@@ -89,6 +89,21 @@ class TestRerank:
             reranked = reranker.rerank("test", results)
         assert reranked[0].chunk == "exact match"
 
+    def test_mixed_cohort_does_not_demote_strong_hybrid_top(self, reranker):
+        """RRF (hybrid) and cosine-distance (HyDE) signals are normalized within
+        their own family, so a HyDE chunk cannot displace a leading hybrid hit just
+        because 1-distance is numerically larger than a tiny RRF score."""
+        cfg.reranker_model = _RERANKER_MODEL
+        results = [
+            _chunk("hybrid_top.md", "exact match", relevance=0.05),
+            _chunk("hybrid_low.md", "weaker hybrid", relevance=0.03),
+            _chunk("hyde.md", "hyde recall", distance=0.4, relevance=None),
+        ]
+        # The cross-encoder favours the HyDE chunk; the hybrid top must still win.
+        with _patch_provider(lambda query, cands: [0.5, 0.5, 0.9]):
+            reranked = reranker.rerank("test", results)
+        assert reranked[0].chunk == "exact match"
+
     def test_perfect_vector_match_not_penalized(self, reranker):
         """A vector-only chunk with distance 0.0 is the strongest possible hit; it
         must read as a full fusion signal, not the falsy-``or`` 0.5 default."""

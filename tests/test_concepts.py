@@ -377,6 +377,16 @@ class TestBuildConceptRecords:
         records = cg.build_concept_records([], [])
         assert (records.nodes, records.edges, records.chunk_concepts) == ([], [], [])
 
+    def test_edge_weights_are_raw_cooccurrence_counts(self, cg):
+        """Edges carry raw co-occurrence counts (not per-file PMI); PMI is computed
+        corpus-wide later in rebuild_clusters. python+ml co-occur in two chunks -> 2.0."""
+        records = cg.build_concept_records(
+            [("a.md", 0), ("a.md", 1)],
+            [["python", "ml"], ["python", "ml"]],
+        )
+        weights = {(e["source"], e["target"]): e["weight"] for e in records.edges}
+        assert weights == {("ml", "python"): 2.0}
+
     def test_merged_concatenates_per_file_records(self, cg):
         from lilbee.data.store import ConceptRecords
 

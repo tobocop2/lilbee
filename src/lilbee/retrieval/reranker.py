@@ -69,6 +69,28 @@ def _fusion_signal(chunk: SearchChunk) -> float:
     return 0.5
 
 
+def _fusion_norms(to_rerank: list[SearchChunk]) -> list[float]:
+    """Min-max normalize the fusion signal WITHIN each scoring family.
+
+    Hybrid rows carry an RRF ``relevance_score`` (tiny magnitude); the rest
+    (vector-only / HyDE recalls) carry a cosine ``distance``. The two scales are
+    not comparable, so normalizing them together would let one family dominate
+    purely as a scale artifact. Each family is scaled to [0, 1] independently;
+    a row with neither signal sits in the non-RRF family at ``_fusion_signal``'s
+    neutral 0.5.
+    """
+    rrf = [i for i, c in enumerate(to_rerank) if c.relevance_score is not None]
+    non_rrf = [i for i, c in enumerate(to_rerank) if c.relevance_score is None]
+    norms = [0.5] * len(to_rerank)
+    for cohort in (rrf, non_rrf):
+        if not cohort:
+            continue
+        scaled = _normalize_scores([_fusion_signal(to_rerank[i]) for i in cohort])
+        for i, value in zip(cohort, scaled, strict=True):
+            norms[i] = value
+    return norms
+
+
 def _blend_scores(
     to_rerank: list[SearchChunk], norm_scores: list[float], fusion_norms: list[float]
 ) -> list[ScoredChunk]:
@@ -130,7 +152,7 @@ class Reranker:
             return results
 
         norm_scores = _normalize_scores(scores)
-        fusion_norms = _normalize_scores([_fusion_signal(c) for c in to_rerank])
+        fusion_norms = _fusion_norms(to_rerank)
         blended = _blend_scores(to_rerank, norm_scores, fusion_norms)
         blended_sorted = sorted(blended, key=lambda x: x.score, reverse=True)
 
