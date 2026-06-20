@@ -2869,3 +2869,95 @@ class TestStreamingFlush:
         evt = done_events[0]
         assert evt.files_written == len(paths)
         assert evt.files_written >= 1
+
+
+class _FakeStream:
+    async def readline(self) -> bytes:
+        return b""  # immediate EOF, so the drains finish
+
+
+class _FakeProc:
+    """Minimal asyncio subprocess stand-in whose wait() can be made to hang."""
+
+    def __init__(self, *, hang_wait: bool = False, returncode: int = 0) -> None:
+        self.stdout = _FakeStream()
+        self.stderr = _FakeStream()
+        self._returncode: int | None = None if hang_wait else returncode
+        self._exit = asyncio.Event()
+        self.terminated = False
+        self.killed = False
+        if not hang_wait:
+            self._exit.set()
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._returncode = 0
+        self._exit.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self._returncode = -9
+        self._exit.set()
+
+    async def wait(self) -> int | None:
+        await self._exit.wait()
+        return self._returncode
+
+
+class TestChromiumBootstrapTermination:
+    async def test_terminate_process_terminates_running(self):
+        from lilbee.crawler.bootstrap import _terminate_process
+
+        proc = _FakeProc(hang_wait=True)
+        await _terminate_process(proc)
+        assert proc.terminated
+        assert not proc.killed
+
+    async def test_terminate_process_noop_when_already_exited(self):
+        from lilbee.crawler.bootstrap import _terminate_process
+
+        proc = _FakeProc(returncode=0)
+        await _terminate_process(proc)
+        assert not proc.terminated
+
+    async def test_terminate_process_kills_when_terminate_ignored(self, monkeypatch):
+        from lilbee.crawler import bootstrap
+
+        monkeypatch.setattr(bootstrap, "_TERMINATE_TIMEOUT_S", 0.05)
+
+        class _Stubborn(_FakeProc):
+            def terminate(self) -> None:
+                self.terminated = True  # ignores the signal; stays running
+
+        proc = _Stubborn(hang_wait=True)
+        await bootstrap._terminate_process(proc)
+        assert proc.terminated
+        assert proc.killed
+
+    async def test_bootstrap_cancel_terminates_install(self, monkeypatch):
+        # bb-ziks.4: cancelling the bootstrap (SSE client disconnect) must not
+        # leave the chromium install running orphaned.
+        from lilbee.crawler import bootstrap
+
+        monkeypatch.setattr(bootstrap, "chromium_installed", lambda: False)
+        monkeypatch.setattr(bootstrap, "_resolve_playwright_runner", lambda: (["pw"], {}))
+        proc = _FakeProc(hang_wait=True)
+
+        async def _fake_exec(*_args, **_kwargs):
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+        task = asyncio.create_task(bootstrap.bootstrap_chromium())
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if proc.stdout is not None and not proc._exit.is_set():
+                break
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert proc.terminated  # the orphaned install was terminated

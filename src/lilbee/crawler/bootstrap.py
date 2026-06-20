@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import sys
@@ -264,11 +265,16 @@ async def bootstrap_chromium(
     assert proc.stderr is not None  # noqa: S101
 
     stderr_tail: list[str] = []
-    await asyncio.gather(
-        _drain_stdout_to_progress(proc.stdout, on_progress),
-        _drain_stderr(proc.stderr, stderr_tail),
-    )
-    returncode = await proc.wait()
+    try:
+        await asyncio.gather(
+            _drain_stdout_to_progress(proc.stdout, on_progress),
+            _drain_stderr(proc.stderr, stderr_tail),
+        )
+        returncode = await proc.wait()
+    finally:
+        # On cancel (SSE client disconnect) or any error, don't leave the
+        # ~180MB chromium install running orphaned; terminate, then kill.
+        await _terminate_process(proc)
 
     if returncode != 0:
         tail = "\n".join(stderr_tail[-10:]) or f"exit code {returncode}"
@@ -276,3 +282,25 @@ async def bootstrap_chromium(
         raise CrawlerBrowserError(f"Chromium bootstrap failed (exit {returncode}): {tail}")
 
     _emit_setup_done(on_progress, success=True, error=None)
+
+
+_TERMINATE_TIMEOUT_S = 5.0
+
+
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    """Terminate then kill *proc* if it is still running, and reap it.
+
+    Best-effort and re-cancel-safe: the waits are shielded so a second
+    cancellation while unwinding cannot leave the child orphaned.
+    """
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+        await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=_TERMINATE_TIMEOUT_S)
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(proc.wait())
