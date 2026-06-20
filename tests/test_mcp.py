@@ -549,6 +549,30 @@ class TestHttpDaemonGate:
         assert result["command"] == "settings_set"
         assert cfg.top_k == 7
 
+    def test_provider_reset_refused_on_http_daemon(self, isolated_env):
+        # settings_reset(['llm_provider']) also triggers reset_services(); the
+        # daemon must refuse it just like settings_set and init/reset.
+        cfg.data_root = isolated_env
+        before = cfg.llm_provider
+        set_http_mounted(True)
+        try:
+            result = settings_reset(["llm_provider"])
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert cfg.llm_provider == before
+
+    def test_non_provider_reset_allowed_on_http_daemon(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.top_k = 99
+        set_http_mounted(True)
+        try:
+            result = settings_reset(["top_k"])
+        finally:
+            set_http_mounted(False)
+        assert result["command"] == "settings_reset"
+
 
 class TestAdd:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)

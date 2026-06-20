@@ -284,6 +284,19 @@ def requires_services_reset(updates: dict[str, Any]) -> bool:
     return bool(set(updates) & PROVIDER_SWITCHING_KEYS)
 
 
+def provider_reset_refused_message(action: str) -> str:
+    """Shared user-facing refusal for a provider *action* on the HTTP server.
+
+    *action* is the verb shown to the user, e.g. ``"Switching"`` or
+    ``"Resetting"``. Kept in one place so the daemon entry points (MCP
+    settings_set / settings_reset, REST config) cannot drift apart.
+    """
+    return (
+        f"{action} the model provider is unavailable on the HTTP server: it rebuilds "
+        "the shared engine for every connected client. Change it from the CLI."
+    )
+
+
 def _invalidate_caches(changed_keys: set[str]) -> None:
     """Drop every read-side cache whose freshness depends on a changed setting."""
     if not changed_keys:

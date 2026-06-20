@@ -8,7 +8,11 @@ from typing import Any
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.app.settings import apply_settings_update, requires_services_reset
+from lilbee.app.settings import (
+    apply_settings_update,
+    provider_reset_refused_message,
+    requires_services_reset,
+)
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
 )
@@ -36,10 +40,7 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     HTTP server; do it from the CLI instead.
     """
     if requires_services_reset(updates):
-        raise ValueError(
-            "Switching the model provider is unavailable on the HTTP server: it "
-            "rebuilds the shared engine for every connected client. Change it from the CLI."
-        )
+        raise ValueError(provider_reset_refused_message("Switching"))
     result = apply_settings_update(updates, allow_model_roles=False)
     return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
 

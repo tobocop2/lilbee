@@ -513,6 +513,7 @@ class TestRoutingProvider:
         FleetProvider (duplicate role servers) and all but one leak.
         """
         import threading
+        import time
 
         from lilbee.providers.routing_provider import RoutingProvider
 
@@ -523,6 +524,10 @@ class TestRoutingProvider:
             def __init__(self) -> None:
                 with count_lock:
                     construct_count["n"] += 1
+                # Widen the check-then-set window: without it the cheap __init__
+                # runs to completion before the GIL yields, so a racing caller
+                # never observes None and the test passes even on unlocked code.
+                time.sleep(0.05)
 
             def shutdown(self) -> None: ...
 
@@ -555,6 +560,7 @@ class TestRoutingProvider:
         constructions instead.
         """
         import threading
+        import time
 
         from lilbee.providers.routing_provider import RoutingProvider
 
@@ -565,6 +571,10 @@ class TestRoutingProvider:
             def __init__(self, *args, **kwargs) -> None:
                 with count_lock:
                     construct_count["n"] += 1
+                # Widen the check-then-set window so a racing caller observes the
+                # uninitialized slot; otherwise the test is false-green on
+                # unlocked code (see test_get_local_single_init_under_concurrency).
+                time.sleep(0.05)
 
             def shutdown(self) -> None: ...
 

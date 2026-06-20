@@ -204,10 +204,9 @@ class _VisionRequestGate:
         concurrent capacity change cannot release the wrong object.
         """
         sem = self._checkout()
-        # _checkout already incremented _in_flight, so the decrement must run on
-        # every exit path -- including one where acquire() itself raises (e.g. an
-        # interrupted blocking acquire). Otherwise a leaked count would pin the
-        # gate non-idle and defer every later capacity resize forever.
+        # _checkout incremented _in_flight; decrement on every exit path,
+        # including one where acquire() raises, or a leaked count pins the gate
+        # non-idle and defers every later capacity resize forever.
         try:
             sem.acquire()
             try:
@@ -221,10 +220,9 @@ class _VisionRequestGate:
     def _checkout(self) -> threading.BoundedSemaphore:
         capacity = max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
         with self._lock:
-            # Only resize when the gate is idle. Swapping in a fresh full-capacity
-            # semaphore while holders of the old one are still in flight would
-            # momentarily double the real cap and undo the 429 protection, so a
-            # capacity change waits for the current batch to drain.
+            # Resize only when idle: rebuilding while old-semaphore holders are
+            # in flight would briefly double the real cap, so a capacity change
+            # waits for the current batch to drain.
             if self._semaphore is None or (self._capacity != capacity and self._in_flight == 0):
                 self._capacity = capacity
                 self._semaphore = threading.BoundedSemaphore(capacity)

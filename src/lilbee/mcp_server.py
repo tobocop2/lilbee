@@ -35,6 +35,7 @@ from lilbee.app.settings import (
     apply_settings_update,
     get_setting,
     list_settings,
+    provider_reset_refused_message,
     requires_services_reset,
     reset_settings,
 )
@@ -650,11 +651,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     ``sync(force_rebuild=true)`` to refresh the index.
     """
     if _transport.http_mounted and requires_services_reset(updates):
-        return _error(
-            "Switching the model provider is unavailable on the HTTP server: it "
-            "rebuilds the shared engine for every connected client. Change it from "
-            "the CLI or the stdio MCP server."
-        )
+        return _error(provider_reset_refused_message("Switching"))
     try:
         result = apply_settings_update(updates)
     except (ValueError, TypeError) as exc:
@@ -669,7 +666,8 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
 @_tool
 def settings_reset(keys: list[str]) -> dict[str, Any]:
     """Reset writable settings to their built-in defaults."""
-
+    if _transport.http_mounted and requires_services_reset(dict.fromkeys(keys)):
+        return _error(provider_reset_refused_message("Resetting"))
     try:
         result = reset_settings(keys)
     except (ValueError, TypeError) as exc:
