@@ -759,7 +759,9 @@ class TestCrawl:
         assert result["status"] == "started"
         assert result["task_id"] == "abc123"
         assert result["url"] == "https://example.com"
-        mock_start.assert_called_once_with("https://example.com", depth=None, max_pages=None)
+        mock_start.assert_called_once_with(
+            "https://example.com", depth=None, max_pages=None, render_mode=None
+        )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="def456")
@@ -767,7 +769,23 @@ class TestCrawl:
         """Depth and max_pages are forwarded to start_crawl."""
         result = crawl(url="https://example.com", depth=2, max_pages=10)
         assert result["task_id"] == "def456"
-        mock_start.assert_called_once_with("https://example.com", depth=2, max_pages=10)
+        mock_start.assert_called_once_with(
+            "https://example.com", depth=2, max_pages=10, render_mode=None
+        )
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="ghi789")
+    def test_passes_render_mode(self, mock_start, _mock_avail, isolated_env):
+        """An explicit render_mode is forwarded to start_crawl."""
+        from lilbee.core.config.enums import CrawlRenderMode
+
+        crawl(url="https://example.com", render_mode=CrawlRenderMode.BROWSER)
+        mock_start.assert_called_once_with(
+            "https://example.com",
+            depth=None,
+            max_pages=None,
+            render_mode=CrawlRenderMode.BROWSER,
+        )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     def test_rejects_invalid_url(self, _mock_avail):
@@ -1617,7 +1635,7 @@ class TestToolsSchemaSize:
 
     async def test_default_tools_schema_under_budget(self) -> None:
         """Default schema (wiki off, crawler off unless the extra is installed)
-        must stay under 6 KB so small-context (16K) chat models keep room
+        must stay under the cap so small-context (16K) chat models keep room
         for the user's actual content. _strip_schema_noise removes title /
         default / null-arm-anyOf / additionalProperties=true noise, hitting
         ~5.2 KB today.
@@ -1632,10 +1650,12 @@ class TestToolsSchemaSize:
             for t in tools
         ]
         total_bytes = len(_json.dumps(payload))
-        # Bumped from 6_000 when the always-on export_dataset / import_dataset tools
-        # landed; their docstrings were trimmed first. ~1.6K tokens still leaves a
+        # Bumped 6_000 -> 7_000 (export/import tools) -> 8_800 when merging the
+        # local-model-api fleet/model-management tools with the crawl-render-mode
+        # feature (render_mode params; 23 tools total). Verbose Args sections were
+        # trimmed first (add/crawl/memory_remember). ~2.1K tokens still leaves a
         # 16K-context model ample room for system + history + content.
-        ceiling = 7_000
+        ceiling = 8_800
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds "
             f"{ceiling}. Each MCP tool's docstring becomes the schema "

@@ -7,6 +7,7 @@ These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -243,7 +244,14 @@ def test_do_crawl_reports_setup_progress() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_crawl(
-        url, *, depth, max_pages, on_progress, quiet=False, include_subdomains=False
+        url,
+        *,
+        depth,
+        max_pages,
+        on_progress,
+        quiet=False,
+        include_subdomains=False,
+        render_mode=None,
     ):
         on_progress(EventType.SETUP_START, object())
         on_progress(
@@ -286,7 +294,14 @@ def test_do_crawl_reports_page_progress() -> None:
     reporter = MagicMock(spec=ProgressReporter)
 
     async def fake_crawl(
-        url, *, depth, max_pages, on_progress, quiet=False, include_subdomains=False
+        url,
+        *,
+        depth,
+        max_pages,
+        on_progress,
+        quiet=False,
+        include_subdomains=False,
+        render_mode=None,
     ):
         on_progress(
             EventType.CRAWL_PAGE,
@@ -309,6 +324,78 @@ def test_do_crawl_reports_page_progress() -> None:
     t.join(timeout=5)
     assert not exc, f"worker raised: {exc[0]}"
     assert reporter.update.call_count >= 2
+
+
+@contextlib.contextmanager
+def _chat_screen_with_task_bar():
+    """A bare ChatScreen whose read-only ``_task_bar`` property yields a MagicMock."""
+    from unittest.mock import PropertyMock
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    screen = ChatScreen.__new__(ChatScreen)
+    screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+    bar = MagicMock()
+    with patch.object(ChatScreen, "_task_bar", new_callable=PropertyMock, return_value=bar):
+        yield screen, bar
+
+
+def test_start_crawl_browser_persists_mode_and_bootstraps_chromium(monkeypatch) -> None:
+    """Browser mode differing from config persists the choice and ensures Chromium first."""
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    with (
+        _chat_screen_with_task_bar() as (screen, bar),
+        patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+    ):
+        screen._start_crawl("https://x", 0, 5, render_mode=CrawlRenderMode.BROWSER)
+    mock_apply.assert_called_once_with({"crawl_render_mode": "browser"})
+    bar.ensure_chromium.assert_called_once()
+    bar.start_task.assert_not_called()
+
+
+def test_start_crawl_http_skips_chromium_and_persists(monkeypatch) -> None:
+    """HTTP mode differing from config persists and kicks off without Chromium bootstrap."""
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.BROWSER)
+    with (
+        _chat_screen_with_task_bar() as (screen, bar),
+        patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+    ):
+        screen._start_crawl("https://x", 0, 5, render_mode=CrawlRenderMode.HTTP)
+    mock_apply.assert_called_once_with({"crawl_render_mode": "http"})
+    bar.ensure_chromium.assert_not_called()
+    bar.start_task.assert_called_once()
+
+
+def test_start_crawl_none_uses_config_without_persisting(monkeypatch) -> None:
+    """render_mode=None inherits cfg and does not re-persist the setting."""
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    with (
+        _chat_screen_with_task_bar() as (screen, bar),
+        patch("lilbee.app.settings.apply_settings_update") as mock_apply,
+    ):
+        screen._start_crawl("https://x", 0, 5)
+    mock_apply.assert_not_called()
+    bar.ensure_chromium.assert_not_called()
+    bar.start_task.assert_called_once()
+
+
+def test_persist_crawl_render_mode_swallows_write_errors() -> None:
+    """A failed settings write is logged, not raised, so the crawl still proceeds."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    screen = ChatScreen.__new__(ChatScreen)
+    with patch("lilbee.app.settings.apply_settings_update", side_effect=OSError("disk full")):
+        screen._persist_crawl_render_mode(CrawlRenderMode.BROWSER)
 
 
 def test_do_sync_reports_file_and_embed_progress() -> None:

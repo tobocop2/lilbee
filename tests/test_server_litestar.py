@@ -1270,6 +1270,20 @@ class TestCrawlRoute:
         kwargs = mock_stream.call_args.kwargs
         assert kwargs["depth"] is None
         assert kwargs["max_pages"] is None
+        # Omitted render_mode reaches the handler as None (resolves to config default).
+        assert kwargs["render_mode"] is None
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_forwards_render_mode(self, mock_stream, client):
+        """An explicit render_mode in the body reaches the handler as the enum."""
+        from lilbee.core.config.enums import CrawlRenderMode
+
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post(
+            "/api/crawl", json={"url": "https://example.com", "render_mode": "browser"}
+        )
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs["render_mode"] is CrawlRenderMode.BROWSER
 
     def test_post_crawl_rejects_zero_max_pages(self, client):
         """max_pages=0 is invalid (use null for unbounded)."""

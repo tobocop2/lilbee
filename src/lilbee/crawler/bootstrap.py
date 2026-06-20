@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+from lilbee._frozen import is_frozen
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -212,7 +213,8 @@ def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
     Spawns Playwright's bundled Node driver directly so the call works under a
     pip install, ``uv tool install``, or a frozen (Nuitka onefile) binary. Falls
     back to ``[sys.executable, '-m', 'playwright']`` for unfrozen builds when the
-    driver lookup fails; re-raises for frozen builds.
+    driver lookup fails; re-raises for frozen builds, where ``sys.executable``
+    is the lilbee exe and ``-m playwright`` would leak into typer.
     """
     try:
         from playwright._impl._driver import compute_driver_executable, get_driver_env
@@ -221,7 +223,7 @@ def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
     try:
         driver_exe, driver_cli = compute_driver_executable()
     except Exception:
-        if not getattr(sys, "frozen", False):
+        if not is_frozen():
             return [sys.executable, "-m", "playwright"], dict(os.environ)
         raise
     return [str(driver_exe), str(driver_cli)], dict(get_driver_env())

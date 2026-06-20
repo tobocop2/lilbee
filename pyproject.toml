@@ -1,7 +1,7 @@
 [project]
 name = "lilbee"
-version = "0.6.66b496"
-description = "A batteries-included terminal app for local AI: a browsable model catalog, a search engine over your own files and code, and a chat that cites its sources. Per-project libraries, semantic and hybrid search, vision OCR, auto-built wiki. CLI, TUI, MCP server, REST API, and Python library in one process; no model server, no database server."
+version = "0.6.66b504"
+description = "Run and manage local AI models, then search your files, code, and the web pages you crawl, with answers that cite the source. Everything runs on your machine in one process: per-project libraries, semantic and hybrid search, vision OCR, an auto-built wiki, CLI, TUI, MCP server, REST API, and Python library. No model server, no database server. Works with your own Ollama or LM Studio models too."
 readme = "README.md"
 license = "Elastic-2.0"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
@@ -53,14 +53,14 @@ dependencies = [
     "gguf>=0.18",
     "huggingface_hub>=1.11.0",
     "psutil>=5.9",
-    "pydantic-settings>=2.13.1",
+    "pydantic-settings>=2.14.2",
     "numpy",
 ]
 
 [project.optional-dependencies]
-remote = ["litellm>=1.50"]
+litellm = ["litellm>=1.84.0"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
-crawler = ["crawl4ai>=0.8.6"]
+crawler = ["crawl4ai>=0.9.0"]
 # The CUDA 12 runtime the bundled llama-server links, from NVIDIA's official PyPI
 # wheels. Markers keep it a no-op off Linux x86_64 (no wheel exists elsewhere);
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH.
@@ -69,7 +69,7 @@ cuda12 = [
     "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
     "nvidia-cuda-nvrtc-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
-release = ["lilbee[crawler,remote,graph]"]
+release = ["lilbee[crawler,litellm,graph]"]
 
 [project.urls]
 Homepage = "https://lilbee.sh/"

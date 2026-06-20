@@ -3,7 +3,6 @@ on_key digit intercept, dismiss_filter, discover-rail population edges."""
 
 from __future__ import annotations
 
-import contextlib
 import sys
 
 import pytest
@@ -189,6 +188,49 @@ async def test_action_toggle_drawer_flips_collapsed_class() -> None:
         assert drawer.has_class("-collapsed")
 
 
+async def test_dismiss_filter_closes_revealed_bar_when_unfocused() -> None:
+    """Esc closes an open filter even when focus has raced off the Input."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        inp = screen.query_one("#catalog-search", Input)
+
+        await pilot.press("slash")  # reveal the filter as `/` does
+        await pilot.pause()
+        assert screen._filter_open
+        inp.value = "qwen"
+        screen.set_focus(None)  # model the reveal-time focus race
+        await pilot.pause()
+        assert not screen._search_focused
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert inp.has_class("-hidden")
+        assert inp.value == ""
+
+
+async def test_go_back_closes_revealed_bar_when_unfocused() -> None:
+    """`q` collapses an open filter (even unfocused) instead of leaving the screen."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        inp = screen.query_one("#catalog-search", Input)
+
+        await pilot.press("slash")
+        await pilot.pause()
+        assert screen._filter_open
+        screen.set_focus(None)
+        await pilot.pause()
+        assert not screen._search_focused
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert inp.has_class("-hidden")
+        assert pilot.app.query_one(CatalogScreen) is screen
+
+
 async def test_action_dismiss_filter_no_op_outside_input() -> None:
     """Esc outside the filter Input must not dismiss; the screen stays put."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
@@ -335,26 +377,16 @@ async def test_action_select_tab_idempotent_when_already_active() -> None:
 
 
 async def test_action_dismiss_filter_clears_input_value() -> None:
-    """Esc with focus inside the filter Input clears it and hides the box.
-
-    Uses a focus-state property override rather than driving real focus
-    so the test passes on CI runners where set_focus doesn't pin reliably.
-    """
-    from unittest.mock import PropertyMock, patch
-
-    from textual.screen import Screen
-
+    """Esc on an open filter clears its value and hides the box."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
         inp = screen.query_one("#catalog-search", Input)
+        await pilot.press("slash")
+        await pilot.pause()
         inp.value = "qwen"
-        # Stub Screen.focused to point at the Input regardless of CI focus
-        # quirks. The action's isinstance(self.focused, Input) gate fires
-        # the filter-clear branch we want to exercise.
-        with patch.object(Screen, "focused", new_callable=PropertyMock, return_value=inp):
-            screen.action_dismiss_filter()
+        await pilot.press("escape")
         await pilot.pause()
         assert inp.value == ""
         assert inp.has_class("-hidden")
@@ -519,7 +551,7 @@ async def test_populate_library_list_with_only_frontier_rows() -> None:
         screen._all_family_rows = lambda: []  # type: ignore[method-assign]
         screen._all_hf_rows = lambda: []  # type: ignore[method-assign]
         screen._all_remote_rows = lambda: []  # type: ignore[method-assign]
-        screen._frontier_rows = [
+        frontier = [
             FrontierCatalogRow(
                 name="gpt-4o",
                 ref="openai/gpt-4o",
@@ -529,18 +561,20 @@ async def test_populate_library_list_with_only_frontier_rows() -> None:
                 key_status=KeyStatus.READY,
             )
         ]
+        # on_mount dispatches a frontier-discovery worker that writes
+        # _frontier_rows asynchronously (empty in the keyless test env). A
+        # plain ``screen._frontier_rows = [...]`` seed races that worker and
+        # gets clobbered on the slower Windows runner, leaving the list
+        # empty. Stub the accessor the renderer reads so the row is the
+        # deterministic source, matching how the attr-missing sibling test
+        # isolates this path.
+        screen._build_frontier_rows = lambda _search: list(frontier)  # type: ignore[method-assign]
+        screen._populate_library_list()
+        await pilot.pause()
         from lilbee.cli.tui.widgets.model_list import ModelList
 
-        ml: ModelList | None = None
-        for _ in range(50):
-            screen._tab_list_cache = {}
-            screen._populate_library_list()
-            await pilot.pause()
-            with contextlib.suppress(Exception):
-                ml = screen.query_one("#list-library", ModelList)
-            if ml is not None and ml.option_count >= 1:
-                break
-        assert ml is not None and ml.option_count >= 1
+        ml = screen.query_one("#list-library", ModelList)
+        assert ml.option_count >= 1
 
 
 async def test_refresh_grid_non_task_tab_uses_legacy_grouping() -> None:

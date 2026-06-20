@@ -18,6 +18,7 @@ from typing import Any
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
@@ -55,18 +56,22 @@ def _get_crawl_semaphore() -> asyncio.Semaphore | None:
     return get_services().crawler_semaphore
 
 
-def _resolve_limit(value: int | None, cfg_ceiling: int | None) -> int | None:
-    """Resolve a caller-provided crawl limit to the number the fetcher consumes.
+def _resolve_depth(value: int | None, cfg_ceiling: int | None) -> int | None:
+    """Resolve a crawl depth to the value the dispatcher consumes.
+
+    Depth has its own contract, distinct from the page-count limit: ``0`` is a
+    valid "seed only / single page" depth, not "unbounded". (Page counts use
+    :func:`_resolve_page_limit`, where ``0`` means "no limit".)
 
     None    -> cfg_ceiling (itself may be None; ``None`` means unbounded)
-    n > 0   -> n (explicit caller intent; cfg is not a ceiling here)
-    n <= 0  -> ValueError (use None for unbounded, not 0)
+    n >= 0  -> n (0 = seed only; explicit caller intent overrides cfg)
+    n < 0   -> ValueError (use None for unbounded)
     """
     effective = value if value is not None else cfg_ceiling
     if effective is None:
         return None
-    if effective <= 0:
-        raise ValueError("crawl limit must be a positive int or None")
+    if effective < 0:
+        raise ValueError("crawl depth must be 0 (seed only) or a positive int")
     return effective
 
 
@@ -94,9 +99,17 @@ def _looks_like_missing_chromium(exc: BaseException) -> bool:
 
 
 async def crawl_single(
-    url: str, *, quiet: bool = False, on_progress: DetailedProgressCallback | None = None
+    url: str,
+    *,
+    quiet: bool = False,
+    on_progress: DetailedProgressCallback | None = None,
+    render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
 ) -> CrawlResult:
     """Fetch a single URL.
+
+    ``render_mode`` defaults to ``BROWSER`` for direct callers; the public
+    entry point :func:`crawl_and_save` resolves it from ``cfg.crawl_render_mode``
+    and passes the canonical value down.
 
     Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
     On a "Chromium executable missing" launch failure, re-runs the
@@ -115,11 +128,15 @@ async def crawl_single(
         raise bootstrap.CrawlerBackendError(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
-    if on_progress:
+    # The setup bracket exists to surface the Chromium warmup, which only
+    # happens in browser mode; HTTP mode opens a browserless client with no
+    # warmup, so emitting a "browser" setup stage there would be misleading.
+    emit_setup = render_mode is CrawlRenderMode.BROWSER
+    if on_progress is not None and emit_setup:
         on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
-        async with Crawl4aiFetcher(quiet=quiet) as fetcher:
-            if on_progress:
+        async with Crawl4aiFetcher(quiet=quiet, render_mode=render_mode) as fetcher:
+            if on_progress is not None and emit_setup:
                 on_progress(
                     EventType.SETUP_DONE,
                     SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
@@ -133,7 +150,7 @@ async def crawl_single(
             log.warning("Chromium missing for %s; bootstrapping then retrying", url)
             await bootstrap.bootstrap_chromium(on_progress=None)
             try:
-                async with Crawl4aiFetcher(quiet=quiet) as fetcher:
+                async with Crawl4aiFetcher(quiet=quiet, render_mode=render_mode) as fetcher:
                     page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
                 return _fetched_to_result(page)
             except Exception as retry_exc:
@@ -153,8 +170,13 @@ async def crawl_recursive(
     quiet: bool = False,
     include_subdomains: bool = False,
     on_result: Callable[[CrawlResult], Any] | None = None,
+    render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
 ) -> list[CrawlResult]:
     """Crawl a URL recursively using BFS, streaming per-page progress.
+
+    ``render_mode`` defaults to ``BROWSER`` for direct callers; the public
+    entry point :func:`crawl_and_save` resolves it from ``cfg.crawl_render_mode``
+    and passes the canonical value down.
 
     ``max_depth`` of None means unbounded depth. ``max_pages`` of
     ``CRAWL_PAGES_UNLIMITED`` (0) means no page limit; a positive int is that
@@ -170,7 +192,10 @@ async def crawl_recursive(
     disk incrementally and keep partial output across cancellation.
     """
     validate_crawl_url(url)
-    depth = _resolve_limit(max_depth, cfg.crawl_max_depth)
+    # ``_run_crawl`` already resolved the depth ceiling (and routed a seed-only
+    # 0 to the single-page path), so the recursive path takes ``max_depth`` as
+    # given: None = unbounded, a positive int = the cap.
+    depth = max_depth
     pages = _resolve_page_limit(max_pages)
 
     # Fail fast when the ``crawler`` extra wasn't installed so SSE
@@ -183,11 +208,12 @@ async def crawl_recursive(
         )
 
     # Fail fast before pulling in backend submodules so callers get a clean
-    # CrawlerBrowserError instead of a Playwright install banner.
-    if not bootstrap.chromium_installed():
+    # CrawlerBrowserError instead of a Playwright install banner. HTTP mode
+    # needs no browser, so the guard only applies to browser-mode crawls.
+    if render_mode is CrawlRenderMode.BROWSER and not bootstrap.chromium_installed():
         raise CrawlerBrowserError(
             "Playwright Chromium browser not installed. "
-            "Run 'uv run playwright install chromium' to enable /crawl."
+            "Run 'uv run playwright install chromium' to enable browser-mode crawling."
         )
 
     # Best-effort sitemap lookup so the TUI / CLI can render a real page-count
@@ -201,15 +227,16 @@ async def crawl_recursive(
     filters = build_filter_spec(include_subdomains=include_subdomains)
 
     results: list[CrawlResult] = []
-    # Opening the crawler launches the browser; on first use its one-time
-    # warmup can take many seconds with no other signal. Bracket it with
-    # setup events (no size estimate -> indeterminate) so the Task Center
-    # shows a "preparing crawler" stage instead of a silent stall.
-    if on_progress:
+    # Browser mode launches Chromium, whose one-time warmup can take many
+    # seconds; bracket it with setup events so the Task Center shows a
+    # "preparing crawler" stage instead of a silent stall. HTTP mode has no
+    # browser warmup, so the bracket is skipped to avoid a misleading stage.
+    emit_setup = render_mode is CrawlRenderMode.BROWSER
+    if on_progress is not None and emit_setup:
         on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
-        async with Crawl4aiFetcher(quiet=quiet) as fetcher:
-            if on_progress:
+        async with Crawl4aiFetcher(quiet=quiet, render_mode=render_mode) as fetcher:
+            if on_progress is not None and emit_setup:
                 on_progress(
                     EventType.SETUP_DONE,
                     SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
@@ -310,11 +337,13 @@ def _make_flush_page(
 
 async def _ensure_crawler_ready(
     on_progress: DetailedProgressCallback | None,
+    render_mode: CrawlRenderMode,
 ) -> None:
     """Reject early when the extra is missing; bootstrap Chromium on first use.
 
     Runs before the Chromium bootstrap so a user without [crawler] doesn't pay
-    the ~160 MB download just to hit the same error afterward. The bootstrap
+    the ~160 MB download just to hit the same error afterward. Only browser mode
+    needs Chromium; HTTP mode skips the bootstrap entirely. The bootstrap
     short-circuits when Chromium is already installed; any progress is forwarded
     through ``on_progress`` so downstream UIs surface a 'setup' stage.
     """
@@ -325,7 +354,7 @@ async def _ensure_crawler_ready(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
 
-    if not bootstrap.chromium_installed():
+    if render_mode is CrawlRenderMode.BROWSER and not bootstrap.chromium_installed():
         await bootstrap.bootstrap_chromium(on_progress=on_progress)
 
 
@@ -339,10 +368,24 @@ async def _run_crawl(
     quiet: bool,
     include_subdomains: bool,
     flush_page: Callable[[Any], Awaitable[Path | None]],
+    render_mode: CrawlRenderMode,
 ) -> int:
-    """Run the single-URL or recursive crawl. Returns ``pages_seen``."""
-    if depth == 0:
-        result = await crawl_single(url, quiet=quiet, on_progress=on_progress)
+    """Run the single-URL or recursive crawl. Returns ``pages_seen``.
+
+    Resolves the depth ceiling here (permitting the seed-only ``0``) so a
+    ``cfg.crawl_max_depth`` of 0 routes to the single-page path instead of
+    blowing up inside the recursive resolver.
+
+    A resolved page limit of 1 is also a single-page crawl: crawl4ai's BFS
+    under-counts tiny ``max_pages`` (``max_pages=1`` yields 0 pages), so route
+    the "at most one page" request to the reliable single-URL fetch.
+    """
+    depth = _resolve_depth(depth, cfg.crawl_max_depth)
+    pages = _resolve_page_limit(max_pages)
+    if depth == 0 or pages == 1:
+        result = await crawl_single(
+            url, quiet=quiet, on_progress=on_progress, render_mode=render_mode
+        )
         try:
             await flush_page(result)
         except OSError:
@@ -359,6 +402,7 @@ async def _run_crawl(
         quiet=quiet,
         include_subdomains=include_subdomains,
         on_result=flush_page,
+        render_mode=render_mode,
     )
     return len(results)
 
@@ -372,6 +416,7 @@ async def crawl_and_save(
     cancel: threading.Event | None = None,
     quiet: bool = False,
     include_subdomains: bool = False,
+    render_mode: CrawlRenderMode | None = None,
 ) -> list[Path]:
     """Crawl URL(s), save as markdown, update metadata. Returns paths written.
 
@@ -380,11 +425,16 @@ async def crawl_and_save(
     ``None`` = no limit, positive int = cap. ``cfg.crawl_max_{depth,pages}`` act
     as ceilings applied only when ``depth``/``max_pages`` are ``None``.
 
+    ``render_mode``: ``None`` resolves to ``cfg.crawl_render_mode`` (the single
+    write-boundary for the default). ``http`` fetches without a browser;
+    ``browser`` runs a tuned Chromium with JavaScript enabled.
+
     Hash-based change detection: always fetches but only saves changed or new
     files. Pages flush to disk as they stream so a cancelled crawl preserves
     the pages already fetched.
     """
-    await _ensure_crawler_ready(on_progress)
+    mode = render_mode if render_mode is not None else cfg.crawl_render_mode
+    await _ensure_crawler_ready(on_progress, mode)
 
     sem = _get_crawl_semaphore()
     if sem is not None:
@@ -409,6 +459,7 @@ async def crawl_and_save(
             quiet=quiet,
             include_subdomains=include_subdomains,
             flush_page=flush_page,
+            render_mode=mode,
         )
 
         if counter["pending"] > 0:

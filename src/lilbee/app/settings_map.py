@@ -12,6 +12,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import (
     ChatMode,
     ClustererBackend,
+    CrawlRenderMode,
     KvCacheType,
     LlmProvider,
     RerankerType,
@@ -537,6 +538,36 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.CRAWLING,
         help_text="Optional recursion-depth cap (blank = no cap; per-crawl values win)",
+    ),
+    "crawl_render_mode": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "How crawls fetch pages. http = lightweight, no browser (default, best "
+            "for static and server-rendered sites). browser = Chromium with "
+            "JavaScript enabled for client-rendered sites, at much higher memory cost."
+        ),
+        choices=tuple(m.value for m in CrawlRenderMode),
+    ),
+    "crawl_browser_recycle_pages": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Browser mode: recycle the Chromium process every N pages to cap memory "
+            "growth on long crawls (0 = never recycle)."
+        ),
+    ),
+    "crawl_browser_extra_args": SettingDef(
+        list,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        render=RenderStyle.LIST_COLLAPSED,
+        help_text=(
+            "Browser mode: extra Chromium launch flags, one per line. "
+            "Defaults trim shared-memory and GPU use."
+        ),
     ),
     "crawl_max_pages": SettingDef(
         int,

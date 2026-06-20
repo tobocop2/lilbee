@@ -1,8 +1,8 @@
 <p align="center">
   <a href="https://lilbee.sh/">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/lilbee-logo-dark.svg">
-      <img alt="lilbee" src="docs/lilbee-logo-light.svg" width="340">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tobocop2/lilbee/main/docs/lilbee-logo-dark.svg">
+      <img alt="lilbee" src="https://raw.githubusercontent.com/tobocop2/lilbee/main/docs/lilbee-logo-light.svg" width="340">
     </picture>
   </a>
 </p>
@@ -12,21 +12,40 @@
 <p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/tutorial">Tutorial reels</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a></p>
 
 <p align="center">
-  <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=latest%20release" alt="Latest release (incl. pre-releases)"></a>
-  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI" alt="lilbee on PyPI"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
-  <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://lilbee.sh/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-brightgreen.svg" alt="Coverage"></a>
-  <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-blue.svg" alt="Typed"></a>
+  <a href="https://github.com/tobocop2/lilbee/releases"><img src="https://img.shields.io/github/v/release/tobocop2/lilbee?include_prereleases&label=release&logo=github&logoColor=white" alt="Latest release"></a>
+  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI&logo=pypi&logoColor=white" alt="lilbee on PyPI"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-2C3E50" alt="License: Elastic License 2.0"></a>
+  <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-7c3aed?logo=obsidian&logoColor=white" alt="Obsidian community plugin"></a>
+  <a href="https://glama.ai/mcp/servers/tobocop2/lilbee"><img src="https://glama.ai/mcp/servers/tobocop2/lilbee/badges/score.svg" alt="Glama MCP server score"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/tobocop2/lilbee/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/tobocop2/lilbee/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white" alt="CI"></a>
+  <a href="https://lilbee.sh/coverage/"><img src="https://img.shields.io/badge/coverage-100%25-2EA043" alt="Coverage"></a>
+  <a href="https://mypy-lang.org/"><img src="https://img.shields.io/badge/typed-mypy-2A6DB2" alt="Typed"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platforms">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-blue.svg" alt="License: Elastic License 2.0"></a>
-  <a href="https://pepy.tech/project/lilbee"><img src="https://static.pepy.tech/badge/lilbee/month" alt="PyPI downloads / month"></a>
+  <a href="https://pepy.tech/project/lilbee"><img src="https://img.shields.io/pepy/dt/lilbee?label=downloads&logo=python&logoColor=white&color=3776AB" alt="PyPI downloads"></a>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/badge/PyPI-pip%20%7C%20uv-3775A9?logo=pypi&logoColor=white" alt="Install from PyPI"></a>
+  <a href="https://github.com/tobocop2/homebrew-lilbee"><img src="https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white" alt="Homebrew tap"></a>
+  <a href="https://aur.archlinux.org/packages/lilbee"><img src="https://img.shields.io/aur/version/lilbee?logo=archlinux&logoColor=white&label=AUR" alt="lilbee on the AUR"></a>
+  <a href="https://github.com/tobocop2/lilbee/pkgs/container/lilbee"><img src="https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white" alt="Docker image on GHCR"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Nix-flake-5277C3?logo=nixos&logoColor=white" alt="Nix flake"></a>
+  <a href="https://tobocop2.github.io/flatpak-lilbee/"><img src="https://img.shields.io/badge/Flatpak-repo-4A90D9?logo=flatpak&logoColor=white" alt="Flatpak repo"></a>
+  <a href="https://github.com/tobocop2/lilbee/releases/latest"><img src="https://img.shields.io/badge/Snap-sideload-82BEA0?logo=snapcraft&logoColor=white" alt="Snap package"></a>
+  <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
 </p>
 
 A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line.
 
-![lilbee chat with cited answers from an indexed PDF manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
+![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
 It's all one program: you never stand up a separate model server, a [vector database](#built-on), or a container. lilbee runs the models and keeps the index itself. Reach it as a full-screen terminal app, a command-line tool, a Model Context Protocol server, an HTTP API, or a Python library. Close it and it's gone, or run it as a service if you'd rather keep it warm. It runs on your computer; lilbee uses a cloud model only when you pick one.
 
@@ -63,7 +82,7 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 Two recommended ways to use lilbee, depending on whether you're the one driving:
 
 - **Run `lilbee`** for the full-screen terminal app. A welcome wizard picks a chat and embedding model, then you index files, search, and chat without leaving the TUI. The Settings screen exposes every retrieval knob (search depth, distance threshold, reranker, chunking) so you can tune lilbee to your library shape.
-- **Wire it into your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
+- **Connect it to your agent over MCP.** Any MCP-aware coding agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets it can quote. Agents can also _fine-tune lilbee on the fly_ via `lilbee_settings_set`. Drop in the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) and the agent reads the full surface: every tool, every retrieval knob, and when to widen for prose vs narrow for code. See [Agent integration](#agent-integration).
 
 Defaults are sane for chatting with code, documentation, crawled sites, and long PDFs. Every retrieval setting is writable from the TUI Settings screen, the `/set` slash command, MCP `lilbee_settings_set`, or `config.toml`. When answers feel thin or noisy, the usual knobs are `top_k`, `max_distance`, or `diversity_max_per_source`.
 
@@ -82,14 +101,14 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up: it loads on demand and runs as a service only if you want it warm.
-- **Everything in one file.** The standalone binary is 250-365 MB and bundles the whole thing: search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
+- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, and terminal UI, with Python and llama.cpp included) in 250-365 MB, or 600 MB+ with the CUDA backend. No Docker, no containers, no web stack, no separate vector database or model server, nothing to stand up or keep running. It loads on demand instead of running as a service you babysit. Comparable desktop AI apps (often Electron-based) ship hundreds of MB to several GB and do less.
 - **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code, with citations, instead of guessing. It can even adjust its own search as it works.
 
 ## Why lilbee
 
 A small local model is fun, but there's only so much you can do with one on its own. Give it properly processed documents and a search engine over them, and it suddenly becomes incredibly powerful. Without those, it never gets past being a fun novelty.
 
-lilbee does all of it, in one install: it finds and runs the models for you, processes your [documents](#built-on) and crawls the web pages you point it at, and searches it all with a real engine. Use it yourself in the terminal, or wire it into your coding agent so it answers from your files with citations instead of guessing.
+lilbee does all of it, in one install: it finds and runs the models for you, processes your [documents](#built-on) and crawls the web pages you point it at, and searches it all with a real engine. Use it yourself in the terminal, or connect it to your coding agent so it answers from your files with citations instead of guessing.
 
 > **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets to ration and no provider to depend on; the cloud's there only when you want it. The same engine works two ways. It's an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build for yourself, over your files and the web pages you save, that you read and ask questions of. And it's a reference layer for code: point it at your project, your dependencies, and your API docs, and your coding agent answers from what's actually there instead of guessing function names. Read it yourself, or have your agent read it for you.
 
@@ -124,9 +143,11 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
+![chat with an indexed PDF manual: a cited markdown table extracted from the source](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
+
 ### Already using an MCP-aware agent? Hand setup to it.
 
-If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, wire them into the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs to move are obvious to them. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
+If you've already got an MCP-aware coding agent running, it can do the setup for you: browse the model catalog, pull picks, assign them to the embedding / reranker / vision roles, and tune retrieval for your library and question style. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs to move are obvious to them. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
 
 ### Opencode integration (coming)
 
@@ -149,6 +170,10 @@ Your files, the search index, and the embeddings stay on your computer. The agen
 Install the `[crawler]` extra, point lilbee at a docs site, a wiki, or a vendor's API reference, and the pages get fetched, converted to markdown, and added to your library. From then on you can search or chat with that copy of the site offline, even after it changes or goes down.
 
 ![/crawl a Wikipedia page, then ask a cited question against it](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.gif)
+
+Or crawl a whole site, not just one page. With recursive crawling on, lilbee follows the links and indexes the lot; watch the page count climb in the Task Center, then ask one question that synthesizes across the whole site.
+
+![crawl a whole site at depth 1, then ask a multipart question that spans it: a cited answer drawn from across the pages, with Qwen3-8B and a reranker](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.gif)
 
 ### Documents, code, and scanned images
 
@@ -246,6 +271,7 @@ No external services either way; lilbee downloads and runs models locally. Optio
 | **Nix**               | `nix run github:tobocop2/lilbee`                                                         | NixOS, nix-darwin, or any host with nix. On Linux the flake bundles `glibc`, `libgomp`, and `vulkan-loader` so it runs on bare NixOS.                                                                                 |
 | **Flatpak**           | `flatpak remote-add --if-not-exists lilbee https://tobocop2.github.io/flatpak-lilbee/lilbee.flatpakrepo && flatpak install lilbee io.github.tobocop2.lilbee` | Linux x86_64, any distro with flatpak. Needs the [Flathub remote](https://flathub.org/setup) for the runtime. Run with `flatpak run io.github.tobocop2.lilbee` (worth an alias); `flatpak update` picks up new releases. Data lives under `~/.var/app/io.github.tobocop2.lilbee/`. |
 | **Snap**              | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64.snap && sudo snap install ./lilbee-linux-x86_64.snap --dangerous --classic` | Linux x86_64. Sideloaded, so snapd flags it `--dangerous` (it just means unsigned) and it won't auto-update; rerun the same command to upgrade. |
+| **Scoop**             | `scoop bucket add lilbee https://github.com/tobocop2/lilbee && scoop install lilbee` | Windows x86_64. Installs the CUDA build on machines with a recent NVIDIA driver, otherwise the CPU build. `scoop update lilbee` upgrades. |
 | **Standalone binary** | [download for your platform &rarr;](https://github.com/tobocop2/lilbee/releases/latest)  | One file, own Python runtime, no `pip` needed. Linux needs glibc 2.28+; the macOS / Windows builds are unsigned (`xattr -d com.apple.quarantine ./lilbee-macos-arm64` if Gatekeeper blocks it).                       |
 | **From source**       | `git clone https://github.com/tobocop2/lilbee && cd lilbee && uv sync && uv run lilbee`  | For hacking on it. Needs `git` and `uv`.                                                                                                                                                                              |
 
@@ -300,7 +326,7 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 Drop the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and any MCP-aware coding agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
 
-**The demos below use opencode driving a cloud model. lilbee stays local; only the queries and the returned chunks cross the wire to the cloud model.** Local-model opencode integration is on the way across many GGUF families: see [Opencode integration (coming)](#opencode-integration-coming) above.
+**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** Local-model opencode integration is on the way across many GGUF families: see [Opencode integration (coming)](#opencode-integration-coming) above.
 
 Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your _local_ files.
 
@@ -314,7 +340,7 @@ The same shape scales up. Pre-index Godot 4's full class reference (810 XMLs, 34
 
 The HTTP server exposes a REST API any tool or GUI can hit: search (with SSE streaming), document lifecycle, crawling, model management, configuration. See the [REST API reference](https://lilbee.sh/api/) and the [usage guide](docs/usage.md#http-server) for setup.
 
-The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it starts the HTTP server in the background, and every citation opens a Source Preview scrolled to the exact spot. Install via [BRAT](https://github.com/TfTHacker/obsidian42-brat); the [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
+The [Obsidian plugin](https://obsidian.lilbee.sh/) is a GUI built on it: it starts the HTTP server in the background, and every citation opens a Source Preview scrolled to the exact spot. It is an official [Obsidian community plugin](https://community.obsidian.md/plugins/lilbee): install it from Settings then Community plugins inside Obsidian. The [plugin README](https://github.com/tobocop2/obsidian-lilbee#quick-start) has setup.
 
 ### Running as a service (optional)
 
@@ -383,6 +409,7 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [LiteLLM] bridges cloud model providers (the `[litellm]` optional extra).
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
+- [Nuitka] compiles the whole thing into the standalone single-file binary, bundling its own Python runtime so there is nothing to install and nothing to compile.
 
 ## Support
 
@@ -412,3 +439,4 @@ Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 [MCP Python SDK]: https://github.com/modelcontextprotocol/python-sdk
 [Typer]: https://typer.tiangolo.com
 [Pydantic]: https://docs.pydantic.dev
+[Nuitka]: https://nuitka.net

@@ -81,7 +81,7 @@ All settings override via environment variables:
 - `LILBEE_OCR_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
 - `LILBEE_TESSERACT_TIMEOUT`: wall-clock timeout in seconds for the Tesseract OCR fallback (default: `60`, `0` = no limit). Only runs when no vision model is available.
 - `LILBEE_SSE_HEARTBEAT_INTERVAL` — seconds between SSE heartbeat events when the producer queue is idle (default: `30`). Set to `0` to disable.
-- `LILBEE_LLM_PROVIDER` — provider: `auto` (default; runs models locally on the managed `llama-server` fleet) or `remote` (external OpenAI-compatible endpoint; requires `pip install lilbee[remote]`).
+- `LILBEE_LLM_PROVIDER` — provider: `auto` (default; runs models locally on the managed `llama-server` fleet) or `remote` (external OpenAI-compatible endpoint; requires `pip install lilbee[litellm]`).
 - `LILBEE_LLAMA_SERVER_PATH`: path to a `llama-server` binary; when set it always wins, even over the bundled wheel (default: the bundled wheel's binary, else PATH)
 - `LILBEE_OLLAMA_BASE_URL` — Ollama server URL (blank uses `http://localhost:11434`)
 - `LILBEE_LM_STUDIO_BASE_URL` — LM Studio server URL (blank uses `http://localhost:1234/v1`)
@@ -214,7 +214,7 @@ The codebase has a small set of `try: import X except ImportError:` patterns for
 
 | Library | Helper | Extra | Used by |
 |---|---|---|---|
-| `litellm` | `lilbee.providers.litellm_sdk.litellm_available()` | `lilbee[remote]` | SDK provider, settings TUI |
+| `litellm` | `lilbee.providers.litellm_sdk.litellm_available()` | `lilbee[litellm]` | SDK provider, settings TUI |
 | `crawl4ai` | `lilbee.crawler.crawler_available()` | `lilbee[crawler]` | Web crawler |
 | `graspologic_native` | `lilbee.retrieval.concepts.nlp.concepts_available()` | `lilbee[graph]` | Concept-graph clustering |
 | `lilbee_engine` | resolved in `lilbee.providers.fleet.binary.resolve_engine_tool()` | bundled wheel | The local inference engine binaries (llama-server + llama-swap + gguf-parser) |

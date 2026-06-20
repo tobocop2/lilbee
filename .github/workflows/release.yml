@@ -246,6 +246,34 @@ jobs:
             exit 1
           fi
 
+          # Frozen multiprocessing reinvocations must be intercepted before typer.
+          # Two real reinvocation shapes the running binary spawns into itself:
+          #   1. the splash subprocess: [exe, -m, lilbee.runtime._splash_runner, <fd>]
+          #   2. the resource tracker:  [exe, -c, "from multiprocessing... main(<fd>)"]
+          # Nuitka never sets sys.frozen, so a build that mis-detects frozen state
+          # leaks these into typer ("No such command '<fd>'", "No such option: -c"),
+          # which is what users see on TUI exit. Drive both shapes directly; fd 999
+          # is unopened so the splash runner sees a dead pipe and exits immediately.
+          MP=$(mktemp)
+          "$EXE" -m lilbee.runtime._splash_runner 999 > "$MP" 2>&1 || true
+          if grep -qE "No such command|No such option" "$MP"; then
+            echo "FAIL: splash -m reinvocation leaked into typer (frozen detection broken)"
+            cat "$MP"
+            exit 1
+          fi
+          # The runner ships only via --include-module; catch a missing module here too.
+          if grep -qE "No module named|ModuleNotFoundError" "$MP"; then
+            echo "FAIL: splash runner module is not bundled in the frozen binary"
+            cat "$MP"
+            exit 1
+          fi
+          "$EXE" -c "import multiprocessing" > "$MP" 2>&1 || true
+          if grep -qE "No such command|No such option" "$MP"; then
+            echo "FAIL: resource-tracker -c reinvocation leaked into typer (frozen detection broken)"
+            cat "$MP"
+            exit 1
+          fi
+
           # Boot server, scan stderr for the spawn-loop pattern, verify /api/health version.
           export LILBEE_DATA="${{ runner.temp }}/lilbee-smoke"
           mkdir -p "$LILBEE_DATA"
@@ -291,6 +319,20 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
 
+      # The Linux cell builds inside the manylinux container, which ships no gh
+      # CLI, so the attach below fails with "gh: command not found" (exit 127)
+      # every time, which silently strands the release fan-out. Install it here;
+      # the windows/macOS host runners already have gh.
+      - name: Install gh CLI in the build container
+        if: inputs.release_tag != '' && matrix.container != ''
+        shell: bash
+        run: |
+          if command -v gh >/dev/null 2>&1; then exit 0; fi
+          dnf install -y 'dnf-command(config-manager)'
+          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+          dnf install -y gh
+          gh --version
+
       # Eager attach: release-candidate creates the pre-release shell before
       # calling, so the asset shows up as soon as this cell finishes.
       - name: Attach binary to the GH pre-release
@@ -298,5 +340,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # GH_REPO is load-bearing: without it gh resolves the repo from the
+          # git remote, and inside the root-run manylinux container git refuses
+          # the runner-owned checkout ("detected dubious ownership"), so the
+          # Linux upload fails. Passing the repo explicitly skips git entirely.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.release_tag }}
         run: gh release upload "$TAG" "dist/${{ matrix.asset_name }}" --clobber

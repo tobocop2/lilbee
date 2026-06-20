@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 from unittest.mock import Mock
@@ -111,3 +112,29 @@ def test_keyboard_interrupt_restores_cursor_and_exits_130(
         launcher.main()
 
     assert exc.value.code == 130
+
+
+class TestForceUtf8Stdio:
+    """``_force_utf8_stdio`` makes stdio UTF-8 without crashing on odd streams."""
+
+    def test_reconfigures_both_streams_to_utf8(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        out = Mock(spec=io.TextIOWrapper)
+        err = Mock(spec=io.TextIOWrapper)
+        monkeypatch.setattr(sys, "stdout", out)
+        monkeypatch.setattr(sys, "stderr", err)
+        launcher._force_utf8_stdio()
+        for stream in (out, err):
+            stream.reconfigure.assert_called_once_with(encoding="utf-8", errors="backslashreplace")
+
+    def test_non_textiowrapper_stream_is_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A StringIO redirect / capture shim isn't a TextIOWrapper; must be a no-op.
+        monkeypatch.setattr(sys, "stdout", io.StringIO())
+        monkeypatch.setattr(sys, "stderr", io.StringIO())
+        launcher._force_utf8_stdio()
+
+    def test_reconfigure_error_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        bad = Mock(spec=io.TextIOWrapper)
+        bad.reconfigure.side_effect = ValueError("stream detached")
+        monkeypatch.setattr(sys, "stdout", bad)
+        monkeypatch.setattr(sys, "stderr", Mock(spec=io.TextIOWrapper))
+        launcher._force_utf8_stdio()

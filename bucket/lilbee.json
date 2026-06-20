@@ -1,0 +1,37 @@
+{
+    "version": "0.6.66b502",
+    "description": "Run and manage local AI models, then search your files, code, and crawled web pages, with answers that cite the source. One program, no server to run.",
+    "homepage": "https://lilbee.sh/",
+    "license": {
+        "identifier": "Elastic-2.0",
+        "url": "https://github.com/tobocop2/lilbee/blob/main/LICENSE"
+    },
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/tobocop2/lilbee/releases/download/v0.6.66b502/lilbee-windows-x86_64.exe#/lilbee.exe",
+            "hash": "54def5988e1f92e636fb3ac2f102a2e20f521c64243cb41ba701cb23948f10e1"
+        }
+    },
+    "bin": "lilbee.exe",
+    "post_install": [
+        "$useCuda = $false",
+        "$smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue",
+        "if ($smi) {",
+        "    $line = & nvidia-smi 2>$null | Select-String 'CUDA Version: (\\d+)\\.(\\d+)'",
+        "    if ($line) {",
+        "        $maj = [int]$line.Matches[0].Groups[1].Value",
+        "        $min = [int]$line.Matches[0].Groups[2].Value",
+        "        if ($maj -gt 12 -or ($maj -eq 12 -and $min -ge 5)) { $useCuda = $true }",
+        "    }",
+        "}",
+        "if ($useCuda) {",
+        "    $cudaHash = 'd6c76b8f99bd22678f01b2049d5caaace5c3d7541150f592384be66c493b8a07'",
+        "    $url = \"https://github.com/tobocop2/lilbee/releases/download/v$version/lilbee-windows-x86_64-cu125.exe\"",
+        "    $exe = Join-Path $dir 'lilbee.exe'",
+        "    Write-Host 'lilbee: NVIDIA CUDA 12.5+ detected, installing the cu125 build'",
+        "    Invoke-WebRequest -Uri $url -OutFile $exe",
+        "    $actual = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()",
+        "    if ($actual -ne $cudaHash) { throw \"lilbee: cu125 checksum mismatch (expected $cudaHash, got $actual)\" }",
+        "}"
+    ]
+}

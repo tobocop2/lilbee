@@ -696,7 +696,14 @@ async def _collect_results(
                 status = _classify_result(result, added, updated, failed, skipped, reasons)
                 if status is BatchStatus.INGESTED:
                     buffered_chunks = await _buffer_and_maybe_flush(
-                        result, buffer, buffered_chunks, added, updated, failed, skipped, flush_failed
+                        result,
+                        buffer,
+                        buffered_chunks,
+                        added,
+                        updated,
+                        failed,
+                        skipped,
+                        flush_failed,
                     )
                 elif status is BatchStatus.SKIPPED and result.needs_cleanup:
                     # Zero-text result is never buffered; collect it for the

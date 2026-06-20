@@ -49,8 +49,6 @@ permissions:
 env:
   # Ollama-registry analogue of conftest's _DEFAULT_CHAT_MODEL; keep param count aligned.
   OLLAMA_TINY_MODEL: qwen3:0.6b
-  # Bump alongside conftest _DEFAULT_*_MODEL so model changes invalidate the cache.
-  QA_MODELS_CACHE_KEY: lilbee-qa-models-v2-qwen3-0.6b-nomic-embed-v1.5-bge-rerank-v2-m3
 
 concurrency:
   group: qa-matrix-${{ github.ref }}
@@ -89,11 +87,10 @@ jobs:
           rc_version: ${{ inputs.version }}
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
-      - name: Restore QA models cache
-        uses: actions/cache@v5
+      - name: Restore QA models from release mirror
+        uses: ./.github/actions/restore-ci-models
         with:
-          path: ~/.lilbee-qa-models
-          key: ${{ env.QA_MODELS_CACHE_KEY }}
+          models-dir: ~/.lilbee-qa-models
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
@@ -167,6 +164,7 @@ jobs:
           LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
           LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
           PYTHONUNBUFFERED: "1"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         shell: bash
         run: |
           echo "Lane: $LILBEE_QA_LANE"
@@ -234,11 +232,10 @@ jobs:
           rc_version: ${{ inputs.version }}
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
-      - name: Restore QA models cache
-        uses: actions/cache@v5
+      - name: Restore QA models from release mirror
+        uses: ./.github/actions/restore-ci-models
         with:
-          path: ~/.lilbee-qa-models
-          key: ${{ env.QA_MODELS_CACHE_KEY }}
+          models-dir: ~/.lilbee-qa-models
 
       - name: Download wheel artifacts from sibling run (lane=pypi, RC mode)
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
@@ -298,6 +295,7 @@ jobs:
           LILBEE_QA_LANE: ${{ matrix.lane == 'pypi' && 'l1-pypi' || 'l2-binary' }}
           LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
           PYTHONUNBUFFERED: "1"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           echo "Lane: $LILBEE_QA_LANE"
           echo "Binary: $LILBEE_QA_BIN"
@@ -342,11 +340,10 @@ jobs:
           rc_version: ${{ inputs.version }}
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
-      - name: Restore QA models cache
-        uses: actions/cache@v5
+      - name: Restore QA models from release mirror
+        uses: ./.github/actions/restore-ci-models
         with:
-          path: ~/.lilbee-qa-models
-          key: ${{ env.QA_MODELS_CACHE_KEY }}
+          models-dir: ~/.lilbee-qa-models
 
       - name: Download wheel artifacts from sibling run (RC mode)
         if: inputs.wheel_run_id != ''
@@ -380,6 +377,7 @@ jobs:
           LILBEE_QA_LANE: l1-pypi
           LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
           PYTHONUNBUFFERED: "1"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p "$LILBEE_QA_MODELS_DIR"
           if [ -d "$HOME/.lilbee-qa-models" ]; then
@@ -422,11 +420,10 @@ jobs:
           rc_version: ${{ inputs.version }}
           lilbee_version: ${{ inputs.lilbee_version || 'latest' }}
 
-      - name: Restore QA models cache
-        uses: actions/cache@v5
+      - name: Restore QA models from release mirror
+        uses: ./.github/actions/restore-ci-models
         with:
-          path: ~/.lilbee-qa-models
-          key: ${{ env.QA_MODELS_CACHE_KEY }}
+          models-dir: ~/.lilbee-qa-models
 
       - name: Download wheel artifacts from sibling run (RC mode)
         if: inputs.wheel_run_id != ''
@@ -455,6 +452,7 @@ jobs:
           LILBEE_QA_LANE: l1-pypi
           LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
           PYTHONUNBUFFERED: "1"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p "$LILBEE_QA_MODELS_DIR"
           if [ -d "$HOME/.lilbee-qa-models" ]; then

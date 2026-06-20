@@ -27,6 +27,7 @@ from .defaults import (
 from .enums import (
     ChatMode,
     ClustererBackend,
+    CrawlRenderMode,
     KvCacheType,
     LlmProvider,
     RerankerType,
@@ -272,6 +273,25 @@ class Config(BaseSettings):
     max_reasoning_chars: int = ConfigField(default=64_000, ge=0, writable=True)
 
     # Web crawling.
+
+    # How crawls fetch pages. ``http`` (default) uses a plain HTTP client with
+    # no browser, the lightweight path for static / server-rendered sites.
+    # ``browser`` launches a tuned Chromium with JavaScript enabled for sites
+    # that render content client-side, at a much higher memory cost.
+    crawl_render_mode: CrawlRenderMode = ConfigField(default=CrawlRenderMode.HTTP, writable=True)
+
+    # Browser-mode memory levers (only used when crawl_render_mode is browser).
+    # Recycle the Chromium process every N fetched pages to cap RSS growth on a
+    # long recursive crawl; 0 disables recycling. Raise on a roomy machine for
+    # fewer restarts, lower it if memory is tight.
+    crawl_browser_recycle_pages: int = ConfigField(default=50, ge=0, writable=True)
+
+    # Extra Chromium launch flags for browser-mode crawls. Defaults trim shared
+    # memory and GPU use; override to pass site- or environment-specific flags.
+    crawl_browser_extra_args: list[str] = ConfigField(
+        default_factory=lambda: ["--disable-dev-shm-usage", "--disable-gpu"],
+        writable=True,
+    )
 
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)

@@ -54,9 +54,13 @@ if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
     LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
 fi
+# Spawned via `python -m`, never statically imported, so Nuitka's import
+# following misses it; include it explicitly or the splash subprocess dies.
+SPLASH_FLAGS=(--include-module=lilbee.runtime._splash_runner)
 
 uv run --no-sync python -m nuitka \
     --mode=onefile \
+    --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
     --no-deployment-flag=self-execution \
     --onefile-cache-mode=cached \
     --onefile-tempdir-spec='{CACHE_DIR}/lilbee/{VERSION}' \
@@ -95,6 +99,7 @@ uv run --no-sync python -m nuitka \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
     --include-data-dir=src/lilbee/skills=lilbee/skills \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
+    "${SPLASH_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \
     "${LLAMA_SERVER_FLAGS[@]}" \
     src/lilbee/__main__.py

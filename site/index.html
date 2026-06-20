@@ -13,15 +13,15 @@
   gtag('config', 'G-G8F65BKGRJ');
 </script>
 
-<title>lilbee: run local AI models and search your files, code, and the web</title>
-<meta name="description" content="Run local AI models and search your files, code, and the web, with answers that cite the source — local RAG, meaning it reads your own files and answers with citations. Works with your own models or your existing Ollama or LM Studio setup. Local-first, one install: CLI, TUI, and an MCP server.">
+<title>lilbee: a local AI search engine for your files, code, and the web</title>
+<meta name="description" content="lilbee is a local AI search engine: it runs the models and searches your files, code, and the web, with cited answers. Local-first, one install.">
 <link rel="canonical" href="https://lilbee.sh/">
 
 <!-- Open Graph: rich link previews for any client that reads the protocol. -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="lilbee">
-<meta property="og:title" content="lilbee: run local AI models and search your files, code, and the web">
-<meta property="og:description" content="Run local AI models and search your files, code, and the web, with cited answers drawn from your own files (local RAG). Local-first, one install. Works with your own models or your existing Ollama or LM Studio setup. A web crawler and an MCP server built in.">
+<meta property="og:title" content="lilbee: a local AI search engine for your files, code, and the web">
+<meta property="og:description" content="lilbee is a local AI search engine: it runs local AI models and searches your files, code, and the web, with cited answers drawn from your own files (local RAG). Turn on memory and it remembers facts and preferences across conversations. Local-first, one install. Works with your own models or your existing Ollama or LM Studio setup. A web crawler and an MCP server built in.">
 <meta property="og:url" content="https://lilbee.sh/">
 <meta property="og:image" content="https://lilbee.sh/social-card.png">
 <meta property="og:image:width" content="1280">
@@ -30,8 +30,8 @@
 
 <!-- Twitter Card: rich previews on X and clients that read the Twitter tags. -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="lilbee: run local AI models and search your files, code, and the web">
-<meta name="twitter:description" content="Run local AI models and search your files, code, and the web, with cited answers from your own files (local RAG). Local-first, one install. Works with your own models or your existing Ollama or LM Studio setup.">
+<meta name="twitter:title" content="lilbee: a local AI search engine for your files, code, and the web">
+<meta name="twitter:description" content="lilbee is a local AI search engine: it runs local AI models and searches your files, code, and the web, with cited answers from your own files (local RAG). Optional memory remembers facts and preferences across conversations. Local-first, one install. Works with your own models or your existing Ollama or LM Studio setup.">
 <meta name="twitter:image" content="https://lilbee.sh/social-card.png">
 <meta name="twitter:image:alt" content="lilbee: local AI search over your files, code, and the web, with a cited answer shown in the terminal UI">
 
@@ -41,10 +41,12 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "lilbee",
-  "description": "lilbee runs local AI models on your own hardware and turns your files, code, and crawled websites into a searchable library you can talk to, with answers that cite the source (local RAG). It works with its own models or your existing Ollama or LM Studio setup. Local-first, with an MCP server for agent integration.",
+  "alternateName": "local AI search engine",
+  "description": "lilbee is a local AI search engine: it runs local AI models on your own hardware and turns your files, code, and crawled websites into a searchable library you can talk to, with answers that cite the source (local RAG). It can remember durable facts about you and your standing preferences across conversations when you turn memory on (off by default). It works with its own models or your existing Ollama or LM Studio setup. Local-first, with an MCP server for agent integration.",
   "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "Local AI search engine",
   "operatingSystem": "macOS, Linux, Windows",
-  "keywords": "local AI, local LLM, RAG, retrieval-augmented generation, semantic search, cited answers, vector search, embeddings, llama.cpp, GGUF, MCP, Model Context Protocol, web crawler, self-hosted, privacy, Ollama, LM Studio",
+  "keywords": "local AI search engine, AI search engine, local search engine, local AI, local LLM, RAG, retrieval-augmented generation, semantic search, cited answers, vector search, embeddings, llama.cpp, GGUF, MCP, Model Context Protocol, long-term memory, persistent chat memory, remembers your preferences, web crawler, self-hosted, privacy, Ollama, LM Studio",
   "url": "https://lilbee.sh/",
   "downloadUrl": "https://pypi.org/project/lilbee/",
   "license": "https://github.com/tobocop2/lilbee/blob/main/LICENSE",
@@ -81,8 +83,8 @@
 888 888 888 888  88888888888888888888
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
-      <h1 class="tagline">Run and manage local AI models, and search everything you own with them, <strong>all in one program</strong>.</h1>
-      <p class="sub">A batteries-included local search engine you can talk to: ask in plain English, and every answer cites the file and line. Runs on your machine, and any coding agent can drive it over MCP.</p>
+      <h1 class="tagline">A <strong>local AI search engine</strong> for your files, your code, and the web. lilbee finds, runs, and manages the models, then talks to everything you point it at. Every answer cites the source, it all runs on your own machine, and it's <strong>one program with nothing else to set up</strong>.</h1>
+      <p class="sub">A built-in model manager browses Hugging Face, downloads models, gives each one a role, and runs them on your own GPU, on Metal, Vulkan, or CUDA. Any coding agent can also use it over MCP.</p>
       <div class="surfaces">
         <span class="surfaces-label">one program, one install</span>
         <span class="surface">terminal app</span>
@@ -91,7 +93,7 @@
         <span class="surface">web API</span>
         <span class="surface">Python library</span>
       </div>
-      <p class="trust"><strong>It runs on your hardware.</strong> Your files stay on disk, and a cloud model runs only when you pick one.</p>
+      <p class="trust"><strong>It runs on your hardware.</strong> Your files stay on disk, and a cloud model runs only when you pick one. No Docker, no servers, no web stack to maintain, just one file you run on demand.</p>
     </section>
 
     <section>
@@ -100,11 +102,13 @@
       <div class="tutorial">
         <div class="tutorial-watch"><a class="tutorial-cta" href="tutorial/">▶&nbsp; watch the full tutorial reel</a></div>
         <div class="tutorialtabs" role="tablist" aria-label="Tutorial reel">
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-setup"    aria-controls="tutorial-pane-setup"    aria-selected="true"  tabindex="0">first run</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-whatis"   aria-controls="tutorial-pane-whatis"   aria-selected="true"  tabindex="0">what is lilbee</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-setup"    aria-controls="tutorial-pane-setup"    aria-selected="false" tabindex="-1">first run</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-tour"     aria-controls="tutorial-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-chat"     aria-controls="tutorial-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawl"    aria-controls="tutorial-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawlsite" aria-controls="tutorial-pane-crawlsite" aria-selected="false" tabindex="-1">crawl a site</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-catalog"  aria-controls="tutorial-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-ollama"   aria-controls="tutorial-pane-ollama"   aria-selected="false" tabindex="-1">ollama</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-lmstudio" aria-controls="tutorial-pane-lmstudio" aria-selected="false" tabindex="-1">lm studio</button>
@@ -117,7 +121,14 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
         </div>
 
-        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-setup" aria-labelledby="tutorial-tab-setup">
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-whatis" aria-labelledby="tutorial-tab-whatis">
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Index lilbee's own README, ask "what is lilbee in one sentence?", and get a cited answer drawn straight from the source.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-setup" aria-labelledby="tutorial-tab-setup" hidden>
           <div class="tutorial-clip">
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
@@ -150,6 +161,13 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption"><code>/crawl &lt;url&gt;</code> fetches a page into your library, then answers against it with a page citation.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-crawlsite" aria-labelledby="tutorial-tab-crawlsite" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-crawl-site.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Recursive crawl (depth 1) of a whole site: hundreds of Wikipedia pages indexed (fast-forwarded), then one multipart question synthesized across them, cited, with Qwen3-8B and a reranker.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-catalog" aria-labelledby="tutorial-tab-catalog" hidden>
@@ -270,7 +288,7 @@
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-brew">details</button>
         <div class="notes-body" id="notes-brew" hidden>
-          <p class="extras">prebuilt bundle: its own Python interpreter and llama.cpp backend, nothing to compile &nbsp;.&nbsp; clears macOS quarantine for you &nbsp;.&nbsp; the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
+          <p class="extras">prebuilt bundle, built with Nuitka: its own Python interpreter and llama.cpp backend, nothing for you to compile &nbsp;.&nbsp; clears macOS quarantine for you &nbsp;.&nbsp; the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
         </div>
       </div>
 
@@ -340,7 +358,7 @@
       </div>
 
       <div class="installpane" role="tabpanel" id="pane-binary" aria-labelledby="tab-binary" hidden>
-        <p class="binary-intro">Single self-contained binary. Bundles its own Python runtime and the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras. Click to download, or use the terminal one-liner.</p>
+        <p class="binary-intro">Single self-contained binary, compiled with <a href="https://nuitka.net">Nuitka</a>. Bundles its own Python runtime and the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras. Click to download, or use the terminal one-liner.</p>
 
         <div class="binary-row">
           <div class="binary-row-h">
@@ -440,7 +458,7 @@
             <li>a model server, always running</li>
             <li>model files fetched by hand</li>
             <li>a vector database to stand up</li>
-            <li>code wiring them together</li>
+            <li>code to connect them</li>
             <li>a separate app for the interface</li>
             <li>often a container around it all</li>
           </ul>
@@ -491,6 +509,10 @@
           <h3>scans &amp; OCR</h3>
           <p>Old scans and photos go through OCR or a local vision model and come out as searchable markdown, layout intact.</p>
         </div>
+        <div class="cap">
+          <h3>remembers what you tell it</h3>
+          <p>Turn on memory and lilbee holds onto durable facts about you and how you like your answers, then recalls the relevant ones on later turns, no matter which conversation they came from. Off by default, and it never leaks into your citations.</p>
+        </div>
       </div>
     </section>
 
@@ -506,7 +528,7 @@
         <a href="https://pypi.org/project/lilbee/"><span class="num">[2]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">package</span></a>
         <a href="api/"><span class="num">[3]</span><span>API docs</span><span class="dots">·······································</span><span class="desc">openapi</span></a>
         <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md"><span class="num">[4]</span><span>Usage guide</span><span class="dots">·······································</span><span class="desc">commands</span></a>
-        <a href="https://github.com/tobocop2/lilbee/blob/main/docs/agent-integration.md"><span class="num">[5]</span><span>Agents</span><span class="dots">·······································</span><span class="desc">mcp / cli</span></a>
+        <a href="https://github.com/tobocop2/lilbee#agent-integration"><span class="num">[5]</span><span>Agents</span><span class="dots">·······································</span><span class="desc">mcp / cli</span></a>
         <a href="coverage/"><span class="num">[6]</span><span>Coverage</span><span class="dots">·······································</span><span class="desc">100%</span></a>
         <a href="https://github.com/tobocop2/lilbee/releases"><span class="num">[7]</span><span>Changelog</span><span class="dots">·······································</span><span class="desc">releases</span></a>
         <a href="https://github.com/tobocop2/lilbee/tree/main/docs/benchmarks"><span class="num">[8]</span><span>Benchmarks</span><span class="dots">·······································</span><span class="desc">godot . ocr</span></a>
@@ -534,7 +556,8 @@
         <a href="https://litestar.dev">Litestar</a> ·
         <a href="https://github.com/modelcontextprotocol/python-sdk">MCP Python SDK</a> ·
         <a href="https://typer.tiangolo.com">Typer</a> ·
-        <a href="https://docs.pydantic.dev">Pydantic</a>
+        <a href="https://docs.pydantic.dev">Pydantic</a> ·
+        <a href="https://nuitka.net">Nuitka</a>
       </p>
     </section>
 

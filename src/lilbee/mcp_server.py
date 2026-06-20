@@ -41,6 +41,7 @@ from lilbee.app.settings import (
 )
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
@@ -235,12 +236,14 @@ async def add(
     force: bool = False,
     enable_ocr: bool | None = None,
     ocr_timeout: float | None = None,
+    render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
 
     Paths must be absolute. URLs (http(s)://) are crawled as markdown.
-    ``enable_ocr`` forces OCR on/off; ``ocr_timeout`` overrides the
-    per-page OCR cap for this call.
+    ``enable_ocr`` forces OCR on/off; ``ocr_timeout`` overrides the per-page OCR
+    cap; ``render_mode`` ("http"/"browser") overrides the configured crawl render
+    mode for any URLs.
     """
     from lilbee.app.ingest import copy_files
     from lilbee.data.ingest import sync as run_sync
@@ -273,7 +276,7 @@ async def add(
             except ValueError as exc:
                 errors.append(f"{url}: {exc}")
                 continue
-            crawled_paths = await crawl_and_save(url)
+            crawled_paths = await crawl_and_save(url, render_mode=render_mode)
             crawled_count += len(crawled_paths)
 
     copy_result = copy_files(valid, force=force)
@@ -301,11 +304,13 @@ def crawl(
     url: str,
     depth: int | None = None,
     max_pages: int | None = None,
+    render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
 
-    ``depth=None`` crawls the whole site, ``0`` is single-URL, positive ints
-    cap follow depth. ``max_pages=None`` is unlimited.
+    ``depth=None`` crawls the whole site, ``0`` is single-URL, positive ints cap
+    follow depth. ``max_pages=None`` is unlimited. ``render_mode``
+    ("http"/"browser") overrides the configured crawl render mode.
     """
     from lilbee.crawler import crawler_available
 
@@ -316,7 +321,7 @@ def crawl(
     except ValueError as exc:
         return _error(str(exc))
 
-    task_id = start_crawl(url, depth=depth, max_pages=max_pages)
+    task_id = start_crawl(url, depth=depth, max_pages=max_pages, render_mode=render_mode)
     return {"status": "started", "task_id": task_id, "url": url}
 
 
@@ -1034,12 +1039,9 @@ def memory_remember(
 ) -> dict[str, Any]:
     """Store a durable memory in this agent's own namespace.
 
-    Args:
-        text: The fact or preference to remember.
-        kind: "fact" (recalled by similarity) or "preference" (always recalled).
-        shared: Set true to also expose this memory to the human's TUI/CLI.
-        agent_id: Stable id for this agent's namespace; otherwise derived from
-            LILBEE_AGENT_ID or the MCP client name.
+    ``kind`` is "fact" (recalled by similarity) or "preference" (always recalled).
+    ``shared`` also exposes it to the human's TUI/CLI. ``agent_id`` namespaces the
+    memory, else derived from LILBEE_AGENT_ID or the MCP client name.
     """
     if not memory_enabled():
         return _error(MEMORY_DISABLED_HINT)

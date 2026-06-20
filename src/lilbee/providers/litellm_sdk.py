@@ -227,8 +227,8 @@ def litellm_available() -> bool:
 
 
 _LITELLM_MISSING_MSG = (
-    "Remote and API models need the lilbee[remote] extra. "
-    "Reinstall with: uv tool install --prerelease=allow 'lilbee[remote]'"
+    "Remote and API models need the lilbee[litellm] extra. "
+    "Reinstall with: uv tool install --prerelease=allow 'lilbee[litellm]'"
 )
 
 

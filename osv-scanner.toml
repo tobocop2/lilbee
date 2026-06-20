@@ -14,7 +14,7 @@ reason = "py 1.11.0 (unmaintained) pulled in transitively by pytest-forked>=1.6.
 
 [[IgnoredVulns]]
 id = "GHSA-vfmq-68hx-4jfw"
-reason = "lxml 5.4.0 pinned transitively by crawl4ai 0.8.6 (latest release), which requires `lxml~=5.3`. The fix lands in lxml 6.1.0 (defaults `resolve_entities` to 'internal' for iterparse/ETCompatXMLParser). lxml is only installed when users opt into the `crawler` extra, and crawl4ai uses lxml primarily for HTML scraping, not untrusted XML parsing with iterparse. Revisit when crawl4ai loosens its lxml pin."
+reason = "lxml 5.4.0 pinned transitively by crawl4ai 0.8.9 (latest release), which requires `lxml~=5.3`. The fix lands in lxml 6.1.0 (defaults `resolve_entities` to 'internal' for iterparse/ETCompatXMLParser). lxml is only installed when users opt into the `crawler` extra, and crawl4ai uses lxml primarily for HTML scraping, not untrusted XML parsing with iterparse. Revisit when crawl4ai loosens its lxml pin."
 
 [[IgnoredVulns]]
 id = "GHSA-xqmj-j6mv-4862"
@@ -57,3 +57,7 @@ reason = "DISPUTED deserialization finding in joblib.numpy_pickle.NumpyArrayWrap
 [[IgnoredVulns]]
 id = "GHSA-h8wq-7xc4-p3qx"
 reason = "False positive against nltk 3.9.4. OSV advisory CVE-2026-0846 fixes the issue in nltk 3.9.3 (affected versions enumerate up to 3.9.2 only); uv.lock pins 3.9.4, which is already past the fix. osv-scanner's range comparison still flags it; suppression is a guard until the scanner refreshes. nltk is pulled in transitively by crawl4ai under the `crawler` extra and lilbee never imports it. Remove this entry once osv-scanner stops emitting the alert."
+
+[[IgnoredVulns]]
+id = "GHSA-p4gq-832x-fm9v"
+reason = "Path traversal in nltk.data.load() via URL-encoded path separators (CVE-2026-54293). All nltk <= 3.9.4 are affected and no fixed version has been published to PyPI (3.9.4 is the latest release; 3.10.0 is still a pre-release). nltk is pulled in transitively by crawl4ai under the `crawler` extra; lilbee never imports nltk, and crawl4ai only calls it with hardcoded resource names (e.g. `tokenizers/punkt`) while crawled text is passed to sent_tokenize/word_tokenize as data, never as a resource path, so the attacker-controlled-path vector is unreachable. The Dependabot alert is dismissed as tolerable risk; bb-m851 tracks the bump to nltk >= 3.10 once it ships."

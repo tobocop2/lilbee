@@ -1004,7 +1004,7 @@ class TestRequireLitellm:
 
         with (
             mock.patch.dict("sys.modules", {"litellm": None}),
-            pytest.raises(ProviderError, match="lilbee\\[remote\\] extra"),
+            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
         ):
             _require_litellm()
 

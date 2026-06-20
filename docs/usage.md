@@ -682,7 +682,7 @@ The ones most users set at least once.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILBEE_DATA` | *(platform default)* | Data directory path. Overridden by `--data-dir` or a `.lilbee/` vault walked up from cwd |
-| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[remote]'` (or `uv tool install --prerelease=allow 'lilbee[remote]'`), any remote name the SDK backend understands |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf` | Chat model. Native GGUF by default; with `pip install --pre 'lilbee[litellm]'` (or `uv tool install --prerelease=allow 'lilbee[litellm]'`), any remote name the SDK backend understands |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Embedding model. Changing this requires `lilbee rebuild` |
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_VISION_TIMEOUT` | `120` | Per-page vision OCR timeout in seconds (`0` = no limit) |
@@ -793,12 +793,12 @@ dependencies:
 # pip
 pip install --pre 'lilbee[graph]'      # concept graph: topic clustering + search boosting
 pip install --pre 'lilbee[crawler]'    # web crawling: index websites alongside local docs
-pip install --pre 'lilbee[remote]'    # remote providers: connect to any SDK-backed provider
+pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-backed provider
 
 # uv tool
 uv tool install --prerelease=allow 'lilbee[graph]'
 uv tool install --prerelease=allow 'lilbee[crawler]'
-uv tool install --prerelease=allow 'lilbee[remote]'
+uv tool install --prerelease=allow 'lilbee[litellm]'
 ```
 
 Install multiple at once:
@@ -947,8 +947,8 @@ are available locally vs. remotely and routes each call to the right backend.
 embeddings local for privacy, or to surface models from a local
 OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
-**Install:** `pip install --pre 'lilbee[remote]'` or
-`uv tool install --prerelease=allow 'lilbee[remote]'`.
+**Install:** `pip install --pre 'lilbee[litellm]'` or
+`uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
 **Configuration:**
 
@@ -1064,7 +1064,7 @@ vision model is configured, it takes precedence.
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
-| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[remote]'` / `uv tool install --prerelease=allow 'lilbee[remote]'`) |
+| **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
 See [model benchmarks](benchmarks/vision-ocr.md) for detailed comparisons.
@@ -1087,8 +1087,8 @@ lilbee runs vision OCR in one of two ways:
    (e.g. `lightonocr`) and lilbee serves it on `llama-server` with an `--mmproj`
    projector. This is the recommended path and supports an SSE heartbeat for
    long scans.
-2. **Remote vision model.** With `pip install --pre 'lilbee[remote]'` (or
-   `uv tool install --prerelease=allow 'lilbee[remote]'`), set the vision
+2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
+   `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
    model to any remote name your SDK backend understands. lilbee will route
    vision calls accordingly.
 
