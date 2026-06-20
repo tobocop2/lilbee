@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,7 +24,7 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.core.security import validate_path_within
-from lilbee.runtime.lock import write_lock
+from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
 from .lance_helpers import (
     _chunk_type_predicate,
@@ -166,6 +167,15 @@ class Store:
         # mutate; callers (temporal filter) hit it per-query.
         self._source_ingested_cache: dict[str, str] | None = None
 
+    def _write_lock(self, timeout: float = LOCK_TIMEOUT) -> AbstractContextManager[None]:
+        """Acquire the write lock keyed on *this* store's data directory.
+
+        A per-instance ``Lilbee`` writes to its own ``lancedb_dir``; locking the
+        global ``cfg`` dir instead would leave those writes uncoordinated across
+        processes.
+        """
+        return write_lock(self._config.lancedb_dir, timeout)
+
     def _invalidate_source_cache(self) -> None:
         """Drop the cached {filename: ingested_at} map."""
         self._source_ingested_cache = None
@@ -264,7 +274,7 @@ class Store:
             return False
         embedding_model = self._config.embedding_model
         embedding_dim = self._config.embedding_dim
-        with write_lock():
+        with self._write_lock():
             # Re-check under the lock so two callers do not both warn-and-write.
             if self.get_meta() is not None:
                 return False
@@ -342,7 +352,7 @@ class Store:
         current_dim = self._config.embedding_dim
         if not self._needs_canonical_meta_rewrite(self.get_meta(), current_model, current_dim):
             return False
-        with write_lock():
+        with self._write_lock():
             meta = self.get_meta()  # re-read under the lock for racing callers
             if not self._needs_canonical_meta_rewrite(meta, current_model, current_dim):
                 return False
@@ -382,7 +392,7 @@ class Store:
         chunk count, so large corpora no longer pay the full
         ``create_fts_index(replace=True)`` rebuild cost on every sync.
         """
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return
@@ -407,7 +417,7 @@ class Store:
         Returns True when an index was created or refreshed.
         """
         threshold = self._config.ann_index_threshold
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return False
@@ -443,7 +453,7 @@ class Store:
         concurrent ``set_embedding_model`` cannot slip a write in past a stale
         compatibility check.
         """
-        with write_lock():
+        with self._write_lock():
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
@@ -634,7 +644,7 @@ class Store:
 
     def delete_by_source(self, source: str) -> None:
         """Delete a source's chunks and page texts."""
-        with write_lock():
+        with self._write_lock():
             self._delete_by_source_unlocked(source)
         self._invalidate_source_cache()
 
@@ -642,7 +652,7 @@ class Store:
         """Add per-page text rows (no vectors). Returns count added."""
         if not records:
             return 0
-        with write_lock():
+        with self._write_lock():
             db = self.get_db()
             table = ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema())
             table.add(records)
@@ -749,7 +759,7 @@ class Store:
     ) -> None:
         """Add or update a source tracking record."""
         row = self._source_row(filename, file_hash, chunk_count, source_type, stat)
-        with write_lock():
+        with self._write_lock():
             self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
 
@@ -767,13 +777,13 @@ class Store:
                 }
                 for bf in backfills[start : start + _SOURCE_STAT_BATCH_ROWS]
             ]
-            with write_lock():
+            with self._write_lock():
                 self._replace_source_rows_unlocked(rows)
         self._invalidate_source_cache()
 
     def optimize_sources(self) -> None:
         """Compact the sources table; per-flush upserts otherwise accrete tiny versions."""
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(SOURCES_TABLE)
             if table is None:
                 return
@@ -796,7 +806,7 @@ class Store:
         """
         if not items:
             return 0
-        with write_lock():
+        with self._write_lock():
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
@@ -852,7 +862,7 @@ class Store:
 
     def delete_source(self, filename: str) -> None:
         """Remove a source file tracking record."""
-        with write_lock():
+        with self._write_lock():
             self._delete_source_unlocked(filename)
         self._invalidate_source_cache()
 
@@ -890,7 +900,7 @@ class Store:
             if name not in known:
                 not_found.append(name)
                 continue
-            with write_lock():
+            with self._write_lock():
                 self._remove_one_unlocked(name)
             self._invalidate_source_cache()
             removed.append(name)
@@ -907,7 +917,7 @@ class Store:
 
     def clear_table(self, name: str, predicate: str) -> None:
         """Delete rows matching *predicate* from *name*. Acquires write lock."""
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(name)
             if table is not None:
                 _safe_delete_unlocked(table, predicate)
@@ -916,7 +926,7 @@ class Store:
         """Add citation records to the store. Returns count added."""
         if not records:
             return 0
-        with write_lock():
+        with self._write_lock():
             db = self.get_db()
             table = ensure_table(db, CITATIONS_TABLE, _citations_schema())
             table.add(records)
@@ -1002,7 +1012,7 @@ class Store:
                 f"Memory vector dimension mismatch: expected "
                 f"{self._config.embedding_dim}, got {len(record.vector)}"
             )
-        with write_lock():
+        with self._write_lock():
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
@@ -1064,7 +1074,7 @@ class Store:
         The ``owner`` predicate scopes the mutation to the caller's namespace so an
         agent cannot flip another owner's (or the human's) memory.
         """
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(MEMORIES_TABLE)
             if table is None:
                 return False
@@ -1088,7 +1098,7 @@ class Store:
         The ``owner`` predicate scopes the delete to the caller's namespace so an
         agent cannot destroy another owner's (or the human's) memory.
         """
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(MEMORIES_TABLE)
             if table is None:
                 return False
@@ -1121,7 +1131,7 @@ class Store:
         vectors = embed([m.text for m in memories])
         for memory, vector in zip(memories, vectors, strict=True):
             memory.vector = vector
-        with write_lock():
+        with self._write_lock():
             db = self.get_db()
             db.drop_table(MEMORIES_TABLE)
             new_table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())
@@ -1140,7 +1150,7 @@ class Store:
         documents, so a rebuild preserves it. Only a factory reset (which deletes
         the data directory) clears it.
         """
-        with write_lock():
+        with self._write_lock():
             self._fts_ready = False
             db = self.get_db()
             for name in _table_names(db):

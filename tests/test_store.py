@@ -53,6 +53,17 @@ def _make_records(n=3, dim=None, chunk_type="raw"):
     ]
 
 
+class TestWriteLockDir:
+    def test_write_lock_keys_on_store_config_dir(self, store, test_config):
+        """A per-instance store locks its own lancedb_dir, not the global cfg dir."""
+        from lilbee.core.config import cfg as global_cfg
+
+        assert test_config.lancedb_dir != global_cfg.lancedb_dir
+        test_config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+        with store._write_lock(timeout=2):
+            assert (test_config.lancedb_dir / ".lock").exists()
+
+
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
         store.ensure_fts_index()

@@ -130,7 +130,7 @@ class ConceptGraph:
 
     def write_concept_records(self, records: ConceptRecords) -> None:
         """Write batched concept rows: one lock acquisition, at most one add per table."""
-        with lock.write_lock():
+        with lock.write_lock(self._config.lancedb_dir):
             db = self._store.get_db()
             # Always create tables so get_graph() returns True even when
             # concept extraction yields no results for the current corpus.
@@ -300,7 +300,7 @@ class ConceptGraph:
 
         self._store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
         if node_records:
-            with lock.write_lock():
+            with lock.write_lock(self._config.lancedb_dir):
                 db = self._store.get_db()
                 nodes_table = data_store.ensure_table(
                     db, CONCEPT_NODES_TABLE, _concept_nodes_schema()
@@ -310,7 +310,7 @@ class ConceptGraph:
 
     def compact_tables(self) -> None:
         """Compact the concept tables; per-file adds otherwise accrete tiny versions."""
-        with lock.write_lock():
+        with lock.write_lock(self._config.lancedb_dir):
             for name in _CONCEPT_TABLES:
                 table = self._store.open_table(name)
                 if table is None:
