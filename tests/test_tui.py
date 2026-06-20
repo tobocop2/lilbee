@@ -406,8 +406,9 @@ class TestCatalogScreenAsync:
             app.push_screen(catalog)
             for _ in range(8):
                 await pilot.pause()
-            # Focus the filter input explicitly to match the scenario.
-            catalog.query_one("#catalog-search", Input).focus()
+            # Open the filter via `/` (reveal + focus); a hidden input is
+            # never focused in production.
+            await pilot.press("slash")
             await pilot.pause()
             assert isinstance(catalog.focused, Input)
             catalog.action_go_back()
@@ -435,7 +436,8 @@ class TestCatalogScreenAsync:
             await pilot.pause()
             catalog.action_toggle_view()  # switch to list view
             await pilot.pause()
-            catalog.query_one("#catalog-search", Input).focus()
+            # Open the filter via `/`, not a bare focus on a hidden input.
+            await pilot.press("slash")
             await pilot.pause()
             assert isinstance(catalog.focused, Input)
             catalog.action_go_back()
