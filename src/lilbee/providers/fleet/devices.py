@@ -135,15 +135,31 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
             _CUDA_ORDER_VAR: os.environ.get(_CUDA_ORDER_VAR, _PCI_BUS_ID_ORDER),
         }
     if backend in ("ROCm", "HIP"):
-        return {
-            _ROCR_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_ROCR_VISIBLE_VAR)),
-            _HIP_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_HIP_VISIBLE_VAR)),
-        }
+        return _amd_visible_env(indices)
     if backend == "Vulkan":
         return {_VK_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_VK_VISIBLE_VAR))}
     if backend == "SYCL":
         return {_ONEAPI_SELECTOR_VAR: _compose_sycl(indices, os.environ.get(_ONEAPI_SELECTOR_VAR))}
     return {}
+
+
+def _amd_visible_env(indices: list[int]) -> dict[str, str]:
+    """Pin an AMD ROCm/HIP child to the probe's *indices* with one visibility var.
+
+    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially
+    by the runtime: ROCR filters first, then HIP re-indexes within the survivors.
+    The probe enumerated a single index space already filtered by whichever var
+    the parent set, so emitting BOTH (each composed against its own parent) would
+    double-filter and select the wrong cards. Emit only the var the parent used,
+    composed against that parent value, and leave the other inherited untouched;
+    default to HIP when the parent restricted neither. The child inherits the
+    parent env, so an unset override keeps any inherited sibling var in force.
+    """
+    parent_rocr = os.environ.get(_ROCR_VISIBLE_VAR)
+    parent_hip = os.environ.get(_HIP_VISIBLE_VAR)
+    if parent_rocr is not None and parent_hip is None:
+        return {_ROCR_VISIBLE_VAR: _compose_visible(indices, parent_rocr)}
+    return {_HIP_VISIBLE_VAR: _compose_visible(indices, parent_hip)}
 
 
 def _compose_sycl(indices: list[int], parent_value: str | None) -> str:
