@@ -255,9 +255,15 @@ class SdkLLMProvider(LLMProvider):
         if timeout and timeout > 0:
             from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(max_workers=1) as pool:
+            # Don't use the context manager: its __exit__ shutdown(wait=True) would
+            # block until a hung call returns, so the caller would not be freed at
+            # the deadline. Shut down without waiting (matching the fleet OCR path).
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
                 future = pool.submit(self.chat, messages, stream=False, model=model)
                 result = future.result(timeout=timeout)
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
         else:
             result = self.chat(messages, stream=False, model=model)
         if not isinstance(result, ChatResult):
