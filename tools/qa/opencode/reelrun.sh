@@ -42,6 +42,11 @@ ws = write_per_cell_workspace("$FAMILY", "$REF")
 import json
 cfg = {"\$schema": "https://opencode.ai/config.json",
        "tools": {"webfetch": False, "bash": False, "question": False},
+       # Auto-approve edits so the coder/giant reels can write the artifact: an
+       # automated VHS reel has no human to satisfy opencode's default "ask" edit
+       # permission, so writes silently never happen and the model narrates the
+       # code instead of creating the file.
+       "permission": {"edit": "allow"},
        "autoupdate": False}
 (ws / "opencode.json").write_text(json.dumps(cfg, indent=2))
 from lilbee.core.config import cfg as lilbee_cfg

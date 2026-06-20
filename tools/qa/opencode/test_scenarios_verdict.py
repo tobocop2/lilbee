@@ -75,3 +75,42 @@ def test_dispatch_without_lilbee_chat_completion_fails_as_zen_fallback(tmp_path:
 def test_no_dispatch_keeps_waiting(tmp_path: Path) -> None:
     _write_chat_completions(tmp_path, 1)  # chat but no search dispatch yet
     assert _verdict(tmp_path) is None
+
+
+def _verdict_with_pane(workspace: Path, pane: str):
+    return _poll_verdict(
+        _scenario(),
+        workspace,
+        pane=pane,
+        baseline_calls=0,
+        baseline_dispatches=0,
+        start=0.0,
+    )
+
+
+def test_ungrounded_not_found_answer_fails_despite_dispatch(tmp_path: Path) -> None:
+    # A fresh dispatch + a lilbee chat completion is NOT a pass when the answer
+    # says the search found nothing: the tier prompts target content the indexed
+    # reference does contain, so "not found" is a real failure, not a clean pass.
+    _write_dispatch_event(tmp_path)
+    _write_chat_completions(tmp_path, 1)
+    pane = (
+        "The AStarGrid2D class and its get_id_path method are not found in the indexed reference."
+    )
+    verdict = _verdict_with_pane(tmp_path, pane)
+    assert verdict is not None
+    assert verdict.status is ScenarioStatus.FAIL
+    assert "ungrounded" in verdict.detail
+
+
+def test_grounded_answer_still_passes(tmp_path: Path) -> None:
+    # A real answer (no ungrounded markers) with dispatch + completion passes:
+    # the gate must not over-fire on substantive responses.
+    _write_dispatch_event(tmp_path)
+    _write_chat_completions(tmp_path, 1)
+    pane = (
+        "Object.connect signature: func connect(signal, callable, flags=0). CONNECT_DEFERRED is 1."
+    )
+    verdict = _verdict_with_pane(tmp_path, pane)
+    assert verdict is not None
+    assert verdict.status is ScenarioStatus.PASS

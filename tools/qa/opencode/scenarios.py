@@ -51,6 +51,25 @@ completion count so a stale pane can't carry a prior cell's glyph.
 """
 
 
+# Phrases a model emits when its lilbee_search returned nothing usable, so it
+# answers "I couldn't find it" instead of grounding the answer in the reference.
+# A fresh dispatch plus a chat completion is NOT a pass when the answer is
+# ungrounded: the tier prompts target content the indexed Godot reference does
+# contain (AStarGrid2D.get_id_path, Object.connect), so an ungrounded answer is a
+# real failure (retrieval gap or the model not using the results), not a correct
+# "absent" response. Without this gate a model that dispatches and then answers
+# "not found" passes, which greenlights demos in which lilbee appears to find
+# nothing.
+_UNGROUNDED_ANSWER_MARKERS: tuple[str, ...] = (
+    "not found in the indexed",
+    "not found in the knowledge base",
+    "no documentation exists",
+    "did not find any information",
+    "not found in the provided",
+    "no documentation found",
+)
+
+
 # Tier prompts run against the indexed Godot 4 class reference. One prompt per
 # tier (same yardstick across same-tier models). Natural phrasing -- the model
 # should discover the lilbee_search MCP tool itself; only Smalls get a "look up"
@@ -157,6 +176,12 @@ def _poll_verdict(
     forbidden_hits = [s for s in scenario.forbidden if s.lower() in pane_lower]
     if forbidden_hits:
         return result(ScenarioStatus.FAIL, f"forbidden substring(s) appeared: {forbidden_hits}")
+    ungrounded = next((m for m in _UNGROUNDED_ANSWER_MARKERS if m in pane_lower), None)
+    if ungrounded is not None:
+        return result(
+            ScenarioStatus.FAIL,
+            f"ungrounded answer (lilbee_search returned nothing usable): {ungrounded!r}",
+        )
     events = read_events(workspace)
     if has_session_error(events):
         return result(ScenarioStatus.FAIL, "session.error event from opencode")
