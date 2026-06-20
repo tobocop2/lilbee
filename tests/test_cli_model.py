@@ -220,6 +220,51 @@ class TestModelEntryFactories:
         assert entry.display_name == ""
 
 
+class TestRemoveModelDataFreedSize:
+    def test_legacy_split_manifest_reports_full_shard_total(self, tmp_path, monkeypatch):
+        # bb-ziks.49 (review round 6): a pre-accounting split manifest
+        # (total_size_bytes None) still frees every shard, so the reported freed
+        # size must reflect the on-disk total, not just the first shard.
+        from unittest.mock import MagicMock
+
+        from lilbee.app.models import _bytes_to_gb, remove_model_data
+
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=10, task="chat")  # first shard only
+        shards = []
+        for n in (1, 2, 3):
+            path = tmp_path / f"shard{n}.gguf"
+            path.write_bytes(b"x" * 100)  # 100 bytes each -> 300 total
+            shards.append(path)
+        registry = MagicMock()
+        registry.shard_paths.return_value = shards
+        manager = MagicMock()
+        manager.remove.return_value = True
+        services = MagicMock(model_manager=manager, registry=registry)
+        monkeypatch.setattr(model_mod, "get_services", lambda: services)
+        monkeypatch.setattr(model_mod, "_native_manifest_index", lambda: {_CHAT_REF: manifest})
+
+        result = remove_model_data(_CHAT_REF)
+        assert result.freed_gb == _bytes_to_gb(300)  # all 3 shards, not the 10-byte first
+
+    def test_modern_manifest_uses_recorded_total(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lilbee.app.models import _bytes_to_gb, remove_model_data
+
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=10, task="chat")
+        manifest.total_size_bytes = 600  # accounted at install; no shard re-stat needed
+        registry = MagicMock()
+        manager = MagicMock()
+        manager.remove.return_value = True
+        services = MagicMock(model_manager=manager, registry=registry)
+        monkeypatch.setattr(model_mod, "get_services", lambda: services)
+        monkeypatch.setattr(model_mod, "_native_manifest_index", lambda: {_CHAT_REF: manifest})
+
+        result = remove_model_data(_CHAT_REF)
+        assert result.freed_gb == _bytes_to_gb(600)
+        registry.shard_paths.assert_not_called()  # recorded total used directly
+
+
 class TestListModelsData:
     def test_default_lists_both_sources(self, fake_manager, native_manifests, with_remote_classify):
         data = model_mod.list_models_data()

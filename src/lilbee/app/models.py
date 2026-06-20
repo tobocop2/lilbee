@@ -354,6 +354,17 @@ def pull_model_data(
     )
 
 
+def _legacy_disk_size(ref: str, *, fallback: int) -> int:
+    """Sum a split GGUF's shard sizes on disk; *fallback* on any failure/single file."""
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        shards = get_services().registry.shard_paths(ref)
+        if len(shards) > 1:
+            return sum(path.stat().st_size for path in shards)
+    return fallback
+
+
 def remove_model_data(
     ref: str,
     source: ModelSource | None = None,
@@ -363,7 +374,12 @@ def remove_model_data(
     manifests = _native_manifest_index()
     # disk_size_bytes is the full multi-shard total; size_bytes alone would report
     # only the first shard for a split GGUF.
-    size_bytes = manifests[ref].disk_size_bytes if ref in manifests else 0
+    manifest = manifests.get(ref)
+    size_bytes = manifest.disk_size_bytes if manifest is not None else 0
+    if manifest is not None and manifest.total_size_bytes is None:
+        # Legacy manifest without shard accounting: removal still frees every
+        # shard, so recover the true on-disk total from the shards for the report.
+        size_bytes = _legacy_disk_size(ref, fallback=size_bytes)
     removed = manager.remove(ref, source=source)
     return RemoveResult(
         model=ref,

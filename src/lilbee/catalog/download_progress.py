@@ -3,9 +3,9 @@
 The TUI runs under Textual which owns the terminal; tqdm output to
 stderr/stdout corrupts the screen. This module provides a tqdm subclass
 (``_CallbackProgressBar``) that suppresses terminal output and tracks
-cumulative bytes; its ``_ProgressTracker`` subclass forwards progress to a
-plain ``Callable[[int, int], None]`` callback (aggregating across split
-shards) and detects whether progress events actually
+cumulative bytes; the ``_ProgressTracker`` wrapper produces a further subclass
+that forwards progress to a plain ``Callable[[int, int], None]`` callback
+(aggregating across split shards) and detects whether progress events actually
 fired so the TUI can detect a cache-hit (no progress events) and render
 ``"already downloaded"`` instead of leaving the bar at 0%.
 
@@ -79,7 +79,8 @@ def make_download_callback(
 class _CallbackProgressBar(_base_tqdm):
     """tqdm subclass that suppresses terminal output and tracks cumulative bytes.
 
-    The _ProgressTracker subclass forwards that progress to a callback.
+    ``_ProgressTracker`` produces a further subclass of this that forwards the
+    progress to a callback.
     Fully suppresses terminal output by disabling tqdm rendering and redirecting
     its file handle to a devnull sink: prevents ANSI escape sequences from leaking
     into Textual's managed terminal.

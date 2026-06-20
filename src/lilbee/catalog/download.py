@@ -178,7 +178,11 @@ def download_model(
         if len(shards) > 1
         else []
     )
-    grand_total = sum(shard_sizes) if shard_sizes and all(size > 0 for size in shard_sizes) else 0
+    grand_total = (
+        sum(shard_sizes)
+        if shard_sizes and all(size != _SIZE_UNKNOWN for size in shard_sizes)
+        else 0
+    )
     tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
     shard_paths: list[Path] = []
     for shard in shards:
