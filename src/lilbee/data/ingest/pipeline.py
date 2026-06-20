@@ -790,15 +790,21 @@ def _classify_result(
         if reasons is not None:
             reasons[result.name] = f"{type(result.error).__name__}: {result.error}"
         return BatchStatus.FAILED
-    if result.chunk_count == 0 and not result.page_texts:
-        # Nothing extracted: no source row, so the file is retried next sync; a
-        # zero-chunk file WITH page texts stays ingested so it stops replanning.
+    if result.chunk_count == 0:
+        # No searchable chunks: never report it as added/updated. With no page
+        # texts either, nothing is persisted and the file retries next sync. With
+        # page texts, it stays INGESTED so its pages persist (export/recon) and it
+        # stops replanning, but it is reported as skipped since search can't see it.
         added.pop(result.name, None)
         updated.pop(result.name, None)
         skipped[result.name] = None
         if reasons is not None:
-            reasons[result.name] = "no text extracted (0 chunks)"
-        return BatchStatus.SKIPPED
+            reasons[result.name] = (
+                "no text extracted (0 chunks)"
+                if not result.page_texts
+                else "stored page text only (0 searchable chunks)"
+            )
+        return BatchStatus.SKIPPED if not result.page_texts else BatchStatus.INGESTED
     return BatchStatus.INGESTED
 
 

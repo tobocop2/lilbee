@@ -933,8 +933,10 @@ class TestZeroChunkPageTextPersistence:
             "lilbee.data.ingest.pipeline._produce_records", side_effect=self._pages_no_chunks
         ):
             first = await sync(quiet=True)
-            assert "blank.pdf" in first.added
-            assert "blank.pdf" not in first.skipped
+            # 0 searchable chunks: reported as skipped, not added (bb-7jg1.11) ...
+            assert "blank.pdf" not in first.added
+            assert "blank.pdf" in first.skipped
+            # ... but its page text and source row still persist (one atomic write).
             items = mock_svc.store.write_chunks_batch.call_args.args[0]
             item = next(it for it in items if it.source == "blank.pdf")
             assert item.records == []
@@ -966,7 +968,9 @@ class TestZeroChunkPageTextPersistence:
             ) as flush_spy,
         ):
             result = await sync(quiet=True)
-        assert len(result.added) == 3
+        # Zero searchable chunks -> reported skipped, but still buffered/flushed.
+        assert len(result.skipped) == 3
+        assert not result.added
         assert flush_spy.call_count >= 2
 
 

@@ -32,6 +32,11 @@ from lilbee.wiki.shared import (
 
 _ORPHAN_CANDIDATE_SUBDIRS: tuple[str, ...] = (WikiSubdir.CONCEPTS, WikiSubdir.ENTITIES)
 
+# Subdirs whose links don't count as "published" backlinks for orphan detection:
+# a [[slug]] living only in a draft or an archived page must not exempt a live
+# concept/entity page from the orphan flag.
+_UNPUBLISHED_SUBDIRS: tuple[str, ...] = (WikiSubdir.DRAFTS, WikiSubdir.ARCHIVE)
+
 log = logging.getLogger(__name__)
 
 
@@ -277,12 +282,16 @@ def _lint_orphans(wiki_root: Path, config: Config) -> list[LintIssue]:
     referenced: set[str] = set()
     candidates: list[Path] = []
     candidate_roots = {wiki_root / sub for sub in _ORPHAN_CANDIDATE_SUBDIRS}
+    unpublished_roots = {wiki_root / sub for sub in _UNPUBLISHED_SUBDIRS}
     for md_path in wiki_root.rglob("*.md"):
-        text = md_path.read_text(encoding="utf-8", errors="replace")
-        for match in WIKI_LINK_RE.finditer(text):
-            slug = match.group(1).split("|", 1)[0].strip().lower()
-            if slug:
-                referenced.add(slug)
+        # Only published pages contribute backlinks; a link from a draft or an
+        # archived page must not keep a live concept/entity page off the orphan list.
+        if not any(root in md_path.parents for root in unpublished_roots):
+            text = md_path.read_text(encoding="utf-8", errors="replace")
+            for match in WIKI_LINK_RE.finditer(text):
+                slug = match.group(1).split("|", 1)[0].strip().lower()
+                if slug:
+                    referenced.add(slug)
         if any(root in md_path.parents for root in candidate_roots):
             candidates.append(md_path)
 
