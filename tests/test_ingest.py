@@ -71,6 +71,11 @@ def mock_svc():
     store.write_chunks_batch.side_effect = _write_batch
     store.delete_source.side_effect = lambda fn: _sources.pop(fn, None)
     store.delete_by_source.return_value = None
+
+    def _remove_documents(names, **_kw):
+        return [_sources.pop(n, None) for n in names]
+
+    store.remove_documents.side_effect = _remove_documents
     store.drop_all.side_effect = lambda: _sources.clear()
     store.ensure_fts_index.return_value = None
     embedder = MagicMock()
@@ -1537,6 +1542,38 @@ class TestCollectResultsSkipped:
         assert captured[0][1].status == "skipped"
         assert "scan.pdf" in skipped
 
+    async def test_zero_text_update_purges_prior_index_entry(self, mock_svc):
+        # An already-indexed file edited to extract to nothing must have its old
+        # chunks/source row removed, not left orphaned in search (bb-ziks.74).
+        from lilbee.data.ingest.pipeline import _collect_results
+        from lilbee.data.ingest.types import _IngestResult
+
+        async def _emptied() -> _IngestResult:
+            return _IngestResult(
+                "notes.md", Path("notes.md"), chunk_count=0, error=None, needs_cleanup=True
+            )
+
+        await _collect_results(iter([_emptied()]), 1, {}, {}, {}, {}, window=2)
+        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
+
+    async def test_zero_text_without_cleanup_does_not_purge(self, mock_svc):
+        from lilbee.data.ingest.pipeline import _collect_results
+        from lilbee.data.ingest.types import _IngestResult
+
+        async def _emptied() -> _IngestResult:
+            return _IngestResult(
+                "fresh.md", Path("fresh.md"), chunk_count=0, error=None, needs_cleanup=False
+            )
+
+        await _collect_results(iter([_emptied()]), 1, {}, {}, {}, {}, window=2)
+        mock_svc.store.remove_documents.assert_not_called()
+
+    def test_purge_emptied_sources_noop_on_empty(self, mock_svc):
+        from lilbee.data.ingest.pipeline import _purge_emptied_sources
+
+        _purge_emptied_sources([])
+        mock_svc.store.remove_documents.assert_not_called()
+
     async def test_error_cancels_still_running_siblings(self):
         """When one task raises, _collect_results' finally cancels the in-flight ones."""
         import asyncio
@@ -2260,6 +2297,92 @@ class TestShouldRunOcrAutoDetect:
         from lilbee.data.ingest.extract import _should_run_ocr
 
         assert _should_run_ocr() is False
+
+
+class TestOcrOverrideContextVar:
+    """Per-request OCR overrides use a ContextVar, never a global cfg mutation."""
+
+    def test_override_does_not_mutate_global_cfg(self, isolated_env):
+        from lilbee.data.ingest.extract import ocr_override
+
+        cfg.enable_ocr = False
+        cfg.ocr_timeout = 11.0
+        with ocr_override(enable_ocr=True, ocr_timeout=99.0):
+            pass
+        assert cfg.enable_ocr is False
+        assert cfg.ocr_timeout == 11.0
+
+    def test_effective_values_reflect_override_then_revert(self, isolated_env):
+        from lilbee.data.ingest.extract import (
+            _effective_enable_ocr,
+            _effective_ocr_timeout,
+            ocr_override,
+        )
+
+        cfg.enable_ocr = False
+        cfg.ocr_timeout = 11.0
+        with ocr_override(enable_ocr=True, ocr_timeout=99.0):
+            assert _effective_enable_ocr() is True
+            assert _effective_ocr_timeout() == 99.0
+        assert _effective_enable_ocr() is False
+        assert _effective_ocr_timeout() == 11.0
+
+    def test_none_arguments_keep_cfg_defaults(self, isolated_env):
+        from lilbee.data.ingest.extract import _effective_enable_ocr, ocr_override
+
+        cfg.enable_ocr = True
+        with ocr_override(enable_ocr=None, ocr_timeout=None):
+            assert _effective_enable_ocr() is True
+
+    def test_should_run_ocr_honors_override(self, isolated_env):
+        from lilbee.data.ingest.extract import _should_run_ocr, ocr_override
+
+        cfg.enable_ocr = True
+        cfg.vision_model = ""
+        with ocr_override(enable_ocr=False):
+            assert _should_run_ocr() is False
+
+    def test_overrides_isolated_across_contexts(self, isolated_env):
+        # Two copied contexts must each see only their own override; this is the
+        # concurrency guarantee that a global cfg mutation could not give.
+        import contextvars
+
+        from lilbee.data.ingest.extract import _effective_ocr_timeout, ocr_override
+
+        cfg.ocr_timeout = 5.0
+        seen: dict[str, float] = {}
+
+        def run_with(value: float, key: str) -> None:
+            with ocr_override(ocr_timeout=value):
+                seen[key] = _effective_ocr_timeout()
+
+        contextvars.copy_context().run(run_with, 30.0, "a")
+        contextvars.copy_context().run(run_with, 70.0, "b")
+        assert seen == {"a": 30.0, "b": 70.0}
+        assert _effective_ocr_timeout() == 5.0  # parent context untouched
+
+    def test_temporary_ocr_config_delegates_without_global_mutation(self, isolated_env):
+        from lilbee.app.ingest import temporary_ocr_config
+        from lilbee.data.ingest.extract import _effective_ocr_timeout
+
+        cfg.ocr_timeout = 8.0
+        with temporary_ocr_config(ocr_timeout=42.0):
+            assert _effective_ocr_timeout() == 42.0
+            assert cfg.ocr_timeout == 8.0
+        assert _effective_ocr_timeout() == 8.0
+
+    async def test_override_propagates_into_to_thread_worker(self, isolated_env):
+        # The fix relies on asyncio.to_thread copying the calling context, which
+        # is how the override reaches the extract worker that actually OCRs.
+        import asyncio
+
+        from lilbee.data.ingest.extract import _effective_ocr_timeout, ocr_override
+
+        cfg.ocr_timeout = 5.0
+        with ocr_override(ocr_timeout=88.0):
+            seen = await asyncio.to_thread(_effective_ocr_timeout)
+        assert seen == 88.0
+        assert await asyncio.to_thread(_effective_ocr_timeout) == 5.0
 
 
 class TestOcrFallbackBackendDispatch:

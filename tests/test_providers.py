@@ -506,6 +506,98 @@ class TestRoutingProvider:
         second = rp._get_sdk_provider()
         assert first is second
 
+    def test_get_local_single_init_under_concurrency(self, monkeypatch) -> None:
+        """Concurrent first-callers build the FleetProvider exactly once.
+
+        Without the double-checked _init_lock, simultaneous callers each spawn a
+        FleetProvider (duplicate role servers) and all but one leak.
+        """
+        import threading
+        import time
+
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        construct_count = {"n": 0}
+        count_lock = threading.Lock()
+
+        class FakeFleet:
+            def __init__(self) -> None:
+                with count_lock:
+                    construct_count["n"] += 1
+                # Widen the check-then-set window: without it the cheap __init__
+                # runs to completion before the GIL yields, so a racing caller
+                # never observes None and the test passes even on unlocked code.
+                time.sleep(0.05)
+
+            def shutdown(self) -> None: ...
+
+        monkeypatch.setattr("lilbee.providers.fleet.provider.FleetProvider", FakeFleet)
+
+        rp = RoutingProvider()
+        self._to_shutdown.append(rp)
+        barrier = threading.Barrier(8)
+        results: list = []
+
+        def worker() -> None:
+            barrier.wait()
+            results.append(rp._get_local())
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert construct_count["n"] == 1
+        assert len({id(r) for r in results}) == 1
+
+    def test_get_sdk_provider_single_init_under_concurrency(self, monkeypatch) -> None:
+        """Concurrent first-callers construct exactly one SdkLLMProvider.
+
+        Asserting on the returned identity alone is false-green: without the
+        lock, racing callers each construct an instance and the last write wins,
+        so every late reader still sees the same final attribute. Count actual
+        constructions instead.
+        """
+        import threading
+        import time
+
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        construct_count = {"n": 0}
+        count_lock = threading.Lock()
+
+        class FakeSdk:
+            def __init__(self, *args, **kwargs) -> None:
+                with count_lock:
+                    construct_count["n"] += 1
+                # Widen the check-then-set window so a racing caller observes the
+                # uninitialized slot; otherwise the test is false-green on
+                # unlocked code (see test_get_local_single_init_under_concurrency).
+                time.sleep(0.05)
+
+            def shutdown(self) -> None: ...
+
+        monkeypatch.setattr("lilbee.providers.routing_provider.SdkLLMProvider", FakeSdk)
+
+        rp = RoutingProvider()
+        self._to_shutdown.append(rp)
+        barrier = threading.Barrier(8)
+        results: list = []
+
+        def worker() -> None:
+            barrier.wait()
+            results.append(rp._get_sdk_provider())
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert construct_count["n"] == 1
+        assert len({id(r) for r in results}) == 1
+
     def test_list_chat_models_empty_when_sdk_unavailable(self) -> None:
         # list_chat_models must skip the SDK backend entirely when the SDK
         # is not installed; native llama-cpp never has a frontier catalog.

@@ -90,9 +90,15 @@ def test_visible_env_cuda_pins_by_index_and_pins_order() -> None:
     assert env == {"CUDA_VISIBLE_DEVICES": "2,3", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
 
 
-def test_visible_env_rocm_uses_rocr_and_hip() -> None:
+def test_visible_env_rocm_emits_single_var_on_clean_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ROCR and HIP filter sequentially, so the child pins with one var only;
+    # with neither parent var set it defaults to HIP at the absolute index.
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
     env = visible_env((FleetDevice("ROCm", 1, "", 0, 0),))
-    assert env == {"ROCR_VISIBLE_DEVICES": "1", "HIP_VISIBLE_DEVICES": "1"}
+    assert env == {"HIP_VISIBLE_DEVICES": "1"}
 
 
 def test_visible_env_vulkan_uses_ggml_var() -> None:
@@ -154,17 +160,29 @@ class TestPresetVisibleDeviceComposition:
         monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
         assert dev_mod._probe_env()["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
 
-    def test_rocm_parent_lists_compose_per_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rocm_rocr_only_parent_emits_rocr_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Parent restricted via ROCR only: emit ROCR composed against it, and do
+        # NOT also emit HIP (which would re-index within the ROCR survivors).
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "4,5")
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
         env = visible_env((FleetDevice("ROCm", 1, "", 0, 0),))
-        assert env == {"ROCR_VISIBLE_DEVICES": "5", "HIP_VISIBLE_DEVICES": "1"}
+        assert env == {"ROCR_VISIBLE_DEVICES": "5"}  # relative 1 -> physical 5
 
-    def test_hip_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rocm_hip_only_parent_emits_hip_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The finding's scenario: HIP-only parent. Emitting an absolute ROCR here
+        # would select the wrong physical card, so only HIP is composed/emitted.
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
-        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "6,7")
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1,3")
         env = visible_env((FleetDevice("HIP", 0, "", 0, 0),))
-        assert env == {"ROCR_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "6"}
+        assert env == {"HIP_VISIBLE_DEVICES": "1"}  # relative 0 -> physical 1, no ROCR
+
+    def test_rocm_both_parents_set_emits_hip_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # When both are set, the inherited ROCR stays in force and only HIP is
+        # re-pinned (within the ROCR survivors), so the cap is never doubled.
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0,1,2")
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "6,7")
+        env = visible_env((FleetDevice("ROCm", 1, "", 0, 0),))
+        assert env == {"HIP_VISIBLE_DEVICES": "7"}  # relative 1 -> physical 7
 
     def test_vulkan_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1,2")

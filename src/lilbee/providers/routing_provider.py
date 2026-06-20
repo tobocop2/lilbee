@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -43,22 +44,33 @@ class RoutingProvider(LLMProvider):
     def __init__(self) -> None:
         self._local: LLMProvider | None = None
         self._sdk_provider: SdkLLMProvider | None = None
+        # Guards both lazy inits so two concurrent first-callers on the shared
+        # daemon don't each build a backend and leak the loser. (Construction is
+        # cheap field init; FleetProvider defers the role-server spawn to first
+        # use and single-flights it internally, so this lock is the singleton
+        # guard, not the spawn guard.)
+        self._init_lock = threading.Lock()
 
     def _get_local(self) -> LLMProvider:
         if self._local is None:
-            # heavy: FleetProvider composes the llama-server stack and spawns
-            # the role servers on first use.
-            from lilbee.providers.fleet.provider import FleetProvider
+            # FleetProvider composes the llama-server stack; its role servers
+            # spawn lazily on first use, not here. Double-checked under
+            # _init_lock so only the first concurrent caller builds it.
+            with self._init_lock:
+                if self._local is None:
+                    from lilbee.providers.fleet.provider import FleetProvider
 
-            self._local = FleetProvider()
+                    self._local = FleetProvider()
         return self._local
 
     def _get_sdk_provider(self) -> SdkLLMProvider:
         if self._sdk_provider is None:
-            self._sdk_provider = SdkLLMProvider(
-                LitellmSdkBackend(),
-                api_key=cfg.llm_api_key,
-            )
+            with self._init_lock:
+                if self._sdk_provider is None:
+                    self._sdk_provider = SdkLLMProvider(
+                        LitellmSdkBackend(),
+                        api_key=cfg.llm_api_key,
+                    )
         return self._sdk_provider
 
     def _pick_backend(self, ref: ProviderModelRef) -> LLMProvider:

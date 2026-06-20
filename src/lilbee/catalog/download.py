@@ -3,6 +3,7 @@
 import fnmatch
 import logging
 import re
+import threading
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -45,6 +46,15 @@ class DownloadConfig(BaseModel):
 
 _HTTP_TOO_LARGE_MARKER = "too large to be downloaded using the regular download method"
 
+_xet_flip_lock = threading.Lock()
+"""Serializes the global ``HF_HUB_DISABLE_XET`` flip in ``_download_with_xet``.
+
+The flag is a huggingface_hub module global with no per-call override, so two
+overlapping xet downloads would otherwise nest their save/restore and leave xet
+permanently toggled. Holding the lock for the whole download keeps the window
+exclusive; over-cap xet downloads are rare large files, so serializing them is
+an acceptable cost for a correct restore."""
+
 
 def _download_with_xet(config: DownloadConfig) -> Path:
     """Re-run the download with xet enabled, for files past the HTTP size cap.
@@ -52,18 +62,20 @@ def _download_with_xet(config: DownloadConfig) -> Path:
     lilbee disables xet by default (``HF_HUB_DISABLE_XET``) so download progress
     bars stay smooth, but huggingface_hub refuses files over its HTTP size cap on
     the regular path and only xet can fetch them. ``is_xet_available()`` reads the
-    constant live, so flip it for this one download and restore it after. hf_xet
-    is a hard dependency, so the xet path is always available.
+    constant live, so flip it for this one download (under ``_xet_flip_lock`` so
+    concurrent xet downloads cannot corrupt the restore) and restore it after.
+    hf_xet is a hard dependency, so the xet path is always available.
     """
     from huggingface_hub import constants, hf_hub_download
 
-    original = constants.HF_HUB_DISABLE_XET
-    constants.HF_HUB_DISABLE_XET = False
-    try:
-        log.info("File exceeds the HTTP download cap; retrying %s via xet.", config.repo_id)
-        return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
-    finally:
-        constants.HF_HUB_DISABLE_XET = original
+    with _xet_flip_lock:
+        original = constants.HF_HUB_DISABLE_XET
+        constants.HF_HUB_DISABLE_XET = False
+        try:
+            log.info("File exceeds the HTTP download cap; retrying %s via xet.", config.repo_id)
+            return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
+        finally:
+            constants.HF_HUB_DISABLE_XET = original
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:

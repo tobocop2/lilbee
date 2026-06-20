@@ -53,14 +53,12 @@ def temporary_ocr_config(
     enable_ocr: bool | None = None,
     ocr_timeout: float | None = None,
 ) -> Generator[None, None, None]:
-    """Temporarily override OCR config for the duration of the block."""
-    old_ocr, old_timeout = cfg.enable_ocr, cfg.ocr_timeout
-    try:
-        if enable_ocr is not None:
-            cfg.enable_ocr = enable_ocr
-        if ocr_timeout is not None:
-            cfg.ocr_timeout = ocr_timeout
+    """Override OCR config for the duration of the block, per request.
+
+    Backed by a ContextVar rather than a global ``cfg`` mutation, so concurrent
+    ingests on the shared HTTP daemon do not clobber one another's OCR settings.
+    """
+    from lilbee.data.ingest.extract import ocr_override
+
+    with ocr_override(enable_ocr, ocr_timeout):
         yield
-    finally:
-        cfg.enable_ocr = old_ocr
-        cfg.ocr_timeout = old_timeout

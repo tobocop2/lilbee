@@ -130,6 +130,31 @@ class TestEagerStartBranch:
         provider.warm_up_pool.assert_not_called()
 
 
+class TestResetServicesSwapBeforeClose:
+    """reset_services clears the singleton before tearing the old one down."""
+
+    def test_reference_cleared_before_teardown(self):
+        from lilbee.app import services as services_mod
+        from tests.conftest import make_mock_services
+
+        observed: list[bool] = []
+        store = MagicMock()
+        provider = MagicMock()
+        # When teardown runs, the module singleton must already be None so a
+        # concurrent get_services() never hands out a closing container.
+        store.close.side_effect = lambda: observed.append(services_mod.peek_services() is None)
+
+        services_mod.set_services(make_mock_services(store=store, provider=provider))
+        try:
+            services_mod.reset_services()
+            assert services_mod.peek_services() is None
+            provider.shutdown.assert_called_once()
+            store.close.assert_called_once()
+            assert observed == [True]  # cleared before close
+        finally:
+            services_mod.set_services(None)
+
+
 class TestResetStore:
     def test_keeps_provider_and_embedder_replaces_store(self, tmp_path):
         """``reset_store`` rebuilds Store-bound services without unloading the provider."""

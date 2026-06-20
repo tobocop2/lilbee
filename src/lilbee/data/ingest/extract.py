@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Generator, Sequence
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -89,18 +91,68 @@ def extraction_config(mode: ExtractMode) -> ExtractionConfig:
     return builders[mode]()
 
 
+_ocr_enable_override: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "lilbee_ocr_enable_override", default=None
+)
+_ocr_timeout_override: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "lilbee_ocr_timeout_override", default=None
+)
+
+
+def _effective_enable_ocr() -> bool | None:
+    """``cfg.enable_ocr`` unless a per-request OCR override is active.
+
+    The override is a ContextVar, not a global cfg mutation, so concurrent
+    ingests on the shared HTTP daemon each see their own setting. The override
+    also propagates into ``asyncio.to_thread`` workers (``to_thread`` copies the
+    calling task's context), which is how the timeout reaches the image-OCR call.
+    """
+    override = _ocr_enable_override.get()
+    return cfg.enable_ocr if override is None else override
+
+
+def _effective_ocr_timeout() -> float:
+    """``cfg.ocr_timeout`` unless a per-request OCR timeout override is active."""
+    override = _ocr_timeout_override.get()
+    return cfg.ocr_timeout if override is None else override
+
+
+@contextmanager
+def ocr_override(
+    enable_ocr: bool | None = None, ocr_timeout: float | None = None
+) -> Generator[None, None, None]:
+    """Scope per-request OCR settings without mutating the global cfg.
+
+    A ``None`` argument leaves that setting at its cfg default. Each override is
+    isolated to the entering context (and any ``to_thread`` work it spawns), so
+    overlapping ingests never clobber one another's OCR config.
+    """
+    tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
+    try:
+        if enable_ocr is not None:
+            tokens.append((_ocr_enable_override, _ocr_enable_override.set(enable_ocr)))
+        if ocr_timeout is not None:
+            tokens.append((_ocr_timeout_override, _ocr_timeout_override.set(ocr_timeout)))
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            var.reset(token)
+
+
 def _should_run_ocr() -> bool:
     """Decide whether to attempt vision-based OCR on scanned PDFs.
 
-    Uses ``cfg.enable_ocr`` and ``cfg.vision_model``:
+    Uses the effective OCR setting (``cfg.enable_ocr`` or a per-request
+    override) and ``cfg.vision_model``:
     True = force on (requires ``cfg.vision_model`` to be set for a real
     vision run; otherwise the caller falls back to Tesseract).
     False = force off.
     None = auto-detect: run vision OCR when ``cfg.vision_model`` is set.
     """
-    if cfg.enable_ocr is True:
+    enable_ocr = _effective_enable_ocr()
+    if enable_ocr is True:
         return True
-    if cfg.enable_ocr is False:
+    if enable_ocr is False:
         return False
     return bool(cfg.vision_model)
 
@@ -177,7 +229,7 @@ async def _vision_ocr_fallback(
             path,
             backend="vision",
             model=cfg.vision_model,
-            per_page_timeout_s=cfg.ocr_timeout,
+            per_page_timeout_s=_effective_ocr_timeout(),
             quiet=quiet,
             on_progress=on_progress,
         )
@@ -220,7 +272,7 @@ async def _vision_image_ocr(
 def _image_ocr_text(path: Path) -> str:
     """OCR one image through the vision server (a single chat-completions call)."""
     return get_services().provider.vision_ocr(
-        _image_to_png_bytes(path), cfg.vision_model, timeout=cfg.ocr_timeout
+        _image_to_png_bytes(path), cfg.vision_model, timeout=_effective_ocr_timeout()
     )
 
 

@@ -1091,6 +1091,41 @@ class TestSyncStreamDoneDelivery:
         counts = json.loads(done_events[0].split("data: ")[1].strip())
         assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0, "skipped": 0}
 
+    async def test_put_threadsafe_defers_enqueue_to_loop(self):
+        """put_threadsafe schedules the enqueue on the loop instead of mutating
+        the asyncio.Queue inline; even called from the loop thread the item is
+        not present until a loop iteration runs (bb-ziks.76)."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        sse.put_threadsafe("hello")
+        # call_soon_threadsafe defers to a later iteration: a direct put_nowait
+        # would have enqueued synchronously here.
+        assert sse.queue.empty()
+        await asyncio.sleep(0)
+        assert sse.queue.get_nowait() == "hello"
+
+    async def test_put_threadsafe_enqueues_from_worker_thread(self):
+        """A producer on a worker thread reaches the loop's queue via the
+        threadsafe handoff."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+
+        def producer() -> None:
+            sse.put_threadsafe("hello")
+            sse.put_threadsafe(None)
+
+        await asyncio.to_thread(producer)
+
+        received: list[str] = []
+        while True:
+            item = await sse.queue.get()
+            if item is None:
+                break
+            received.append(item)
+        assert received == ["hello"]
+
     async def test_drain_exits_cleanly_when_producer_raises(self):
         """A raising producer still enqueues the sentinel via finally so drain closes."""
         from lilbee.server.handlers import SseStream
@@ -2607,6 +2642,34 @@ class TestUpdateConfig:
         with pytest.raises(ValueError, match="chunk_overlap"):
             await handlers.update_config({"chunk_overlap": 1024})
 
+    def test_as_int_setting_coerces_strings_excludes_bool(self):
+        """The chunk guards coerce string numerics but never treat a bool as a size."""
+        from lilbee.app.settings import _as_int_setting
+
+        assert _as_int_setting("1000") == 1000
+        assert _as_int_setting(256) == 256
+        assert _as_int_setting("not_numeric") is None
+        assert _as_int_setting(True) is None
+        assert _as_int_setting(None) is None
+
+    async def test_provider_switch_refused_on_http_server(self):
+        """A provider switch rebuilds the shared singleton, so REST refuses it.
+
+        The REST handler only ever runs inside the always-concurrent HTTP server,
+        so a provider switch (which forces reset_services) is refused here.
+        """
+        before = cfg.llm_provider
+        with pytest.raises(ValueError, match="HTTP server"):
+            await handlers.update_config({"llm_provider": "remote"})
+        assert cfg.llm_provider == before  # no teardown triggered
+
+    def test_requires_services_reset_detects_provider_switch(self):
+        from lilbee.app.settings import requires_services_reset
+
+        assert requires_services_reset({"llm_provider": "remote"}) is True
+        assert requires_services_reset({"top_k": 5}) is False
+        assert requires_services_reset({}) is False
+
     async def test_llm_api_key_write_only(self, tmp_path):
         """llm_api_key can be written via PATCH but is excluded from GET."""
         result = await handlers.update_config({"llm_api_key": "sk-test123"})
@@ -3520,7 +3583,7 @@ class TestRunLlmStreamCancel:
             _rag_h._run_llm_stream(
                 [{"role": "user", "content": "hi"}],
                 None,
-                queue,
+                queue.put_nowait,
                 cancel,
                 error_holder,
                 [],
@@ -3569,7 +3632,7 @@ class TestReasoningCapHandling:
                 _rag_h._run_llm_stream(
                     [{"role": "user", "content": "explain quantum tunneling"}],
                     None,
-                    queue,
+                    queue.put_nowait,
                     cancel,
                     error_holder,
                     [],
@@ -3605,7 +3668,7 @@ class TestReasoningCapHandling:
                 _rag_h._run_llm_stream(
                     [{"role": "user", "content": "hi"}],
                     None,
-                    queue,
+                    queue.put_nowait,
                     cancel,
                     error_holder,
                     [],
@@ -3646,7 +3709,7 @@ class TestReasoningCapHandling:
                 _rag_h._run_llm_stream(
                     [{"role": "user", "content": "hi"}],
                     None,
-                    queue,
+                    queue.put_nowait,
                     cancel,
                     error_holder,
                     [],
@@ -3681,7 +3744,7 @@ class TestReasoningCapHandling:
                 _rag_h._run_llm_stream(
                     [{"role": "user", "content": "long question"}],
                     None,
-                    queue,
+                    queue.put_nowait,
                     cancel,
                     error_holder,
                     [],

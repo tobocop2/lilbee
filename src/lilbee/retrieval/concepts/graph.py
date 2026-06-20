@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections import Counter
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -53,18 +54,23 @@ class ConceptGraph:
         self._store = store
         self._nlp: Any = None
         self._nlp_unavailable: bool = False
+        # A spaCy Language is not safe for concurrent processing (shared Vocab /
+        # StringStore). ConceptGraph is a Services singleton, so serialize every
+        # nlp() / nlp.pipe() call on the shared daemon behind this lock.
+        self._nlp_lock = threading.Lock()
 
     def _ensure_nlp(self) -> Any | None:
         """Lazy-load and cache the spaCy model. Returns None if unavailable."""
-        if self._nlp_unavailable:
-            return None
-        if self._nlp is None:
-            try:
-                self._nlp = _ensure_spacy_model()
-            except ImportError:
-                log.warning("Concept graph disabled: spaCy model unavailable")
-                self._nlp_unavailable = True
-                return None
+        if self._nlp is None and not self._nlp_unavailable:
+            # Double-checked under _nlp_lock so two concurrent first-callers don't
+            # each load en_core_web_sm (the loser would just be discarded).
+            with self._nlp_lock:
+                if self._nlp is None and not self._nlp_unavailable:
+                    try:
+                        self._nlp = _ensure_spacy_model()
+                    except ImportError:
+                        log.warning("Concept graph disabled: spaCy model unavailable")
+                        self._nlp_unavailable = True
         return self._nlp
 
     def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:
@@ -76,8 +82,9 @@ class ConceptGraph:
         nlp = self._ensure_nlp()
         if nlp is None:
             return []
-        doc = nlp(text)
-        return _filter_noun_chunks(doc, max_concepts)
+        with self._nlp_lock:
+            doc = nlp(text)
+            return _filter_noun_chunks(doc, max_concepts)
 
     def extract_concepts_batch(self, texts: list[str]) -> list[list[str]]:
         """Batch-extract concepts from multiple texts."""
@@ -87,7 +94,10 @@ class ConceptGraph:
         if nlp is None:
             return [[] for _ in texts]
         max_concepts = self._config.concept_max_per_chunk
-        return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
+        # Hold the lock across the full pipe iteration: nlp.pipe is lazy, so the
+        # actual parsing happens as the comprehension consumes it.
+        with self._nlp_lock:
+            return [_filter_noun_chunks(doc, max_concepts) for doc in nlp.pipe(texts)]
 
     def build_concept_records(
         self, chunk_ids: list[tuple[str, int]], concept_lists: list[list[str]]

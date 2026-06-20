@@ -183,6 +183,16 @@ class SseStream:
         self.loop = asyncio.get_running_loop()
         self.callback: DetailedProgressCallback = self._build_callback()
 
+    def put_threadsafe(self, item: str | None) -> None:
+        """Enqueue an always-delivered event from a worker thread.
+
+        ``asyncio.Queue.put_nowait`` is not thread-safe: it wakes a pending
+        getter via ``Future.set_result``, which must run on the loop thread. A
+        producer running under ``run_in_executor`` therefore hands the put back
+        to the loop instead of mutating the queue directly.
+        """
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, item)
+
     def _build_callback(self) -> DetailedProgressCallback:
         """Create a progress callback that serializes events into the queue.
         Safe to call from both the event-loop thread and worker threads.

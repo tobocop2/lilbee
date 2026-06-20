@@ -25,6 +25,7 @@ from lilbee.mcp_server import (
     remove,
     reset,
     search,
+    set_http_mounted,
     settings_get,
     settings_list,
     settings_reset,
@@ -493,6 +494,87 @@ class TestInit:
 
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
+
+
+class TestHttpDaemonGate:
+    """init/reset refuse to run on the shared HTTP daemon (teardown-race guard)."""
+
+    def test_init_refused_on_http_daemon_without_mutating_cfg(self, tmp_path):
+        before = cfg.data_root
+        set_http_mounted(True)
+        try:
+            result = init(str(tmp_path / "proj"))
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert not (tmp_path / "proj" / ".lilbee").exists()  # no side effects
+        assert cfg.data_root == before  # cfg untouched
+
+    def test_reset_refused_on_http_daemon(self):
+        set_http_mounted(True)
+        try:
+            result = reset(confirm=True)
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+
+    def test_init_allowed_on_stdio(self, tmp_path):
+        set_http_mounted(False)  # stdio default
+        result = init(str(tmp_path / "proj"))
+        assert result.get("command") == "init"
+
+    def test_provider_switch_refused_on_http_daemon(self, isolated_env):
+        # settings_set('llm_provider') triggers reset_services(); refuse it on the
+        # daemon for the same teardown-race reason init/reset are refused.
+        cfg.data_root = isolated_env
+        before = cfg.llm_provider
+        set_http_mounted(True)
+        try:
+            result = settings_set({"llm_provider": "remote"})
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert cfg.llm_provider == before  # no teardown, cfg untouched
+
+    def test_non_provider_settings_allowed_on_http_daemon(self, isolated_env):
+        cfg.data_root = isolated_env
+        set_http_mounted(True)
+        try:
+            result = settings_set({"top_k": 7})
+        finally:
+            set_http_mounted(False)
+        assert result["command"] == "settings_set"
+        assert cfg.top_k == 7
+
+    def test_provider_reset_refused_on_http_daemon(self, isolated_env):
+        # settings_reset(['llm_provider']) also triggers reset_services(); the
+        # daemon must refuse it just like settings_set and init/reset.
+        cfg.data_root = isolated_env
+        before = cfg.llm_provider
+        set_http_mounted(True)
+        try:
+            result = settings_reset(["llm_provider"])
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert cfg.llm_provider == before
+
+    def test_non_provider_reset_allowed_on_http_daemon(self, isolated_env):
+        from lilbee.core.config import Config
+
+        cfg.data_root = isolated_env
+        cfg.top_k = 99
+        set_http_mounted(True)
+        try:
+            result = settings_reset(["top_k"])
+        finally:
+            set_http_mounted(False)
+        assert result["command"] == "settings_reset"
+        assert cfg.top_k == Config.model_fields["top_k"].default  # actually reset
 
 
 class TestAdd:
@@ -1071,6 +1153,29 @@ class TestSettingsMcp:
         result = settings_set({"top_k": 12, "chunk_size": 1})
         assert "error" in result
         assert cfg.top_k == 5
+
+    def test_settings_set_validates_string_chunk_overlap(self, isolated_env):
+        # MCP forwards raw JSON, so an agent can send a numeric as a string. The
+        # chunk_overlap < chunk_size guard must still fire (bb-ziks.71).
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": "1024"})
+        assert "error" in result
+        assert "chunk_overlap" in result["error"]
+        assert cfg.chunk_overlap != 1024
+
+    def test_settings_set_validates_string_chunk_size_minimum(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"chunk_size": "1"})
+        assert "error" in result
+        assert "chunk_size must be >=" in result["error"]
+
+    def test_settings_set_accepts_valid_string_numeric(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": "64"})
+        assert result["command"] == "settings_set"
+        assert cfg.chunk_overlap == 64
 
     def test_settings_set_rolls_back_when_pydantic_rejects_second_field(self, isolated_env):
         cfg.data_root = isolated_env

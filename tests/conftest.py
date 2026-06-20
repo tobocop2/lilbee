@@ -145,12 +145,16 @@ def _reset_services_after_test():
     from contextlib import suppress
 
     from lilbee.app.services import peek_services, set_services
+    from lilbee.mcp_server import set_http_mounted
 
     svc = peek_services()
     if svc is not None:
         with suppress(Exception):
             svc.provider.shutdown()
     set_services(None)
+    # build_mcp_mount() flips this process-global True; clear it so a mount test
+    # never leaves init/reset gated for an unrelated later test.
+    set_http_mounted(False)
 
 
 @pytest.fixture(autouse=True)

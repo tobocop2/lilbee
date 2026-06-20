@@ -17,6 +17,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
@@ -34,7 +35,7 @@ from lilbee.providers.warm_progress import WarmProgress, WarmProgressTracker
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from lilbee.providers.base import (
         ChatMessage,
@@ -185,21 +186,47 @@ class _VisionRequestGate:
     The ingest file fan-out runs many files at once and each file's ``pdf_ocr`` opens
     its own ``vision_ocr_concurrency`` page pool, so without a shared cap the aggregate
     over-subscribes a single-replica vision server into a 429 storm. The semaphore is
-    rebuilt when the configured capacity (``vision_replicas * vision_ocr_concurrency``)
-    changes.
+    rebuilt to the configured capacity (``vision_replicas * vision_ocr_concurrency``)
+    only while the gate is idle, so a capacity change never doubles the live cap.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._capacity = 0
+        self._in_flight = 0
         self._semaphore: threading.BoundedSemaphore | None = None
 
-    def semaphore(self) -> threading.BoundedSemaphore:
+    @contextmanager
+    def slot(self) -> Iterator[None]:
+        """Hold one vision-request slot for the duration of the block.
+
+        The acquired semaphore is captured and released by this same call, so a
+        concurrent capacity change cannot release the wrong object.
+        """
+        sem = self._checkout()
+        # _checkout incremented _in_flight; decrement on every exit path,
+        # including one where acquire() raises, or a leaked count pins the gate
+        # non-idle and defers every later capacity resize forever.
+        try:
+            sem.acquire()
+            try:
+                yield
+            finally:
+                sem.release()
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+    def _checkout(self) -> threading.BoundedSemaphore:
         capacity = max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
         with self._lock:
-            if self._semaphore is None or self._capacity != capacity:
+            # Resize only when idle: rebuilding while old-semaphore holders are
+            # in flight would briefly double the real cap, so a capacity change
+            # waits for the current batch to drain.
+            if self._semaphore is None or (self._capacity != capacity and self._in_flight == 0):
                 self._capacity = capacity
                 self._semaphore = threading.BoundedSemaphore(capacity)
+            self._in_flight += 1
             return self._semaphore
 
 
@@ -268,7 +295,7 @@ def _ocr_pdf_page(
     from lilbee.vision import build_vision_messages
 
     messages = build_vision_messages(ocr_prompt, png)
-    with _VISION_GATE.semaphore():
+    with _VISION_GATE.slot():
         remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
         if remaining == 0.0:
             log.warning(
@@ -631,7 +658,7 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.VISION)
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
-        with _VISION_GATE.semaphore():
+        with _VISION_GATE.slot():
             return _vision_call(_least_in_flight(clients), messages, timeout)
 
     def pdf_ocr(
