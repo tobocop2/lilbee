@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from events import count_session_idles, count_tool_dispatches, has_session_error, read_events
@@ -49,6 +49,23 @@ so the glyph cleanly separates real end-to-end dispatch from opencode chrome
 mentions the tool name. Cross-checked against the launcher-serve.log chat-
 completion count so a stale pane can't carry a prior cell's glyph.
 """
+
+
+# Phrases that mark a final answer the search could not ground in the reference.
+# A fresh dispatch + chat completion is not a PASS when the settled answer says
+# the indexed reference had nothing: the tier prompts target content the
+# reference does contain (AStarGrid2D.get_id_path, Object.connect), so that is a
+# retrieval/answer failure, not a correct "absent" response. Kept narrow and
+# scanned only on the settled answer tail (see downgrade_if_ungrounded) so
+# transient mid-search reasoning or an incidental negative does not false-fail.
+_UNGROUNDED_ANSWER_MARKERS: tuple[str, ...] = (
+    "not found in the indexed",
+    "not found in the knowledge base",
+    "no documentation exists",
+)
+# Pane-tail window scanned for ungrounded markers: large enough for the settled
+# final answer, small enough to exclude earlier mid-search reasoning.
+_UNGROUNDED_SCAN_TAIL = 2000
 
 
 # Tier prompts run against the indexed Godot 4 class reference. One prompt per
@@ -251,6 +268,29 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
         detail=f"no {_SEARCH_TOOL_SUBSTR} dispatch within {scenario.timeout_s:.0f}s",
         pane_excerpt=last_pane[-_PANE_EXCERPT_TAIL:],
         elapsed_s=scenario.timeout_s,
+    )
+
+
+def downgrade_if_ungrounded(result: ScenarioResult, settled_pane: str) -> ScenarioResult:
+    """Downgrade a PASS to FAIL when the settled answer is ungrounded.
+
+    Must run on the SETTLED pane (after :func:`wait_for_answer_settle`): the
+    verdict trips at dispatch + completion, before opencode finishes streaming
+    the answer, so grounding can only be judged once the answer is rendered.
+    Scans the answer tail for a marker that the search returned nothing usable.
+    Non-PASS results and grounded answers pass through unchanged.
+    """
+    if result.status is not ScenarioStatus.PASS:
+        return result
+    tail = settled_pane.lower()[-_UNGROUNDED_SCAN_TAIL:]
+    ungrounded = next((m for m in _UNGROUNDED_ANSWER_MARKERS if m.lower() in tail), None)
+    if ungrounded is None:
+        return result
+    return replace(
+        result,
+        status=ScenarioStatus.FAIL,
+        detail=f"dispatched + completed but the answer is ungrounded "
+        f"(search found nothing in the reference): {ungrounded!r}",
     )
 
 
