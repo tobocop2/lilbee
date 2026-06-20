@@ -7,7 +7,7 @@ import contextlib
 import dataclasses
 import logging
 import threading
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from lilbee.app.memory import auto_extract, auto_extract_enabled
@@ -141,7 +141,7 @@ def _chat_warming_events() -> list[str]:
 def _run_llm_stream(
     messages: list[ChatMessage],
     opts: dict[str, Any] | None,
-    queue: asyncio.Queue[str | None],
+    put: Callable[[str | None], None],
     cancel: threading.Event,
     error_holder: list[BaseException],
     answer_parts: list[str],
@@ -165,7 +165,7 @@ def _run_llm_stream(
                 events.close()
                 break
             if isinstance(event, CapNotice):
-                queue.put_nowait(
+                put(
                     sse_event(
                         SseEvent.REASONING,
                         {"token": CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars)},
@@ -175,11 +175,11 @@ def _run_llm_stream(
                 kind = SseEvent.REASONING if event.is_reasoning else SseEvent.TOKEN
                 if kind is SseEvent.TOKEN:
                     answer_parts.append(event.content)
-                queue.put_nowait(sse_event(kind, {"token": event.content}))
+                put(sse_event(kind, {"token": event.content}))
     except Exception as exc:
         error_holder.append(exc)
     finally:
-        queue.put_nowait(None)
+        put(None)
 
 
 async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator[str, None]:
@@ -235,7 +235,14 @@ async def _stream_rag_response(
     answer_parts: list[str] = []
 
     executor_fut = sse.loop.run_in_executor(
-        None, _run_llm_stream, messages, opts, sse.queue, sse.cancel, error_holder, answer_parts
+        None,
+        _run_llm_stream,
+        messages,
+        opts,
+        sse.put_threadsafe,
+        sse.cancel,
+        error_holder,
+        answer_parts,
     )
     task = asyncio.ensure_future(executor_fut)
     async for event in sse.drain(task, "RAG stream"):
