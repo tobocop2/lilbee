@@ -91,16 +91,6 @@ def set_http_mounted(value: bool) -> None:
     _transport.http_mounted = value
 
 
-def is_http_mounted() -> bool:
-    """True when this process serves over the shared HTTP daemon.
-
-    True only inside the running HTTP server (REST + MCP-over-http share one
-    process and one Services singleton); False under the CLI, the TUI, and the
-    stdio MCP server, which are single-client.
-    """
-    return _transport.http_mounted
-
-
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
