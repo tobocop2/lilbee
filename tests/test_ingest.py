@@ -1400,9 +1400,10 @@ class TestClassifyResult:
         assert "scanned.pdf" not in failed
         assert "scanned.pdf" in skipped
 
-    def test_zero_chunks_with_page_texts_stays_for_flush(self):
-        # Whitespace-only OCR: no chunks, but the pages and source row must
-        # persist so the file stops replanning, so the result stays INGESTED.
+    def test_zero_chunks_with_page_texts_persists_but_counts_skipped(self):
+        # Whitespace-only OCR: no searchable chunks, so it is reported as skipped
+        # (bb-7jg1.11), but the pages and source row must still persist (it stops
+        # replanning), so the status stays INGESTED for the batched flush.
         from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.ingest.types import _IngestResult
         from lilbee.runtime.progress import BatchStatus
@@ -1417,8 +1418,8 @@ class TestClassifyResult:
             page_texts=[{"source": "blank.pdf", "page": 1, "text": " ", "content_type": "pdf"}],
         )
         assert _classify_result(result, added, {}, {}, skipped) is BatchStatus.INGESTED
-        assert "blank.pdf" in added
-        assert "blank.pdf" not in skipped
+        assert "blank.pdf" not in added  # not counted as added: search can't see it
+        assert "blank.pdf" in skipped
 
     def test_nonzero_chunks_stay_for_flush(self):
         # A successful file is reported INGESTED and left in added; persistence

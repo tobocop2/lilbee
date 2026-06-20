@@ -52,7 +52,11 @@ def write_lock(
     cannot stall ~60s.
     """
     deadline = time.monotonic() + timeout
-    flock = FileLock(_lock_path(lancedb_dir))
+    lock_path = _lock_path(lancedb_dir)
+    # The first write to a per-instance store can run before its data dir exists;
+    # the file lock cannot be created in a missing directory.
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flock = FileLock(lock_path)
     try:
         flock.acquire(timeout=timeout)
     except FileLockTimeout:

@@ -95,6 +95,19 @@ class TestClearAndAdd:
         store.clear_and_add("t_lock", schema, [{"concept": "next"}], "concept IS NOT NULL")
         assert locked_during == [True]  # delete ran under the write lock
 
+    def test_skips_add_when_delete_fails(self, store, monkeypatch):
+        import pyarrow as pa
+
+        import lilbee.data.store.core as core_mod
+
+        schema = pa.schema([pa.field("concept", pa.utf8())])
+        store.clear_and_add("t_fail", schema, [{"concept": "old"}], "concept IS NOT NULL")
+        # A failed delete must not add the new rows (would duplicate the stale ones).
+        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", lambda table, predicate: False)
+        store.clear_and_add("t_fail", schema, [{"concept": "new"}], "concept IS NOT NULL")
+        rows = store.open_table("t_fail").search().to_list()
+        assert {r["concept"] for r in rows} == {"old"}  # unchanged; new rows not added
+
 
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
