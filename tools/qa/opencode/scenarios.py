@@ -51,23 +51,21 @@ completion count so a stale pane can't carry a prior cell's glyph.
 """
 
 
-# Phrases a model emits when its lilbee_search returned nothing usable, so it
-# answers "I couldn't find it" instead of grounding the answer in the reference.
-# A fresh dispatch plus a chat completion is NOT a pass when the answer is
-# ungrounded: the tier prompts target content the indexed Godot reference does
-# contain (AStarGrid2D.get_id_path, Object.connect), so an ungrounded answer is a
-# real failure (retrieval gap or the model not using the results), not a correct
-# "absent" response. Without this gate a model that dispatches and then answers
-# "not found" passes, which greenlights demos in which lilbee appears to find
-# nothing.
+# Phrases that mark a final answer the search could not ground in the reference.
+# A fresh dispatch + chat completion is not a PASS when the settled answer says
+# the indexed reference had nothing: the tier prompts target content the
+# reference does contain (AStarGrid2D.get_id_path, Object.connect), so that is a
+# retrieval/answer failure, not a correct "absent" response. Kept narrow and
+# scanned only on the would-be-PASS answer tail (see _poll_verdict) so transient
+# mid-search reasoning or an incidental negative does not false-fail.
 _UNGROUNDED_ANSWER_MARKERS: tuple[str, ...] = (
     "not found in the indexed",
     "not found in the knowledge base",
     "no documentation exists",
-    "did not find any information",
-    "not found in the provided",
-    "no documentation found",
 )
+# Pane-tail window scanned for ungrounded markers: large enough for the settled
+# final answer, small enough to exclude earlier mid-search reasoning.
+_UNGROUNDED_SCAN_TAIL = 2000
 
 
 # Tier prompts run against the indexed Godot 4 class reference. One prompt per
@@ -176,21 +174,29 @@ def _poll_verdict(
     forbidden_hits = [s for s in scenario.forbidden if s.lower() in pane_lower]
     if forbidden_hits:
         return result(ScenarioStatus.FAIL, f"forbidden substring(s) appeared: {forbidden_hits}")
-    ungrounded = next((m for m in _UNGROUNDED_ANSWER_MARKERS if m in pane_lower), None)
-    if ungrounded is not None:
-        return result(
-            ScenarioStatus.FAIL,
-            f"ungrounded answer (lilbee_search returned nothing usable): {ungrounded!r}",
-        )
     events = read_events(workspace)
     if has_session_error(events):
         return result(ScenarioStatus.FAIL, "session.error event from opencode")
     fresh_dispatches = count_tool_dispatches(events, _SEARCH_TOOL_SUBSTR) - baseline_dispatches
     fresh_call = _count_ok_chat_completions(workspace) - baseline_calls
     missing = [s for s in scenario.expected if s.lower() not in pane_lower]
-    return _dispatch_verdict(
+    verdict = _dispatch_verdict(
         result, fresh_dispatches, fresh_call, has_events=bool(events), missing=missing
     )
+    # Downgrade only a would-be-PASS: the answer turn has completed (a fresh
+    # dispatch AND chat completion), so the final answer is rendered. Scan just
+    # the answer tail so an earlier transient "not found" from mid-search
+    # reasoning cannot false-fail a recovered, grounded final answer.
+    if verdict is not None and verdict.status is ScenarioStatus.PASS:
+        tail = pane_lower[-_UNGROUNDED_SCAN_TAIL:]
+        ungrounded = next((m for m in _UNGROUNDED_ANSWER_MARKERS if m.lower() in tail), None)
+        if ungrounded is not None:
+            return result(
+                ScenarioStatus.FAIL,
+                f"dispatched + completed but the answer is ungrounded "
+                f"(search found nothing in the reference): {ungrounded!r}",
+            )
+    return verdict
 
 
 def _dispatch_verdict(

@@ -114,3 +114,13 @@ def test_grounded_answer_still_passes(tmp_path: Path) -> None:
     verdict = _verdict_with_pane(tmp_path, pane)
     assert verdict is not None
     assert verdict.status is ScenarioStatus.PASS
+
+
+def test_ungrounded_answer_without_dispatch_keeps_waiting(tmp_path: Path) -> None:
+    # The ungrounded gate only downgrades a would-be-PASS. A model that answers
+    # "not found" from memory without ever dispatching must NOT be mislabeled as
+    # an ungrounded-search failure; it keeps waiting (and later times out on the
+    # accurate no-dispatch detail).
+    _write_chat_completions(tmp_path, 1)  # completion but no search dispatch
+    pane = "AStarGrid2D get_id_path is not found in the indexed reference."
+    assert _verdict_with_pane(tmp_path, pane) is None
