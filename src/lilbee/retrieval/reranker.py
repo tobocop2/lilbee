@@ -39,6 +39,10 @@ _BLEND_SCHEDULE = {
     "bottom": (0.30, 0.70),
 }
 
+# Neutral point of the [0, 1] fusion/rerank scale: used for a candidate with no
+# usable score and for a cohort whose scores are all equal (no spread to rank on).
+_NEUTRAL_SCORE = 0.5
+
 
 def _normalize_scores(scores: list[float]) -> list[float]:
     """Min-max normalize raw cross-encoder scores to [0, 1]."""
@@ -47,7 +51,7 @@ def _normalize_scores(scores: list[float]) -> list[float]:
     score_range = max_score - min_score
     if score_range > 0:
         return [(s - min_score) / score_range for s in scores]
-    return [0.5] * len(scores)
+    return [_NEUTRAL_SCORE] * len(scores)
 
 
 def _fusion_signal(chunk: SearchChunk) -> float:
@@ -55,18 +59,18 @@ def _fusion_signal(chunk: SearchChunk) -> float:
 
     Hybrid rows carry an RRF ``relevance_score`` (small positive magnitude);
     vector-only rows carry a cosine ``distance`` (0.0 = identical, lower = better).
-    Both are mapped to higher-is-better; ``_blend_scores`` min-max normalizes the
-    whole candidate set so their differing magnitudes become comparable.
+    Both are mapped to higher-is-better; ``_fusion_norms`` then scales each family
+    to [0, 1] independently so their differing magnitudes become comparable.
 
     ``is None`` rather than truthiness is deliberate: a perfect vector match has
     ``distance == 0.0`` -- the strongest possible hit -- which falsy ``or`` would
-    misread as the 0.5 default.
+    misread as the neutral default.
     """
     if chunk.relevance_score is not None:
         return chunk.relevance_score
     if chunk.distance is not None:
         return 1.0 - chunk.distance
-    return 0.5
+    return _NEUTRAL_SCORE
 
 
 def _fusion_norms(to_rerank: list[SearchChunk]) -> list[float]:
@@ -77,11 +81,11 @@ def _fusion_norms(to_rerank: list[SearchChunk]) -> list[float]:
     not comparable, so normalizing them together would let one family dominate
     purely as a scale artifact. Each family is scaled to [0, 1] independently;
     a row with neither signal sits in the non-RRF family at ``_fusion_signal``'s
-    neutral 0.5.
+    neutral score.
     """
     rrf = [i for i, c in enumerate(to_rerank) if c.relevance_score is not None]
     non_rrf = [i for i, c in enumerate(to_rerank) if c.relevance_score is None]
-    norms = [0.5] * len(to_rerank)
+    norms = [_NEUTRAL_SCORE] * len(to_rerank)
     for cohort in (rrf, non_rrf):
         if not cohort:
             continue
@@ -96,10 +100,11 @@ def _blend_scores(
 ) -> list[ScoredChunk]:
     """Blend fusion scores with reranker scores using position-aware weights.
 
-    Both inputs are already min-max normalized to [0, 1] across the candidate
-    set, so a strong hybrid hit (whose raw RRF score is tiny in absolute terms)
-    still earns real fusion weight. Each chunk is copied with ``rerank_score``
-    set to its blended score; the input chunks are left untouched.
+    Both inputs are already min-max normalized to [0, 1] (``fusion_norms`` within
+    each scoring family, ``norm_scores`` across the reranker scores), so a strong
+    hybrid hit whose raw RRF score is tiny in absolute terms still earns real
+    fusion weight. Each chunk is copied with ``rerank_score`` set to its blended
+    score; the input chunks are left untouched.
     """
     blended: list[ScoredChunk] = []
     for i, (chunk, rerank_score, fusion_norm) in enumerate(

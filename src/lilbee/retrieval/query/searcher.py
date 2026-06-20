@@ -227,7 +227,9 @@ class Searcher:
             return False
         # Probe the same pool the scoped search returns, else a confident hit in
         # the wrong sub-pool could skip expansion the scoped result actually needs.
-        results = self._store.bm25_probe(question, top_k=2, chunk_type=chunk_type)
+        results = self._store.bm25_probe(
+            question, top_k=_MIN_BM25_PROBE_RESULTS, chunk_type=chunk_type
+        )
         if not results:
             return False
         top_score = _bm25_confidence(results[0].relevance_score)

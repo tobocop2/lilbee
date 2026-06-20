@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import lilbee.app.services as svc_mod
-from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_EDGES_TABLE, cfg
+from lilbee.core.config import CHUNK_CONCEPTS_TABLE, cfg
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.concepts import ConceptGraph
 
@@ -707,51 +707,42 @@ class TestGetChunkConcepts:
 
 
 class TestRebuildClusters:
-    def test_rebuild_no_table(self, cg, mock_svc):
+    @staticmethod
+    def _chunk_concepts(rows):
+        """An open_table side effect serving *rows* as the chunk_concepts table."""
+        import pyarrow as pa
+
+        cc_tbl = MagicMock()
+        cc_tbl.to_arrow.return_value = pa.table(rows)
+        return cc_tbl, lambda name: cc_tbl if name == CHUNK_CONCEPTS_TABLE else MagicMock()
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_no_chunk_concepts_table(self, mock_leiden, cg, mock_svc):
+        """No chunk_concepts table -> no corpus stats -> nothing to cluster."""
         mock_svc.store.open_table.return_value = None
         cg.rebuild_clusters()
+        mock_leiden.assert_not_called()
+        mock_svc.store.clear_and_add.assert_not_called()
 
-    def test_rebuild_empty_edges(self, cg, mock_svc):
-        import pyarrow as pa
-
-        mock_table = MagicMock()
-        mock_table.to_arrow.return_value = pa.table(
-            {"source": [], "target": [], "weight": []},
-            schema=pa.schema(
-                [
-                    pa.field("source", pa.utf8()),
-                    pa.field("target", pa.utf8()),
-                    pa.field("weight", pa.float64()),
-                ]
-            ),
-        )
-        mock_svc.store.open_table.return_value = mock_table
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_empty_chunk_concepts(self, mock_leiden, cg, mock_svc):
+        _cc, side = self._chunk_concepts({"chunk_source": [], "chunk_index": [], "concept": []})
+        mock_svc.store.open_table.side_effect = side
         cg.rebuild_clusters()
-
-    @staticmethod
-    def _tables(edges, chunk_concepts):
-        """A name->mock open_table side effect for the edges and chunk_concepts tables."""
-        import pyarrow as pa
-
-        edges_tbl, cc_tbl = MagicMock(), MagicMock()
-        edges_tbl.to_arrow.return_value = pa.table(edges)
-        cc_tbl.to_arrow.return_value = pa.table(chunk_concepts)
-        by_name = {CONCEPT_EDGES_TABLE: edges_tbl, CHUNK_CONCEPTS_TABLE: cc_tbl}
-        return edges_tbl, cc_tbl, lambda name: by_name.get(name, MagicMock())
+        mock_leiden.assert_not_called()
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_recomputes_corpus_pmi(self, mock_leiden, cg, mock_svc):
-        """Leiden runs on corpus PMI recomputed from raw co-occurrence counts and the
-        corpus chunk_concepts stats, not the stored per-file counts."""
-        # ml and python each appear in 2 of 4 chunks and co-occur in 2:
+        """Leiden runs on corpus PMI computed from the chunk_concepts map (not the
+        edge table's weights, whose meaning can drift across versions)."""
+        # python & ml each appear in 2 of 4 chunks, co-occurring in 2:
         # PPMI = log2(0.5 / (0.5 * 0.5)) = 1.0.
-        _e, _c, side = self._tables(
-            {"source": ["ml"], "target": ["python"], "weight": [2.0]},
+        _cc, side = self._chunk_concepts(
             {
                 "chunk_source": ["d.md"] * 6,
                 "chunk_index": [0, 0, 1, 1, 2, 3],
                 "concept": ["python", "ml", "python", "ml", "rust", "rust"],
-            },
+            }
         )
         mock_svc.store.open_table.side_effect = side
         mock_leiden.return_value = ({"python": 0, "ml": 0}, {"python": 1, "ml": 1})
@@ -764,84 +755,48 @@ class TestRebuildClusters:
         assert {r["concept"] for r in node_records} == {"python", "ml"}
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
-    def test_rebuild_aggregates_duplicate_edges(self, mock_leiden, cg, mock_svc):
-        """Per-file ingest appends duplicate edge rows; rebuild sums their counts
-        into one corpus co-occurrence before computing PMI."""
-        # python-ml co-occur in 3 chunks (rows 2.0 + 1.0), each concept in 3 of 6
-        # chunks: PPMI = log2(0.5 / (0.5 * 0.5)) = 1.0.
-        _e, _c, side = self._tables(
+    def test_rebuild_counts_cooccurrence_per_distinct_chunk(self, mock_leiden, cg, mock_svc):
+        """A pair counts once per distinct chunk it shares; a duplicate concept row
+        within the same chunk does not inflate the co-occurrence."""
+        # chunk 0 has a duplicate 'ml' row; python+ml still co-occur in 2 chunks.
+        _cc, side = self._chunk_concepts(
             {
-                "source": ["ml", "ml"],
-                "target": ["python", "python"],
-                "weight": [2.0, 1.0],
-            },
-            {
-                "chunk_source": ["d.md"] * 9,
-                "chunk_index": [0, 0, 1, 1, 2, 2, 3, 4, 5],
-                "concept": [
-                    "python",
-                    "ml",
-                    "python",
-                    "ml",
-                    "python",
-                    "ml",
-                    "go",
-                    "go",
-                    "go",
-                ],
-            },
+                "chunk_source": ["d.md"] * 7,
+                "chunk_index": [0, 0, 0, 1, 1, 2, 3],
+                "concept": ["python", "ml", "ml", "python", "ml", "x", "x"],
+            }
         )
         mock_svc.store.open_table.side_effect = side
-        mock_leiden.return_value = ({"python": 0}, {"python": 1})
+        mock_leiden.return_value = ({"python": 0, "ml": 0}, {"python": 1, "ml": 1})
 
         cg.rebuild_clusters()
-        assert mock_leiden.call_args.args[0] == [
-            {"source": "ml", "target": "python", "weight": 1.0}
-        ]
+        # python & ml in 2 of 4 chunks, co-occur in 2 -> PPMI 1.0 (not 3 from the dup).
+        mock_leiden.assert_called_once_with([{"source": "ml", "target": "python", "weight": 1.0}])
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
-    def test_rebuild_skips_when_chunk_concepts_missing(self, mock_leiden, cg, mock_svc):
-        """With edges but no chunk_concepts table there are no corpus stats to
-        compute PMI from, so clustering is skipped rather than dividing by zero."""
-        import pyarrow as pa
-
-        edges_tbl = MagicMock()
-        edges_tbl.to_arrow.return_value = pa.table(
-            {"source": ["a"], "target": ["b"], "weight": [1.0]}
+    def test_rebuild_skips_when_no_cooccurrence(self, mock_leiden, cg, mock_svc):
+        """Chunks that each carry a single concept produce no pairs, so there is
+        nothing to cluster."""
+        _cc, side = self._chunk_concepts(
+            {"chunk_source": ["d.md", "d.md"], "chunk_index": [0, 1], "concept": ["a", "b"]}
         )
-        mock_svc.store.open_table.side_effect = lambda name: (
-            edges_tbl if name == CONCEPT_EDGES_TABLE else None
-        )
+        mock_svc.store.open_table.side_effect = side
         cg.rebuild_clusters()
         mock_leiden.assert_not_called()
         mock_svc.store.clear_and_add.assert_not_called()
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
-    def test_rebuild_skips_when_pmi_yields_no_edges(self, mock_leiden, cg, mock_svc):
-        """An edge whose endpoints never appear in chunk_concepts has zero
-        probability, so PMI drops it and there is nothing to cluster."""
-        _e, _c, side = self._tables(
-            {"source": ["x"], "target": ["y"], "weight": [1.0]},
-            {"chunk_source": ["d.md"], "chunk_index": [0], "concept": ["z"]},
-        )
-        mock_svc.store.open_table.side_effect = side
-        cg.rebuild_clusters()
-        mock_leiden.assert_not_called()
-
-    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_compacts_concept_tables(self, mock_leiden, cg, mock_svc):
-        """rebuild_clusters ends with optimize() on every concept table."""
-        edges_tbl, cc_tbl, side = self._tables(
-            {"source": ["a"], "target": ["b"], "weight": [1.0]},
-            {"chunk_source": ["d.md", "d.md"], "chunk_index": [0, 0], "concept": ["a", "b"]},
+        """rebuild_clusters ends with optimize() on the concept tables."""
+        cc_tbl, side = self._chunk_concepts(
+            {"chunk_source": ["d.md", "d.md"], "chunk_index": [0, 0], "concept": ["a", "b"]}
         )
         mock_svc.store.open_table.side_effect = side
         mock_leiden.return_value = ({"a": 0}, {"a": 1})
 
         cg.rebuild_clusters()
-        # compact_tables opens each concept table by name; edges and chunk_concepts
-        # resolve to their mocks, the nodes name to a fresh mock -> optimize once each.
-        assert edges_tbl.optimize.call_count == 1
+        # compact_tables opens each concept table by name; chunk_concepts resolves to
+        # its mock (the others to fresh mocks) -> optimize fires once on it.
         assert cc_tbl.optimize.call_count == 1
 
     def test_compact_tables_survives_optimize_failure(self, cg, mock_svc):
