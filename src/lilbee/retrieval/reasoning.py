@@ -231,9 +231,15 @@ def _text_only(stream: Iterator[Any]) -> Iterator[str]:
     frame both ride the same iterator; the RAG / reasoning paths only consume
     text, so any non-str frame is dropped here rather than crashing the chat.
     """
-    for item in stream:
-        if isinstance(item, str):
-            yield item
+    try:
+        for item in stream:
+            if isinstance(item, str):
+                yield item
+    finally:
+        # Forward close to the source: when a consumer (filter_reasoning on
+        # cap-fire) closes this generator, a plain for-loop would not propagate
+        # GeneratorExit to *stream*, leaking its HTTP connection / in_flight slot.
+        _close_iterator(stream)
 
 
 def cap_events_as_stream_tokens(

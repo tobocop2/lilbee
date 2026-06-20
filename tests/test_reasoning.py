@@ -349,6 +349,38 @@ class TestStreamChatWithCap:
         assert "final " in response and "answer." in response
         assert provider.chat.call_count == 2
 
+    def test_cap_fire_closes_the_first_stream_through_text_only(self):
+        # bb-ziks.17: on cap-fire the first stream is closed via _text_only's
+        # forwarded close, or its HTTP connection / in_flight slot leaks until GC.
+        class ClosableStream:
+            def __init__(self, tokens) -> None:
+                self._tokens = iter(tokens)
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self._tokens)
+
+            def close(self) -> None:
+                self.closed = True
+
+        first = ClosableStream(["<think>" + ("x " * 400) + "</think>not reached"])
+        provider = MagicMock()
+        provider.chat.side_effect = [first, iter(["answer"])]
+        list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "q"}],
+                options=None,
+                model="test-model",
+                show_reasoning=True,
+                cap_chars=512,
+            )
+        )
+        assert first.closed  # the capped first stream was closed, not leaked
+
     def test_continuation_call_appends_user_nudge(self):
         long_think = "<think>" + ("x " * 400) + "</think>"
         provider = self._make_provider([long_think], ["done"])

@@ -1196,6 +1196,26 @@ def test_chat_stream_items_recovers_bare_json_tool_call() -> None:
     assert json.loads(deltas[0].arguments_delta or "") == {"query": "cats"}
 
 
+def test_recover_bare_json_stream_forwards_close_to_source() -> None:
+    # bb-ziks.17: closing the wrapper must close the source generator, or the
+    # underlying HTTP stream and its in_flight slot leak until GC.
+    from lilbee.providers.fleet.client import _recover_bare_json_stream
+
+    source_closed = {"value": False}
+
+    def source():
+        try:
+            yield "hello "
+            yield "world"
+        finally:
+            source_closed["value"] = True
+
+    wrapped = _recover_bare_json_stream(source())
+    assert next(wrapped) == "hello "  # plain text streams straight through
+    wrapped.close()
+    assert source_closed["value"]
+
+
 def test_chat_stream_items_streams_normal_text_incrementally() -> None:
     """Plain text is not buffered to the end; tokens arrive one frame at a time."""
     body = _content_sse("He") + _content_sse("llo") + _content_sse(" there") + "data: [DONE]\n\n"
