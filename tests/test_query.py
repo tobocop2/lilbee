@@ -4,7 +4,7 @@ import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import ChunkType, SearchChunk
 from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.retrieval.query import (
     Searcher,
@@ -1193,7 +1193,7 @@ class TestSearchStructured:
         mock_svc.store.bm25_probe.return_value = [_make_result()]
         results = get_services().searcher._search_structured("term", "test query", 5)
         assert len(results) == 1
-        mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5)
+        mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5, chunk_type=None)
 
     def test_vec_mode(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1208,6 +1208,23 @@ class TestSearchStructured:
 
     def test_unknown_mode_returns_empty(self, mock_svc):
         assert get_services().searcher._search_structured("unknown", "test", 5) == []
+
+    def test_term_mode_forwards_chunk_type(self, mock_svc):
+        """A ``term:`` query under an explicit scope must keep the scope filter."""
+        mock_svc.store.bm25_probe.return_value = [_make_result()]
+        get_services().searcher._search_structured("term", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.bm25_probe.call_args[1]["chunk_type"] == ChunkType.WIKI
+
+    def test_vec_mode_forwards_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("vec", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
+
+    def test_hyde_mode_forwards_chunk_type(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("doc")
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("hyde", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
 
 
 class TestSearchContextIntegration:
@@ -1321,6 +1338,23 @@ class TestConceptBoosting:
         finally:
             cfg.concept_graph = old
             cfg.query_expansion_count = 3
+
+    def test_boost_resorts_by_boosted_score(self, mock_svc):
+        """Boost mutates scores in place; the list must be re-sorted so callers that
+        consume search() order directly (CLI search, MCP lilbee_search) see the
+        boost change the ranking, not just the scores."""
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        weak = _make_result(source="weak.md", distance=0.4)
+        strong = _make_result(source="strong.md", distance=0.1)
+        mock_svc.concepts.boost_results.return_value = [weak, strong]
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            out = get_services().searcher._apply_concept_boost([weak, strong], "python question")
+            assert [r.source for r in out] == ["strong.md", "weak.md"]
+        finally:
+            cfg.concept_graph = old
 
     def test_boost_skipped_when_disabled(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(distance=0.5)]

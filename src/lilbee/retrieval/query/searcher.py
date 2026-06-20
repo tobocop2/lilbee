@@ -232,12 +232,19 @@ class Searcher:
             query_concepts = self._concepts.extract_concepts(question)
             if not query_concepts:
                 return results
-            return self._concepts.boost_results(results, query_concepts)
+            boosted = self._concepts.boost_results(results, query_concepts)
+            # boost_results mutates relevance_score/distance but preserves input
+            # order; re-sort so the boost actually re-ranks for callers that consume
+            # search() order directly (CLI search, MCP lilbee_search).
+            boosted.sort(key=_relevance_weight, reverse=True)
+            return boosted
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
             return results
 
-    def _hyde_search(self, question: str, top_k: int) -> list[SearchChunk]:
+    def _hyde_search(
+        self, question: str, top_k: int, chunk_type: ChunkType | None = None
+    ) -> list[SearchChunk]:
         """Hypothetical Document Embedding search.
         Gao et al. 2022, "Precise Zero-Shot Dense Retrieval without
         Relevance Labels" -- generates a hypothetical answer passage,
@@ -253,7 +260,7 @@ class Searcher:
             if not text:
                 return []
             hyde_vec = self._embedder.embed_query(text)
-            return self._store.search(hyde_vec, top_k=top_k, query_text=None)
+            return self._store.search(hyde_vec, top_k=top_k, query_text=None, chunk_type=chunk_type)
         except Exception:
             log.debug("HyDE search failed", exc_info=True)
             return []
@@ -286,12 +293,14 @@ class Searcher:
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
         if mode == "term":
-            return self._store.bm25_probe(query, top_k=top_k)
+            return self._store.bm25_probe(query, top_k=top_k, chunk_type=chunk_type)
         if mode == "vec":
             query_vec = self._embedder.embed_query(query)
-            return self._store.search(query_vec, top_k=top_k, query_text=None)
+            return self._store.search(
+                query_vec, top_k=top_k, query_text=None, chunk_type=chunk_type
+            )
         if mode == "hyde":
-            return self._hyde_search(query, top_k)
+            return self._hyde_search(query, top_k, chunk_type=chunk_type)
         if mode in (ChunkType.WIKI, ChunkType.RAW):
             # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
             effective = chunk_type if chunk_type is not None else ChunkType(mode)
