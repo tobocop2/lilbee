@@ -69,6 +69,29 @@ def test_apply_cuda_runtime_env_updates_os_environ(monkeypatch: pytest.MonkeyPat
     assert cuda_runtime.os.environ["LD_LIBRARY_PATH"] == str(wheel)
 
 
+def test_apply_cuda_runtime_env_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # bb-ziks.15: plan_all_launches re-applies on every reload pass; the wheel
+    # dirs must not accumulate duplicate copies in LD_LIBRARY_PATH.
+    _force_linux(monkeypatch)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    wheels = [Path("/wheel/a"), Path("/wheel/b")]
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: wheels)
+    apply_cuda_runtime_env()
+    apply_cuda_runtime_env()
+    apply_cuda_runtime_env()
+    expected = cuda_runtime.os.pathsep.join(str(w) for w in wheels)
+    assert cuda_runtime.os.environ["LD_LIBRARY_PATH"] == expected
+
+
+def test_cuda_runtime_env_keeps_unrelated_existing_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    _force_linux(monkeypatch)
+    wheel = Path("/wheel/lib")
+    monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [wheel])
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/lib")
+    result = cuda_runtime.cuda_runtime_env()["LD_LIBRARY_PATH"]
+    assert result == cuda_runtime.os.pathsep.join([str(wheel), "/usr/local/lib"])
+
+
 def test_apply_cuda_runtime_env_noop_when_no_wheels(monkeypatch: pytest.MonkeyPatch) -> None:
     _force_linux(monkeypatch)
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
