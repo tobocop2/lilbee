@@ -564,6 +564,8 @@ class TestHttpDaemonGate:
         assert cfg.llm_provider == before
 
     def test_non_provider_reset_allowed_on_http_daemon(self, isolated_env):
+        from lilbee.core.config import Config
+
         cfg.data_root = isolated_env
         cfg.top_k = 99
         set_http_mounted(True)
@@ -572,6 +574,7 @@ class TestHttpDaemonGate:
         finally:
             set_http_mounted(False)
         assert result["command"] == "settings_reset"
+        assert cfg.top_k == Config.model_fields["top_k"].default  # actually reset
 
 
 class TestAdd:

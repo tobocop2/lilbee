@@ -61,15 +61,16 @@ class ConceptGraph:
 
     def _ensure_nlp(self) -> Any | None:
         """Lazy-load and cache the spaCy model. Returns None if unavailable."""
-        if self._nlp_unavailable:
-            return None
-        if self._nlp is None:
-            try:
-                self._nlp = _ensure_spacy_model()
-            except ImportError:
-                log.warning("Concept graph disabled: spaCy model unavailable")
-                self._nlp_unavailable = True
-                return None
+        if self._nlp is None and not self._nlp_unavailable:
+            # Double-checked under _nlp_lock so two concurrent first-callers don't
+            # each load en_core_web_sm (the loser would just be discarded).
+            with self._nlp_lock:
+                if self._nlp is None and not self._nlp_unavailable:
+                    try:
+                        self._nlp = _ensure_spacy_model()
+                    except ImportError:
+                        log.warning("Concept graph disabled: spaCy model unavailable")
+                        self._nlp_unavailable = True
         return self._nlp
 
     def extract_concepts(self, text: str, max_concepts: int | None = None) -> list[str]:

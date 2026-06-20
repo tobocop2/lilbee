@@ -211,9 +211,8 @@ def reset_services() -> None:
 
     Swap the module reference to ``None`` *before* tearing the old instances
     down, so a new caller never observes a half-closed container. On the shared
-    HTTP daemon every entry point that would call this mid-flight is refused: the
-    init/reset MCP tools, and a provider switch via MCP settings_set or the REST
-    config handler. Outside the daemon (CLI, TUI, stdio) it runs single-client.
+    HTTP daemon every entry point that would call this mid-flight is refused, so
+    it only ever runs single-client (CLI, TUI, stdio MCP).
     """
     global _svc
     old = _svc
