@@ -302,5 +302,7 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.shield(proc.wait())
+        # SIGKILL is uncatchable so the reap should be near-instant; cap it anyway
+        # so a wedged reap can't hang the cleanup path indefinitely.
+        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=_TERMINATE_TIMEOUT_S)

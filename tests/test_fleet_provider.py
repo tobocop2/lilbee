@@ -159,21 +159,43 @@ def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
 
 
-def test_adopt_swap_closes_previous_clients(monkeypatch) -> None:
-    # bb-ziks.14: re-adopting over an existing pool (a reload) must close the old
-    # clients' httpx pools, or every reload leaks one pool per replica.
+def test_adopt_swap_schedules_old_client_close(monkeypatch) -> None:
+    # bb-ziks.14: re-adopting over an existing pool (a reload) hands the old
+    # clients to the idle-drain closer, or every reload leaks one pool per replica.
     launch = _fake_launch(WorkerRole.EMBED)
     swap = _install_engine(monkeypatch, launches=[launch])
     p = FleetProvider()
     old = [_fake_client(), _fake_client()]
     p._clients = {WorkerRole.EMBED: old}
+    captured: list = []
+    monkeypatch.setattr(p, "_close_clients_when_idle", lambda clients: captured.extend(clients))
 
     with p._lock:
         p._adopt_swap(swap, [launch])
 
-    for client in old:
-        client.close.assert_called_once_with()
+    assert captured == old  # exactly the previous clients are scheduled for close
     assert p._clients[WorkerRole.EMBED][0] not in old  # fresh client adopted
+
+
+def test_close_clients_when_idle_closes_after_drain() -> None:
+    # bb-ziks.14 (review round 2): an old client mid-request must NOT be closed
+    # out from under; the closer waits for in_flight to drain first.
+    p = FleetProvider()
+    busy = _fake_client(in_flight=1)
+    thread = p._close_clients_when_idle([busy])
+    assert thread is not None
+    thread.join(timeout=0.5)
+    assert thread.is_alive()  # still waiting: in_flight > 0, not closed yet
+    busy.close.assert_not_called()
+
+    busy.in_flight = 0  # request finished
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    busy.close.assert_called_once_with()  # closed only after draining
+
+
+def test_close_clients_when_idle_noop_on_empty() -> None:
+    assert FleetProvider()._close_clients_when_idle([]) is None
 
 
 def test_adopt_swap_threads_rerank_mode(monkeypatch) -> None:

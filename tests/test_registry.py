@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from unittest import mock
 
@@ -23,6 +24,7 @@ from lilbee.modelhub.registry import (
 _REPO = "Qwen/Qwen3-0.6B-GGUF"
 _FILENAME = "Qwen3-0.6B-Q4_K_M.gguf"
 _REF = f"{_REPO}/{_FILENAME}"
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def _make_manifest(
@@ -449,6 +451,45 @@ class TestModelRegistryResolve:
         registry = ModelRegistry(tmp_path)
         with pytest.raises(KeyError, match="not installed"):
             registry.shard_paths(_REF)
+
+    def _seed_split(self, tmp_path: Path, repo: str) -> str:
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        return f"{repo}/m-mxfp4-00001-of-00003.gguf"
+
+    def test_cache_recovered_split_records_shard_accounting(self, tmp_path: Path) -> None:
+        # bb-ziks.49 (review round 2): a cache-only split GGUF (no manifest yet)
+        # must recover its total size and every shard digest, not just the first.
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        ref = self._seed_split(tmp_path, repo)
+        registry.resolve(ref)  # triggers _reregister_from_cache
+        manifest = registry._read_manifest(repo, "m-mxfp4-00001-of-00003.gguf")
+        assert manifest is not None
+        assert manifest.total_size_bytes == sum(len(f"shard-{n}".encode()) for n in (1, 2, 3))
+        assert len(manifest.shard_blobs) == 2  # shards 2 and 3
+        assert all(_SHA256_HEX_RE.fullmatch(d) for d in manifest.shard_blobs)
+
+    def test_recover_legacy_shard_blobs_finds_extra_shards(self, tmp_path: Path) -> None:
+        # bb-ziks.49 (review round 2): a pre-accounting manifest (empty shard_blobs)
+        # still frees every shard because removal recovers them from the cache.
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        ref = self._seed_split(tmp_path, repo)
+        registry.resolve(ref)
+        blobs = registry._recover_legacy_shard_blobs(ref)
+        assert len(blobs) == 2  # shards 2 and 3 (primary excluded)
+        assert all(_SHA256_HEX_RE.fullmatch(d) for d in blobs)
+
+    def test_recover_legacy_shard_blobs_empty_for_single_file(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path)
+        _seed_hf_cache(tmp_path)
+        assert registry._recover_legacy_shard_blobs(_REF) == []
 
     def test_split_gguf_shards_present_but_snapshot_missing_raises_not_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1132,6 +1173,8 @@ class TestShardAccounting:
         total, shard_blobs = _shard_accounting(tmp_path / names[0])
         assert total == 30  # all three shards summed
         assert len(shard_blobs) == 2  # shards 2 and 3 (primary tracked separately)
+        # Copy/non-symlink mode: digests are content hashes, never snapshot names.
+        assert all(_SHA256_HEX_RE.fullmatch(d) for d in shard_blobs)
 
     def test_multi_shard_skips_missing_shard(self, tmp_path: Path) -> None:
         from lilbee.modelhub.registry import _shard_accounting

@@ -65,6 +65,11 @@ _PREWARM_CHUNK_BYTES = 8 * 1024 * 1024
 # generation, so the weights-scaled cold-load budget plus the margin raises this floor.
 _REQUEST_TIMEOUT_FLOOR_S = 900.0
 _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
+# A reload's old clients are closed only after their in-flight requests drain, so
+# a reader still mid-call on an old client snapshot is never closed out from
+# under. The deadline is a backstop for a client that never drains.
+_CLIENT_DRAIN_TIMEOUT_S = 600.0
+_CLIENT_DRAIN_POLL_S = 0.1
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
@@ -409,9 +414,10 @@ class FleetProvider:
         keyed by its replica model id; launches carry the chat slots/ctx so the
         capacity and served context come from the launch, not a probe.
         """
-        # Close the previous clients (a reload re-adopts over an existing pool);
-        # the reloaded swap already stopped their upstreams. Else each reload
-        # leaks an httpx pool per replica per role.
+        # Close the previous clients (a reload re-adopts over an existing pool) once
+        # their in-flight requests drain, off-thread. Closing immediately would
+        # error a reader still mid-call on an old client snapshot; not closing at
+        # all leaks an httpx pool per replica per role on every reload.
         old_clients = [client for pool in self._clients.values() for client in pool]
         self._swap = swap
         endpoint = swap.endpoint()
@@ -432,8 +438,31 @@ class FleetProvider:
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
-        for client in old_clients:
-            client.close()
+        self._close_clients_when_idle(old_clients)
+
+    def _close_clients_when_idle(
+        self, clients: list[LlamaServerClient]
+    ) -> threading.Thread | None:
+        """Close *clients* once their in-flight requests drain, off the caller's thread.
+
+        A reload swaps the pool while reader threads may still hold (and be mid-call
+        on) an old client snapshot, so each client is closed only after its
+        ``in_flight`` reaches zero (bounded by ``_CLIENT_DRAIN_TIMEOUT_S``).
+        Returns the drain thread (or ``None`` when there is nothing to close).
+        """
+        if not clients:
+            return None
+
+        def _drain() -> None:
+            for client in clients:
+                deadline = time.monotonic() + _CLIENT_DRAIN_TIMEOUT_S
+                while client.in_flight > 0 and time.monotonic() < deadline:
+                    time.sleep(_CLIENT_DRAIN_POLL_S)
+                client.close()
+
+        thread = threading.Thread(target=_drain, name="fleet-client-drain", daemon=True)
+        thread.start()
+        return thread
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         """The client pool for *role*, or a user-facing error when it has no server.

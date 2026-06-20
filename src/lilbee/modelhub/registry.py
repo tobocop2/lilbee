@@ -8,6 +8,7 @@ repo are two distinct installations. Manifests live at
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -249,8 +250,11 @@ class ModelRegistry:
             raise KeyError(f"Model {ref} not installed")
         if self._read_manifest(hf_repo, shards[0]) is None:
             # Same cache recovery as the single-file path; resolve the symlink so
-            # the manifest records the content-hashed blob, not the link.
-            self._reregister_from_cache(hf_repo, shards[0], first_shard.resolve())
+            # the manifest records the content-hashed blob, not the link, and pass
+            # the snapshot path so the shard accounting is recovered too.
+            self._reregister_from_cache(
+                hf_repo, shards[0], first_shard.resolve(), snapshot_path=first_shard
+            )
         return first_shard
 
     def _resolve_repo_only(self, hf_repo: str) -> Path:
@@ -360,8 +364,19 @@ class ModelRegistry:
         )
         return [path for path in candidates if path.exists()]
 
-    def _reregister_from_cache(self, hf_repo: str, gguf_filename: str, blob_path: Path) -> None:
-        """Best-effort manifest write for a cache-recovered model so listings see it."""
+    def _reregister_from_cache(
+        self,
+        hf_repo: str,
+        gguf_filename: str,
+        blob_path: Path,
+        snapshot_path: Path | None = None,
+    ) -> None:
+        """Best-effort manifest write for a cache-recovered model so listings see it.
+
+        *snapshot_path* is the first shard's snapshot path (siblings co-located);
+        when given, the split-shard accounting is recovered too, so a cache-only
+        split GGUF still frees every shard and reports its full size.
+        """
         ref = format_native_gguf_ref(hf_repo, gguf_filename)
         try:
             entry = find_catalog_entry(ref)
@@ -369,6 +384,9 @@ class ModelRegistry:
                 task = entry.task
             else:
                 task = ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
+            total_size, shard_blobs = (
+                _shard_accounting(snapshot_path) if snapshot_path is not None else (None, [])
+            )
             self._write_manifest(
                 ModelManifest(
                     hf_repo=hf_repo,
@@ -377,6 +395,8 @@ class ModelRegistry:
                     task=task,
                     downloaded_at=datetime.now(UTC).isoformat(),
                     blob=blob_path.name,  # the blob's filename is its sha in the HF cache
+                    total_size_bytes=total_size,
+                    shard_blobs=shard_blobs,
                 )
             )
             log.info("Recovered manifest for %s from the model cache", ref)
@@ -440,6 +460,9 @@ class ModelRegistry:
         manifest = self._read_manifest(hf_repo, gguf_filename)
         if manifest is None:
             return False
+        # Manifests written before shard accounting existed have no shard_blobs, so
+        # recover them from the cache *before* unlinking (resolve needs the manifest).
+        shard_blobs = manifest.shard_blobs or self._recover_legacy_shard_blobs(ref)
         manifest_path = self._manifest_path(hf_repo, gguf_filename)
         manifest_path.unlink()
         repo_dir = manifest_path.parent
@@ -448,11 +471,23 @@ class ModelRegistry:
         # Free the primary blob and every extra shard blob; a split GGUF has more
         # than one, and leaving the others orphans them when a sibling quant keeps
         # the repo cache dir alive.
-        for digest in [manifest.blob, *manifest.shard_blobs]:
+        for digest in [manifest.blob, *shard_blobs]:
             if digest is not None:
                 self._gc_blob(manifest.hf_repo, digest)
         log.info("Removed model %s", ref)
         return True
+
+    def _recover_legacy_shard_blobs(self, ref: str) -> list[str]:
+        """Extra shard blob digests for a pre-accounting split GGUF, best-effort.
+
+        Older manifests recorded only the first shard, so removing them would
+        orphan the rest. Derive the sibling shards from the cache; empty on any
+        failure or for a single-file model, so removal never breaks.
+        """
+        with contextlib.suppress(Exception):
+            shards = self.shard_paths(ref)
+            return [_blob_digest(path) for path in shards[1:]]
+        return []
 
     def _gc_blob(self, hf_repo: str, digest: str) -> None:
         """Drop blob bytes and HuggingFace cache cruft now that *digest*
@@ -591,9 +626,10 @@ def _shard_accounting(first_shard_path: Path) -> tuple[int | None, list[str]]:
     """Total on-disk size and non-primary shard blob digests for a split GGUF.
 
     ``(None, [])`` for a single-file model. For a split GGUF, the sibling shards
-    live next to the first shard; each snapshot file is a symlink whose target
-    name is its HF blob digest, so the shards are summed and the digests of
-    shards 2..N collected for removal-time garbage collection.
+    live next to the first shard; ``_blob_digest`` yields each shard's blob digest
+    (the HF cache blob name, or a content hash in copy/non-symlink mode), so the
+    shards are summed and the digests of shards 2..N collected for removal-time
+    garbage collection.
     """
     shard_names = split_shard_filenames(first_shard_path.name)
     if len(shard_names) <= 1:
@@ -606,7 +642,7 @@ def _shard_accounting(first_shard_path: Path) -> tuple[int | None, list[str]]:
             continue
         total += shard_path.stat().st_size
         if index > 0:  # the primary blob is tracked separately as manifest.blob
-            shard_blobs.append(shard_path.resolve().name)
+            shard_blobs.append(_blob_digest(shard_path))
     return total, shard_blobs
 
 
