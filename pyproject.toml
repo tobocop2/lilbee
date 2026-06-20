@@ -53,14 +53,14 @@ dependencies = [
     "gguf>=0.18",
     "huggingface_hub>=1.11.0",
     "psutil>=5.9",
-    "pydantic-settings>=2.13.1",
+    "pydantic-settings>=2.14.2",
     "numpy",
 ]
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.84.0"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
-crawler = ["crawl4ai>=0.8.9"]
+crawler = ["crawl4ai>=0.9.0"]
 release = ["lilbee[crawler,litellm,graph]"]
 
 [project.urls]
