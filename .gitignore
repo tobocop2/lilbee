@@ -23,6 +23,7 @@ htmlcov/
 !tools/qa/**/*.html
 # Site files served by GitHub Pages must be tracked.
 !site/robots.txt
+!site/a6304ff876c16bda1e4371eb04f45c7d.txt
 !demos/sample-corpus/**
 CLAUDE.md
 .worktrees/
