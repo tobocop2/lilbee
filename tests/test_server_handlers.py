@@ -2628,6 +2628,16 @@ class TestUpdateConfig:
         with pytest.raises(ValueError, match="chunk_overlap"):
             await handlers.update_config({"chunk_overlap": 1024})
 
+    def test_as_int_setting_coerces_strings_excludes_bool(self):
+        """The chunk guards coerce string numerics but never treat a bool as a size."""
+        from lilbee.app.settings import _as_int_setting
+
+        assert _as_int_setting("1000") == 1000
+        assert _as_int_setting(256) == 256
+        assert _as_int_setting("not_numeric") is None
+        assert _as_int_setting(True) is None
+        assert _as_int_setting(None) is None
+
     async def test_llm_api_key_write_only(self, tmp_path):
         """llm_api_key can be written via PATCH but is excluded from GET."""
         result = await handlers.update_config({"llm_api_key": "sk-test123"})
