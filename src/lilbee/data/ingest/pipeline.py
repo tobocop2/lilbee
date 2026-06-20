@@ -75,23 +75,19 @@ def _max_concurrent() -> int:
     """Files allowed in their compute phase at once.
 
     ``cpu_quota()`` (cpu_count // 2) keeps worker storms from starving the TUI's asyncio
-    main thread. But with a data-parallel fleet (N vision/embed servers, one per GPU), a
-    few-core box would cap file concurrency below the GPU count and starve the extra
-    cards, so the bottleneck role's total slots set the floor: vision OCR (replicas x
-    per-server pages) when a vision model is configured, else the embed replicas.
+    main thread, and is the cap for text/code ingest. Vision OCR is different: every file
+    in compute holds a continuous-batching slot on a vision server, which returns 429 when
+    oversubscribed, so an OCR run is bounded by the vision slot capacity (replicas x
+    per-server pages) -- a single vision server included. Otherwise a many-core box fans
+    ``cpu_quota()`` requests (dozens) at one server's few slots and 429-drops files, while a
+    few-core box with several GPUs would starve the extra cards.
     """
     from lilbee.core.config import cfg
 
-    # Only a multi-replica (multi-GPU) fleet scales above cpu_quota; with one replica per
-    # role the cpu_quota cap is untouched, so single-GPU/CPU hosts and the macOS TUI see
-    # exactly the previous behavior.
-    vision_slots = (
-        cfg.vision_replicas * cfg.vision_ocr_concurrency
-        if cfg.vision_model and cfg.vision_replicas > 1
-        else 0
-    )
+    if cfg.vision_model:
+        return max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
     embed_slots = cfg.embed_replicas if cfg.embed_replicas > 1 else 0
-    return max(cpu_quota(), vision_slots, embed_slots)
+    return max(cpu_quota(), embed_slots)
 
 
 async def _rebuild_concept_clusters() -> None:
