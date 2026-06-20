@@ -360,6 +360,22 @@ class TestRebuildEmbeddings:
         got = store.get_memories(owner_predicate=LOCAL_PREDICATE)[0]
         assert got.vector[3] == 1.0
 
+    def test_snapshot_and_embed_run_under_write_lock(self, store):
+        # bb-ziks.7: the read+embed must hold the lock, or a concurrent add_memory
+        # committing in the embed window is erased by the unconditional drop_table.
+        from lilbee.runtime.lock import _write_mutex
+
+        store.add_memory(_memory(store, text="x", axis=0))
+        dim = store._config.embedding_dim
+        locked_during: list[bool] = []
+
+        def embed(texts: list[str]) -> list[list[float]]:
+            locked_during.append(_write_mutex.locked())
+            return [_unit_vector(dim, 3) for _ in texts]
+
+        store.rebuild_memory_embeddings(embed)
+        assert locked_during == [True]  # embed ran while the write lock was held
+
 
 class TestEmbeddingCompat:
     def test_add_after_model_change_raises(self, store):

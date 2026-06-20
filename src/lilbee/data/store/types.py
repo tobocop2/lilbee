@@ -33,13 +33,26 @@ class ConceptRecords:
         )
 
 
+class SourceType(StrEnum):
+    """Values for the ``_sources.source_type`` column.
+
+    ``DOCUMENT`` mirrors a file under ``documents/`` and is managed by the
+    file-driven sync. ``IMPORTED`` is detached: it came from ``lilbee import``
+    and has no backing file, so sync must not treat it as a missing document.
+    """
+
+    DOCUMENT = "document"
+    IMPORTED = "imported"
+
+
 class ChunkWrite(NamedTuple):
     """One document's chunks plus its source-table update, for a batched write.
 
     ``Store.write_chunks_batch`` folds many of these into a single locked
     transaction so bulk ingest doesn't pay a write-lock acquisition per document.
     ``page_texts`` rows land in the same transaction, after the cleanup delete
-    and before the source row.
+    and before the source row. ``source_type`` lets the detached import path
+    reuse the same atomic write while still tagging its rows ``IMPORTED``.
     """
 
     source: str
@@ -48,6 +61,7 @@ class ChunkWrite(NamedTuple):
     needs_cleanup: bool
     stat: SourceStat | None = None
     page_texts: list[dict] | None = None
+    source_type: SourceType = SourceType.DOCUMENT
 
 
 class ChunkType(StrEnum):
@@ -59,18 +73,6 @@ class ChunkType(StrEnum):
 
     RAW = "raw"
     WIKI = "wiki"
-
-
-class SourceType(StrEnum):
-    """Values for the ``_sources.source_type`` column.
-
-    ``DOCUMENT`` mirrors a file under ``documents/`` and is managed by the
-    file-driven sync. ``IMPORTED`` is detached: it came from ``lilbee import``
-    and has no backing file, so sync must not treat it as a missing document.
-    """
-
-    DOCUMENT = "document"
-    IMPORTED = "imported"
 
 
 # ``schema_version`` is an integer for forward-compat. Bump only if we ever need to

@@ -277,6 +277,34 @@ class TestOrphanDetection:
         ]
         assert orphan_issues == []
 
+    def test_link_only_from_draft_does_not_exempt_orphan(self, tmp_path: Path):
+        # bb-ziks.78: a [[slug]] living only in a draft must not keep the live
+        # concept page off the orphan list (no published page links it).
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "drafts", "wip", "Mentions [[braking]] but unpublished.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_slugs = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert "wiki/concepts/braking.md" in orphan_slugs
+
+    def test_link_only_from_archive_does_not_exempt_orphan(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "archive", "old", "Mentions [[braking]].\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_slugs = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert "wiki/concepts/braking.md" in orphan_slugs
+
     def test_entity_page_with_incoming_link_is_not_orphan(self, tmp_path: Path):
         write_wiki_page(tmp_path, "entities", "henry-ford", "# Henry Ford\n\nText.\n")
         write_wiki_page(

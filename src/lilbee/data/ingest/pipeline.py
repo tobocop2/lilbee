@@ -696,7 +696,7 @@ async def _collect_results(
                 status = _classify_result(result, added, updated, failed, skipped, reasons)
                 if status is BatchStatus.INGESTED:
                     buffered_chunks = await _buffer_and_maybe_flush(
-                        result, buffer, buffered_chunks, added, updated, failed, flush_failed
+                        result, buffer, buffered_chunks, added, updated, failed, skipped, flush_failed
                     )
                 elif status is BatchStatus.SKIPPED and result.needs_cleanup:
                     # Zero-text result is never buffered; collect it for the
@@ -710,7 +710,9 @@ async def _collect_results(
         # The inner finally guarantees the sibling cancel even if the flush
         # itself raises (e.g. a cancellation landing on the to_thread await).
         try:
-            await asyncio.to_thread(_flush_writes, buffer, added, updated, failed, flush_failed)
+            await asyncio.to_thread(
+                _flush_writes, buffer, added, updated, failed, skipped, flush_failed
+            )
             await asyncio.to_thread(_purge_emptied_sources, to_purge)
         finally:
             still_pending = [t for t in in_flight if not t.done()]
@@ -727,6 +729,7 @@ async def _buffer_and_maybe_flush(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
+    skipped: dict[str, None],
     flush_failed: set[str] | None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
@@ -734,7 +737,9 @@ async def _buffer_and_maybe_flush(
     # Zero-chunk files count one unit so the buffer stays bounded.
     buffered_chunks += max(result.chunk_count, 1)
     if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
-        await asyncio.to_thread(_flush_writes, buffer, added, updated, failed, flush_failed)
+        await asyncio.to_thread(
+            _flush_writes, buffer, added, updated, failed, skipped, flush_failed
+        )
         buffered_chunks = 0
     return buffered_chunks
 
@@ -790,15 +795,21 @@ def _classify_result(
         if reasons is not None:
             reasons[result.name] = f"{type(result.error).__name__}: {result.error}"
         return BatchStatus.FAILED
-    if result.chunk_count == 0 and not result.page_texts:
-        # Nothing extracted: no source row, so the file is retried next sync; a
-        # zero-chunk file WITH page texts stays ingested so it stops replanning.
+    if result.chunk_count == 0:
+        # No searchable chunks: never report it as added/updated. With no page
+        # texts either, nothing is persisted and the file retries next sync. With
+        # page texts, it stays INGESTED so its pages persist (export/recon) and it
+        # stops replanning, but it is reported as skipped since search can't see it.
         added.pop(result.name, None)
         updated.pop(result.name, None)
         skipped[result.name] = None
         if reasons is not None:
-            reasons[result.name] = "no text extracted (0 chunks)"
-        return BatchStatus.SKIPPED
+            reasons[result.name] = (
+                "no text extracted (0 chunks)"
+                if not result.page_texts
+                else "stored page text only (0 searchable chunks)"
+            )
+        return BatchStatus.SKIPPED if not result.page_texts else BatchStatus.INGESTED
     return BatchStatus.INGESTED
 
 
@@ -880,6 +891,7 @@ def _flush_writes(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
+    skipped: dict[str, None],
     flush_failed: set[str] | None = None,
 ) -> None:
     """Flush the buffered documents to the store; track a write failure.
@@ -900,6 +912,9 @@ def _flush_writes(
             log.warning("Failed to write %s: %s", r.name, exc)
             added.pop(r.name, None)
             updated.pop(r.name, None)
+            # A page-text-only file was pre-marked skipped at classification; on a
+            # flush failure it belongs in failed only, never both.
+            skipped.pop(r.name, None)
             failed[r.name] = None
             if flush_failed is not None:
                 flush_failed.add(r.name)

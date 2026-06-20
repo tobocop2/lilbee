@@ -53,6 +53,62 @@ def _make_records(n=3, dim=None, chunk_type="raw"):
     ]
 
 
+class TestWriteLockDir:
+    def test_write_lock_keys_on_store_config_dir(self, store, test_config):
+        """A per-instance store locks its own lancedb_dir, not the global cfg dir."""
+        from lilbee.core.config import cfg as global_cfg
+
+        assert test_config.lancedb_dir != global_cfg.lancedb_dir
+        test_config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+        with store._write_lock(timeout=2):
+            assert (test_config.lancedb_dir / ".lock").exists()
+
+
+class TestClearAndAdd:
+    def test_replaces_rows_atomically(self, store):
+        import pyarrow as pa
+
+        schema = pa.schema([pa.field("concept", pa.utf8()), pa.field("n", pa.int64())])
+        store.clear_and_add("t_demo", schema, [{"concept": "a", "n": 1}], "concept IS NOT NULL")
+        store.clear_and_add("t_demo", schema, [{"concept": "b", "n": 2}], "concept IS NOT NULL")
+        rows = store.open_table("t_demo").search().to_list()
+        assert {r["concept"] for r in rows} == {"b"}  # old row replaced, not appended
+
+    def test_holds_lock_across_delete_and_add(self, store, monkeypatch):
+        import pyarrow as pa
+
+        from lilbee.runtime.lock import _write_mutex
+
+        schema = pa.schema([pa.field("concept", pa.utf8())])
+        store.clear_and_add("t_lock", schema, [{"concept": "seed"}], "concept IS NOT NULL")
+
+        locked_during: list[bool] = []
+        import lilbee.data.store.core as core_mod
+
+        real = core_mod._safe_delete_unlocked
+
+        def spy_delete(table, predicate):
+            locked_during.append(_write_mutex.locked())
+            return real(table, predicate)
+
+        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", spy_delete)
+        store.clear_and_add("t_lock", schema, [{"concept": "next"}], "concept IS NOT NULL")
+        assert locked_during == [True]  # delete ran under the write lock
+
+    def test_skips_add_when_delete_fails(self, store, monkeypatch):
+        import pyarrow as pa
+
+        import lilbee.data.store.core as core_mod
+
+        schema = pa.schema([pa.field("concept", pa.utf8())])
+        store.clear_and_add("t_fail", schema, [{"concept": "old"}], "concept IS NOT NULL")
+        # A failed delete must not add the new rows (would duplicate the stale ones).
+        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", lambda table, predicate: False)
+        store.clear_and_add("t_fail", schema, [{"concept": "new"}], "concept IS NOT NULL")
+        rows = store.open_table("t_fail").search().to_list()
+        assert {r["concept"] for r in rows} == {"old"}  # unchanged; new rows not added
+
+
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
         store.ensure_fts_index()

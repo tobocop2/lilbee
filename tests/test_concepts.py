@@ -718,14 +718,10 @@ class TestRebuildClusters:
         mock_svc.store.open_table.return_value = mock_table
         cg.rebuild_clusters()
 
-    @patch("lilbee.runtime.lock.write_lock")
-    @patch("lilbee.data.store.ensure_table")
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
-    def test_rebuild_with_edges(self, mock_leiden, mock_ensure, mock_lock, cg, mock_svc):
+    def test_rebuild_with_edges(self, mock_leiden, cg, mock_svc):
         import pyarrow as pa
 
-        mock_lock.return_value.__enter__ = MagicMock()
-        mock_lock.return_value.__exit__ = MagicMock(return_value=False)
         mock_table = MagicMock()
         edge_rows = [
             {"source": "python", "target": "ml", "weight": 2.0},
@@ -739,17 +735,17 @@ class TestRebuildClusters:
             }
         )
         mock_svc.store.open_table.return_value = mock_table
-        mock_svc.store.get_db.return_value = MagicMock()
         mock_leiden.return_value = (
             {"python": 0, "ml": 0, "deep learning": 1},
             {"python": 1, "ml": 2, "deep learning": 1},
         )
-        mock_nodes_table = MagicMock()
-        mock_ensure.return_value = mock_nodes_table
 
         cg.rebuild_clusters()
         mock_leiden.assert_called_once_with(edge_rows)
-        mock_nodes_table.add.assert_called_once()
+        # Nodes are replaced atomically (delete+add under one lock), not a bare add.
+        mock_svc.store.clear_and_add.assert_called_once()
+        node_records = mock_svc.store.clear_and_add.call_args.args[2]
+        assert {r["concept"] for r in node_records} == {"python", "ml", "deep learning"}
 
     @patch("lilbee.runtime.lock.write_lock")
     @patch("lilbee.data.store.ensure_table")

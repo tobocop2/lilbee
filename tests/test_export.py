@@ -183,3 +183,30 @@ class TestImportDataset:
         test_config.embedding_model = "ollama/other-model:v1"
         with pytest.raises(EmbeddingModelMismatchError):
             await import_dataset(store, [_page("doc.pdf", 1, "body")])
+
+    async def test_import_uses_single_atomic_batch_write(self, services, monkeypatch):
+        # bb-ziks.27: each source must be written via one locked write_chunks_batch
+        # (cleanup + chunks + page texts + source row), not four separate unlocked
+        # writes that could destroy the source if one fails mid-way.
+        store = services
+        batch_calls = 0
+        real_batch = store.write_chunks_batch
+
+        def counting_batch(items):
+            nonlocal batch_calls
+            batch_calls += 1
+            return real_batch(items)
+
+        legacy: list[str] = []
+        monkeypatch.setattr(store, "write_chunks_batch", counting_batch)
+        monkeypatch.setattr(store, "delete_by_source", lambda *a, **k: legacy.append("delete"))
+        monkeypatch.setattr(store, "add_chunks", lambda *a, **k: legacy.append("add_chunks"))
+        monkeypatch.setattr(store, "add_page_texts", lambda *a, **k: legacy.append("page_texts"))
+        monkeypatch.setattr(store, "upsert_source", lambda *a, **k: legacy.append("upsert"))
+
+        await import_dataset(store, [_page("doc.pdf", 1, "body")])
+
+        assert batch_calls == 1
+        assert legacy == []  # none of the old per-op unlocked writes were used
+        # The atomic write still landed the source as IMPORTED.
+        assert store.get_sources()[0]["source_type"] == SourceType.IMPORTED

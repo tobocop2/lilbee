@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from lilbee.data.ingest.extract import chunk_and_embed_pages
-from lilbee.data.store import PageTextRecord, SourceType
+from lilbee.data.store import ChunkWrite, PageTextRecord, SourceType
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
@@ -197,10 +197,21 @@ async def import_dataset(
         content_type = source_rows[0]["content_type"] or "text"
         page_texts = [(r["page"], r["text"]) for r in source_rows]
         chunks = await chunk_and_embed_pages(page_texts, name, content_type, on_progress)
-        store.delete_by_source(name)
-        store.add_chunks(cast(list[dict], chunks))
-        store.add_page_texts([dict(r) for r in source_rows])
-        store.upsert_source(name, "", len(chunks), source_type=SourceType.IMPORTED)
+        # One locked transaction (cleanup + chunks + page texts + source row) so a
+        # failure can't leave the source with its old rows deleted and no new ones;
+        # the embedding-dim check inside runs before the cleanup delete.
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    source=name,
+                    file_hash="",
+                    records=cast(list[dict], chunks),
+                    needs_cleanup=True,
+                    page_texts=[dict(r) for r in source_rows],
+                    source_type=SourceType.IMPORTED,
+                )
+            ]
+        )
         imported.append(name)
         total_pages += len(source_rows)
         total_chunks += len(chunks)
