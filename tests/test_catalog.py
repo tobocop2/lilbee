@@ -1010,6 +1010,53 @@ class TestSplitShardDownload:
         assert disable_during_retry == [False]  # xet was on for the retry
         assert hc.HF_HUB_DISABLE_XET is True  # flag restored afterwards
 
+    def test_xet_flip_holds_lock_during_download(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The global XET flip stays under _xet_flip_lock for the whole download.
+
+        Two overlapping xet downloads would otherwise nest their save/restore and
+        leave xet permanently toggled; the lock makes the flip window exclusive.
+        """
+        import huggingface_hub.constants as hc
+
+        from lilbee.catalog.download import DownloadConfig, _download_with_xet, _xet_flip_lock
+
+        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)
+        locked_during: list[bool] = []
+
+        def fake(**kwargs: Any) -> str:
+            locked_during.append(_xet_flip_lock.locked())
+            return str(tmp_path / "x.gguf")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
+        config = DownloadConfig(repo_id="r/r", filename="x.gguf", token=None)
+        _download_with_xet(config)
+
+        assert locked_during == [True]  # lock held across the flipped window
+        assert hc.HF_HUB_DISABLE_XET is True  # restored, lock released
+
+    def test_xet_flip_restores_and_releases_on_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed xet download still restores the flag and releases the lock."""
+        import huggingface_hub.constants as hc
+
+        from lilbee.catalog.download import DownloadConfig, _download_with_xet, _xet_flip_lock
+
+        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)
+
+        def fake(**kwargs: Any) -> str:
+            raise ValueError("boom")
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake)
+        config = DownloadConfig(repo_id="r/r", filename="x.gguf", token=None)
+        with pytest.raises(ValueError, match="boom"):
+            _download_with_xet(config)
+
+        assert hc.HF_HUB_DISABLE_XET is True  # restored even on failure
+        assert not _xet_flip_lock.locked()  # lock released
+
 
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
