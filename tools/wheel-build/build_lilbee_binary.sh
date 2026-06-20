@@ -42,6 +42,10 @@ for f in "$SITE_PKG"/*__mypyc*.so; do
     MYPYC_FLAGS+=("--include-data-files=$f=$(basename "$f")")
 done
 
+# Spawned via `python -m`, never statically imported, so Nuitka's import
+# following misses it; include it explicitly or the splash subprocess dies.
+SPLASH_FLAGS=(--include-module=lilbee.runtime._splash_runner)
+
 uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
@@ -83,5 +87,6 @@ uv run --no-sync python -m nuitka \
     --include-distribution-metadata=catalogue \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
+    "${SPLASH_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \
     src/lilbee/__main__.py
