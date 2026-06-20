@@ -409,6 +409,10 @@ class FleetProvider:
         keyed by its replica model id; launches carry the chat slots/ctx so the
         capacity and served context come from the launch, not a probe.
         """
+        # A reload re-adopts over an existing pool; close the previous clients'
+        # httpx pools or every reload leaks one pool per replica per role. The
+        # reloaded swap already stopped the old upstreams, so nothing is in flight.
+        old_clients = [client for pool in self._clients.values() for client in pool]
         self._swap = swap
         endpoint = swap.endpoint()
         # token_cap truncates oversize embed/rerank inputs to the per-slot context
@@ -428,6 +432,8 @@ class FleetProvider:
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
+        for client in old_clients:
+            client.close()
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         """The client pool for *role*, or a user-facing error when it has no server.

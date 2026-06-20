@@ -159,6 +159,23 @@ def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
 
 
+def test_adopt_swap_closes_previous_clients(monkeypatch) -> None:
+    # bb-ziks.14: re-adopting over an existing pool (a reload) must close the old
+    # clients' httpx pools, or every reload leaks one pool per replica.
+    launch = _fake_launch(WorkerRole.EMBED)
+    swap = _install_engine(monkeypatch, launches=[launch])
+    p = FleetProvider()
+    old = [_fake_client(), _fake_client()]
+    p._clients = {WorkerRole.EMBED: old}
+
+    with p._lock:
+        p._adopt_swap(swap, [launch])
+
+    for client in old:
+        client.close.assert_called_once_with()
+    assert p._clients[WorkerRole.EMBED][0] not in old  # fresh client adopted
+
+
 def test_adopt_swap_threads_rerank_mode(monkeypatch) -> None:
     launch = _fake_launch(WorkerRole.RERANK)
     launch.rerank_mode = RerankMode.LLM
