@@ -70,6 +70,11 @@ _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # under. The deadline is a backstop for a client that never drains.
 _CLIENT_DRAIN_TIMEOUT_S = 600.0
 _CLIENT_DRAIN_POLL_S = 0.1
+# Grace before draining: _require_clients hands out a client under the lock then
+# releases it before the request increments in_flight, so a reader that just
+# checked out an old client has in_flight==0 for that brief handoff. Waiting it
+# out lets the request enter its in_flight window before the drain inspects it.
+_CLIENT_DRAIN_GRACE_S = 0.5
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
@@ -454,6 +459,7 @@ class FleetProvider:
             return None
 
         def _drain() -> None:
+            time.sleep(_CLIENT_DRAIN_GRACE_S)  # let just-checked-out requests start
             for client in clients:
                 deadline = time.monotonic() + _CLIENT_DRAIN_TIMEOUT_S
                 while client.in_flight > 0 and time.monotonic() < deadline:

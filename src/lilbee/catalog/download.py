@@ -170,12 +170,15 @@ def download_model(
         return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
 
     # Sum the shard sizes up front so a multi-shard pull reports one monotonic
-    # 0->100% against the real total, not N separate per-shard cycles.
-    grand_total = (
-        sum(fetch_expected_file_size(entry.hf_repo, shard) for shard in shards)
+    # 0->100% against the real total, not N separate per-shard cycles. Only use
+    # the sum when every shard size is known (0 = unresolved/offline); a partial
+    # sum would undercount the total and let progress run past 100%.
+    shard_sizes = (
+        [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
         if len(shards) > 1
-        else 0
+        else []
     )
+    grand_total = sum(shard_sizes) if shard_sizes and all(size > 0 for size in shard_sizes) else 0
     tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
     shard_paths: list[Path] = []
     for shard in shards:

@@ -177,9 +177,11 @@ def test_adopt_swap_schedules_old_client_close(monkeypatch) -> None:
     assert p._clients[WorkerRole.EMBED][0] not in old  # fresh client adopted
 
 
-def test_close_clients_when_idle_closes_after_drain() -> None:
+def test_close_clients_when_idle_closes_after_drain(monkeypatch) -> None:
     # bb-ziks.14 (review round 2): an old client mid-request must NOT be closed
     # out from under; the closer waits for in_flight to drain first.
+    monkeypatch.setattr(prov_mod, "_CLIENT_DRAIN_GRACE_S", 0.0)
+    monkeypatch.setattr(prov_mod, "_CLIENT_DRAIN_POLL_S", 0.01)
     p = FleetProvider()
     busy = _fake_client(in_flight=1)
     thread = p._close_clients_when_idle([busy])

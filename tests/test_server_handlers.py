@@ -2496,22 +2496,34 @@ class TestModelsPull:
 
 class TestModelsDelete:
     async def test_returns_deleted_true(self):
-        mock_manager = MagicMock()
-        mock_manager.remove.return_value = True
+        from lilbee.app.models import RemoveResult
+
         with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
+            "lilbee.app.models.remove_model_data",
+            return_value=RemoveResult(model="test", deleted=True, freed_gb=4.0),
         ):
             result = await handlers.models_delete("test", source="native")
         assert result.deleted is True
         assert result.model == "test"
 
-    async def test_returns_deleted_false(self):
-        mock_manager = MagicMock()
-        mock_manager.remove.return_value = False
+    async def test_reports_freed_size_from_shared_remove(self):
+        # bb-ziks.49 (review round 3): REST reports the real freed size (full
+        # multi-shard total), not a hardcoded 0, matching CLI and MCP.
+        from lilbee.app.models import RemoveResult
+
         with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
+            "lilbee.app.models.remove_model_data",
+            return_value=RemoveResult(model="m", deleted=True, freed_gb=40.0),
+        ):
+            result = await handlers.models_delete("m", source="native")
+        assert result.freed_gb == 40.0
+
+    async def test_returns_deleted_false(self):
+        from lilbee.app.models import RemoveResult
+
+        with patch(
+            "lilbee.app.models.remove_model_data",
+            return_value=RemoveResult(model="missing", deleted=False, freed_gb=0.0),
         ):
             result = await handlers.models_delete("missing", source="native")
         assert result.deleted is False
@@ -2521,14 +2533,13 @@ class TestModelsDelete:
         """Refusing to remove a read-only local-server model surfaces as a 409."""
         from litestar.exceptions import HTTPException
 
-        mock_manager = MagicMock()
-        mock_manager.remove.side_effect = ValueError(
-            "lilbee runs Ollama models but doesn't remove them. Manage them in Ollama instead."
-        )
         with (
             patch(
-                "lilbee.server.handlers.models.get_services",
-                return_value=MagicMock(model_manager=mock_manager),
+                "lilbee.app.models.remove_model_data",
+                side_effect=ValueError(
+                    "lilbee runs Ollama models but doesn't remove them. "
+                    "Manage them in Ollama instead."
+                ),
             ),
             pytest.raises(HTTPException) as exc_info,
         ):

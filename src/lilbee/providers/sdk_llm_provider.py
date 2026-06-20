@@ -257,7 +257,8 @@ class SdkLLMProvider(LLMProvider):
 
             # Don't use the context manager: its __exit__ shutdown(wait=True) would
             # block until a hung call returns, so the caller would not be freed at
-            # the deadline. Shut down without waiting (matching the fleet OCR path).
+            # the deadline. Shut down without waiting (matching the fleet OCR path);
+            # a wedged call's worker thread lives until the backend httpx timeout.
             pool = ThreadPoolExecutor(max_workers=1)
             try:
                 future = pool.submit(self.chat, messages, stream=False, model=model)
