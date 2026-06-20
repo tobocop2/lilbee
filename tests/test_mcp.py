@@ -9,7 +9,7 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
-from lilbee.crawler.task import clear_tasks
+from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk, Store
 from lilbee.mcp_server import (
@@ -752,10 +752,11 @@ class TestAddWithUrls:
 
 class TestCrawl:
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
-    def test_returns_task_id(self, mock_start, _mock_avail, isolated_env):
+    async def test_returns_task_id(self, mock_start, _mock_dns, _mock_avail, isolated_env):
         """Non-blocking crawl returns a task_id immediately."""
-        result = crawl(url="https://example.com")
+        result = await crawl(url="https://example.com")
         assert result["status"] == "started"
         assert result["task_id"] == "abc123"
         assert result["url"] == "https://example.com"
@@ -764,22 +765,26 @@ class TestCrawl:
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="def456")
-    def test_passes_depth_and_max_pages(self, mock_start, _mock_avail, isolated_env):
+    async def test_passes_depth_and_max_pages(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
         """Depth and max_pages are forwarded to start_crawl."""
-        result = crawl(url="https://example.com", depth=2, max_pages=10)
+        result = await crawl(url="https://example.com", depth=2, max_pages=10)
         assert result["task_id"] == "def456"
         mock_start.assert_called_once_with(
             "https://example.com", depth=2, max_pages=10, render_mode=None
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="ghi789")
-    def test_passes_render_mode(self, mock_start, _mock_avail, isolated_env):
+    async def test_passes_render_mode(self, mock_start, _mock_dns, _mock_avail, isolated_env):
         """An explicit render_mode is forwarded to start_crawl."""
         from lilbee.core.config.enums import CrawlRenderMode
 
-        crawl(url="https://example.com", render_mode=CrawlRenderMode.BROWSER)
+        await crawl(url="https://example.com", render_mode=CrawlRenderMode.BROWSER)
         mock_start.assert_called_once_with(
             "https://example.com",
             depth=None,
@@ -788,16 +793,38 @@ class TestCrawl:
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    def test_rejects_invalid_url(self, _mock_avail):
-        result = crawl(url="ftp://bad.com")
+    async def test_rejects_invalid_url(self, _mock_avail):
+        result = await crawl(url="ftp://bad.com")
         assert "error" in result
 
-    def test_crawler_not_installed(self):
+    async def test_crawler_not_installed(self):
         """Returns error when crawl4ai is not installed."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
-            result = crawl(url="https://example.com")
+            result = await crawl(url="https://example.com")
             assert "error" in result
             assert "pip install" in result["error"].lower()
+
+    def test_crawl_is_async_so_it_runs_on_the_loop(self):
+        """crawl must be a coroutine function: _offload_sync passes async handlers
+        straight through to the loop instead of a worker thread, so start_crawl's
+        asyncio.create_task has a running loop."""
+        import inspect
+
+        assert inspect.iscoroutinefunction(crawl)
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    async def test_schedules_crawl_task_on_running_loop(self, _mock_dns, _mock_avail, isolated_env):
+        """Regression (bb-ziks.3): with the real start_crawl the create_task must
+        run on the loop. When crawl was offloaded to a worker thread this raised
+        'no running event loop' and every MCP crawl call failed."""
+        import lilbee.crawler.task as task_mod
+
+        clear_tasks()
+        with mock.patch.object(task_mod, "run_crawl", new_callable=AsyncMock):
+            result = await crawl(url="https://example.com", depth=0)
+        assert result["status"] == "started"
+        assert get_task(result["task_id"]) is not None
 
 
 class TestCrawlStatus:
