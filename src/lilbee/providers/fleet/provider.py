@@ -409,9 +409,9 @@ class FleetProvider:
         keyed by its replica model id; launches carry the chat slots/ctx so the
         capacity and served context come from the launch, not a probe.
         """
-        # A reload re-adopts over an existing pool; close the previous clients'
-        # httpx pools or every reload leaks one pool per replica per role. The
-        # reloaded swap already stopped the old upstreams, so nothing is in flight.
+        # Close the previous clients (a reload re-adopts over an existing pool);
+        # the reloaded swap already stopped their upstreams. Else each reload
+        # leaks an httpx pool per replica per role.
         old_clients = [client for pool in self._clients.values() for client in pool]
         self._swap = swap
         endpoint = swap.endpoint()

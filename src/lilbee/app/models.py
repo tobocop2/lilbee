@@ -73,7 +73,7 @@ class ModelEntry(BaseModel):
             name=ref,
             source=ModelSource.NATIVE.value,
             task=manifest.task if manifest else None,
-            size_gb=_bytes_to_gb(manifest.size_bytes) if manifest else None,
+            size_gb=_bytes_to_gb(manifest.disk_size_bytes) if manifest else None,
             display_name=clean_display_name(manifest.hf_repo) if manifest else "",
         )
 
@@ -146,8 +146,8 @@ class ManifestData(BaseModel):
             ref=manifest.ref,
             display_name=clean_display_name(manifest.hf_repo),
             task=manifest.task,
-            size_gb=_bytes_to_gb(manifest.size_bytes),
-            size_bytes=manifest.size_bytes,
+            size_gb=_bytes_to_gb(manifest.disk_size_bytes),
+            size_bytes=manifest.disk_size_bytes,
             hf_repo=manifest.hf_repo,
             gguf_filename=manifest.gguf_filename,
             downloaded_at=manifest.downloaded_at,

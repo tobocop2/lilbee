@@ -1142,8 +1142,11 @@ def _recover_bare_json_stream(
         # Forward close to the source generator: if a consumer closes this
         # wrapper mid-stream, a plain for-loop would not propagate GeneratorExit
         # to *items*, leaking the underlying HTTP stream and its in_flight slot.
+        # Suppress teardown errors (httpx stream close can raise) so they don't
+        # mask the exception that triggered this finally.
         if isinstance(items, Generator):
-            items.close()
+            with contextlib.suppress(Exception):
+                items.close()
 
 
 def _passthrough_text(buffer: str, text: str) -> bool:

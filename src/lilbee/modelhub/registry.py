@@ -595,8 +595,6 @@ def _shard_accounting(first_shard_path: Path) -> tuple[int | None, list[str]]:
     name is its HF blob digest, so the shards are summed and the digests of
     shards 2..N collected for removal-time garbage collection.
     """
-    from lilbee.catalog.download import split_shard_filenames
-
     shard_names = split_shard_filenames(first_shard_path.name)
     if len(shard_names) <= 1:
         return None, []

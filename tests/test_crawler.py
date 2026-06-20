@@ -2888,6 +2888,7 @@ class _FakeProc:
         self.stderr = _FakeStream()
         self._returncode: int | None = None if hang_wait else returncode
         self._exit = asyncio.Event()
+        self.wait_entered = asyncio.Event()  # set once wait() is actually awaited
         self.terminated = False
         self.killed = False
         if not hang_wait:
@@ -2908,6 +2909,7 @@ class _FakeProc:
         self._exit.set()
 
     async def wait(self) -> int | None:
+        self.wait_entered.set()
         await self._exit.wait()
         return self._returncode
 
@@ -2957,10 +2959,9 @@ class TestChromiumBootstrapTermination:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
 
         task = asyncio.create_task(bootstrap.bootstrap_chromium())
-        for _ in range(50):
-            await asyncio.sleep(0)
-            if proc.stdout is not None and not proc._exit.is_set():
-                break
+        # Cancel only once the task is genuinely parked inside proc.wait() (the
+        # finally that must terminate it has been entered), not merely scheduled.
+        await asyncio.wait_for(proc.wait_entered.wait(), timeout=2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

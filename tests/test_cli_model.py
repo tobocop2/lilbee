@@ -185,6 +185,21 @@ class TestModelEntryFactories:
         assert entry.size_gb is None
         assert entry.display_name == ""
 
+    def test_from_native_reports_full_split_total(self):
+        # bb-ziks.49 follow-up: a split GGUF lists its total on-disk size, not the
+        # first-shard size, so list/show agree with the freed-on-remove total.
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=1 * 1024**3, task="chat")
+        manifest.total_size_bytes = 6 * 1024**3  # six-shard total
+        entry = ModelEntry.from_native(_CHAT_REF, manifest)
+        assert entry.size_gb == 6.0
+
+    def test_manifest_data_reports_full_split_total(self):
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=1 * 1024**3, task="chat")
+        manifest.total_size_bytes = 6 * 1024**3
+        data = ManifestData.from_manifest(manifest)
+        assert data.size_gb == 6.0
+        assert data.size_bytes == 6 * 1024**3
+
     def test_from_backend_with_remote(self):
         remote = _remote(_OLLAMA_REF, task="chat", parameter_size="8B")
         entry = ModelEntry.from_backend(_OLLAMA_REF, remote, ModelSource.OLLAMA)
