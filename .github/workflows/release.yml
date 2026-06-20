@@ -288,6 +288,12 @@ jobs:
             cat "$MP"
             exit 1
           fi
+          # The runner ships only via --include-module; catch a missing module here too.
+          if grep -qE "No module named|ModuleNotFoundError" "$MP"; then
+            echo "FAIL: splash runner module is not bundled in the frozen binary"
+            cat "$MP"
+            exit 1
+          fi
           "$EXE" -c "import multiprocessing" > "$MP" 2>&1 || true
           if grep -qE "No such command|No such option" "$MP"; then
             echo "FAIL: resource-tracker -c reinvocation leaked into typer (frozen detection broken)"
