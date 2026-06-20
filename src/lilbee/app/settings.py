@@ -170,6 +170,27 @@ def _is_nullable(key: str) -> bool:
     return False
 
 
+def _as_int_setting(value: Any) -> int | None:
+    """Coerce a settings value to int the way pydantic will, or None if not numeric.
+
+    MCP settings_set forwards raw JSON, so a numeric setting can arrive as a
+    string (``{"chunk_overlap": "1000"}``). The cross-field guards must compare
+    the coerced int, not skip on the string and let pydantic accept an
+    unvalidated value downstream. ``bool`` is excluded (it is not a meaningful
+    chunk size) and non-numeric strings fall through to pydantic's type error.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
@@ -177,12 +198,12 @@ def _validate(updates: dict[str, Any]) -> None:
             raise ValueError(f"Unknown or read-only setting: {key}")
         if value is None and not _is_nullable(key):
             raise ValueError(f"Setting '{key}' does not accept null")
-    new_chunk_size = updates.get("chunk_size")
-    if isinstance(new_chunk_size, int) and new_chunk_size < _MIN_CHUNK_SIZE:
+    new_chunk_size = _as_int_setting(updates.get("chunk_size"))
+    if new_chunk_size is not None and new_chunk_size < _MIN_CHUNK_SIZE:
         raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")
-    effective_chunk_size = new_chunk_size if isinstance(new_chunk_size, int) else cfg.chunk_size
-    new_overlap = updates.get("chunk_overlap")
-    if isinstance(new_overlap, int) and new_overlap >= effective_chunk_size:
+    effective_chunk_size = new_chunk_size if new_chunk_size is not None else cfg.chunk_size
+    new_overlap = _as_int_setting(updates.get("chunk_overlap"))
+    if new_overlap is not None and new_overlap >= effective_chunk_size:
         raise ValueError(
             f"chunk_overlap ({new_overlap}) must be < chunk_size ({effective_chunk_size})"
         )

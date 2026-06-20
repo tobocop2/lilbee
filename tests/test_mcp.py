@@ -1103,6 +1103,29 @@ class TestSettingsMcp:
         assert "error" in result
         assert cfg.top_k == 5
 
+    def test_settings_set_validates_string_chunk_overlap(self, isolated_env):
+        # MCP forwards raw JSON, so an agent can send a numeric as a string. The
+        # chunk_overlap < chunk_size guard must still fire (bb-ziks.71).
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": "1024"})
+        assert "error" in result
+        assert "chunk_overlap" in result["error"]
+        assert cfg.chunk_overlap != 1024
+
+    def test_settings_set_validates_string_chunk_size_minimum(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"chunk_size": "1"})
+        assert "error" in result
+        assert "chunk_size must be >=" in result["error"]
+
+    def test_settings_set_accepts_valid_string_numeric(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": "64"})
+        assert result["command"] == "settings_set"
+        assert cfg.chunk_overlap == 64
+
     def test_settings_set_rolls_back_when_pydantic_rejects_second_field(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.top_k = 5
