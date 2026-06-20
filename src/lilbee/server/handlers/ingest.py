@@ -13,7 +13,6 @@ from lilbee.app.ingest import copy_files
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
-from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
@@ -181,7 +180,7 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
     finally:
-        IngestLockRegistry.release(acquired)
+        registry.release(acquired)
 
 
 async def _run_import_with_sentinel(sse: SseStream, data: bytes, fmt: str) -> ImportSummary:

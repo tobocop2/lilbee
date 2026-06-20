@@ -448,6 +448,32 @@ class TestAddIngestMutex:
         assert IngestLockRegistry.canonical_source_name("/some/path/doc.txt") == "doc.txt"
         assert IngestLockRegistry.canonical_source_name("doc.txt") == "doc.txt"
 
+    async def test_release_evicts_entry_so_registry_does_not_grow(self, isolated_env):
+        """bb-ziks.40: a long-lived daemon must not keep one lock per filename forever."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        for i in range(50):
+            acquired, busy = await registry.acquire([f"doc{i}.txt"])
+            assert not busy
+            registry.release(acquired)
+        # Every name was released, so no entry should linger.
+        assert registry._locks == {}
+
+    async def test_release_keeps_entry_for_still_held_name(self, isolated_env):
+        """Releasing one batch must not evict a name another batch still holds."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        held, _ = await registry.acquire(["doc.txt"])
+        # A second acquire for the same name is rejected (busy), nothing to evict.
+        also, busy = await registry.acquire(["doc.txt"])
+        assert also == [] and busy == ["doc.txt"]
+        registry.release(also)  # no-op
+        assert "doc.txt" in registry._locks  # still held by the first batch
+        registry.release(held)
+        assert registry._locks == {}
+
     async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
         """Duplicate paths in one request collapse to a single acquired lock."""
         from lilbee.app.services import get_services
