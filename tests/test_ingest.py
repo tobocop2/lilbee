@@ -71,6 +71,11 @@ def mock_svc():
     store.write_chunks_batch.side_effect = _write_batch
     store.delete_source.side_effect = lambda fn: _sources.pop(fn, None)
     store.delete_by_source.return_value = None
+
+    def _remove_documents(names, **_kw):
+        return [_sources.pop(n, None) for n in names]
+
+    store.remove_documents.side_effect = _remove_documents
     store.drop_all.side_effect = lambda: _sources.clear()
     store.ensure_fts_index.return_value = None
     embedder = MagicMock()
@@ -1536,6 +1541,38 @@ class TestCollectResultsSkipped:
         assert len(captured) == 1
         assert captured[0][1].status == "skipped"
         assert "scan.pdf" in skipped
+
+    async def test_zero_text_update_purges_prior_index_entry(self, mock_svc):
+        # An already-indexed file edited to extract to nothing must have its old
+        # chunks/source row removed, not left orphaned in search (bb-ziks.74).
+        from lilbee.data.ingest.pipeline import _collect_results
+        from lilbee.data.ingest.types import _IngestResult
+
+        async def _emptied() -> _IngestResult:
+            return _IngestResult(
+                "notes.md", Path("notes.md"), chunk_count=0, error=None, needs_cleanup=True
+            )
+
+        await _collect_results(iter([_emptied()]), 1, {}, {}, {}, {}, window=2)
+        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
+
+    async def test_zero_text_without_cleanup_does_not_purge(self, mock_svc):
+        from lilbee.data.ingest.pipeline import _collect_results
+        from lilbee.data.ingest.types import _IngestResult
+
+        async def _emptied() -> _IngestResult:
+            return _IngestResult(
+                "fresh.md", Path("fresh.md"), chunk_count=0, error=None, needs_cleanup=False
+            )
+
+        await _collect_results(iter([_emptied()]), 1, {}, {}, {}, {}, window=2)
+        mock_svc.store.remove_documents.assert_not_called()
+
+    def test_purge_emptied_sources_noop_on_empty(self, mock_svc):
+        from lilbee.data.ingest.pipeline import _purge_emptied_sources
+
+        _purge_emptied_sources([])
+        mock_svc.store.remove_documents.assert_not_called()
 
     async def test_error_cancels_still_running_siblings(self):
         """When one task raises, _collect_results' finally cancels the in-flight ones."""

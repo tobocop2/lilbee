@@ -687,6 +687,7 @@ async def _collect_results(
     buffer: list[_IngestResult] = []
     buffered_chunks = 0
     completed_count = 0
+    to_purge: list[str] = []
     in_flight: set[asyncio.Task[_IngestResult]] = set()
     try:
         _refill_window(in_flight, pending, window)
@@ -701,6 +702,11 @@ async def _collect_results(
                     buffered_chunks = await _buffer_and_maybe_flush(
                         result, buffer, buffered_chunks, added, updated, failed, flush_failed
                     )
+                elif status is BatchStatus.SKIPPED and result.needs_cleanup:
+                    # An already-indexed file edited to yield zero chunks and zero
+                    # page texts is never buffered, so the flush's cleanup never
+                    # runs; purge its stale chunks/source row so it stops surfacing.
+                    to_purge.append(result.name)
                 _report_file_progress(
                     result, status, completed_count, total, on_progress, progress, ptask
                 )
@@ -710,6 +716,7 @@ async def _collect_results(
         # itself raises (e.g. a cancellation landing on the to_thread await).
         try:
             await asyncio.to_thread(_flush_writes, buffer, added, updated, failed, flush_failed)
+            await asyncio.to_thread(_purge_emptied_sources, to_purge)
         finally:
             still_pending = [t for t in in_flight if not t.done()]
             for task in still_pending:
@@ -857,6 +864,20 @@ def _flush_concept_records(buffer: list[_IngestResult]) -> None:
         get_services().concepts.write_concept_records(ConceptRecords.merged(batches))
     except Exception:
         log.warning("Concept indexing failed for %d-file batch", len(batches), exc_info=True)
+
+
+def _purge_emptied_sources(names: list[str]) -> None:
+    """Remove the prior index entry for files that now extract to nothing.
+
+    An already-indexed file edited to yield zero chunks and zero page texts is
+    classified SKIPPED and never buffered, so the batched cleanup delete never
+    runs and its old chunks and source row would linger in search results. Full
+    removal here keeps the index consistent; ``remove_documents`` is a no-op for
+    never-indexed (brand-new empty) files, so unindexed inputs cost nothing.
+    """
+    if not names:
+        return
+    get_services().store.remove_documents(names)
 
 
 def _flush_writes(
