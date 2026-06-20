@@ -491,6 +491,11 @@ class TestModelRegistryResolve:
         _seed_hf_cache(tmp_path)
         assert registry._recover_legacy_shard_blobs(_REF) == []
 
+    def test_recover_legacy_shard_blobs_empty_when_unresolvable(self, tmp_path: Path) -> None:
+        # Uninstalled ref: shard_paths raises, suppressed so removal never breaks.
+        registry = ModelRegistry(tmp_path)
+        assert registry._recover_legacy_shard_blobs(_REF) == []
+
     def test_split_gguf_shards_present_but_snapshot_missing_raises_not_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
