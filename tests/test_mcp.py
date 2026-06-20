@@ -927,19 +927,25 @@ class TestWikiStatus:
         assert result["wiki_enabled"] is True
         assert result["pages"] == 0
 
-    def test_with_pages(self, tmp_path, mock_svc):
+    def test_pages_count_all_built_content_not_drafts(self, tmp_path, mock_svc):
+        """pages counts every content subdir (here 1 summary + 2 concepts), not just
+        summaries+drafts -- a normal build writes concepts/entities/synthesis."""
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
         cfg.wiki = True
-        (tmp_path / "wiki" / "summaries").mkdir(parents=True)
-        (tmp_path / "wiki" / "summaries" / "a.md").write_text("content")
-        (tmp_path / "wiki" / "drafts").mkdir(parents=True)
-        (tmp_path / "wiki" / "drafts" / "b.md").write_text("content")
+        wiki = tmp_path / "wiki"
+        (wiki / "summaries").mkdir(parents=True)
+        (wiki / "summaries" / "a.md").write_text("content")
+        (wiki / "concepts").mkdir(parents=True)
+        (wiki / "concepts" / "c1.md").write_text("content")
+        (wiki / "concepts" / "c2.md").write_text("content")
+        (wiki / "drafts").mkdir(parents=True)
+        (wiki / "drafts" / "b.md").write_text("content")
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = wiki_status()
         assert result["summaries"] == 1
         assert result["drafts"] == 1
-        assert result["pages"] == 2
+        assert result["pages"] == 3
 
 
 class TestWikiBuildTool:

@@ -45,7 +45,12 @@ from lilbee.wiki.drafts import (
     reject_draft,
 )
 from lilbee.wiki.index import update_wiki_index
-from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR, WIKI_DISABLED_ERROR, WikiSubdir
+from lilbee.wiki.shared import (
+    INVALID_DRAFT_SLUG_ERROR,
+    WIKI_DISABLED_ERROR,
+    WikiSubdir,
+    total_wiki_pages,
+)
 
 
 def _wiki_root() -> Path:
@@ -287,7 +292,7 @@ async def wiki_status_route() -> WikiStatusResult:
         wiki_enabled=cfg.wiki,
         summaries=len(summaries),
         drafts=len(drafts),
-        pages=len(summaries) + len(drafts),
+        pages=total_wiki_pages(root),
         lint_errors=report.error_count,
         lint_warnings=report.warning_count,
     )

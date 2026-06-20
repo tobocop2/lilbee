@@ -164,6 +164,21 @@ class TestWikiEnabled:
         assert pages[0]["source_count"] == 1
         assert pages[0]["created_at"] == "2026-04-04T12:00:00+00:00"
 
+    async def test_status_counts_all_content_subdirs(self, isolated_env: Path):
+        """pages counts every content subdir (summary + 2 concepts here), not just
+        summaries+drafts; the pending draft is not counted."""
+        wiki_root = isolated_env / "wiki"
+        _make_wiki_page(wiki_root, "summaries", "s1")
+        _make_wiki_page(wiki_root, "concepts", "c1")
+        _make_wiki_page(wiki_root, "concepts", "c2")
+        _make_wiki_page(wiki_root, "drafts", "d1")
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pages"] == 3
+        assert body["drafts"] == 1
+
     async def test_list_multiple_subdirs(self, isolated_env: Path):
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "doc-a")
@@ -433,7 +448,7 @@ class TestWikiEnabled:
         assert body["wiki_enabled"] is True
         assert body["pages"] == 0
 
-    async def test_status_counts_summaries_and_drafts(self, monkeypatch, tmp_path):
+    async def test_status_reports_drafts_but_excludes_them_from_pages(self, monkeypatch, tmp_path):
         from lilbee.wiki import lint as lint_mod
 
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -454,7 +469,8 @@ class TestWikiEnabled:
         body = resp.json()
         assert body["summaries"] == 2
         assert body["drafts"] == 1
-        assert body["pages"] == 3
+        # pages counts published content (the 2 summaries); pending drafts are not pages.
+        assert body["pages"] == 2
 
 
 def _make_draft(

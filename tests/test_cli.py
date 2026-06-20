@@ -2785,6 +2785,24 @@ class TestWikiBuild:
         assert data["count"] == 1
         assert data["entities"] == 0
 
+    def test_status_counts_all_content_pages(self, mock_svc, isolated_env):
+        """wiki status pages counts every content subdir (1 summary + 2 concepts),
+        not summaries+drafts; the pending draft is excluded."""
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        (wiki_root / "summaries").mkdir(parents=True)
+        (wiki_root / "summaries" / "s.md").write_text("x")
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "c1.md").write_text("x")
+        (wiki_root / "concepts" / "c2.md").write_text("x")
+        (wiki_root / "drafts").mkdir(parents=True)
+        (wiki_root / "drafts" / "d.md").write_text("x")
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["pages"] == 3
+        assert data["drafts"] == 1
+
     def test_update_reruns_build(self, mock_svc, isolated_env, monkeypatch):
         """wiki update currently delegates to wiki build (see bb-he8o for smarter version)."""
         monkeypatch.setattr(

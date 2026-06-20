@@ -23,6 +23,7 @@ from lilbee.core.security import PathTraversalError
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WikiSubdir,
+    total_wiki_pages,
 )
 
 if TYPE_CHECKING:
@@ -170,7 +171,7 @@ def wiki_status(
                 "wiki_enabled": cfg.wiki,
                 WikiSubdir.SUMMARIES: summaries,
                 WikiSubdir.DRAFTS: drafts,
-                "pages": summaries + drafts,
+                "pages": total_wiki_pages(wiki_root),
                 "lint_errors": report.error_count,
                 "lint_warnings": report.warning_count,
             }

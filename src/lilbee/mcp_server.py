@@ -57,6 +57,7 @@ from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
     WikiSubdir,
+    total_wiki_pages,
 )
 
 log = logging.getLogger(__name__)
@@ -516,7 +517,7 @@ def wiki_status() -> dict[str, Any]:
         "wiki_enabled": cfg.wiki,
         WikiSubdir.SUMMARIES: len(summaries),
         WikiSubdir.DRAFTS: len(drafts),
-        "pages": len(summaries) + len(drafts),
+        "pages": total_wiki_pages(wiki_root),
         "lint_errors": report.error_count,
         "lint_warnings": report.warning_count,
     }
