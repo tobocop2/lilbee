@@ -65,16 +65,6 @@ _PREWARM_CHUNK_BYTES = 8 * 1024 * 1024
 # generation, so the weights-scaled cold-load budget plus the margin raises this floor.
 _REQUEST_TIMEOUT_FLOOR_S = 900.0
 _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
-# A reload's old clients are closed only after their in-flight requests drain, so
-# a reader still mid-call on an old client snapshot is never closed out from
-# under. The deadline is a backstop for a client that never drains.
-_CLIENT_DRAIN_TIMEOUT_S = 600.0
-_CLIENT_DRAIN_POLL_S = 0.1
-# Grace before draining: _require_clients hands out a client under the lock then
-# releases it before the request increments in_flight, so a reader that just
-# checked out an old client has in_flight==0 for that brief handoff. Waiting it
-# out lets the request enter its in_flight window before the drain inspects it.
-_CLIENT_DRAIN_GRACE_S = 0.5
 # Jinja chat templates flag tool support by referencing one of these names as an
 # identifier inside a ``{% ... %}`` / ``{{ ... }}`` block (not free-text prose).
 # The server parses tool calls natively via ``--jinja``; this probe only decides
@@ -350,6 +340,11 @@ class FleetProvider:
         # all pointed at the llama-swap endpoint and routed by replica model id;
         # rebuilt whenever the swap process (re)starts. Requests round-robin the pool.
         self._clients: dict[WorkerRole, list[LlamaServerClient]] = {}
+        # Clients retired by a reload, awaiting close. A reload's old clients may
+        # still be held by an in-flight reader, so they are closed at the *next*
+        # reload (by when those readers have finished) or at shutdown, never while
+        # potentially in use. See _retire_clients.
+        self._retiring_clients: list[LlamaServerClient] = []
         # Chat batching slots and per-slot context from the chat launch, surfaced to
         # the concurrency gate and clients; defaults until the swap is up.
         self._chat_slots = 1
@@ -419,10 +414,9 @@ class FleetProvider:
         keyed by its replica model id; launches carry the chat slots/ctx so the
         capacity and served context come from the launch, not a probe.
         """
-        # Close the previous clients (a reload re-adopts over an existing pool) once
-        # their in-flight requests drain, off-thread. Closing immediately would
-        # error a reader still mid-call on an old client snapshot; not closing at
-        # all leaks an httpx pool per replica per role on every reload.
+        # Retire the previous clients (a reload re-adopts over an existing pool):
+        # closing them now would error a reader still mid-call on an old client
+        # snapshot, and never closing leaks an httpx pool per replica per role.
         old_clients = [client for pool in self._clients.values() for client in pool]
         self._swap = swap
         endpoint = swap.endpoint()
@@ -443,32 +437,25 @@ class FleetProvider:
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
-        self._close_clients_when_idle(old_clients)
+        self._retire_clients(old_clients)
 
-    def _close_clients_when_idle(
-        self, clients: list[LlamaServerClient]
-    ) -> threading.Thread | None:
-        """Close *clients* once their in-flight requests drain, off the caller's thread.
+    def _retire_clients(self, old_clients: list[LlamaServerClient]) -> None:
+        """Close the previously-retired clients, then retire *old_clients*.
 
-        A reload swaps the pool while reader threads may still hold (and be mid-call
-        on) an old client snapshot, so each client is closed only after its
-        ``in_flight`` reaches zero (bounded by ``_CLIENT_DRAIN_TIMEOUT_S``).
-        Returns the drain thread (or ``None`` when there is nothing to close).
+        Caller holds ``self._lock``. Retired clients are never handed to new
+        readers (they are out of ``self._clients``), so by this reload any reader
+        that held one from a prior reload has finished; an ``in_flight == 0``
+        check confirms it before close, and any still-busy client stays retired
+        for the next reload. This closes idle reloaded-away pools without ever
+        closing one a reader could still use. Shutdown closes whatever remains.
         """
-        if not clients:
-            return None
-
-        def _drain() -> None:
-            time.sleep(_CLIENT_DRAIN_GRACE_S)  # let just-checked-out requests start
-            for client in clients:
-                deadline = time.monotonic() + _CLIENT_DRAIN_TIMEOUT_S
-                while client.in_flight > 0 and time.monotonic() < deadline:
-                    time.sleep(_CLIENT_DRAIN_POLL_S)
+        still_busy: list[LlamaServerClient] = []
+        for client in self._retiring_clients:
+            if client.in_flight == 0:
                 client.close()
-
-        thread = threading.Thread(target=_drain, name="fleet-client-drain", daemon=True)
-        thread.start()
-        return thread
+            else:
+                still_busy.append(client)
+        self._retiring_clients = still_busy + old_clients
 
     def _require_clients(self, role: WorkerRole) -> list[LlamaServerClient]:
         """The client pool for *role*, or a user-facing error when it has no server.
@@ -535,9 +522,12 @@ class FleetProvider:
     def _drop_swap_refs(self) -> None:
         """Clear the swap, its clients, and the chat capacity so the next call rebuilds."""
         with self._lock:
+            # Close the live pool and any clients still awaiting retirement.
             clients = [client for pool in self._clients.values() for client in pool]
+            clients.extend(self._retiring_clients)
             self._swap = None
             self._clients = {}
+            self._retiring_clients = []
             self._chat_slots = 1
             self._chat_ctx = None
         for client in clients:
