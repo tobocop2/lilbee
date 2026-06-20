@@ -188,6 +188,23 @@ class TestExtractConcepts:
         assert "158 vehicle" not in result
         assert "chevrolet caprice" in result
 
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_holds_nlp_lock_during_processing(self, mock_spacy, cg):
+        """The shared (non-thread-safe) spaCy Language is used under _nlp_lock."""
+        locked_during: list[bool] = []
+        nlp = MagicMock()
+
+        def call_fn(text):
+            locked_during.append(cg._nlp_lock.locked())
+            return _make_mock_doc(["good concept"])
+
+        nlp.side_effect = call_fn
+        mock_spacy.return_value = nlp
+
+        cg.extract_concepts("text")
+        assert locked_during == [True]  # lock held while nlp() runs
+        assert not cg._nlp_lock.locked()  # released afterwards
+
 
 class TestExtractConceptsBatch:
     @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
@@ -224,6 +241,24 @@ class TestExtractConceptsBatch:
         mock_spacy.return_value = _make_mock_nlp({"text": ["alpha", "beta", "gamma", "delta"]})
         result = cg.extract_concepts_batch(["text"])
         assert len(result[0]) == 2
+
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_holds_nlp_lock_across_pipe(self, mock_spacy, cg):
+        """nlp.pipe is lazy, so the lock is held across the whole iteration."""
+        locked_during: list[bool] = []
+        nlp = MagicMock()
+        nlp.side_effect = lambda text: _make_mock_doc([])
+
+        def pipe_fn(texts):
+            locked_during.append(cg._nlp_lock.locked())
+            return [_make_mock_doc(["good concept"]) for _ in texts]
+
+        nlp.pipe = pipe_fn
+        mock_spacy.return_value = nlp
+
+        cg.extract_concepts_batch(["text"])
+        assert locked_during == [True]
+        assert not cg._nlp_lock.locked()
 
 
 class TestGetNlp:
