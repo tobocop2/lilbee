@@ -7,7 +7,7 @@ from datetime import timedelta
 from enum import StrEnum
 from typing import NamedTuple, NotRequired, TypedDict
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # How often readers re-check the manifest for new versions from other processes.
 # Zero means strong consistency (every read checks); higher values reduce disk I/O
@@ -139,12 +139,13 @@ class SearchChunk(BaseModel):
     chunk_index: int
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
-    # Hybrid rows carry an RRF ``_relevance_score``; BM25/FTS-only rows carry
-    # ``_score``. Both mean "higher = better", so both populate relevance_score
-    # (RRF wins when a hybrid row happens to carry both).
-    relevance_score: float | None = Field(
-        None, validation_alias=AliasChoices("_relevance_score", "_score")
-    )
+    # Hybrid rows carry an RRF ``_relevance_score`` (small fusion-scale magnitude,
+    # higher = better) that filtering and ranking compare across results.
+    relevance_score: float | None = Field(None, validation_alias="_relevance_score")
+    # FTS/BM25-only rows carry a raw, unbounded ``_score``. It lives in its own
+    # field so it never contaminates the fusion-scale ``relevance_score``; only the
+    # confidence-based expansion-skip reads it (sigmoid-squashed to [0, 1]).
+    bm25_score: float | None = Field(None, validation_alias="_score")
     rerank_score: float | None = None
 
 

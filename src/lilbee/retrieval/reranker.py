@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 from lilbee.core.config import Config
 from lilbee.data.store import SearchChunk
+from lilbee.retrieval.query.dedup import _fusion_norms, _normalize_scores
 
 log = logging.getLogger(__name__)
 
@@ -38,61 +39,6 @@ _BLEND_SCHEDULE = {
     "mid": (0.50, 0.50),
     "bottom": (0.30, 0.70),
 }
-
-# Neutral point of the [0, 1] fusion/rerank scale: used for a candidate with no
-# usable score and for a cohort whose scores are all equal (no spread to rank on).
-_NEUTRAL_SCORE = 0.5
-
-
-def _normalize_scores(scores: list[float]) -> list[float]:
-    """Min-max normalize raw cross-encoder scores to [0, 1]."""
-    min_score = min(scores)
-    max_score = max(scores)
-    score_range = max_score - min_score
-    if score_range > 0:
-        return [(s - min_score) / score_range for s in scores]
-    return [_NEUTRAL_SCORE] * len(scores)
-
-
-def _fusion_signal(chunk: SearchChunk) -> float:
-    """A chunk's retrieval confidence as a "higher = better" raw signal.
-
-    Hybrid rows carry an RRF ``relevance_score`` (small positive magnitude);
-    vector-only rows carry a cosine ``distance`` (0.0 = identical, lower = better).
-    Both are mapped to higher-is-better; ``_fusion_norms`` then scales each family
-    to [0, 1] independently so their differing magnitudes become comparable.
-
-    ``is None`` rather than truthiness is deliberate: a perfect vector match has
-    ``distance == 0.0`` -- the strongest possible hit -- which falsy ``or`` would
-    misread as the neutral default.
-    """
-    if chunk.relevance_score is not None:
-        return chunk.relevance_score
-    if chunk.distance is not None:
-        return 1.0 - chunk.distance
-    return _NEUTRAL_SCORE
-
-
-def _fusion_norms(to_rerank: list[SearchChunk]) -> list[float]:
-    """Min-max normalize the fusion signal WITHIN each scoring family.
-
-    Hybrid rows carry an RRF ``relevance_score`` (tiny magnitude); the rest
-    (vector-only / HyDE recalls) carry a cosine ``distance``. The two scales are
-    not comparable, so normalizing them together would let one family dominate
-    purely as a scale artifact. Each family is scaled to [0, 1] independently;
-    a row with neither signal sits in the non-RRF family at ``_fusion_signal``'s
-    neutral score.
-    """
-    rrf = [i for i, c in enumerate(to_rerank) if c.relevance_score is not None]
-    non_rrf = [i for i, c in enumerate(to_rerank) if c.relevance_score is None]
-    norms = [_NEUTRAL_SCORE] * len(to_rerank)
-    for cohort in (rrf, non_rrf):
-        if not cohort:
-            continue
-        scaled = _normalize_scores([_fusion_signal(to_rerank[i]) for i in cohort])
-        for i, value in zip(cohort, scaled, strict=True):
-            norms[i] = value
-    return norms
 
 
 def _blend_scores(

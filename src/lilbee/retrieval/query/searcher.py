@@ -29,6 +29,7 @@ from lilbee.retrieval.query.dedup import (
     _relevance_weight,
     deduplicate_sources,
     filter_results,
+    order_by_fusion,
     prepare_results,
 )
 from lilbee.retrieval.query.expansion import EXPANSION_MAX_TOKENS, EXPANSION_PROMPT
@@ -232,12 +233,12 @@ class Searcher:
         )
         if not results:
             return False
-        top_score = _bm25_confidence(results[0].relevance_score)
+        top_score = _bm25_confidence(results[0].bm25_score)
         if top_score < self._config.expansion_skip_threshold:
             return False
         if len(results) < _MIN_BM25_PROBE_RESULTS:
             return True
-        second_score = _bm25_confidence(results[1].relevance_score)
+        second_score = _bm25_confidence(results[1].bm25_score)
         return (top_score - second_score) >= self._config.expansion_skip_gap
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
@@ -252,9 +253,10 @@ class Searcher:
             boosted = self._concepts.boost_results(results, query_concepts)
             # boost_results mutates relevance_score/distance but preserves input
             # order; re-sort so the boost actually re-ranks for callers that consume
-            # search() order directly (CLI search, MCP lilbee_search).
-            boosted.sort(key=_relevance_weight, reverse=True)
-            return boosted
+            # search() order directly (CLI search, MCP lilbee_search). order_by_fusion
+            # normalizes per scoring family so HyDE (distance) hits can't outrank a
+            # strong hybrid (RRF) hit purely on scale.
+            return order_by_fusion(boosted)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
             return results

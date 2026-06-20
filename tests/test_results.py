@@ -51,14 +51,6 @@ def test_single_chunk() -> None:
     assert ex.line_end == 10
 
 
-def test_raw_bm25_relevance_clamped_to_one() -> None:
-    """FTS/term: rows carry a raw, unbounded BM25 _score; Excerpt.relevance is a
-    documented [0, 1] value, so it must be clamped."""
-    results = group([_chunk(distance=None, relevance_score=2.5)])
-    assert results[0].excerpts[0].relevance == 1.0
-    assert results[0].best_relevance == 1.0
-
-
 def test_multiple_chunks_same_source() -> None:
     chunks = [
         _chunk(source="a.md", distance=0.5, chunk="first"),

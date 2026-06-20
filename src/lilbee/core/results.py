@@ -30,9 +30,7 @@ def _zero_to_none(val: int) -> int | None:
 
 def _to_excerpt(chunk: SearchChunk) -> Excerpt:
     if chunk.relevance_score is not None:
-        # relevance_score may be a raw, unbounded BM25 _score (FTS / term: path),
-        # so clamp to the documented [0, 1] excerpt-relevance range.
-        relevance = min(1.0, max(0.0, chunk.relevance_score))
+        relevance = chunk.relevance_score
     else:
         relevance = 1.0 / (1.0 + (chunk.distance or 0))
     return Excerpt(

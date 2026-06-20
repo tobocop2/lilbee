@@ -283,8 +283,8 @@ class ConceptGraph:
         chunk_concepts is the ground-truth concept<->chunk map: it is source-scoped
         (re-ingesting a source replaces its rows) and its schema is stable, so PMI
         computed from it stays correct across re-ingests and version upgrades. The
-        edge table is append-only and its ``weight`` column's meaning has changed
-        over time, so it is not a safe source for these corpus counts.
+        edge table is append-only and its ``weight`` is a per-file co-occurrence
+        count, not corpus PMI, so it is not a safe source for these corpus counts.
 
         Concepts are de-duplicated per chunk, so a concept (or pair) counts once per
         distinct chunk it appears in -- the document frequency PMI is defined on.

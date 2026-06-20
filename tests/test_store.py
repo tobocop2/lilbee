@@ -176,15 +176,17 @@ class TestEnsureFtsIndex:
         _args, kwargs = create_spy.call_args
         assert kwargs.get("replace") is False
 
-    def test_bm25_probe_populates_relevance_score(self, store):
-        """LanceDB FTS returns rows keyed on ``_score``; the probe must surface it
-        as ``relevance_score`` so confidence-based expansion-skip sees a real signal."""
+    def test_bm25_probe_populates_bm25_score(self, store):
+        """LanceDB FTS returns rows keyed on ``_score``; the probe must surface it as
+        ``bm25_score`` so confidence-based expansion-skip sees a real signal. It must
+        NOT land in the fusion-scale ``relevance_score`` (which stays None for FTS)."""
         store.add_chunks(_make_records())
         store.ensure_fts_index()
         results = store.bm25_probe("text")
         assert results
-        assert all(r.relevance_score is not None for r in results)
-        assert results[0].relevance_score > 0
+        assert all(r.bm25_score is not None for r in results)
+        assert results[0].bm25_score > 0
+        assert all(r.relevance_score is None for r in results)
 
     def test_bm25_probe_filters_by_chunk_type(self, store):
         """An explicit scope on a ``term:`` query must be honoured by the probe."""
@@ -214,18 +216,23 @@ class TestSearchChunkScoreAlias:
         base.update(extra)
         return base
 
-    def test_fts_score_maps_to_relevance_score(self):
-        """BM25/FTS rows carry ``_score`` (higher = better); it must populate
-        ``relevance_score`` the same way hybrid rows' ``_relevance_score`` does."""
-        assert SearchChunk(**self._row(_score=2.5)).relevance_score == 2.5
+    def test_fts_score_maps_to_bm25_score(self):
+        """BM25/FTS ``_score`` populates the dedicated ``bm25_score`` field, kept
+        separate from the fusion-scale ``relevance_score``."""
+        chunk = SearchChunk(**self._row(_score=2.5))
+        assert chunk.bm25_score == 2.5
+        assert chunk.relevance_score is None
 
     def test_relevance_score_alias_still_works(self):
-        assert SearchChunk(**self._row(_relevance_score=0.03)).relevance_score == 0.03
+        chunk = SearchChunk(**self._row(_relevance_score=0.03))
+        assert chunk.relevance_score == 0.03
+        assert chunk.bm25_score is None
 
-    def test_relevance_score_wins_over_score_when_both_present(self):
-        """Hybrid rows can carry both; the RRF ``_relevance_score`` takes priority."""
+    def test_hybrid_row_keeps_scores_in_separate_fields(self):
+        """A hybrid row carrying both keeps RRF in relevance_score and BM25 in bm25_score."""
         chunk = SearchChunk(**self._row(_relevance_score=0.03, _score=2.5))
         assert chunk.relevance_score == 0.03
+        assert chunk.bm25_score == 2.5
 
 
 def _make_indexable_records(n, dim):
