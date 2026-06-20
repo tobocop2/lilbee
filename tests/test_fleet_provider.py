@@ -365,6 +365,34 @@ def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
         assert prov_mod._VISION_GATE._capacity == 8
 
 
+def test_vision_gate_slot_decrements_in_flight_when_acquire_raises(monkeypatch) -> None:
+    # If acquire() raises (e.g. an interrupted blocking acquire), the in-flight
+    # counter must still be decremented, or a leaked count would pin the gate
+    # non-idle and defer every later capacity resize forever.
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(cfg, "vision_replicas", 1)
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
+
+    real_checkout = prov_mod._VISION_GATE._checkout
+
+    class _BoomSemaphore:
+        def acquire(self) -> None:
+            raise KeyboardInterrupt
+
+    def _checkout_returning_boom():
+        real_checkout()  # increments _in_flight like the real path
+        return _BoomSemaphore()
+
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_checkout", _checkout_returning_boom)
+
+    with pytest.raises(KeyboardInterrupt), prov_mod._VISION_GATE.slot():
+        pass  # pragma: no cover - acquire raises before the body
+
+    assert prov_mod._VISION_GATE._in_flight == 0  # counter not leaked
+
+
 def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
     # The ingest file fan-out can launch far more concurrent OCR requests than the
     # vision server has slots; the gate (held by every vision entry point) caps

@@ -47,7 +47,13 @@ _ocr_timeout_option = typer.Option(
 
 
 def _apply_ocr_overrides(ocr: bool | None, ocr_timeout: float | None) -> None:
-    """Apply --ocr/--no-ocr and --ocr-timeout CLI overrides to config."""
+    """Apply --ocr/--no-ocr and --ocr-timeout CLI overrides to config.
+
+    The CLI is a single-shot, single-process invocation, so mutating the global
+    cfg here is safe (it mirrors ``apply_overrides`` for the data dir). The
+    daemon-shared per-request OCR override uses a ContextVar instead; see
+    ``temporary_ocr_config``.
+    """
     if ocr is not None:
         cfg.enable_ocr = ocr
     if ocr_timeout is not None:

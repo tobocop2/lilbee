@@ -2371,6 +2371,19 @@ class TestOcrOverrideContextVar:
             assert cfg.ocr_timeout == 8.0
         assert _effective_ocr_timeout() == 8.0
 
+    async def test_override_propagates_into_to_thread_worker(self, isolated_env):
+        # The fix relies on asyncio.to_thread copying the calling context, which
+        # is how the override reaches the extract worker that actually OCRs.
+        import asyncio
+
+        from lilbee.data.ingest.extract import _effective_ocr_timeout, ocr_override
+
+        cfg.ocr_timeout = 5.0
+        with ocr_override(ocr_timeout=88.0):
+            seen = await asyncio.to_thread(_effective_ocr_timeout)
+        assert seen == 88.0
+        assert await asyncio.to_thread(_effective_ocr_timeout) == 5.0
+
 
 class TestOcrFallbackBackendDispatch:
     """``_handle_scanned_pdf_fallback`` routes to the right backend on the pool."""

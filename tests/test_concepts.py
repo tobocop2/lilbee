@@ -244,20 +244,24 @@ class TestExtractConceptsBatch:
 
     @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
     def test_holds_nlp_lock_across_pipe(self, mock_spacy, cg):
-        """nlp.pipe is lazy, so the lock is held across the whole iteration."""
+        """nlp.pipe is lazy, so the lock must stay held across the iteration."""
         locked_during: list[bool] = []
         nlp = MagicMock()
         nlp.side_effect = lambda text: _make_mock_doc([])
 
+        # A generator (like real spaCy nlp.pipe): each doc is produced during
+        # iteration, so the lock must still be held as the comprehension pulls
+        # items -- not merely when pipe() is first called.
         def pipe_fn(texts):
-            locked_during.append(cg._nlp_lock.locked())
-            return [_make_mock_doc(["good concept"]) for _ in texts]
+            for _ in texts:
+                locked_during.append(cg._nlp_lock.locked())
+                yield _make_mock_doc(["good concept"])
 
         nlp.pipe = pipe_fn
         mock_spacy.return_value = nlp
 
-        cg.extract_concepts_batch(["text"])
-        assert locked_during == [True]
+        cg.extract_concepts_batch(["a", "b", "c"])
+        assert locked_during == [True, True, True]  # held for every yielded doc
         assert not cg._nlp_lock.locked()
 
 

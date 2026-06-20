@@ -1091,9 +1091,23 @@ class TestSyncStreamDoneDelivery:
         counts = json.loads(done_events[0].split("data: ")[1].strip())
         assert counts == {"added": 0, "updated": 0, "removed": 0, "failed": 0, "skipped": 0}
 
+    async def test_put_threadsafe_defers_enqueue_to_loop(self):
+        """put_threadsafe schedules the enqueue on the loop instead of mutating
+        the asyncio.Queue inline; even called from the loop thread the item is
+        not present until a loop iteration runs (bb-ziks.76)."""
+        from lilbee.server.handlers import SseStream
+
+        sse = SseStream()
+        sse.put_threadsafe("hello")
+        # call_soon_threadsafe defers to a later iteration: a direct put_nowait
+        # would have enqueued synchronously here.
+        assert sse.queue.empty()
+        await asyncio.sleep(0)
+        assert sse.queue.get_nowait() == "hello"
+
     async def test_put_threadsafe_enqueues_from_worker_thread(self):
-        """put_threadsafe hands the enqueue back to the loop, so a producer on a
-        worker thread never mutates the asyncio.Queue directly (bb-ziks.76)."""
+        """A producer on a worker thread reaches the loop's queue via the
+        threadsafe handoff."""
         from lilbee.server.handlers import SseStream
 
         sse = SseStream()

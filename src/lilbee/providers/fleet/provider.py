@@ -204,11 +204,17 @@ class _VisionRequestGate:
         concurrent capacity change cannot release the wrong object.
         """
         sem = self._checkout()
-        sem.acquire()
+        # _checkout already incremented _in_flight, so the decrement must run on
+        # every exit path -- including one where acquire() itself raises (e.g. an
+        # interrupted blocking acquire). Otherwise a leaked count would pin the
+        # gate non-idle and defer every later capacity resize forever.
         try:
-            yield
+            sem.acquire()
+            try:
+                yield
+            finally:
+                sem.release()
         finally:
-            sem.release()
             with self._lock:
                 self._in_flight -= 1
 

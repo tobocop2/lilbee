@@ -546,11 +546,32 @@ class TestRoutingProvider:
         assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
-    def test_get_sdk_provider_single_init_under_concurrency(self) -> None:
-        """Concurrent first-callers share one SdkLLMProvider (double-checked lock)."""
+    def test_get_sdk_provider_single_init_under_concurrency(self, monkeypatch) -> None:
+        """Concurrent first-callers construct exactly one SdkLLMProvider.
+
+        Asserting on the returned identity alone is false-green: without the
+        lock, racing callers each construct an instance and the last write wins,
+        so every late reader still sees the same final attribute. Count actual
+        constructions instead.
+        """
         import threading
 
-        rp = self._make_provider()
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        construct_count = {"n": 0}
+        count_lock = threading.Lock()
+
+        class FakeSdk:
+            def __init__(self, *args, **kwargs) -> None:
+                with count_lock:
+                    construct_count["n"] += 1
+
+            def shutdown(self) -> None: ...
+
+        monkeypatch.setattr("lilbee.providers.routing_provider.SdkLLMProvider", FakeSdk)
+
+        rp = RoutingProvider()
+        self._to_shutdown.append(rp)
         barrier = threading.Barrier(8)
         results: list = []
 
@@ -564,6 +585,7 @@ class TestRoutingProvider:
         for t in threads:
             t.join()
 
+        assert construct_count["n"] == 1
         assert len({id(r) for r in results}) == 1
 
     def test_list_chat_models_empty_when_sdk_unavailable(self) -> None:
