@@ -167,7 +167,7 @@ class TestRoleReady:
         assert mgr.role_ready(WorkerRole.CHAT) is False
 
     def test_false_when_shutdown_clears_port_mid_probe(self, tmp_path: Path) -> None:
-        # bb-ziks.16: a concurrent shutdown clears _port, so endpoint() raises
+        # A concurrent shutdown clears _port, so endpoint() raises
         # ProviderError; the read-only probe must report False, not throw.
         mgr = SwapManager(tmp_path)  # never started -> _port is None
         assert mgr.role_ready(WorkerRole.CHAT) is False

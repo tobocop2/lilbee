@@ -1156,7 +1156,7 @@ class TestSettingsMcp:
 
     def test_settings_set_validates_string_chunk_overlap(self, isolated_env):
         # MCP forwards raw JSON, so an agent can send a numeric as a string. The
-        # chunk_overlap < chunk_size guard must still fire (bb-ziks.71).
+        # chunk_overlap < chunk_size guard must still fire.
         cfg.data_root = isolated_env
         cfg.chunk_size = 512
         result = settings_set({"chunk_overlap": "1024"})

@@ -449,7 +449,7 @@ class TestAddIngestMutex:
         assert IngestLockRegistry.canonical_source_name("doc.txt") == "doc.txt"
 
     async def test_release_evicts_entry_so_registry_does_not_grow(self, isolated_env):
-        """bb-ziks.40: a long-lived daemon must not keep one lock per filename forever."""
+        """A long-lived daemon must not keep one lock per filename forever."""
         from lilbee.runtime.ingest_lock import IngestLockRegistry
 
         registry = IngestLockRegistry()

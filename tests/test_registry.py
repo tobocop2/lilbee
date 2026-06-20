@@ -463,7 +463,7 @@ class TestModelRegistryResolve:
         return f"{repo}/m-mxfp4-00001-of-00003.gguf"
 
     def test_cache_recovered_split_records_shard_accounting(self, tmp_path: Path) -> None:
-        # bb-ziks.49 (review round 2): a cache-only split GGUF (no manifest yet)
+        # A cache-only split GGUF (no manifest yet)
         # must recover its total size and every shard digest, not just the first.
         registry = ModelRegistry(tmp_path)
         repo = "ggml-org/gpt-oss-120b-GGUF"
@@ -476,7 +476,7 @@ class TestModelRegistryResolve:
         assert all(_SHA256_HEX_RE.fullmatch(d) for d in manifest.shard_blobs)
 
     def test_recover_legacy_shard_blobs_finds_extra_shards(self, tmp_path: Path) -> None:
-        # bb-ziks.49 (review round 2): a pre-accounting manifest (empty shard_blobs)
+        # A pre-accounting manifest (empty shard_blobs)
         # still frees every shard because removal recovers them from the cache.
         registry = ModelRegistry(tmp_path)
         repo = "ggml-org/gpt-oss-120b-GGUF"
@@ -856,7 +856,7 @@ class TestModelRegistryRemove:
         assert registry.is_installed(f"{_REPO}/Q8.gguf")
 
     def test_remove_gcs_all_split_shard_blobs(self, tmp_path: Path) -> None:
-        """bb-ziks.49: a split GGUF's extra shard blobs are freed on remove.
+        """A split GGUF's extra shard blobs are freed on remove.
 
         A sibling quant keeps the repo cache dir alive, so removal must gc each
         shard blob individually rather than relying on wiping the whole repo dir.

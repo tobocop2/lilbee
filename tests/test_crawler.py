@@ -2945,7 +2945,7 @@ class TestChromiumBootstrapTermination:
         assert proc.killed
 
     async def test_bootstrap_cancel_terminates_install(self, monkeypatch):
-        # bb-ziks.4: cancelling the bootstrap (SSE client disconnect) must not
+        # Cancelling the bootstrap (SSE client disconnect) must not
         # leave the chromium install running orphaned.
         from lilbee.crawler import bootstrap
 

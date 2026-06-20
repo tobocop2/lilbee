@@ -958,7 +958,7 @@ class TestZeroChunkPageTextPersistence:
             "lilbee.data.ingest.pipeline._produce_records", side_effect=self._pages_no_chunks
         ):
             first = await sync(quiet=True)
-            # 0 searchable chunks: reported as skipped, not added (bb-7jg1.11) ...
+            # 0 searchable chunks: reported as skipped, not added ...
             assert "blank.pdf" not in first.added
             assert "blank.pdf" in first.skipped
             # ... but its page text and source row still persist (one atomic write).
@@ -1427,7 +1427,7 @@ class TestClassifyResult:
 
     def test_zero_chunks_with_page_texts_persists_but_counts_skipped(self):
         # Whitespace-only OCR: no searchable chunks, so it is reported as skipped
-        # (bb-7jg1.11), but the pages and source row must still persist (it stops
+        # , but the pages and source row must still persist (it stops
         # replanning), so the status stays INGESTED for the batched flush.
         from lilbee.data.ingest.pipeline import _classify_result
         from lilbee.data.ingest.types import _IngestResult
@@ -1574,7 +1574,7 @@ class TestCollectResultsSkipped:
 
     async def test_zero_text_update_purges_prior_index_entry(self, mock_svc):
         # An already-indexed file edited to extract to nothing must have its old
-        # chunks/source row removed, not left orphaned in search (bb-ziks.74).
+        # Chunks/source row removed, not left orphaned in search.
         from lilbee.data.ingest.pipeline import _collect_results
         from lilbee.data.ingest.types import _IngestResult
 

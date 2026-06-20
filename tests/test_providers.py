@@ -3142,7 +3142,7 @@ class TestSdkLLMProviderVisionOcr:
             provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0.01)
 
     def test_timeout_frees_caller_without_waiting_for_hung_call(self) -> None:
-        # bb-7jg1.22: on timeout the caller must be freed at the deadline, not
+        # On timeout the caller must be freed at the deadline, not
         # blocked by the pool's shutdown(wait=True) until the hung call returns.
         import threading
         import time

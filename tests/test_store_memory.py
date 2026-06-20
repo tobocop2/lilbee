@@ -361,7 +361,7 @@ class TestRebuildEmbeddings:
         assert got.vector[3] == 1.0
 
     def test_snapshot_and_embed_run_under_write_lock(self, store):
-        # bb-ziks.7: the read+embed must hold the lock, or a concurrent add_memory
+        # The read+embed must hold the lock, or a concurrent add_memory
         # committing in the embed window is erased by the unconditional drop_table.
         from lilbee.runtime.lock import _write_mutex
 

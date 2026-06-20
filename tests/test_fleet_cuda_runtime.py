@@ -70,7 +70,7 @@ def test_apply_cuda_runtime_env_updates_os_environ(monkeypatch: pytest.MonkeyPat
 
 
 def test_apply_cuda_runtime_env_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
-    # bb-ziks.15: plan_all_launches re-applies on every reload pass; the wheel
+    # plan_all_launches re-applies on every reload pass; the wheel
     # dirs must not accumulate duplicate copies in LD_LIBRARY_PATH.
     _force_linux(monkeypatch)
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)

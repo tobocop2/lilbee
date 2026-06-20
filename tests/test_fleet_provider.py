@@ -160,7 +160,7 @@ def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
 
 
 def test_adopt_swap_retires_old_clients_without_closing(monkeypatch) -> None:
-    # bb-ziks.14: re-adopting (a reload) must not close old clients in place (a
+    # Re-adopting (a reload) must not close old clients in place (a
     # reader may still hold one); they are retired for deferred close.
     launch = _fake_launch(WorkerRole.EMBED)
     swap = _install_engine(monkeypatch, launches=[launch])
@@ -178,7 +178,7 @@ def test_adopt_swap_retires_old_clients_without_closing(monkeypatch) -> None:
 
 
 def test_retire_closes_prior_idle_generation_at_next_reload() -> None:
-    # bb-ziks.14 (review round 5): the prior reload's clients are closed at the
+    # The prior reload's clients are closed at the
     # next reload, by when their readers (in_flight==0) have finished.
     p = FleetProvider()
     prior = [_fake_client(in_flight=0), _fake_client(in_flight=0)]
@@ -381,7 +381,7 @@ def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
 
 
 def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
-    # bb-ziks.30: resizing the gate while a request is in flight would build a
+    # Resizing the gate while a request is in flight would build a
     # fresh full-capacity semaphore beside the old holders and momentarily double
     # the real cap. The resize must wait until the gate drains to idle.
     import threading

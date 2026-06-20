@@ -1197,7 +1197,7 @@ def test_chat_stream_items_recovers_bare_json_tool_call() -> None:
 
 
 def test_recover_bare_json_stream_forwards_close_to_source() -> None:
-    # bb-ziks.17: closing the wrapper must close the source generator, or the
+    # Closing the wrapper must close the source generator, or the
     # underlying HTTP stream and its in_flight slot leak until GC.
     from lilbee.providers.fleet.client import _recover_bare_json_stream
 

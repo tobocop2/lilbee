@@ -350,7 +350,7 @@ class TestStreamChatWithCap:
         assert provider.chat.call_count == 2
 
     def test_cap_fire_closes_the_first_stream_through_text_only(self):
-        # bb-ziks.17: on cap-fire the first stream is closed via _text_only's
+        # On cap-fire the first stream is closed via _text_only's
         # forwarded close, or its HTTP connection / in_flight slot leaks until GC.
         class ClosableStream:
             def __init__(self, tokens) -> None:

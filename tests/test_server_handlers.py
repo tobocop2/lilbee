@@ -1094,7 +1094,7 @@ class TestSyncStreamDoneDelivery:
     async def test_put_threadsafe_defers_enqueue_to_loop(self):
         """put_threadsafe schedules the enqueue on the loop instead of mutating
         the asyncio.Queue inline; even called from the loop thread the item is
-        not present until a loop iteration runs (bb-ziks.76)."""
+        not present until a loop iteration runs."""
         from lilbee.server.handlers import SseStream
 
         sse = SseStream()
@@ -2507,7 +2507,7 @@ class TestModelsDelete:
         assert result.model == "test"
 
     async def test_reports_freed_size_from_shared_remove(self):
-        # bb-ziks.49 (review round 3): REST reports the real freed size (full
+        # REST reports the real freed size (full
         # multi-shard total), not a hardcoded 0, matching CLI and MCP.
         from lilbee.app.models import RemoveResult
 

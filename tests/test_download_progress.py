@@ -691,7 +691,7 @@ class TestProgressTracker:
         assert events[-1] == (40, 100)
 
     def test_split_shards_report_one_monotonic_progression(self) -> None:
-        # bb-7jg1.14: two shards must report one 0->grand_total run, not two
+        # Two shards must report one 0->grand_total run, not two
         # separate 0->100% cycles against the wrong (first-shard) total.
         events: list[tuple[int, int]] = []
         tracker = _ProgressTracker(lambda d, t: events.append((d, t)), grand_total=300)
