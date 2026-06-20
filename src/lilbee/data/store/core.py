@@ -850,7 +850,7 @@ class Store:
     def _batch_source_rows(self, items: list[ChunkWrite]) -> list[dict]:
         """One ``_sources`` row per batched document."""
         return [
-            self._source_row(it.source, it.file_hash, len(it.records), SourceType.DOCUMENT, it.stat)
+            self._source_row(it.source, it.file_hash, len(it.records), it.source_type, it.stat)
             for it in items
         ]
 
