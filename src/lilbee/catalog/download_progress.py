@@ -2,9 +2,10 @@
 
 The TUI runs under Textual which owns the terminal; tqdm output to
 stderr/stdout corrupts the screen. This module provides a tqdm subclass
-(``_CallbackProgressBar``) that suppresses terminal output and forwards
-progress to a plain ``Callable[[int, int], None]`` callback. The
-``_ProgressTracker`` wrapper detects whether progress events actually
+(``_CallbackProgressBar``) that suppresses terminal output and tracks
+cumulative bytes; its ``_ProgressTracker`` subclass forwards progress to a
+plain ``Callable[[int, int], None]`` callback (aggregating across split
+shards) and detects whether progress events actually
 fired so the TUI can detect a cache-hit (no progress events) and render
 ``"already downloaded"`` instead of leaving the bar at 0%.
 

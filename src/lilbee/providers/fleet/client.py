@@ -407,7 +407,7 @@ class LlamaServerClient:
         """
         payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
         if stream:
-            return self._chat_stream(payload)
+            return self._stream_tracked(self._chat_stream_body(payload))
         request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
         with self._track():
             resp = self._http.post(
@@ -416,11 +416,9 @@ class LlamaServerClient:
             _raise_for_status(resp)
             return str(resp.json()["choices"][0]["message"]["content"])
 
-    def _chat_stream(self, payload: dict[str, Any]) -> Iterator[str]:
-        with (
-            self._track(),
-            self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
-        ):
+    def _chat_stream_body(self, payload: dict[str, Any]) -> Iterator[str]:
+        # in_flight is reserved by _stream_tracked, which wraps this; see there.
+        with self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp:
             _raise_for_status(resp)
             for line in resp.iter_lines():
                 delta = _parse_sse_delta(line)
@@ -534,22 +532,22 @@ class LlamaServerClient:
         """
         prepared = self._prepare_chat_messages(messages)
         return _recover_bare_json_stream(
-            self._open_chat_stream(prepared, tools, tool_choice, options)
+            self._stream_tracked(self._open_chat_stream_body(prepared, tools, tool_choice, options))
         )
 
-    def _open_chat_stream(
+    def _open_chat_stream_body(
         self,
         messages: Sequence[Mapping[str, Any]],
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         options: dict[str, Any] | None,
     ) -> Iterator[str | ToolCallDelta | TokenUsage]:
-        """Open one SSE chat stream and yield its frames; raises before the first frame."""
+        """Open one SSE chat stream and yield its frames; raises before the first frame.
+
+        in_flight is reserved by _stream_tracked, which wraps this; see there.
+        """
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
-        with (
-            self._track(),
-            self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
-        ):
+        with self._http.stream("POST", _CHAT_PATH, json=payload) as resp:
             _raise_for_status(resp)
             for line in resp.iter_lines():
                 yield from _parse_sse_stream_items(line)
@@ -850,6 +848,35 @@ class LlamaServerClient:
     def _track(self) -> _InFlight:
         return _InFlight(self)
 
+    def _enter_in_flight(self) -> None:
+        """Atomically reserve one in-flight slot (the router balances on this)."""
+        with self._in_flight_lock:
+            self.in_flight += 1
+
+    def _exit_in_flight(self) -> None:
+        """Atomically release one in-flight slot."""
+        with self._in_flight_lock:
+            self.in_flight -= 1
+
+    def _stream_tracked(self, body: Iterator[_T]) -> Iterator[_T]:
+        """Wrap a streaming *body* so its in-flight slot is reserved eagerly.
+
+        Reserves the slot now (at call time), not on the body's first iteration:
+        a stream is often built and handed off before its first frame is pulled,
+        and a concurrent reload's client drain keys on ``in_flight`` to decide a
+        client is idle. Eager reservation keeps a checked-out-but-not-yet-started
+        stream from being closed out from under. The slot is released when the
+        returned generator is exhausted or closed.
+        """
+        self._enter_in_flight()
+        return self._release_in_flight_on_close(body)
+
+    def _release_in_flight_on_close(self, body: Iterator[_T]) -> Iterator[_T]:
+        try:
+            yield from body
+        finally:
+            self._exit_in_flight()
+
 
 class _InFlight:
     """Context manager that atomically bumps the owner's in-flight counter.
@@ -862,12 +889,10 @@ class _InFlight:
         self._client = client
 
     def __enter__(self) -> None:
-        with self._client._in_flight_lock:
-            self._client.in_flight += 1
+        self._client._enter_in_flight()
 
     def __exit__(self, *_exc: object) -> None:
-        with self._client._in_flight_lock:
-            self._client.in_flight -= 1
+        self._client._exit_in_flight()
 
 
 def _rerank_score(item: dict[str, Any]) -> float:

@@ -869,6 +869,37 @@ def test_in_flight_resets_after_chat() -> None:
     assert c.in_flight == 0
 
 
+def test_chat_stream_reserves_in_flight_before_first_frame() -> None:
+    # bb-ziks.14 (review round 4): a stream reserves its in-flight slot at creation,
+    # before the first frame is pulled, so a concurrent reload's client drain (which
+    # keys on in_flight) never closes the client during the checkout->first-next gap.
+    body = _content_sse("hi") + "data: [DONE]\n\n"
+    c = _client(_stream_handler(body))
+    stream = c.chat([{"role": "user", "content": "q"}], stream=True)
+    assert c.in_flight == 1  # reserved eagerly, not on first iteration
+    assert list(stream) == ["hi"]
+    assert c.in_flight == 0  # released on exhaustion
+
+
+def test_chat_stream_items_reserves_in_flight_before_first_frame() -> None:
+    body = _content_sse("hi") + "data: [DONE]\n\n"
+    c = _client(_stream_handler(body))
+    stream = c.chat_stream_items([{"role": "user", "content": "q"}], tools=_tools())
+    assert c.in_flight == 1  # reserved eagerly through the recover wrapper too
+    list(stream)
+    assert c.in_flight == 0
+
+
+def test_chat_stream_releases_in_flight_on_close() -> None:
+    body = _content_sse("a") + _content_sse("b") + "data: [DONE]\n\n"
+    c = _client(_stream_handler(body))
+    stream = c.chat([{"role": "user", "content": "q"}], stream=True)
+    assert c.in_flight == 1
+    assert next(stream) == "a"
+    stream.close()  # abandoned mid-stream
+    assert c.in_flight == 0  # released on close, not leaked
+
+
 def test_close_closes_owned_client() -> None:
     c = LlamaServerClient("http://gpu0", "m")  # owns its httpx.Client
     c.close()
