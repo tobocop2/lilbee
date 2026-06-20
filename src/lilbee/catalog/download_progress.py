@@ -110,20 +110,37 @@ class _CallbackProgressBar(_base_tqdm):
 
 
 class _ProgressTracker:
-    """Wraps a tqdm_class to detect whether progress updates actually fired."""
+    """Wraps a tqdm_class to detect updates and aggregate across split shards.
 
-    def __init__(self, callback: Any) -> None:
+    For a multi-shard GGUF, each shard gets its own tqdm. Reporting each shard's
+    own ``(done, total)`` would show N separate 0->100% cycles against the wrong
+    total; instead the tracker carries ``grand_total`` (all shards) and a
+    ``completed_base`` (bytes from finished shards), so the callback sees one
+    monotonic 0->100% over the whole download. ``grand_total`` of 0 means
+    single-file: fall back to the shard's own tqdm total (unchanged behavior).
+    """
+
+    def __init__(self, callback: Any, grand_total: int = 0) -> None:
         self.was_used = False
         self._callback = callback
+        self.grand_total = grand_total
+        self._completed_base = 0
+
+    def shard_done(self, shard_size: int) -> None:
+        """Roll a finished shard's bytes into the base for the next shard."""
+        self._completed_base += shard_size
 
     def make_tqdm_class(self) -> type[_base_tqdm]:
         tracker = self
 
         class _Cls(_CallbackProgressBar):
-            _callback = staticmethod(tracker._callback)
-
             def update(self, n: float = 1) -> bool | None:
                 tracker.was_used = True
-                return super().update(n)
+                self._cumulative += int(n)
+                done = tracker._completed_base + self._cumulative
+                shard_total = self.total if self.total is not None else 0
+                total = tracker.grand_total or (tracker._completed_base + shard_total)
+                tracker._callback(int(done), int(total))
+                return None
 
         return _Cls

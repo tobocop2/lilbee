@@ -15,7 +15,7 @@ import os
 import re
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -94,14 +94,24 @@ class ModelManifest:
 
     hf_repo: str
     gguf_filename: str
-    size_bytes: int
+    size_bytes: int  # primary (first-shard) blob size; validated against the blob on disk
     task: ModelTask
     downloaded_at: str  # ISO 8601
     blob: str | None = None  # SHA-256 hex of the blob in the HF cache; None pre-install
+    # A split GGUF has further shard blobs beyond ``blob``. ``total_size_bytes``
+    # is the sum across every shard (None = single file, use ``size_bytes``);
+    # ``shard_blobs`` are the non-primary shard digests, so removal frees them all.
+    total_size_bytes: int | None = None
+    shard_blobs: list[str] = field(default_factory=list)
 
     @property
     def ref(self) -> str:
         return format_native_gguf_ref(self.hf_repo, self.gguf_filename)
+
+    @property
+    def disk_size_bytes(self) -> int:
+        """Total bytes this model occupies on disk, across all shards."""
+        return self.total_size_bytes if self.total_size_bytes is not None else self.size_bytes
 
 
 def _copy_atomic(source_path: Path, blob_path: Path) -> None:
@@ -406,6 +416,10 @@ class ModelRegistry:
             task=manifest.task,
             downloaded_at=manifest.downloaded_at,
             blob=digest,
+            # Carry the split-shard accounting through unchanged (computed by the
+            # caller from the full shard set); install only rewrites the primary.
+            total_size_bytes=manifest.total_size_bytes,
+            shard_blobs=manifest.shard_blobs,
         )
         self._write_manifest(updated)
         return blob_path
@@ -431,8 +445,12 @@ class ModelRegistry:
         repo_dir = manifest_path.parent
         if repo_dir.exists() and not any(repo_dir.iterdir()):
             repo_dir.rmdir()
-        if manifest.blob is not None:
-            self._gc_blob(manifest.hf_repo, manifest.blob)
+        # Free the primary blob and every extra shard blob; a split GGUF has more
+        # than one, and leaving the others orphans them when a sibling quant keeps
+        # the repo cache dir alive.
+        for digest in [manifest.blob, *manifest.shard_blobs]:
+            if digest is not None:
+                self._gc_blob(manifest.hf_repo, digest)
         log.info("Removed model %s", ref)
         return True
 
@@ -457,7 +475,7 @@ class ModelRegistry:
             if cache_path.exists():
                 shutil.rmtree(cache_path)
             return
-        if any(m.blob == digest for m in siblings):
+        if any(digest == m.blob or digest in m.shard_blobs for m in siblings):
             return
         blob_file = cache_path / "blobs" / digest
         if blob_file.exists():
@@ -569,6 +587,31 @@ def _repo_relative_gguf_name(file_path: Path) -> str:
     return "/".join(relative_parts) if relative_parts else file_path.name
 
 
+def _shard_accounting(first_shard_path: Path) -> tuple[int | None, list[str]]:
+    """Total on-disk size and non-primary shard blob digests for a split GGUF.
+
+    ``(None, [])`` for a single-file model. For a split GGUF, the sibling shards
+    live next to the first shard; each snapshot file is a symlink whose target
+    name is its HF blob digest, so the shards are summed and the digests of
+    shards 2..N collected for removal-time garbage collection.
+    """
+    from lilbee.catalog.download import split_shard_filenames
+
+    shard_names = split_shard_filenames(first_shard_path.name)
+    if len(shard_names) <= 1:
+        return None, []
+    total = 0
+    shard_blobs: list[str] = []
+    for index, name in enumerate(shard_names):
+        shard_path = first_shard_path.with_name(name)
+        if not shard_path.exists():
+            continue
+        total += shard_path.stat().st_size
+        if index > 0:  # the primary blob is tracked separately as manifest.blob
+            shard_blobs.append(shard_path.resolve().name)
+    return total, shard_blobs
+
+
 def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """Write a registry manifest for a freshly downloaded GGUF.
 
@@ -578,12 +621,15 @@ def register_downloaded_model(entry: CatalogModel, file_path: Path) -> None:
     """
     registry = ModelRegistry(cfg.models_dir)
     gguf_filename = _repo_relative_gguf_name(file_path)
+    total_size, shard_blobs = _shard_accounting(file_path)
     manifest = ModelManifest(
         hf_repo=entry.hf_repo,
         gguf_filename=gguf_filename,
         size_bytes=file_path.stat().st_size,
         task=entry.task,
         downloaded_at=datetime.now(UTC).isoformat(),
+        total_size_bytes=total_size,
+        shard_blobs=shard_blobs,
     )
     try:
         registry.install(entry.hf_repo, gguf_filename, file_path, manifest)

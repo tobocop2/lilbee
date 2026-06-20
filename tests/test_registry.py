@@ -809,6 +809,60 @@ class TestModelRegistryRemove:
         registry.remove(f"{_REPO}/Q4.gguf")
         assert registry.is_installed(f"{_REPO}/Q8.gguf")
 
+    def test_remove_gcs_all_split_shard_blobs(self, tmp_path: Path) -> None:
+        """bb-ziks.49: a split GGUF's extra shard blobs are freed on remove.
+
+        A sibling quant keeps the repo cache dir alive, so removal must gc each
+        shard blob individually rather than relying on wiping the whole repo dir.
+        """
+        registry = ModelRegistry(tmp_path)
+        sib = tmp_path / "sib.gguf"
+        sib.write_bytes(b"GGUF" + b"\x09" * 30)
+        registry.install(_REPO, "Sibling.gguf", sib, _make_manifest(gguf_filename="Sibling.gguf"))
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        blobs = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
+        (blobs / "shard2digest").write_bytes(b"x" * 10)
+        (blobs / "shard3digest").write_bytes(b"x" * 10)
+        manifest = registry._read_manifest(_REPO, _FILENAME)
+        assert manifest is not None
+        manifest.shard_blobs = ["shard2digest", "shard3digest"]
+        registry._write_manifest(manifest)
+
+        registry.remove(_REF)
+        assert not (blobs / "shard2digest").exists()
+        assert not (blobs / "shard3digest").exists()
+        assert registry.is_installed(f"{_REPO}/Sibling.gguf")
+
+    def test_remove_keeps_shard_blob_referenced_by_sibling(self, tmp_path: Path) -> None:
+        """A shard digest still referenced by a sibling's shard_blobs survives."""
+        registry = ModelRegistry(tmp_path)
+        sib = tmp_path / "sib.gguf"
+        sib.write_bytes(b"GGUF" + b"\x09" * 30)
+        registry.install(_REPO, "Sibling.gguf", sib, _make_manifest(gguf_filename="Sibling.gguf"))
+        sibling = registry._read_manifest(_REPO, "Sibling.gguf")
+        assert sibling is not None
+        sibling.shard_blobs = ["shared"]
+        registry._write_manifest(sibling)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        blobs = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
+        (blobs / "shared").write_bytes(b"x" * 10)
+        manifest = registry._read_manifest(_REPO, _FILENAME)
+        assert manifest is not None
+        manifest.shard_blobs = ["shared"]
+        registry._write_manifest(manifest)
+
+        registry.remove(_REF)
+        assert (blobs / "shared").exists()  # still referenced by the sibling
+
+    def test_disk_size_bytes_uses_total_for_split(self, tmp_path: Path) -> None:
+        manifest = _make_manifest()
+        manifest.size_bytes = 100  # first shard only
+        assert manifest.disk_size_bytes == 100  # single-file: falls back to size_bytes
+        manifest.total_size_bytes = 600  # six-shard total
+        assert manifest.disk_size_bytes == 600
+
     def test_remove_missing(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         removed = registry.remove(_REF)
@@ -1055,3 +1109,26 @@ class TestModelRegistryGCBlobPathGuard:
         assert any(
             "Refusing to remove cache outside models_dir" in r.message for r in caplog.records
         )
+
+
+class TestShardAccounting:
+    def test_single_file_returns_none_and_empty(self, tmp_path: Path) -> None:
+        from lilbee.modelhub.registry import _shard_accounting
+
+        f = tmp_path / "model-Q4_K_M.gguf"
+        f.write_bytes(b"x" * 10)
+        assert _shard_accounting(f) == (None, [])
+
+    def test_multi_shard_sums_size_and_collects_extra_blobs(self, tmp_path: Path) -> None:
+        from lilbee.modelhub.registry import _shard_accounting
+
+        names = [
+            "m-00001-of-00003.gguf",
+            "m-00002-of-00003.gguf",
+            "m-00003-of-00003.gguf",
+        ]
+        for name in names:
+            (tmp_path / name).write_bytes(b"x" * 10)
+        total, shard_blobs = _shard_accounting(tmp_path / names[0])
+        assert total == 30  # all three shards summed
+        assert len(shard_blobs) == 2  # shards 2 and 3 (primary tracked separately)

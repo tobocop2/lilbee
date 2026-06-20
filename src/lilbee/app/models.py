@@ -361,7 +361,9 @@ def remove_model_data(
     """Remove *ref* and return a typed result with freed size."""
     manager = get_services().model_manager
     manifests = _native_manifest_index()
-    size_bytes = manifests[ref].size_bytes if ref in manifests else 0
+    # disk_size_bytes is the full multi-shard total; size_bytes alone would report
+    # only the first shard for a split GGUF.
+    size_bytes = manifests[ref].disk_size_bytes if ref in manifests else 0
     removed = manager.remove(ref, source=source)
     return RemoveResult(
         model=ref,
