@@ -11,7 +11,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scenarios import Scenario, ScenarioStatus, _poll_verdict
+from scenarios import (
+    Scenario,
+    ScenarioResult,
+    ScenarioStatus,
+    _poll_verdict,
+    downgrade_if_ungrounded,
+)
 
 
 def _scenario() -> Scenario:
@@ -77,50 +83,42 @@ def test_no_dispatch_keeps_waiting(tmp_path: Path) -> None:
     assert _verdict(tmp_path) is None
 
 
-def _verdict_with_pane(workspace: Path, pane: str):
-    return _poll_verdict(
-        _scenario(),
-        workspace,
-        pane=pane,
-        baseline_calls=0,
-        baseline_dispatches=0,
-        start=0.0,
-    )
+# downgrade_if_ungrounded runs on the SETTLED pane (after wait_for_answer_settle),
+# so these inject a settled pane directly, which is exactly how the harness calls it.
+def _passing() -> ScenarioResult:
+    return ScenarioResult(name="x", status=ScenarioStatus.PASS, detail="1 dispatch + completion")
 
 
-def test_ungrounded_not_found_answer_fails_despite_dispatch(tmp_path: Path) -> None:
-    # A fresh dispatch + a lilbee chat completion is NOT a pass when the answer
-    # says the search found nothing: the tier prompts target content the indexed
-    # reference does contain, so "not found" is a real failure, not a clean pass.
-    _write_dispatch_event(tmp_path)
-    _write_chat_completions(tmp_path, 1)
+def test_downgrade_ungrounded_pass_becomes_fail() -> None:
     pane = (
         "The AStarGrid2D class and its get_id_path method are not found in the indexed reference."
     )
-    verdict = _verdict_with_pane(tmp_path, pane)
-    assert verdict is not None
-    assert verdict.status is ScenarioStatus.FAIL
-    assert "ungrounded" in verdict.detail
+    out = downgrade_if_ungrounded(_passing(), pane)
+    assert out.status is ScenarioStatus.FAIL
+    assert "ungrounded" in out.detail
 
 
-def test_grounded_answer_still_passes(tmp_path: Path) -> None:
-    # A real answer (no ungrounded markers) with dispatch + completion passes:
-    # the gate must not over-fire on substantive responses.
-    _write_dispatch_event(tmp_path)
-    _write_chat_completions(tmp_path, 1)
+def test_downgrade_keeps_grounded_pass() -> None:
+    # A substantive grounded answer is left untouched (no over-fire).
     pane = (
         "Object.connect signature: func connect(signal, callable, flags=0). CONNECT_DEFERRED is 1."
     )
-    verdict = _verdict_with_pane(tmp_path, pane)
-    assert verdict is not None
-    assert verdict.status is ScenarioStatus.PASS
+    assert downgrade_if_ungrounded(_passing(), pane).status is ScenarioStatus.PASS
 
 
-def test_ungrounded_answer_without_dispatch_keeps_waiting(tmp_path: Path) -> None:
-    # The ungrounded gate only downgrades a would-be-PASS. A model that answers
-    # "not found" from memory without ever dispatching must NOT be mislabeled as
-    # an ungrounded-search failure; it keeps waiting (and later times out on the
-    # accurate no-dispatch detail).
-    _write_chat_completions(tmp_path, 1)  # completion but no search dispatch
+def test_downgrade_noop_on_non_pass() -> None:
+    # The gate only downgrades a PASS; a FAIL (e.g. no dispatch) keeps its
+    # accurate detail rather than being relabeled "ungrounded".
+    fail = ScenarioResult(name="x", status=ScenarioStatus.FAIL, detail="no dispatch")
     pane = "AStarGrid2D get_id_path is not found in the indexed reference."
-    assert _verdict_with_pane(tmp_path, pane) is None
+    out = downgrade_if_ungrounded(fail, pane)
+    assert out.status is ScenarioStatus.FAIL
+    assert out.detail == "no dispatch"
+
+
+def test_downgrade_scans_only_the_tail() -> None:
+    # An ungrounded phrase from earlier mid-search reasoning, pushed out of the
+    # tail by a long grounded final answer, must not false-fail.
+    early = "search 1: not found in the indexed set; retrying. "
+    grounded = "get_id_path returns a PackedInt64Array of point ids. " * 80
+    assert downgrade_if_ungrounded(_passing(), early + grounded).status is ScenarioStatus.PASS

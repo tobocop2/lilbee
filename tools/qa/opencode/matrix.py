@@ -40,6 +40,7 @@ from opencode_driver import (
 from report import CellResult, render_report
 from scenarios import (
     ScenarioResult,
+    downgrade_if_ungrounded,
     run_multi_turn_scenario,
     run_scenario,
     scenario_for_tier,
@@ -89,10 +90,13 @@ def run_smoke_scenarios(
     scen = scenario_for_tier(tier)
     print(f"[{family}] running {scen.name}: {scen.prompt[:60]}...")
     single = run_scenario(session, scen, workspace)
-    print(f"[{family}]   -> {single.status.value} ({single.elapsed_s:.1f}s) {single.detail}")
-    # Settle the single-call answer before the multi-turn sequence reuses the
-    # session, so its first turn starts from a quiet pane.
+    # Settle the single-call answer before grading it (and before the multi-turn
+    # sequence reuses the session): the verdict trips at dispatch + completion
+    # while the answer is still streaming, so answer-grounding can only be judged
+    # once it has rendered on the pane.
     wait_for_answer_settle(session, workspace)
+    single = downgrade_if_ungrounded(single, tmux_capture(session))
+    print(f"[{family}]   -> {single.status.value} ({single.elapsed_s:.1f}s) {single.detail}")
     print(f"[{family}] running {tier} multi-turn tool sequence...")
     multi = run_multi_turn_scenario(session, tier, workspace)
     print(

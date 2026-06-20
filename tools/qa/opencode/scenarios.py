@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from events import count_session_idles, count_tool_dispatches, has_session_error, read_events
@@ -56,8 +56,8 @@ completion count so a stale pane can't carry a prior cell's glyph.
 # the indexed reference had nothing: the tier prompts target content the
 # reference does contain (AStarGrid2D.get_id_path, Object.connect), so that is a
 # retrieval/answer failure, not a correct "absent" response. Kept narrow and
-# scanned only on the would-be-PASS answer tail (see _poll_verdict) so transient
-# mid-search reasoning or an incidental negative does not false-fail.
+# scanned only on the settled answer tail (see downgrade_if_ungrounded) so
+# transient mid-search reasoning or an incidental negative does not false-fail.
 _UNGROUNDED_ANSWER_MARKERS: tuple[str, ...] = (
     "not found in the indexed",
     "not found in the knowledge base",
@@ -180,23 +180,9 @@ def _poll_verdict(
     fresh_dispatches = count_tool_dispatches(events, _SEARCH_TOOL_SUBSTR) - baseline_dispatches
     fresh_call = _count_ok_chat_completions(workspace) - baseline_calls
     missing = [s for s in scenario.expected if s.lower() not in pane_lower]
-    verdict = _dispatch_verdict(
+    return _dispatch_verdict(
         result, fresh_dispatches, fresh_call, has_events=bool(events), missing=missing
     )
-    # Downgrade only a would-be-PASS: the answer turn has completed (a fresh
-    # dispatch AND chat completion), so the final answer is rendered. Scan just
-    # the answer tail so an earlier transient "not found" from mid-search
-    # reasoning cannot false-fail a recovered, grounded final answer.
-    if verdict is not None and verdict.status is ScenarioStatus.PASS:
-        tail = pane_lower[-_UNGROUNDED_SCAN_TAIL:]
-        ungrounded = next((m for m in _UNGROUNDED_ANSWER_MARKERS if m.lower() in tail), None)
-        if ungrounded is not None:
-            return result(
-                ScenarioStatus.FAIL,
-                f"dispatched + completed but the answer is ungrounded "
-                f"(search found nothing in the reference): {ungrounded!r}",
-            )
-    return verdict
 
 
 def _dispatch_verdict(
@@ -282,6 +268,29 @@ def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioR
         detail=f"no {_SEARCH_TOOL_SUBSTR} dispatch within {scenario.timeout_s:.0f}s",
         pane_excerpt=last_pane[-_PANE_EXCERPT_TAIL:],
         elapsed_s=scenario.timeout_s,
+    )
+
+
+def downgrade_if_ungrounded(result: ScenarioResult, settled_pane: str) -> ScenarioResult:
+    """Downgrade a PASS to FAIL when the settled answer is ungrounded.
+
+    Must run on the SETTLED pane (after :func:`wait_for_answer_settle`): the
+    verdict trips at dispatch + completion, before opencode finishes streaming
+    the answer, so grounding can only be judged once the answer is rendered.
+    Scans the answer tail for a marker that the search returned nothing usable.
+    Non-PASS results and grounded answers pass through unchanged.
+    """
+    if result.status is not ScenarioStatus.PASS:
+        return result
+    tail = settled_pane.lower()[-_UNGROUNDED_SCAN_TAIL:]
+    ungrounded = next((m for m in _UNGROUNDED_ANSWER_MARKERS if m.lower() in tail), None)
+    if ungrounded is None:
+        return result
+    return replace(
+        result,
+        status=ScenarioStatus.FAIL,
+        detail=f"dispatched + completed but the answer is ungrounded "
+        f"(search found nothing in the reference): {ungrounded!r}",
     )
 
 
