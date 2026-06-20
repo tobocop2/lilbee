@@ -506,6 +506,66 @@ class TestRoutingProvider:
         second = rp._get_sdk_provider()
         assert first is second
 
+    def test_get_local_single_init_under_concurrency(self, monkeypatch) -> None:
+        """Concurrent first-callers build the FleetProvider exactly once.
+
+        Without the double-checked _init_lock, simultaneous callers each spawn a
+        FleetProvider (duplicate role servers) and all but one leak.
+        """
+        import threading
+
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        construct_count = {"n": 0}
+        count_lock = threading.Lock()
+
+        class FakeFleet:
+            def __init__(self) -> None:
+                with count_lock:
+                    construct_count["n"] += 1
+
+            def shutdown(self) -> None: ...
+
+        monkeypatch.setattr("lilbee.providers.fleet.provider.FleetProvider", FakeFleet)
+
+        rp = RoutingProvider()
+        self._to_shutdown.append(rp)
+        barrier = threading.Barrier(8)
+        results: list = []
+
+        def worker() -> None:
+            barrier.wait()
+            results.append(rp._get_local())
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert construct_count["n"] == 1
+        assert len({id(r) for r in results}) == 1
+
+    def test_get_sdk_provider_single_init_under_concurrency(self) -> None:
+        """Concurrent first-callers share one SdkLLMProvider (double-checked lock)."""
+        import threading
+
+        rp = self._make_provider()
+        barrier = threading.Barrier(8)
+        results: list = []
+
+        def worker() -> None:
+            barrier.wait()
+            results.append(rp._get_sdk_provider())
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len({id(r) for r in results}) == 1
+
     def test_list_chat_models_empty_when_sdk_unavailable(self) -> None:
         # list_chat_models must skip the SDK backend entirely when the SDK
         # is not installed; native llama-cpp never has a frontier catalog.
