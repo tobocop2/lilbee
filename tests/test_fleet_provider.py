@@ -305,16 +305,64 @@ def test_vision_call_caps_output_tokens(monkeypatch) -> None:
 
 def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
     # The gate must cap in-flight vision requests at the fleet's real OCR capacity
-    # (replicas x per-server slots) and rebuild when that capacity changes.
+    # (replicas x per-server slots) and rebuild to a new capacity while idle.
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
     monkeypatch.setattr(cfg, "vision_replicas", 3)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
-    gate = prov_mod._VISION_GATE.semaphore()
+    with prov_mod._VISION_GATE.slot():
+        first = prov_mod._VISION_GATE._semaphore
     assert prov_mod._VISION_GATE._capacity == 12
     monkeypatch.setattr(cfg, "vision_replicas", 1)
-    assert prov_mod._VISION_GATE.semaphore() is not gate
+    with prov_mod._VISION_GATE.slot():
+        assert prov_mod._VISION_GATE._semaphore is not first  # rebuilt while idle
     assert prov_mod._VISION_GATE._capacity == 4
+
+
+def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
+    # bb-ziks.30: resizing the gate while a request is in flight would build a
+    # fresh full-capacity semaphore beside the old holders and momentarily double
+    # the real cap. The resize must wait until the gate drains to idle.
+    import threading
+
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(cfg, "vision_replicas", 1)
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
+
+    entered = threading.Event()
+    release = threading.Event()
+    held: list[object] = []
+
+    def _hold() -> None:
+        with prov_mod._VISION_GATE.slot():
+            held.append(prov_mod._VISION_GATE._semaphore)
+            entered.set()
+            release.wait(timeout=5)
+
+    worker = threading.Thread(target=_hold)
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        # Capacity change arrives mid-flight; a checkout must reuse the live
+        # semaphore rather than swap, so the cap is never doubled.
+        monkeypatch.setattr(cfg, "vision_replicas", 4)
+        reused = prov_mod._VISION_GATE._checkout()
+        try:
+            assert reused is held[0]
+            assert prov_mod._VISION_GATE._capacity == 2
+        finally:
+            with prov_mod._VISION_GATE._lock:  # balance the raw _checkout increment
+                prov_mod._VISION_GATE._in_flight -= 1
+    finally:
+        release.set()
+        worker.join()
+
+    # Once idle again, the next checkout applies the deferred capacity.
+    with prov_mod._VISION_GATE.slot():
+        assert prov_mod._VISION_GATE._capacity == 8
 
 
 def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
@@ -327,6 +375,7 @@ def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
 
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
     monkeypatch.setattr(cfg, "vision_replicas", 1)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
@@ -337,7 +386,7 @@ def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
 
     def _hold() -> None:
         nonlocal live, peak, ran
-        with prov_mod._VISION_GATE.semaphore():
+        with prov_mod._VISION_GATE.slot():
             with lock:
                 live += 1
                 peak = max(peak, live)
