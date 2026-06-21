@@ -414,7 +414,9 @@ class LlamaServerClient:
                 _CHAT_PATH, json={**payload, "stream": False}, timeout=request_timeout
             )
             _raise_for_status(resp)
-            return str(resp.json()["choices"][0]["message"]["content"])
+            # content is null for a refusal / content-filter stop / empty completion;
+            # coerce to "" (like chat_result/chat_tools) so callers never see "None".
+            return resp.json()["choices"][0]["message"].get("content") or ""
 
     def _chat_stream(self, payload: dict[str, Any]) -> Iterator[str]:
         with (

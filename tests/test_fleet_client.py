@@ -325,6 +325,16 @@ def test_chat_returns_content() -> None:
     assert _client().chat([{"role": "user", "content": "hi"}]) == "Hello"
 
 
+def test_chat_coerces_null_content_to_empty_string() -> None:
+    """content is null for a refusal / content-filter stop / empty completion;
+    chat() must return "" (like chat_result/chat_tools), never the string "None"."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+
+    assert _client(handler).chat([{"role": "user", "content": "hi"}]) == ""
+
+
 def test_chat_stream_yields_deltas() -> None:
     chunks = list(_client().chat([{"role": "user", "content": "hi"}], stream=True))
     assert chunks == ["He", "llo"]
