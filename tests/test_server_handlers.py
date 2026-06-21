@@ -2716,8 +2716,9 @@ class TestUpdateConfig:
             await handlers.update_config({"chunk_size": 5})
 
     async def test_chunk_size_at_minimum_accepted(self, tmp_path):
-        result = await handlers.update_config({"chunk_size": 64})
-        assert result.updated == ["chunk_size"]
+        # Lower the overlap alongside it so the overlap < chunk_size invariant holds.
+        result = await handlers.update_config({"chunk_size": 64, "chunk_overlap": 32})
+        assert set(result.updated) == {"chunk_size", "chunk_overlap"}
         assert cfg.chunk_size == 64
 
     async def test_chunk_overlap_at_or_above_chunk_size_rejected(self):
