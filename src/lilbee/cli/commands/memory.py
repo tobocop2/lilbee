@@ -132,5 +132,10 @@ def memory_remove(
     deleted = forget(memory_id)
     if cfg.json_mode:
         json_output({"id": memory_id, "deleted": deleted})
+        if not deleted:
+            raise typer.Exit(1)
         return
     console.print(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found.")
+    # Exit non-zero on not-found, matching `model remove` / `remove`.
+    if not deleted:
+        raise typer.Exit(1)

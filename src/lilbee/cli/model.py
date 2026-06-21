@@ -7,6 +7,7 @@ the Rich renderers below adapt them for human-readable terminal output.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -332,8 +333,6 @@ def _is_interactive_terminal() -> bool:
     CliRunner replaces ``sys.stdin`` during invoke which makes direct
     monkey-patching of ``sys.stdin.isatty`` unreliable.
     """
-    import sys
-
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
