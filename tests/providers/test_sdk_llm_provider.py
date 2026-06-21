@@ -198,6 +198,30 @@ class TestChatNonStream:
         assert result.tool_calls[0].name == "get_weather"
         assert result.tool_calls[0].arguments == '{"city":"SF"}'
 
+    def test_chat_with_tools_returns_tool_calls(self) -> None:
+        """Regression (bb-ziks.75): the SDK provider advertises tool support and its
+        chat() handles tools, so chat_with_tools must route through it rather than
+        inheriting the base stub that raises 'not supported'."""
+        from lilbee.providers.base import ChatToolResult
+        from lilbee.providers.sdk_backend import SdkToolCall
+
+        backend = FakeBackend(
+            supports_tools_result=True,
+            complete_result=CompletionResult(
+                content="ok",
+                finish_reason="tool_calls",
+                tool_calls=(SdkToolCall(id="c1", name="get_weather", arguments='{"city":"SF"}'),),
+            ),
+        )
+        provider = SdkLLMProvider(backend)
+        result = provider.chat_with_tools(
+            [{"role": "user", "content": "weather?"}],
+            tools=[{"type": "function", "function": {"name": "get_weather"}}],
+        )
+        assert isinstance(result, ChatToolResult)
+        assert result.content == "ok"
+        assert [tc.name for tc in result.tool_calls] == ["get_weather"]
+
     def test_tools_and_tool_choice_threaded_into_request_options(self) -> None:
         backend = FakeBackend(supports_tools_result=True)
         provider = SdkLLMProvider(backend)
