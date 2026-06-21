@@ -87,6 +87,12 @@ class CompletionsNamedToolChoice(BaseModel):
     function: CompletionsToolChoiceFunction
 
 
+class StreamOptions(BaseModel):
+    """OpenAI ``stream_options``. ``include_usage`` adds a final usage-only chunk."""
+
+    include_usage: bool = False
+
+
 class CompletionsRequest(BaseModel):
     """Top-level ``POST /v1/chat/completions`` request body."""
 
@@ -100,6 +106,7 @@ class CompletionsRequest(BaseModel):
     max_tokens: int | None = Field(default=None, ge=1)
     stop: str | list[str] | None = None
     stream: bool = False
+    stream_options: StreamOptions | None = None
 
 
 class CompletionsResponseToolCallFunction(BaseModel):

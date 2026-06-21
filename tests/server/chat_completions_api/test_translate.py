@@ -739,8 +739,34 @@ class TestCanonicalStreamToCompletionsChunks:
         assert first.tool_calls[0].function.name == "get_weather"
 
     async def test_message_delta_usage_emits_final_usage_chunk(self) -> None:
-        """A MessageDelta carrying usage produces a trailing usage chunk with an
-        empty choices list and populated totals (include_usage shape). (F4)"""
+        """With include_usage set, a MessageDelta carrying usage produces a trailing
+        usage chunk with an empty choices list and populated totals."""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockDelta(index=0, delta=TextDelta(text="hi")),
+            ContentBlockStop(index=0),
+            MessageDelta(
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=6, output_tokens=2),
+            ),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x", include_usage=True
+            )
+        )
+        usage_chunk = chunks[-1]
+        assert usage_chunk.choices == []
+        assert usage_chunk.usage is not None
+        assert usage_chunk.usage.prompt_tokens == 6
+        assert usage_chunk.usage.completion_tokens == 2
+        assert usage_chunk.usage.total_tokens == 8
+
+    async def test_usage_chunk_omitted_without_include_usage(self) -> None:
+        """Without include_usage, no usage chunk is emitted even when the canonical
+        stream carries usage (OpenAI stream_options.include_usage contract)."""
         events: list[CanonicalStreamEvent] = [
             MessageStart(id="msg_x", model="m"),
             ContentBlockStart(index=0, block=TextBlock(text="")),
@@ -757,12 +783,8 @@ class TestCanonicalStreamToCompletionsChunks:
                 _async_iter(events), model="m", response_id="msg_x"
             )
         )
-        usage_chunk = chunks[-1]
-        assert usage_chunk.choices == []
-        assert usage_chunk.usage is not None
-        assert usage_chunk.usage.prompt_tokens == 6
-        assert usage_chunk.usage.completion_tokens == 2
-        assert usage_chunk.usage.total_tokens == 8
+        assert all(c.usage is None for c in chunks)
+        assert chunks[-1].choices[0].finish_reason == "stop"
 
     async def test_message_delta_without_usage_emits_no_usage_chunk(self) -> None:
         events: list[CanonicalStreamEvent] = [

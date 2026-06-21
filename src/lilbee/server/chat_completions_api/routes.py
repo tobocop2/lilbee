@@ -120,10 +120,11 @@ async def chat_completions_endpoint(
 
     guard = ChatSlotGuard()
     if req.stream:
+        include_usage = bool(data.stream_options and data.stream_options.include_usage)
         # The after-send hook frees the slot when a disconnect lands before the
         # generator's first iteration (its finally never runs in that case).
         return Stream(
-            _gated_completions_stream(req, guard),
+            _gated_completions_stream(req, guard, include_usage=include_usage),
             media_type="text/event-stream",
             background=BackgroundTask(guard.release),
         )
@@ -179,6 +180,8 @@ async def _run_non_stream(req: CanonicalChatRequest, guard: ChatSlotGuard) -> Re
 async def _gated_completions_stream(
     req: CanonicalChatRequest,
     guard: ChatSlotGuard,
+    *,
+    include_usage: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, freeing the slot on exit.
 
@@ -193,7 +196,7 @@ async def _gated_completions_stream(
         try:
             events = dispatch_chat_stream(req)
             chunks = canonical_stream_to_completions_chunks(
-                events, model=req.model, response_id=_response_id()
+                events, model=req.model, response_id=_response_id(), include_usage=include_usage
             )
             async for frame in encode_completions_sse(chunks):
                 yield frame

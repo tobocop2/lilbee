@@ -191,8 +191,13 @@ async def canonical_stream_to_completions_chunks(
     *,
     model: str,
     response_id: str,
+    include_usage: bool = False,
 ) -> AsyncIterator[CompletionsStreamChunk]:
-    """Turn canonical stream events into ``CompletionsStreamChunk`` instances."""
+    """Turn canonical stream events into ``CompletionsStreamChunk`` instances.
+
+    The trailing usage-only chunk is emitted only when *include_usage* is set,
+    matching OpenAI's ``stream_options.include_usage`` contract.
+    """
     mapper = _StreamMapper()
     async for event in events:
         if isinstance(event, ContentBlockStart):
@@ -210,7 +215,7 @@ async def canonical_stream_to_completions_chunks(
                 CompletionsStreamDelta(),
                 finish_reason=_finish_reason_for(event),
             )
-            if event.usage is not None:
+            if include_usage and event.usage is not None:
                 yield _usage_chunk(model, response_id, event.usage)
         elif isinstance(event, MessageStart | ContentBlockStop | MessageStop):
             # OpenAI's wire format has no equivalent for these canonical events:
