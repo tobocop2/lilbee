@@ -18,7 +18,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 import httpx
 import psutil
@@ -36,6 +36,11 @@ log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 _CONFIG_FILENAME = "llama-swap.json"
+# llama-swap's own stdout/stderr (its HTTP access log) is captured here instead of
+# inherited from the parent: a TUI or CLI parent owns the terminal, and an inherited
+# fd would bleed llama-swap's request log straight onto the screen and corrupt the
+# render. Per-model upstream logs are unaffected (those go to llama-swap's /logs API).
+_LOG_FILENAME = "llama-swap.log"
 # Cross-run reaping: each owner lilbee writes its own state file (named with its
 # pid) recording its swap's pid/pgid plus the owner's pid and create time, so the
 # next start can kill a dead owner's surviving llama-swap (it holds VRAM
@@ -115,8 +120,10 @@ class SwapManager:
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir
         self._config_path = data_dir / _CONFIG_FILENAME
+        self._log_path = data_dir / _LOG_FILENAME
         self._state_path = data_dir / _state_filename(os.getpid())
         self._proc: subprocess.Popen[bytes] | None = None
+        self._log_file: BinaryIO | None = None
         self._port: int | None = None
         self._member_ports: list[int] = []
 
@@ -137,6 +144,10 @@ class SwapManager:
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._config_path.write_text(build_swap_config(launches, member_ports))
         self._port = ports[0]
+        # Capture llama-swap's stdout/stderr to a file so its access log never
+        # reaches an inherited terminal (a TUI/CLI parent) and garbles the screen.
+        self._close_log()
+        self._log_file = self._log_path.open("ab")
         self._proc = subprocess.Popen(  # noqa: S603 - argv[0] is the resolved llama-swap
             [
                 str(resolve_llama_swap()),
@@ -145,6 +156,8 @@ class SwapManager:
                 _LISTEN_FLAG,
                 f"{_HOST}:{self._port}",
             ],
+            stdout=self._log_file,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
@@ -257,6 +270,14 @@ class SwapManager:
             self._state_path.unlink(missing_ok=True)
         self._proc = None
         self._port = None
+        self._close_log()
+
+    def _close_log(self) -> None:
+        """Close the captured llama-swap log handle, if one is open."""
+        if self._log_file is not None:
+            with contextlib.suppress(OSError):
+                self._log_file.close()
+            self._log_file = None
 
     def _await_health(self) -> None:
         """Poll the proxy's /health until it answers, or fail with a clear error."""
