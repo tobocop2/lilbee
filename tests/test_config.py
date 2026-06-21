@@ -320,6 +320,33 @@ class TestTomlConfigFile:
             c = Config()
             assert c.enable_ocr is True
 
+    def test_list_field_from_toml_stays_a_list(self, tmp_path):
+        """A TOML array maps to a native list, not its stringified repr."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            'cors_origins = ["https://a.example", "https://b.example"]\n'
+            'crawl_exclude_patterns = [".*/private/.*"]\n'
+            'crawl_browser_extra_args = ["--disable-gpu", "--no-sandbox"]\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.cors_origins == ["https://a.example", "https://b.example"]
+            assert c.crawl_exclude_patterns == [".*/private/.*"]
+            # No before-validator splitter, so the old str(v) coercion hard-failed here.
+            assert c.crawl_browser_extra_args == ["--disable-gpu", "--no-sandbox"]
+
+    def test_empty_string_scalar_in_toml_falls_back_to_default(self, tmp_path):
+        """Legacy '' sentinel (set_setting wrote it for None) is dropped, not coerced."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text('chat_model = ""\n')
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.chat_model == _DEFAULT_CHAT_REF
+
     def test_top_p_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("top_p = 0.9\n")

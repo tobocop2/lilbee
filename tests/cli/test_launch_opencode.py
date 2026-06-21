@@ -659,6 +659,34 @@ def test_launch_opencode_first_run_records_setup_marker(tmp_path):
     assert "First-time opencode setup will write" in result.stdout
 
 
+def test_record_setup_writes_marker_atomically(tmp_path, monkeypatch):
+    from lilbee.cli.launchers import opencode
+
+    marker = tmp_path / "opencode-setup.json"
+    monkeypatch.setattr(opencode, "_setup_marker_path", lambda: marker)
+    opencode._record_setup()
+    assert json.loads(marker.read_text()) == {"accepted": True}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_record_setup_leaves_existing_marker_intact_on_failure(tmp_path, monkeypatch):
+    """A failed rewrite must not truncate or litter: the prior marker survives."""
+    from lilbee.cli.launchers import opencode
+
+    marker = tmp_path / "opencode-setup.json"
+    marker.write_text(json.dumps({"accepted": True}))
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(opencode, "_setup_marker_path", lambda: marker)
+    monkeypatch.setattr(opencode.os, "replace", _boom)
+    with pytest.raises(OSError):
+        opencode._record_setup()
+    assert json.loads(marker.read_text()) == {"accepted": True}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_launch_opencode_skips_prompt_when_marker_present(tmp_path):
     # A recorded marker means later launches do not re-print the setup plan.
     _write_server_session()

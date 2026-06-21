@@ -23,6 +23,10 @@ _MAX_FILENAME_LEN = 200
 # Sentinel for index pages (trailing slash or empty path)
 _INDEX_FILENAME = "index.md"
 
+# Length of the query-string hash folded into a filename to keep distinct
+# queries on the same path from mapping to (and overwriting) the same file.
+_QUERY_HASH_LEN = 8
+
 # How often the crawl metadata JSON is rewritten during a streaming crawl.
 # Markdown files are durable per-page; metadata batches to keep write volume
 # bounded. Worst-case loss on crash is N-1 entries, recoverable from the files.
@@ -34,34 +38,36 @@ def url_to_filename(url: str) -> str:
 
     Examples:
         https://docs.python.org/3/tutorial/ → docs.python.org/3/tutorial/index.md
-        https://example.com/page?q=1#frag   → example.com/page.md
+        https://example.com/page?q=1        → example.com/page/index_q<hash>.md
         https://example.com/                → example.com/index.md
+
+    A distinct query string folds a short hash of the query into the filename so
+    two URLs differing only in their query do not map to the same file and
+    overwrite each other. The fragment is client-side and intentionally ignored.
     """
     parsed = urlparse(url)
     host = parsed.hostname or "unknown"
-    path = parsed.path.rstrip("/")
+    path = parsed.path.strip("/")
 
-    if not path or path == "/":
-        return f"{host}/{_INDEX_FILENAME}"
-
-    # Strip leading slash
-    path = path.lstrip("/")
-
-    # Neutralize path traversal segments
-    path = re.sub(r"\.\.+", "_", path)
-
-    # Replace unsafe filesystem characters
-    path = re.sub(r'[<>:"|?*]', "_", path)
-
-    # If the last segment has no extension, treat as directory
-    last_segment = path.rsplit("/", 1)[-1]
-    if "." not in last_segment:
-        path = f"{path}/{_INDEX_FILENAME}"
+    if not path:
+        rel = _INDEX_FILENAME
     else:
-        # Replace existing extension with .md
-        path = re.sub(r"\.[^./]+$", ".md", path)
+        # Neutralize path traversal segments and unsafe filesystem characters.
+        path = re.sub(r"\.\.+", "_", path)
+        path = re.sub(r'[<>:"|?*]', "_", path)
+        last_segment = path.rsplit("/", 1)[-1]
+        if re.search(r"\.[^./]+$", last_segment):
+            rel = re.sub(r"\.[^./]+$", ".md", path)  # real extension: swap it for .md
+        else:
+            # No real extension (incl. a bare "." segment) -> treat as a directory.
+            # This guarantees rel ends in .md so the query suffix below always applies.
+            rel = f"{path}/{_INDEX_FILENAME}"
 
-    full = f"{host}/{path}"
+    if parsed.query:
+        query_hash = hashlib.sha256(parsed.query.encode()).hexdigest()[:_QUERY_HASH_LEN]
+        rel = re.sub(r"\.md$", f"_q{query_hash}.md", rel)
+
+    full = f"{host}/{rel}"
 
     # Truncate if too long, preserving .md extension
     if len(full) > _MAX_FILENAME_LEN:

@@ -108,13 +108,39 @@ class TestUrlToFilename:
         result = url_to_filename("https://example.com/docs/guide.html")
         assert result == "example.com/docs/guide.md"
 
-    def test_query_params_stripped(self):
-        result = url_to_filename("https://example.com/page?q=1&foo=bar")
-        assert result == "example.com/page/index.md"
+    def test_distinct_queries_map_to_distinct_files(self):
+        # ?q=1 and ?q=2 are different resources; they must not clobber each other.
+        a = url_to_filename("https://example.com/page?q=1")
+        b = url_to_filename("https://example.com/page?q=2")
+        assert a != b
+        assert a.startswith("example.com/page/") and a.endswith(".md")
+        assert b.startswith("example.com/page/") and b.endswith(".md")
+
+    def test_same_query_is_stable(self):
+        url = "https://example.com/page?q=1&foo=bar"
+        assert url_to_filename(url) == url_to_filename(url)
+
+    def test_query_with_file_extension_disambiguated(self):
+        a = url_to_filename("https://example.com/docs/guide.html?v=1")
+        b = url_to_filename("https://example.com/docs/guide.html?v=2")
+        assert a != b
+        assert a.startswith("example.com/docs/guide") and a.endswith(".md")
+
+    def test_dotted_non_extension_segment_still_disambiguates_query(self):
+        # A path segment that is a bare "." has no real extension; it must still
+        # route to .md so distinct queries don't collide on it.
+        a = url_to_filename("https://example.com/.?a=1")
+        b = url_to_filename("https://example.com/.?a=2")
+        assert a != b
+        assert a.endswith(".md") and b.endswith(".md")
 
     def test_fragment_stripped(self):
-        result = url_to_filename("https://example.com/page#section")
-        assert result == "example.com/page/index.md"
+        # Fragments are client-side; same resource -> same file (and no query suffix).
+        assert (
+            url_to_filename("https://example.com/page#section")
+            == url_to_filename("https://example.com/page")
+            == "example.com/page/index.md"
+        )
 
     def test_unsafe_chars_replaced(self):
         result = url_to_filename("https://example.com/a<b>c")

@@ -992,8 +992,10 @@ class _TomlSource:
         # Empty strings represent "no persisted value" for nullable scalar
         # fields (legacy from set_setting writing "" for None). Pydantic
         # can't coerce "" to int|None, so dropping them here lets the field
-        # default apply rather than crashing the whole Config load.
-        return {k: str(v) for k, v in data.items() if str(v) != ""}
+        # default apply rather than crashing the whole Config load. TOML's
+        # native types (lists, ints, bools) pass through untouched: stringifying
+        # turned a list field's ["a", "b"] into the literal "['a', 'b']".
+        return {k: v for k, v in data.items() if v != ""}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:
