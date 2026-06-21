@@ -3312,22 +3312,85 @@ async def test_reset_services_when_drained_spawns_worker_when_idle():
             mock_worker.assert_called_once()
 
 
-async def test_reset_services_worker_resets_off_thread_and_confirms():
-    """The reset worker runs reset_services off the event loop and toasts done."""
+async def test_reset_services_worker_resets_warms_and_unblocks():
+    """The reset worker resets + warms off the event loop, then unblocks input."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
+        screen.swapping_model = True
         with (
             patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
+            patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
             patch.object(app, "notify") as mock_notify,
         ):
             screen._reset_services_worker()
             await app.workers.wait_for_complete()
             await _pilot.pause()
             mock_reset.assert_called_once()
+            # get_services rebuilds + eager-warms the new model in the worker.
+            mock_get.assert_called_once()
+            # The input is unblocked only after the worker reports the model loaded.
+            assert screen.swapping_model is False
             assert any("Now using" in str(call.args[0]) for call in mock_notify.call_args_list), (
                 mock_notify.call_args_list
             )
+
+
+async def test_reset_services_worker_failure_unblocks_and_errors():
+    """A reload failure still unblocks the input and surfaces an error toast."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        with (
+            patch(
+                "lilbee.cli.tui.screens.chat.reset_services",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen._reset_services_worker()
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
+            assert screen.swapping_model is False
+            assert any(
+                "Could not switch model" in str(call.args[0]) for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_apply_model_change_blocks_input_during_swap():
+    """apply_model_change disables the chat input so a prompt can't race the load."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = False
+        # Block the drained reset from spawning the worker, so the swap stays
+        # in its in-progress state long enough to observe the input gate (with
+        # reset_services mocked the worker would otherwise finish instantly).
+        with patch.object(screen, "_reset_services_when_drained"):
+            screen.apply_model_change()
+            # swapping_model is set synchronously; its watcher disables the input.
+            assert screen.swapping_model is True
+            assert screen.query_one("#chat-input").disabled is True
+
+
+async def test_submit_rejected_while_swapping_model():
+    """A submit mid-swap is rejected with a 'still switching' toast, not sent."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        with (
+            patch.object(screen, "_send_message") as mock_send,
+            patch.object(app, "notify") as mock_notify,
+        ):
+            rejected = screen._reject_submit_when_busy()
+            assert rejected is True
+            mock_send.assert_not_called()
+            assert any(
+                "switching model" in str(call.args[0]).lower()
+                for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():

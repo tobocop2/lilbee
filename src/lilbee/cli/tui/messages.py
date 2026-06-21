@@ -109,6 +109,8 @@ CMD_MODEL_SET = "Model set to {name}"
 MODEL_SWAP_APPLYING = "Switching model, loading..."
 MODEL_SWAP_DONE = "Now using {name}"
 MODEL_SWAP_FAILED = "Could not switch model: {error}"
+# Shown when the user tries to send a prompt while the new chat model is still loading.
+CHAT_MODEL_SWITCHING = "Still switching model. One moment, then send your prompt."
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"

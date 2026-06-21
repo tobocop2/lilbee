@@ -162,6 +162,10 @@ class ChatScreen(Screen[None]):
     AUTO_FOCUS = "#chat-input"
 
     streaming: reactive[bool] = reactive(False)
+    # True while a chat-model swap's fleet reload runs in the background. Gates the
+    # submit handler and disables the input so the user can't fire a prompt into a
+    # half-loaded fleet; cleared when the swap worker finishes (or fails).
+    swapping_model: reactive[bool] = reactive(False)
 
     HELP = (
         "# Chat\n\n"
@@ -474,12 +478,7 @@ class ChatScreen(Screen[None]):
             # submitting whatever empty / stale text the input still holds.
             self._enter_insert_mode()
             return
-        if self.streaming:
-            # Only one chat message may be in flight at a time. Surface a
-            # toast so the user knows the prompt was rejected (rather
-            # than silently dropped) and ask them to cancel first if
-            # they want to redirect the model.
-            self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
+        if self._reject_submit_when_busy():
             return
         # Enter when the completion dropdown is showing a different
         # selection than the input itself: accept the highlight first
@@ -510,6 +509,23 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
+    def _reject_submit_when_busy(self) -> bool:
+        """Toast and reject a submit while a swap is loading or a stream is in flight.
+
+        Returns True when the prompt was rejected so the caller stops. The swap
+        check comes first: a prompt sent mid-swap would race a half-torn-down
+        fleet, so the user is asked to wait rather than cancel.
+        """
+        if self.swapping_model:
+            self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
+            return True
+        if self.streaming:
+            # Only one chat message may be in flight at a time; surface a toast
+            # so the prompt is visibly rejected, not silently dropped.
+            self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
+            return True
+        return False
 
     def _pending_required_model_download(self) -> str | None:
         """Return the in-flight download's name if it's for the configured chat or embedding model.
@@ -1498,23 +1514,38 @@ class ChatScreen(Screen[None]):
     def apply_model_change(self) -> None:
         """Swap to the new chat model without freezing the UI.
 
-        ``reset_services`` is a multi-second fleet reload, so it runs in a thread
-        worker instead of on the event loop. The in-flight stream is cancelled
-        first, an indicator toast is shown immediately, and the reset waits for
-        the chat worker(s) to drain so the new model takes over cleanly.
+        ``reset_services`` plus the new model's cold load is a multi-second fleet
+        reload, so it runs in a thread worker instead of on the event loop. The
+        in-flight stream is cancelled first, the input is blocked behind a
+        "switching" state with an indicator toast, and the reset waits for the
+        chat worker(s) to drain so the new model takes over cleanly. The input
+        re-enables only once the worker reports the new model loaded.
         """
         if self.streaming:
             self.action_cancel_stream()
+        self.swapping_model = True
         self.app.notify(msg.MODEL_SWAP_APPLYING)
         self.call_later(self._reset_services_when_drained)
+
+    def watch_swapping_model(self, swapping: bool) -> None:
+        """Disable the chat input while a swap loads so a prompt can't race it.
+
+        Restores focus when the swap finishes so the user can type immediately
+        without re-clicking the input that was disabled out from under them.
+        """
+        self.set_class(swapping, "swapping-model")
+        self._chat_input.disabled = swapping
+        if not swapping and self._insert_mode:
+            self._chat_input.focus()
 
     def _reset_services_when_drained(self) -> None:
         """Spawn the off-thread reset once in-flight workers have drained.
 
-        Waiting on the event loop is cheap and non-blocking. It waits for *all*
-        workers, including a prior swap's reset worker, so ``reset_services`` is
-        never run twice concurrently (a cancelled thread keeps running to
-        completion, so serializing here is the only safe guard).
+        Runs on the event loop (cheap, non-blocking) and checks before spawning,
+        so the swap worker is not yet among ``self.workers``. Waiting for every
+        worker, including a prior swap's, serializes resets so ``reset_services``
+        never runs twice at once (a cancelled thread runs to completion, so this
+        is the only safe guard).
         """
         if self.workers:
             self.call_later(self._reset_services_when_drained)
@@ -1523,19 +1554,29 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
     def _reset_services_worker(self) -> None:
-        """Run the multi-second service reset off the event loop, then confirm."""
+        """Reset and warm the new model off the event loop, then unblock the input.
+
+        ``reset_services`` tears down the old fleet; ``get_services`` rebuilds it
+        and (eager start) kicks off the new model's load, so when this returns the
+        new model is loading or ready, not a surprise cold load on the next prompt.
+        """
         try:
             reset_services()
+            get_services()
         except Exception as exc:  # any reload failure becomes a toast, never a crash
-            call_from_thread(
-                self, self.app.notify, msg.MODEL_SWAP_FAILED.format(error=exc), severity="error"
-            )
+            call_from_thread(self, self._on_model_swap_failed, str(exc))
             return
         call_from_thread(self, self._on_model_swapped)
 
     def _on_model_swapped(self) -> None:
-        """Main-thread completion toast confirming the new chat model is live."""
+        """Main-thread completion: unblock the input and confirm the new model."""
+        self.swapping_model = False
         self.app.notify(msg.MODEL_SWAP_DONE.format(name=cfg.chat_model))
+
+    def _on_model_swap_failed(self, error: str) -> None:
+        """Main-thread failure: unblock the input and surface the error."""
+        self.swapping_model = False
+        self.app.notify(msg.MODEL_SWAP_FAILED.format(error=error), severity="error")
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""
