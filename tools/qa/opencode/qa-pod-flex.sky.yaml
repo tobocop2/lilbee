@@ -1,0 +1,47 @@
+# Region-flexible variant of qa-pod.sky.yaml: find 3x80GB GPUs wherever they are
+# available instead of pinning to the lilbee-qa volume's DC (CA-MTL-3). Runs
+# ephemeral -- /workspace lives on a large container disk, so the engine build,
+# model pulls, and corpus do NOT survive teardown, but the pod can launch in any
+# RunPod region with capacity. Used when the pinned-volume pod can't get GPUs.
+#
+#   sky launch -c lilbee-qa-flex tools/qa/opencode/qa-pod-flex.sky.yaml \
+#     --env BRANCH=qa/opencode-fleet-validation --secret HF_TOKEN=...
+#
+# disk_size holds the from-source engine + the embedder + the largest single
+# model (cleanup-per-cell keeps the pull set flat at ~130GB for MiniMax), so one
+# pod can run the proof and then the full giant matrix without re-provisioning.
+name: lilbee-qa-flex
+
+resources:
+  cloud: runpod
+  disk_size: 280
+  # 3-card configs only (MiniMax-M2 ~123GB needs 3x80GB). SkyPilot tries these in
+  # order across ALL enabled regions and picks the first with capacity; no region
+  # or volume pin, so EU/US/anywhere is fair game. Fail fast if none are free
+  # rather than waiting endlessly (no --retry-until-up).
+  ordered:
+    - accelerators: A100-80GB-SXM:3
+    - accelerators: A100-80GB:3
+    - accelerators: H100:3
+    - accelerators: H100-SXM:3
+    - accelerators: H200:3
+
+envs:
+  BRANCH: qa/opencode-fleet-validation
+  BACKEND: cu124
+  MATRIX_ARGS: "--families qwen3 --keep-models"  # proof first; widen for the full run
+  HF_TOKEN: ""
+
+setup: |
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${BRANCH}/tools/qa/opencode/pod_bootstrap.sh" -o /tmp/pod_bootstrap.sh
+  BRANCH="${BRANCH}" BACKEND="${BACKEND}" bash /tmp/pod_bootstrap.sh
+
+run: |
+  cd /workspace/lilbee
+  source /workspace/qa_env.sh
+  # Ephemeral pods build the corpus fresh, and qa_corpus.sh's `lilbee add` needs
+  # the embedder registered. The volume path skips this (pre-built corpus); a
+  # fresh pod must pull the embedder before indexing or the index comes up empty.
+  uv run lilbee model pull "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+  bash tools/qa/opencode/qa_corpus.sh
+  uv run python tools/qa/opencode/matrix.py ${MATRIX_ARGS}
