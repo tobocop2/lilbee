@@ -54,13 +54,19 @@ def test_probe_sends_range_header(monkeypatch: pytest.MonkeyPatch) -> None:
     blob = make_minimal_gguf("llama")
     captured: dict[str, object] = {}
 
-    def _capture(url: str, headers: dict[str, str], timeout: float) -> httpx.Response:
+    def _capture(
+        url: str, headers: dict[str, str], timeout: float, follow_redirects: bool = False
+    ) -> httpx.Response:
         captured["headers"] = headers
+        captured["follow_redirects"] = follow_redirects
         return httpx.Response(200, content=blob)
 
     monkeypatch.setattr(header_probe.httpx, "get", _capture)
     probe_architecture("https://example.test/model.gguf")
     assert captured["headers"]["Range"] == f"bytes=0-{GGUF_HEADER_PROBE_BYTES - 1}"
+    # HF /resolve/ URLs 302 to the CDN; the probe must follow the redirect or it
+    # reads the redirect notice instead of the GGUF header (bb-ziks.43).
+    assert captured["follow_redirects"] is True
 
 
 def test_probe_returns_empty_on_missing_arch_key(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -39,6 +39,18 @@ def hf_repo_from_ref(ref: str) -> str:
     return ref
 
 
+def gguf_filename_from_ref(ref: str) -> str:
+    """Return the filename portion of a native GGUF ref (after ``<org>/<repo>/``).
+
+    The filename may include repo subdirectories (a quant stored under e.g.
+    ``Q4_K_M/...gguf``), so everything past the first two segments is kept.
+    Returns empty string for non-native refs (bare repos, provider-prefixed).
+    """
+    if ref.endswith(".gguf") and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
+        return "/".join(ref.split("/")[NATIVE_GGUF_REF_MIN_SLASHES:])
+    return ""
+
+
 def format_native_gguf_ref(hf_repo: str, gguf_filename: str) -> str:
     """Render the canonical ``<hf_repo>/<gguf_filename>`` native GGUF ref."""
     return f"{hf_repo}/{gguf_filename}"

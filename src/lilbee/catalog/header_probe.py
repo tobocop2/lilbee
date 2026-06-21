@@ -26,7 +26,11 @@ def probe_architecture(blob_url: str) -> str:
     """Return general.architecture from the GGUF header, or empty string on any failure."""
     try:
         headers = {"Range": f"bytes=0-{GGUF_HEADER_PROBE_BYTES - 1}"}
-        resp = httpx.get(blob_url, headers=headers, timeout=_PROBE_TIMEOUT_S)
+        # follow_redirects: a HuggingFace ``/resolve/`` URL for an LFS-backed GGUF
+        # 302-redirects to the CDN; without following it the probe reads the tiny
+        # redirect body, the GGUF magic check fails, and every arch verdict is
+        # silently UNKNOWN (so the unsupported-arch guard never fires).
+        resp = httpx.get(blob_url, headers=headers, timeout=_PROBE_TIMEOUT_S, follow_redirects=True)
         if resp.status_code >= HTTPStatus.BAD_REQUEST:
             return ""
         return _parse_arch(resp.content)
