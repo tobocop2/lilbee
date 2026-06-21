@@ -715,6 +715,29 @@ class TestCanonicalStreamToCompletionsChunks:
         assert chunks[-1].choices[0].delta.content is None
         assert chunks[-1].choices[0].delta.tool_calls is None
 
+    async def test_tool_call_first_stream_emits_role_on_first_chunk(self) -> None:
+        """A response that opens with a tool call (no leading text) must still carry
+        role:assistant on the first chunk, or OpenAI-SDK delta accumulation breaks."""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(
+                index=0, block=ToolUseBlock(id="call_1", name="get_weather", input={})
+            ),
+            ContentBlockDelta(index=0, delta=ToolUseDelta(partial_json='{"city":"SF"}')),
+            ContentBlockStop(index=0),
+            MessageDelta(stop_reason=StopReason.TOOL_USE),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        first = chunks[0].choices[0].delta
+        assert first.role == "assistant"
+        assert first.tool_calls is not None
+        assert first.tool_calls[0].function.name == "get_weather"
+
     async def test_message_delta_usage_emits_final_usage_chunk(self) -> None:
         """A MessageDelta carrying usage produces a trailing usage chunk with an
         empty choices list and populated totals (include_usage shape). (F4)"""

@@ -135,16 +135,20 @@ class _StreamMapper:
         self._next_tool_index = 0
 
     def block_start(self, event: ContentBlockStart) -> CompletionsStreamDelta | None:
-        if isinstance(event.block, TextBlock):
-            if self._role_emitted:
-                return None
+        # The first delta must carry role:assistant for OpenAI-SDK accumulation,
+        # whether the response opens with text or a tool call.
+        role: Literal["assistant"] | None = None
+        if not self._role_emitted:
             self._role_emitted = True
-            return CompletionsStreamDelta(role="assistant")
+            role = "assistant"
+        if isinstance(event.block, TextBlock):
+            return CompletionsStreamDelta(role=role) if role is not None else None
         if isinstance(event.block, ToolUseBlock):
             tool_index = self._next_tool_index
             self._tool_index_for_block[event.index] = tool_index
             self._next_tool_index += 1
             return CompletionsStreamDelta(
+                role=role,
                 tool_calls=[_tool_call_open(tool_index, event.block.id, event.block.name)],
             )
         return None
