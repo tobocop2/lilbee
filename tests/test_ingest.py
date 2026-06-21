@@ -725,6 +725,42 @@ class TestSyncCancellation:
         with pytest.raises(asyncio.CancelledError):
             await ingest_batch(files, added, {}, {}, {}, quiet=True, cancel=cancel)
 
+    async def test_cancel_in_batch_still_flushes_completed_sibling(self, isolated_env, mock_svc):
+        """A cancel landing in the same done-batch as a genuinely completed file must
+        not drop that file: it is buffered and flushed before the cancel propagates
+        (bb-ziks.21). Prior code re-raised the first CancelledError from fut.result()
+        and abandoned the sibling."""
+        from lilbee.data.ingest import pipeline
+
+        async def _ok():
+            return _real_ingest_result("good.pdf", file_hash="h-good")
+
+        async def _cancelled():
+            raise asyncio.CancelledError
+
+        added: dict[str, None] = {}
+        flushed: list[str] = []
+
+        def _record_flush(buffer, _added, _updated, _failed, _skipped, _flush_failed):
+            flushed.extend(r.name for r in buffer)
+
+        with (
+            mock.patch.object(pipeline, "_flush_writes", side_effect=_record_flush),
+            mock.patch.object(pipeline, "_purge_emptied_sources"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await pipeline._collect_results(
+                iter([_ok(), _cancelled()]),
+                total=2,
+                added=added,
+                updated={},
+                failed={},
+                skipped={},
+                window=2,
+            )
+
+        assert "good.pdf" in flushed
+
     async def test_atomic_delete_for_modified_file(self, mock_extract_file, isolated_env, mock_svc):
         """Modified file: its old chunks are cleaned up in the same batched write."""
         from lilbee.data.ingest import sync

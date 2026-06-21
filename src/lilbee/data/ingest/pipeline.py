@@ -690,8 +690,19 @@ async def _collect_results(
         while in_flight:
             done, still_running = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
             in_flight = set(still_running)
+            saw_cancel = False
             for fut in done:
-                result = fut.result()
+                try:
+                    result = fut.result()
+                except asyncio.CancelledError:
+                    # A user cancel completes several futures together. Flag it but
+                    # keep draining `done` so a sibling that genuinely finished in
+                    # the same batch is still buffered and flushed (the
+                    # cancel-persists contract), then propagate after the loop. A
+                    # non-cancel exception still propagates immediately, as before,
+                    # so a genuine ingest bug surfaces and cancels the siblings.
+                    saw_cancel = True
+                    continue
                 completed_count += 1
                 status = _classify_result(result, added, updated, failed, skipped, reasons)
                 if status is BatchStatus.INGESTED:
@@ -712,6 +723,10 @@ async def _collect_results(
                 _report_file_progress(
                     result, status, completed_count, total, on_progress, progress, ptask
                 )
+            if saw_cancel:
+                # Completed siblings in this batch are now buffered; propagate the
+                # cancel so the finally flushes them and cancels still-running work.
+                raise asyncio.CancelledError
             _refill_window(in_flight, pending, window)
     finally:
         # The inner finally guarantees the sibling cancel even if the flush
