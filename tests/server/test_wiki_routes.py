@@ -355,6 +355,52 @@ class TestWikiEnabled:
         assert body["archived"] == 0
         assert body["flagged"] == 0
 
+    async def test_prune_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """prune_wiki walks the whole tree + store; it runs in a worker thread, not
+        on the event loop (bb-ziks.44)."""
+        import threading
+
+        from conftest import make_mock_services
+        from lilbee.wiki import prune as prune_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def fake_prune(store):
+            seen.append(threading.get_ident())
+            return prune_mod.PruneReport()
+
+        monkeypatch.setattr(prune_mod, "prune_wiki", fake_prune)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/prune", headers=_h())
+        assert resp.status_code == 201
+        assert seen and seen[0] != loop_tid
+
+    async def test_status_runs_lint_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The status route's lint pass embeds; it runs off the event loop (bb-ziks.44)."""
+        import threading
+
+        from conftest import make_mock_services
+        from lilbee.wiki import lint as lint_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        _make_wiki_page(isolated_env / "wiki", "summaries", "s1")  # so status reaches lint
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def fake_lint(store, config=None):
+            seen.append(threading.get_ident())
+            return lint_mod.LintReport()
+
+        monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        assert seen and seen[0] != loop_tid
+
     async def test_build_returns_summary(self, monkeypatch):
         monkeypatch.setattr(
             "lilbee.server.wiki.run_full_build",
@@ -646,6 +692,36 @@ class TestWikiDraftsEndpoints:
         assert body["reindexed_chunks"] == 3
         assert body["moved_to"].endswith("summaries/cv-manual.md")
         assert captured["slug"] == "cv-manual"
+
+    async def test_accept_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """accept_draft re-chunks + embeds; it runs in a worker thread, not on the
+        event loop that serves every other request (bb-ziks.44)."""
+        import threading
+
+        from lilbee.server import wiki as server_wiki_mod
+        from lilbee.wiki.drafts import AcceptResult
+
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=20)
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def _fake_accept(slug: str, root: Path, store: object) -> AcceptResult:
+            seen.append(threading.get_ident())
+            return AcceptResult(
+                slug=slug,
+                requested_slug=slug,
+                moved_to=root / "summaries" / f"{slug}.md",
+                reindexed_chunks=1,
+            )
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
+        assert resp.status_code == 201
+        assert seen and seen[0] != loop_tid
 
     async def test_accept_missing_404(self, monkeypatch: pytest.MonkeyPatch):
         from lilbee.server import wiki as server_wiki_mod
