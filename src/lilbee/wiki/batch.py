@@ -244,10 +244,12 @@ def finalize_section(
     citation_block = render_citation_block(verified)
     full_content = assemble_content(frontmatter, clean_body, citation_block)
 
-    # Concept collision: the second source proposing a slug loses
-    # and writes to a drafts collision marker; the winning source's
-    # page stays untouched.
-    if kind is EntityKind.CONCEPT and subdir == WikiSubdir.CONCEPTS:
+    # Concept collision: the second source proposing a slug loses and writes to a
+    # drafts collision marker; the winning source's page stays untouched. This
+    # applies whether the section publishes or is routed to drafts -- a below-
+    # threshold concept still claims the slug, and two such drafts would otherwise
+    # overwrite each other at drafts/<slug>.md.
+    if kind is EntityKind.CONCEPT:
         first_source = written_concept_slugs.get(slug)
         if first_source is not None and first_source != source:
             return divert_concept_collision(
