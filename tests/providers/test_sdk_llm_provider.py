@@ -409,6 +409,19 @@ class TestChatStream:
         assert deltas[0].name == "get_weather"
         assert deltas[1].arguments_delta == '{"city":"SF"}'
 
+    def test_emits_finish_frame_from_chunk_finish_reason(self) -> None:
+        from lilbee.providers.base import FinishReason, StreamFinish
+
+        backend = FakeBackend(
+            stream_chunks=[
+                StreamChunk(content="hi"),
+                StreamChunk(content="", finish_reason="length"),
+            ]
+        )
+        provider = SdkLLMProvider(backend)
+        items = list(provider.chat([{"role": "user", "content": "hi"}], stream=True))
+        assert items == ["hi", StreamFinish(reason=FinishReason.LENGTH)]
+
     def test_wraps_errors_when_opening_stream(self) -> None:
         backend = FakeBackend(raise_complete=RuntimeError("stream boom"))
         provider = SdkLLMProvider(backend)

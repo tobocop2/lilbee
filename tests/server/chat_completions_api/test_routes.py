@@ -818,6 +818,30 @@ class TestStreamingCompletion:
         assert chunks[-2]["choices"][0]["finish_reason"] == "stop"
         assert chunks[-1] == "[DONE]"
 
+    async def test_stream_reports_length_finish_on_truncation(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A truncated stream surfaces finish_reason 'length', matching non-stream. (bb-ziks.46)"""
+        from lilbee.providers.base import FinishReason, StreamFinish
+
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            ["he", StreamFinish(reason=FinishReason.LENGTH)]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+        assert resp.status_code == 200
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[-2]["choices"][0]["finish_reason"] == "length"
+        assert chunks[-1] == "[DONE]"
+
     async def test_stream_releases_lock_when_finished(self, services_with_chat_model, _auth_token):
         services_with_chat_model.provider.chat.return_value = FakeProviderStream(["x"])
         async with AsyncTestClient(_build_app()) as client:

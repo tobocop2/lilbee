@@ -129,6 +129,21 @@ class FinishReason(StrEnum):
     TOOL_CALLS = "tool_calls"
     CONTENT_FILTER = "content_filter"
 
+    @classmethod
+    def coerce(cls, raw: object) -> FinishReason:
+        """Map a backend-supplied finish_reason to a member, defaulting to STOP.
+
+        Both the streaming and non-streaming paths read finish_reason from the
+        backend; an unknown or non-string value (a model that omits it) falls
+        back to STOP so the dispatch reports an ordinary end-of-turn.
+        """
+        if isinstance(raw, str):
+            try:
+                return cls(raw)
+            except ValueError:
+                return cls.STOP
+        return cls.STOP
+
 
 @dataclass(frozen=True)
 class TokenUsage:
@@ -172,9 +187,23 @@ class ToolCallDelta:
     arguments_delta: str | None
 
 
-ChatStreamItem = str | ToolCallDelta | TokenUsage
-"""One frame yielded by a streaming chat call: text token, tool-call delta, or a
-final token-usage summary (emitted once, last, when the backend reports usage)."""
+@dataclass(frozen=True)
+class StreamFinish:
+    """Terminal frame carrying why a streaming chat call stopped.
+
+    Emitted once, near the end of the stream, so the dispatch can report the
+    same finish_reason the non-streaming path already surfaces, notably
+    ``length`` on a max_tokens truncation. Tool-call streams already infer
+    TOOL_USE from their deltas, so a finish frame never downgrades that.
+    """
+
+    reason: FinishReason
+
+
+ChatStreamItem = str | ToolCallDelta | TokenUsage | StreamFinish
+"""One frame yielded by a streaming chat call: text token, tool-call delta, the
+final token-usage summary, or the finish-reason terminator (each emitted once,
+last, when the backend reports them)."""
 
 
 class LLMProvider(Protocol):

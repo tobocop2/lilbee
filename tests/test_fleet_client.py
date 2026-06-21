@@ -1365,6 +1365,24 @@ def test_parse_sse_stream_items_skips_empty_choices() -> None:
     assert list(_parse_sse_stream_items('data: {"choices": []}')) == []
 
 
+def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
+    from lilbee.providers.base import FinishReason, StreamFinish
+    from lilbee.providers.fleet.client import _parse_sse_stream_items
+
+    line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": "length"}]}'
+    items = list(_parse_sse_stream_items(line))
+    assert items == ["x", StreamFinish(reason=FinishReason.LENGTH)]
+
+
+def test_parse_sse_stream_items_no_finish_frame_without_reason() -> None:
+    from lilbee.providers.base import StreamFinish
+    from lilbee.providers.fleet.client import _parse_sse_stream_items
+
+    line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": null}]}'
+    items = list(_parse_sse_stream_items(line))
+    assert not any(isinstance(i, StreamFinish) for i in items)
+
+
 def test_tokenize_and_detokenize_use_upstream_route() -> None:
     """llama-swap proxies the native /tokenize + /detokenize routes only under
     /upstream/<model>/...; the bare paths 404 (bb-4pw)."""

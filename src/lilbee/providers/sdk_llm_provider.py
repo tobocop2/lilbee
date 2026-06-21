@@ -29,6 +29,7 @@ from lilbee.providers.base import (
     FinishReason,
     LLMProvider,
     ProviderError,
+    StreamFinish,
     ToolCall,
     ToolCallDelta,
 )
@@ -259,6 +260,10 @@ class SdkLLMProvider(LLMProvider):
                         name=delta.name,
                         arguments_delta=delta.arguments_delta,
                     )
+                if chunk.finish_reason is not None:
+                    # The closing chunk's finish_reason lets the dispatch report
+                    # length/stop, matching the non-streaming path.
+                    yield StreamFinish(reason=FinishReason.coerce(chunk.finish_reason))
         except ProviderError:
             raise
         except Exception as exc:
