@@ -318,9 +318,8 @@ async def crawl(
         return _error("Web crawling requires: pip install 'lilbee[crawler]'")
     try:
         # URL validation resolves the host (blocking DNS), so it runs off the loop.
-        # The crawl itself is scheduled ON the loop: start_crawl uses
-        # asyncio.create_task, which needs a running loop -- it had none when this
-        # tool was offloaded to a worker thread, so every MCP crawl call failed.
+        # The crawl itself must be scheduled ON the loop: start_crawl uses
+        # asyncio.create_task, which requires a running event loop.
         await anyio.to_thread.run_sync(require_valid_crawl_url, url)
     except ValueError as exc:
         return _error(str(exc))

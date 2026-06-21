@@ -4284,9 +4284,18 @@ class TestCrawlDefaultCapNotice:
 
 def test_mcp_command_applies_data_dir_then_starts(tmp_path):
     """The stdio MCP command accepts --data-dir/--global like its serve sibling and
-    applies the override before starting the server."""
-    with mock.patch("lilbee.mcp_server.main") as mock_main:
-        result = runner.invoke(app, ["mcp", "--data-dir", str(tmp_path / "alt")])
+    applies the override (mutating cfg to point at the alt root) before main()."""
+    from lilbee.core.config import cfg
+
+    alt = tmp_path / "alt"
+    applied_root: list = []
+    with mock.patch(
+        "lilbee.mcp_server.main", side_effect=lambda: applied_root.append(cfg.data_root)
+    ) as mock_main:
+        result = runner.invoke(app, ["mcp", "--data-dir", str(alt)])
     assert result.exit_code == 0, result.output
     assert "No such option" not in result.output
     mock_main.assert_called_once()
+    # The override was applied before the server started, not merely parsed: main()
+    # observed cfg.data_root already pointing at the alt root.
+    assert applied_root == [alt]

@@ -48,15 +48,6 @@ from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
 
-_FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
-
-
-def _coerce_finish_reason(raw: str | None) -> FinishReason:
-    """Map a backend-supplied finish_reason to :class:`FinishReason`."""
-    if raw is None:
-        return FinishReason.STOP
-    return _FINISH_REASONS.get(raw, FinishReason.STOP)
-
 
 def _api_base_for(ref: ProviderModelRef) -> str | None:
     """Endpoint for a local-server ref; ``None`` for hosted APIs (no base needed)."""
@@ -210,7 +201,7 @@ class SdkLLMProvider(LLMProvider):
             tool_calls=tuple(
                 ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in result.tool_calls
             ),
-            finish_reason=_coerce_finish_reason(result.finish_reason),
+            finish_reason=FinishReason.coerce(result.finish_reason),
         )
 
     def supports_tools(self, model_ref: str) -> bool:

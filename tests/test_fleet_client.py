@@ -1348,9 +1348,12 @@ def test_coerce_finish_reason_non_string_is_stop() -> None:
     from lilbee.providers.base import FinishReason
     from lilbee.providers.fleet.client import _coerce_finish_reason
 
-    # A missing finish_reason (None) or any non-string falls back to STOP.
+    # A missing finish_reason (None), a non-string, or an unknown string all
+    # fall back to STOP; a known value maps to its member.
     assert _coerce_finish_reason(None) is FinishReason.STOP
     assert _coerce_finish_reason(42) is FinishReason.STOP
+    assert _coerce_finish_reason("not_a_reason") is FinishReason.STOP
+    assert _coerce_finish_reason("length") is FinishReason.LENGTH
 
 
 def test_parse_sse_stream_items_skips_malformed_json() -> None:

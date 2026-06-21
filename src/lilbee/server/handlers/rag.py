@@ -211,9 +211,9 @@ async def _stream_rag_response(
 ) -> AsyncGenerator[str, None]:
     """SSE streaming for the ask (search) endpoint.
 
-    Mirrors ``Searcher.ask_raw`` so streaming and one-shot ask agree: search mode
-    with no embedder refuses cleanly, chat mode answers ungrounded, otherwise the
-    answer is grounded in retrieved sources.
+    Mirrors ``Searcher.ask_stream`` so streaming, one-shot, and CLI ask agree:
+    search mode with no embedder refuses cleanly, chat mode answers ungrounded,
+    otherwise the answer is grounded in retrieved sources.
     """
     yield ""  # force generator
 
@@ -222,8 +222,12 @@ async def _stream_rag_response(
 
     searcher = get_services().searcher
     if searcher.search_unavailable():
-        # Search needs an embedder to ground; refuse cleanly instead of hard-failing.
-        yield sse_error(SEARCH_NEEDS_EMBEDDER, code=SseErrorCode.SEARCH_NEEDS_EMBEDDER)
+        # Search needs an embedder to ground. Mirror Searcher.ask_stream by
+        # returning the refusal as a normal answer token (not an SSE error) so the
+        # streaming, one-shot, and CLI ask paths all surface it the same way.
+        yield sse_event(SseEvent.TOKEN, {"token": SEARCH_NEEDS_EMBEDDER})
+        yield sse_event(SseEvent.SOURCES, [])
+        yield sse_done({})
         return
     if searcher.skip_retrieval():
         # Chat mode with an embedder present: answer ungrounded, mirroring ask_raw.
@@ -276,10 +280,12 @@ async def _stream_rag_response(
     # Ensure executor thread has finished before yielding final events
     await executor_fut
 
-    # SOURCES carries the cited subset (what the answer referenced), matching the
-    # cited_sources contract of the non-streaming ask/chat responses.
+    # SOURCES carries the cited subset (what the answer referenced), falling back
+    # to the full retrieved set when the answer carries no inline citations.
+    # Mirrors Searcher.ask_stream's ``used if used else results``.
     cited = cited_subset("".join(answer_parts), results)
-    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in cited])
+    source_list = cited if cited else results
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in source_list])
     yield sse_done({})
 
     # Auto-extraction (and its notification) trails ``done`` so clients that stop
@@ -376,10 +382,12 @@ async def _stream_chat_response(
         yield sse_error(user_message, code=code, detail=raw if code else None)
         return
 
-    # SOURCES carries the cited subset (what the answer referenced), matching the
-    # cited_sources contract of the non-streaming ask/chat responses.
+    # SOURCES carries the cited subset (what the answer referenced), falling back
+    # to the full retrieved set when the answer carries no inline citations.
+    # Mirrors Searcher.ask_stream's ``used if used else results``.
     cited = cited_subset("".join(answer_parts), sources)
-    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in cited])
+    source_list = cited if cited else sources
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in source_list])
     yield sse_done({})
     async for mem_event in _emit_extracted_memories(question, "".join(answer_parts)):
         yield mem_event

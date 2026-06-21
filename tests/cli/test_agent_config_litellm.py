@@ -113,9 +113,23 @@ def test_litellm_config_without_running_server_exits_1():
     assert "lilbee serve" in result.stderr
 
 
-def test_litellm_config_accepts_data_root_flags(tmp_path):
-    """Entry-point parity (bb-7jg1.21): agent-config litellm accepts --data-dir."""
-    result = runner.invoke(app, ["agent-config", "litellm", "--data-dir", str(tmp_path / "alt")])
+def test_litellm_config_applies_data_dir_override(tmp_path):
+    """Entry-point parity (bb-7jg1.21): --data-dir is applied before the server
+    session is resolved. A running session exists ONLY under the alt root, so
+    exit 0 + the alt port/token prove the override took effect, not just parsed."""
+    alt = tmp_path / "alt"
+    alt_data = alt / "data"
+    alt_data.mkdir(parents=True)
+    (alt_data / "server.json").write_text(json.dumps({"token": "alt-token"}))
+    (alt_data / "server.port").write_text("8799")
+    registry = _fake_registry([(_CHAT_REF_A, "chat")])
+    with patch(
+        "lilbee.cli.launchers.server.get_services",
+        return_value=MagicMock(registry=registry),
+    ):
+        result = runner.invoke(app, ["agent-config", "litellm", "--data-dir", str(alt)])
     assert "No such option" not in result.output
-    assert result.exit_code == 1
-    assert "lilbee serve" in result.stderr
+    assert result.exit_code == 0, result.stderr
+    params = yaml.safe_load(result.stdout)["model_list"][0]["litellm_params"]
+    assert params["api_base"] == "http://127.0.0.1:8799/v1"
+    assert params["api_key"] == "alt-token"

@@ -319,12 +319,25 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
-    @mock.patch.object(models, "list_installed_models", return_value=[])
-    def test_non_chat_only_install_still_pulls(self, _mock_list, mock_ram, mock_disk, mock_pull):
-        """Regression (bb-ziks.67): a pulled vision/reranker (or remote non-chat)
-        model is not a chat model, so list_installed_models is empty and the
-        bootstrap still pulls one rather than short-circuiting."""
-        with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
+    def test_non_chat_only_install_still_pulls(self, mock_ram, mock_disk, mock_pull):
+        """Regression (bb-ziks.67): an installed reranker/vision model is not a chat
+        model, so the real (task-filtered) list_installed_models excludes it and the
+        bootstrap still pulls one rather than short-circuiting. Drives the real
+        list_installed_models through reclassify_by_name (no mock of the classifier)."""
+        from lilbee.catalog.types import ModelTask
+
+        # A manifest that declares task="chat" but whose ref names a reranker; the
+        # name-based reclassifier must demote it so it never counts as a chat model.
+        reranker = mock.Mock(ref="bge-reranker-v2-m3", task=ModelTask.CHAT)
+        with (
+            mock.patch.object(models, "ModelRegistry") as mock_registry,
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            mock.patch.object(models.sys.stdin, "isatty", return_value=False),
+        ):
+            mock_registry.return_value.list_installed.return_value = [reranker]
+            # The reranker is excluded, so the chat-task list is empty...
+            assert models.list_installed_models() == []
+            # ...and the bootstrap therefore pulls a real chat model.
             pulled = models.ensure_chat_model()
         assert pulled == models.pick_default_model(16.0).ref
         mock_pull.assert_called_once()

@@ -99,15 +99,27 @@ def test_opencode_config_without_running_server_exits_1():
     assert "lilbee serve" in result.stderr
 
 
-def test_opencode_config_accepts_data_root_flags(tmp_path):
-    """Entry-point parity (bb-7jg1.21): agent-config accepts --data-dir/--global like
-    its siblings, applying the override before resolving the server session."""
+def test_opencode_config_applies_data_dir_override(tmp_path):
+    """Entry-point parity (bb-7jg1.21): --data-dir is applied before the server
+    session is resolved, so the session is read from the alt root. A running
+    session exists ONLY under the alt root, so exit 0 + the alt port/token prove
+    the override took effect (not merely that the flag parsed)."""
     alt = tmp_path / "alt"
-    result = runner.invoke(app, ["agent-config", "opencode", "--data-dir", str(alt)])
-    # Flags are recognized (not a usage error); no running server -> serve hint.
+    alt_data = alt / "data"
+    alt_data.mkdir(parents=True)
+    (alt_data / "server.json").write_text(json.dumps({"token": "alt-token"}))
+    (alt_data / "server.port").write_text("8799")
+    registry = _fake_registry([(_CHAT_REF_A, "chat")])
+    with patch(
+        "lilbee.cli.launchers.server.get_services",
+        return_value=MagicMock(registry=registry),
+    ):
+        result = runner.invoke(app, ["agent-config", "opencode", "--data-dir", str(alt)])
     assert "No such option" not in result.output
-    assert result.exit_code == 1
-    assert "lilbee serve" in result.stderr
+    assert result.exit_code == 0, result.stderr
+    options = json.loads(result.stdout)["provider"]["lilbee"]["options"]
+    assert options["baseURL"] == "http://127.0.0.1:8799/v1"
+    assert options["apiKey"] == "alt-token"
 
 
 def test_opencode_config_without_port_file_exits_1():
