@@ -105,6 +105,11 @@ _CRAWL_FLAG_MAX_PAGES = "--max-pages"
 _CRAWL_FLAG_INCLUDE_SUBDOMAINS = "--include-subdomains"
 _CRAWL_FLAG_RENDER = "--render"
 
+# The model-swap service reset runs in this named worker so the drain-before-reset
+# wait can ignore it (it must not block on itself) and a rapid second swap cancels
+# the prior reset rather than stacking fleet reloads.
+_MODEL_SWAP_WORKER = "model_swap_reset"
+
 
 def _parse_add_paths(args: str) -> list[Path]:
     """Resolve ``/add`` arguments to filesystem paths.
@@ -1491,19 +1496,46 @@ class ChatScreen(Screen[None]):
         self.streaming = False
 
     def apply_model_change(self) -> None:
-        """Cancel active stream (if any) and reset services for the new model."""
+        """Swap to the new chat model without freezing the UI.
+
+        ``reset_services`` is a multi-second fleet reload, so it runs in a thread
+        worker instead of on the event loop. The in-flight stream is cancelled
+        first, an indicator toast is shown immediately, and the reset waits for
+        the chat worker(s) to drain so the new model takes over cleanly.
+        """
         if self.streaming:
             self.action_cancel_stream()
-            self.call_later(self._deferred_service_reset)
-        else:
-            reset_services()
+        self.app.notify(msg.MODEL_SWAP_APPLYING)
+        self.call_later(self._reset_services_when_drained)
 
-    def _deferred_service_reset(self) -> None:
-        """Reset services once workers have drained."""
+    def _reset_services_when_drained(self) -> None:
+        """Spawn the off-thread reset once in-flight workers have drained.
+
+        Waiting on the event loop is cheap and non-blocking. It waits for *all*
+        workers, including a prior swap's reset worker, so ``reset_services`` is
+        never run twice concurrently (a cancelled thread keeps running to
+        completion, so serializing here is the only safe guard).
+        """
         if self.workers:
-            self.call_later(self._deferred_service_reset)
+            self.call_later(self._reset_services_when_drained)
             return
-        reset_services()
+        self._reset_services_worker()
+
+    @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
+    def _reset_services_worker(self) -> None:
+        """Run the multi-second service reset off the event loop, then confirm."""
+        try:
+            reset_services()
+        except Exception as exc:  # any reload failure becomes a toast, never a crash
+            call_from_thread(
+                self, self.app.notify, msg.MODEL_SWAP_FAILED.format(error=exc), severity="error"
+            )
+            return
+        call_from_thread(self, self._on_model_swapped)
+
+    def _on_model_swapped(self) -> None:
+        """Main-thread completion toast confirming the new chat model is live."""
+        self.app.notify(msg.MODEL_SWAP_DONE.format(name=cfg.chat_model))
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""

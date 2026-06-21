@@ -50,11 +50,11 @@ def test_model_key_to_worker_role_covers_all_four(key: str, expected: WorkerRole
 
 
 async def test_apply_model_pick_persists_and_reloads_vision() -> None:
-    """A vision pick writes the new ref and respawns the vision worker."""
+    """A vision pick writes the new ref and respawns the vision worker off-thread."""
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
     app = LilbeeAppHost()
-    async with app.run_test(size=(80, 24)) as _pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         with (
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
             patch(
@@ -65,9 +65,12 @@ async def test_apply_model_pick_persists_and_reloads_vision() -> None:
             apply_model_pick(
                 app.screen, key="vision_model", ref="hf:org/vlm-q4", on_done=lambda: None
             )
-        mock_apply.assert_called_once()
-        assert mock_apply.call_args.args[1:] == ("vision_model", "hf:org/vlm-q4")
-        services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+            # The reload runs in a thread worker so the UI never freezes; await it.
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            mock_apply.assert_called_once()
+            assert mock_apply.call_args.args[1:] == ("vision_model", "hf:org/vlm-q4")
+            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
 
 
 async def test_apply_model_pick_none_is_cancel() -> None:
@@ -86,7 +89,7 @@ async def test_apply_model_pick_empty_clears_nullable_field() -> None:
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
     app = LilbeeAppHost()
-    async with app.run_test(size=(80, 24)) as _pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         with (
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply,
             patch(
@@ -95,8 +98,10 @@ async def test_apply_model_pick_empty_clears_nullable_field() -> None:
             ),
         ):
             apply_model_pick(app.screen, key="reranker_model", ref="", on_done=lambda: None)
-        mock_apply.assert_called_once()
-        assert mock_apply.call_args.args[1:] == ("reranker_model", "")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            mock_apply.assert_called_once()
+            assert mock_apply.call_args.args[1:] == ("reranker_model", "")
 
 
 async def test_apply_model_pick_empty_ignored_for_non_nullable() -> None:
