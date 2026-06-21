@@ -16,6 +16,8 @@ from lilbee.cli.launchers.server import (
     installed_chat_model_refs,
     running_server_session,
 )
+from lilbee.core.config import cfg
+from lilbee.providers.model_ref import with_configured_remote_chat
 
 agent_config_app = typer.Typer(help="Print a paste-ready config block for an AI client.")
 
@@ -35,7 +37,9 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
     block = builder(
         base_url=f"http://{LOOPBACK}:{port}",
         api_key=token,
-        model_refs=installed_chat_model_refs(),
+        # Include a remote-configured chat model the native registry lacks, so the
+        # emitted config lists the model lilbee serves (matching launch + /v1/models).
+        model_refs=with_configured_remote_chat(installed_chat_model_refs(), cfg.chat_model),
         **kwargs,
     )
     if isinstance(block, str):

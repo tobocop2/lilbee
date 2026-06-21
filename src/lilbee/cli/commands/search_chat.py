@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import typer
 from rich.table import Table
@@ -77,6 +77,15 @@ _scope_option = typer.Option(
 )
 
 
+def _display_score(result: dict[str, Any]) -> float:
+    """Relevance score, else distance, else 0.0. Explicit None checks keep a
+    legitimate 0.0 from falling through a truthy ``or`` chain."""
+    score = result.get("relevance_score")
+    if score is None:
+        score = result.get("distance")
+    return 0.0 if score is None else score
+
+
 def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
@@ -110,6 +119,9 @@ def search(
             raise SystemExit(1) from None
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
+    # Apply the same relevance cutoff the REST and MCP search paths use, so the
+    # CLI doesn't surface lower-relevance chunks the API would suppress.
+    results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -132,8 +144,7 @@ def search(
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        score = r.get("relevance_score") or r.get("distance") or 0
-        table.add_row(r["source"], preview, f"{score:.4f}")
+        table.add_row(r["source"], preview, f"{_display_score(r):.4f}")
     console.print(table)
 
 

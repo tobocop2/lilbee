@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import DownloadProgress
-    from lilbee.catalog.types import ModelSource
+    from lilbee.catalog.types import ModelSource, ModelTask
 
 
 def _render_list(data: ListModelsResult) -> Table:
@@ -118,6 +118,27 @@ def _parse_source_or_bad_param(value: str | None) -> ModelSource | None:
         raise typer.BadParameter(str(exc)) from exc
 
 
+def _parse_task_or_bad_param(value: str | None) -> ModelTask | None:
+    """Parse a CLI --task value, mirroring --source's JSON-envelope + friendly error.
+
+    Without this, an invalid --task leaked Python's "'x' is not a valid ModelTask"
+    and broke --json by emitting Typer usage text instead of the error envelope.
+    """
+    from lilbee.catalog.types import ModelTask
+
+    if not value:
+        return None
+    try:
+        return ModelTask(value)
+    except ValueError:
+        allowed = ", ".join(t.value for t in ModelTask)
+        msg = f"invalid task {value!r}; expected one of: {allowed}"
+        if cfg.json_mode:
+            json_output({"error": msg})
+            raise SystemExit(1) from None
+        raise typer.BadParameter(msg) from None
+
+
 @model_app.command("list")
 def list_cmd(
     source: str | None = _source_option,
@@ -126,13 +147,8 @@ def list_cmd(
     use_global: bool = global_option,
 ) -> None:
     """List installed models across all sources."""
-    from lilbee.catalog.types import ModelTask
-
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    try:
-        parsed_task = ModelTask(task) if task else None
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+    parsed_task = _parse_task_or_bad_param(task)
     data = list_models_data(source=_parse_source_or_bad_param(source), task=parsed_task)
     if cfg.json_mode:
         json_output(data.model_dump())

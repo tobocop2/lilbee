@@ -1173,6 +1173,20 @@ class TestSearch:
         data = json.loads(result.output.strip())
         assert data["results"] == []
 
+    def test_search_applies_max_distance_filter(self, mock_svc, monkeypatch):
+        """CLI search drops chunks beyond cfg.max_distance, like REST and MCP."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "max_distance", 0.5)
+        near = _MOCK_SEARCH_RESULTS[0]  # distance 0.25
+        far = _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": "far.pdf", "distance": 0.9})
+        mock_svc.searcher.search.return_value = [near, far]
+        result = runner.invoke(app, ["--json", "search", "q"])
+        assert result.exit_code == 0
+        sources = [r["source"] for r in json.loads(result.output.strip())["results"]]
+        assert "manual.pdf" in sources
+        assert "far.pdf" not in sources
+
     def test_search_human_output(self, mock_svc):
         mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
         result = runner.invoke(app, ["search", "engine oil"])

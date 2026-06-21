@@ -350,7 +350,17 @@ class TestListCmd:
     def test_invalid_task_raises_bad_param(self, fake_manager):
         result = runner.invoke(app, ["model", "list", "--task", "bogus"])
         assert result.exit_code != 0
-        assert "ModelTask" in result.output
+        # Friendly message listing valid tasks; never leaks the internal enum name.
+        assert "ModelTask" not in result.output
+        assert "chat" in result.output
+
+    def test_invalid_task_json_mode_emits_error_envelope(self, fake_manager):
+        result = runner.invoke(app, ["--json", "model", "list", "--task", "bogus"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "bogus" in data["error"]
+        assert "ModelTask" not in data["error"]
 
 
 class TestShowModelData:
