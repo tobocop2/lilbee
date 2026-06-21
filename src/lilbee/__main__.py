@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
 import os
-import runpy
 import sys
 from pathlib import Path
 
@@ -92,10 +92,16 @@ def _dispatch_module_invocation() -> bool:
     """Run a `python -m lilbee.<module>` reinvocation and return True when handled.
 
     Internal subprocesses spawned via ``[sys.executable, "-m", "lilbee.X", ...]``
-    (e.g. ``splash._splash_runner``) hit typer's `--model -m` short-form parser
-    in a frozen build. Detect the pattern, route to runpy, never reach typer.
-    Restricted to the ``lilbee.*`` namespace so a stray ``lilbee -m foo`` typed
-    by a user can't reach exec.
+    (e.g. ``splash.start`` launching ``lilbee.runtime._splash_runner``) hit
+    typer's `--model -m` short-form parser in a frozen build. Detect the
+    pattern, run the target module's ``main()`` directly, never reach typer.
+
+    Imports the module and calls ``main()`` rather than ``runpy.run_module``:
+    Nuitka's module loader does not implement ``get_code``, so ``runpy`` raises
+    ``AttributeError: ... has no attribute 'get_code'`` inside the onefile
+    binary. Every ``lilbee.*`` module reinvoked this way exposes a ``main()``
+    entry point. Restricted to the ``lilbee.*`` namespace so a stray
+    ``lilbee -m foo`` typed by a user can't reach exec.
     """
     if not _is_frozen():
         return False
@@ -105,7 +111,8 @@ def _dispatch_module_invocation() -> bool:
     if not module_name.startswith("lilbee."):
         return False
     sys.argv = [module_name, *sys.argv[3:]]
-    runpy.run_module(module_name, run_name="__main__", alter_sys=True)
+    module = importlib.import_module(module_name)
+    module.main()
     return True
 
 

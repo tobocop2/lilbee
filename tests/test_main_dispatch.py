@@ -184,7 +184,7 @@ class TestDispatchFrozenChild:
 
 
 class TestDispatchModuleInvocation:
-    """Route `[bin, -m, lilbee.<module>, ...]` to runpy before typer sees it."""
+    """Route `[bin, -m, lilbee.<module>, ...]` to the module's main() before typer."""
 
     def test_returns_false_when_not_frozen(self) -> None:
         with (
@@ -217,48 +217,47 @@ class TestDispatchModuleInvocation:
     def test_routes_under_nuitka_without_sys_frozen(self) -> None:
         # Regression: same Nuitka frozen-detection gap as the mp-child dispatcher.
         argv_in = ["bin", "-m", "lilbee.core.system", "extra"]
+        module = mock.Mock()
         with (
             mock.patch.object(main_mod.sys, "frozen", False, create=True),
             mock.patch.object(main_mod, "__compiled__", object(), create=True),
             mock.patch.object(main_mod.sys, "argv", argv_in),
-            mock.patch("runpy.run_module") as run_module,
+            mock.patch.object(main_mod.importlib, "import_module", return_value=module) as imp,
         ):
             assert main_mod._dispatch_module_invocation() is True
-        run_module.assert_called_once_with(
-            "lilbee.core.system", run_name="__main__", alter_sys=True
-        )
+        imp.assert_called_once_with("lilbee.core.system")
+        module.main.assert_called_once_with()
 
-    def test_routes_lilbee_module_through_runpy(self) -> None:
-        argv_in = ["bin", "-m", "lilbee.core.system", "extra"]
+    def test_runs_module_main_with_rewritten_argv(self) -> None:
+        # The reinvocation calls the module's main() (never runpy, which fails
+        # under Nuitka: its loader has no get_code). argv is stripped to the
+        # module name plus the original trailing args so main() reads its fd.
+        argv_in = ["bin", "-m", "lilbee.runtime._splash_runner", "999"]
         captured: dict[str, object] = {}
-
-        def fake_run_module(name: str, *, run_name: str, alter_sys: bool) -> None:
-            captured["name"] = name
-            captured["run_name"] = run_name
-            captured["alter_sys"] = alter_sys
-            captured["argv_at_call"] = list(main_mod.sys.argv)
+        module = mock.Mock()
+        module.main.side_effect = lambda: captured.update(argv_at_call=list(main_mod.sys.argv))
 
         with (
             mock.patch.object(main_mod.sys, "frozen", True, create=True),
             mock.patch.object(main_mod.sys, "argv", argv_in),
-            mock.patch("runpy.run_module", side_effect=fake_run_module),
+            mock.patch.object(main_mod.importlib, "import_module", return_value=module) as imp,
         ):
             assert main_mod._dispatch_module_invocation() is True
 
-        assert captured["name"] == "lilbee.core.system"
-        assert captured["run_name"] == "__main__"
-        assert captured["alter_sys"] is True
-        assert captured["argv_at_call"] == ["lilbee.core.system", "extra"]
+        imp.assert_called_once_with("lilbee.runtime._splash_runner")
+        module.main.assert_called_once_with()
+        assert captured["argv_at_call"] == ["lilbee.runtime._splash_runner", "999"]
 
 
 class TestPrestartMpResourceTracker:
-    """The package-import prestart must skip frozen builds, including Nuitka."""
+    """The package-import prestart must run on POSIX, including frozen Nuitka builds."""
 
-    def test_skips_under_nuitka_without_sys_frozen(self) -> None:
-        # Regression: under the bug this prestart spawned the resource_tracker
-        # child inside the onefile binary, surfacing "No such command '<fd>'".
-        # The guard delegates to lilbee._frozen.is_frozen, which reads its own
-        # __compiled__ marker.
+    def test_prestarts_under_nuitka_without_sys_frozen(self) -> None:
+        # Regression (the chat "bad value(s) in fds_to_keep" crash): the prestart
+        # was disabled in frozen builds, so the resource tracker launched lazily
+        # at worker-spawn time after Textual swapped stderr (fileno -1). It must
+        # run in frozen builds too; the tracker's -c reinvocation is intercepted
+        # by __main__._dispatch_frozen_child.
         from multiprocessing import resource_tracker
 
         import lilbee
@@ -272,7 +271,7 @@ class TestPrestartMpResourceTracker:
             mock.patch.object(resource_tracker, "ensure_running", lambda: called.append(1)),
         ):
             lilbee._prestart_mp_resource_tracker()
-        assert called == []
+        assert called == [1]
 
     def test_prestarts_on_posix_when_not_frozen(self) -> None:
         from multiprocessing import resource_tracker
@@ -287,3 +286,16 @@ class TestPrestartMpResourceTracker:
         ):
             lilbee._prestart_mp_resource_tracker()
         assert called == [1]
+
+    def test_skips_on_windows(self) -> None:
+        from multiprocessing import resource_tracker
+
+        import lilbee
+
+        called: list[int] = []
+        with (
+            mock.patch.object(main_mod.sys, "platform", "win32"),
+            mock.patch.object(resource_tracker, "ensure_running", lambda: called.append(1)),
+        ):
+            lilbee._prestart_mp_resource_tracker()
+        assert called == []
