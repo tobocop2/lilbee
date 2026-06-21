@@ -29,7 +29,7 @@ from textual.widgets import Footer, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
-from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.services import get_services, reset_store
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
@@ -63,6 +63,7 @@ from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.retrieval.query.history_window import windowed_history
@@ -1513,18 +1514,18 @@ class ChatScreen(Screen[None]):
     def apply_model_change(self) -> None:
         """Swap to the new chat model without freezing the UI.
 
-        ``reset_services`` plus the new model's cold load is a multi-second fleet
-        reload, so it runs in a thread worker instead of on the event loop. The
-        in-flight stream is cancelled first, the input is blocked behind a
-        "switching" state with an indicator toast, and the reset waits for the
-        chat worker(s) to drain so the new model takes over cleanly. The input
-        re-enables only once the worker reports the new model loaded.
+        Reloading the fleet for the new model is a multi-second restart, so it
+        runs in a thread worker instead of on the event loop. The in-flight stream
+        is cancelled first, the input is blocked behind a "switching" state with an
+        indicator toast, and the reload waits for in-flight workers to drain so the
+        restart doesn't disrupt them. The input re-enables only once the worker
+        reports the new model loaded.
         """
         if self.streaming:
             self.action_cancel_stream()
         self.swapping_model = True
         self.app.notify(msg.MODEL_SWAP_APPLYING)
-        self.call_later(self._reset_services_when_drained)
+        self.call_later(self._reload_chat_when_drained)
 
     def watch_swapping_model(self, swapping: bool) -> None:
         """Disable the chat input while a swap loads so a prompt can't race it.
@@ -1540,34 +1541,32 @@ class ChatScreen(Screen[None]):
             if not swapping and self._insert_mode:
                 self._chat_input.focus()
 
-    def _reset_services_when_drained(self) -> None:
-        """Spawn the off-thread reset once in-flight workers have drained.
+    def _reload_chat_when_drained(self) -> None:
+        """Spawn the off-thread chat reload once in-flight workers have drained.
 
-        ``reset_services`` tears down BOTH the provider and the store, so it must
-        not run while any worker is still using them: an in-flight chat stream,
-        search, ingest/sync, or a prior swap's own reset worker. Cancellation only
-        requests teardown (a cancelled thread runs to completion), so waiting for
-        every worker to actually finish is the only safe guard, and it also
-        serializes resets so two never overlap. Runs on the event loop (cheap,
-        non-blocking) and checks before spawning, so this swap's worker is not yet
-        among ``self.workers``.
+        The reload restarts the whole fleet proxy, so it waits for workers that use
+        it (an in-flight chat stream cancelled just above, a search) to finish first
+        rather than yank the engine out from under them. Runs on the event loop
+        (cheap, non-blocking) and checks before spawning, so this swap's worker is
+        not yet among ``self.workers``.
         """
         if self.workers:
-            self.call_later(self._reset_services_when_drained)
+            self.call_later(self._reload_chat_when_drained)
             return
-        self._reset_services_worker()
+        self._reload_chat_model_worker()
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
-    def _reset_services_worker(self) -> None:
-        """Reset and warm the new model off the event loop, then unblock the input.
+    def _reload_chat_model_worker(self) -> None:
+        """Reload only the chat role off the event loop, then unblock the input.
 
-        ``reset_services`` tears down the old fleet; ``get_services`` rebuilds it
-        and (eager start) kicks off the new model's load, so when this returns the
-        new model is loading or ready, not a surprise cold load on the next prompt.
+        ``reload_role(wait=True)`` re-plans and restarts the fleet for the new chat
+        model while keeping the store and searcher (a chat-model change doesn't
+        touch retrieval), and returns once the model has loaded. The provider
+        serializes overlapping reloads, so a rapid second swap coalesces onto the
+        latest cfg.
         """
         try:
-            reset_services()
-            get_services()
+            get_services().reload_role(WorkerRole.CHAT, wait=True)
         except Exception as exc:  # any reload failure becomes a toast, never a crash
             call_from_thread(self, self._on_model_swap_failed, str(exc))
             return

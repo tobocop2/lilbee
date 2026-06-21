@@ -1294,6 +1294,49 @@ class TestLifecycleMethods:
         p = FleetProvider()  # _swap stays None
         p._reload_blocking()  # must not raise
 
+    def test_reload_role_wait_runs_synchronously(self, monkeypatch) -> None:
+        spawned = {"thread": False}
+        monkeypatch.setattr("threading.Thread", lambda *a, **k: spawned.__setitem__("thread", True))
+        p = FleetProvider()
+        p._swap = _FakeSwap()
+        ran = {"blocking": False}
+        p._reload_blocking = lambda: ran.__setitem__("blocking", True)  # type: ignore[method-assign]
+        p.reload_role(WorkerRole.CHAT, wait=True)
+        assert spawned["thread"] is False  # no background thread; ran in the caller's
+        assert ran["blocking"] is True  # reload ran synchronously before returning
+
+    def test_reload_role_wait_propagates_failure(self) -> None:
+        p = FleetProvider()
+        p._swap = _FakeSwap()
+
+        def boom() -> None:
+            raise RuntimeError("reload failed")
+
+        p._reload_blocking = boom  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="reload failed"):
+            p.reload_role(WorkerRole.CHAT, wait=True)
+
+    def test_reload_role_wait_blocks_until_in_flight_done(self) -> None:
+        p = FleetProvider()
+        p._swap = _FakeSwap()
+        with p._lock:
+            p._reloading = True  # simulate a reload already in flight
+        returned = threading.Event()
+
+        def waiter() -> None:
+            p.reload_role(WorkerRole.CHAT, wait=True)  # sets pending, waits on the cond
+            returned.set()
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        assert not returned.wait(timeout=0.3)  # blocked while the in-flight reload runs
+        assert p._reload_pending is True  # the waiter queued its pass
+        with p._lock:  # the in-flight reload finishes
+            p._reloading = False
+            p._reload_done.notify_all()
+        assert returned.wait(timeout=2.0)  # the waiter woke and returned
+        t.join(timeout=2.0)
+
     def test_add_spawn_listener_stores_callbacks(self) -> None:
         p = FleetProvider()
 

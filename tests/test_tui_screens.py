@@ -3249,7 +3249,7 @@ async def test_chat_cancel_stream_while_streaming():
 
 
 async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels the stream and schedules the drained reset."""
+    """apply_model_change cancels the stream and schedules the drained reload."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -3260,11 +3260,11 @@ async def testapply_model_change_cancels_stream_when_streaming():
         ):
             screen.apply_model_change()
             mock_cancel.assert_called_once()
-            mock_later.assert_called_once_with(screen._reset_services_when_drained)
+            mock_later.assert_called_once_with(screen._reload_chat_when_drained)
 
 
-async def testapply_model_change_defers_reset_off_event_loop_when_not_streaming():
-    """Not streaming: the reset is scheduled (off-thread), never run on the event
+async def testapply_model_change_defers_reload_off_event_loop_when_not_streaming():
+    """Not streaming: the reload is scheduled (off-thread), never run on the event
     loop, so the swap can't freeze the TUI."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3273,16 +3273,16 @@ async def testapply_model_change_defers_reset_off_event_loop_when_not_streaming(
         with (
             patch.object(screen, "action_cancel_stream") as mock_cancel,
             patch.object(screen, "call_later") as mock_later,
-            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
+            patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
         ):
             screen.apply_model_change()
             mock_cancel.assert_not_called()
-            mock_later.assert_called_once_with(screen._reset_services_when_drained)
-            mock_reset.assert_not_called()
+            mock_later.assert_called_once_with(screen._reload_chat_when_drained)
+            mock_get.assert_not_called()
 
 
-async def test_reset_services_when_drained_retries_while_workers_active():
-    """_reset_services_when_drained retries via call_later (and spawns no reset
+async def test_reload_chat_when_drained_retries_while_workers_active():
+    """_reload_chat_when_drained retries via call_later (and spawns no reload
     worker) while any worker, including a prior swap's, is still running."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3292,43 +3292,45 @@ async def test_reset_services_when_drained_retries_while_workers_active():
                 type(screen), "workers", new_callable=MagicMock, return_value=[MagicMock()]
             ),
             patch.object(screen, "call_later") as mock_later,
-            patch.object(screen, "_reset_services_worker") as mock_worker,
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
-            screen._reset_services_when_drained()
-            mock_later.assert_called_once_with(screen._reset_services_when_drained)
+            screen._reload_chat_when_drained()
+            mock_later.assert_called_once_with(screen._reload_chat_when_drained)
             mock_worker.assert_not_called()
 
 
-async def test_reset_services_when_drained_spawns_worker_when_idle():
-    """Once workers drain, the off-thread reset worker is spawned."""
+async def test_reload_chat_when_drained_spawns_worker_when_idle():
+    """Once workers drain, the off-thread reload worker is spawned."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         for w in list(screen.workers):
             w.cancel()
         await pilot.pause()
-        with patch.object(screen, "_reset_services_worker") as mock_worker:
-            screen._reset_services_when_drained()
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen._reload_chat_when_drained()
             mock_worker.assert_called_once()
 
 
-async def test_reset_services_worker_resets_warms_and_unblocks():
-    """The reset worker resets + warms off the event loop, then unblocks input."""
+async def test_reload_chat_worker_reloads_only_chat_and_unblocks():
+    """The worker reloads the CHAT role (keeping the store) and unblocks input."""
+    from lilbee.providers.roles import WorkerRole
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.swapping_model = True
+        services_mock = MagicMock()
         with (
-            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
-            patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services_mock),
             patch.object(app, "notify") as mock_notify,
         ):
-            screen._reset_services_worker()
+            screen._reload_chat_model_worker()
             await app.workers.wait_for_complete()
             await _pilot.pause()
-            mock_reset.assert_called_once()
-            # get_services rebuilds + eager-warms the new model in the worker.
-            mock_get.assert_called_once()
+            # Only the chat role is reloaded, synchronously (wait=True), so the
+            # store and searcher are kept rather than torn down.
+            services_mock.reload_role.assert_called_once_with(WorkerRole.CHAT, wait=True)
             # The input is unblocked only after the worker reports the model loaded.
             assert screen.swapping_model is False
             assert any("Now using" in str(call.args[0]) for call in mock_notify.call_args_list), (
@@ -3336,20 +3338,19 @@ async def test_reset_services_worker_resets_warms_and_unblocks():
             )
 
 
-async def test_reset_services_worker_failure_unblocks_and_errors():
+async def test_reload_chat_worker_failure_unblocks_and_errors():
     """A reload failure still unblocks the input and surfaces an error toast."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.swapping_model = True
+        services_mock = MagicMock()
+        services_mock.reload_role.side_effect = RuntimeError("boom")
         with (
-            patch(
-                "lilbee.cli.tui.screens.chat.reset_services",
-                side_effect=RuntimeError("boom"),
-            ),
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services_mock),
             patch.object(app, "notify") as mock_notify,
         ):
-            screen._reset_services_worker()
+            screen._reload_chat_model_worker()
             await app.workers.wait_for_complete()
             await _pilot.pause()
             assert screen.swapping_model is False
@@ -3364,10 +3365,9 @@ async def test_apply_model_change_blocks_input_during_swap():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
-        # Block the drained reset from spawning the worker, so the swap stays
-        # in its in-progress state long enough to observe the input gate (with
-        # reset_services mocked the worker would otherwise finish instantly).
-        with patch.object(screen, "_reset_services_when_drained"):
+        # Block the drained reload from spawning the worker, so the swap stays
+        # in its in-progress state long enough to observe the input gate.
+        with patch.object(screen, "_reload_chat_when_drained"):
             screen.apply_model_change()
             # swapping_model is set synchronously; its watcher disables the input.
             assert screen.swapping_model is True

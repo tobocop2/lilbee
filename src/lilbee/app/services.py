@@ -74,14 +74,16 @@ class Services:
         """
         self.provider.cancel_inference()
 
-    def reload_role(self, role_name: WorkerRole) -> None:
+    def reload_role(self, role_name: WorkerRole, *, wait: bool = False) -> None:
         """Respawn only *role_name*'s model server so it picks up changed cfg.
 
         Other roles' servers and any in-flight stream they own are untouched. Use
         when one role-bound model setting changed (e.g. embedding_model). The
-        respawn runs off the caller's thread, so this returns immediately.
+        respawn runs off the caller's thread, so this returns immediately, unless
+        ``wait=True`` (the caller is already off the event loop and wants to block
+        until the new model has loaded).
         """
-        self.provider.reload_role(role_name)
+        self.provider.reload_role(role_name, wait=wait)
 
     def add_pool_listener(
         self,

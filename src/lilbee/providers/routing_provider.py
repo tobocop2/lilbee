@@ -310,10 +310,10 @@ class RoutingProvider(LLMProvider):
         if self._local is not None:
             self._local.cancel_inference()
 
-    def reload_role(self, role: WorkerRole) -> None:
+    def reload_role(self, role: WorkerRole, *, wait: bool = False) -> None:
         """Forward to the native engine; the SDK side has no per-role servers."""
         if self._local is not None:
-            self._local.reload_role(role)
+            self._local.reload_role(role, wait=wait)
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Native readiness without building; True when no local engine exists yet."""
