@@ -867,3 +867,21 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
 
     budget = launch_mod.chat_warm_budget_s()
     assert budget == max(launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total)))
+
+
+def test_install_skill_is_atomic_on_failure(tmp_path, monkeypatch):
+    """A failed copy must not leave a half-written skill dir (which exists()
+    would skip forever) or any staging litter."""
+    from lilbee.cli.launchers import opencode
+
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    monkeypatch.setattr(opencode, "_opencode_skill_dest", lambda: dest)
+
+    def _boom(*_a, **_k):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(opencode.os, "replace", _boom)
+    with pytest.raises(OSError):
+        opencode._install_lilbee_skill()
+    assert not dest.exists()
+    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))
