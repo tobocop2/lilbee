@@ -9,7 +9,6 @@ import inspect
 import logging
 import os
 import re
-import textwrap
 import threading
 import uuid
 from collections.abc import Callable
@@ -923,6 +922,18 @@ def _strip_property_noise(prop: dict[str, Any]) -> None:
     _collapse_nullable_anyof(prop)
 
 
+def _flatten_tool_description(text: str) -> str:
+    """Flatten a triple-quoted tool docstring for the tools wire.
+
+    The summary line carries no indent while continuation lines are indented to
+    the source, so ``textwrap.dedent`` alone is a no-op (the common prefix is the
+    empty string) and leaves source indentation on every body line -- including
+    deeper-indented Args lines. Strip each line so the model sees flat text;
+    blank lines are kept so paragraph breaks survive.
+    """
+    return "\n".join(line.strip() for line in text.strip().splitlines())
+
+
 def _strip_schema_noise() -> None:
     """Trim auto-generated noise from every registered tool's schema before
     it ships on the OpenAI tools wire for each chat request.
@@ -955,7 +966,7 @@ def _strip_schema_noise() -> None:
                     if isinstance(prop, dict):
                         _strip_property_noise(prop)
         if isinstance(info.description, str):
-            info.description = textwrap.dedent(info.description).strip()
+            info.description = _flatten_tool_description(info.description)
 
 
 _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'

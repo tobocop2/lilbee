@@ -1710,6 +1710,29 @@ class TestToolsSchemaSize:
                         f"{t.name}.{pname}: per-property title leaked into schema"
                     )
 
+    async def test_descriptions_have_no_indented_body_lines(self) -> None:
+        """_strip_schema_noise flattens docstring indentation before it ships. A
+        triple-quoted docstring indents every continuation line; textwrap.dedent
+        alone left those 4-space prefixes in place because the summary line's zero
+        indent makes the common prefix empty."""
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for line in (t.description or "").splitlines():
+                assert not line.startswith("    "), f"{t.name}: indented body line on the wire"
+
+    def test_flatten_tool_description_dedents_body(self) -> None:
+        from lilbee.mcp_server import _flatten_tool_description
+
+        text = "Summary line.\n\n    Indented body.\n    Second line."
+        assert _flatten_tool_description(text) == "Summary line.\n\nIndented body.\nSecond line."
+
+    def test_flatten_tool_description_single_line(self) -> None:
+        from lilbee.mcp_server import _flatten_tool_description
+
+        assert _flatten_tool_description("Just a summary.") == "Just a summary."
+
     async def test_no_default_value_noise_in_input_schema(self) -> None:
         """The model picks tools from name + description; ``default`` values
         on properties are server-side trivia that cost tokens at every dispatch.
