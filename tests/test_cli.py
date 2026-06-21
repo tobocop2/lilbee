@@ -1880,6 +1880,16 @@ class TestRebuildJson:
 
 class TestAddJson:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json_suppresses_eager_start(self, mock_sync, isolated_env, tmp_path):
+        """Headless json add only needs embed; it must not eager-warm every role."""
+        src = tmp_path / "source" / "m.txt"
+        src.parent.mkdir()
+        src.write_text("x")
+        cfg.worker_pool_eager_start = True
+        runner.invoke(app, ["--json", "add", str(src)])
+        assert cfg.worker_pool_eager_start is False
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "manual.txt"
         src.parent.mkdir()
