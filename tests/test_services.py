@@ -55,13 +55,22 @@ class TestCancelInference:
 
 class TestReloadRole:
     def test_delegates_to_provider_with_role(self):
-        """``reload_role`` forwards the requested role to the provider."""
+        """``reload_role`` forwards the requested role (and wait flag) to the provider."""
         from tests.conftest import make_mock_services
 
         provider = MagicMock()
         services = make_mock_services(provider=provider)
         services.reload_role(WorkerRole.EMBED)
-        provider.reload_role.assert_called_once_with(WorkerRole.EMBED)
+        provider.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=False)
+
+    def test_forwards_wait_flag_to_provider(self):
+        """``wait=True`` (the chat-swap path) is forwarded to the provider."""
+        from tests.conftest import make_mock_services
+
+        provider = MagicMock()
+        services = make_mock_services(provider=provider)
+        services.reload_role(WorkerRole.CHAT, wait=True)
+        provider.reload_role.assert_called_once_with(WorkerRole.CHAT, wait=True)
 
 
 class TestAddPoolListener:
