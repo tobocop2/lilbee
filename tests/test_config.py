@@ -1411,6 +1411,34 @@ class TestCrawlExcludePatternsValidator:
         assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
 
 
+class TestCrawlBrowserExtraArgsValidator:
+    def test_newline_separated_string_splits(self):
+        """The persist path joins list values with newlines; reload must split them."""
+        from lilbee.core.config import Config
+
+        result = Config._split_crawl_browser_extra_args("--flag-a\n--flag-b")
+        assert result == ["--flag-a", "--flag-b"]
+
+    def test_list_passes_through_unchanged(self):
+        from lilbee.core.config import Config
+
+        assert Config._split_crawl_browser_extra_args(["--a", "--b"]) == ["--a", "--b"]
+
+    def test_persisted_newline_string_round_trips(self, tmp_path):
+        """A value persisted as a newline-joined string must not crash the whole
+        config load (which would silently discard every other setting)."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            'crawl_browser_extra_args = "--flag-a\\n--flag-b"\nchat_model = "ollama/keep:latest"\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.crawl_browser_extra_args == ["--flag-a", "--flag-b"]
+            assert c.chat_model == "ollama/keep:latest"  # other settings survive
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = _clean_env(tmp_path)
