@@ -11,7 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PIL import Image
+from PIL import Image, ImageSequence
 
 if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
@@ -187,11 +187,14 @@ async def _vision_ocr_cached(
     loop or a single image). Output is cached by file content + model, so a retry
     after a downstream failure (chunk/embed/store) reuses the pages, not re-OCR-ing.
     """
+    # The per-page timeout bounds completeness: a page that exhausts the budget
+    # yields empty text. Key on it so raising the timeout re-OCRs the file rather
+    # than serving the earlier, partially-empty cached result for the same content.
     key = ocr_cache_key(
         file_hash(path),
         backend="vision",
         model=cfg.vision_model,
-        extra=str(cfg.vision_ocr_max_tokens),
+        extra=f"{cfg.vision_ocr_max_tokens}:{_effective_ocr_timeout()}",
     )
     cached = load_ocr_pages(key)
     if cached is not None:
@@ -253,11 +256,19 @@ async def _vision_image_ocr(
     on_progress: DetailedProgressCallback,
     page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
-    """Vision OCR a single image (one page) through the worker pool."""
+    """Vision OCR an image through the worker pool, one page per frame.
+
+    A multi-frame TIFF/GIF yields one OCR page per frame instead of silently
+    dropping every frame after the first.
+    """
 
     async def _ocr() -> list[tuple[int, str]]:
-        text = await asyncio.to_thread(_image_ocr_text, path)
-        return [(1, text)]
+        page_pngs = await asyncio.to_thread(_image_page_pngs, path)
+        pages: list[tuple[int, str]] = []
+        for page_num, png in enumerate(page_pngs, start=1):
+            text = await asyncio.to_thread(_ocr_image_png, png)
+            pages.append((page_num, text))
+        return pages
 
     return await _vision_ocr_cached(
         path,
@@ -269,19 +280,26 @@ async def _vision_image_ocr(
     )
 
 
-def _image_ocr_text(path: Path) -> str:
-    """OCR one image through the vision server (a single chat-completions call)."""
+def _ocr_image_png(png: bytes) -> str:
+    """OCR one rendered image page through the vision server."""
     return get_services().provider.vision_ocr(
-        _image_to_png_bytes(path), cfg.vision_model, timeout=_effective_ocr_timeout()
+        png, cfg.vision_model, timeout=_effective_ocr_timeout()
     )
 
 
-def _image_to_png_bytes(path: Path) -> bytes:
-    """Load any mapped image extension and re-encode as PNG for the projector."""
+def _image_page_pngs(path: Path) -> list[bytes]:
+    """Each frame of a (possibly multi-frame) image, re-encoded as PNG.
+
+    A single-frame image yields one entry; a multipage TIFF/GIF yields one per
+    frame so every page reaches the projector instead of just the first.
+    """
+    pages: list[bytes] = []
     with Image.open(path) as img:
-        buf = BytesIO()
-        img.convert("RGB").save(buf, format="PNG")
-        return buf.getvalue()
+        for frame in ImageSequence.Iterator(img):
+            buf = BytesIO()
+            frame.convert("RGB").save(buf, format="PNG")
+            pages.append(buf.getvalue())
+    return pages
 
 
 def _run_tesseract_sync(path: Path) -> Any:
@@ -347,6 +365,16 @@ async def _tesseract_ocr_fallback(
     return await chunk_and_embed_pages(page_texts, source_name, content_type, on_progress)
 
 
+def _chunk_pages(page_texts: Sequence[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Chunk each OCR page's text. Semantic chunking is off: a single OCR page
+    rarely spans multiple topics, so the semantic round-trip is not worth it."""
+    return [
+        (page_num, chunk)
+        for page_num, text in page_texts
+        for chunk in chunk_text(text, use_semantic=False)
+    ]
+
+
 async def chunk_and_embed_pages(
     page_texts: Sequence[tuple[int, str]],
     source_name: str,
@@ -357,12 +385,9 @@ async def chunk_and_embed_pages(
     if not page_texts:
         return []
 
-    # Single OCR page rarely spans multiple topics; skip the semantic round-trip.
-    all_chunks = [
-        (page_num, chunk)
-        for page_num, text in page_texts
-        for chunk in chunk_text(text, use_semantic=False)
-    ]
+    # chunk_text runs kreuzberg's synchronous extractor; offload it so a long OCR
+    # document does not stall sibling files sharing this event loop.
+    all_chunks = await asyncio.to_thread(_chunk_pages, page_texts)
     if not all_chunks:
         return []
     texts = [c for _, c in all_chunks]
@@ -427,6 +452,11 @@ async def _handle_scanned_pdf_fallback(
     file.
     """
     del result  # Both backends re-extract; the kreuzberg result is not reused.
+    if _effective_enable_ocr() is False:
+        # OCR explicitly disabled: skip entirely (vision and Tesseract) rather
+        # than paying the full Tesseract cost the config says is turned off.
+        log.info("OCR disabled; skipping scanned-PDF OCR for %s", source_name)
+        return []
     use_ocr = _should_run_ocr()
     if use_ocr and cfg.vision_model:
         log.info(
@@ -474,6 +504,11 @@ async def _handle_image(
     An image has no text layer to extract first, so it routes straight to OCR --
     the same downstream call a PDF page hits after it is rasterized to an image.
     """
+    if _effective_enable_ocr() is False:
+        # OCR explicitly disabled: an image has no text layer, so skip it rather
+        # than paying the full Tesseract cost the config says is turned off.
+        log.info("OCR disabled; skipping image OCR for %s", source_name)
+        return []
     if _should_run_ocr() and cfg.vision_model:
         log.info("Image: using vision OCR for %s (model=%s)", source_name, cfg.vision_model)
         return await _vision_image_ocr(
@@ -584,7 +619,11 @@ async def ingest_markdown(
     if not raw_text.strip():
         return []
 
-    texts = chunk_text(raw_text, mime_type="text/markdown", heading_context=True)
+    # chunk_text runs kreuzberg's synchronous extractor; offload it so a large
+    # markdown doc does not stall sibling files sharing this event loop.
+    texts = await asyncio.to_thread(
+        chunk_text, raw_text, mime_type="text/markdown", heading_context=True
+    )
     if not texts:
         return []
 

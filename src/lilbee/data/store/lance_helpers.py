@@ -85,8 +85,14 @@ def safe_delete(
 
 
 def escape_sql_string(value: str) -> str:
-    """Escape single quotes for SQL predicates."""
-    return value.replace("\\", "\\\\").replace("'", "''")
+    """Escape a value for a single-quoted SQL string literal in a LanceDB predicate.
+
+    LanceDB's Datafusion engine follows standard SQL: the only escape inside a
+    ``'...'`` literal is doubling the single quote. Backslash is an ordinary
+    character, so escaping it (``\\`` -> ``\\\\``) corrupts the literal and makes a
+    value containing a backslash (e.g. a Windows path) never match.
+    """
+    return value.replace("'", "''")
 
 
 def local_owner_predicate() -> str:

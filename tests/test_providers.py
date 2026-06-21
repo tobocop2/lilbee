@@ -3294,7 +3294,7 @@ class TestEmbedApiBaseRouting:
         provider = SdkLLMProvider(LitellmSdkBackend())
         cfg.embedding_model = "ollama/nomic-embed-text:latest"
         fake = mock.MagicMock()
-        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2], "index": 0}]}
 
         with mock.patch.dict("sys.modules", {"litellm": fake}):
             provider.embed(["hello"])
@@ -3309,7 +3309,7 @@ class TestEmbedApiBaseRouting:
         provider = SdkLLMProvider(LitellmSdkBackend())
         cfg.embedding_model = "openai/text-embedding-3-small"
         fake = mock.MagicMock()
-        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2], "index": 0}]}
 
         with mock.patch.dict("sys.modules", {"litellm": fake}):
             provider.embed(["hello"])

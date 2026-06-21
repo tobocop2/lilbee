@@ -1015,8 +1015,11 @@ class TestEscapeSqlString:
     def test_escapes_single_quotes(self):
         assert escape_sql_string("it's") == "it''s"
 
-    def test_escapes_backslashes(self):
-        assert escape_sql_string("path\\file") == "path\\\\file"
+    def test_backslash_is_not_escaped(self):
+        # LanceDB's Datafusion treats backslash literally inside a '...' literal,
+        # so doubling it corrupts the value and a backslash-bearing name never
+        # matches its predicate (bb-7jg1).
+        assert escape_sql_string("path\\file") == "path\\file"
 
     def test_injection_payload(self):
         escaped = escape_sql_string("' OR 1=1 --")
@@ -1025,6 +1028,24 @@ class TestEscapeSqlString:
         # No lone single quote remains (all are doubled)
         stripped = escaped.replace("''", "")
         assert "'" not in stripped
+
+    def test_delete_by_source_matches_backslash_source(self, store):
+        """A source name with a backslash must match its predicate end-to-end; the
+        prior backslash-doubling made it never match, leaking the source's chunks."""
+        backslash_src = r"win\dir\doc.md"
+        backslash = _make_records(n=1)
+        backslash[0]["source"] = backslash_src
+        plain = _make_records(n=1)
+        plain[0]["source"] = "plain.md"
+        plain[0]["chunk_index"] = 1
+        store.add_chunks(backslash + plain)
+
+        store.delete_by_source(backslash_src)
+
+        rows = store.open_table("chunks").search().to_list()
+        sources = {r["source"] for r in rows}
+        assert backslash_src not in sources
+        assert "plain.md" in sources
 
 
 class TestChunkTypeField:

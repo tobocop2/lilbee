@@ -5,11 +5,40 @@ implementation.
 """
 
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from lilbee.data.chunk import chunk_text
+
+
+@dataclass
+class _FakeMeta:
+    """Stand-in for tree-sitter ChunkContext.metadata in chunk_code tests."""
+
+    symbols_defined: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _FakeTSChunk:
+    """Stand-in for a tree-sitter result.chunks entry (size-bounded CodeChunk)."""
+
+    content: str
+    start_line: int
+    end_line: int
+    symbols: list[str] = field(default_factory=list)
+
+    @property
+    def metadata(self) -> _FakeMeta:
+        return _FakeMeta(symbols_defined=self.symbols)
+
+
+@dataclass
+class _FakeResult:
+    """Stand-in for tree-sitter ProcessResult exposing only .chunks."""
+
+    chunks: list[_FakeTSChunk]
 
 
 class TestChunkText:
@@ -296,7 +325,7 @@ class Greeter:
         finally:
             path.unlink()
 
-    def test_empty_symbols_triggers_fallback(self):
+    def test_empty_chunks_triggers_fallback(self):
         from unittest.mock import patch
 
         from lilbee.data.code_chunker import chunk_code
@@ -307,16 +336,15 @@ class Greeter:
             path = Path(f.name)
 
         try:
-            # Stub out _ensure_language and process so we land on the
-            # no-symbols branch deterministically, regardless of whether
-            # tree-sitter Python is installed on the host.
+            # process() yielding no size-bounded chunks must fall back to text
+            # chunking rather than returning nothing.
             with (
                 patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value={}),
-                patch("lilbee.data.code_chunker._extract_symbols", return_value=[]),
+                patch("lilbee.data.code_chunker.process", return_value=_FakeResult([])),
             ):
                 chunks = chunk_code(path)
                 assert isinstance(chunks, list)
+                assert chunks  # fell back to non-empty text chunks
         finally:
             path.unlink()
 
@@ -360,22 +388,22 @@ class Greeter:
         finally:
             path.unlink()
 
-    def test_chunk_code_emits_symbol_chunks(self):
-        """Cover the structured-chunk emission path when _extract_symbols
-        returns at least one symbol. Mocked so the test is independent of
-        whether tree-sitter actually parses on this CI host."""
+    def test_chunk_code_emits_chunks_from_result(self):
+        """chunk_code consumes the parser's size-bounded result.chunks (not the
+        unbounded structure tree): the header names the relative source and the
+        chunk's symbols, and the content is passed through verbatim. Mocked so the
+        test is independent of whether tree-sitter parses on this CI host."""
         from unittest.mock import patch
 
-        from lilbee.data.code_chunker import SymbolInfo, chunk_code
+        from lilbee.data.code_chunker import chunk_code
 
-        symbol = SymbolInfo(
-            name="hello",
-            kind="function",
-            line_start=1,
-            line_end=3,
-            text="def hello():\n    return 1\n",
+        result = _FakeResult(
+            [
+                _FakeTSChunk(
+                    "def hello():\n    return 1\n", start_line=0, end_line=2, symbols=["hello"]
+                )
+            ]
         )
-
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("def hello():\n    return 1\n")
             f.flush()
@@ -384,19 +412,147 @@ class Greeter:
         try:
             with (
                 patch("lilbee.data.code_chunker._ensure_language", return_value=True),
-                patch("lilbee.data.code_chunker.process", return_value={}),
-                patch("lilbee.data.code_chunker._extract_symbols", return_value=[symbol]),
+                patch("lilbee.data.code_chunker.process", return_value=result),
             ):
-                chunks = chunk_code(path)
+                chunks = chunk_code(path, source_name="pkg/mod.py")
         finally:
             path.unlink()
 
         assert len(chunks) == 1
         first = chunks[0]
-        assert "function: hello" in first.chunk
+        assert "# File: pkg/mod.py | hello (lines 1-2)" in first.chunk
+        assert "def hello" in first.chunk
         assert first.line_start == 1
-        assert first.line_end == 3
+        assert first.line_end == 2
         assert first.chunk_index == 0
+
+    def test_chunk_header_omits_symbols_and_never_says_none(self):
+        """A symbol-free (anonymous) chunk omits the symbol segment entirely
+        rather than rendering the literal string 'None' (bb-ziks.62)."""
+        from unittest.mock import patch
+
+        from lilbee.data.code_chunker import chunk_code
+
+        result = _FakeResult([_FakeTSChunk("x = 1\n", start_line=0, end_line=1, symbols=[])])
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n")
+            f.flush()
+            path = Path(f.name)
+        try:
+            with (
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", return_value=result),
+            ):
+                chunks = chunk_code(path, source_name="m.py")
+        finally:
+            path.unlink()
+        assert chunks[0].chunk.startswith("# File: m.py (lines 1-1)")
+        assert "None" not in chunks[0].chunk
+        assert "|" not in chunks[0].chunk
+
+    def test_header_uses_relative_source_name_not_absolute_path(self):
+        """The header carries the relative source name, never the host's absolute
+        path, so an exported corpus does not leak the operator's disk layout
+        (bb-ziks.19)."""
+        from unittest.mock import patch
+
+        from lilbee.data.code_chunker import chunk_code
+
+        result = _FakeResult([_FakeTSChunk("code\n", start_line=0, end_line=1, symbols=["s"])])
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("code\n")
+            f.flush()
+            path = Path(f.name)
+        try:
+            with (
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", return_value=result),
+            ):
+                chunks = chunk_code(path, source_name="src/x.py")
+        finally:
+            path.unlink()
+        assert "src/x.py" in chunks[0].chunk
+        assert str(path) not in chunks[0].chunk
+
+    def test_non_ascii_code_not_corrupted(self):
+        """Non-ASCII identifiers/strings survive chunking: the prior code sliced a
+        str with tree-sitter UTF-8 byte offsets, mis-slicing every symbol after
+        the first multibyte char (bb-7jg1.4)."""
+        from lilbee.data.code_chunker import chunk_code
+
+        code = (
+            'def greet(náme):\n    return f"Hallo {náme}"\n\n'
+            'class Wörker:\n    def café(self):\n        return "résumé"\n'
+        )
+        with tempfile.NamedTemporaryFile(
+            suffix=".py", mode="w", encoding="utf-8", delete=False
+        ) as f:
+            f.write(code)
+            f.flush()
+            path = Path(f.name)
+        try:
+            chunks = chunk_code(path)
+        finally:
+            path.unlink()
+        joined = "\n".join(c.chunk for c in chunks)
+        # Assert the exact multi-byte spans, not bare identifiers: byte-offset
+        # slicing of a str shifts after the first multibyte char, so the full
+        # declarations would be mangled even though a stray identifier might survive.
+        assert "def greet(náme):" in joined
+        assert 'return f"Hallo {náme}"' in joined
+        assert "class Wörker:" in joined
+        assert "def café(self):" in joined
+        assert 'return "résumé"' in joined
+
+    def test_line_end_derived_from_content_not_parser_end_line(self):
+        """A chunk whose final line has no trailing newline must report that line as
+        line_end. tree-sitter's end_line counts newline-terminated lines, so it
+        under-reports here; line_end is derived from the content instead."""
+        from unittest.mock import patch
+
+        from lilbee.data.code_chunker import chunk_code
+
+        # Content spans two physical lines but ends without a trailing newline;
+        # the fake's end_line=1 mirrors the real parser's under-count.
+        result = _FakeResult(
+            [_FakeTSChunk("def a():\n    return 1", start_line=0, end_line=1, symbols=["a"])]
+        )
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("def a():\n    return 1")
+            f.flush()
+            path = Path(f.name)
+        try:
+            with (
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", return_value=result),
+            ):
+                chunks = chunk_code(path, source_name="m.py")
+        finally:
+            path.unlink()
+        assert chunks[0].line_start == 1
+        assert chunks[0].line_end == 2
+        assert "lines 1-2" in chunks[0].chunk
+
+    def test_real_parser_line_range_spans_no_trailing_newline_file(self):
+        """Against the real parser, the chunk line range reaches the file's final
+        line even when the file has no trailing newline."""
+        from lilbee.data.code_chunker import chunk_code
+
+        # 5 physical lines (L1..L5), no trailing newline on the last.
+        code = "def alpha():\n    return 1\n\ndef beta():\n    return 2"
+        with tempfile.NamedTemporaryFile(
+            suffix=".py", mode="w", encoding="utf-8", delete=False
+        ) as f:
+            f.write(code)
+            f.flush()
+            path = Path(f.name)
+        try:
+            chunks = chunk_code(path)
+        finally:
+            path.unlink()
+        assert chunks
+        assert min(c.line_start for c in chunks) == 1
+        assert max(c.line_end for c in chunks) == 5
 
 
 class TestHeadingContextNoDuplicate:
