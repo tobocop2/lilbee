@@ -111,3 +111,11 @@ def test_litellm_config_without_running_server_exits_1():
     result = runner.invoke(app, ["agent-config", "litellm"])
     assert result.exit_code == 1
     assert "lilbee serve" in result.stderr
+
+
+def test_litellm_config_accepts_data_root_flags(tmp_path):
+    """Entry-point parity (bb-7jg1.21): agent-config litellm accepts --data-dir."""
+    result = runner.invoke(app, ["agent-config", "litellm", "--data-dir", str(tmp_path / "alt")])
+    assert "No such option" not in result.output
+    assert result.exit_code == 1
+    assert "lilbee serve" in result.stderr

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import typer
 
 from lilbee.cli.agent_configs import litellm, opencode
+from lilbee.cli.app import apply_overrides, data_dir_option, global_option
 from lilbee.cli.launchers.server import (
     LOOPBACK,
     installed_chat_model_refs,
@@ -45,12 +47,20 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
 
 
 @agent_config_app.command("opencode")
-def _opencode_cmd() -> None:
+def _opencode_cmd(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
     """Print an opencode.json block (OpenAI-compatible provider + MCP server)."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit_block(opencode.opencode_config)
 
 
 @agent_config_app.command("litellm")
-def _litellm_cmd() -> None:
+def _litellm_cmd(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
     """Print a LiteLLM `config.yaml` snippet routing model names to lilbee."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit_block(litellm.litellm_config)

@@ -99,6 +99,17 @@ def test_opencode_config_without_running_server_exits_1():
     assert "lilbee serve" in result.stderr
 
 
+def test_opencode_config_accepts_data_root_flags(tmp_path):
+    """Entry-point parity (bb-7jg1.21): agent-config accepts --data-dir/--global like
+    its siblings, applying the override before resolving the server session."""
+    alt = tmp_path / "alt"
+    result = runner.invoke(app, ["agent-config", "opencode", "--data-dir", str(alt)])
+    # Flags are recognized (not a usage error); no running server -> serve hint.
+    assert "No such option" not in result.output
+    assert result.exit_code == 1
+    assert "lilbee serve" in result.stderr
+
+
 def test_opencode_config_without_port_file_exits_1():
     server_json_path().write_text(json.dumps({"token": "t"}))
     # no server.port written

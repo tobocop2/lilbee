@@ -120,8 +120,12 @@ def serve(
     asyncio.run(_run_server(server, config, cfg.server_host))
 
 
-def mcp_cmd() -> None:
+def mcp_cmd(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
     """Start the MCP server (stdio transport) for agent integration."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
     from lilbee.mcp_server import main
 
     main()

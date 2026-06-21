@@ -4280,3 +4280,13 @@ class TestCrawlDefaultCapNotice:
         monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
         _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=9)
         assert "--max-pages 0" not in capsys.readouterr().err
+
+
+def test_mcp_command_applies_data_dir_then_starts(tmp_path):
+    """The stdio MCP command accepts --data-dir/--global like its serve sibling and
+    applies the override before starting the server."""
+    with mock.patch("lilbee.mcp_server.main") as mock_main:
+        result = runner.invoke(app, ["mcp", "--data-dir", str(tmp_path / "alt")])
+    assert result.exit_code == 0, result.output
+    assert "No such option" not in result.output
+    mock_main.assert_called_once()

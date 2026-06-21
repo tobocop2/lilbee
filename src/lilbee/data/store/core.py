@@ -930,9 +930,7 @@ class Store:
             if table is not None:
                 _safe_delete_unlocked(table, predicate)
 
-    def clear_and_add(
-        self, name: str, schema: pa.Schema, rows: list[dict], predicate: str
-    ) -> None:
+    def clear_and_add(self, name: str, schema: pa.Schema, rows: list[dict], predicate: str) -> None:
         """Replace the rows matching *predicate* with *rows* in one locked write.
 
         Delete and add run under a single write lock, so a reader never observes
