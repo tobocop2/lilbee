@@ -108,3 +108,16 @@ class ScenarioStatus(StrEnum):
     FAIL = "fail"
     TIMEOUT = "timeout"
     ERROR = "error"
+
+
+class ExpectedSupport(StrEnum):
+    """Whether docs/opencode-models.md claims a family works through opencode.
+
+    Lets a full-matrix run separate a real regression (a SUPPORTED family that
+    failed) from a documented non-supported family (expected to fail). A run is
+    green when every supported family passes and every unsupported one fails for
+    its documented reason.
+    """
+
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"

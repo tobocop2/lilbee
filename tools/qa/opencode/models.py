@@ -12,7 +12,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_config import _EMBED_REF, _MODEL_PULL_TIMEOUT_S, _SUSPENDED_SUFFIX, REPO_ROOT
+from harness_config import (
+    _EMBED_REF,
+    _MODEL_PULL_TIMEOUT_S,
+    _SUSPENDED_SUFFIX,
+    REPO_ROOT,
+    ExpectedSupport,
+)
 
 
 def _models_manifests_dir() -> Path:
@@ -101,6 +107,10 @@ class ModelCell:
     size_gb: float
     skip: bool = False
     tier: str = "small"  # small | mid | giant -> picks the prompt from _TIER_PROMPTS
+    # Default supported: a family is presumed to work unless models.toml marks it
+    # unsupported per docs/opencode-models.md, so a new family's failure reads as a
+    # regression to investigate, not a silently-tolerated expected fail.
+    expected: ExpectedSupport = ExpectedSupport.SUPPORTED
 
 
 def load_models(path: Path) -> list[ModelCell]:
@@ -113,6 +123,7 @@ def load_models(path: Path) -> list[ModelCell]:
             size_gb=float(raw.get("size_gb", 0.0)),
             skip=bool(raw.get("skip", False)),
             tier=str(raw.get("tier", "small")),
+            expected=ExpectedSupport(raw.get("expected", ExpectedSupport.SUPPORTED.value)),
         )
         for raw in data.get("model", [])
     ]

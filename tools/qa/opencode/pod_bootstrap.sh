@@ -18,6 +18,7 @@
 #     hardlink, so the venv goes on LOCAL disk with UV_LINK_MODE=copy.
 #   - System tools a fresh container lacks but the build/harness need:
 #     cmake ninja-build build-essential ccache go tmux `time` ffmpeg uv opencode.
+#     tesseract-ocr backs the reel frame-by-frame QA (frame_qa.py).
 #   - lilbee reads LILBEE_DATA / LILBEE_MODELS_DIR (not *_DIR for data); models go
 #     to a persistent dir so pulls survive a resume.
 set -euo pipefail
@@ -40,7 +41,7 @@ log() { echo "[bootstrap] $*"; }
 log "apt packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq cmake ninja-build build-essential ccache git curl tmux time ffmpeg
+apt-get install -y -qq cmake ninja-build build-essential ccache git curl tmux time ffmpeg tesseract-ocr
 
 # 2. Go toolchain for the engine helpers (llama-swap, gguf-parser).
 if [ ! -x /usr/local/go/bin/go ] && ! command -v go >/dev/null; then

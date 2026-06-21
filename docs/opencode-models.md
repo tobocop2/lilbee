@@ -59,10 +59,31 @@ black-box integration test: nothing is mocked, so a pass means the whole path
 | File | Role |
 |------|------|
 | `matrix.py` | The driver. Defines the model matrix (`models.toml`), runs each cell, writes `results/results.md`. |
-| `models.toml` | The matrix: one row per family with its GGUF ref and tier. |
-| `prevalidate.py` | Optional pre-flight: for every cell, assert the model answers the prompt well before any expensive run. |
+| `models.toml` | The matrix: one row per family with its GGUF ref, tier, and `expected` support status. |
+| `reelrun.sh` | Reel factory: records one validated demo reel per family, captures a multi-GPU snapshot, then gates the reel frame-by-frame. |
+| `frame_qa.py` | OCRs a reel's frames and asserts the developer-visible arc (prompt -> dispatch -> grounded answer/code -> no error frame -> not a dead screen). |
+| `gpu_snapshot.py` | Per-device VRAM snapshot while a model is resident; proves a giant's weights span multiple GPUs. |
 | `stress.py` | Concurrency probe: many agents hitting one served model at once. |
 | `results/` | Per-run output: `results.md` plus each cell's captured opencode pane. |
+
+### Supported vs unsupported, and what a green run means
+
+`models.toml` tags each family `expected = "supported"` (default) or
+`"unsupported"` (documented below as not working). The report classifies every
+cell as `PASS`, `REGRESSION` (a supported family that failed), `expected-fail`
+(an unsupported family that failed for its known reason), or `newly-working`. The
+run fails only on a regression, so a green matrix means **every supported family
+passed and every unsupported one failed exactly as documented**.
+
+### Reels and multi-GPU evidence
+
+`reelrun.sh <family> <ref> <tier>` records the per-model demo reel and, in the
+same run, produces two machine-checked artifacts: a `gpu.json`/`gpu.md` snapshot
+(for a giant, proof the weights are tensor-split across >=2 cards) and a
+`frame_qa.json`/`frame_qa.md` report (every unique frame OCR'd and graded). Both
+gate the reel: a giant that lands on one card, or a reel whose timeline is a dead
+boot screen or never shows the answer, is not published. The frame gate needs the
+`tesseract` binary on the recording host (installed by `pod_bootstrap.sh`).
 
 ### Per-cell lifecycle (`run_cell`)
 

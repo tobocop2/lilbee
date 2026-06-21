@@ -130,7 +130,7 @@ def teardown_cell(session: str, serve_proc: subprocess.Popen[bytes] | None, keep
 
 def run_cell(cell: ModelCell, args: argparse.Namespace) -> CellResult:
     """Orchestrate one matrix cell: setup, scenarios, teardown, cleanup."""
-    result = CellResult(family=cell.family, ref=cell.ref)
+    result = CellResult(family=cell.family, ref=cell.ref, expected=cell.expected)
     session = f"{_TMUX_SESSION_PREFIX}-{cell.family}"
     log_path = LOG_DIR / f"{cell.family}.log"
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -232,11 +232,19 @@ def main() -> int:
     (RESULTS_DIR / "results.md").write_text(render_report(results))
     print(f"\nreport: {RESULTS_DIR / 'results.md'}")
 
-    failed = [r for r in results if not r.passed]
-    if failed:
-        print(f"FAIL: {len(failed)}/{len(results)} cell(s) failed")
+    passed = [r for r in results if r.passed]
+    regressions = [r for r in results if r.is_regression]
+    expected_fails = [r for r in results if r.classification == "expected-fail"]
+    print(
+        f"summary: {len(passed)} passed, {len(regressions)} regression(s), "
+        f"{len(expected_fails)} documented expected-fail(s)"
+    )
+    # Only a supported family failing fails the run; a documented-unsupported
+    # family failing for its known reason is expected, not a regression.
+    if regressions:
+        print(f"FAIL: regressions in {', '.join(r.family for r in regressions)}")
         return 1
-    print(f"PASS: all {len(results)} cell(s) passed")
+    print(f"PASS: every supported family passed ({len(results)} cells run)")
     return 0
 
 

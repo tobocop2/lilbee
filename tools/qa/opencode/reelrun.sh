@@ -72,6 +72,16 @@ if [ "$PREWARM" = 1 ]; then
   done
   curl -s "http://127.0.0.1:$PORT/api/health" | grep -q '"chat_ready":true' || { echo "[reelrun] warm FAILED"; exit 3; }
   echo "[reelrun] warm ready"
+  # Multi-GPU proof, captured while the model is resident. A true giant cannot
+  # fit on one card, so it must span >=2; smaller tiers snapshot for the record
+  # but a single-card load is expected and not a failure.
+  MIN_DEV=1; [ "$TIER" = "giant" ] && MIN_DEV=2
+  if ! python3 "$QA/gpu_snapshot.py" --label "$FAMILY" --min-devices "$MIN_DEV" --out-dir "$OUT"; then
+    if [ "$TIER" = "giant" ]; then
+      echo "[reelrun] GIANT DID NOT SPAN >=$MIN_DEV GPUs"; exit 6
+    fi
+    echo "[reelrun] gpu snapshot note: single-card load (expected for $TIER)"
+  fi
 else
   echo "[reelrun] spinner mode: no pre-warm; launch opencode will cold-load and show the warm bar"
 fi
@@ -155,4 +165,13 @@ print(f"unique frames kept: {kept}")
 PYEOF
 
 tar czf "/workspace/reelfactory/$FAMILY-frames.tgz" -C "$OUT" frames
-echo "[reelrun] DONE $FAMILY -> $OUT"
+
+# Frame-by-frame gate: OCR every unique frame and assert the developer-visible
+# arc (prompt -> lilbee_search dispatch -> grounded answer/code -> no error frame
+# -> not a dead screen). A reel that fails this is not publishable.
+echo "[reelrun] frame-by-frame QA"
+if ! python3 "$QA/frame_qa.py" "$OUT/frames" "$TIER" --family "$FAMILY"; then
+  echo "[reelrun] FRAME QA FAILED for $FAMILY (see $OUT/frame_qa.md)"; exit 7
+fi
+
+echo "[reelrun] DONE $FAMILY -> $OUT (frame QA passed)"
