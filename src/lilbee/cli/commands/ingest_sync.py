@@ -450,6 +450,9 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
     copy_result = CopyResult()
     if file_paths:
         copy_result = copy_files(file_paths, force=force)
+    # Headless one-shot ingest: only the embed server is needed, so suppress eager
+    # start (matching the interactive path) instead of warming every role's VRAM.
+    cfg.worker_pool_eager_start = False
     result = asyncio.run(sync(quiet=True))
     json_output(
         {

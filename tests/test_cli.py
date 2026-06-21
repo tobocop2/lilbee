@@ -277,6 +277,12 @@ class TestAsk:
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
+    def test_ask_rejects_empty_question(self, mock_svc):
+        result = runner.invoke(app, ["ask", "   "])
+        assert result.exit_code != 0
+        assert "must not be empty" in result.output
+        mock_svc.searcher.ask_stream.assert_not_called()
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
@@ -1172,6 +1178,17 @@ class TestSearch:
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["results"] == []
+
+    def test_search_caps_top_k(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "q", "--top-k", "500"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+
+    def test_search_rejects_empty_query(self, mock_svc):
+        result = runner.invoke(app, ["search", "   "])
+        assert result.exit_code != 0
+        assert "must not be empty" in result.output
 
     def test_search_applies_max_distance_filter(self, mock_svc, monkeypatch):
         """CLI search drops chunks beyond cfg.max_distance, like REST and MCP."""
