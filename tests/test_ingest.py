@@ -744,7 +744,24 @@ class TestSyncCancellation:
         def _record_flush(buffer, _added, _updated, _failed, _skipped, _flush_failed):
             flushed.extend(r.name for r in buffer)
 
+        # `done` is a set, so the order the loop sees the two completed futures is
+        # not guaranteed. Force the cancelled future to be processed FIRST so the
+        # test deterministically fails on the old code (its CancelledError aborted
+        # the loop before the completed sibling) and passes only with the fix.
+        real_wait = pipeline.asyncio.wait
+
+        async def _cancel_first_wait(fs, **kwargs):
+            done, pending = await real_wait(fs, **kwargs)
+
+            def _is_cancel(fut):
+                return fut.cancelled() or isinstance(
+                    fut.exception() if not fut.cancelled() else None, asyncio.CancelledError
+                )
+
+            return sorted(done, key=lambda f: 0 if _is_cancel(f) else 1), pending
+
         with (
+            mock.patch.object(pipeline.asyncio, "wait", _cancel_first_wait),
             mock.patch.object(pipeline, "_flush_writes", side_effect=_record_flush),
             mock.patch.object(pipeline, "_purge_emptied_sources"),
             pytest.raises(asyncio.CancelledError),
@@ -829,6 +846,38 @@ class TestIngestHelpers:
         with patch("lilbee.data.code_chunker.chunk_code", return_value=[]):
             result = ingest_code_sync(f, "empty.py")
             assert result == []
+
+    async def test_ingest_code_header_uses_relative_source_name(self, isolated_env, mock_svc):
+        """ingest_code_sync threads the relative source_name into the chunk header so
+        the indexed content never carries the host's absolute path (bb-ziks.19).
+        Reverting to chunk_code(path) would emit the file's basename instead."""
+        from unittest.mock import patch
+
+        from lilbee.data.ingest import ingest_code_sync
+
+        class _FakeMeta:
+            symbols_defined = ("alpha",)
+
+        class _FakeChunk:
+            content = "def alpha():\n    return 1\n"
+            start_line = 0
+            end_line = 2
+            metadata = _FakeMeta()
+
+        class _FakeResult:
+            chunks = (_FakeChunk(),)
+
+        f = isolated_env / "abs_module.py"
+        f.write_text("def alpha():\n    return 1\n")
+        with (
+            patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+            patch("lilbee.data.code_chunker.process", return_value=_FakeResult()),
+        ):
+            records = ingest_code_sync(f, "pkg/mod.py")
+        assert records
+        joined = "\n".join(r["chunk"] for r in records)
+        assert "# File: pkg/mod.py" in joined
+        assert str(f) not in joined  # absolute path must never leak into content
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def testingest_document_pdf_with_pages(self, mock_kf, isolated_env):
@@ -2363,6 +2412,24 @@ class TestImageOcr:
         with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
             mock_tess.return_value = _make_empty_result()
             assert await ingest_document(f, "scan.png", "image") == []
+
+    async def test_multipage_image_ocrs_every_frame_end_to_end(self, isolated_env, mock_svc):
+        """A multi-frame TIFF routed to vision OCR yields one OCR call and one page
+        record per frame (bb-7jg1.10), not just the first frame."""
+        cfg.enable_ocr = True
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        mock_svc.provider.vision_ocr.return_value = "frame text " * 5
+        from PIL import Image
+
+        f = isolated_env / "multi.tiff"
+        frames = [Image.new("RGB", (4, 4), color=c) for c in [(1, 2, 3), (4, 5, 6), (7, 8, 9)]]
+        frames[0].save(f, format="TIFF", save_all=True, append_images=frames[1:])
+
+        from lilbee.data.ingest import ingest_document
+
+        records = await ingest_document(f, "multi.tiff", "image")
+        assert mock_svc.provider.vision_ocr.call_count == 3
+        assert sorted({r["page_start"] for r in records}) == [1, 2, 3]
 
     def test_image_page_pngs_single_frame_reencodes(self, isolated_env):
         from lilbee.data.ingest.extract import _image_page_pngs

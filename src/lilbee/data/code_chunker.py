@@ -105,6 +105,23 @@ def _chunk_header(source_name: str, symbols: list[str], line_start: int, line_en
     return header
 
 
+def _line_span(start_line_zero_based: int, content: str) -> tuple[int, int]:
+    """1-based inclusive ``(line_start, line_end)`` the chunk's content covers.
+
+    ``line_end`` is derived from the content's own line count rather than the
+    parser's ``end_line``: tree-sitter reports ``end_line`` as the count of
+    newline-terminated lines, so a chunk whose final line has no trailing newline
+    (the last chunk of a file that does not end in one, or a sub-line split) would
+    otherwise under-report its last line by one.
+    """
+    line_start = start_line_zero_based + 1
+    # count("\n") plus one for a final line without a trailing newline; empty
+    # content yields a single (degenerate) line so line_end never precedes start.
+    spanned = content.count("\n") + (0 if content.endswith("\n") else 1)
+    line_end = line_start + max(spanned, 1) - 1
+    return line_start, line_end
+
+
 def _chunks_from_result(result: Any, source_name: str) -> list[CodeChunk]:
     """Build :class:`CodeChunk` records from tree-sitter's size-bounded ``result.chunks``.
 
@@ -117,8 +134,7 @@ def _chunks_from_result(result: Any, source_name: str) -> list[CodeChunk]:
     chunks: list[CodeChunk] = []
     for i, tc in enumerate(result.chunks):
         symbols = list(tc.metadata.symbols_defined) if tc.metadata is not None else []
-        line_start = tc.start_line + 1
-        line_end = tc.end_line
+        line_start, line_end = _line_span(tc.start_line, tc.content)
         header = _chunk_header(source_name, symbols, line_start, line_end)
         chunks.append(
             CodeChunk(

@@ -495,9 +495,64 @@ class Greeter:
         finally:
             path.unlink()
         joined = "\n".join(c.chunk for c in chunks)
-        assert "náme" in joined
-        assert "Wörker" in joined
-        assert "résumé" in joined
+        # Assert the exact multi-byte spans, not bare identifiers: byte-offset
+        # slicing of a str shifts after the first multibyte char, so the full
+        # declarations would be mangled even though a stray identifier might survive.
+        assert "def greet(náme):" in joined
+        assert 'return f"Hallo {náme}"' in joined
+        assert "class Wörker:" in joined
+        assert "def café(self):" in joined
+        assert 'return "résumé"' in joined
+
+    def test_line_end_derived_from_content_not_parser_end_line(self):
+        """A chunk whose final line has no trailing newline must report that line as
+        line_end. tree-sitter's end_line counts newline-terminated lines, so it
+        under-reports here; line_end is derived from the content instead."""
+        from unittest.mock import patch
+
+        from lilbee.data.code_chunker import chunk_code
+
+        # Content spans two physical lines but ends without a trailing newline;
+        # the fake's end_line=1 mirrors the real parser's under-count.
+        result = _FakeResult(
+            [_FakeTSChunk("def a():\n    return 1", start_line=0, end_line=1, symbols=["a"])]
+        )
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("def a():\n    return 1")
+            f.flush()
+            path = Path(f.name)
+        try:
+            with (
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", return_value=result),
+            ):
+                chunks = chunk_code(path, source_name="m.py")
+        finally:
+            path.unlink()
+        assert chunks[0].line_start == 1
+        assert chunks[0].line_end == 2
+        assert "lines 1-2" in chunks[0].chunk
+
+    def test_real_parser_line_range_spans_no_trailing_newline_file(self):
+        """Against the real parser, the chunk line range reaches the file's final
+        line even when the file has no trailing newline."""
+        from lilbee.data.code_chunker import chunk_code
+
+        # 5 physical lines (L1..L5), no trailing newline on the last.
+        code = "def alpha():\n    return 1\n\ndef beta():\n    return 2"
+        with tempfile.NamedTemporaryFile(
+            suffix=".py", mode="w", encoding="utf-8", delete=False
+        ) as f:
+            f.write(code)
+            f.flush()
+            path = Path(f.name)
+        try:
+            chunks = chunk_code(path)
+        finally:
+            path.unlink()
+        assert chunks
+        assert min(c.line_start for c in chunks) == 1
+        assert max(c.line_end for c in chunks) == 5
 
 
 class TestHeadingContextNoDuplicate:

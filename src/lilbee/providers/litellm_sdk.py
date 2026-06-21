@@ -533,8 +533,8 @@ class LitellmSdkBackend:
         # Order by the response's ``index`` rather than arrival order: a proxy or
         # gateway may return the batch out of order, and the consumer zips vectors
         # to inputs positionally, so a reorder would silently mis-pair every chunk
-        # with the wrong vector. Falls back to arrival position when an item omits
-        # index. Mirrors the rerank path's index handling.
+        # with the wrong vector. ``index`` is required (always present in a
+        # spec-conforming response), mirroring the rerank path's direct read.
         vectors = [_embedding_vector(item) for item in sorted(data, key=_embedding_index)]
         if isinstance(response, dict):
             model = response.get("model")
