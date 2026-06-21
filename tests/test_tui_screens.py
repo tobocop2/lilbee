@@ -3249,7 +3249,7 @@ async def test_chat_cancel_stream_while_streaming():
 
 
 async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels stream and defers service reset."""
+    """apply_model_change cancels the stream and schedules the drained reset."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -3260,22 +3260,30 @@ async def testapply_model_change_cancels_stream_when_streaming():
         ):
             screen.apply_model_change()
             mock_cancel.assert_called_once()
-            mock_later.assert_called_once_with(screen._deferred_service_reset)
+            mock_later.assert_called_once_with(screen._reset_services_when_drained)
 
 
-async def testapply_model_change_resets_immediately_when_not_streaming():
-    """apply_model_change resets services immediately when not streaming."""
+async def testapply_model_change_defers_reset_off_event_loop_when_not_streaming():
+    """Not streaming: the reset is scheduled (off-thread), never run on the event
+    loop, so the swap can't freeze the TUI."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
-        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
+        with (
+            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "call_later") as mock_later,
+            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
+        ):
             screen.apply_model_change()
-            mock_reset.assert_called_once()
+            mock_cancel.assert_not_called()
+            mock_later.assert_called_once_with(screen._reset_services_when_drained)
+            mock_reset.assert_not_called()
 
 
-async def test_deferred_service_reset_retries_while_workers_active():
-    """_deferred_service_reset retries via call_later when workers exist."""
+async def test_reset_services_when_drained_retries_while_workers_active():
+    """_reset_services_when_drained retries via call_later (and spawns no reset
+    worker) while any worker, including a prior swap's, is still running."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
@@ -3284,25 +3292,42 @@ async def test_deferred_service_reset_retries_while_workers_active():
                 type(screen), "workers", new_callable=MagicMock, return_value=[MagicMock()]
             ),
             patch.object(screen, "call_later") as mock_later,
-            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
+            patch.object(screen, "_reset_services_worker") as mock_worker,
         ):
-            screen._deferred_service_reset()
-            mock_later.assert_called_once_with(screen._deferred_service_reset)
-            mock_reset.assert_not_called()
+            screen._reset_services_when_drained()
+            mock_later.assert_called_once_with(screen._reset_services_when_drained)
+            mock_worker.assert_not_called()
 
 
-async def test_deferred_service_reset_resets_when_no_workers():
-    """_deferred_service_reset calls reset_services when workers drained."""
+async def test_reset_services_when_drained_spawns_worker_when_idle():
+    """Once workers drain, the off-thread reset worker is spawned."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
-        # Cancel background workers so the screen's worker manager is empty
         for w in list(screen.workers):
             w.cancel()
         await pilot.pause()
-        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
-            screen._deferred_service_reset()
+        with patch.object(screen, "_reset_services_worker") as mock_worker:
+            screen._reset_services_when_drained()
+            mock_worker.assert_called_once()
+
+
+async def test_reset_services_worker_resets_off_thread_and_confirms():
+    """The reset worker runs reset_services off the event loop and toasts done."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        with (
+            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen._reset_services_worker()
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
             mock_reset.assert_called_once()
+            assert any("Now using" in str(call.args[0]) for call in mock_notify.call_args_list), (
+                mock_notify.call_args_list
+            )
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():
@@ -12383,10 +12408,13 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
     from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
+            # The persist + role reload now runs in a thread worker; await it.
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
         # Label was repainted via model_picker_label; the chat_model field
@@ -12410,7 +12438,7 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
@@ -12420,7 +12448,9 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
             ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
-        services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
 
 
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():
@@ -12485,6 +12515,28 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
         mock_apply.assert_not_called()
 
 
+class _SyncWorkerApp:
+    """Stub App for unit tests of the model-swap persist path.
+
+    The persist now offloads its config write + role reload to a thread worker;
+    this stub runs that worker (and its main-thread completion callback)
+    synchronously so a non-async unit test still exercises the path inline.
+    """
+
+    def notify(self, *_args, **_kwargs) -> None:
+        pass
+
+    def run_worker(self, work, **_kwargs):
+        work()
+
+    def call_from_thread(self, fn, *args, **kwargs):
+        fn(*args, **kwargs)
+
+    @property
+    def app(self) -> _SyncWorkerApp:
+        return self
+
+
 def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monkeypatch):
     """Nullable fields treat ref='' as 'disable'; ref=None is still cancel."""
     from unittest.mock import patch
@@ -12497,7 +12549,8 @@ def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monk
         raise RuntimeError("button absent in unit test")
 
     screen.query_one = _raise
-    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: type("_A", (), {})()))
+    sync_app = _SyncWorkerApp()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: sync_app))
     with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
         screen._on_model_picker_dismissed("vision_model", None)
         mock_apply.assert_not_called()
@@ -12611,7 +12664,7 @@ def test_settings_on_model_picker_dismissed_swallows_query_failures(monkeypatch)
         raise RuntimeError("button removed")
 
     screen.query_one = _raise
-    fake_app = type("FakeApp", (), {})()
+    fake_app = _SyncWorkerApp()
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
     with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"):
         screen._on_model_picker_dismissed("chat_model", "fake/x.gguf")

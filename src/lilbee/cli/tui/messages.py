@@ -104,6 +104,11 @@ CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
 CMD_SET_READONLY = "{key} is read-only; use the Models screen"
 CMD_MODEL_SET = "Model set to {name}"
+# Shown while a model swap's fleet reload runs off the event loop, so the swap
+# reads as in-progress instead of a frozen TUI.
+MODEL_SWAP_APPLYING = "Switching model, loading..."
+MODEL_SWAP_DONE = "Now using {name}"
+MODEL_SWAP_FAILED = "Could not switch model: {error}"
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"
