@@ -80,9 +80,10 @@ def _archive_page(
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     source_path = wiki_root / relative
 
-    archive_dir = wiki_root / WikiSubdir.ARCHIVE
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = archive_dir / source_path.name
+    # Mirror the source subdir under archive/ (archive/concepts/foo.md), not a flat
+    # archive/foo.md: same-slug pages from different subdirs would overwrite there.
+    archive_path = wiki_root / WikiSubdir.ARCHIVE / relative
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     if source_path.exists():
         shutil.move(source_path, archive_path)

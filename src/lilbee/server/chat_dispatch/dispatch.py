@@ -14,9 +14,11 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.providers.base import (
     ChatResult,
+    ChatStreamItem,
     FinishReason,
     ProviderError,
     ProviderErrorKind,
+    StreamFinish,
     TokenUsage,
     ToolCallDelta,
 )
@@ -165,9 +167,8 @@ async def dispatch_chat_stream(
 
 
 async def _async_iter_provider_stream(
-    stream: Iterator[str | ToolCallDelta | TokenUsage]
-    | AsyncIterator[str | ToolCallDelta | TokenUsage],
-) -> AsyncIterator[str | ToolCallDelta | TokenUsage]:
+    stream: Iterator[ChatStreamItem] | AsyncIterator[ChatStreamItem],
+) -> AsyncIterator[ChatStreamItem]:
     """Iterate a provider chat stream without blocking the event loop.
 
     An async-native stream is consumed directly, without thread hops. The
@@ -193,8 +194,8 @@ _STREAM_DONE: Any = object()
 
 
 def _next_or_done(
-    stream: Iterator[str | ToolCallDelta | TokenUsage],
-) -> str | ToolCallDelta | TokenUsage | Any:
+    stream: Iterator[ChatStreamItem],
+) -> ChatStreamItem | Any:
     """Pull the next frame from *stream*; return ``_STREAM_DONE`` at exhaustion.
 
     Raising ``StopIteration`` inside a coroutine becomes ``RuntimeError`` per
@@ -217,13 +218,15 @@ class _StreamState:
         self._stop_reason: StopReason = StopReason.END_TURN
         self._usage: TokenUsage | None = None
 
-    def feed(self, frame: str | ToolCallDelta | TokenUsage) -> Iterator[CanonicalStreamEvent]:
+    def feed(self, frame: ChatStreamItem) -> Iterator[CanonicalStreamEvent]:
         if isinstance(frame, str):
             yield from self._feed_text(frame)
         elif isinstance(frame, TokenUsage):
             # Terminator-only frame: carries token totals, no content. Stash it
             # so finish() can attach the counts to the closing MessageDelta.
             self._usage = frame
+        elif isinstance(frame, StreamFinish):
+            self._feed_finish(frame)
         else:
             yield from self._feed_tool(frame)
 
@@ -240,6 +243,14 @@ class _StreamState:
             else None
         )
         yield MessageDelta(stop_reason=self._stop_reason, usage=usage)
+
+    def _feed_finish(self, frame: StreamFinish) -> None:
+        # The finish frame sets the closing stop reason (e.g. MAX_TOKENS on a
+        # length truncation). A tool-call stream already settled on TOOL_USE via
+        # the deltas, so never let a trailing finish frame downgrade that.
+        if self._stop_reason is StopReason.TOOL_USE:
+            return
+        self._stop_reason = _FINISH_REASON_TO_STOP.get(frame.reason, StopReason.END_TURN)
 
     def _feed_text(self, text: str) -> Iterator[CanonicalStreamEvent]:
         if self._open != _OpenBlockKind.TEXT:

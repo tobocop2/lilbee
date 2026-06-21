@@ -93,7 +93,10 @@ def _fallback_chunks(text: str) -> list[CodeChunk]:
                 chunk_index=idx,
             )
         )
-        search_from = line_start
+        # line_start is 1-based; find_line's `start` is a 0-based index. Convert so
+        # the next search begins at this chunk's start line (not one past it), which
+        # matters when overlapping chunks share a first line.
+        search_from = line_start - 1
 
     return results
 

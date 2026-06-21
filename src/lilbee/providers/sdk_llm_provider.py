@@ -21,12 +21,15 @@ from typing import Any, Literal, overload
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import (
+    ChatMessage,
     ChatResult,
     ChatStreamItem,
+    ChatToolResult,
     ClosableIterator,
     FinishReason,
     LLMProvider,
     ProviderError,
+    StreamFinish,
     ToolCall,
     ToolCallDelta,
 )
@@ -44,15 +47,6 @@ from lilbee.providers.sdk_backend import (
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
-
-_FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
-
-
-def _coerce_finish_reason(raw: str | None) -> FinishReason:
-    """Map a backend-supplied finish_reason to :class:`FinishReason`."""
-    if raw is None:
-        return FinishReason.STOP
-    return _FINISH_REASONS.get(raw, FinishReason.STOP)
 
 
 def _api_base_for(ref: ProviderModelRef) -> str | None:
@@ -207,12 +201,36 @@ class SdkLLMProvider(LLMProvider):
             tool_calls=tuple(
                 ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in result.tool_calls
             ),
-            finish_reason=_coerce_finish_reason(result.finish_reason),
+            finish_reason=FinishReason.coerce(result.finish_reason),
         )
 
     def supports_tools(self, model_ref: str) -> bool:
         """Delegate to the backend's ``supports_tools`` probe."""
         return self._backend.supports_tools(model_ref)
+
+    def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatToolResult:
+        """Tool-calling chat for remote/SDK models.
+
+        The base stub raises, but this backend advertises tool support and ``chat``
+        already forwards tools/tool_choice, so route through it instead of refusing.
+        """
+        result = self.chat(
+            [{"role": m["role"], "content": m["content"]} for m in messages],
+            stream=False,
+            options=options,
+            model=model,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        return ChatToolResult(content=result.text, tool_calls=list(result.tool_calls))
 
     def _chat_stream(self, request: CompletionRequest) -> ClosableIterator[ChatStreamItem]:
         """Yield content tokens and tool-call deltas from a streaming completion.
@@ -233,6 +251,10 @@ class SdkLLMProvider(LLMProvider):
                         name=delta.name,
                         arguments_delta=delta.arguments_delta,
                     )
+                if chunk.finish_reason is not None:
+                    # The closing chunk's finish_reason lets the dispatch report
+                    # length/stop, matching the non-streaming path.
+                    yield StreamFinish(reason=FinishReason.coerce(chunk.finish_reason))
         except ProviderError:
             raise
         except Exception as exc:

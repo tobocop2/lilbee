@@ -11,6 +11,7 @@ from lilbee.app.services import set_services
 from lilbee.providers.base import (
     ChatResult,
     FinishReason,
+    StreamFinish,
     TokenUsage,
     ToolCall,
     ToolCallDelta,
@@ -506,6 +507,35 @@ class TestDispatchChatStream:
         events = await self._drain(dispatch_chat_stream(_req()))
         msg_delta = next(e for e in events if isinstance(e, MessageDelta))
         assert msg_delta.usage is None
+
+    async def test_stream_length_finish_maps_to_max_tokens(self, services_with_model) -> None:
+        """A StreamFinish(LENGTH) terminator closes the stream as MAX_TOKENS. (bb-ziks.46)"""
+        stream = _FakeStream(["hi", StreamFinish(reason=FinishReason.LENGTH)])
+        services_with_model.provider.chat.return_value = stream
+        events = await self._drain(dispatch_chat_stream(_req()))
+        msg_delta = next(e for e in events if isinstance(e, MessageDelta))
+        assert msg_delta.stop_reason == StopReason.MAX_TOKENS
+
+    async def test_stream_stop_finish_keeps_end_turn(self, services_with_model) -> None:
+        stream = _FakeStream(["hi", StreamFinish(reason=FinishReason.STOP)])
+        services_with_model.provider.chat.return_value = stream
+        events = await self._drain(dispatch_chat_stream(_req()))
+        msg_delta = next(e for e in events if isinstance(e, MessageDelta))
+        assert msg_delta.stop_reason == StopReason.END_TURN
+
+    async def test_stream_finish_does_not_downgrade_tool_use(self, services_with_model) -> None:
+        """A trailing finish frame must not override the TOOL_USE a tool stream set."""
+        services_with_model.provider.supports_tools.return_value = True
+        stream = _FakeStream(
+            [
+                ToolCallDelta(index=0, id="c1", name="search", arguments_delta='{"q":"x"}'),
+                StreamFinish(reason=FinishReason.STOP),
+            ]
+        )
+        services_with_model.provider.chat.return_value = stream
+        events = await self._drain(dispatch_chat_stream(_req()))
+        msg_delta = next(e for e in events if isinstance(e, MessageDelta))
+        assert msg_delta.stop_reason == StopReason.TOOL_USE
 
     async def test_empty_stream_yields_message_envelope_only(self, services_with_model) -> None:
         stream = _FakeStream([])

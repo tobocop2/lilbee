@@ -325,6 +325,16 @@ def test_chat_returns_content() -> None:
     assert _client().chat([{"role": "user", "content": "hi"}]) == "Hello"
 
 
+def test_chat_coerces_null_content_to_empty_string() -> None:
+    """content is null for a refusal / content-filter stop / empty completion;
+    chat() must return "" (like chat_result/chat_tools), never the string "None"."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+
+    assert _client(handler).chat([{"role": "user", "content": "hi"}]) == ""
+
+
 def test_chat_stream_yields_deltas() -> None:
     chunks = list(_client().chat([{"role": "user", "content": "hi"}], stream=True))
     assert chunks == ["He", "llo"]
@@ -1338,9 +1348,12 @@ def test_coerce_finish_reason_non_string_is_stop() -> None:
     from lilbee.providers.base import FinishReason
     from lilbee.providers.fleet.client import _coerce_finish_reason
 
-    # A missing finish_reason (None) or any non-string falls back to STOP.
+    # A missing finish_reason (None), a non-string, or an unknown string all
+    # fall back to STOP; a known value maps to its member.
     assert _coerce_finish_reason(None) is FinishReason.STOP
     assert _coerce_finish_reason(42) is FinishReason.STOP
+    assert _coerce_finish_reason("not_a_reason") is FinishReason.STOP
+    assert _coerce_finish_reason("length") is FinishReason.LENGTH
 
 
 def test_parse_sse_stream_items_skips_malformed_json() -> None:
@@ -1353,6 +1366,24 @@ def test_parse_sse_stream_items_skips_empty_choices() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     assert list(_parse_sse_stream_items('data: {"choices": []}')) == []
+
+
+def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
+    from lilbee.providers.base import FinishReason, StreamFinish
+    from lilbee.providers.fleet.client import _parse_sse_stream_items
+
+    line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": "length"}]}'
+    items = list(_parse_sse_stream_items(line))
+    assert items == ["x", StreamFinish(reason=FinishReason.LENGTH)]
+
+
+def test_parse_sse_stream_items_no_finish_frame_without_reason() -> None:
+    from lilbee.providers.base import StreamFinish
+    from lilbee.providers.fleet.client import _parse_sse_stream_items
+
+    line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": null}]}'
+    items = list(_parse_sse_stream_items(line))
+    assert not any(isinstance(i, StreamFinish) for i in items)
 
 
 def test_tokenize_and_detokenize_use_upstream_route() -> None:

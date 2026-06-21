@@ -35,11 +35,14 @@ def _draft_content(
     faithfulness: float | None = 0.85,
     drift_pct: int | None = None,
     bad_title: bool = False,
+    origin: str | None = None,
 ) -> str:
     drift_marker = ""
     if drift_pct is not None:
+        origin_note = f"; origin: {origin}" if origin else ""
         drift_marker = (
-            f"<!-- DRIFT: {drift_pct}% content changed - flagged for human review -->\n\n"
+            f"<!-- DRIFT: {drift_pct}% content changed{origin_note} "
+            "- flagged for human review -->\n\n"
         )
     fm_lines = ["---"]
     if faithfulness is not None:
@@ -169,6 +172,36 @@ class TestAcceptDraft:
             result = accept_draft("fresh", wiki_root, store)
         assert WikiSubdir.SUMMARIES in result.moved_to.parts
         assert (wiki_root / WikiSubdir.SUMMARIES / "fresh.md").is_file()
+
+    def test_accepts_into_origin_subdir_when_no_published_counterpart(self, tmp_path: Path) -> None:
+        # A concept page whose published counterpart was deleted drifts to a draft;
+        # accepting it must restore it under concepts/, not misfile it to summaries/.
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "torque.md",
+            _draft_content("torque body", drift_pct=50, origin=WikiSubdir.CONCEPTS),
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("torque", wiki_root, store)
+        assert WikiSubdir.CONCEPTS in result.moved_to.parts
+        assert (wiki_root / WikiSubdir.CONCEPTS / "torque.md").is_file()
+        assert not (wiki_root / WikiSubdir.SUMMARIES / "torque.md").exists()
+
+    def test_origin_marker_outside_content_subdirs_falls_back_to_summaries(
+        self, tmp_path: Path
+    ) -> None:
+        # A marker naming a non-content subdir (drafts/archive) or an unknown value
+        # must not route there; the summaries fallback still applies.
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "bogus.md",
+            _draft_content("body", drift_pct=50, origin=WikiSubdir.ARCHIVE),
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("bogus", wiki_root, store)
+        assert WikiSubdir.SUMMARIES in result.moved_to.parts
 
     def test_strips_drift_marker_from_accepted_content(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"

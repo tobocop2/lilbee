@@ -9,7 +9,6 @@ import inspect
 import logging
 import os
 import re
-import textwrap
 import threading
 import uuid
 from collections.abc import Callable
@@ -57,6 +56,7 @@ from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
     WikiSubdir,
+    total_wiki_pages,
 )
 
 log = logging.getLogger(__name__)
@@ -300,7 +300,7 @@ async def add(
 
 
 @_tool_if(crawler_available())
-def crawl(
+async def crawl(
     url: str,
     depth: int | None = None,
     max_pages: int | None = None,
@@ -317,7 +317,10 @@ def crawl(
     if not crawler_available():
         return _error("Web crawling requires: pip install 'lilbee[crawler]'")
     try:
-        require_valid_crawl_url(url)
+        # URL validation resolves the host (blocking DNS), so it runs off the loop.
+        # The crawl itself must be scheduled ON the loop: start_crawl uses
+        # asyncio.create_task, which requires a running event loop.
+        await anyio.to_thread.run_sync(require_valid_crawl_url, url)
     except ValueError as exc:
         return _error(str(exc))
 
@@ -512,7 +515,7 @@ def wiki_status() -> dict[str, Any]:
         "wiki_enabled": cfg.wiki,
         WikiSubdir.SUMMARIES: len(summaries),
         WikiSubdir.DRAFTS: len(drafts),
-        "pages": len(summaries) + len(drafts),
+        "pages": total_wiki_pages(wiki_root),
         "lint_errors": report.error_count,
         "lint_warnings": report.warning_count,
     }
@@ -918,6 +921,18 @@ def _strip_property_noise(prop: dict[str, Any]) -> None:
     _collapse_nullable_anyof(prop)
 
 
+def _flatten_tool_description(text: str) -> str:
+    """Flatten a triple-quoted tool docstring for the tools wire.
+
+    The summary line carries no indent while continuation lines are indented to
+    the source, so ``textwrap.dedent`` alone is a no-op (the common prefix is the
+    empty string) and leaves source indentation on every body line -- including
+    deeper-indented Args lines. Strip each line so the model sees flat text;
+    blank lines are kept so paragraph breaks survive.
+    """
+    return "\n".join(line.strip() for line in text.strip().splitlines())
+
+
 def _strip_schema_noise() -> None:
     """Trim auto-generated noise from every registered tool's schema before
     it ships on the OpenAI tools wire for each chat request.
@@ -950,7 +965,7 @@ def _strip_schema_noise() -> None:
                     if isinstance(prop, dict):
                         _strip_property_noise(prop)
         if isinstance(info.description, str):
-            info.description = textwrap.dedent(info.description).strip()
+            info.description = _flatten_tool_description(info.description)
 
 
 _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'

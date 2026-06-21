@@ -1085,13 +1085,15 @@ class TestDivertToDrafts:
     def test_writes_draft_with_note(self, tmp_path: Path):
         drafts_dir = tmp_path / "drafts"
         content = "# New Page\n\nNew content."
-        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text")
+        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text", "concepts")
         assert result.exists()
         assert result.parent == drafts_dir
         text = result.read_text()
         assert "DRIFT" in text
         assert "45%" in text
         assert "human review" in text
+        # The origin subdir rides the marker so accept restores the page to concepts/.
+        assert "origin: concepts" in text
         assert content in text
 
 
@@ -1487,3 +1489,37 @@ class TestRunFullSynthesize:
         assert captured["config"] is cfg
         assert result["count"] == 1
         assert result["paths"][0].endswith("typing.md")
+
+
+class TestPersistAndFinalizeDrift:
+    """A drift-diverted regen must not leak its unreviewed body into the index or
+    citations under the published page's identity (bb-ziks.35)."""
+
+    def test_diversion_skips_publish_indexing(self):
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        store = MagicMock(spec=Store)
+        target = TestWikiIndexing._target()
+        published = target.wiki_root / target.subdir / f"{target.slug}.md"
+        published.parent.mkdir(parents=True, exist_ok=True)
+        published.write_text("Old published body, unrelated to the regen.", encoding="utf-8")
+
+        old = cfg.wiki_drift_threshold
+        cfg.wiki_drift_threshold = 0.1
+        try:
+            page_path = persist_and_finalize(
+                "Brand new drifted body sharing nothing with the old page.",
+                target,
+                [],
+                [],
+                store,
+                cfg,
+            )
+        finally:
+            cfg.wiki_drift_threshold = old
+
+        assert WikiSubdir.DRAFTS in page_path.parts
+        assert "Old published body" in published.read_text()
+        store.add_citations.assert_not_called()
+        store.delete_citations_for_wiki.assert_not_called()
+        store.clear_table.assert_not_called()

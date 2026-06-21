@@ -818,6 +818,30 @@ class TestStreamingCompletion:
         assert chunks[-2]["choices"][0]["finish_reason"] == "stop"
         assert chunks[-1] == "[DONE]"
 
+    async def test_stream_reports_length_finish_on_truncation(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A truncated stream surfaces finish_reason 'length', matching non-stream. (bb-ziks.46)"""
+        from lilbee.providers.base import FinishReason, StreamFinish
+
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            ["he", StreamFinish(reason=FinishReason.LENGTH)]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+        assert resp.status_code == 200
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[-2]["choices"][0]["finish_reason"] == "length"
+        assert chunks[-1] == "[DONE]"
+
     async def test_stream_releases_lock_when_finished(self, services_with_chat_model, _auth_token):
         services_with_chat_model.provider.chat.return_value = FakeProviderStream(["x"])
         async with AsyncTestClient(_build_app()) as client:
@@ -1003,12 +1027,41 @@ class TestStreamingCompletion:
         assert chunks[-1] == "[DONE]"
         assert chat_gate().in_flight == 0
 
-    async def test_stream_emits_usage_chunk_from_final_usage_frame(
+    async def test_stream_emits_usage_chunk_when_include_usage_set(
         self, services_with_chat_model, _auth_token
     ):
-        """A trailing TokenUsage frame from the provider becomes a final usage
-        chunk (empty choices, populated totals) before [DONE]. (F4 streaming)
+        """With stream_options.include_usage, a trailing TokenUsage frame becomes a
+        final usage chunk (empty choices, populated totals) before [DONE].
         """
+        from lilbee.providers.base import TokenUsage
+
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            ["he", "llo", TokenUsage(prompt_tokens=9, completion_tokens=2)]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
+            )
+        chunks = _sse_to_chunks(resp.content)
+        assert chunks[-1] == "[DONE]"
+        usage_chunk = chunks[-2]
+        assert usage_chunk["choices"] == []
+        assert usage_chunk["usage"]["prompt_tokens"] == 9
+        assert usage_chunk["usage"]["completion_tokens"] == 2
+        assert usage_chunk["usage"]["total_tokens"] == 11
+
+    async def test_stream_omits_usage_chunk_without_include_usage(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Without stream_options.include_usage, no usage chunk is emitted even when
+        the provider reports a trailing usage frame (OpenAI contract)."""
         from lilbee.providers.base import TokenUsage
 
         services_with_chat_model.provider.chat.return_value = FakeProviderStream(
@@ -1026,11 +1079,7 @@ class TestStreamingCompletion:
             )
         chunks = _sse_to_chunks(resp.content)
         assert chunks[-1] == "[DONE]"
-        usage_chunk = chunks[-2]
-        assert usage_chunk["choices"] == []
-        assert usage_chunk["usage"]["prompt_tokens"] == 9
-        assert usage_chunk["usage"]["completion_tokens"] == 2
-        assert usage_chunk["usage"]["total_tokens"] == 11
+        assert all(not isinstance(c, dict) or c.get("usage") is None for c in chunks)
 
     async def test_stream_missing_role_model_emits_model_not_found_frame(
         self, services_with_chat_model, _auth_token

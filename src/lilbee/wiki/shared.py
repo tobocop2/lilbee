@@ -41,6 +41,22 @@ WIKI_CONTENT_SUBDIRS: tuple[WikiSubdir, ...] = (
     WikiSubdir.ENTITIES,
 )
 
+
+def total_wiki_pages(wiki_root: Path) -> int:
+    """Count published ``.md`` pages across every wiki content subdir.
+
+    ``wiki build`` writes concepts/entities/synthesis pages, while summaries come
+    from draft-accept, so counting only summaries (+ drafts) reports zero pages
+    after a normal build even though searchable pages exist.
+    """
+    total = 0
+    for subdir in WIKI_CONTENT_SUBDIRS:
+        directory = wiki_root / subdir
+        if directory.exists():
+            total += sum(1 for _ in directory.rglob("*.md"))
+    return total
+
+
 WIKI_DISABLED_ERROR = "wiki not enabled"
 
 # Generic, path-free error for a draft slug that fails traversal validation.

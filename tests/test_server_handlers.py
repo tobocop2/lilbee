@@ -70,8 +70,9 @@ def mock_svc():
     searcher.search.return_value = []
     searcher.ask_raw.return_value = MagicMock(answer="", sources=[])
     searcher.build_rag_context.return_value = None
-    # Default to the retrieval path; chat-mode tests flip this explicitly.
+    # Default to the grounded retrieval path; mode/embedder tests flip these.
     searcher.skip_retrieval.return_value = False
+    searcher.search_unavailable.return_value = False
     services = make_mock_services(searcher=searcher)
     # chat_dispatch validates cfg.chat_model against the registry.
     chat_manifest = MagicMock()
@@ -386,15 +387,58 @@ class TestAskStream:
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
 
-    async def test_always_retrieves_ignoring_chat_mode(self, mock_svc):
-        """ask is an explicit document query: it retrieves even when the searcher
-        would skip retrieval in chat-only mode."""
-        mock_svc.searcher.skip_retrieval.return_value = True
-        mock_svc.searcher.build_rag_context.return_value = None
+    async def test_search_mode_no_embedder_refuses(self, mock_svc):
+        """Search mode with no embedder refuses by streaming the refusal as a normal
+        answer token (not an SSE error), mirroring Searcher.ask_stream so the
+        streaming, one-shot, and CLI ask paths surface it identically."""
+        from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
+
+        mock_svc.searcher.search_unavailable.return_value = True
         events = [e async for e in handlers.ask_stream("q")]
-        mock_svc.searcher.build_rag_context.assert_called_once()
-        mock_svc.searcher.direct_messages.assert_not_called()
-        assert any(e.startswith("event: error") for e in events if e)
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        non_empty = [e for e in events if e]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in non_empty]
+        assert "error" not in event_types
+        assert event_types[-1] == "done"
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert json.loads(token_event.split("data: ")[1].strip())["token"] == SEARCH_NEEDS_EMBEDDER
+
+    async def test_sources_event_falls_back_to_full_set_when_uncited(self, mock_svc):
+        """When the answer carries no inline citations, SOURCES emits the full
+        retrieved set, mirroring Searcher.ask_stream's ``used if used else results``."""
+        a = _SAMPLE_CHUNK.model_copy(update={"source": "a.md", "chunk_index": 0})
+        b = _SAMPLE_CHUNK.model_copy(update={"source": "b.md", "chunk_index": 1})
+        mock_svc.searcher.build_rag_context.return_value = ([a, b], [])
+        mock_svc.provider.chat.return_value = iter(["an answer with no citation markers"])
+        events = [e async for e in handlers.ask_stream("question")]
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["a.md", "b.md"]
+
+    async def test_chat_mode_streams_ungrounded(self, mock_svc):
+        """In chat mode (embedder present) ask_stream answers ungrounded via
+        direct_messages, mirroring ask_raw, instead of grounding."""
+        mock_svc.searcher.skip_retrieval.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        mock_svc.provider.chat.return_value = iter(["answer"])
+        events = [e async for e in handlers.ask_stream("q")]
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        mock_svc.searcher.direct_messages.assert_called_once()
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in events if e]
+        assert "token" in event_types
+        assert "done" in event_types
+
+    async def test_sources_event_carries_cited_subset(self, mock_svc):
+        """The SOURCES event emits the cited subset (what the answer referenced),
+        matching the non-stream cited_sources contract, not the full retrieved list."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "cited.md", "chunk_index": 0})
+        other = _SAMPLE_CHUNK.model_copy(update={"source": "other.md", "chunk_index": 1})
+        mock_svc.searcher.build_rag_context.return_value = ([cited, other], [])
+        mock_svc.provider.chat.return_value = iter(["see [1] for details"])
+        events = [e async for e in handlers.ask_stream("question")]
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["cited.md"]
 
     async def test_unknown_error_yields_internal_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -689,6 +733,34 @@ class TestChatStream:
         async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
+
+    async def test_sources_event_carries_cited_subset(self, mock_svc, monkeypatch):
+        """The chat SOURCES event emits the cited subset (what the answer referenced),
+        matching the non-stream cited_sources contract, not the full retrieved list."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "cited.md", "chunk_index": 0})
+        other = _SAMPLE_CHUNK.model_copy(update={"source": "other.md", "chunk_index": 1})
+        mock_svc.searcher.build_rag_context.return_value = ([cited, other], [])
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["see [1] here"])
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["cited.md"]
+
+    async def test_sources_event_falls_back_to_full_set_when_uncited(self, mock_svc, monkeypatch):
+        """When the chat answer carries no inline citations, SOURCES emits the full
+        retrieved set, mirroring Searcher.ask_stream's ``used if used else results``."""
+        a = _SAMPLE_CHUNK.model_copy(update={"source": "a.md", "chunk_index": 0})
+        b = _SAMPLE_CHUNK.model_copy(update={"source": "b.md", "chunk_index": 1})
+        mock_svc.searcher.build_rag_context.return_value = ([a, b], [])
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["no markers here"])
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["a.md", "b.md"]
 
     async def test_emits_warming_event_when_chat_cold(self, mock_svc, monkeypatch):
         mock_svc.provider.role_ready.return_value = False

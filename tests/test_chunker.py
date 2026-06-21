@@ -242,6 +242,20 @@ class Greeter:
         lines = ["aaa", "bbb", "ccc"]
         assert find_line("zzz", lines, 0) == 1
 
+    def test_fallback_line_tracking_does_not_skip_chunk_start(self):
+        """The next search must begin at a chunk's actual start line, not one past
+        it: an overlapping chunk that re-includes the previous start line would
+        otherwise be skipped and mis-located (1-based start fed as a 0-based index)."""
+        from unittest.mock import patch
+
+        from lilbee.data import code_chunker
+
+        text = "FIRST\nsecond"
+        with patch.object(code_chunker, "chunk_text", return_value=["FIRST\nsecond", "FIRST"]):
+            chunks = code_chunker._fallback_chunks(text)
+        assert chunks[0].line_start == 1
+        assert chunks[1].line_start == 1
+
     def test_ensure_language_false_triggers_fallback(self):
         from unittest.mock import patch
 

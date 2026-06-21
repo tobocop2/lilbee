@@ -2785,6 +2785,24 @@ class TestWikiBuild:
         assert data["count"] == 1
         assert data["entities"] == 0
 
+    def test_status_counts_all_content_pages(self, mock_svc, isolated_env):
+        """wiki status pages counts every content subdir (1 summary + 2 concepts),
+        not summaries+drafts; the pending draft is excluded."""
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        (wiki_root / "summaries").mkdir(parents=True)
+        (wiki_root / "summaries" / "s.md").write_text("x")
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "c1.md").write_text("x")
+        (wiki_root / "concepts" / "c2.md").write_text("x")
+        (wiki_root / "drafts").mkdir(parents=True)
+        (wiki_root / "drafts" / "d.md").write_text("x")
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["pages"] == 3
+        assert data["drafts"] == 1
+
     def test_update_reruns_build(self, mock_svc, isolated_env, monkeypatch):
         """wiki update currently delegates to wiki build (see bb-he8o for smarter version)."""
         monkeypatch.setattr(
@@ -4262,3 +4280,22 @@ class TestCrawlDefaultCapNotice:
         monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
         _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=9)
         assert "--max-pages 0" not in capsys.readouterr().err
+
+
+def test_mcp_command_applies_data_dir_then_starts(tmp_path):
+    """The stdio MCP command accepts --data-dir/--global like its serve sibling and
+    applies the override (mutating cfg to point at the alt root) before main()."""
+    from lilbee.core.config import cfg
+
+    alt = tmp_path / "alt"
+    applied_root: list = []
+    with mock.patch(
+        "lilbee.mcp_server.main", side_effect=lambda: applied_root.append(cfg.data_root)
+    ) as mock_main:
+        result = runner.invoke(app, ["mcp", "--data-dir", str(alt)])
+    assert result.exit_code == 0, result.output
+    assert "No such option" not in result.output
+    mock_main.assert_called_once()
+    # The override was applied before the server started, not merely parsed: main()
+    # observed cfg.data_root already pointing at the alt root.
+    assert applied_root == [alt]

@@ -21,6 +21,7 @@ from lilbee.providers.base import (
     FinishReason,
     ProviderError,
     ProviderErrorKind,
+    StreamFinish,
     TokenUsage,
     ToolCall,
     ToolCallDelta,
@@ -414,7 +415,9 @@ class LlamaServerClient:
                 _CHAT_PATH, json={**payload, "stream": False}, timeout=request_timeout
             )
             _raise_for_status(resp)
-            return str(resp.json()["choices"][0]["message"]["content"])
+            # content is null for a refusal / content-filter stop / empty completion;
+            # coerce to "" (like chat_result/chat_tools) so callers never see "None".
+            return resp.json()["choices"][0]["message"].get("content") or ""
 
     def _chat_stream(self, payload: dict[str, Any]) -> Iterator[str]:
         with (
@@ -514,7 +517,7 @@ class LlamaServerClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         options: dict[str, Any] | None = None,
-    ) -> Iterator[str | ToolCallDelta | TokenUsage]:
+    ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Stream text tokens and tool-call deltas from the server's OpenAI SSE.
 
         Each SSE chunk's ``choices[0].delta`` carries a ``content`` token and/or
@@ -543,7 +546,7 @@ class LlamaServerClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: str | dict[str, Any] | None,
         options: dict[str, Any] | None,
-    ) -> Iterator[str | ToolCallDelta | TokenUsage]:
+    ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Open one SSE chat stream and yield its frames; raises before the first frame."""
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
         with (
@@ -945,14 +948,9 @@ def _usage_from_body(body: Mapping[str, Any]) -> TokenUsage | None:
     )
 
 
-_FINISH_REASONS: dict[str, FinishReason] = {fr.value: fr for fr in FinishReason}
-
-
 def _coerce_finish_reason(raw: Any) -> FinishReason:
     """Map a server-supplied finish_reason string to :class:`FinishReason`."""
-    if not isinstance(raw, str):
-        return FinishReason.STOP
-    return _FINISH_REASONS.get(raw, FinishReason.STOP)
+    return FinishReason.coerce(raw)
 
 
 def _tool_call_delta_from_chunk(call: Mapping[str, Any], *, fallback_index: int) -> ToolCallDelta:
@@ -976,11 +974,14 @@ def _tool_call_delta_from_chunk(call: Mapping[str, Any], *, fallback_index: int)
     )
 
 
-def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta | TokenUsage]:
-    """Yield text tokens and tool-call deltas from one OpenAI SSE line.
+def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
+    """Yield text tokens, tool-call deltas, and the finish frame from one SSE line.
 
     A chunk can carry a ``content`` token, a ``tool_calls`` delta array, or
-    both; each is yielded as its own :data:`ChatStreamItem` frame.
+    both; each is yielded as its own :data:`ChatStreamItem` frame. The chunk
+    that closes the turn carries ``choices[0].finish_reason``, surfaced as a
+    :class:`StreamFinish` so the dispatch reports ``length`` (and friends), not
+    just the default end-of-turn.
     """
     if not line.startswith(_DATA_PREFIX):
         return
@@ -1008,6 +1009,9 @@ def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta | TokenUs
     for i, call in enumerate(raw_calls):
         if isinstance(call, Mapping):
             yield _tool_call_delta_from_chunk(call, fallback_index=i)
+    raw_finish = choices[0].get("finish_reason")
+    if raw_finish is not None:
+        yield StreamFinish(reason=_coerce_finish_reason(raw_finish))
 
 
 def _arguments_to_str(arguments: Any) -> str:
@@ -1107,8 +1111,8 @@ def _tool_call_delta_from_recovered(call: ToolCall, index: int) -> ToolCallDelta
 
 
 def _recover_bare_json_stream(
-    items: Iterator[str | ToolCallDelta | TokenUsage],
-) -> Iterator[str | ToolCallDelta | TokenUsage]:
+    items: Iterator[str | ToolCallDelta | TokenUsage | StreamFinish],
+) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
     """Wrap a raw chat stream to recover a tool call emitted as bare-JSON text.
 
     Some small models print ``{"name": ..., "arguments": {...}}`` as content
@@ -1127,7 +1131,7 @@ def _recover_bare_json_stream(
                 yield from _flush_plain(buffer)
                 buffer, saw_native = "", True
                 yield item
-            elif isinstance(item, TokenUsage):
+            elif isinstance(item, TokenUsage | StreamFinish):
                 yield from _recover_buffer(buffer)
                 buffer = ""
                 yield item

@@ -23,7 +23,7 @@ from lilbee.retrieval.query.formatting import (
     _format_citation,
     cited_subset,
 )
-from lilbee.retrieval.query.searcher import _GROUNDED_REFUSAL
+from lilbee.retrieval.query.searcher import _GROUNDED_REFUSAL, SEARCH_NEEDS_EMBEDDER
 from tests.conftest import make_citation
 
 
@@ -1772,12 +1772,10 @@ class TestDirectMessagesNoEmbed:
 
 
 class TestAskRawNoEmbed:
-    def test_direct_llm_when_no_embedding(self, mock_svc):
-        """ask_raw without embedding calls the LLM directly via the general
-        system prompt. No canned chat-only banner is injected by the searcher;
-        the TUI surfaces that mode banner separately."""
+    def test_search_mode_no_embedder_refuses(self, mock_svc):
+        """Search mode (the default) with no embedder refuses cleanly instead of
+        silently answering ungrounded -- the answer can't be grounded."""
         mock_svc.embedder.embedding_available.return_value = False
-        mock_svc.provider.chat.return_value = _text_result("direct answer")
 
         searcher = Searcher(
             cfg,
@@ -1788,29 +1786,36 @@ class TestAskRawNoEmbed:
             mock_svc.concepts,
         )
         result = searcher.ask_raw("hello")
-        assert result.answer == "direct answer"
+        assert result.answer == SEARCH_NEEDS_EMBEDDER
         assert result.sources == []
-        sent = mock_svc.provider.chat.call_args[0][0]
-        assert sent[0]["content"] == cfg.general_system_prompt
+        mock_svc.provider.chat.assert_not_called()
 
-    def test_no_embed_strips_think_tags(self, mock_svc):
-        """ask_raw no-embed path strips <think> tags."""
-        mock_svc.embedder.embedding_available.return_value = False
-        mock_svc.provider.chat.return_value = _text_result(
-            "<think>inner thought</think>direct answer"
-        )
-
-        searcher = Searcher(
-            cfg,
-            mock_svc.provider,
-            mock_svc.store,
-            mock_svc.embedder,
-            mock_svc.reranker,
-            mock_svc.concepts,
-        )
-        result = searcher.ask_raw("hello")
-        assert "<think>" not in result.answer
-        assert "direct answer" in result.answer
+    def test_chat_mode_no_embedder_answers_ungrounded(self, mock_svc):
+        """Chat mode continues without an embedder: a direct, ungrounded answer
+        under the general system prompt, with <think> tags stripped."""
+        old = cfg.chat_mode
+        cfg.chat_mode = "chat"
+        try:
+            mock_svc.embedder.embedding_available.return_value = False
+            mock_svc.provider.chat.return_value = _text_result(
+                "<think>inner thought</think>direct answer"
+            )
+            searcher = Searcher(
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
+            )
+            result = searcher.ask_raw("hello")
+            assert "<think>" not in result.answer
+            assert "direct answer" in result.answer
+            assert result.sources == []
+            sent = mock_svc.provider.chat.call_args[0][0]
+            assert sent[0]["content"] == cfg.general_system_prompt
+        finally:
+            cfg.chat_mode = old
 
 
 class TestAskRawChatMode:
@@ -1856,26 +1861,27 @@ class TestAskRawChatMode:
         finally:
             cfg.chat_mode = old
 
-    def test_search_mode_without_embedding_falls_through(self, mock_svc):
+    def test_search_mode_without_embedding_refuses(self, mock_svc):
+        """Search mode with no embedder can't ground, so it refuses cleanly rather
+        than free-wheeling on the model's parametric knowledge."""
         old = cfg.chat_mode
         cfg.chat_mode = "search"
         try:
             mock_svc.embedder.embedding_available.return_value = False
-            mock_svc.provider.chat.return_value = _text_result("direct answer")
             result = get_services().searcher.ask_raw("question")
-            assert result.answer == "direct answer"
+            assert result.answer == SEARCH_NEEDS_EMBEDDER
             assert result.sources == []
             mock_svc.store.search.assert_not_called()
+            mock_svc.provider.chat.assert_not_called()
         finally:
             cfg.chat_mode = old
 
 
 class TestAskStreamNoEmbed:
-    def test_streams_directly_when_no_embedding(self, mock_svc):
-        """ask_stream without embedding streams from the LLM directly under
-        the general system prompt; the searcher does not inject a banner."""
+    def test_search_mode_no_embedder_refuses(self, mock_svc):
+        """ask_stream in search mode with no embedder yields a clean refusal token
+        instead of hard-failing or streaming an ungrounded answer."""
         mock_svc.embedder.embedding_available.return_value = False
-        mock_svc.provider.chat.return_value = iter(["chunk1", "chunk2"])
 
         searcher = Searcher(
             cfg,
@@ -1887,29 +1893,36 @@ class TestAskStreamNoEmbed:
         )
         tokens = list(searcher.ask_stream("hello"))
         combined = "".join(st.content for st in tokens)
-        assert combined == "chunk1chunk2"
+        assert combined == SEARCH_NEEDS_EMBEDDER
+        mock_svc.provider.chat.assert_not_called()
 
-    def test_stream_handles_connection_error(self, mock_svc):
-        """ask_stream without embedding handles ConnectionError gracefully."""
-        mock_svc.embedder.embedding_available.return_value = False
+    def test_chat_mode_stream_handles_connection_error(self, mock_svc):
+        """Chat mode streams ungrounded without an embedder; a mid-stream
+        ConnectionError is reported gracefully rather than propagating."""
+        old = cfg.chat_mode
+        cfg.chat_mode = "chat"
+        try:
+            mock_svc.embedder.embedding_available.return_value = False
 
-        def failing():
-            yield "partial"
-            raise ConnectionError("lost")
+            def failing():
+                yield "partial"
+                raise ConnectionError("lost")
 
-        mock_svc.provider.chat.return_value = failing()
+            mock_svc.provider.chat.return_value = failing()
 
-        searcher = Searcher(
-            cfg,
-            mock_svc.provider,
-            mock_svc.store,
-            mock_svc.embedder,
-            mock_svc.reranker,
-            mock_svc.concepts,
-        )
-        tokens = list(searcher.ask_stream("hello"))
-        combined = "".join(st.content for st in tokens)
-        assert "Connection lost" in combined
+            searcher = Searcher(
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
+            )
+            tokens = list(searcher.ask_stream("hello"))
+            combined = "".join(st.content for st in tokens)
+            assert "Connection lost" in combined
+        finally:
+            cfg.chat_mode = old
 
 
 class TestFilterResults:

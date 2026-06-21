@@ -135,16 +135,20 @@ class _StreamMapper:
         self._next_tool_index = 0
 
     def block_start(self, event: ContentBlockStart) -> CompletionsStreamDelta | None:
-        if isinstance(event.block, TextBlock):
-            if self._role_emitted:
-                return None
+        # The first delta must carry role:assistant for OpenAI-SDK accumulation,
+        # whether the response opens with text or a tool call.
+        role: Literal["assistant"] | None = None
+        if not self._role_emitted:
             self._role_emitted = True
-            return CompletionsStreamDelta(role="assistant")
+            role = "assistant"
+        if isinstance(event.block, TextBlock):
+            return CompletionsStreamDelta(role=role) if role is not None else None
         if isinstance(event.block, ToolUseBlock):
             tool_index = self._next_tool_index
             self._tool_index_for_block[event.index] = tool_index
             self._next_tool_index += 1
             return CompletionsStreamDelta(
+                role=role,
                 tool_calls=[_tool_call_open(tool_index, event.block.id, event.block.name)],
             )
         return None
@@ -187,8 +191,13 @@ async def canonical_stream_to_completions_chunks(
     *,
     model: str,
     response_id: str,
+    include_usage: bool = False,
 ) -> AsyncIterator[CompletionsStreamChunk]:
-    """Turn canonical stream events into ``CompletionsStreamChunk`` instances."""
+    """Turn canonical stream events into ``CompletionsStreamChunk`` instances.
+
+    The trailing usage-only chunk is emitted only when *include_usage* is set,
+    matching OpenAI's ``stream_options.include_usage`` contract.
+    """
     mapper = _StreamMapper()
     async for event in events:
         if isinstance(event, ContentBlockStart):
@@ -206,7 +215,7 @@ async def canonical_stream_to_completions_chunks(
                 CompletionsStreamDelta(),
                 finish_reason=_finish_reason_for(event),
             )
-            if event.usage is not None:
+            if include_usage and event.usage is not None:
                 yield _usage_chunk(model, response_id, event.usage)
         elif isinstance(event, MessageStart | ContentBlockStop | MessageStop):
             # OpenAI's wire format has no equivalent for these canonical events:
