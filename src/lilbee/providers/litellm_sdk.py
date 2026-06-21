@@ -15,7 +15,7 @@ import base64
 import functools
 import logging
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -324,6 +324,23 @@ _KIND_MESSAGES: dict[ProviderErrorKind, str] = {
     ),
 }
 
+
+def _embedding_index(item: Any) -> int:
+    """Return an embedding item's ``index`` across the dict and object response shapes.
+
+    The OpenAI embeddings response always carries ``index``; mirrors the rerank
+    path's direct read rather than a defaulted lookup.
+    """
+    idx = item["index"] if isinstance(item, dict) else item.index
+    return int(idx)
+
+
+def _embedding_vector(item: Any) -> list[float]:
+    """Return an embedding item's vector across the dict and object response shapes."""
+    vector = item["embedding"] if isinstance(item, dict) else item.embedding
+    return cast("list[float]", vector)
+
+
 # Operation labels prefixed onto the fallback message for an unrecognised error.
 _CHAT_FAILED = "Chat failed"
 _EMBED_FAILED = "Embedding failed"
@@ -513,7 +530,12 @@ class LitellmSdkBackend:
         except Exception as exc:
             raise _provider_error(_EMBED_FAILED, exc, request.ref.for_display()) from exc
         data = response["data"] if isinstance(response, dict) else response.data
-        vectors = [item["embedding"] for item in data]
+        # Order by the response's ``index`` rather than arrival order: a proxy or
+        # gateway may return the batch out of order, and the consumer zips vectors
+        # to inputs positionally, so a reorder would silently mis-pair every chunk
+        # with the wrong vector. Falls back to arrival position when an item omits
+        # index. Mirrors the rerank path's index handling.
+        vectors = [_embedding_vector(item) for item in sorted(data, key=_embedding_index)]
         if isinstance(response, dict):
             model = response.get("model")
         else:

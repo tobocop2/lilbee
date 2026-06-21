@@ -2076,13 +2076,11 @@ class TestVisionFallback:
         )
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
-    async def test_vision_pool_not_called_when_ocr_disabled(self, mock_kf, isolated_env, mock_svc):
-        """``cfg.enable_ocr=False`` skips the vision pool path entirely.
-
-        Tesseract OCR runs inline (via the patched ``extract_file_sync``)
-        rather than through ``provider.pdf_ocr``, so the assertion is
-        that the pool was never reached.
-        """
+    async def test_ocr_disabled_skips_both_backends(self, mock_kf, isolated_env, mock_svc):
+        """``cfg.enable_ocr=False`` disables OCR entirely (bb-ziks.20): neither the
+        vision pool nor the Tesseract fallback runs. Only the initial text-layer
+        extract is attempted; finding none, the file is skipped without paying the
+        Tesseract cost the config says is turned off."""
         mock_kf.return_value = _make_empty_result()
         cfg.enable_ocr = False
         f = isolated_env / "scanned.pdf"
@@ -2090,8 +2088,12 @@ class TestVisionFallback:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "scanned.pdf", "pdf")
+        with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
+            result = await ingest_document(f, "scanned.pdf", "pdf")
         mock_svc.provider.pdf_ocr.assert_not_called()
+        mock_tess.assert_not_called()
+        # Only the initial text-layer extract ran; no Tesseract re-extract.
+        assert mock_kf.call_count == 1
         assert result == []
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
@@ -2272,6 +2274,48 @@ class TestImageOcr:
 
         assert await ingest_document(f, "scan.png", "image") == []
 
+    async def test_image_ocr_disabled_skips_both_backends(self, isolated_env, mock_svc):
+        """enable_ocr=False disables OCR entirely for images (bb-ziks.20): neither
+        the vision pool nor the Tesseract fallback runs."""
+        cfg.enable_ocr = False
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        f = isolated_env / "scan.png"
+        _write_png(f)
+
+        from lilbee.data.ingest import ingest_document
+
+        with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
+            result = await ingest_document(f, "scan.png", "image")
+        assert result == []
+        mock_svc.provider.vision_ocr.assert_not_called()
+        mock_tess.assert_not_called()
+
+    async def test_vision_ocr_cache_key_includes_timeout(self, isolated_env, mock_svc, monkeypatch):
+        """The vision OCR cache key carries the per-page timeout so raising it
+        re-OCRs rather than serving an earlier partially-empty result for the same
+        content (bb-ziks.39). Also exercises the cache-hit reuse path."""
+        from lilbee.data.ingest import extract
+        from lilbee.runtime.progress import noop_callback
+
+        cfg.enable_ocr = True
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.ocr_timeout = 77.0
+        captured: dict[str, str] = {}
+
+        def fake_key(file_h, *, backend, model, extra):
+            captured["extra"] = extra
+            return "cache-key"
+
+        monkeypatch.setattr(extract, "ocr_cache_key", fake_key)
+        monkeypatch.setattr(extract, "load_ocr_pages", lambda key: [(1, "cached page text")])
+        f = isolated_env / "scan.png"
+        _write_png(f)
+
+        result = await extract._vision_image_ocr(f, "scan.png", "image", on_progress=noop_callback)
+        assert "77" in captured["extra"]
+        assert result  # cache hit produced chunks from the cached page, no re-OCR
+        mock_svc.provider.vision_ocr.assert_not_called()
+
     async def test_image_tesseract_empty_skips_file(self, isolated_env, mock_svc):
         cfg.vision_model = ""
         cfg.enable_ocr = None
@@ -2284,15 +2328,32 @@ class TestImageOcr:
             mock_tess.return_value = _make_empty_result()
             assert await ingest_document(f, "scan.png", "image") == []
 
-    def test_image_to_png_bytes_reencodes(self, isolated_env):
-        from lilbee.data.ingest.extract import _image_to_png_bytes
+    def test_image_page_pngs_single_frame_reencodes(self, isolated_env):
+        from lilbee.data.ingest.extract import _image_page_pngs
 
         f = isolated_env / "x.bmp"
         from PIL import Image
 
         Image.new("RGB", (4, 4), color=(1, 2, 3)).save(f, format="BMP")
-        png = _image_to_png_bytes(f)
-        assert png.startswith(b"\x89PNG\r\n")
+        pages = _image_page_pngs(f)
+        assert len(pages) == 1
+        assert pages[0].startswith(b"\x89PNG\r\n")
+
+    def test_image_page_pngs_multipage_tiff_yields_all_frames(self, isolated_env):
+        """A multi-frame TIFF produces one PNG page per frame; the prior code
+        dropped every frame after the first (bb-7jg1.10)."""
+        from lilbee.data.ingest.extract import _image_page_pngs
+
+        f = isolated_env / "multi.tiff"
+        from PIL import Image
+
+        frame0 = Image.new("RGB", (4, 4), color=(1, 2, 3))
+        frame1 = Image.new("RGB", (4, 4), color=(4, 5, 6))
+        frame2 = Image.new("RGB", (4, 4), color=(7, 8, 9))
+        frame0.save(f, format="TIFF", save_all=True, append_images=[frame1, frame2])
+        pages = _image_page_pngs(f)
+        assert len(pages) == 3
+        assert all(p.startswith(b"\x89PNG\r\n") for p in pages)
 
 
 class TestShouldRunOcrAutoDetect:
@@ -2467,7 +2528,7 @@ class TestOcrFallbackBackendDispatch:
         self, mock_kf, isolated_env, mock_svc, caplog
     ):
         """Tesseract returning no pages produces a user-facing skip warning."""
-        cfg.enable_ocr = False
+        cfg.enable_ocr = None  # auto: no vision model -> Tesseract fallback runs
         cfg.vision_model = ""
         # Both pre-extract and tesseract fallback return empty.
         mock_kf.side_effect = [_make_empty_result(), _make_empty_result()]
@@ -2501,7 +2562,7 @@ class TestOcrFallbackBackendDispatch:
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_no_timeout_runs_uncapped(self, mock_kf, isolated_env, mock_svc):
         """``cfg.tesseract_timeout == 0`` skips ``asyncio.wait_for`` and runs uncapped."""
-        cfg.enable_ocr = False
+        cfg.enable_ocr = None  # auto: no vision model -> Tesseract fallback runs
         cfg.vision_model = ""
         cfg.tesseract_timeout = 0
         mock_kf.side_effect = [
@@ -2523,7 +2584,7 @@ class TestOcrFallbackBackendDispatch:
         self, mock_kf, isolated_env, mock_svc, caplog
     ):
         """Tesseract exceeding the wall-clock cap logs a warning and skips the file."""
-        cfg.enable_ocr = False
+        cfg.enable_ocr = None  # auto: no vision model -> Tesseract fallback runs
         cfg.vision_model = ""
         cfg.tesseract_timeout = 30.0
         # Pre-extract returns empty; tesseract fallback's wait_for fires.
@@ -2549,7 +2610,7 @@ class TestOcrFallbackBackendDispatch:
         self, mock_kf, isolated_env, mock_svc, caplog
     ):
         """A kreuzberg backend crash logs a warning and returns no chunks."""
-        cfg.enable_ocr = False
+        cfg.enable_ocr = None  # auto: no vision model -> Tesseract fallback runs
         cfg.vision_model = ""
         cfg.tesseract_timeout = 30.0
         # Pre-extract OK; tesseract fallback raises.
