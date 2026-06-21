@@ -650,6 +650,26 @@ class TestEmbeddingMismatchSurfacing:
         assert payloads[0]["detail"] == self.PERSISTED
 
 
+class TestModelsPullArchPrecheck:
+    """The unsupported-arch refusal must be a real HTTP 409 from the route, not an
+    in-stream abort after the 200 SSE headers have flushed (bb-ziks.24)."""
+
+    def test_pull_route_returns_409_before_stream(self, client):
+        from lilbee.catalog.compat import UnsupportedArchError
+
+        manager = mock.MagicMock()
+        manager._enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+        with mock.patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=mock.MagicMock(model_manager=manager),
+        ):
+            resp = client.post(
+                "/api/models/pull", json={"model": "acme/foo-GGUF", "source": "native"}
+            )
+        assert resp.status_code == 409
+        assert resp.json()["extra"]["code"] == "unsupported_arch"
+
+
 class TestSyncRoute:
     @mock.patch("lilbee.server.handlers.sync_stream")
     def test_returns_sse(self, mock_stream, client):

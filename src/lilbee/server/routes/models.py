@@ -124,6 +124,11 @@ async def models_installed_route() -> ModelsInstalledResponse:
 @post("/api/models/pull")
 async def models_pull_route(data: PullRequest) -> Stream:
     """Pull a model with streaming SSE progress events."""
+    # Validate before opening the stream so an unsupported arch is a real 409, not
+    # an in-stream abort after the 200 SSE headers have flushed.
+    await handlers.enforce_pull_arch_compat(
+        data.model, source=data.source, allow_unsupported=data.allow_unsupported
+    )
     return Stream(
         handlers.models_pull(
             data.model, source=data.source, allow_unsupported=data.allow_unsupported

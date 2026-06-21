@@ -523,37 +523,51 @@ async def models_installed() -> ModelsInstalledResponse:
     return ModelsInstalledResponse(models=models)
 
 
+async def enforce_pull_arch_compat(
+    model: str, *, source: str = "native", allow_unsupported: bool = False
+) -> None:
+    """Raise HTTP 409 for an unsupported architecture before the pull stream opens.
+
+    The route must await this BEFORE returning ``Stream(models_pull(...))``: a raise
+    inside the ``models_pull`` async generator fires only on first iteration, after
+    Litestar has already flushed the 200 SSE headers, so it can no longer set the
+    status. (``manager.pull`` re-enforces compatibility during the pull itself.)
+    """
+    from litestar.exceptions import HTTPException
+
+    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
+
+    if _parse_source(source) is not ModelSource.NATIVE or allow_unsupported:
+        return
+    manager = get_services().model_manager
+    try:
+        await asyncio.to_thread(manager._enforce_arch_compat, model)
+    except UnsupportedArchError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="unsupported_arch",
+            extra={
+                "code": "unsupported_arch",
+                "arch": exc.architecture,
+                "ref": exc.ref,
+                "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
+                "total_supported": len(SUPPORTED_ARCHS),
+            },
+        ) from exc
+
+
 async def models_pull(
     model: str, *, source: str = "native", allow_unsupported: bool = False
 ) -> AsyncGenerator[str, None]:
     """Yield SSE progress events while pulling a model in real time.
     Sets a cancel event on client disconnect so the pull stops.
 
-    Pre-checks architecture compatibility BEFORE opening the SSE stream so
-    refusals surface as an HTTP 409 from the route, not an in-stream error.
+    Architecture compatibility is enforced by the route via
+    :func:`enforce_pull_arch_compat` before this stream opens; ``manager.pull``
+    re-enforces it during the pull.
     """
-    from litestar.exceptions import HTTPException
-
-    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
-
     manager = get_services().model_manager
     src = _parse_source(source)
-
-    if src is ModelSource.NATIVE and not allow_unsupported:
-        try:
-            await asyncio.to_thread(manager._enforce_arch_compat, model)
-        except UnsupportedArchError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail="unsupported_arch",
-                extra={
-                    "code": "unsupported_arch",
-                    "arch": exc.architecture,
-                    "ref": exc.ref,
-                    "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
-                    "total_supported": len(SUPPORTED_ARCHS),
-                },
-            ) from exc
 
     sse = SseStream()
 
