@@ -42,25 +42,23 @@ def _install_thread_only_tqdm_lock() -> None:
 def _prestart_mp_resource_tracker() -> None:
     """Start the multiprocessing resource tracker before Textual swaps stderr.
 
-    Later ``Process.start()`` calls reuse the cached tracker fd and
-    never hit the fork_exec with a bad fd. No-op on Windows, which
-    doesn't use ``_posixsubprocess``, and no-op under a frozen build
-    (Nuitka onefile), where ``sys.executable`` is the lilbee exe itself
-    and the tracker's spawn would re-enter typer with ``-B -s -E`` as
-    CLI args (``__main__._dispatch_frozen_child`` handles that case).
+    The tracker launches lazily on the first semaphore creation, which in
+    the TUI is a worker's ``Value(lock=True)`` abort flag, spawned after
+    Textual has replaced ``sys.stderr`` with a stream whose ``fileno()``
+    returns -1. The tracker's launch passes that -1 into
+    ``_posixsubprocess.fork_exec`` and crashes with ``bad value(s) in
+    fds_to_keep``. Launching it here, at import time with a real stderr,
+    caches a valid tracker fd that every later ``Process.start()`` reuses.
 
-    Detecting the frozen build via :func:`lilbee._frozen.is_frozen` is
-    load-bearing: Nuitka never sets ``sys.frozen``, so a check on that
-    attribute alone would let the tracker spawn fire inside the onefile
-    binary and surface the typer error.
+    Runs in frozen builds too (Nuitka onefile): the tracker re-executes
+    ``sys.executable`` with ``-c "from multiprocessing.resource_tracker
+    import main;main(N)"``, which ``__main__._dispatch_frozen_child``
+    intercepts and execs before typer sees it. No-op on Windows, which
+    does not use ``_posixsubprocess``.
     """
     import sys as _sys
 
-    from lilbee._frozen import is_frozen
-
     if _sys.platform == "win32":
-        return
-    if is_frozen():
         return
     try:
         from multiprocessing import resource_tracker
