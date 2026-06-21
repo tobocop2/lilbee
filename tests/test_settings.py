@@ -2,7 +2,43 @@
 
 from unittest import mock
 
+import pytest
+
 from lilbee.core import settings
+
+
+class TestChunkSizeOverlapInvariant:
+    def test_lowering_chunk_size_below_existing_overlap_is_rejected(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "chunk_size", 512)
+        monkeypatch.setattr(appset.cfg, "chunk_overlap", 100)
+        with pytest.raises(ValueError, match="chunk_overlap"):
+            appset._validate({"chunk_size": 64})
+
+    def test_lowering_chunk_size_above_existing_overlap_is_allowed(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "chunk_size", 512)
+        monkeypatch.setattr(appset.cfg, "chunk_overlap", 50)
+        appset._validate({"chunk_size": 256})  # 50 < 256, no raise
+
+
+class TestApplySettingsRollback:
+    def test_parse_error_during_persist_restores_snapshot(self, monkeypatch):
+        """A non-OSError (e.g. corrupt-toml parse) during persist must roll the
+        in-memory snapshot back, not leave cfg holding unpersisted values."""
+        from lilbee.app import settings as appset
+
+        original = appset.cfg.chunk_size
+
+        def _boom(*_a, **_k):
+            raise ValueError("corrupt config.toml")
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", _boom)
+        with pytest.raises(ValueError):
+            appset.apply_settings_update({"chunk_size": original + 64})
+        assert appset.cfg.chunk_size == original
 
 
 class TestLoad:

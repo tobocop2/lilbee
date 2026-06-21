@@ -687,6 +687,7 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
+                log.warning("Invalid flash_attention=%r, using auto", v)
                 return None
         return bool(v)
 
@@ -785,6 +786,20 @@ class Config(BaseSettings):
     def _split_cors_origins(cls, v: Any) -> Any:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
+    @field_validator("crawl_browser_extra_args", mode="before")
+    @classmethod
+    def _split_crawl_browser_extra_args(cls, v: Any) -> Any:
+        """Accept a newline-separated string, matching how the field is persisted.
+
+        ``app.settings`` joins list values with newlines before writing them to
+        ``config.toml`` as a scalar string. Without this inverse, reload cannot
+        coerce that string to ``list[str]`` and the whole config.toml is dropped.
+        TOML lists and JSON arrays pass through unchanged.
+        """
+        if isinstance(v, str):
+            return [a.strip() for a in v.splitlines() if a.strip()]
         return v
 
     @field_validator("crawl_exclude_patterns", mode="before")

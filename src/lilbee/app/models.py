@@ -207,8 +207,9 @@ def adopt_embedder(ref: str) -> AdoptResult:
     from lilbee.catalog.types import ModelSource
 
     manager = get_services().model_manager
-    already_active = cfg.embedding_model == ref and manager.is_installed(ref, ModelSource.NATIVE)
-    if not manager.is_installed(ref, ModelSource.NATIVE):
+    installed = manager.is_installed(ref, ModelSource.NATIVE)
+    already_active = cfg.embedding_model == ref and installed
+    if not installed:
         pull_model_data(ref, ModelSource.NATIVE)
     result = apply_settings_update({"embedding_model": ref})
     return AdoptResult(
