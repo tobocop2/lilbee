@@ -25,7 +25,6 @@ from textual.widgets import (
     TabPane,
 )
 
-from lilbee.app.services import get_services
 from lilbee.app.settings import reset_settings
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup, get_default
 from lilbee.cli.tui import messages as msg
@@ -54,7 +53,6 @@ from lilbee.cli.tui.screens.settings_widgets import (
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick
 from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
-from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -489,11 +487,14 @@ class SettingsScreen(Screen[None]):
         apply_model_pick(self, key=key, ref=ref, on_done=lambda: self._after_model_pick(key))
 
     def _after_model_pick(self, key: str) -> None:
-        """Refresh the picker button and reload the role's fleet server after a swap."""
+        """Refresh the picker button after a swap.
+
+        The role reload is owned by ``apply_model_pick`` (it runs off the event
+        loop in a worker), so this on_done only repaints the label. Reloading
+        here too would double the fleet restart AND block the UI on the main
+        thread, which is the freeze this path is meant to avoid.
+        """
         self._refresh_picker_button(key)
-        role = MODEL_FIELD_TO_ROLE.get(key)
-        if role is not None:
-            get_services().reload_role(role)
 
     def _refresh_picker_button(self, key: str) -> None:
         try:

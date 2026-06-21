@@ -12486,13 +12486,13 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         assert str(button.label).strip() != ""
 
 
-async def test_settings_model_picker_dismissed_reloads_worker_for_role():
-    """Picking from Settings respawns just the role that changed.
+async def test_settings_model_picker_dismissed_reloads_worker_once():
+    """Picking from Settings respawns just the role that changed, exactly once.
 
-    Without this, the new model is written to cfg but the live worker
-    keeps the old model loaded until restart. With it, the rerank /
-    vision / embed worker reflects the new selection on the next call,
-    and an in-flight chat stream is unaffected.
+    The reload is owned by ``apply_model_pick`` (off the event loop); the Settings
+    on_done must NOT also reload, or the fleet restarts twice and the second
+    reload blocks the UI thread. ``model_pick`` is the only path that reloads, so
+    asserting a single reload there guards that regression.
     """
     from unittest.mock import patch
 

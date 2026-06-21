@@ -1532,20 +1532,26 @@ class ChatScreen(Screen[None]):
 
         Restores focus when the swap finishes so the user can type immediately
         without re-clicking the input that was disabled out from under them.
+        Guarded because the unblock fires from the swap worker via
+        ``call_from_thread``, which can land after the user navigated away and
+        the input is no longer mounted.
         """
-        self.set_class(swapping, "swapping-model")
-        self._chat_input.disabled = swapping
-        if not swapping and self._insert_mode:
-            self._chat_input.focus()
+        with contextlib.suppress(NoMatches):
+            self._chat_input.disabled = swapping
+            if not swapping and self._insert_mode:
+                self._chat_input.focus()
 
     def _reset_services_when_drained(self) -> None:
         """Spawn the off-thread reset once in-flight workers have drained.
 
-        Runs on the event loop (cheap, non-blocking) and checks before spawning,
-        so the swap worker is not yet among ``self.workers``. Waiting for every
-        worker, including a prior swap's, serializes resets so ``reset_services``
-        never runs twice at once (a cancelled thread runs to completion, so this
-        is the only safe guard).
+        ``reset_services`` tears down BOTH the provider and the store, so it must
+        not run while any worker is still using them: an in-flight chat stream,
+        search, ingest/sync, or a prior swap's own reset worker. Cancellation only
+        requests teardown (a cancelled thread runs to completion), so waiting for
+        every worker to actually finish is the only safe guard, and it also
+        serializes resets so two never overlap. Runs on the event loop (cheap,
+        non-blocking) and checks before spawning, so this swap's worker is not yet
+        among ``self.workers``.
         """
         if self.workers:
             self.call_later(self._reset_services_when_drained)
