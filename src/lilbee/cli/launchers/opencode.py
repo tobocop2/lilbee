@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from importlib import resources
 from pathlib import Path
 
@@ -36,10 +37,19 @@ def _setup_recorded() -> bool:
 
 
 def _record_setup() -> None:
-    """Persist that the user accepted opencode setup; idempotent."""
+    """Persist that the user accepted opencode setup; idempotent (atomic write)."""
     path = _setup_marker_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"accepted": True}), encoding="utf-8")
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as tmp:
+            tmp_name = tmp.name
+            tmp.write(json.dumps({"accepted": True}).encode("utf-8"))
+        os.replace(tmp_name, path)
+    except BaseException:
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
+        raise
 
 
 def _print_setup_plan() -> None:

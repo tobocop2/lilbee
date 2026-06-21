@@ -903,6 +903,17 @@ class TestLeidenPartition:
             edges_passed = call_args[1]["edges"]
             assert edges_passed[0][2] == _MIN_LEIDEN_WEIGHT
 
+    def test_passes_deterministic_seed(self):
+        """Leiden is randomized; the call must pin a seed so the same edge set
+        always yields the same communities."""
+        mock_graspologic = MagicMock()
+        mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0})
+        with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
+            from lilbee.retrieval.concepts.community import _LEIDEN_SEED, _leiden_partition
+
+            _leiden_partition([{"source": "a", "target": "b", "weight": 1.0}])
+            assert mock_graspologic.leiden.call_args[1]["seed"] == _LEIDEN_SEED
+
 
 class TestCommunityDataclass:
     def test_community_fields(self):
