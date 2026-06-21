@@ -7,6 +7,7 @@ metadata is available to any provider without loading a model into the engine.
 from __future__ import annotations
 
 import logging
+import struct
 import threading
 from pathlib import Path
 
@@ -111,8 +112,15 @@ def read_gguf_metadata(model_path: Path) -> dict[str, str] | None:
 
 
 def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None:
-    reader = GGUFReader(str(model_path))
-    fields = reader.fields
+    try:
+        reader = GGUFReader(str(model_path))
+        fields = reader.fields
+    except (ValueError, KeyError, IndexError, struct.error, OSError, UnicodeDecodeError) as exc:
+        # A truncated or corrupt GGUF header surfaces as a parser error. Report
+        # "no readable metadata" (None, an outcome callers already handle) rather
+        # than letting a raw parse error abort the whole fleet build.
+        log.warning("Could not parse GGUF metadata from %s: %s", model_path, exc)
+        return None
     result: dict[str, str] = {}
 
     arch = gguf_scalar_str(fields.get(GGUF_ARCH_KEY))

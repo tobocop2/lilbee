@@ -9,6 +9,11 @@ from huggingface_hub import hf_hub_url
 from huggingface_hub.utils import HFValidationError
 
 from lilbee.catalog.header_probe import probe_architecture
+from lilbee.catalog.refs import (
+    NATIVE_GGUF_REF_MIN_SLASHES,
+    gguf_filename_from_ref,
+    hf_repo_from_ref,
+)
 from lilbee.catalog.types import ModelCompat
 
 if TYPE_CHECKING:
@@ -38,8 +43,15 @@ def resolve_arch_for_pull(ref: str, hf_client: HfClient) -> str:
 
 
 def _resolve_blob_url(ref: str) -> str:
-    """Return a probable .gguf blob URL for *ref*, or empty string if unresolvable."""
-    if ":" in ref:
+    """Return a probable .gguf blob URL for *ref*, or empty string if unresolvable.
+
+    lilbee's canonical native refs are slash-delimited ``<org>/<repo>/<file>.gguf``
+    (the filename may add subdirs for a quant), so the repo and filename are split
+    on that shape; an ollama-style ``repo:tag`` ref is split on the colon.
+    """
+    if ref.endswith(".gguf") and ref.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES:
+        repo, filename = hf_repo_from_ref(ref), gguf_filename_from_ref(ref)
+    elif ":" in ref:
         repo, filename = ref.split(":", 1)
     else:
         repo, filename = ref, ""

@@ -305,7 +305,9 @@ def _ocr_pdf_page(
             )
             return idx, ""
         try:
-            return idx, _vision_call(_least_in_flight(clients), messages, remaining)
+            return idx, _call_with_failover(
+                clients, lambda client: _vision_call(client, messages, remaining)
+            )
         except ProviderError:
             # One failed/timed-out page yields empty text; siblings continue.
             log.warning(
@@ -690,7 +692,9 @@ class FleetProvider:
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
         with _VISION_GATE.slot():
-            return _vision_call(_least_in_flight(clients), messages, timeout)
+            return _call_with_failover(
+                clients, lambda client: _vision_call(client, messages, timeout)
+            )
 
     def pdf_ocr(
         self,

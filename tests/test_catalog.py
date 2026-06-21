@@ -810,6 +810,30 @@ class TestHfRepoFromRef:
         assert hf_repo_from_ref("ollama/llama3:8b") == "ollama/llama3:8b"
 
 
+class TestGgufFilenameFromRef:
+    def test_flat_ref_yields_filename(self) -> None:
+        from lilbee.catalog.refs import gguf_filename_from_ref
+
+        ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+        assert gguf_filename_from_ref(ref) == "Qwen3-8B-Q4_K_M.gguf"
+
+    def test_subdir_ref_keeps_quant_subdir(self) -> None:
+        from lilbee.catalog.refs import gguf_filename_from_ref
+
+        ref = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        assert gguf_filename_from_ref(ref) == "Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+
+    def test_bare_repo_yields_empty(self) -> None:
+        from lilbee.catalog.refs import gguf_filename_from_ref
+
+        assert gguf_filename_from_ref("Qwen/Qwen3-8B-GGUF") == ""
+
+    def test_provider_prefixed_ref_yields_empty(self) -> None:
+        from lilbee.catalog.refs import gguf_filename_from_ref
+
+        assert gguf_filename_from_ref("ollama/llama3:8b") == ""
+
+
 class TestBuildAdhocEntry:
     def test_valid_repo_derives_defaults(self) -> None:
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")

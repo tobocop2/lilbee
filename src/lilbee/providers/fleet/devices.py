@@ -115,7 +115,20 @@ def _compose_visible(indices: list[int], parent_value: str | None) -> str:
     if parent_value is None:
         return ",".join(str(i) for i in indices)
     entries = [entry.strip() for entry in parent_value.split(",") if entry.strip()]
-    return ",".join(entries[i] if i < len(entries) else str(i) for i in indices)
+    out: list[str] = []
+    for i in indices:
+        if i >= len(entries):
+            # The probe enumerates devices under the parent restriction, so every
+            # index must map into it. An out-of-range index is an invariant
+            # violation; emitting a bare ``str(i)`` would pin an absolute integer
+            # into a possibly UUID-namespaced list, silently selecting the wrong
+            # GPU. Fail loudly instead.
+            raise ValueError(
+                f"device index {i} is outside the parent visible-devices list "
+                f"{parent_value!r}; cannot compose a child pin without selecting the wrong GPU"
+            )
+        out.append(entries[i])
+    return ",".join(out)
 
 
 def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:

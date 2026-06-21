@@ -101,11 +101,14 @@ def plan_placement(
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
 
-    # Single-instance roles first (chat tensor-splits here, claiming its cards),
-    # largest-first; then data-parallel replicas fill the remaining headroom.
+    # Single-instance roles first; then data-parallel replicas fill the remaining
+    # headroom. Within the singles, place the search-critical roles (embed/rerank)
+    # before chat: chat tensor-splits across cards and, placed first, can claim
+    # them all and leave an essential search role unplaceable. Search-first here
+    # mirrors the shared-memory path's reservation.
     singles = [m for m in models if m.replicas <= 1]
     replicated = [m for m in models if m.replicas > 1]
-    for model in sorted(singles, key=lambda m: m.est_vram_bytes, reverse=True):
+    for model in sorted(singles, key=_shared_pool_order):
         plan = _place_single(model, remaining, estimate_peak)
         if plan is None:
             unplaceable.append(model.role)

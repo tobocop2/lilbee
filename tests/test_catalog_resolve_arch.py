@@ -54,3 +54,19 @@ def test_resolve_blob_url_returns_url_for_concrete_filename() -> None:
     url = compat._resolve_blob_url("acme/foo-GGUF:model-q4.gguf")
     assert "acme/foo-GGUF" in url
     assert url.endswith("model-q4.gguf")
+
+
+def test_resolve_blob_url_resolves_native_slash_ref() -> None:
+    """A canonical native ref ``<org>/<repo>/<file>.gguf`` resolves to its blob URL.
+    The prior split-on-colon left every native ref with an empty filename, so the
+    arch-compat guard never probed (bb-ziks.72)."""
+    url = compat._resolve_blob_url("Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf")
+    assert "Qwen/Qwen3-0.6B-GGUF" in url
+    assert url.endswith("Qwen3-0.6B-Q4_K_M.gguf")
+
+
+def test_resolve_blob_url_native_ref_keeps_quant_subdir() -> None:
+    """A quant stored under a repo subdir keeps the subdir in the resolved filename."""
+    url = compat._resolve_blob_url("unsloth/M-GGUF/Q4_K_M/model.gguf")
+    assert "unsloth/M-GGUF" in url
+    assert url.endswith("Q4_K_M/model.gguf")
