@@ -3331,7 +3331,7 @@ async def test_reload_chat_worker_reloads_only_chat_and_unblocks():
             # Only the chat role is reloaded, synchronously (wait=True), so the
             # store and searcher are kept rather than torn down.
             services_mock.reload_role.assert_called_once_with(WorkerRole.CHAT, wait=True)
-            # The input is unblocked only after the worker reports the model loaded.
+            # The input is unblocked only after the worker finishes the reload.
             assert screen.swapping_model is False
             assert any("Now using" in str(call.args[0]) for call in mock_notify.call_args_list), (
                 mock_notify.call_args_list

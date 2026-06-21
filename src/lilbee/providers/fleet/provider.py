@@ -1014,9 +1014,10 @@ class FleetProvider:
         pass per pending flag so the change is applied, not dropped.
 
         ``wait=True`` runs the reload in the caller's thread and returns only once
-        it (and any reload already in flight that will run the pending pass) has
-        finished, so a caller already off the event loop gets a real completion
-        signal. It propagates a reload failure as an exception.
+        the restart (and any reload already in flight that will run the pending
+        pass) has finished and the proxy is healthy again, so a caller already off
+        the event loop gets a real completion signal. The role's model still loads
+        lazily on its next request. It propagates a reload failure as an exception.
         """
         with self._lock:
             if self._swap is None:

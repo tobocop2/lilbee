@@ -1518,8 +1518,8 @@ class ChatScreen(Screen[None]):
         runs in a thread worker instead of on the event loop. The in-flight stream
         is cancelled first, the input is blocked behind a "switching" state with an
         indicator toast, and the reload waits for in-flight workers to drain so the
-        restart doesn't disrupt them. The input re-enables only once the worker
-        reports the new model loaded.
+        restart doesn't disrupt them. The input re-enables once the fleet has
+        restarted with the new model (which loads on the next request).
         """
         if self.streaming:
             self.action_cancel_stream()
@@ -1561,9 +1561,10 @@ class ChatScreen(Screen[None]):
 
         ``reload_role(wait=True)`` re-plans and restarts the fleet for the new chat
         model while keeping the store and searcher (a chat-model change doesn't
-        touch retrieval), and returns once the model has loaded. The provider
-        serializes overlapping reloads, so a rapid second swap coalesces onto the
-        latest cfg.
+        touch retrieval), and returns once the fleet proxy is back up; the model
+        itself loads on the next request (the same lazy load every role swap uses).
+        The provider serializes overlapping reloads, so a rapid second swap
+        coalesces onto the latest cfg.
         """
         try:
             get_services().reload_role(WorkerRole.CHAT, wait=True)
