@@ -294,9 +294,22 @@ jobs:
             cat "$MP"
             exit 1
           fi
+          # Any traceback means the dispatch crashed running the module. runpy.run_module
+          # raised AttributeError ("nuitka_module_loader has no attribute 'get_code'") in
+          # the onefile binary; fd 999 is dead, so the runner must exit silently.
+          if grep -qE "Traceback|Error:|get_code" "$MP"; then
+            echo "FAIL: splash -m reinvocation raised an exception in the frozen binary"
+            cat "$MP"
+            exit 1
+          fi
           "$EXE" -c "import multiprocessing" > "$MP" 2>&1 || true
           if grep -qE "No such command|No such option" "$MP"; then
             echo "FAIL: resource-tracker -c reinvocation leaked into typer (frozen detection broken)"
+            cat "$MP"
+            exit 1
+          fi
+          if grep -qE "Traceback|Error:|get_code" "$MP"; then
+            echo "FAIL: resource-tracker -c reinvocation raised an exception in the frozen binary"
             cat "$MP"
             exit 1
           fi
