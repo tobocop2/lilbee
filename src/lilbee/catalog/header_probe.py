@@ -1,16 +1,19 @@
-"""Range-GET a GGUF blob's header and extract general.architecture via gguf-py."""
+"""Range-GET a GGUF blob's header and extract general.architecture.
+
+The architecture is read by walking the metadata KV table directly (see
+``_parse_arch``) rather than via gguf-py's ``GGUFReader``, which needs the whole
+KV table -- including a model's multi-megabyte tokenizer arrays -- present, and
+so chokes on a Range-GET-truncated header.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import struct
-import tempfile
 from http import HTTPStatus
-from pathlib import Path
 
 import httpx
-from gguf import GGUFReader, GGUFValueType, ReaderField
+from gguf import GGUFValueType, ReaderField
 
 log = logging.getLogger(__name__)
 
@@ -18,8 +21,6 @@ GGUF_HEADER_PROBE_BYTES = 65536
 GGUF_MAGIC = b"GGUF"
 GGUF_ARCH_KEY = "general.architecture"
 _PROBE_TIMEOUT_S = 10.0
-_TENSOR_COUNT_OFFSET = 8
-_TENSOR_COUNT_SIZE = 8
 
 
 def probe_architecture(blob_url: str) -> str:
@@ -39,32 +40,98 @@ def probe_architecture(blob_url: str) -> str:
         return ""
 
 
+# GGUF metadata value-type tags (gguf spec) and the fixed byte sizes of the
+# scalar ones. ARRAY/STRING carry their own length prefixes.
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
+_GGUF_SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+# magic(4) + version(4) + tensor_count(8) + kv_count(8)
+_GGUF_HEADER_FIXED = 24
+
+
+class _TruncatedHeaderError(Exception):
+    """The probe window ended before the bytes a parse step needed."""
+
+
+class _HeaderCursor:
+    """Little-endian reader over the probed GGUF header bytes."""
+
+    def __init__(self, blob: bytes) -> None:
+        self._blob = blob
+        self._pos = 0
+
+    def take(self, n: int) -> bytes:
+        end = self._pos + n
+        if n < 0 or end > len(self._blob):
+            raise _TruncatedHeaderError
+        chunk = self._blob[self._pos : end]
+        self._pos = end
+        return chunk
+
+    def u32(self) -> int:
+        return int(struct.unpack_from("<I", self.take(4))[0])
+
+    def u64(self) -> int:
+        return int(struct.unpack_from("<Q", self.take(8))[0])
+
+    def gguf_string(self) -> bytes:
+        return self.take(self.u64())
+
+
+def _skip_value(cur: _HeaderCursor, value_type: int) -> None:
+    """Advance *cur* past one metadata value of *value_type*."""
+    size = _GGUF_SCALAR_SIZES.get(value_type)
+    if size is not None:
+        cur.take(size)
+        return
+    if value_type == _GGUF_TYPE_STRING:
+        cur.gguf_string()
+        return
+    if value_type == _GGUF_TYPE_ARRAY:
+        elem_type = cur.u32()
+        count = cur.u64()
+        elem_size = _GGUF_SCALAR_SIZES.get(elem_type)
+        if elem_size is not None:
+            cur.take(elem_size * count)
+        elif elem_type == _GGUF_TYPE_STRING:
+            for _ in range(count):
+                cur.gguf_string()
+        else:
+            raise _TruncatedHeaderError  # nested/unknown array element: stop parsing
+        return
+    raise _TruncatedHeaderError  # unknown value type: stop parsing
+
+
 def _parse_arch(blob: bytes) -> str:
     """Extract general.architecture from a (possibly truncated) GGUF header.
 
-    Patches the tensor_count field to zero so ``gguf-py``'s ``GGUFReader``
-    skips the tensor info table that would otherwise require the full
-    file. Only the KV table needs to be intact for architecture lookup.
+    Walks the metadata KV table directly and returns as soon as it reaches
+    ``general.architecture``, which GGUF writers emit among the first entries.
+    This deliberately avoids gguf-py's ``GGUFReader``, which parses the entire KV
+    table up front: a real model's multi-megabyte tokenizer arrays run past the
+    Range-GET probe window, so ``GGUFReader`` raises on the truncation before any
+    field can be read. Returns empty string on a malformed or too-short header.
     """
-    if len(blob) < _TENSOR_COUNT_OFFSET + _TENSOR_COUNT_SIZE or blob[:4] != GGUF_MAGIC:
+    if len(blob) < _GGUF_HEADER_FIXED or blob[:4] != GGUF_MAGIC:
         return ""
-    patched = bytearray(blob)
-    patched[_TENSOR_COUNT_OFFSET : _TENSOR_COUNT_OFFSET + _TENSOR_COUNT_SIZE] = struct.pack("<Q", 0)
-    with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as f:
-        f.write(bytes(patched))
-        tmp = Path(f.name)
+    cur = _HeaderCursor(blob)
+    arch_key = GGUF_ARCH_KEY.encode("utf-8")
     try:
-        return _read_architecture(tmp)
-    except (ValueError, struct.error, IndexError, OSError, UnicodeDecodeError) as exc:
-        log.debug("GGUFReader parse failed: %s", exc)
+        cur.take(4)  # magic
+        cur.u32()  # version
+        cur.u64()  # tensor_count (the tensor-info table is never read)
+        kv_count = cur.u64()
+        for _ in range(kv_count):
+            key = cur.gguf_string()
+            value_type = cur.u32()
+            if key == arch_key:
+                if value_type != _GGUF_TYPE_STRING:
+                    return ""
+                return cur.gguf_string().decode("utf-8", errors="replace")
+            _skip_value(cur, value_type)
+    except _TruncatedHeaderError:
         return ""
-    finally:
-        # GGUFReader memory-maps the file; on Windows the mapping must be released
-        # before the file can be deleted (a held mapping raises PermissionError /
-        # WinError 32, which missing_ok does not cover). _read_architecture scopes
-        # the reader so it is freed on return; suppress is a best-effort backstop.
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+    return ""
 
 
 def gguf_scalar_str(field: ReaderField | None) -> str | None:
@@ -88,19 +155,3 @@ def gguf_scalar_str(field: ReaderField | None) -> str | None:
     if isinstance(scalar, (list, tuple)):
         scalar = scalar[0] if scalar else None
     return None if scalar is None else str(scalar)
-
-
-def _read_architecture(path: Path) -> str:
-    """Return general.architecture from the GGUF file at *path*, or empty string.
-
-    Kept separate so the ``GGUFReader`` (and its memory map of *path*) is released
-    when this returns, letting the caller delete the temp file on Windows.
-
-    Architecture is a string by spec; a field present under a non-STRING type is
-    malformed, so it yields an empty string rather than a stringified number.
-    """
-    reader = GGUFReader(str(path))
-    field = reader.fields.get(GGUF_ARCH_KEY)
-    if field is None or not field.types or field.types[-1] != GGUFValueType.STRING:
-        return ""
-    return gguf_scalar_str(field) or ""

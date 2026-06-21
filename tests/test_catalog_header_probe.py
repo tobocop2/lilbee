@@ -18,18 +18,94 @@ def test_probe_reads_architecture(monkeypatch: pytest.MonkeyPatch) -> None:
     assert probe_architecture("https://example.test/model.gguf") == "llama"
 
 
-def test_probe_survives_tempfile_cleanup_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    # On Windows the GGUFReader memory-map can keep the temp file locked, so the
-    # unlink raises PermissionError (WinError 32). The probe must still return the
-    # parsed architecture rather than propagating the cleanup error.
-    blob = make_minimal_gguf("llama")
+def _gguf_arch_then_truncated_tokenizer(arch: str) -> bytes:
+    """A header with general.architecture first, then a tokenizer string-array whose
+    declared count is huge but whose bytes are cut off (as a real model's tokenizer
+    arrays are by the Range-GET probe window)."""
+
+    def gstr(s: bytes) -> bytes:
+        return struct.pack("<Q", len(s)) + s
+
+    blob = b"GGUF" + struct.pack("<I", 3)  # magic + version
+    blob += struct.pack("<Q", 0)  # tensor_count
+    blob += struct.pack("<Q", 2)  # kv_count
+    # KV0: general.architecture = <arch> (value type 8 = STRING)
+    blob += gstr(b"general.architecture") + struct.pack("<I", 8) + gstr(arch.encode())
+    # KV1: tokenizer.ggml.tokens = ARRAY(STRING) declaring 151936 entries, then cut off.
+    blob += gstr(b"tokenizer.ggml.tokens") + struct.pack("<I", 9)
+    blob += struct.pack("<I", 8) + struct.pack("<Q", 151936)
+    blob += gstr(b"only-one-token-then-truncated")
+    return blob
+
+
+def _kv(key: bytes, vtype: int, value: bytes) -> bytes:
+    return struct.pack("<Q", len(key)) + key + struct.pack("<I", vtype) + value
+
+
+def _gstr(s: bytes) -> bytes:
+    return struct.pack("<Q", len(s)) + s
+
+
+def _hdr(entries: list[bytes], kv_count: int | None = None) -> bytes:
+    count = kv_count if kv_count is not None else len(entries)
+    head = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + struct.pack("<Q", count)
+    return head + b"".join(entries)
+
+
+class TestParseArchWalker:
+    """The KV walker behind probe_architecture, exercised at the byte level."""
+
+    def test_skips_scalar_string_and_array_values_before_arch(self) -> None:
+        blob = _hdr(
+            [
+                _kv(b"general.quantization_version", 4, struct.pack("<I", 2)),  # uint32 scalar
+                _kv(b"general.name", 8, _gstr(b"m")),  # string
+                _kv(
+                    b"x.list",
+                    9,
+                    struct.pack("<I", 4) + struct.pack("<Q", 2) + struct.pack("<II", 1, 2),
+                ),
+                _kv(b"general.architecture", 8, _gstr(b"qwen3")),
+            ]
+        )
+        assert header_probe._parse_arch(blob) == "qwen3"
+
+    def test_skips_string_array_before_arch(self) -> None:
+        arr = struct.pack("<I", 8) + struct.pack("<Q", 2) + _gstr(b"a") + _gstr(b"bb")
+        blob = _hdr(
+            [
+                _kv(b"x.strs", 9, arr),
+                _kv(b"general.architecture", 8, _gstr(b"llama")),
+            ]
+        )
+        assert header_probe._parse_arch(blob) == "llama"
+
+    def test_truncated_mid_kv_returns_empty(self) -> None:
+        blob = _hdr([_kv(b"general.name", 8, _gstr(b"m"))], kv_count=5)  # claims 5, only 1 present
+        assert header_probe._parse_arch(blob) == ""
+
+    def test_unknown_value_type_returns_empty(self) -> None:
+        blob = _hdr([_kv(b"weird", 99, b"")], kv_count=1)  # arch never reached
+        assert header_probe._parse_arch(blob) == ""
+
+    def test_unknown_array_element_type_returns_empty(self) -> None:
+        bad_arr = struct.pack("<I", 99) + struct.pack("<Q", 1)
+        blob = _hdr([_kv(b"weird", 9, bad_arr)], kv_count=1)
+        assert header_probe._parse_arch(blob) == ""
+
+    def test_non_string_arch_returns_empty(self) -> None:
+        blob = _hdr([_kv(b"general.architecture", 4, struct.pack("<I", 1))])
+        assert header_probe._parse_arch(blob) == ""
+
+
+def test_probe_reads_arch_before_truncated_tokenizer_array(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real GGUF emits general.architecture first, then multi-megabyte tokenizer
+    arrays that run past the probe window. The KV walker returns the arch without
+    parsing those arrays, where gguf-py's GGUFReader chokes on the truncation and
+    the arch-compat guard never fired (bb-ziks.43 end-to-end)."""
+    blob = _gguf_arch_then_truncated_tokenizer("qwen3")
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: httpx.Response(200, content=blob))
-
-    def _raise_unlink(self: object, *_a: object, **_k: object) -> None:
-        raise PermissionError("WinError 32 simulated")
-
-    monkeypatch.setattr(header_probe.Path, "unlink", _raise_unlink)
-    assert probe_architecture("https://example.test/model.gguf") == "llama"
+    assert probe_architecture("https://example.test/model.gguf") == "qwen3"
 
 
 def test_probe_handles_truncated_header(monkeypatch: pytest.MonkeyPatch) -> None:

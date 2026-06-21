@@ -115,7 +115,7 @@ def _read_gguf_metadata_uncached(model_path: Path) -> dict[str, str] | None:
     try:
         reader = GGUFReader(str(model_path))
         fields = reader.fields
-    except (ValueError, struct.error, IndexError, OSError, UnicodeDecodeError) as exc:
+    except (ValueError, KeyError, IndexError, struct.error, OSError, UnicodeDecodeError) as exc:
         # A truncated or corrupt GGUF header surfaces as a parser error. Report
         # "no readable metadata" (None, an outcome callers already handle) rather
         # than letting a raw parse error abort the whole fleet build.
