@@ -1,7 +1,8 @@
-"""Code chunking via tree-sitter AST analysis.
+"""Code chunking via tree-sitter.
 
-Extracts structured symbol information (functions, classes, imports)
-and builds enriched chunk headers with symbol metadata.
+Consumes the parser's size-bounded chunks and prepends a header naming the
+relative source and the symbols each chunk defines. Falls back to plain text
+chunking when the language is unsupported or parsing fails.
 """
 
 import logging
