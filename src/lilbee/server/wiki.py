@@ -126,7 +126,9 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
     slug = slug.lstrip("/")
     store = svc_mod.get_services().store
     try:
-        result = accept_draft(slug, _wiki_root(), store)
+        # accept_draft re-chunks and embeds the page; offload so it doesn't block
+        # the event loop (and every other REST/MCP request on it).
+        result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:
@@ -194,7 +196,8 @@ def _citations_for_slug(slug: str) -> WikiCitationsResult:
 async def wiki_lint_route() -> WikiLintResult:
     """Trigger a full wiki lint."""
     _require_wiki()
-    report = lint_mod.lint_all(svc_mod.get_services().store)
+    # lint_all scans every page and embeds; offload so it doesn't block the loop.
+    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
     return WikiLintResult(
         issues=[WikiLintIssueItem(**i.to_dict()) for i in report.issues],
         errors=report.error_count,
@@ -206,7 +209,8 @@ async def wiki_lint_route() -> WikiLintResult:
 async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    report = prune_mod.prune_wiki(svc_mod.get_services().store)
+    # prune_wiki walks the whole wiki tree and store; offload off the loop.
+    report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
     return WikiPruneResult(
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
@@ -287,7 +291,7 @@ async def wiki_status_route() -> WikiStatusResult:
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
-    report = lint_mod.lint_all(svc_mod.get_services().store)
+    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
     return WikiStatusResult(
         wiki_enabled=cfg.wiki,
         summaries=len(summaries),

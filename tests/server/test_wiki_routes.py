@@ -317,6 +317,30 @@ class TestWikiEnabled:
         assert body["warnings"] == 0
         assert body["issues"] == []
 
+    async def test_lint_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """lint_all scans every page and embeds, so it runs in a worker thread, not
+        on the event loop that serves every other REST/MCP request (bb-ziks.44)."""
+        import threading
+
+        from conftest import make_mock_services
+        from lilbee.wiki import lint as lint_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def fake_lint(store, config=None):
+            seen.append(threading.get_ident())
+            return lint_mod.LintReport()
+
+        monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/lint", headers=_h())
+        assert resp.status_code == 201
+        assert seen and seen[0] != loop_tid
+
     async def test_lint_status_route_removed(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/lint/task-abc", headers=_h())
