@@ -43,6 +43,18 @@ class TestPlanPlacement:
             unplaceable_roles=(),
         )
 
+    def test_search_role_placed_before_chat_on_constrained_host(self) -> None:
+        """When chat and an essential search role can't both fit, the search role
+        wins its placement instead of being starved by the larger chat model
+        placed first (bb-7jg1.6)."""
+        chat = ModelPlacementInput(WorkerRole.CHAT, 20 * _GB)
+        embed = ModelPlacementInput(WorkerRole.EMBED, 18 * _GB)
+        # One 24 GB card (21.6 GB usable): either model fits alone, not both.
+        plan = plan_placement([chat, embed], [(0, 24 * _GB)], estimate_peak=_even(chat, embed))
+        placed = {i.role for i in plan.instances}
+        assert WorkerRole.EMBED in placed
+        assert WorkerRole.CHAT in plan.unplaceable_roles
+
     def test_colocates_small_models_on_one_gpu(self) -> None:
         plan = plan_placement(
             [
@@ -149,7 +161,7 @@ class TestPlanPlacement:
         assert {i.role for i in plan.instances} == {WorkerRole.EMBED}
         assert plan.unplaceable_roles == (WorkerRole.CHAT,)
 
-    def test_first_fit_decreasing_places_largest_first(self) -> None:
+    def test_search_role_placed_first_then_chat(self) -> None:
         plan = plan_placement(
             [
                 ModelPlacementInput(WorkerRole.EMBED, 5 * _GB),
@@ -159,9 +171,9 @@ class TestPlanPlacement:
             estimate_peak=_never,
         )
         by_role = {i.role: i.devices for i in plan.instances}
-        # Largest (chat) placed first on device 0; embed then lands on the
-        # now-emptier device 1. Each is a single-GPU instance.
-        assert by_role == {WorkerRole.CHAT: (0,), WorkerRole.EMBED: (1,)}
+        # Search-first: embed claims device 0, then chat lands on the emptier
+        # device 1. Each is a single-GPU instance (bb-7jg1.6).
+        assert by_role == {WorkerRole.EMBED: (0,), WorkerRole.CHAT: (1,)}
         assert plan.unplaceable_roles == ()
 
 
@@ -188,21 +200,23 @@ class TestPerDeviceSplit:
 
     def test_charges_each_card_its_own_share(self) -> None:
         # Chat splits with an uneven per-device charge (10 GiB, 5 GiB). A following
-        # embed that fits only the less-charged card proves the debit is per-device,
-        # not the proportional/summed charge the old planner applied.
+        # single role that fits only the less-charged card proves the debit is
+        # per-device, not the proportional/summed charge the old planner applied.
+        # Vision (a non-search single) is placed after chat, so it exercises the
+        # post-chat fit; a search role would be placed first (bb-7jg1.6).
         chat = ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)
-        embed = ModelPlacementInput(WorkerRole.EMBED, 12 * _GB)
+        vision = ModelPlacementInput(WorkerRole.VISION, 12 * _GB)
 
         def peak(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
             return (10 * _GB, 5 * _GB)
 
         plan = plan_placement(
-            [chat, embed],
+            [chat, vision],
             [(0, 24 * _GB), (1, 24 * _GB)],
             estimate_peak=peak,
         )
-        embed_inst = next(i for i in plan.instances if i.role is WorkerRole.EMBED)
-        assert embed_inst.devices == (
+        vision_inst = next(i for i in plan.instances if i.role is WorkerRole.VISION)
+        assert vision_inst.devices == (
             1,
         )  # card 1 (charged 5) has room; card 0 (charged 10) does not
 

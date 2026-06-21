@@ -137,12 +137,13 @@ class TestPresetVisibleDeviceComposition:
         env = visible_env((FleetDevice("CUDA", 1, "", 0, 0),))
         assert env["CUDA_VISIBLE_DEVICES"] == "GPU-bbb"
 
-    def test_cuda_index_past_parent_list_falls_back_to_relative(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cuda_index_past_parent_list_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An index outside the parent restriction is an invariant violation; pinning
+        a bare absolute index into a (possibly UUID) parent list would select the
+        wrong GPU, so composition fails loudly instead (bb-7jg1.13)."""
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
-        env = visible_env((FleetDevice("CUDA", 0, "", 0, 0), FleetDevice("CUDA", 1, "", 0, 0)))
-        assert env["CUDA_VISIBLE_DEVICES"] == "2,1"
+        with pytest.raises(ValueError, match="outside the parent visible-devices list"):
+            visible_env((FleetDevice("CUDA", 0, "", 0, 0), FleetDevice("CUDA", 1, "", 0, 0)))
 
     def test_cuda_clean_env_emits_relative_ids(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)

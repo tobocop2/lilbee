@@ -1389,6 +1389,14 @@ class _FakeReplica:
             raise self.fail
         return [0.5] * len(candidates)
 
+    def chat(
+        self, messages: object, options: object = None, stream: bool = False, **_kw: object
+    ) -> str:
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return "ocr text"
+
 
 class TestReplicaHealthRouting:
     def test_least_in_flight_skips_unhealthy_clients(self) -> None:
@@ -1431,6 +1439,41 @@ class TestReplicaHealthRouting:
         p = _provider_with_clients({WorkerRole.EMBED: [only]})
         with pytest.raises(ProviderError, match="no healthy replica"):
             p.embed(["a"])
+
+    def test_vision_ocr_fails_over_to_healthy_replica(self, monkeypatch) -> None:
+        """Vision OCR uses the failover path like embed/rerank: a dead replica is
+        marked unhealthy and the call retries on a live one, instead of the dead
+        replica being re-picked and the error swallowed to empty text (bb-7jg1.5)."""
+        import httpx as _httpx
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        alive = _FakeReplica(in_flight=5)  # busier, picked only after failover
+        monkeypatch.setattr(cfg, "vision_model", "org/vis/model.gguf")
+        p = _provider_with_clients({WorkerRole.VISION: [dead, alive]})
+        assert p.vision_ocr(b"\x89PNG", "") == "ocr text"
+        assert dead.healthy is False
+        assert alive.calls == 1
+
+    def test_vision_pdf_page_fails_over_to_healthy_replica(self, monkeypatch) -> None:
+        """The per-page PDF OCR path fails a dead replica over too, so a page is
+        OCR'd by a live replica rather than skipped to empty text (bb-7jg1.5)."""
+        import httpx as _httpx
+
+        from lilbee.providers.fleet import provider as prov
+
+        dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
+        alive = _FakeReplica(in_flight=5)
+        idx, text = prov._ocr_pdf_page(
+            0,
+            b"\x89PNG",
+            clients=[dead, alive],
+            ocr_prompt="read it",
+            deadline=None,
+            page_path=Path("doc.pdf"),
+        )
+        assert (idx, text) == (0, "ocr text")
+        assert dead.healthy is False
+        assert alive.calls == 1
 
     def test_successful_call_restores_an_unhealthy_replica(self) -> None:
         only = _FakeReplica()
