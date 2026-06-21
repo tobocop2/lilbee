@@ -105,9 +105,8 @@ _CRAWL_FLAG_MAX_PAGES = "--max-pages"
 _CRAWL_FLAG_INCLUDE_SUBDOMAINS = "--include-subdomains"
 _CRAWL_FLAG_RENDER = "--render"
 
-# The model-swap service reset runs in this named worker so the drain-before-reset
-# wait can ignore it (it must not block on itself) and a rapid second swap cancels
-# the prior reset rather than stacking fleet reloads.
+# Name for the thread worker that resets and warms the new chat model off the
+# event loop.
 _MODEL_SWAP_WORKER = "model_swap_reset"
 
 

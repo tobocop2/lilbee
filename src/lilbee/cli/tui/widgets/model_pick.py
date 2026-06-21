@@ -21,6 +21,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Name for the thread worker that persists + reloads a non-chat role off the
+# event loop (the chat scope has its own worker in chat.py).
+_PERSIST_WORKER_NAME = "model_swap_persist"
+
 # Single source of truth for "after a model-key write, which worker pool role
 # needs to respawn so the next call picks up the new ref?". Used by both the
 # Settings picker dismiss path and the chat-screen model rail's button.
@@ -160,4 +164,4 @@ def _persist(
         on_done()
         app.notify(msg.MODEL_SWAP_DONE.format(name=ref))
 
-    app.run_worker(_runner, thread=True, exit_on_error=False, name="model_swap_persist")
+    app.run_worker(_runner, thread=True, exit_on_error=False, name=_PERSIST_WORKER_NAME)
