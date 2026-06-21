@@ -351,6 +351,16 @@ class TestPathTraversalDefense:
         error_issues = [i for i in issues if i.severity == IssueSeverity.ERROR]
         assert any("escapes documents dir" in i.message for i in error_issues)
 
+    def test_wiki_source_traversal_does_not_read_outside_wiki_root(self, tmp_path: Path):
+        """A traversal wiki_source must not read/disclose a file outside wiki_root."""
+        secret = cfg.data_root.parent / "secret.md"
+        secret.write_text("UNMARKEDSECRET disclosed claim line\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        issues = lint_wiki_page("../../secret.md", store)
+        assert issues == []
+        assert all("UNMARKEDSECRET" not in i.message for i in issues)
+
 
 class TestParseFrontmatter:
     def test_extracts_field(self):
