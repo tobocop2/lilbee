@@ -184,7 +184,7 @@ def write_page(
         if ratio > drift_threshold:
             drafts_dir = wiki_root / WikiSubdir.DRAFTS
             diff_text = diff_summary(old_content, full_content)
-            return divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
+            return divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text, subdir)
 
     page_path.write_text(full_content, encoding="utf-8")
     return page_path

@@ -24,6 +24,7 @@ from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
+    WIKI_CONTENT_SUBDIRS,
     PendingKind,
     WikiSubdir,
     parse_frontmatter,
@@ -175,12 +176,34 @@ def _find_published(wiki_root: Path, slug: str) -> Path | None:
     return None
 
 
+_ORIGIN_MARKER_RE = re.compile(
+    r"<!--\s*DRIFT:[^>]*origin:\s*(?P<subdir>\w+)[^>]*-->",
+    re.IGNORECASE,
+)
+
+_CONTENT_SUBDIR_BY_VALUE = {s.value: s for s in WIKI_CONTENT_SUBDIRS}
+
+
 def _parse_drift_ratio(text: str) -> float | None:
     """Extract the drift percentage from a draft's leading marker."""
     match = _DRIFT_MARKER_RE.search(text)
     if match is None:
         return None
     return int(match.group("pct")) / 100.0
+
+
+def _parse_origin_subdir(text: str) -> WikiSubdir | None:
+    """Extract the origin page-type subdir from a drift marker, if it names a valid one.
+
+    The marker carries ``origin: <subdir>`` so an unpaired drift draft accepts
+    back into its own page type. Returns None for drafts without the field
+    (markers written before this was recorded) or values outside the content
+    subdirs, so the caller keeps the summaries fallback.
+    """
+    match = _ORIGIN_MARKER_RE.search(text)
+    if match is None:
+        return None
+    return _CONTENT_SUBDIR_BY_VALUE.get(match.group("subdir").lower())
 
 
 def _parse_pending_kind(text: str) -> str | None:
@@ -341,11 +364,12 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     if published is not None:
         target = published
     else:
-        target = wiki_root / WikiSubdir.SUMMARIES / f"{target_slug}.md"
+        fallback_subdir = _parse_origin_subdir(raw) or WikiSubdir.SUMMARIES
+        target = wiki_root / fallback_subdir / f"{target_slug}.md"
         log.info(
             "Draft %s has no published counterpart; accepting into %s",
             slug,
-            WikiSubdir.SUMMARIES,
+            fallback_subdir,
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(clean, encoding="utf-8")

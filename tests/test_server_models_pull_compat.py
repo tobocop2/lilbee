@@ -40,6 +40,19 @@ async def test_enforce_arch_compat_raises_409() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enforce_arch_compat_skips_remote_and_override() -> None:
+    """Remote source and allow_unsupported both bypass the native arch precheck."""
+    mock_manager = MagicMock()
+    with patch(
+        "lilbee.server.handlers.models.get_services",
+        return_value=MagicMock(model_manager=mock_manager),
+    ):
+        await handlers.enforce_pull_arch_compat("ollama:llama3", source="remote")
+        await handlers.enforce_pull_arch_compat("acme/foo", source="native", allow_unsupported=True)
+    mock_manager._enforce_arch_compat.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_models_pull_generator_does_not_precheck() -> None:
     """The generator no longer prechecks (the route does); a raise here would be too
     late. manager.pull still enforces compatibility during the pull itself."""

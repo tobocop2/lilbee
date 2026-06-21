@@ -1085,13 +1085,15 @@ class TestDivertToDrafts:
     def test_writes_draft_with_note(self, tmp_path: Path):
         drafts_dir = tmp_path / "drafts"
         content = "# New Page\n\nNew content."
-        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text")
+        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text", "concepts")
         assert result.exists()
         assert result.parent == drafts_dir
         text = result.read_text()
         assert "DRIFT" in text
         assert "45%" in text
         assert "human review" in text
+        # The origin subdir rides the marker so accept restores the page to concepts/.
+        assert "origin: concepts" in text
         assert content in text
 
 

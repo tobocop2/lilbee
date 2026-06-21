@@ -44,11 +44,21 @@ def divert_to_drafts(
     slug: str,
     change_ratio: float,
     diff_text: str,
+    origin_subdir: str,
 ) -> Path:
-    """Write new content to wiki/drafts/ with a drift note instead of overwriting."""
+    """Write new content to wiki/drafts/ with a drift note instead of overwriting.
+
+    ``origin_subdir`` is the published subdir the page would have landed in
+    (``concepts``, ``entities``, ...); it rides the drift marker so that
+    accepting an unpaired draft restores it to its own page type instead of
+    defaulting to ``summaries/``.
+    """
     draft_path = drafts_dir / f"{slug}.md"
     draft_path.parent.mkdir(parents=True, exist_ok=True)
-    note = f"<!-- DRIFT: {change_ratio:.0%} content changed - flagged for human review -->\n\n"
+    note = (
+        f"<!-- DRIFT: {change_ratio:.0%} content changed; origin: {origin_subdir} "
+        "- flagged for human review -->\n\n"
+    )
     draft_path.write_text(note + new_content, encoding="utf-8")
     log.warning(
         "Drift detected for %s (%.0f%% changed), diverted to drafts. Diff:\n%s",
