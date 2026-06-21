@@ -18,7 +18,6 @@ def _reset():
     snapshot = {
         "reranker_model": cfg.reranker_model,
         "rerank_candidates": cfg.rerank_candidates,
-        "expansion_skip_threshold": cfg.expansion_skip_threshold,
     }
     yield
     for key, value in snapshot.items():
@@ -70,21 +69,52 @@ class TestRerank:
             _chunk("b.md", "chunk B", relevance=0.8),
             _chunk("c.md", "chunk C", relevance=0.5),
         ]
+        # Fusion is min-max normalized across the set ([0.3,0.8,0.5] -> [0,1,0.4])
+        # then blended 0.7/0.3 with the normalized reranker scores at the top slots.
         with _patch_provider(lambda query, cands: [0.9, 0.1, 0.5]):
             reranked = reranker.rerank("test query", results)
-        assert [c.chunk for c in reranked] == ["chunk B", "chunk A", "chunk C"]
+        assert [c.chunk for c in reranked] == ["chunk B", "chunk C", "chunk A"]
 
-    def test_bm25_protection(self, reranker):
+    def test_strong_fusion_hit_resists_reranker_demotion(self, reranker):
+        """A hybrid hit that clearly leads the fusion field keeps the top slot even
+        when the cross-encoder favours a weaker chunk. Realistic RRF magnitudes
+        (~0.03) once made fusion negligible in the blend; normalization restores it."""
         cfg.reranker_model = _RERANKER_MODEL
-        cfg.expansion_skip_threshold = 0.8
         results = [
-            _chunk("a.md", "exact match", distance=0.9, relevance=0.9),
-            _chunk("b.md", "reranker favorite", relevance=0.95),
-            _chunk("c.md", "mid", relevance=0.5),
+            _chunk("a.md", "exact match", relevance=0.033),
+            _chunk("b.md", "reranker favorite", relevance=0.005),
+            _chunk("c.md", "mid", relevance=0.004),
         ]
         with _patch_provider(lambda query, cands: [0.0, 1.0, 0.5]):
             reranked = reranker.rerank("test", results)
         assert reranked[0].chunk == "exact match"
+
+    def test_mixed_cohort_does_not_demote_strong_hybrid_top(self, reranker):
+        """RRF (hybrid) and cosine-distance (HyDE) signals are normalized within
+        their own family, so a HyDE chunk cannot displace a leading hybrid hit just
+        because 1-distance is numerically larger than a tiny RRF score."""
+        cfg.reranker_model = _RERANKER_MODEL
+        results = [
+            _chunk("hybrid_top.md", "exact match", relevance=0.05),
+            _chunk("hybrid_low.md", "weaker hybrid", relevance=0.03),
+            _chunk("hyde.md", "hyde recall", distance=0.4, relevance=None),
+        ]
+        # The cross-encoder favours the HyDE chunk; the hybrid top must still win.
+        with _patch_provider(lambda query, cands: [0.5, 0.5, 0.9]):
+            reranked = reranker.rerank("test", results)
+        assert reranked[0].chunk == "exact match"
+
+    def test_perfect_vector_match_not_penalized(self, reranker):
+        """A vector-only chunk with distance 0.0 is the strongest possible hit; it
+        must read as a full fusion signal, not the falsy-``or`` 0.5 default."""
+        cfg.reranker_model = _RERANKER_MODEL
+        results = [
+            _chunk("near.md", "near match", distance=0.4, relevance=None),
+            _chunk("perfect.md", "perfect match", distance=0.0, relevance=None),
+        ]
+        with _patch_provider(lambda query, cands: [0.5, 0.5]):
+            reranked = reranker.rerank("test", results)
+        assert reranked[0].chunk == "perfect match"
 
     def test_handles_remainder(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
@@ -139,18 +169,18 @@ class TestRerank:
         assert unscored == ["chunk C"]
         assert all(r.rerank_score is None for r in results)  # inputs stay untouched
 
-    def test_pinned_top_keeps_blended_rerank_score(self, reranker):
+    def test_protected_top_keeps_real_blended_score(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
-        cfg.expansion_skip_threshold = 0.8
         results = [
-            _chunk("a.md", "exact match", relevance=0.9),
-            _chunk("b.md", "reranker favorite", relevance=0.5),
+            _chunk("a.md", "exact match", relevance=0.033),
+            _chunk("b.md", "reranker favorite", relevance=0.005),
+            _chunk("c.md", "mid", relevance=0.004),
         ]
-        with _patch_provider(lambda query, cands: [0.0, 1.0]):
+        with _patch_provider(lambda query, cands: [0.0, 1.0, 0.5]):
             reranked = reranker.rerank("test", results)
-        assert [c.chunk for c in reranked] == ["exact match", "reranker favorite"]
-        assert len(reranked) == 2  # the pin must not duplicate the top chunk
-        # The pin sentinel orders the list; the stamped score stays the real blend.
+        assert reranked[0].chunk == "exact match"
+        assert len(reranked) == 3  # no duplication
+        # Every stamped score is a real blended value in [0, 1], no sentinel.
         assert all(r.rerank_score is not None and r.rerank_score <= 1.0 for r in reranked)
 
     def test_sends_chunk_text_to_provider(self, reranker):
@@ -186,15 +216,17 @@ class TestRerankerBlendPositions:
             reranked = r.rerank("test", results, candidates=12)
         assert len(reranked) == 12
 
-    def test_no_bm25_protection_when_below_threshold(self):
+    def test_reranker_wins_when_fusion_field_is_flat(self):
+        """When the top retrieval hit barely leads the fusion field, the
+        cross-encoder is free to promote a different chunk."""
         cfg.reranker_model = _RERANKER_MODEL
-        cfg.expansion_skip_threshold = 0.8
         r = Reranker(cfg)
         results = [
-            _chunk("a.md", "low bm25", relevance=0.5),
-            _chunk("b.md", "high rerank", relevance=0.3),
+            _chunk("a.md", "barely ahead", relevance=0.020),
+            _chunk("b.md", "high rerank", relevance=0.019),
+            _chunk("c.md", "trailing", relevance=0.001),
         ]
-        with _patch_provider(lambda query, cands: [0.1, 0.9]):
+        with _patch_provider(lambda query, cands: [0.0, 1.0, 0.0]):
             reranked = r.rerank("test", results)
         assert reranked[0].chunk == "high rerank"
 
@@ -220,7 +252,6 @@ class TestGoldenOrdering:
 
     def test_all_equal_scores_preserve_input_order(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
-        cfg.expansion_skip_threshold = 0.6  # above chunk relevance: no BM25 pin
         results = [_chunk(f"{i}.md", f"chunk {i}", relevance=0.5) for i in range(5)]
         with _patch_provider(lambda query, cands: [0.5] * len(cands)):
             reranked = reranker.rerank("test", results)
@@ -229,7 +260,6 @@ class TestGoldenOrdering:
 
     def test_both_scores_none_uses_fusion_default(self, reranker):
         cfg.reranker_model = _RERANKER_MODEL
-        cfg.expansion_skip_threshold = 0.6  # top relevance is None->0: no pin
 
         def _bare(source: str, chunk: str) -> SearchChunk:
             return SearchChunk(
@@ -245,8 +275,8 @@ class TestGoldenOrdering:
             )
 
         results = [_bare("a.md", "A"), _bare("b.md", "B")]
-        # relevance_score and distance both None -> fusion_score == 0.5
-        # (reranker.py:57). Reranker scores then decide order: B over A.
+        # Both fusion signals default to 0.5 and normalize equal, so the reranker
+        # scores decide order: B over A.
         with _patch_provider(lambda query, cands: [0.1, 0.9]):
             reranked = reranker.rerank("test", results)
         assert [c.chunk for c in reranked] == ["B", "A"]
@@ -271,7 +301,6 @@ class TestRerankChangesContext:
 
     def test_reranking_changes_selected_context_set(self):
         cfg.reranker_model = _RERANKER_MODEL
-        cfg.expansion_skip_threshold = 0.95  # top fusion hit stays below: no pin
         reranker = Reranker(cfg)
         searcher = Searcher(
             cfg,

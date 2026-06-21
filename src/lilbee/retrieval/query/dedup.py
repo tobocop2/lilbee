@@ -8,6 +8,10 @@ from lilbee.retrieval.query.formatting import format_source
 
 _DEFAULT_RELEVANCE_WEIGHT = 0.5
 
+# Neutral point of the [0, 1] fusion scale: used for a candidate with no usable
+# score and for a cohort whose scores are all equal (no spread to rank on).
+_NEUTRAL_SCORE = 0.5
+
 
 def _relevance_weight(result: SearchChunk) -> float:
     """Return a [0, 1] relevance weight for distance-aware selection.
@@ -21,6 +25,63 @@ def _relevance_weight(result: SearchChunk) -> float:
     if result.distance is not None:
         return max(0.0, 1.0 - result.distance)
     return _DEFAULT_RELEVANCE_WEIGHT
+
+
+def _normalize_scores(scores: list[float]) -> list[float]:
+    """Min-max normalize scores to [0, 1]; an all-equal set maps to the midpoint."""
+    min_score = min(scores)
+    max_score = max(scores)
+    score_range = max_score - min_score
+    if score_range > 0:
+        return [(s - min_score) / score_range for s in scores]
+    return [_NEUTRAL_SCORE] * len(scores)
+
+
+def _fusion_signal(result: SearchChunk) -> float:
+    """A chunk's retrieval confidence as a "higher = better" raw signal.
+
+    Hybrid rows carry an RRF ``relevance_score`` (small positive magnitude);
+    vector-only rows carry a cosine ``distance`` (0.0 = identical, lower = better).
+    ``is None`` rather than truthiness is deliberate: a perfect vector match has
+    ``distance == 0.0`` -- the strongest possible hit -- which falsy ``or`` would
+    misread as the neutral default.
+    """
+    if result.relevance_score is not None:
+        return result.relevance_score
+    if result.distance is not None:
+        return 1.0 - result.distance
+    return _NEUTRAL_SCORE
+
+
+def _fusion_norms(results: list[SearchChunk]) -> list[float]:
+    """Normalize each chunk's fusion signal to [0, 1] WITHIN its scoring family.
+
+    Hybrid rows carry an RRF ``relevance_score`` (tiny magnitude); the rest
+    (vector-only / HyDE recalls) carry a cosine ``distance``. The two scales are
+    not comparable, so normalizing them together would let one family dominate
+    purely as a scale artifact. Each family is scaled independently; a row with
+    neither signal sits in the non-RRF family at the neutral score.
+    """
+    rrf = [i for i, r in enumerate(results) if r.relevance_score is not None]
+    non_rrf = [i for i, r in enumerate(results) if r.relevance_score is None]
+    norms = [_NEUTRAL_SCORE] * len(results)
+    for cohort in (rrf, non_rrf):
+        if not cohort:
+            continue
+        scaled = _normalize_scores([_fusion_signal(results[i]) for i in cohort])
+        for i, value in zip(cohort, scaled, strict=True):
+            norms[i] = value
+    return norms
+
+
+def order_by_fusion(results: list[SearchChunk]) -> list[SearchChunk]:
+    """Sort results best-first by fusion signal, normalized within each scoring
+    family so RRF (hybrid) and cosine-distance (vector/HyDE) rows are comparable
+    and one scale can't dominate the order as an artifact of its magnitude.
+    """
+    norms = _fusion_norms(results)
+    order = sorted(range(len(results)), key=lambda i: norms[i], reverse=True)
+    return [results[i] for i in order]
 
 
 def _greedy_cover(

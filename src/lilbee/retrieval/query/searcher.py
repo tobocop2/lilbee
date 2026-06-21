@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Generator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -28,6 +29,7 @@ from lilbee.retrieval.query.dedup import (
     _relevance_weight,
     deduplicate_sources,
     filter_results,
+    order_by_fusion,
     prepare_results,
 )
 from lilbee.retrieval.query.expansion import EXPANSION_MAX_TOKENS, EXPANSION_PROMPT
@@ -57,6 +59,18 @@ log = logging.getLogger(__name__)
 # BM25 probe needs at least this many hits to compare top vs. runner-up
 # scores for the expansion-skip heuristic.
 _MIN_BM25_PROBE_RESULTS = 2
+
+
+def _bm25_confidence(score: float | None) -> float:
+    """Squash a raw, unbounded BM25 score into the (0, 1) confidence that the
+    expansion-skip thresholds are calibrated for (the config calls this the
+    "sigmoid-normalized BM25 score"). Absent or non-positive scores read as 0,
+    so a missing FTS signal never trips the skip.
+    """
+    if score is None or score <= 0.0:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-score))
+
 
 # RAG mode answer when retrieval finds no usable sources: a grounded refusal
 # instead of free-wheeling on the model's parametric knowledge. Users who want
@@ -209,18 +223,22 @@ class Searcher:
             log.debug("Query expansion exception", exc_info=True)
             return []
 
-    def _should_skip_expansion(self, question: str) -> bool:
+    def _should_skip_expansion(self, question: str, chunk_type: ChunkType | None = None) -> bool:
         if self._config.expansion_skip_threshold <= 0:
             return False
-        results = self._store.bm25_probe(question, top_k=2)
+        # Probe the same pool the scoped search returns, else a confident hit in
+        # the wrong sub-pool could skip expansion the scoped result actually needs.
+        results = self._store.bm25_probe(
+            question, top_k=_MIN_BM25_PROBE_RESULTS, chunk_type=chunk_type
+        )
         if not results:
             return False
-        top_score = results[0].relevance_score or 0
+        top_score = _bm25_confidence(results[0].bm25_score)
         if top_score < self._config.expansion_skip_threshold:
             return False
         if len(results) < _MIN_BM25_PROBE_RESULTS:
             return True
-        second_score = results[1].relevance_score or 0
+        second_score = _bm25_confidence(results[1].bm25_score)
         return (top_score - second_score) >= self._config.expansion_skip_gap
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
@@ -232,12 +250,20 @@ class Searcher:
             query_concepts = self._concepts.extract_concepts(question)
             if not query_concepts:
                 return results
-            return self._concepts.boost_results(results, query_concepts)
+            boosted = self._concepts.boost_results(results, query_concepts)
+            # boost_results mutates relevance_score/distance but preserves input
+            # order; re-sort so the boost actually re-ranks for callers that consume
+            # search() order directly (CLI search, MCP lilbee_search). order_by_fusion
+            # normalizes per scoring family so HyDE (distance) hits can't outrank a
+            # strong hybrid (RRF) hit purely on scale.
+            return order_by_fusion(boosted)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
             return results
 
-    def _hyde_search(self, question: str, top_k: int) -> list[SearchChunk]:
+    def _hyde_search(
+        self, question: str, top_k: int, chunk_type: ChunkType | None = None
+    ) -> list[SearchChunk]:
         """Hypothetical Document Embedding search.
         Gao et al. 2022, "Precise Zero-Shot Dense Retrieval without
         Relevance Labels" -- generates a hypothetical answer passage,
@@ -253,7 +279,7 @@ class Searcher:
             if not text:
                 return []
             hyde_vec = self._embedder.embed_query(text)
-            return self._store.search(hyde_vec, top_k=top_k, query_text=None)
+            return self._store.search(hyde_vec, top_k=top_k, query_text=None, chunk_type=chunk_type)
         except Exception:
             log.debug("HyDE search failed", exc_info=True)
             return []
@@ -286,12 +312,14 @@ class Searcher:
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
         if mode == "term":
-            return self._store.bm25_probe(query, top_k=top_k)
+            return self._store.bm25_probe(query, top_k=top_k, chunk_type=chunk_type)
         if mode == "vec":
             query_vec = self._embedder.embed_query(query)
-            return self._store.search(query_vec, top_k=top_k, query_text=None)
+            return self._store.search(
+                query_vec, top_k=top_k, query_text=None, chunk_type=chunk_type
+            )
         if mode == "hyde":
-            return self._hyde_search(query, top_k)
+            return self._hyde_search(query, top_k, chunk_type=chunk_type)
         if mode in (ChunkType.WIKI, ChunkType.RAW):
             # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
             effective = chunk_type if chunk_type is not None else ChunkType(mode)
@@ -359,9 +387,10 @@ class Searcher:
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
         top_k: int,
+        chunk_type: ChunkType | None = None,
     ) -> None:
         """Append unseen HyDE hits to ``results`` (in place), reweighted by ``hyde_weight``."""
-        for r in self._hyde_search(question, top_k):
+        for r in self._hyde_search(question, top_k, chunk_type=chunk_type):
             key = (r.source, r.chunk_index)
             if key in seen:
                 continue
@@ -403,12 +432,12 @@ class Searcher:
             query_text=question,
             chunk_type=chunk_type,
         )
-        if self._should_skip_expansion(question):
+        if self._should_skip_expansion(question, chunk_type):
             return results[: top_k * 2]
         seen = {(r.source, r.chunk_index) for r in results}
         self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
         if self._config.hyde:
-            self._merge_hyde_results(question, results, seen, top_k)
+            self._merge_hyde_results(question, results, seen, top_k, chunk_type)
         results = self._apply_concept_boost(results, question)
         return results[: top_k * 2]
 

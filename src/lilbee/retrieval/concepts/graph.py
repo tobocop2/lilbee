@@ -102,7 +102,14 @@ class ConceptGraph:
     def build_concept_records(
         self, chunk_ids: list[tuple[str, int]], concept_lists: list[list[str]]
     ) -> ConceptRecords:
-        """Build co-occurrence graph rows (PMI-weighted) from chunk concepts; no store access."""
+        """Build co-occurrence graph rows from chunk concepts; no store access.
+
+        Edge weights are raw co-occurrence counts (the edges carry graph
+        connectivity), not PMI. Corpus PMI for clustering is recomputed from the
+        chunk_concepts map in :meth:`rebuild_clusters`: computing PMI per file (with
+        one file's chunk count as the denominator) and summing the per-file weights
+        inflates pairs that recur across many small files, which is not corpus PMI.
+        """
         cooccurrences: Counter[tuple[str, str]] = Counter()
         concept_counts: Counter[str] = Counter()
         chunk_concept_records: list[dict[str, Any]] = []
@@ -118,13 +125,15 @@ class ConceptGraph:
                     pair = (min(a, b), max(a, b))
                     cooccurrences[pair] += 1
 
-        pmi_weights = _compute_pmi(cooccurrences, concept_counts, len(chunk_ids))
         return ConceptRecords(
             nodes=[
                 {"concept": c, "cluster_id": 0, "degree": count}
                 for c, count in concept_counts.items()
             ],
-            edges=[{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()],
+            edges=[
+                {"source": a, "target": b, "weight": float(count)}
+                for (a, b), count in cooccurrences.items()
+            ],
             chunk_concepts=chunk_concept_records,
         )
 
@@ -265,27 +274,53 @@ class ConceptGraph:
             if by_cluster.get(cid)
         ]
 
-    def _aggregated_edge_rows(self, edges_table: lancedb.table.Table) -> list[dict[str, Any]]:
-        """Stream the edge table in batches, summing duplicate edges.
+    def _corpus_pmi_inputs(
+        self,
+    ) -> tuple[Counter[tuple[str, str]], Counter[str], int]:
+        """Co-occurrence counts, concept document-frequencies, and chunk count,
+        all derived from the chunk_concepts table.
 
-        Per-file ingest appends one edge row per co-occurring pair, so the table
-        accumulates duplicates; the in-memory list holds unique edges only.
+        chunk_concepts is the ground-truth concept<->chunk map: it is source-scoped
+        (re-ingesting a source replaces its rows) and its schema is stable, so PMI
+        computed from it stays correct across re-ingests and version upgrades. The
+        edge table is append-only and its ``weight`` is a per-file co-occurrence
+        count, not corpus PMI, so it is not a safe source for these corpus counts.
+
+        Concepts are de-duplicated per chunk, so a concept (or pair) counts once per
+        distinct chunk it appears in -- the document frequency PMI is defined on.
         """
-        edge_weights: dict[tuple[str, str], float] = {}
-        for rows in _iter_row_batches(edges_table):
+        cooccurrences: Counter[tuple[str, str]] = Counter()
+        concept_counts: Counter[str] = Counter()
+        table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
+        if table is None:
+            return cooccurrences, concept_counts, 0
+        per_chunk: dict[tuple[str, int], set[str]] = {}
+        for rows in _iter_row_batches(table):
             for row in rows:
-                key = (row["source"], row["target"])
-                edge_weights[key] = edge_weights.get(key, 0.0) + row["weight"]
-        return [{"source": a, "target": b, "weight": w} for (a, b), w in edge_weights.items()]
+                key = (row["chunk_source"], row["chunk_index"])
+                per_chunk.setdefault(key, set()).add(row["concept"])
+        for concepts in per_chunk.values():
+            ordered = sorted(concepts)
+            for c in ordered:
+                concept_counts[c] += 1
+            for i, a in enumerate(ordered):
+                for b in ordered[i + 1 :]:
+                    cooccurrences[(a, b)] += 1
+        return cooccurrences, concept_counts, len(per_chunk)
 
     def rebuild_clusters(self) -> None:
-        """Re-run Leiden clustering on the existing edge table, then compact."""
-        edges_table = self._store.open_table(CONCEPT_EDGES_TABLE)
-        if edges_table is None:
+        """Recompute corpus PMI from the chunk_concepts map, re-run Leiden, compact.
+
+        PMI is a corpus-level statistic, so it is computed once over corpus-wide
+        co-occurrence and concept counts (see :meth:`_corpus_pmi_inputs`) rather
+        than per file; summing per-file PMI would inflate pairs that recur across
+        many small files.
+        """
+        cooccurrences, concept_counts, total_chunks = self._corpus_pmi_inputs()
+        if total_chunks == 0 or not cooccurrences:
             return
-        edge_rows = self._aggregated_edge_rows(edges_table)
-        if not edge_rows:
-            return
+        pmi_weights = _compute_pmi(cooccurrences, concept_counts, total_chunks)
+        edge_rows = [{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()]
 
         partition, degree_map = _leiden_partition(edge_rows)
 

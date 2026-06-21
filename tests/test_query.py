@@ -1,10 +1,12 @@
 """Tests for the RAG query pipeline (mocked: no live server needed)."""
 
+from unittest import mock
+
 import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import ChunkType, SearchChunk
 from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.retrieval.query import (
     Searcher,
@@ -92,6 +94,7 @@ def _make_result(
     chunk_index=0,
     distance=0.5,
     relevance_score=None,
+    bm25_score=None,
     rerank_score=None,
     vector=None,
 ) -> SearchChunk:
@@ -107,6 +110,7 @@ def _make_result(
         chunk_index=chunk_index,
         distance=distance,
         relevance_score=relevance_score,
+        bm25_score=bm25_score,
         rerank_score=rerank_score,
         vector=vector or [0.1],
     )
@@ -1044,29 +1048,37 @@ class TestSelectContext:
 
 
 class TestShouldSkipExpansion:
+    """bm25_probe rows carry a raw, unbounded BM25 score in ``bm25_score`` (LanceDB
+    FTS _score); the probe values here use those realistic magnitudes, not
+    pre-normalized [0, 1] numbers, since _should_skip_expansion sigmoid-squashes
+    them before comparing to the [0, 1] thresholds (default 0.8 / gap 0.15)."""
+
     def test_skips_when_confident(self, mock_svc):
+        # sigmoid(5.0)=0.993 >= 0.8; gap to sigmoid(1.0)=0.731 is 0.262 >= 0.15.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.9),
-            _make_result(relevance_score=0.5),
+            _make_result(bm25_score=5.0),
+            _make_result(bm25_score=1.0),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is True
 
     def test_does_not_skip_when_low_score(self, mock_svc):
+        # sigmoid(0.5)=0.622 < 0.8: a weak top BM25 hit still expands.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.5),
-            _make_result(relevance_score=0.4),
+            _make_result(bm25_score=0.5),
+            _make_result(bm25_score=0.4),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is False
 
     def test_does_not_skip_when_close_gap(self, mock_svc):
+        # sigmoid(5.0)=0.993 and sigmoid(4.0)=0.982: gap 0.011 < 0.15.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.85),
-            _make_result(relevance_score=0.82),
+            _make_result(bm25_score=5.0),
+            _make_result(bm25_score=4.0),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is False
 
     def test_skips_with_single_confident_result(self, mock_svc):
-        mock_svc.store.bm25_probe.return_value = [_make_result(relevance_score=0.9)]
+        mock_svc.store.bm25_probe.return_value = [_make_result(bm25_score=5.0)]
         assert get_services().searcher._should_skip_expansion("test") is True
 
     def test_does_not_skip_when_empty(self, mock_svc):
@@ -1080,6 +1092,30 @@ class TestShouldSkipExpansion:
             assert get_services().searcher._should_skip_expansion("test") is False
         finally:
             cfg.expansion_skip_threshold = old
+
+    def test_forwards_scope_to_probe(self, mock_svc):
+        """A scoped search must probe the same pool it searches, not the mixed pool."""
+        mock_svc.store.bm25_probe.return_value = []
+        get_services().searcher._should_skip_expansion("q", ChunkType.WIKI)
+        assert mock_svc.store.bm25_probe.call_args.kwargs["chunk_type"] == ChunkType.WIKI
+
+    def test_does_not_skip_when_score_missing(self, mock_svc):
+        """A probe row with no FTS score reads as zero confidence, never skipping."""
+        mock_svc.store.bm25_probe.return_value = [_make_result(bm25_score=None)]
+        assert get_services().searcher._should_skip_expansion("test") is False
+
+
+class TestBm25Confidence:
+    def test_squashes_and_floors(self):
+        from lilbee.retrieval.query.searcher import _bm25_confidence
+
+        # Absent or non-positive scores floor to zero confidence.
+        assert _bm25_confidence(None) == 0.0
+        assert _bm25_confidence(0.0) == 0.0
+        assert _bm25_confidence(-2.0) == 0.0
+        # Positive raw BM25 scores squash monotonically into (0.5, 1).
+        assert 0.5 < _bm25_confidence(1.0) < 1.0
+        assert _bm25_confidence(5.0) > _bm25_confidence(1.0)
 
 
 class TestParseStructuredQuery:
@@ -1193,7 +1229,7 @@ class TestSearchStructured:
         mock_svc.store.bm25_probe.return_value = [_make_result()]
         results = get_services().searcher._search_structured("term", "test query", 5)
         assert len(results) == 1
-        mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5)
+        mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5, chunk_type=None)
 
     def test_vec_mode(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1209,6 +1245,23 @@ class TestSearchStructured:
     def test_unknown_mode_returns_empty(self, mock_svc):
         assert get_services().searcher._search_structured("unknown", "test", 5) == []
 
+    def test_term_mode_forwards_chunk_type(self, mock_svc):
+        """A ``term:`` query under an explicit scope must keep the scope filter."""
+        mock_svc.store.bm25_probe.return_value = [_make_result()]
+        get_services().searcher._search_structured("term", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.bm25_probe.call_args[1]["chunk_type"] == ChunkType.WIKI
+
+    def test_vec_mode_forwards_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("vec", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
+
+    def test_hyde_mode_forwards_chunk_type(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("doc")
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("hyde", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
+
 
 class TestSearchContextIntegration:
     def test_structured_term_mode(self, mock_svc):
@@ -1219,9 +1272,11 @@ class TestSearchContextIntegration:
 
     def test_skips_expansion_when_confident(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
+        # Raw BM25 magnitudes (sigmoid(5.0)=0.993, sigmoid(1.0)=0.731): confident
+        # top with a wide gap, so expansion is skipped.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.9),
-            _make_result(relevance_score=0.5),
+            _make_result(bm25_score=5.0),
+            _make_result(bm25_score=1.0),
         ]
         results = get_services().searcher.search("exact match query")
         # Provider.chat should NOT be called for expansion
@@ -1239,6 +1294,27 @@ class TestSearchContextIntegration:
             assert "normal.md" in sources
         finally:
             cfg.hyde = old
+
+    def test_scoped_search_threads_scope_through_hyde_merge(self, mock_svc):
+        """A scoped non-structured search must scope its HyDE merge too, else
+        out-of-scope chunks leak into a scoped result set."""
+        mock_svc.store.search.return_value = []
+        mock_svc.store.bm25_probe.return_value = []  # don't skip expansion
+        captured: dict[str, object] = {}
+
+        def fake_hyde(question, top_k, chunk_type=None):
+            captured["chunk_type"] = chunk_type
+            return []
+
+        old_hyde, old_cg, old_qe = cfg.hyde, cfg.concept_graph, cfg.query_expansion_count
+        cfg.hyde, cfg.concept_graph, cfg.query_expansion_count = True, False, 0
+        try:
+            searcher = get_services().searcher
+            with mock.patch.object(searcher, "_hyde_search", side_effect=fake_hyde):
+                searcher.search("question", chunk_type=ChunkType.RAW)
+            assert captured["chunk_type"] == ChunkType.RAW
+        finally:
+            cfg.hyde, cfg.concept_graph, cfg.query_expansion_count = old_hyde, old_cg, old_qe
 
     def test_hyde_adds_unique_results_with_distance_adjustment(self, mock_svc):
         """HyDE results not seen in normal search are added with adjusted distance."""
@@ -1321,6 +1397,41 @@ class TestConceptBoosting:
         finally:
             cfg.concept_graph = old
             cfg.query_expansion_count = 3
+
+    def test_boost_resorts_by_boosted_score(self, mock_svc):
+        """Boost mutates scores in place; the list must be re-sorted so callers that
+        consume search() order directly (CLI search, MCP lilbee_search) see the
+        boost change the ranking, not just the scores."""
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        weak = _make_result(source="weak.md", distance=0.4)
+        strong = _make_result(source="strong.md", distance=0.1)
+        mock_svc.concepts.boost_results.return_value = [weak, strong]
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            out = get_services().searcher._apply_concept_boost([weak, strong], "python question")
+            assert [r.source for r in out] == ["strong.md", "weak.md"]
+        finally:
+            cfg.concept_graph = old
+
+    def test_boost_resort_keeps_strong_hybrid_above_hyde(self, mock_svc):
+        """The boosted list mixes RRF (hybrid) and distance (HyDE) rows; per-family
+        normalization keeps a strong hybrid hit on top instead of letting a HyDE
+        recall's larger 1-distance dominate the tiny RRF score."""
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        strong = _make_result(source="strong.md", distance=None, relevance_score=0.05)
+        weak = _make_result(source="weak.md", distance=None, relevance_score=0.02)
+        hyde = _make_result(source="hyde.md", distance=0.3, relevance_score=None)
+        mock_svc.concepts.boost_results.return_value = [strong, weak, hyde]
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            out = get_services().searcher._apply_concept_boost([strong, weak, hyde], "python q")
+            assert out[0].source == "strong.md"
+        finally:
+            cfg.concept_graph = old
 
     def test_boost_skipped_when_disabled(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(distance=0.5)]

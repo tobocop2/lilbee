@@ -176,6 +176,64 @@ class TestEnsureFtsIndex:
         _args, kwargs = create_spy.call_args
         assert kwargs.get("replace") is False
 
+    def test_bm25_probe_populates_bm25_score(self, store):
+        """LanceDB FTS returns rows keyed on ``_score``; the probe must surface it as
+        ``bm25_score`` so confidence-based expansion-skip sees a real signal. It must
+        NOT land in the fusion-scale ``relevance_score`` (which stays None for FTS)."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        results = store.bm25_probe("text")
+        assert results
+        assert all(r.bm25_score is not None for r in results)
+        assert results[0].bm25_score > 0
+        assert all(r.relevance_score is None for r in results)
+
+    def test_bm25_probe_filters_by_chunk_type(self, store):
+        """An explicit scope on a ``term:`` query must be honoured by the probe."""
+        store.add_chunks(_make_records(n=2, chunk_type="raw"))
+        store.add_chunks(_make_records(n=2, chunk_type="wiki"))
+        store.ensure_fts_index()
+        results = store.bm25_probe("text", chunk_type=ChunkType.WIKI)
+        assert results
+        assert all(r.chunk_type == ChunkType.WIKI for r in results)
+
+
+class TestSearchChunkScoreAlias:
+    @staticmethod
+    def _row(**extra):
+        base = {
+            "source": "a.md",
+            "content_type": "text",
+            "chunk_type": "raw",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": "hi",
+            "chunk_index": 0,
+            "vector": [0.0] * cfg.embedding_dim,
+        }
+        base.update(extra)
+        return base
+
+    def test_fts_score_maps_to_bm25_score(self):
+        """BM25/FTS ``_score`` populates the dedicated ``bm25_score`` field, kept
+        separate from the fusion-scale ``relevance_score``."""
+        chunk = SearchChunk(**self._row(_score=2.5))
+        assert chunk.bm25_score == 2.5
+        assert chunk.relevance_score is None
+
+    def test_relevance_score_alias_still_works(self):
+        chunk = SearchChunk(**self._row(_relevance_score=0.03))
+        assert chunk.relevance_score == 0.03
+        assert chunk.bm25_score is None
+
+    def test_hybrid_row_keeps_scores_in_separate_fields(self):
+        """A hybrid row carrying both keeps RRF in relevance_score and BM25 in bm25_score."""
+        chunk = SearchChunk(**self._row(_relevance_score=0.03, _score=2.5))
+        assert chunk.relevance_score == 0.03
+        assert chunk.bm25_score == 2.5
+
 
 def _make_indexable_records(n, dim):
     """Records with varied vectors so IVF_PQ has something to train on."""

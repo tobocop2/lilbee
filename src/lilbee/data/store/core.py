@@ -470,8 +470,13 @@ class Store:
                 )
             return len(records)
 
-    def bm25_probe(self, query_text: str, top_k: int = 5) -> list[SearchChunk]:
-        """Quick BM25-only search for confidence checking. Returns up to top_k results."""
+    def bm25_probe(
+        self, query_text: str, top_k: int = 5, chunk_type: ChunkType | None = None
+    ) -> list[SearchChunk]:
+        """Quick BM25-only search for confidence checking. Returns up to top_k results.
+
+        When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
+        """
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
@@ -480,7 +485,10 @@ class Store:
         if not self._fts_ready:
             return []
         try:
-            rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
+            query = table.search(query_text, query_type="fts")
+            if chunk_type:
+                query = query.where(_chunk_type_predicate(chunk_type))
+            rows = query.limit(top_k).to_list()
             return [SearchChunk(**r) for r in rows]
         except Exception:
             log.debug("BM25 probe failed", exc_info=True)

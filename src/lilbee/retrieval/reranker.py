@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 from lilbee.core.config import Config
 from lilbee.data.store import SearchChunk
+from lilbee.retrieval.query.dedup import _fusion_norms, _normalize_scores
 
 log = logging.getLogger(__name__)
 
@@ -40,27 +41,21 @@ _BLEND_SCHEDULE = {
 }
 
 
-def _normalize_scores(scores: list[float]) -> list[float]:
-    """Min-max normalize raw cross-encoder scores to [0, 1]."""
-    min_score = min(scores)
-    max_score = max(scores)
-    score_range = max_score - min_score
-    if score_range > 0:
-        return [(s - min_score) / score_range for s in scores]
-    return [0.5] * len(scores)
-
-
-def _blend_scores(to_rerank: list[SearchChunk], norm_scores: list[float]) -> list[ScoredChunk]:
+def _blend_scores(
+    to_rerank: list[SearchChunk], norm_scores: list[float], fusion_norms: list[float]
+) -> list[ScoredChunk]:
     """Blend fusion scores with reranker scores using position-aware weights.
 
-    Each chunk is copied with ``rerank_score`` set to its blended score;
-    the input chunks are left untouched.
+    Both inputs are already min-max normalized to [0, 1] (``fusion_norms`` within
+    each scoring family, ``norm_scores`` across the reranker scores), so a strong
+    hybrid hit whose raw RRF score is tiny in absolute terms still earns real
+    fusion weight. Each chunk is copied with ``rerank_score`` set to its blended
+    score; the input chunks are left untouched.
     """
     blended: list[ScoredChunk] = []
-    for i, (chunk, rerank_score) in enumerate(zip(to_rerank, norm_scores, strict=True)):
-        fusion_score = chunk.relevance_score or (1.0 - (chunk.distance or 0.5))
-        fusion_norm = max(0.0, min(1.0, fusion_score))
-
+    for i, (chunk, rerank_score, fusion_norm) in enumerate(
+        zip(to_rerank, norm_scores, fusion_norms, strict=True)
+    ):
         if i < _TOP_POSITION_CUTOFF:
             fw, rw = _BLEND_SCHEDULE["top"]
         elif i < _MID_POSITION_CUTOFF:
@@ -74,26 +69,12 @@ def _blend_scores(to_rerank: list[SearchChunk], norm_scores: list[float]) -> lis
     return blended
 
 
-def _pin_original_top(
-    blended: list[ScoredChunk],
-    skip_threshold: float,
-) -> list[ScoredChunk]:
-    """Pin the original top result if its relevance exceeds the skip threshold."""
-    original_top = blended[0].chunk
-    top_score = original_top.relevance_score or 0
-    blended_sorted = sorted(blended, key=lambda x: x.score, reverse=True)
-    if top_score >= skip_threshold and blended_sorted[0].chunk is not original_top:
-        blended_sorted = [ScoredChunk(999.0, original_top)] + [
-            ScoredChunk(s, c) for s, c in blended_sorted if c is not original_top
-        ]
-    return blended_sorted
-
-
 class Reranker:
     """Cross-encoder reranker with position-aware blending.
 
-    Delegates scoring to the active provider's ``rerank``; handles result
-    blending and the BM25-protection pin (Nogueira & Cho 2019,
+    Delegates scoring to the active provider's ``rerank``; blends the result with
+    the normalized retrieval fusion signal so a confident hybrid hit keeps its
+    standing against a reranker that favours a weaker chunk (Nogueira & Cho 2019,
     https://arxiv.org/abs/1901.04085).
     """
 
@@ -122,8 +103,9 @@ class Reranker:
             return results
 
         norm_scores = _normalize_scores(scores)
-        blended = _blend_scores(to_rerank, norm_scores)
-        blended_sorted = _pin_original_top(blended, self._config.expansion_skip_threshold)
+        fusion_norms = _fusion_norms(to_rerank)
+        blended = _blend_scores(to_rerank, norm_scores, fusion_norms)
+        blended_sorted = sorted(blended, key=lambda x: x.score, reverse=True)
 
         reranked = [chunk for _, chunk in blended_sorted]
         return reranked + remainder
