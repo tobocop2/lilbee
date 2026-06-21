@@ -15,6 +15,7 @@ from lilbee.cli.launchers.server import (
     LOOPBACK,
     installed_chat_model_refs,
     running_server_session,
+    served_chat_ctx,
 )
 from lilbee.core.config import cfg
 from lilbee.providers.model_ref import with_configured_remote_chat
@@ -34,13 +35,20 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
         typer.secho(_SERVE_HINT, err=True, fg=typer.colors.RED)
         raise typer.Exit(1)
     token, port = session
+    extra = dict(kwargs)
+    if builder is opencode.opencode_config:
+        # Match `launch opencode`: pin the served model as default and pass the
+        # context window, so the pasted config opens on a lilbee model and trims
+        # history to the right limit.
+        extra.setdefault("default_ref", str(cfg.chat_model))
+        extra.setdefault("chat_ctx", served_chat_ctx(port))
     block = builder(
         base_url=f"http://{LOOPBACK}:{port}",
         api_key=token,
         # Include a remote-configured chat model the native registry lacks, so the
         # emitted config lists the model lilbee serves (matching launch + /v1/models).
         model_refs=with_configured_remote_chat(installed_chat_model_refs(), cfg.chat_model),
-        **kwargs,
+        **extra,
     )
     if isinstance(block, str):
         # Use typer.echo (no Rich word-wrap) so YAML stays parseable when

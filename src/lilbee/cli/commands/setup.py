@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
 
@@ -28,6 +30,8 @@ from lilbee.runtime.progress import EventType, SetupProgressEvent
 if TYPE_CHECKING:
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.swap_manager import SwapManager
+
+_LegResultT = TypeVar("_LegResultT")
 
 _SELF_CHECK_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _SELF_CHECK_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
@@ -51,14 +55,20 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     dest = dest_dir / filename
     console.print(f"Downloading {url}")
     last_exc: BaseException | None = None
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310  literal https url
-                dest.write_bytes(response.read())
-            return dest
-        except (OSError, urllib.error.URLError) as exc:
-            last_exc = exc
-            console.print(f"download attempt {attempt + 1} failed: {exc!r}")
+    try:
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310  literal https url
+                    dest.write_bytes(response.read())
+                return dest
+            except (OSError, urllib.error.URLError) as exc:
+                last_exc = exc
+                console.print(f"download attempt {attempt + 1} failed: {exc!r}")
+    except BaseException:
+        shutil.rmtree(dest_dir, ignore_errors=True)
+        raise
+    # All attempts failed: drop the empty temp dir before raising.
+    shutil.rmtree(dest_dir, ignore_errors=True)
     raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
 
 
@@ -106,7 +116,9 @@ def _resolved_provider_kwargs() -> dict[str, Any]:
     }
 
 
-def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager, LlamaServerClient]:
+def _self_check_server(
+    role: WorkerRole, model_path: Path
+) -> tuple[SwapManager, LlamaServerClient, Path]:
     """Start a one-model llama-swap for *model_path* in *role* and return its
     manager plus an OpenAI client.
 
@@ -163,12 +175,12 @@ def _self_check_server(role: WorkerRole, model_path: Path) -> tuple[SwapManager,
     )
     swap = SwapManager(work_dir)
     swap.start([launch])
-    return swap, LlamaServerClient(swap.endpoint(), launch.model_id)
+    return swap, LlamaServerClient(swap.endpoint(), launch.model_id), work_dir
 
 
 def _self_check_chat(model_path: Path, max_tokens: int) -> str:
     """Run a chat model through a one-off llama-swap, request a tiny completion, tear down."""
-    swap, client = _self_check_server(WorkerRole.CHAT, model_path)
+    swap, client, work_dir = _self_check_server(WorkerRole.CHAT, model_path)
     try:
         result = client.chat(
             [{"role": "user", "content": "2+2="}],
@@ -178,16 +190,46 @@ def _self_check_chat(model_path: Path, max_tokens: int) -> str:
         return str(result)
     finally:
         swap.shutdown()
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _self_check_embed(model_path: Path) -> int:
     """Run an embedding model through a one-off llama-swap, return one vector's dim."""
-    swap, client = _self_check_server(WorkerRole.EMBED, model_path)
+    swap, client, work_dir = _self_check_server(WorkerRole.EMBED, model_path)
     try:
         vectors = client.embed(["test"])
         return len(vectors[0]) if vectors else 0
     finally:
         swap.shutdown()
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _self_check_leg(
+    model_path: Path | None,
+    repo: str,
+    filename: str,
+    label: str,
+    check: Callable[[Path], _LegResultT],
+) -> tuple[_LegResultT, Path]:
+    """Resolve a model (user path or download), run *check*, and clean any download.
+
+    On any failure emits the structured failure and exits 1, matching the
+    per-leg error handling the self-check command used inline.
+    """
+    download_dir: Path | None = None
+    try:
+        if model_path is None:
+            model_path = _download_self_check_model(repo, filename)
+            download_dir = model_path.parent
+        console.print(f"Loading {label} model {model_path}")
+        result = check(model_path)
+    except Exception as exc:
+        _self_check_emit_failure(repr(exc))
+        raise typer.Exit(1) from exc
+    finally:
+        if download_dir is not None:
+            shutil.rmtree(download_dir, ignore_errors=True)
+    return result, model_path
 
 
 def self_check_cmd(
@@ -215,15 +257,13 @@ def self_check_cmd(
     Exits 0 on success, 1 on any failure. Intended for post-install
     verification and as the end-to-end gate in release CI.
     """
-    try:
-        chat_path = chat_model_path or _download_self_check_model(
-            _SELF_CHECK_CHAT_REPO, _SELF_CHECK_CHAT_FILE
-        )
-        console.print(f"Loading chat model {chat_path}")
-        text = _self_check_chat(chat_path, max_tokens)
-    except Exception as exc:
-        _self_check_emit_failure(repr(exc))
-        raise typer.Exit(1) from exc
+    text, chat_path = _self_check_leg(
+        chat_model_path,
+        _SELF_CHECK_CHAT_REPO,
+        _SELF_CHECK_CHAT_FILE,
+        "chat",
+        lambda p: _self_check_chat(p, max_tokens),
+    )
 
     if not text.strip():
         _self_check_emit_failure("empty inference response")
@@ -231,15 +271,13 @@ def self_check_cmd(
 
     embedding_dims: int | None = None
     if not skip_embedding:
-        try:
-            embed_path = embed_model_path or _download_self_check_model(
-                _SELF_CHECK_EMBED_REPO, _SELF_CHECK_EMBED_FILE
-            )
-            console.print(f"Loading embedding model {embed_path}")
-            embedding_dims = _self_check_embed(embed_path)
-        except Exception as exc:
-            _self_check_emit_failure(repr(exc))
-            raise typer.Exit(1) from exc
+        embedding_dims, _ = _self_check_leg(
+            embed_model_path,
+            _SELF_CHECK_EMBED_REPO,
+            _SELF_CHECK_EMBED_FILE,
+            "embedding",
+            _self_check_embed,
+        )
 
         if not embedding_dims:
             _self_check_emit_failure("empty embedding vector")
