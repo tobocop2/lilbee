@@ -85,6 +85,19 @@ def persist_and_finalize(
     page_path = write_page(
         target.wiki_root, target.subdir, target.slug, content, config.wiki_drift_threshold
     )
+    published_path = target.wiki_root / target.subdir / f"{target.slug}.md"
+    if page_path != published_path:
+        # write_page diverted the drifted content to drafts/ and left the published
+        # page intact. Don't index, re-cite, or prune raw sources under the published
+        # identity: the draft is unreviewed and is indexed only when accepted.
+        append_wiki_log(
+            WikiLogAction.GENERATED,
+            f"{target.page_type} page for {target.label} drifted; diverted to draft "
+            f"{page_path.name} (published page unchanged)",
+            config,
+        )
+        return page_path
+
     for rec in verified:
         rec["wiki_source"] = target.wiki_source
     store.delete_citations_for_wiki(target.wiki_source)
