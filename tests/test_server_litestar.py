@@ -634,7 +634,9 @@ class TestEmbeddingMismatchSurfacing:
         async def _collect():
             with mock.patch.object(rag, "get_services") as mock_services:
                 searcher = mock_services.return_value.searcher
-                # A mismatch only surfaces while retrieving, i.e. in search mode.
+                # A mismatch only surfaces while retrieving: search mode with an
+                # embedder present (search available, retrieval runs).
+                searcher.search_unavailable.return_value = False
                 searcher.skip_retrieval.return_value = False
                 searcher.build_rag_context.side_effect = self._mismatch()
                 return [event async for event in make_stream(rag)]

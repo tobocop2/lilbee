@@ -19,6 +19,7 @@ from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import cited_subset
+from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -208,26 +209,41 @@ async def _stream_rag_response(
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Shared SSE streaming for ask_stream and chat_stream."""
+    """SSE streaming for the ask (search) endpoint.
+
+    Mirrors ``Searcher.ask_raw`` so streaming and one-shot ask agree: search mode
+    with no embedder refuses cleanly, chat mode answers ungrounded, otherwise the
+    answer is grounded in retrieved sources.
+    """
     yield ""  # force generator
 
     for warming in _chat_warming_events():
         yield warming
 
-    try:
-        rag = get_services().searcher.build_rag_context(
-            question, top_k=top_k, history=history, chunk_type=chunk_type
-        )
-    except EmbeddingModelMismatchError as mismatch:
-        # detail carries the index's embedder so the client can offer to adopt it.
-        detail = mismatch.persisted_model if mismatch.dims_match else None
-        yield sse_error(str(mismatch), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
+    searcher = get_services().searcher
+    if searcher.search_unavailable():
+        # Search needs an embedder to ground; refuse cleanly instead of hard-failing.
+        yield sse_error(SEARCH_NEEDS_EMBEDDER, code=SseErrorCode.SEARCH_NEEDS_EMBEDDER)
         return
-    if rag is None:
-        yield sse_error("No relevant documents found.")
-        return
+    if searcher.skip_retrieval():
+        # Chat mode with an embedder present: answer ungrounded, mirroring ask_raw.
+        results: list[SearchChunk] = []
+        messages = searcher.direct_messages(question, history)
+    else:
+        try:
+            rag = searcher.build_rag_context(
+                question, top_k=top_k, history=history, chunk_type=chunk_type
+            )
+        except EmbeddingModelMismatchError as mismatch:
+            # detail carries the index's embedder so the client can offer to adopt it.
+            detail = mismatch.persisted_model if mismatch.dims_match else None
+            yield sse_error(str(mismatch), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
+            return
+        if rag is None:
+            yield sse_error("No relevant documents found.")
+            return
+        results, messages = rag
 
-    results, messages = rag
     opts = _resolve_generation_options(options) or cfg.generation_options()
 
     sse = SseStream()
@@ -260,7 +276,10 @@ async def _stream_rag_response(
     # Ensure executor thread has finished before yielding final events
     await executor_fut
 
-    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in results])
+    # SOURCES carries the cited subset (what the answer referenced), matching the
+    # cited_sources contract of the non-streaming ask/chat responses.
+    cited = cited_subset("".join(answer_parts), results)
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in cited])
     yield sse_done({})
 
     # Auto-extraction (and its notification) trails ``done`` so clients that stop
@@ -357,7 +376,10 @@ async def _stream_chat_response(
         yield sse_error(user_message, code=code, detail=raw if code else None)
         return
 
-    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in sources])
+    # SOURCES carries the cited subset (what the answer referenced), matching the
+    # cited_sources contract of the non-streaming ask/chat responses.
+    cited = cited_subset("".join(answer_parts), sources)
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in cited])
     yield sse_done({})
     async for mem_event in _emit_extracted_memories(question, "".join(answer_parts)):
         yield mem_event

@@ -77,6 +77,14 @@ def _bm25_confidence(score: float | None) -> float:
 # off-corpus answers can switch to chat mode.
 _GROUNDED_REFUSAL = "I couldn't find anything in the indexed documents that answers that."
 
+# Ask/search needs an embedder to ground an answer. When none is loaded, refuse
+# with an actionable message rather than hard-failing or silently answering
+# ungrounded; chat mode stays available for an off-corpus reply.
+SEARCH_NEEDS_EMBEDDER = (
+    "Search needs an embedding model to ground answers in your documents. "
+    "Add one, or switch to chat mode for an ungrounded reply."
+)
+
 # Token reserve for the generated answer when budgeting RAG context to num_ctx.
 _ANSWER_RESERVE_TOKENS = 1024
 # Approximate token cost of the Context/Question template wrapper.
@@ -551,6 +559,18 @@ class Searcher:
             or not self._embedder.embedding_available()
         )
 
+    def search_unavailable(self) -> bool:
+        """Search mode is active but retrieval can't run because no embedder is loaded.
+
+        Ask refuses cleanly in this state (best UX: tell the user search needs an
+        embedder) rather than silently answering ungrounded. Chat mode is exempt --
+        it intentionally answers off-corpus, so it falls back instead of refusing.
+        """
+        return (
+            self._config.chat_mode != ChatMode.CHAT.value
+            and not self._embedder.embedding_available()
+        )
+
     def direct_messages(
         self, question: str, history: list[ChatMessage] | None = None
     ) -> list[ChatMessage]:
@@ -593,8 +613,10 @@ class Searcher:
         *,
         chunk_type: ChunkType | None = None,
     ) -> AskResult:
-        """Ask a question. Skips retrieval when chat_mode is 'chat' or
-        when no embedding model is configured."""
+        """Ask a question. Refuses cleanly without an embedder (search can't
+        ground); falls back to direct chat only when chat_mode is 'chat'."""
+        if self.search_unavailable():
+            return AskResult(answer=SEARCH_NEEDS_EMBEDDER, sources=[])
         if self.skip_retrieval():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
@@ -661,6 +683,9 @@ class Searcher:
         chunk_type: ChunkType | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""
+        if self.search_unavailable():
+            yield StreamToken(content=SEARCH_NEEDS_EMBEDDER, is_reasoning=False)
+            return
         if self.skip_retrieval():
             yield from self._stream_direct(question, history, options)
             return
