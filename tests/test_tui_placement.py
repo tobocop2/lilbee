@@ -353,3 +353,47 @@ async def test_placement_screen_app_harness(monkeypatch):
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         assert isinstance(app.screen, screen_mod.PlacementScreen)
+
+
+@pytest.mark.asyncio
+async def test_preview_bad_json_notifies(monkeypatch):
+    """ctrl+r with invalid JSON shows an error notification, not a crash."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    notes: list[str] = []
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen._spec_text = "not-valid-json"
+        monkeypatch.setattr(screen, "notify", lambda msg, **k: notes.append(msg))
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+
+    assert any(notes)
+
+
+@pytest.mark.asyncio
+async def test_apply_empty_spec_calls_set_placement_none(monkeypatch):
+    """ctrl+s with an empty spec passes None to set_placement."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    set_calls: list[object] = []
+    monkeypatch.setattr(
+        screen_mod, "set_placement", lambda spec: set_calls.append(spec) or _make_view()
+    )
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen._spec_text = ""
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+
+    assert set_calls == [None]

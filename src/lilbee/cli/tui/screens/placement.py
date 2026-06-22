@@ -60,6 +60,10 @@ def _render_roles(view: PlacementView) -> str:
 class PlacementScreen(Screen[None]):
     """GPU placement viewer and editor."""
 
+    # Lilbee always hosts screens on a LilbeeApp, so narrowing the type lets
+    # the screen call switch_view without per-call type: ignore comments.
+    app: LilbeeApp  # type: ignore[assignment]
+
     CSS_PATH = "placement.tcss"
     AUTO_FOCUS = _GPU_TABLE_ID
     HELP = "Inspect GPU placement. ctrl+r preview, ctrl+s apply, ctrl+x clear, q back."
@@ -191,7 +195,7 @@ class PlacementScreen(Screen[None]):
         if len(self.app.screen_stack) > 1:
             self.app.pop_screen()
         else:
-            self.app.switch_view("Chat")  # type: ignore[attr-defined]
+            self.app.switch_view("Chat")
 
 
 class PlacementScreenApp(_LilbeeAppTestHost):
