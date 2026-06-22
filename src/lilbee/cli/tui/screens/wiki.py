@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -38,6 +38,22 @@ _SLUG_WITH_TYPE_MIN_PARTS = 2
 def _wiki_root() -> Path:
     """Resolve the wiki root directory from config."""
     return cfg.data_root / cfg.wiki_dir
+
+
+def _safe_float(value: object) -> float | None:
+    """Coerce an untyped frontmatter value to float, or None if not numeric."""
+    try:
+        return float(cast("float", value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    """Coerce an untyped frontmatter value to int, or *default* if not numeric."""
+    try:
+        return int(cast("float", value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _format_page_header(
@@ -262,8 +278,9 @@ class WikiScreen(Screen[None]):
             self.query_one("#wiki-content", Markdown).update(msg.WIKI_NO_CONTENT)
             return
 
-        faithfulness = page.frontmatter.get("faithfulness_score")
-        faith_val = float(faithfulness) if faithfulness is not None else None
+        # Frontmatter is arbitrary parsed YAML; a non-numeric value must not
+        # crash the node-select handler that calls this.
+        faith_val = _safe_float(page.frontmatter.get("faithfulness_score"))
 
         page_type = ""
         parts = slug.split("/")
@@ -280,7 +297,7 @@ class WikiScreen(Screen[None]):
         header_text = _format_page_header(
             title=page.title,
             page_type=page_type,
-            source_count=int(source_count) if source_count else 0,
+            source_count=_safe_int(source_count),
             created_at=str(created_at),
             faithfulness=faith_val,
         )

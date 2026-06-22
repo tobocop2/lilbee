@@ -113,8 +113,13 @@ class LilbeeCommandProvider(Provider):
             app.title = msg.app_title(value)
 
     def _delete_doc(self, name: str) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
+
         get_services().store.remove_documents([name])
-        self.screen.app.notify(f"Deleted {name}")
+        # Invalidate the document cache like the chat /delete path, so the
+        # deleted file stops being offered by autocomplete and the palette.
+        invalidate_document_cache()
+        self.screen.app.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _action_sync(self) -> None:
         self._app.action_run_sync()

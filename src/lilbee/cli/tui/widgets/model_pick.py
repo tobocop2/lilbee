@@ -10,7 +10,7 @@ from lilbee.app.services import get_services
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -19,16 +19,6 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.screens.model_picker import PickerScope
 
 log = logging.getLogger(__name__)
-
-# Single source of truth for "after a model-key write, which worker pool role
-# needs to respawn so the next call picks up the new ref?". Used by both the
-# Settings picker dismiss path and the chat-screen model rail's button.
-_MODEL_KEY_TO_WORKER_ROLE: dict[str, WorkerRole] = {
-    "chat_model": WorkerRole.CHAT,
-    "embedding_model": WorkerRole.EMBED,
-    "reranker_model": WorkerRole.RERANK,
-    "vision_model": WorkerRole.VISION,
-}
 
 
 def config_key_for_scope(scope: PickerScope) -> str:
@@ -128,7 +118,7 @@ def _persist(
     app: App, key: str, ref: str, on_done: Callable[[], None], reload_worker: bool
 ) -> None:
     apply_active_model(app, key, ref)
-    role = _MODEL_KEY_TO_WORKER_ROLE.get(key)
+    role = MODEL_FIELD_TO_ROLE.get(key)
     if reload_worker and role is not None:
         get_services().reload_role(role)
     on_done()

@@ -78,7 +78,7 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
-from lilbee.providers.sdk_backend import get_provider_api_key
+from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, get_provider_api_key
 from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
 
 log = logging.getLogger(__name__)
@@ -1732,7 +1732,7 @@ class CatalogScreen(Screen[None]):
             apply_active_model(self.app, _model_field_for_task(row.task), row.ref)
             self.notify(msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider))
             return
-        key_field = f"{row.provider_id}_api_key"
+        key_field = PROVIDER_API_KEY_FIELD.get(row.provider_id, f"{row.provider_id}_api_key")
         self.notify(
             msg.CATALOG_NEEDS_KEY.format(provider=row.provider, key_field=key_field),
             severity="warning",

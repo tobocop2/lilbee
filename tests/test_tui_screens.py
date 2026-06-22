@@ -3897,8 +3897,13 @@ async def test_command_provider_delete_doc(mock_svc):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        provider._delete_doc("notes.md")
+        with patch(
+            "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
+        ) as mock_invalidate:
+            provider._delete_doc("notes.md")
         mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
+        # Palette delete invalidates the doc cache like the chat /delete path.
+        mock_invalidate.assert_called_once()
 
 
 async def test_command_provider_action_sync():
@@ -12922,3 +12927,19 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             after = len(list(screen._grid_container.query(".section-heading")))
             assert after > before, "expected an additional section heading"
+
+
+class TestWikiSafeCoerce:
+    def test_safe_float_handles_non_numeric(self):
+        from lilbee.cli.tui.screens.wiki import _safe_float
+
+        assert _safe_float("0.8") == 0.8
+        assert _safe_float(None) is None
+        assert _safe_float("high") is None  # non-numeric frontmatter must not crash
+
+    def test_safe_int_handles_non_numeric(self):
+        from lilbee.cli.tui.screens.wiki import _safe_int
+
+        assert _safe_int(3) == 3
+        assert _safe_int(None) == 0
+        assert _safe_int("lots", default=0) == 0

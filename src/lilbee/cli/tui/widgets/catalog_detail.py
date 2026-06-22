@@ -112,7 +112,7 @@ def _render_fit_pill(fit: FitChip) -> Content:
     elif fit.level is FitLevel.TIGHT:
         text = f"tight +{max(0.0, fit.headroom_gb):.1f} GB"
     else:
-        text = f"won't {fit.headroom_gb:.1f} GB"
+        text = f"won't run, short by {abs(fit.headroom_gb):.1f} GB"
     return pill(text, _FIT_LEVEL_BACKGROUND[fit.level], "$text")
 
 
