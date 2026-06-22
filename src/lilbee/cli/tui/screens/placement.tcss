@@ -1,0 +1,30 @@
+PlacementScreen {
+
+    #placement-layout {
+        height: 1fr;
+        padding: 0 1;
+    }
+
+    #placement-gpus {
+        height: auto;
+        max-height: 12;
+        border: solid $surface-lighten-2;
+        margin-bottom: 1;
+    }
+
+    #placement-role-summary {
+        height: auto;
+        margin-bottom: 1;
+        color: $text;
+    }
+
+    #placement-spec {
+        height: 1fr;
+        min-height: 8;
+        border: solid $surface-lighten-2;
+
+        &:focus-within {
+            border: tall $primary;
+        }
+    }
+}

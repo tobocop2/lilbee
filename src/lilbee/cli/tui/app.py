@@ -68,6 +68,12 @@ def _make_wiki() -> Screen:
     return WikiScreen()
 
 
+def _make_placement() -> Screen:
+    from lilbee.cli.tui.screens.placement import PlacementScreen
+
+    return PlacementScreen()
+
+
 # Screen factory per managed view name (Chat is special-cased in switch_view and
 # has no factory). The active set + order + wiki gate come from msg.get_nav_views,
 # so the view universe lives in exactly one place (messages.ALL_NAV_VIEWS).
@@ -77,6 +83,7 @@ _VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
     "Settings": _make_settings,
     "Tasks": _make_tasks,
     "Wiki": _make_wiki,
+    "Placement": _make_placement,
 }
 
 
