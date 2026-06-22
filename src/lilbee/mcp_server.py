@@ -126,6 +126,16 @@ def _tool(fn: _F) -> _F:
     return fn
 
 
+def _tool_named(name: str) -> Callable[[_F], _F]:
+    """Register an MCP tool under an explicit wire *name* (sync handlers offloaded)."""
+
+    def deco(fn: _F) -> _F:
+        mcp.tool(name=name)(_offload_sync(fn))
+        return fn
+
+    return deco
+
+
 def _tool_if(condition: bool) -> Callable[[_F], _F]:
     """Register an MCP tool only when *condition* is true.
 
@@ -1111,13 +1121,13 @@ def _placement_dict(view: PlacementView) -> dict[str, Any]:
     }
 
 
-@_tool
+@_tool_named("get_placement")
 def get_placement_tool() -> dict[str, Any]:
     """Show the current effective multi-GPU model placement."""
     return _placement_dict(get_placement())
 
 
-@_tool
+@_tool_named("preview_placement")
 def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]:
     """Preview what a placement spec (or auto, when omitted) would place. No changes made."""
     from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
@@ -1129,7 +1139,7 @@ def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]
         return _error(str(exc))
 
 
-@_tool
+@_tool_named("set_placement")
 def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
     """Set and apply a manual multi-GPU placement spec (persists to config)."""
     from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
@@ -1140,7 +1150,7 @@ def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
         return _error(str(exc))
 
 
-@_tool
+@_tool_named("clear_placement")
 def clear_placement_tool() -> dict[str, Any]:
     """Clear the manual placement and return to automatic placement."""
     return _placement_dict(set_placement(None))

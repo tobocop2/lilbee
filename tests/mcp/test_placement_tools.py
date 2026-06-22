@@ -1,5 +1,7 @@
 """Tests for MCP placement tools (get/preview/set/clear)."""
 
+import pytest
+
 import lilbee.mcp_server as mcp_server
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.providers.roles import WorkerRole
@@ -74,7 +76,7 @@ def test_preview_placement_tool_with_spec(monkeypatch):
 
     monkeypatch.setattr(mcp_server, "preview_placement", _capture)
     out = mcp_server.preview_placement_tool({"chat": {"devices": [0]}})
-    assert seen["spec"] is not None
+    assert seen["spec"].roles[WorkerRole.CHAT].devices == (0,)
     assert "gpus" in out
 
 
@@ -88,3 +90,18 @@ def test_preview_placement_tool_error(monkeypatch):
     out = mcp_server.preview_placement_tool({"chat": {"devices": [99]}})
     assert "error" in out
     assert "no GPUs available" in out["error"]
+
+
+@pytest.mark.asyncio
+async def test_placement_tools_wire_names():
+    """Placement tools must be registered under clean wire names (no _tool suffix)."""
+    tools = await mcp_server.mcp.list_tools()
+    names = {t.name for t in tools}
+    assert "get_placement" in names
+    assert "preview_placement" in names
+    assert "set_placement" in names
+    assert "clear_placement" in names
+    assert "get_placement_tool" not in names
+    assert "preview_placement_tool" not in names
+    assert "set_placement_tool" not in names
+    assert "clear_placement_tool" not in names
