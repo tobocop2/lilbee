@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -200,7 +201,8 @@ async def import_dataset(
         # One locked transaction (cleanup + chunks + page texts + source row) so a
         # failure can't leave the source with its old rows deleted and no new ones;
         # the embedding-dim check inside runs before the cleanup delete.
-        store.write_chunks_batch(
+        await asyncio.to_thread(
+            store.write_chunks_batch,
             [
                 ChunkWrite(
                     source=name,
@@ -210,7 +212,7 @@ async def import_dataset(
                     page_texts=[dict(r) for r in source_rows],
                     source_type=SourceType.IMPORTED,
                 )
-            ]
+            ],
         )
         imported.append(name)
         total_pages += len(source_rows)
