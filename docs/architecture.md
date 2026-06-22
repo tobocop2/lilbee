@@ -256,6 +256,7 @@ and the TUI Placement screen. The `preview` operation is a dry-run: it shows
 what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
+
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
   vision roles can run as N independent servers, one per GPU, so large-scale ingest
   fans embedding / OCR across the whole box. The single roles (chat) are placed

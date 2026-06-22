@@ -970,8 +970,7 @@ llama-server fleet, remote model names route to the SDK backend) and `remote`
 
 By default lilbee decides which GPUs each model goes on automatically. It
 bin-packs all four roles (chat, embed, rerank, vision) across your available
-GPUs and tensor-splits anything too large for one card. For most setups this is
-all you need.
+GPUs and tensor-splits anything too large for one card.
 
 If you want to pin specific models to specific cards, you can set a placement
 spec. The spec is a JSON object with one entry per role you want to control:
