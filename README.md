@@ -413,7 +413,7 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 
 ## Support
 
-Having trouble? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for log locations and common failures.
+Having trouble? See [TROUBLESHOOTING.md](https://github.com/tobocop2/lilbee/blob/main/TROUBLESHOOTING.md) for log locations and common failures.
 
 lilbee is built and maintained by one person. If it is useful to you, you can chip in via [PayPal](https://paypal.me/lilbeedotsh). Bug reports and pull requests help just as much.
 

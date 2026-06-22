@@ -112,7 +112,7 @@ class TestStart:
         mgr = SwapManager(tmp_path)
         mgr.start([_launch(WorkerRole.CHAT)])
 
-        log_path = tmp_path / "llama-swap.log"
+        log_path = tmp_path / "logs" / "llama-swap.log"
         assert log_path.exists()
         # stdout is the opened log file (its .name is the path), not None
         # (inherited terminal) nor a PIPE; stderr merges into the same file.
