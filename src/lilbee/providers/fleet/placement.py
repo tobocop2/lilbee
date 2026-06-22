@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
 from lilbee.providers.roles import WorkerRole
 
@@ -220,3 +221,51 @@ def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:
     if not candidates:
         return None
     return max(candidates, key=lambda idx: remaining[idx])
+
+
+def placement_from_spec(
+    spec: PlacementSpec,
+    active_roles: tuple[WorkerRole, ...],
+    device_free: dict[int, int],
+    *,
+    estimate_peak: PeakEstimator,
+) -> Placement:
+    """Build a Placement from a manual *spec*, charging each card and failing loud.
+
+    Every active role must have an entry; every device must exist; each card must
+    fit the sum of the per-device peaks charged to it. Mirrors the auto planner's
+    USABLE_VRAM_FRACTION headroom and busiest-card accounting.
+    """
+    remaining = {idx: free * USABLE_VRAM_FRACTION for idx, free in device_free.items()}
+    instances: list[InstancePlan] = []
+    for role in active_roles:
+        rp = spec.roles.get(role)
+        if rp is None:
+            raise PlacementError(f"{role.value} has a model but no placement entry in placement")
+        for idx in rp.devices:
+            if idx not in device_free:
+                raise PlacementError(
+                    f"{role.value} pinned to device {idx} but only "
+                    f"{len(device_free)} GPU(s) detected"
+                )
+        ratio = rp.tensor_split or tuple(1 for _ in rp.devices)
+        per_device = estimate_peak(role, ratio)
+        for replica in range(rp.replicas):
+            for idx, peak in zip(rp.devices, per_device, strict=True):
+                if peak > remaining[idx]:
+                    raise PlacementError(
+                        f"{role.value} pinned to device {idx} needs "
+                        f"{peak / 1024**3:.1f} GiB but device {idx} has "
+                        f"{device_free[idx] / 1024**3:.1f} GiB free"
+                    )
+            for idx, peak in zip(rp.devices, per_device, strict=True):
+                remaining[idx] -= peak
+            instances.append(
+                InstancePlan(
+                    role=role,
+                    devices=tuple(rp.devices),
+                    tensor_split=ratio if len(rp.devices) > 1 else (),
+                    replica=replica,
+                )
+            )
+    return Placement(instances=tuple(instances), unplaceable_roles=())
