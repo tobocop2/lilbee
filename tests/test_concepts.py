@@ -205,6 +205,20 @@ class TestExtractConcepts:
         assert locked_during == [True]  # lock held while nlp() runs
         assert not cg._nlp_lock.locked()  # released afterwards
 
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_repeated_query_reuses_memo(self, mock_spacy, cg):
+        """One search() extracts the same query twice (expand + boost); the second
+        call hits the single-entry memo instead of re-running spaCy."""
+        nlp = MagicMock(return_value=_make_mock_doc(["good concept"]))
+        mock_spacy.return_value = nlp
+        first = cg.extract_concepts("same query")
+        second = cg.extract_concepts("same query")
+        assert first == second == ["good concept"]
+        assert nlp.call_count == 1  # second call served from the memo
+        # A different query is not served from the memo.
+        cg.extract_concepts("other query")
+        assert nlp.call_count == 2
+
 
 class TestExtractConceptsBatch:
     @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")

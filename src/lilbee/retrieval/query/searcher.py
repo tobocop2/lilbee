@@ -60,6 +60,11 @@ log = logging.getLogger(__name__)
 # scores for the expansion-skip heuristic.
 _MIN_BM25_PROBE_RESULTS = 2
 
+# Structured-query mode names (the ``mode:`` prefix shortcut). Single source for
+# both the prefix parser and the dispatch in ``_search_structured``. "term"/"vec"/
+# "hyde" pick a retrieval strategy; "wiki"/"raw" are ChunkType scope shortcuts.
+_STRUCTURED_QUERY_MODES = ("term", "vec", "hyde", ChunkType.WIKI.value, ChunkType.RAW.value)
+
 
 def _bm25_confidence(score: float | None) -> float:
     """Squash a raw, unbounded BM25 score into the (0, 1) confidence that the
@@ -307,9 +312,11 @@ class Searcher:
         return chunk_type
 
     def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
-        for prefix in ("term:", "vec:", "hyde:", "wiki:", "raw:"):
-            if question.strip().lower().startswith(prefix):
-                return prefix[:-1], question.strip()[len(prefix) :].strip()
+        stripped = question.strip()
+        for mode in _STRUCTURED_QUERY_MODES:
+            prefix = f"{mode}:"
+            if stripped.lower().startswith(prefix):
+                return mode, stripped[len(prefix) :].strip()
         return None, question
 
     def _search_structured(

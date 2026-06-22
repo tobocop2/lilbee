@@ -58,6 +58,10 @@ class ConceptGraph:
         # StringStore). ConceptGraph is a Services singleton, so serialize every
         # nlp() / nlp.pipe() call on the shared daemon behind this lock.
         self._nlp_lock = threading.Lock()
+        # Single-entry memo: one search() extracts concepts for the same query
+        # twice (expansion + boost), so cache the last (text, max) -> result to
+        # spare the second spaCy pass without unbounded growth.
+        self._last_extract: tuple[tuple[str, int], list[str]] | None = None
 
     def _ensure_nlp(self) -> Any | None:
         """Lazy-load and cache the spaCy model. Returns None if unavailable."""
@@ -82,9 +86,14 @@ class ConceptGraph:
         nlp = self._ensure_nlp()
         if nlp is None:
             return []
+        cache_key = (text, max_concepts)
         with self._nlp_lock:
+            if self._last_extract is not None and self._last_extract[0] == cache_key:
+                return self._last_extract[1]
             doc = nlp(text)
-            return _filter_noun_chunks(doc, max_concepts)
+            result = _filter_noun_chunks(doc, max_concepts)
+            self._last_extract = (cache_key, result)
+            return result
 
     def extract_concepts_batch(self, texts: list[str]) -> list[list[str]]:
         """Batch-extract concepts from multiple texts."""
@@ -157,10 +166,13 @@ class ConceptGraph:
         """Boost search results whose chunks overlap with query concepts."""
         if not query_concepts or not results:
             return results
+        table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
+        if table is None:
+            return results
         query_set = set(query_concepts)
         boosted: list[Any] = []
         for r in results:
-            chunk_concepts = set(self.get_chunk_concepts(r.source, r.chunk_index))
+            chunk_concepts = set(self._chunk_concepts_from(table, r.source, r.chunk_index))
             overlap = len(query_set & chunk_concepts)
             if overlap > 0:
                 boost = (overlap / len(query_set)) * self._config.concept_boost_weight
@@ -177,6 +189,15 @@ class ConceptGraph:
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if table is None:
             return []
+        return self._chunk_concepts_from(table, source, chunk_index)
+
+    @staticmethod
+    def _chunk_concepts_from(table: Any, source: str, chunk_index: int) -> list[str]:
+        """Query one chunk's concepts from an already-open table.
+
+        Split out so a batch caller (``boost_results``) opens the table once
+        instead of re-opening it per result (an N+1 LanceDB access).
+        """
         escaped = escape_sql_string(source)
         try:
             rows = (
