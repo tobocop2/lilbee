@@ -258,7 +258,7 @@ class KnownModelCache:
         if model in refs:
             return model
         if "/" not in model and ":" in model:
-            prefixed = f"ollama/{model}"
+            prefixed = OLLAMA.qualify(model)
             if prefixed in refs:
                 return prefixed
         return None

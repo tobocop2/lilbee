@@ -10,7 +10,7 @@ from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.model_ref import PROVIDER_PREFIXES
+from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
 
 # Test-only bypass. Both the env var and pytest must be present so a
 # leaked env var cannot disable validation in production.
@@ -22,10 +22,6 @@ _MODEL_FIELD_TO_TASK: dict[str, str] = {
     "vision_model": "vision",
     "reranker_model": "rerank",
 }
-
-# A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
-# two ``/`` separators; one-slash refs are bare repo IDs.
-_NATIVE_GGUF_REF_MIN_SLASHES = 2
 
 
 class TaskMismatchError(ValueError):
@@ -72,7 +68,7 @@ def _canonical_featured_ref(ref: str, entry: Any, want: ModelTask) -> str:
         raise TaskMismatchError(ref, ModelTask(entry.task), want)
     # Keep a full ``<repo>/<file>.gguf`` so resolve_model_path lands on
     # the exact installed quant; fall back to the catalog ref otherwise.
-    if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
+    if is_native_gguf_ref(ref):
         return ref
     canonical: str = entry.ref
     return canonical
