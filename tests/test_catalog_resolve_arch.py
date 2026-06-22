@@ -39,6 +39,22 @@ def test_resolve_writes_back_to_cache(client: HfClient, monkeypatch: pytest.Monk
     assert client.get_cached_arch("acme/bar-GGUF") == "gemma3"
 
 
+def test_resolve_does_not_cache_empty_arch_on_probe_failure(
+    client: HfClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient probe failure ('') must not be cached, or the unsupported-arch
+    guard would be permanently disabled for this ref. A later successful probe
+    must still be able to resolve and cache the real arch."""
+    monkeypatch.setattr(compat, "_resolve_blob_url", lambda _ref: "https://example.test/x.gguf")
+    monkeypatch.setattr(compat, "probe_architecture", lambda _url: "")
+    assert resolve_arch_for_pull("acme/flaky-GGUF", client) == ""
+    assert client.get_cached_arch("acme/flaky-GGUF") is None
+
+    monkeypatch.setattr(compat, "probe_architecture", lambda _url: "llama")
+    assert resolve_arch_for_pull("acme/flaky-GGUF", client) == "llama"
+    assert client.get_cached_arch("acme/flaky-GGUF") == "llama"
+
+
 def test_resolve_blob_url_returns_empty_for_glob_filename() -> None:
     """`*.gguf` filenames aren't unique blobs; resolver bails to UNKNOWN."""
     assert compat._resolve_blob_url("acme/foo-GGUF:*.gguf") == ""
