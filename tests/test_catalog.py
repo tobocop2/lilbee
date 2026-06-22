@@ -295,13 +295,16 @@ class TestResolveSiblingGguf:
 
 
 class TestEstimateSizeFromSiblings:
-    def test_returns_size_from_largest_gguf(self) -> None:
+    def test_sizes_the_picked_quant_not_the_largest(self) -> None:
+        # The row names the picked quant (Q4_K_M); size must match that file, not
+        # the larger Q8_0, or size-bucket filtering mis-buckets the model.
         siblings = [
             RepoSibling(rfilename="model-Q4_K_M.gguf", size=4_000_000_000),
             RepoSibling(rfilename="model-Q8_0.gguf", size=7_000_000_000),
         ]
+        assert _hf_client._resolve_sibling_gguf(siblings) == "model-Q4_K_M.gguf"
         result = _hf_client._estimate_size_from_siblings(siblings)
-        assert result == round(7_000_000_000 / (1024**3), 1)
+        assert result == round(4_000_000_000 / (1024**3), 1)
 
     def test_returns_zero_when_no_size(self) -> None:
         siblings = [RepoSibling(rfilename="model.gguf", size=0)]

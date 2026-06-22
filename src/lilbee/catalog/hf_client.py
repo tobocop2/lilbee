@@ -128,13 +128,19 @@ def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
 
 
 def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
-    """Estimate model size in GB from the largest GGUF file in siblings."""
-    max_bytes = 0
-    for sib in siblings:
-        if sib.rfilename.endswith(".gguf"):
-            max_bytes = max(max_bytes, sib.size or 0)
-    if max_bytes > 0:
-        return round(max_bytes / _BYTES_PER_GB, 1)
+    """Estimate model size in GB from the GGUF the row will actually pull.
+
+    Sizes the same quant ``_resolve_sibling_gguf`` names (via ``pick_best_gguf``),
+    not the repo's largest GGUF. Sizing the largest (often an F16/BF16) while the
+    row names the Q4_K_M quant mis-buckets the model under size filtering.
+    """
+    gguf_files = [s for s in siblings if s.rfilename.endswith(".gguf")]
+    if not gguf_files:
+        return 0.0
+    picked = pick_best_gguf([s.rfilename for s in gguf_files])
+    for sib in gguf_files:
+        if sib.rfilename == picked and sib.size:
+            return round(sib.size / _BYTES_PER_GB, 1)
     return 0.0  # unknown: display as "?" in UI
 
 
