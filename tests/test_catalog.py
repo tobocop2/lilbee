@@ -1634,10 +1634,11 @@ class TestVisionMmprojFiles:
 
         for entry in FEATURED_VISION:
             assert entry.hf_repo in VISION_MMPROJ_FILES, (
-                f"Vision model {entry.name} ({entry.hf_repo}) missing from VISION_MMPROJ_FILES"
+                f"Vision model {entry.display_name} ({entry.hf_repo}) "
+                "missing from VISION_MMPROJ_FILES"
             )
             assert VISION_MMPROJ_FILES[entry.hf_repo], (
-                f"Vision model {entry.name} has empty mmproj pattern"
+                f"Vision model {entry.display_name} has empty mmproj pattern"
             )
 
     def test_download_model_calls_mmproj_for_vision(
