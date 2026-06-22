@@ -45,3 +45,21 @@ def test_rejects_non_positive_replicas():
 def test_rejects_malformed_json():
     with pytest.raises(PlacementError, match="not valid JSON"):
         PlacementSpec.from_json("{not json")
+
+
+def test_to_json_includes_replicas_when_not_one():
+    spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,), replicas=2)})
+    import json
+
+    data = json.loads(spec.to_json())
+    assert data["embed"]["replicas"] == 2
+
+
+def test_rejects_json_array_at_top_level():
+    with pytest.raises(PlacementError, match="must be a JSON object keyed by role"):
+        PlacementSpec.from_json("[1, 2, 3]")
+
+
+def test_rejects_non_dict_role_entry():
+    with pytest.raises(PlacementError, match="placement entry must be an object"):
+        PlacementSpec.from_json('{"chat": [0, 1]}')

@@ -1843,3 +1843,18 @@ class TestImportRoute:
             auth_mod.session_manager.token = None
             auth_mod.session_manager._initialized = previous_init
         assert resp.status_code == 401
+
+
+class TestPlacementSetRoute:
+    def test_placement_error_returns_422(self, client):
+        """A PlacementError from placement_set must surface as 422."""
+        from lilbee.providers.fleet.placement_spec import PlacementError
+
+        with mock.patch(
+            "lilbee.server.handlers.placement_set",
+            new_callable=AsyncMock,
+            side_effect=PlacementError("invalid spec"),
+        ):
+            resp = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
+        assert resp.status_code == 422
+        assert "invalid spec" in resp.json()["detail"]

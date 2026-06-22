@@ -32,3 +32,9 @@ def test_placement_is_writable_not_public():
 
     assert "placement" in WRITABLE_CONFIG_FIELDS
     assert "placement" not in PUBLIC_CONFIG_FIELDS
+
+
+def test_unexpected_type_raises():
+    """A non-string, non-PlacementSpec value must fail validation."""
+    with pytest.raises(ValidationError):
+        Config(placement=42)

@@ -4315,3 +4315,61 @@ class TestSourceContentRoute:
         assert resp.headers["content-type"].startswith("image/avif")
         assert resp.headers["x-content-type-options"] == "nosniff"
         assert "content-disposition" not in resp.headers
+
+
+def _stub_placement_view():
+    """Minimal PlacementView with no GPUs or roles for handler-level tests."""
+    from lilbee.app.placement import PlacementView
+
+    return PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
+
+
+class TestPlacementHandlers:
+    async def test_placement_returns_response(self):
+        view = _stub_placement_view()
+        with patch("lilbee.app.placement.get_placement", return_value=view):
+            resp = await handlers.placement()
+        assert resp.manual is False
+        assert resp.gpus == []
+        assert resp.roles == []
+
+    async def test_placement_preview_without_spec(self):
+        view = _stub_placement_view()
+        with patch("lilbee.app.placement.preview_placement", return_value=view):
+            resp = await handlers.placement_preview(None)
+        assert resp.manual is False
+
+    async def test_placement_preview_with_spec_json(self):
+        view = _stub_placement_view()
+        with patch("lilbee.app.placement.preview_placement", return_value=view):
+            resp = await handlers.placement_preview('{"chat": {"devices": [0]}}')
+        assert resp.manual is False
+
+    async def test_placement_set_returns_response(self):
+        view = _stub_placement_view()
+        with patch("lilbee.app.placement.set_placement", return_value=view):
+            resp = await handlers.placement_set('{"chat": {"devices": [0]}}')
+        assert resp.manual is False
+
+    async def test_placement_clear_returns_response(self):
+        view = _stub_placement_view()
+        with patch("lilbee.app.placement.set_placement", return_value=view):
+            resp = await handlers.placement_clear()
+        assert resp.manual is False
+
+    async def test_gpus_returns_list(self):
+        from lilbee.app.placement import GpuInfo, PlacementView
+
+        gpu = GpuInfo(
+            index=0,
+            backend="cuda",
+            label="cuda0",
+            name="A100",
+            total_bytes=80 * 1024**3,
+            free_bytes=40 * 1024**3,
+        )
+        view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
+        with patch("lilbee.app.placement.get_placement", return_value=view):
+            result = await handlers.gpus()
+        assert len(result) == 1
+        assert result[0].name == "A100"
