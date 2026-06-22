@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import functools
 import inspect
+import json
 import logging
 import os
 import re
@@ -27,6 +28,7 @@ from lilbee.app.memory import (
     recall,
     remember,
 )
+from lilbee.app.placement import PlacementView, get_placement, preview_placement, set_placement
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.app.settings import (
@@ -1126,6 +1128,60 @@ def memory_forget(memory_id: str, agent_id: str = "", ctx: Context | None = None
     if not forget(memory_id, owner=owner):
         return _error(f"No memory '{memory_id}' in this agent's namespace.")
     return {"ok": True, "id": memory_id}
+
+
+def _placement_dict(view: PlacementView) -> dict[str, Any]:
+    return {
+        "gpus": [vars(g) for g in view.gpus],
+        "roles": [
+            {
+                "role": r.role.value,
+                "model": r.model,
+                "devices": list(r.devices),
+                "tensor_split": list(r.tensor_split) if r.tensor_split else None,
+                "replicas": r.replicas,
+            }
+            for r in view.roles
+        ],
+        "unplaceable": [r.value for r in view.unplaceable],
+        "manual": view.manual,
+        "spec_json": view.spec_json,
+    }
+
+
+@_tool
+def get_placement_tool() -> dict[str, Any]:
+    """Show the current effective multi-GPU model placement."""
+    return _placement_dict(get_placement())
+
+
+@_tool
+def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Preview what a placement spec (or auto, when omitted) would place. No changes made."""
+    from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+
+    try:
+        parsed = PlacementSpec.from_json(json.dumps(spec)) if spec else None
+        return _placement_dict(preview_placement(parsed))
+    except PlacementError as exc:
+        return _error(str(exc))
+
+
+@_tool
+def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
+    """Set and apply a manual multi-GPU placement spec (persists to config)."""
+    from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+
+    try:
+        return _placement_dict(set_placement(PlacementSpec.from_json(json.dumps(spec))))
+    except PlacementError as exc:
+        return _error(str(exc))
+
+
+@_tool
+def clear_placement_tool() -> dict[str, Any]:
+    """Clear the manual placement and return to automatic placement."""
+    return _placement_dict(set_placement(None))
 
 
 _strip_schema_noise()
