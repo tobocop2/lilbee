@@ -147,11 +147,11 @@ def _split_batched_output(
         if kind_label is None:
             kind_label = match_label(lowered, concepts, EntityKind.CONCEPT)
         if kind_label is None:
-            # Concept labels come from the LLM itself: tag any
-            # unmatched section as CONCEPT only when the caller is
-            # expecting concept curation; otherwise drop it as
-            # noise.
-            if concepts is not None and expected_concept_labels is not None:
+            # Concept labels come from the LLM itself: tag any unmatched section as
+            # CONCEPT only when the caller is expecting concept curation; otherwise
+            # drop it as noise. ``concepts`` is always a set (``... or set()``), so
+            # the real signal is the raw ``expected_concept_labels`` arg.
+            if expected_concept_labels is not None:
                 recovered.setdefault(name, (EntityKind.CONCEPT, _prefix_heading(name, body)))
             continue
         kind, label = kind_label

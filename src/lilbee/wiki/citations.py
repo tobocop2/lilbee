@@ -236,8 +236,12 @@ def resolve_multi_source_citations(
 
 
 def _match_citation_source(source_ref: str, source_names: list[str]) -> str:
-    """Find which source a citation references by matching filenames in the ref."""
-    for name in source_names:
+    """Find which source a citation references by matching filenames in the ref.
+
+    Checks longest names first so a filename that is a substring of another
+    (e.g. ``doc.md`` within ``mydoc.md``) can't shadow the more specific match.
+    """
+    for name in sorted(source_names, key=len, reverse=True):
         if name in source_ref:
             return name
     return ""

@@ -360,3 +360,17 @@ class TestCitationRecordTypedDict:
         }
         assert rec["page_start"] == 0
         assert rec["citation_key"] == "src1"
+
+
+class TestMatchCitationSource:
+    def test_longest_filename_wins_over_substring(self):
+        """A filename that is a substring of another must not shadow it."""
+        from lilbee.wiki.citations import _match_citation_source
+
+        names = ["doc.md", "mydoc.md"]
+        assert _match_citation_source("see mydoc.md p.2", names) == "mydoc.md"
+
+    def test_returns_empty_when_no_match(self):
+        from lilbee.wiki.citations import _match_citation_source
+
+        assert _match_citation_source("see other.md", ["doc.md"]) == ""
