@@ -53,7 +53,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
 )
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick
-from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
+from lilbee.core.config import cfg
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
 
 if TYPE_CHECKING:
@@ -370,7 +370,7 @@ class SettingsScreen(Screen[None]):
         raw = ta.text
         parsed = self._parse_value(defn, raw)
         assert isinstance(parsed, list)  # noqa: S101 -- mypy narrowing, defn.type is list above
-        err = self._validate_regex_list(parsed)
+        err = self._validate_regex_list(parsed) if defn.validate_regex else None
         error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:
             line_no, err_text = err
@@ -393,8 +393,9 @@ class SettingsScreen(Screen[None]):
         defn = SETTINGS_MAP.get(key)
         if defn is None:
             return
-        defaults = list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
-        text = "\n".join(defaults)
+        default = get_default(key)
+        defaults = list(default) if isinstance(default, list) else []
+        text = "\n".join(str(item) for item in defaults)
         ta = self.query_one(f"#ed-{key}", ListTextArea)
         ta.load_text(text)
         self._persist_value(key, defn, text)

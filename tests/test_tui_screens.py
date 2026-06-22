@@ -12418,6 +12418,12 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
+            # The single reload now runs in _after_model_pick (settings module);
+            # apply_model_pick is called with reload_worker=False to avoid a double.
+            patch(
+                "lilbee.cli.tui.screens.settings.get_services",
+                return_value=services_mock,
+            ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
         services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
