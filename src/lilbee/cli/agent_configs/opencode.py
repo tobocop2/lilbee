@@ -66,6 +66,7 @@ def opencode_config(
     model_refs: list[str],
     chat_ctx: int | None = None,
     default_ref: str | None = None,
+    include_mcp: bool = True,
 ) -> dict[str, Any]:
     """Return the opencode.json block wiring lilbee as a provider.
 
@@ -78,6 +79,10 @@ def opencode_config(
     to fit instead of overflowing on a long agentic session. ``default_ref``
     pins opencode's startup model via the top-level ``model`` key
     (``provider/model-id`` form).
+
+    ``include_mcp=False`` omits the ``mcp`` block entirely (rather than emitting
+    ``enabled: false``) so a user who brings their own MCP servers keeps them via
+    opencode's own config merge, while lilbee stays the model provider.
     """
     config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
@@ -92,7 +97,9 @@ def opencode_config(
                 "models": {ref: _model_entry(ref, chat_ctx) for ref in sorted(model_refs)},
             }
         },
-        "mcp": {
+    }
+    if include_mcp:
+        config["mcp"] = {
             "lilbee": {
                 "type": "remote",
                 "url": f"{base_url}/mcp",
@@ -100,8 +107,7 @@ def opencode_config(
                 "headers": {"Authorization": f"Bearer {api_key}"},
                 "timeout": _MCP_TIMEOUT_MS,
             }
-        },
-    }
+        }
     if default_ref is not None:
         config["model"] = f"lilbee/{default_ref}"
     return config

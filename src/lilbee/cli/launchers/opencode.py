@@ -119,8 +119,9 @@ class OpencodeLauncher:
     name = "opencode"
     install_hint = _OPENCODE_INSTALL_HINT
 
-    def __init__(self, *, assume_yes: bool = False) -> None:
+    def __init__(self, *, assume_yes: bool = False, include_mcp: bool = True) -> None:
         self._assume_yes = assume_yes
+        self._include_mcp = include_mcp
 
     def find_binary(self) -> str | None:
         return shutil.which("opencode")
@@ -130,7 +131,10 @@ class OpencodeLauncher:
     ) -> tuple[list[str], dict[str, str]]:
         if not _confirm_setup(self._assume_yes):
             raise typer.Exit(0)
-        _install_lilbee_skill()
+        # The lilbee-mcp guidance skill only helps when the MCP tool is wired in;
+        # skip it when MCP is disabled (a previously-installed skill is left alone).
+        if self._include_mcp:
+            _install_lilbee_skill()
         # The block carries the session's ephemeral port and token; never persist
         # it into user config.
         block = opencode_config(
@@ -139,6 +143,7 @@ class OpencodeLauncher:
             model_refs=model_refs,
             chat_ctx=served_chat_ctx(port),
             default_ref=str(cfg.chat_model),
+            include_mcp=self._include_mcp,
         )
         env = {**os.environ, _OPENCODE_CONFIG_ENV_VAR: json.dumps(block)}
         return ([], env)
@@ -152,6 +157,13 @@ def opencode_cmd(
         "-y",
         help="Proceed with first-run setup without the interactive prompt (for scripts/CI).",
     ),
+    mcp: bool | None = typer.Option(
+        None,
+        "--mcp/--no-mcp",
+        help="Inject lilbee's MCP search tool into opencode. Defaults to the "
+        "agent_mcp_enabled config; --mcp/--no-mcp overrides it for this launch.",
+    ),
 ) -> None:
     """Launch opencode with lilbee as its model provider."""
-    run_launcher(OpencodeLauncher(assume_yes=yes))
+    include_mcp = cfg.agent_mcp_enabled if mcp is None else mcp
+    run_launcher(OpencodeLauncher(assume_yes=yes, include_mcp=include_mcp))
