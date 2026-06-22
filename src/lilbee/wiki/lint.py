@@ -248,8 +248,14 @@ def lint_changed_sources(
 def lint_all(
     store: Store,
     config: Config | None = None,
+    *,
+    record_log: bool = True,
 ) -> LintReport:
-    """Full lint: check every wiki page in the store."""
+    """Full lint: check every wiki page in the store.
+
+    ``record_log=False`` skips the audit-log append so a read-only status check
+    can reuse this without mutating ``log.md``.
+    """
     if config is None:
         config = cfg
     report = LintReport()
@@ -268,11 +274,12 @@ def lint_all(
             report.issues.extend(lint_wiki_page(wiki_source, store, config))
 
     report.issues.extend(_lint_orphans(wiki_root, config))
-    append_wiki_log(
-        WikiLogAction.LINT,
-        f"{report.error_count} error(s), {report.warning_count} warning(s)",
-        config,
-    )
+    if record_log:
+        append_wiki_log(
+            WikiLogAction.LINT,
+            f"{report.error_count} error(s), {report.warning_count} warning(s)",
+            config,
+        )
     return report
 
 

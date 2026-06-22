@@ -35,6 +35,15 @@ _EXTRACTOR_BY_MODE: dict[
 _IMPLEMENTED_MODES: frozenset[WikiEntityMode] = frozenset({WikiEntityMode.NER_ENTITIES})
 
 
+def effective_entity_mode(mode: WikiEntityMode) -> WikiEntityMode:
+    """The mode that will actually run for *mode*, applying the fallback.
+
+    Unimplemented strategies resolve to ``NER_ENTITIES``; provenance records this
+    so the audit reflects the extractor that ran, not the configured request.
+    """
+    return mode if mode in _IMPLEMENTED_MODES else WikiEntityMode.NER_ENTITIES
+
+
 def get_entity_extractor(
     mode: WikiEntityMode, provider: LLMProvider, config: Config
 ) -> EntityExtractor:
@@ -50,6 +59,6 @@ def get_entity_extractor(
             mode.value,
             WikiEntityMode.NER_ENTITIES.value,
         )
-        mode = WikiEntityMode.NER_ENTITIES
-    factory = _EXTRACTOR_BY_MODE[mode]
+    effective = effective_entity_mode(mode)
+    factory = _EXTRACTOR_BY_MODE[effective]
     return factory(provider, config)

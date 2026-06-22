@@ -18,6 +18,7 @@ from lilbee.core.config import Config
 from lilbee.data.store import CitationRecord, SearchChunk
 from lilbee.wiki.cache import normalize_whitespace
 from lilbee.wiki.citation import ParsedCitation
+from lilbee.wiki.entity_extractor.factory import effective_entity_mode
 
 log = logging.getLogger(__name__)
 
@@ -178,7 +179,9 @@ def render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
     """
     block = {
         "provenance": {
-            "extraction_method": config.wiki_entity_mode.value,
+            # Record the extractor that actually runs (config mode may fall back),
+            # so the audit reflects reality, not the requested setting.
+            "extraction_method": effective_entity_mode(config.wiki_entity_mode).value,
             "chunks": [{"source": c.source, "chunk_index": c.chunk_index} for c in chunks],
         }
     }

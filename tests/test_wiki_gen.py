@@ -1324,6 +1324,18 @@ class TestBuildFrontmatter:
         assert "chunk_index: 0" in fm
         assert "chunk_index: 1" in fm
 
+    def test_provenance_records_effective_mode_not_configured(self, monkeypatch):
+        """When the configured entity mode falls back, provenance names the one that ran."""
+        from lilbee.core.config.enums import WikiEntityMode
+        from lilbee.wiki.page import build_frontmatter
+
+        monkeypatch.setattr(cfg, "wiki_entity_mode", WikiEntityMode.LLM_TAGGED)
+        chunks = [_make_chunk("body", source="doc.md", chunk_index=0)]
+        fm = build_frontmatter(cfg, ["doc.md"], 0.85, chunks=chunks)
+        # LLM_TAGGED isn't implemented; it falls back to ner_entities at run time.
+        assert "extraction_method: ner_entities" in fm
+        assert "llm_tagged" not in fm
+
     def test_provenance_round_trips_through_parse_frontmatter(self):
         from lilbee.wiki.page import build_frontmatter
         from lilbee.wiki.shared import parse_frontmatter

@@ -523,7 +523,8 @@ def wiki_status() -> dict[str, Any]:
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
-    report = lint_all(get_services().store)
+    # Read-only status: lint for counts without appending to the audit log.
+    report = lint_all(get_services().store, record_log=False)
     return {
         "wiki_enabled": cfg.wiki,
         WikiSubdir.SUMMARIES: len(summaries),
