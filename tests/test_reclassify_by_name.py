@@ -60,3 +60,10 @@ def test_reranker_wins_over_embedding_pattern() -> None:
     # bge-reranker matches both the bge- embedder pattern and the rerank pattern;
     # rerank is checked first so it stays a reranker.
     assert reclassify_by_name("gpustack/bge-reranker-v2-m3-GGUF", "chat") == ModelTask.RERANK
+
+
+def test_embedding_wins_over_vision_pattern() -> None:
+    # nomic-embed-vision matches both the "embed" embedder pattern and the
+    # "vision" pattern; it is an image embedder, so embedding must win. This also
+    # keeps reclassify_by_name aligned with discovery._classify_remote_task.
+    assert reclassify_by_name("nomic-embed-vision-v1.5", "chat") == ModelTask.EMBEDDING

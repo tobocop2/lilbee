@@ -819,6 +819,17 @@ class TestClassifyRemoteTask:
 
         assert _classify_remote_task("llava:13b", "llama") == ModelTask.VISION
 
+    def test_embedding_wins_over_vision_for_image_embedder(self) -> None:
+        """An image embedder matches both 'embed' and 'vision'; embedding wins.
+
+        Mirrors catalog.query.reclassify_by_name so the remote and manifest
+        classification paths never disagree.
+        """
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager.discovery import _classify_remote_task
+
+        assert _classify_remote_task("nomic-embed-vision-v1.5", "") == ModelTask.EMBEDDING
+
 
 class TestRemoteModelProvider:
     def test_classify_remote_models_sets_provider(self) -> None:
