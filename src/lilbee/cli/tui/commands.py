@@ -160,4 +160,4 @@ class LilbeeCommandProvider(Provider):
         if chat is None:
             app.notify("Open Chat to run /reset")
             return
-        chat._cmd_reset("")
+        chat.request_reset()

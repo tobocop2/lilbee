@@ -1084,6 +1084,11 @@ class ChatScreen(Screen[None]):
         )
 
     def _cmd_reset(self, args: str) -> None:
+        self.request_reset()
+
+    def request_reset(self) -> None:
+        """Public entry for the confirm-then-wipe flow (shared by /reset and the
+        command palette), so callers don't reach into a private slash handler."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         def _on_confirm(confirmed: bool | None) -> None:

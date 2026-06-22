@@ -3939,7 +3939,7 @@ async def test_command_provider_action_version():
 
 
 async def test_command_provider_action_reset_pushes_confirm():
-    """Palette 'Reset knowledge base' invokes ChatScreen._cmd_reset to push the ConfirmDialog."""
+    """Palette 'Reset knowledge base' invokes ChatScreen.request_reset (the public entry)."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -3948,11 +3948,11 @@ async def test_command_provider_action_reset_pushes_confirm():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         chat = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
-        with patch.object(chat, "_cmd_reset") as mock_reset:
+        with patch.object(chat, "request_reset") as mock_reset:
             provider = LilbeeCommandProvider(app.screen, match_style=None)
             provider._action_reset()
             await pilot.pause()
-            mock_reset.assert_called_once_with("")
+            mock_reset.assert_called_once_with()
 
 
 async def test_command_provider_action_reset_no_chat_screen():
