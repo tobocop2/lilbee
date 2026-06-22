@@ -65,10 +65,15 @@ def test_set_persists_and_resets(monkeypatch):
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: writes.update(d))
     monkeypatch.setattr(app_placement, "reset_services", lambda: writes.setdefault("reset", True))
+    prior = app_placement.cfg.placement
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(1, 1))})
-    app_placement.set_placement(spec)
-    assert writes["placement"] == spec.to_json()
-    assert writes["reset"] is True
+    try:
+        app_placement.set_placement(spec)
+        assert writes["placement"] == spec.to_json()
+        assert writes["reset"] is True
+        assert app_placement.cfg.placement == spec
+    finally:
+        app_placement.cfg.placement = prior
 
 
 def test_set_none_clears(monkeypatch):
@@ -79,8 +84,13 @@ def test_set_none_clears(monkeypatch):
         app_placement.settings, "delete_values", lambda root, keys: deletes.setdefault("keys", keys)
     )
     monkeypatch.setattr(app_placement, "reset_services", lambda: None)
-    app_placement.set_placement(None)
-    assert deletes["keys"] == ["placement"]
+    prior = app_placement.cfg.placement
+    try:
+        app_placement.set_placement(None)
+        assert deletes["keys"] == ["placement"]
+        assert app_placement.cfg.placement is None
+    finally:
+        app_placement.cfg.placement = prior
 
 
 def test_set_validates_before_persist(monkeypatch):
@@ -97,3 +107,24 @@ def test_set_validates_before_persist(monkeypatch):
     with pytest.raises(PlacementError):
         app_placement.set_placement(PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))}))
     assert wrote["any"] is False
+
+
+def test_view_multi_replica_keeps_first_devices():
+    resolved = ResolvedPlacement(
+        devices=(
+            FleetDevice("CUDA", 0, "NVIDIA A100", 80 * GIB, 72 * GIB),
+            FleetDevice("CUDA", 1, "NVIDIA A100", 80 * GIB, 80 * GIB),
+        ),
+        instances=(
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,), tensor_split=None),
+            InstancePlan(role=WorkerRole.EMBED, devices=(1,), tensor_split=None),
+        ),
+        unplaceable_roles=(),
+        model_refs={WorkerRole.EMBED: "org/embed.gguf"},
+    )
+    view = app_placement._view(resolved, manual=False, spec_json=None)
+    embed_views = [r for r in view.roles if r.role is WorkerRole.EMBED]
+    assert len(embed_views) == 1
+    role_view = embed_views[0]
+    assert role_view.replicas == 2
+    assert role_view.devices == (0,)

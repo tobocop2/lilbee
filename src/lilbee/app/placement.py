@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from lilbee.app.services import reset_services
 from lilbee.core import settings
@@ -67,14 +67,16 @@ def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -
     by_role: dict[WorkerRole, RolePlacementView] = {}
     for plan in resolved.instances:
         existing = by_role.get(plan.role)
-        replicas = (existing.replicas + 1) if existing else 1
-        by_role[plan.role] = RolePlacementView(
-            role=plan.role,
-            model=resolved.model_refs.get(plan.role, ""),
-            devices=plan.devices,
-            tensor_split=plan.tensor_split or None,
-            replicas=replicas,
-        )
+        if existing is not None:
+            by_role[plan.role] = replace(existing, replicas=existing.replicas + 1)
+        else:
+            by_role[plan.role] = RolePlacementView(
+                role=plan.role,
+                model=resolved.model_refs.get(plan.role, ""),
+                devices=plan.devices,
+                tensor_split=plan.tensor_split or None,
+                replicas=1,
+            )
     return PlacementView(
         gpus=gpus,
         roles=tuple(by_role.values()),
