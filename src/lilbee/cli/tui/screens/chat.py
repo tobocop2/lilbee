@@ -1517,15 +1517,17 @@ class ChatScreen(Screen[None]):
         Reloading the fleet for the new model is a multi-second restart, so it
         runs in a thread worker instead of on the event loop. The in-flight stream
         is cancelled first, the input is blocked behind a "switching" state with an
-        indicator toast, and the reload waits for in-flight workers to drain so the
-        restart doesn't disrupt them. The input re-enables once the fleet has
-        restarted with the new model (which loads on the next request).
+        indicator toast, and the worker reloads only the chat role. The provider
+        retires any still-busy client across the restart and serializes overlapping
+        reloads, so the worker can start at once without waiting for other workers.
+        The input re-enables once the fleet has restarted with the new model (which
+        loads on the next request).
         """
         if self.streaming:
             self.action_cancel_stream()
         self.swapping_model = True
         self.app.notify(msg.MODEL_SWAP_APPLYING)
-        self.call_later(self._reload_chat_when_drained)
+        self._reload_chat_model_worker()
 
     def watch_swapping_model(self, swapping: bool) -> None:
         """Disable the chat input while a swap loads so a prompt can't race it.
@@ -1540,20 +1542,6 @@ class ChatScreen(Screen[None]):
             self._chat_input.disabled = swapping
             if not swapping and self._insert_mode:
                 self._chat_input.focus()
-
-    def _reload_chat_when_drained(self) -> None:
-        """Spawn the off-thread chat reload once in-flight workers have drained.
-
-        The reload restarts the whole fleet proxy, so it waits for workers that use
-        it (an in-flight chat stream cancelled just above, a search) to finish first
-        rather than yank the engine out from under them. Runs on the event loop
-        (cheap, non-blocking) and checks before spawning, so this swap's worker is
-        not yet among ``self.workers``.
-        """
-        if self.workers:
-            self.call_later(self._reload_chat_when_drained)
-            return
-        self._reload_chat_model_worker()
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
     def _reload_chat_model_worker(self) -> None:

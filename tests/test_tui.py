@@ -293,8 +293,14 @@ class TestChatScreenAsync:
                 mock_notify.assert_called()
                 assert "Unknown command" in mock_notify.call_args[0][0]
 
+    @mock.patch("lilbee.cli.tui.screens.chat.get_services")
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_slash_model_changes_model(self, mock_catalog: mock.MagicMock) -> None:
+    async def test_slash_model_changes_model(
+        self, mock_catalog: mock.MagicMock, mock_services: mock.MagicMock
+    ) -> None:
+        # get_services is mocked so the model-swap worker's reload_role is a no-op:
+        # /model sets cfg.chat_model via apply_active_model (not mocked); the real
+        # fleet reload is exercised separately in the swap-specific tests.
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -305,6 +311,7 @@ class TestChatScreenAsync:
             new_ref = "ollama/new-model:latest"
             inp.value = f"/model {new_ref}"
             await pilot.press("enter")
+            await app.workers.wait_for_complete()
             await pilot.pause()
             assert cfg.chat_model == new_ref
 

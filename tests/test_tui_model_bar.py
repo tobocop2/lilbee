@@ -73,6 +73,32 @@ async def test_apply_model_pick_persists_and_reloads_vision() -> None:
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
 
 
+async def test_apply_model_pick_reload_failure_shows_error_toast() -> None:
+    """A reload failure in the worker surfaces an error toast, never crashes."""
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = False
+    services_mock.reload_role.side_effect = RuntimeError("boom")
+    app = LilbeeAppHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        with (
+            patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
+            patch(
+                "lilbee.cli.tui.widgets.model_pick.get_services",
+                return_value=services_mock,
+            ),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            apply_model_pick(
+                app.screen, key="vision_model", ref="hf:org/vlm-q4", on_done=lambda: None
+            )
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert any(
+                "Could not switch model" in str(call.args[0])
+                for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
 async def test_apply_model_pick_none_is_cancel() -> None:
     """``ref is None`` is the Esc/cancel path: nothing persists, on_done never runs."""
     app = LilbeeAppHost()

@@ -3249,67 +3249,37 @@ async def test_chat_cancel_stream_while_streaming():
 
 
 async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels the stream and schedules the drained reload."""
+    """apply_model_change cancels the stream and spawns the off-thread reload."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = True
         with (
             patch.object(screen, "action_cancel_stream") as mock_cancel,
-            patch.object(screen, "call_later") as mock_later,
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
             mock_cancel.assert_called_once()
-            mock_later.assert_called_once_with(screen._reload_chat_when_drained)
+            mock_worker.assert_called_once()
 
 
-async def testapply_model_change_defers_reload_off_event_loop_when_not_streaming():
-    """Not streaming: the reload is scheduled (off-thread), never run on the event
-    loop, so the swap can't freeze the TUI."""
+async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming():
+    """Not streaming: the reload runs in a worker, never on the event loop, so the
+    swap can't freeze the TUI."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
         with (
             patch.object(screen, "action_cancel_stream") as mock_cancel,
-            patch.object(screen, "call_later") as mock_later,
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
             patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
         ):
             screen.apply_model_change()
             mock_cancel.assert_not_called()
-            mock_later.assert_called_once_with(screen._reload_chat_when_drained)
-            mock_get.assert_not_called()
-
-
-async def test_reload_chat_when_drained_retries_while_workers_active():
-    """_reload_chat_when_drained retries via call_later (and spawns no reload
-    worker) while any worker, including a prior swap's, is still running."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        with (
-            patch.object(
-                type(screen), "workers", new_callable=MagicMock, return_value=[MagicMock()]
-            ),
-            patch.object(screen, "call_later") as mock_later,
-            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
-        ):
-            screen._reload_chat_when_drained()
-            mock_later.assert_called_once_with(screen._reload_chat_when_drained)
-            mock_worker.assert_not_called()
-
-
-async def test_reload_chat_when_drained_spawns_worker_when_idle():
-    """Once workers drain, the off-thread reload worker is spawned."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        for w in list(screen.workers):
-            w.cancel()
-        await pilot.pause()
-        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
-            screen._reload_chat_when_drained()
             mock_worker.assert_called_once()
+            # The reload runs in the worker, not inline on the event loop.
+            mock_get.assert_not_called()
 
 
 async def test_reload_chat_worker_reloads_only_chat_and_unblocks():
@@ -3365,9 +3335,9 @@ async def test_apply_model_change_blocks_input_during_swap():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
-        # Block the drained reload from spawning the worker, so the swap stays
-        # in its in-progress state long enough to observe the input gate.
-        with patch.object(screen, "_reload_chat_when_drained"):
+        # Stub the worker so the swap stays in its in-progress state long enough
+        # to observe the input gate (the real worker would unblock on completion).
+        with patch.object(screen, "_reload_chat_model_worker"):
             screen.apply_model_change()
             # swapping_model is set synchronously; its watcher disables the input.
             assert screen.swapping_model is True
@@ -3391,6 +3361,30 @@ async def test_submit_rejected_while_swapping_model():
                 "switching model" in str(call.args[0]).lower()
                 for call in mock_notify.call_args_list
             ), mock_notify.call_args_list
+
+
+async def test_submit_rejected_while_streaming():
+    """A submit while a response is streaming is rejected with the busy toast."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = False
+        screen.streaming = True
+        with patch.object(app, "notify") as mock_notify:
+            assert screen._reject_submit_when_busy() is True
+            assert any(
+                "answering" in str(call.args[0]).lower() for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_submit_not_rejected_when_idle():
+    """When neither swapping nor streaming, the submit is allowed through."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = False
+        screen.streaming = False
+        assert screen._reject_submit_when_busy() is False
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():
