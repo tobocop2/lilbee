@@ -3748,6 +3748,11 @@ class TestSelfCheck:
         d = tmp_path / "wd"
         d.mkdir()
         monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
+        # The llama-server binary isn't present in CI; stub the resolver so the
+        # function reaches the swap.start cleanup path under test.
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+        )
         fake_swap = mock.MagicMock()
         fake_swap.start.side_effect = RuntimeError("engine died")
         monkeypatch.setattr(
