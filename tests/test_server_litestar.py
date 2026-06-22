@@ -1307,9 +1307,17 @@ class TestCrawlRoute:
         assert resp.status_code == 201
         assert mock_stream.call_args.kwargs["render_mode"] is CrawlRenderMode.BROWSER
 
-    def test_post_crawl_rejects_zero_max_pages(self, client):
-        """max_pages=0 is invalid (use null for unbounded)."""
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_accepts_zero_max_pages_as_unlimited(self, mock_stream, client):
+        """max_pages=0 is the explicit unlimited sentinel honored by TUI/crawler."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
         resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": 0})
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs["max_pages"] == 0
+
+    def test_post_crawl_rejects_negative_max_pages(self, client):
+        """A negative max_pages is still a validation error."""
+        resp = client.post("/api/crawl", json={"url": "https://example.com", "max_pages": -1})
         assert resp.status_code == 400
 
 

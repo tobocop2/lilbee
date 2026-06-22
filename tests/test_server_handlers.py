@@ -2126,6 +2126,7 @@ class TestModelsCatalog:
             sort=CatalogSort.DOWNLOADS,
             limit=10,
             offset=5,
+            model_manager=mock_svc.model_manager,
         )
 
     @patch("lilbee.server.handlers.models.get_catalog")
