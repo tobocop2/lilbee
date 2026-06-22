@@ -254,9 +254,9 @@ def placement_from_spec(
             for idx, peak in zip(rp.devices, per_device, strict=True):
                 if peak > remaining[idx]:
                     raise PlacementError(
-                        f"{role.value} pinned to device {idx} needs "
-                        f"{peak / 1024**3:.1f} GiB but device {idx} has "
-                        f"{device_free[idx] / 1024**3:.1f} GiB free"
+                        f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
+                        f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
+                        f"({device_free[idx] / 1024**3:.1f} GiB free, 90% headroom)"
                     )
             for idx, peak in zip(rp.devices, per_device, strict=True):
                 remaining[idx] -= peak
