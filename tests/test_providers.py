@@ -3676,7 +3676,7 @@ class TestRoutingLifecycleForwarding:
         rp.cancel_inference()
         local.cancel_inference.assert_called_once_with()
         rp.reload_role(WorkerRole.EMBED)
-        local.reload_role.assert_called_once_with(WorkerRole.EMBED)
+        local.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=False)
 
     def test_cancel_and_reload_are_noop_without_local(self) -> None:
         from lilbee.providers.roles import WorkerRole
