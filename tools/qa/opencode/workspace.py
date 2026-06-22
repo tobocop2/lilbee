@@ -65,6 +65,11 @@ _AGENTS_MD = """\
 You are working with Godot 4.4. Your training data is outdated -- many classes and
 methods were renamed or replaced in Godot 4.x, so you cannot rely on memory.
 
+**Work completely autonomously. Never ask the user a clarifying question** -- you have
+no one to answer, so pick sensible defaults and proceed to a finished result. Do not
+call any "ask"/"question" tool or pause for input; just make a reasonable choice and
+keep going.
+
 **You MUST use the `lilbee_search` MCP tool to look up Godot APIs.** The Godot 4.4
 class reference is indexed locally in lilbee. Do NOT guess or use web search -- call
 `lilbee_search` with the exact class or method name.
