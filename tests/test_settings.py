@@ -345,6 +345,34 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.chat_model = original
 
+    def test_env_var_wins_over_config_toml(self, tmp_path, monkeypatch):
+        """An explicit LILBEE_<FIELD> env var overrides config.toml, as documented."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            cfg.vision_replicas = 4  # value as loaded from LILBEE_VISION_REPLICAS
+            monkeypatch.setenv("LILBEE_VISION_REPLICAS", "4")
+            (tmp_path / "config.toml").write_text("vision_replicas = 2\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 4
+        finally:
+            cfg.vision_replicas = original
+
+    def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
+        """Without the env var, config.toml is still overlaid onto cfg."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 3
+        finally:
+            cfg.vision_replicas = original
+
 
 class TestListSettingRegexMarker:
     def test_only_regex_list_validates_as_regex(self):

@@ -1,6 +1,7 @@
 """Persistent settings stored in config.toml alongside the data directory."""
 
 import logging
+import os
 import sys
 import threading
 import tomllib
@@ -87,7 +88,12 @@ def delete_values(data_root: Path, keys: list[str]) -> None:
 
 
 def overlay_persisted_settings(root: Path) -> None:
-    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values."""
+    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values.
+
+    An explicit ``LILBEE_<FIELD>`` env var wins over config.toml (the documented
+    precedence): cfg already holds the env-loaded value, so a key whose env var is
+    set is left untouched rather than overwritten by the persisted file.
+    """
     log = logging.getLogger(__name__)
     try:
         persisted = load(root)
@@ -97,8 +103,12 @@ def overlay_persisted_settings(root: Path) -> None:
     if not persisted:
         return
     overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
+    env_prefix = cfg.model_config.get("env_prefix", "")
     for key, raw in persisted.items():
         if key not in overlayable:
+            continue
+        # Env var explicitly set: env overrides config.toml, so keep the env value.
+        if f"{env_prefix}{key.upper()}" in os.environ:
             continue
         # Legacy: set_setting used to persist None as "". Skip rather than
         # warn so a stale config doesn't spam logs on every CLI invocation.
