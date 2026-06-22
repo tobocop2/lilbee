@@ -374,15 +374,17 @@ COMPAT_MODAL_BODY = (
     "so loading after download will probably fail. Pull anyway?"
 )
 DEFAULT_VIEW = "Chat"
-_BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
+WIKI_VIEW = "Wiki"
+# The full nav-view universe in order. Single source for the view set: the
+# settings bar pre-creates a tab per entry (toggling Wiki visibility at
+# runtime), get_nav_views() gates Wiki, and app.get_views() derives its
+# factory map from get_nav_views().
+ALL_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks", WIKI_VIEW)
 
 
 def get_nav_views() -> list[str]:
     """Return the active nav view names, including Wiki when enabled."""
-    views = list(_BASE_NAV_VIEWS)
-    if cfg.wiki:
-        views.append("Wiki")
-    return views
+    return [v for v in ALL_NAV_VIEWS if v != WIKI_VIEW or cfg.wiki]
 
 
 MODE_NORMAL = "NORMAL"

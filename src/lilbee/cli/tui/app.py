@@ -67,20 +67,21 @@ def _make_wiki() -> Screen:
     return WikiScreen()
 
 
-_BASE_VIEWS: dict[str, Callable[[], Screen]] = {
+# Screen factory per managed view name (Chat is special-cased in switch_view and
+# has no factory). The active set + order + wiki gate come from msg.get_nav_views,
+# so the view universe lives in exactly one place (messages.ALL_NAV_VIEWS).
+_VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
     "Catalog": _make_catalog,
     "Status": _make_status,
     "Settings": _make_settings,
     "Tasks": _make_tasks,
+    "Wiki": _make_wiki,
 }
 
 
 def get_views() -> dict[str, Callable[[], Screen]]:
-    """Return the active view factories, including wiki when enabled."""
-    views = dict(_BASE_VIEWS)
-    if cfg.wiki:
-        views["Wiki"] = _make_wiki
-    return views
+    """Return the active view factories, derived from the nav view list."""
+    return {name: _VIEW_FACTORIES[name] for name in msg.get_nav_views() if name in _VIEW_FACTORIES}
 
 
 class LilbeeApp(App[None]):
