@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
@@ -161,10 +162,10 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         if self._test_skip_auto_init:
             return
-        self._canonicalize_persisted_models()
+        await self._canonicalize_persisted_models()
         self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the default.
@@ -204,17 +205,24 @@ class LilbeeApp(App[None]):
 
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
-    def _canonicalize_persisted_models(self) -> None:
-        """Swap stale persisted refs to a working fallback, persist, and log once."""
+    async def _canonicalize_persisted_models(self) -> None:
+        """Swap stale persisted refs to a working fallback, persist, and log once.
+
+        Canonicalization can probe local model servers over HTTP/DNS, so it runs
+        off the event loop to keep the TUI from freezing at mount. The probes
+        finish before the chat screen installs, so it still sees a settled ref.
+        """
         from lilbee.modelhub.model_manager import (
             ValidationResult,
             canonicalize_chat_model,
             canonicalize_embedding_model,
         )
 
+        chat_canon = await asyncio.to_thread(canonicalize_chat_model)
+        embedding_canon = await asyncio.to_thread(canonicalize_embedding_model)
         for canon, field, label in (
-            (canonicalize_chat_model(), "chat_model", "Chat"),
-            (canonicalize_embedding_model(), "embedding_model", "Embedding"),
+            (chat_canon, "chat_model", "Chat"),
+            (embedding_canon, "embedding_model", "Embedding"),
         ):
             if canon.status == ValidationResult.OK:
                 continue

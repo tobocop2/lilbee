@@ -295,13 +295,16 @@ class TestResolveSiblingGguf:
 
 
 class TestEstimateSizeFromSiblings:
-    def test_returns_size_from_largest_gguf(self) -> None:
+    def test_sizes_the_picked_quant_not_the_largest(self) -> None:
+        # The row names the picked quant (Q4_K_M); size must match that file, not
+        # the larger Q8_0, or size-bucket filtering mis-buckets the model.
         siblings = [
             RepoSibling(rfilename="model-Q4_K_M.gguf", size=4_000_000_000),
             RepoSibling(rfilename="model-Q8_0.gguf", size=7_000_000_000),
         ]
+        assert _hf_client._resolve_sibling_gguf(siblings) == "model-Q4_K_M.gguf"
         result = _hf_client._estimate_size_from_siblings(siblings)
-        assert result == round(7_000_000_000 / (1024**3), 1)
+        assert result == round(4_000_000_000 / (1024**3), 1)
 
     def test_returns_zero_when_no_size(self) -> None:
         siblings = [RepoSibling(rfilename="model.gguf", size=0)]
@@ -1377,6 +1380,20 @@ class TestPipelineToTask:
         assert _query.pipeline_to_task("sentence-similarity") == "embedding"
 
 
+class TestGetInstalledModels:
+    def test_returns_installed_names(self) -> None:
+        manager = MagicMock()
+        manager.list_installed.return_value = ["a/b", "c/d"]
+        assert _query._get_installed_models(manager) == {"a/b", "c/d"}
+
+    def test_manager_failure_returns_empty_and_logs(self, caplog) -> None:
+        manager = MagicMock()
+        manager.list_installed.side_effect = RuntimeError("registry broken")
+        with caplog.at_level("WARNING"):
+            assert _query._get_installed_models(manager) == set()
+        assert any("treating as none installed" in r.getMessage() for r in caplog.records)
+
+
 class TestFeaturedVisionModel:
     def test_featured_vision_is_lightonocr(self) -> None:
         assert len(FEATURED_VISION) == 1
@@ -1415,40 +1432,6 @@ class TestSortModels:
         models = list(FEATURED_ALL)
         sorted_m = _query._sort_models(models, "featured")
         assert len(sorted_m) == len(models)
-
-
-class TestFetchModelFileSize:
-    def test_returns_size_from_tree_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from unittest.mock import MagicMock
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = [
-            {"path": "model-Q4_K_M.gguf", "size": 5_000_000_000},
-            {"path": "model-Q8_0.gguf", "size": 9_000_000_000},
-            {"path": "README.md", "size": 100},
-        ]
-        mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr("lilbee.catalog.download.httpx.get", lambda *a, **kw: mock_resp)
-
-        result = catalog.fetch_model_file_size("user/repo")
-        assert result == round(5_000_000_000 / (1024**3), 1)
-
-    def test_returns_zero_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "lilbee.catalog.download.httpx.get",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail")),
-        )
-        assert catalog.fetch_model_file_size("user/repo") == 0.0
-
-    def test_returns_zero_no_gguf_files(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from unittest.mock import MagicMock
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = [{"path": "README.md", "size": 100}]
-        mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr("lilbee.catalog.download.httpx.get", lambda *a, **kw: mock_resp)
-
-        assert catalog.fetch_model_file_size("user/repo") == 0.0
 
 
 class TestHfCacheEviction:
@@ -1861,15 +1844,25 @@ class TestFindMmprojFile:
         result = find_mmproj_file("LightOnOCR-2")
         assert result is None
 
+    @staticmethod
+    def _write_repo_mmproj(models_dir: Path, hf_repo: str, filename: str) -> Path:
+        """Write *filename* into *hf_repo*'s HF cache subtree, as hf_hub_download would."""
+        snapshot = models_dir / f"models--{hf_repo.replace('/', '--')}" / "snapshots" / "rev0"
+        snapshot.mkdir(parents=True, exist_ok=True)
+        mmproj = snapshot / filename
+        mmproj.write_bytes(b"fake")
+        return mmproj
+
     def test_finds_mmproj_with_fnmatch_pattern(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """find_mmproj_file matches using VISION_MMPROJ_FILES patterns."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
 
-        # Test with LightOnOCR-2 (featured vision model)
-        mmproj = tmp_path / "model-mmproj-f16.gguf"
-        mmproj.write_bytes(b"fake")
+        # Test with LightOnOCR-2 (featured vision model), in its own cache subtree.
+        mmproj = self._write_repo_mmproj(
+            tmp_path, "noctrex/LightOnOCR-2-1B-GGUF", "model-mmproj-f16.gguf"
+        )
 
         from lilbee.catalog import find_mmproj_file
 
@@ -1882,14 +1875,41 @@ class TestFindMmprojFile:
         """find_mmproj_file also matches against hf_repo."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
 
-        mmproj = tmp_path / "model-mmproj-f16.gguf"
-        mmproj.write_bytes(b"fake")
+        mmproj = self._write_repo_mmproj(
+            tmp_path, "noctrex/LightOnOCR-2-1B-GGUF", "model-mmproj-f16.gguf"
+        )
 
         from lilbee.catalog import find_mmproj_file
 
         # Match against hf_repo instead of display name
         result = find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF")
         assert result == mmproj
+
+    def test_does_not_return_other_repos_mmproj(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An mmproj that belongs to a different repo must not be returned for a
+        repo whose own mmproj isn't present (cross-contamination guard)."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        # A different vision repo's mmproj sits in the cache, but the featured
+        # LightOnOCR repo has none of its own.
+        self._write_repo_mmproj(tmp_path, "someone/other-vision-GGUF", "mmproj-f16.gguf")
+
+        from lilbee.catalog import find_mmproj_file
+
+        assert find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF") is None
+
+    def test_returns_none_when_repo_cache_has_no_mmproj(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The matched repo's cache exists but holds only a non-mmproj GGUF, so
+        the scoped walk finds nothing and returns None."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        self._write_repo_mmproj(tmp_path, "noctrex/LightOnOCR-2-1B-GGUF", "model-Q4_K_M.gguf")
+
+        from lilbee.catalog import find_mmproj_file
+
+        assert find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF") is None
 
 
 class TestResolveMmprojFilename:

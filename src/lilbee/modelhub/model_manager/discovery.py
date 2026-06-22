@@ -203,13 +203,22 @@ def detect_remote_embedding_models() -> list[str]:
     return [m.name for m in classify_all_remote_models() if m.task == ModelTask.EMBEDDING]
 
 
+def _installed_native_refs() -> set[str]:
+    """Canonical refs from the native registry; empty set if the walk fails."""
+    try:
+        return {m.ref for m in get_services().registry.list_installed()}
+    except Exception:
+        log.warning("Native registry walk failed; contributing no installed refs", exc_info=True)
+        return set()
+
+
 def gather_known_model_refs() -> set[str]:
     """Canonical refs from the native registry, every configured local server, and APIs.
 
     Each primitive swallows its own failures, so a backend being down contributes an
     empty subset rather than raising.
     """
-    refs = {m.ref for m in get_services().registry.list_installed()}
+    refs = _installed_native_refs()
     for rm in classify_all_remote_models():
         refs.add(format_remote_ref(rm.name, rm.provider))
     for models in discover_api_models().values():
@@ -249,7 +258,7 @@ class KnownModelCache:
         if model in refs:
             return model
         if "/" not in model and ":" in model:
-            prefixed = f"ollama/{model}"
+            prefixed = OLLAMA.qualify(model)
             if prefixed in refs:
                 return prefixed
         return None

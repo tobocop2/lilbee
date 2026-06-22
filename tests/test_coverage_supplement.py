@@ -561,7 +561,7 @@ class TestAppCanonicalizeFallbackNotice:
                 ) as mock_update_values,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                app._canonicalize_persisted_models()
+                await app._canonicalize_persisted_models()
                 mock_update_values.assert_called_once()
                 persisted_args = mock_update_values.call_args.args
                 assert persisted_args[0] == cfg.data_root
@@ -611,7 +611,7 @@ class TestAppCanonicalizeFallbackNotice:
             caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
         ):
             # Must not raise.
-            app._canonicalize_persisted_models()
+            await app._canonicalize_persisted_models()
         assert any("ollama/nomic-embed-text" in r.getMessage() for r in caplog.records), (
             "a rejected swap must be logged at WARNING"
         )
@@ -651,7 +651,7 @@ class TestAppCanonicalizeFallbackNotice:
                 mock.patch("lilbee.cli.tui.app.apply_settings_update") as mock_apply,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                app._canonicalize_persisted_models()
+                await app._canonicalize_persisted_models()
                 mock_apply.assert_not_called()
             assert cfg.embedding_model == snapshot_embed, "an un-fallbackable ref is left intact"
             assert notifications, "the user must be told why before the wizard opens"
