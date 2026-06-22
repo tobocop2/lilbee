@@ -8216,9 +8216,11 @@ class TestWikiScreenSearch:
             screen = app.screen
             assert isinstance(screen, WikiScreen)
             search = app.screen.query_one("#wiki-search", TextualInput)
+            # Both edits land before any pause so the first debounce timer cannot
+            # expire in the gap (that race made this flaky on slow CI runners);
+            # the second Changed resets the timer, so exactly one pass fires.
             with patch.object(screen, "_load_pages") as mock_load:
                 search.value = "A"
-                await pilot.pause()
                 search.value = "Al"
                 await pilot.pause(0.25)
             assert mock_load.call_count == 1
