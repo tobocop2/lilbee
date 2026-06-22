@@ -163,7 +163,8 @@ def wiki_status(
 
     from lilbee.wiki.lint import lint_all as _lint_all
 
-    report = _lint_all(get_services().store)
+    # Read-only status: lint for counts without appending to the audit log.
+    report = _lint_all(get_services().store, record_log=False)
 
     if cfg.json_mode:
         json_output(

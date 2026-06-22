@@ -248,6 +248,14 @@ class TestLintWritesLogEntry:
         content = log_path.read_text()
         assert "lint |" in content
 
+    def test_lint_all_record_log_false_does_not_write_log(self, tmp_path: Path) -> None:
+        """A read-only status check (record_log=False) must not mutate log.md."""
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        lint_all(store, record_log=False)
+        assert not (tmp_path / "wiki" / "log.md").exists()
+
 
 class TestOrphanDetection:
     def test_orphan_concept_flagged(self, tmp_path: Path):

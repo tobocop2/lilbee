@@ -10,6 +10,7 @@ so wiki content participates in retrieval.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -148,14 +149,17 @@ def build_frontmatter(
     the generator and the extraction method from config, so a bad page
     is auditable without re-running the pipeline.
     """
-    sources_yaml = ", ".join(f'"{s}"' for s in sorted(source_names))
+    # JSON-serialize the list: a JSON array is valid YAML flow syntax and escapes
+    # quotes/backslashes/unicode, so a filename like ``a"b\c.txt`` can't corrupt
+    # the frontmatter (the hand-rolled per-name quoting did).
+    sources_yaml = json.dumps(sorted(source_names))
     hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
     provenance_block = render_provenance(config, chunks) if chunks is not None else ""
     return (
         f"---\n"
         f"generated_by: {config.chat_model}\n"
         f"generated_at: {datetime.now(UTC).isoformat()}\n"
-        f"sources: [{sources_yaml}]\n"
+        f"sources: {sources_yaml}\n"
         f"faithfulness_score: {score:.2f}\n"
         f"{hash_line}"
         f"{provenance_block}"

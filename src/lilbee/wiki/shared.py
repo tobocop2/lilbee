@@ -100,6 +100,7 @@ class WikiLogAction(StrEnum):
     BUILD = "build"
     INGEST = "ingest"
     LINT = "lint"
+    PRUNE = "prune"
 
 
 SUBDIR_TO_TYPE: dict[str, WikiPageType] = {
