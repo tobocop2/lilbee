@@ -486,7 +486,11 @@ class SettingsScreen(Screen[None]):
 
     def _on_model_picker_dismissed(self, key: str, ref: str | None) -> None:
         """Persist the picker selection, refresh the button, and reload the role's server."""
-        apply_model_pick(self, key=key, ref=ref, on_done=lambda: self._after_model_pick(key))
+        # _after_model_pick already reloads the role; let it own the single reload
+        # so the role server isn't respawned twice for one pick.
+        apply_model_pick(
+            self, key=key, ref=ref, reload_worker=False, on_done=lambda: self._after_model_pick(key)
+        )
 
     def _after_model_pick(self, key: str) -> None:
         """Refresh the picker button and reload the role's fleet server after a swap."""

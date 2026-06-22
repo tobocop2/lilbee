@@ -832,7 +832,9 @@ class CatalogScreen(Screen[None]):
             return
         self._rows.extend(new_rows)
         self._list_widget.append_rows(list(new_rows))
-        self._list_cache_key = (
+        # Update the per-tab cache key (not a stray singular attribute) so a
+        # subsequent _refresh_list for this tab sees the appended rows as cached.
+        self._list_cache_keys[self._active_tab_id_cache] = (
             tuple((r.name, r.installed) for r in self._rows),
             self._get_search_text(),
         )

@@ -878,10 +878,9 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
     def _cmd_catalog(self, _args: str) -> None:
+        # switch_view already installs and navigates to the managed Catalog view;
+        # a push_screen on top would stack a second, orphaned CatalogScreen.
         self.app.switch_view("Catalog")
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
         """Run /delete in a worker so the chat screen stays interactive."""
