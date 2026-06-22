@@ -322,7 +322,7 @@ class ModelPickerButton(Static, can_focus=True):
         ``apply_model_pick`` already persisted the ref and (for non-chat
         scopes) reloaded the worker. Chat swaps cancel the in-flight stream
         and reset services here so the new chat model takes over cleanly. Works
-        Works regardless of which container the button is mounted in.
+        regardless of which container the button is mounted in.
         """
         self._refresh()
         if self._scope != "chat":

@@ -7,8 +7,12 @@ and ensures consistent messaging.
 
 from __future__ import annotations
 
+import logging
+
 from lilbee.core.config import cfg
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
+
+log = logging.getLogger(__name__)
 
 
 def app_title(model: str) -> str:
@@ -284,7 +288,10 @@ def _spacy_available() -> bool:
     except (ImportError, OSError):
         return False
     except Exception:
-        return True
+        # An unexpected spaCy-internal failure: don't claim availability (that
+        # would hide the install guidance); log it and treat spaCy as absent.
+        log.debug("spaCy availability check failed unexpectedly", exc_info=True)
+        return False
     return True
 
 

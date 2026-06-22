@@ -396,7 +396,7 @@ class SettingsScreen(Screen[None]):
         default = get_default(key)
         defaults = list(default) if isinstance(default, list) else []
         text = "\n".join(str(item) for item in defaults)
-        ta = self.query_one(f"#ed-{key}", ListTextArea)
+        ta = self.query_one(f"#{EDITOR_ID_PREFIX}{key}", ListTextArea)
         ta.load_text(text)
         self._persist_value(key, defn, text)
         error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
@@ -637,6 +637,13 @@ class SettingsScreen(Screen[None]):
         if tabs.active != next_id:
             tabs.active = next_id
 
+    def _focus_adjacent(self, direction: int) -> None:
+        """Move focus to the next/previous widget app-wide (direction 1 / -1)."""
+        if direction == 1:
+            self.app.action_focus_next()
+        else:
+            self.app.action_focus_previous()
+
     def _move_focus_within_pane(self, *, direction: int) -> None:
         focused = self.app.focused
         tabs = self.query_one("#settings-tabs", TabbedContent)
@@ -644,11 +651,11 @@ class SettingsScreen(Screen[None]):
         try:
             body = self.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
         except Exception:
-            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            self._focus_adjacent(direction)
             return
         focusables = [w for w in body.query("*") if w.focusable]
         if not focusables or focused is None or focused not in focusables:
-            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            self._focus_adjacent(direction)
             return
         index = focusables.index(focused)
         next_index = index + direction

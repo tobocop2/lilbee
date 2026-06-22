@@ -2221,6 +2221,26 @@ class TestSlashSuggester:
         s = SlashSuggester(use_cache=False)
         assert await s.get_suggestion("") is None
 
+    def test_setting_names_exclude_non_settable(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        names = SlashSuggester(use_cache=False)._get_setting_names()
+        assert "wiki_dir" not in names  # read-only: would be refused by /set
+        assert "chat_model" in names
+
+    def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        with patch(
+            "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
+        ):
+            assert s._get_model_names() == []
+        with patch("lilbee.cli.tui.widgets.suggester.get_services", side_effect=RuntimeError):
+            assert s._get_document_names() == []
+
     async def test_slash_prefix_suggests_command(self) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 

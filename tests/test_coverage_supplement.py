@@ -1455,14 +1455,16 @@ class TestWikiEmptyStateSpacyBranches:
         ):
             assert _spacy_available() is False
 
-    def test_spacy_available_returns_true_on_other_exception(self) -> None:
+    def test_spacy_available_returns_false_on_unexpected_exception(self) -> None:
+        """An unexpected spaCy error must not fail open to 'available' (which
+        would hide the install guidance)."""
         from lilbee.cli.tui.messages import _spacy_available
 
         with mock.patch(
             "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
             side_effect=RuntimeError,
         ):
-            assert _spacy_available() is True
+            assert _spacy_available() is False
 
     def test_spacy_available_returns_true_on_success(self) -> None:
         from lilbee.cli.tui.messages import _spacy_available

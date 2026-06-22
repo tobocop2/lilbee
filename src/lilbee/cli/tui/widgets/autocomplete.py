@@ -14,6 +14,7 @@ from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import completion_names
@@ -83,7 +84,9 @@ def _model_options() -> list[str]:
 
 
 def _setting_options() -> list[str]:
-    return list(SETTINGS_MAP.keys())
+    # Only settable keys, in map order: a non-writable entry (e.g. wiki_dir)
+    # would be offered then refused by /set.
+    return [k for k in SETTINGS_MAP if _is_settable(k)]
 
 
 def _document_options() -> list[str]:

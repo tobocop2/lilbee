@@ -29,6 +29,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     FrontierCatalogRow,
     KeyStatus,
     LocalCatalogRow,
+    SizeVariant,
 )
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
 from lilbee.runtime.hardware import FitChip, FitLevel
@@ -460,7 +461,7 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     return lines
 
 
-def _build_size_variant_strip(variants: list) -> Content:
+def _build_size_variant_strip(variants: list[SizeVariant]) -> Content:
     """Inline chip strip showing every quant for a family-aggregated card.
 
     Renders compact 'Q4 · Q5 · F16' style chips so the eye reads the
