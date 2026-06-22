@@ -147,6 +147,10 @@ class ModelGrid(Widget, can_focus=True):
         self._cards_per_row: int = _DEFAULT_COLUMNS
         self._last_click_index: int | None = None
         self._last_click_at: float = 0.0
+        # render_line is called once per terminal row, so each card is asked for
+        # _CARD_HEIGHT times per repaint; cache the built lines so a card renders
+        # once. Cleared whenever the dataset, highlight, or width changes.
+        self._card_cache: dict[tuple[int, int, bool, str], _CardLines] = {}
 
     @property
     def rows(self) -> list[CatalogRow]:
@@ -161,6 +165,7 @@ class ModelGrid(Widget, can_focus=True):
     def set_rows(self, rows: list[CatalogRow]) -> None:
         """Replace the dataset and reset the highlight."""
         self._rows = list(rows)
+        self._card_cache.clear()
         self.highlighted = None
         self.refresh(layout=True)
 
@@ -168,6 +173,7 @@ class ModelGrid(Widget, can_focus=True):
         new_cols = self._columns_for_width(self.size.width)
         if new_cols != self._cards_per_row:
             self._cards_per_row = new_cols
+            self._card_cache.clear()
             self.refresh(layout=True)
 
     @staticmethod
@@ -200,6 +206,9 @@ class ModelGrid(Widget, can_focus=True):
         and ask the parent to scroll. The Highlighted message lets the
         catalog screen run keyboard-driven prefetch on every cursor move.
         """
+        # The two cards whose selected state flipped must re-render; clearing
+        # also bounds the cache to one repaint's worth of cards.
+        self._card_cache.clear()
         self.refresh()
         if new is None or self._cards_per_row <= 0 or self.size.width <= 0:
             return
@@ -325,6 +334,19 @@ class ModelGrid(Widget, can_focus=True):
         self.highlighted = index
         self.focus()
 
+    def _card_lines(
+        self, index: int, col_width: int, selected: bool, border_style: str
+    ) -> _CardLines:
+        """Build (and cache for this repaint) the card lines for one cell."""
+        key = (index, col_width, selected, border_style)
+        cached = self._card_cache.get(key)
+        if cached is None:
+            cached = _render_card_strip(
+                self._rows[index], selected=selected, width=col_width, border_style=border_style
+            )
+            self._card_cache[key] = cached
+        return cached
+
     def render_line(self, y: int) -> Strip:
         """Compose one terminal line by stitching the per-column card slices."""
         if y < 0:
@@ -341,11 +363,8 @@ class ModelGrid(Widget, can_focus=True):
                 # Empty slot in a partial last row -> match screen surface.
                 segments.append(Content.styled(" " * col_width, _GAP_STYLE))
                 continue
-            row = self._rows[index]
             selected = index == self.highlighted
-            card = _render_card_strip(
-                row, selected=selected, width=col_width, border_style=border_style
-            )
+            card = self._card_lines(index, col_width, selected, border_style)
             segments.append(card.lines[line_within])
         joined = Content("").join(segments)
         return Strip(joined.render_segments(Style.null())).simplify()

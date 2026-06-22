@@ -1552,6 +1552,26 @@ class TestModelGridTruncateAndPad:
             out = mg._render_card_strip(row, selected=False, width=20, border_style="dim")
         assert out.lines, "expected card lines"
 
+    def test_card_lines_builds_each_card_once_per_repaint(self) -> None:
+        """The per-cell cache means a card builds once, not _CARD_HEIGHT times."""
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets import model_grid as mg
+
+        row = FrontierCatalogRow(
+            name="api",
+            ref="acme/api",
+            task="chat",
+            provider="Acme",
+            provider_id="acme",
+            key_status=KeyStatus.READY,
+        )
+        grid = mg.ModelGrid(rows=[row])
+        with mock.patch.object(mg, "_render_card_strip", wraps=mg._render_card_strip) as spy:
+            first = grid._card_lines(0, 20, False, "dim")
+            again = grid._card_lines(0, 20, False, "dim")
+        assert first is again
+        assert spy.call_count == 1
+
     def test_cell_at_returns_none_in_gutter_row(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
         from lilbee.cli.tui.widgets import model_grid as mg
