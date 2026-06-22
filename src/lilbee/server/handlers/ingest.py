@@ -142,16 +142,20 @@ def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None]:
     return enable_ocr, ocr_timeout
 
 
-async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
+async def add_files_stream(
+    paths: list[str],
+    *,
+    force: bool = False,
+    enable_ocr: bool | None = None,
+    ocr_timeout: float | None = None,
+) -> AsyncGenerator[str, None]:
     """Copy files, sync, and yield SSE progress events.
 
-    Contended sources emit ``already_ingesting`` and the stream closes
-    without a ``done`` event, signalling the client to wait rather than retry.
+    Takes the already-validated/parsed values from ``validate_add_paths`` so the
+    request dict is decoded once. Contended sources emit ``already_ingesting``
+    and the stream closes without a ``done`` event, signalling the client to
+    wait rather than retry.
     """
-    paths = data.get("paths", [])
-    force = bool(data.get("force", False))
-    enable_ocr, ocr_timeout = _parse_ocr_params(data)
-
     registry = get_services().ingest_lock_registry
     acquired, busy = await registry.acquire(paths)
     try:
@@ -162,8 +166,14 @@ async def add_files_stream(data: dict[str, Any]) -> AsyncGenerator[str, None]:
         if not acquired:
             return
 
+        # Ingest only the paths this request actually locked; contended ones
+        # already got an ``already_ingesting`` event and must not be re-ingested
+        # under the holder's lock. ``acquired`` keys are canonical source names,
+        # so select the original path strings whose name was acquired.
+        acquired_names = {name for name, _lock in acquired}
+        locked_paths = [p for p in paths if registry.canonical_source_name(p) in acquired_names]
         sse = SseStream()
-        task = asyncio.create_task(_run_add(paths, force, enable_ocr, ocr_timeout, sse))
+        task = asyncio.create_task(_run_add(locked_paths, force, enable_ocr, ocr_timeout, sse))
         try:
             async for event in sse.drain(task, "Add files stream"):
                 yield event

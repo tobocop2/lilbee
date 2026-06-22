@@ -60,6 +60,14 @@ async def list_models_endpoint(request: Request) -> Response:
     if auth_error is not None:
         return auth_error
 
+    # list_installed walks the model filesystem and served_chat_ctx may probe the
+    # engine; run both off the event loop like the sibling chat-completions route.
+    payload = await asyncio.to_thread(_build_models_list_payload)
+    return Response(payload.model_dump(), media_type="application/json")
+
+
+def _build_models_list_payload() -> ModelsListResponse:
+    """Synchronous /v1/models body: blocking registry walk + engine ctx probe."""
     services = get_services()
     # The served window applies to the active chat model; advertise it so a
     # client trims history to fit instead of overflowing on a long session.
@@ -72,7 +80,7 @@ async def list_models_endpoint(request: Request) -> Response:
     # A ref without a registry entry carries the newest native timestamp so a
     # client sorting by created desc does not bury the model lilbee serves.
     fallback_created = max((_parse_created(m.downloaded_at) for m in installed.values()), default=0)
-    payload = ModelsListResponse(
+    return ModelsListResponse(
         data=[
             ModelEntry(
                 id=ref,
@@ -84,7 +92,6 @@ async def list_models_endpoint(request: Request) -> Response:
             for ref in refs
         ]
     )
-    return Response(payload.model_dump(), media_type="application/json")
 
 
 @post("/v1/chat/completions", status_code=200)
@@ -104,9 +111,10 @@ async def chat_completions_endpoint(
         # (e.g. image content). Surface as 400 instead of a generic 500.
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
 
-    preflush_error = await _preflush_or_none(req)
-    if preflush_error is not None:
-        return preflush_error
+    preflight = await _preflight_resolved_model(req)
+    if isinstance(preflight, Response):
+        return preflight
+    resolved_model = preflight
 
     try:
         await acquire_chat_slot_or_busy(get_services().provider.max_concurrent_chats())
@@ -124,31 +132,35 @@ async def chat_completions_endpoint(
         # The after-send hook frees the slot when a disconnect lands before the
         # generator's first iteration (its finally never runs in that case).
         return Stream(
-            _gated_completions_stream(req, guard, include_usage=include_usage),
+            _gated_completions_stream(
+                req, guard, model=resolved_model, include_usage=include_usage
+            ),
             media_type="text/event-stream",
             background=BackgroundTask(guard.release),
         )
     return await _run_non_stream(req, guard)
 
 
-async def _preflush_or_none(req: CanonicalChatRequest) -> Response | None:
-    """Validate *req* before any streaming response starts.
+async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response:
+    """Validate *req* before any streaming response starts, returning the resolved model.
 
     A 4xx body here is reachable by any OpenAI-compatible client; once a
     Stream is returned the headers are flushed at 200 and downstream errors
     can only travel via SSE frames which not every client surfaces cleanly.
     Runs the preflight in a thread: a lapsed model-discovery TTL makes it do
-    blocking HTTP probes that must not stall the event loop.
-    Returns ``None`` when *req* is fit to dispatch.
+    blocking HTTP probes that must not stall the event loop. Returns the
+    canonical resolved model string when *req* is fit to dispatch, so the
+    streaming response echoes the same model the non-streaming path does.
     """
     try:
-        await asyncio.to_thread(preflight_chat_request, req)
-    except Exception as exc:  # typed dispatch errors only; classify or re-raise
+        return await asyncio.to_thread(preflight_chat_request, req)
+    except Exception as exc:
         classified = classify_provider_error(exc)
         if classified is None:
-            raise
+            # Mirror _run_non_stream: an unclassified failure still rides the
+            # OpenAI error envelope, not a bare framework 500.
+            return _internal_error_response()
         return _error_response(classified.http_status, classified.code, classified.message)
-    return None
 
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
@@ -181,6 +193,7 @@ async def _gated_completions_stream(
     req: CanonicalChatRequest,
     guard: ChatSlotGuard,
     *,
+    model: str,
     include_usage: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """Drive ``dispatch_chat_stream`` -> translate -> SSE-encode, freeing the slot on exit.
@@ -196,7 +209,7 @@ async def _gated_completions_stream(
         try:
             events = dispatch_chat_stream(req)
             chunks = canonical_stream_to_completions_chunks(
-                events, model=req.model, response_id=_response_id(), include_usage=include_usage
+                events, model=model, response_id=_response_id(), include_usage=include_usage
             )
             async for frame in encode_completions_sse(chunks):
                 yield frame

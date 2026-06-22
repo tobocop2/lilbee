@@ -1088,7 +1088,7 @@ class TestAddFiles:
 
         with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = []
-            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+            async for event in handlers.add_files_stream([str(test_file)]):
                 events.append(event)
             assert any("done" in e for e in events)
 
@@ -1102,7 +1102,7 @@ class TestAddFiles:
 
         with patch("lilbee.data.ingest.sync", side_effect=failing_sync):
             events = []
-            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+            async for event in handlers.add_files_stream([str(test_file)]):
                 events.append(event)
 
         error_events = [e for e in events if e.startswith("event: error")]
@@ -2126,6 +2126,7 @@ class TestModelsCatalog:
             sort=CatalogSort.DOWNLOADS,
             limit=10,
             offset=5,
+            model_manager=mock_svc.model_manager,
         )
 
     @patch("lilbee.server.handlers.models.get_catalog")

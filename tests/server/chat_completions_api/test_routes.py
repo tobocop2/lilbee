@@ -1382,7 +1382,10 @@ class TestRouteDispatchErrorBranches:
             messages=(CanonicalMessage(role="user", content="hi"),),
             stream=True,
         )
-        frames = [frame async for frame in _gated_completions_stream(req, ChatSlotGuard())]
+        frames = [
+            frame
+            async for frame in _gated_completions_stream(req, ChatSlotGuard(), model=req.model)
+        ]
         joined = b"".join(frames).decode()
         assert "model_not_found" in joined
 
@@ -1406,15 +1409,20 @@ class TestRouteDispatchErrorBranches:
             messages=(CanonicalMessage(role="user", content="hi"),),
             stream=True,
         )
-        frames = [frame async for frame in _gated_completions_stream(req, ChatSlotGuard())]
+        frames = [
+            frame
+            async for frame in _gated_completions_stream(req, ChatSlotGuard(), model=req.model)
+        ]
         joined = b"".join(frames).decode()
         assert "model_does_not_support_tools" in joined
 
     @pytest.mark.asyncio
-    async def test_preflush_reraises_unclassified_preflight_error(self, monkeypatch) -> None:
-        # Preflight only raises classifiable typed errors today; if it ever
-        # raised something else, the route re-raises rather than masking it.
-        from lilbee.server.chat_completions_api.routes import _preflush_or_none
+    async def test_preflight_unclassified_error_returns_openai_envelope(self, monkeypatch) -> None:
+        # An unclassified preflight failure rides the OpenAI internal_error
+        # envelope (matching the non-stream dispatch path), not a bare 500.
+        from litestar import Response
+
+        from lilbee.server.chat_completions_api.routes import _preflight_resolved_model
         from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
 
         def _raise(req: object) -> str:
@@ -1427,16 +1435,19 @@ class TestRouteDispatchErrorBranches:
             model="vendor/m",
             messages=(CanonicalMessage(role="user", content="hi"),),
         )
-        with pytest.raises(RuntimeError, match="unexpected preflight failure"):
-            await _preflush_or_none(req)
+        result = await _preflight_resolved_model(req)
+        assert isinstance(result, Response)
+        assert result.status_code == 500
+        assert result.content["error"]["code"] == "internal_error"
 
     @pytest.mark.asyncio
-    async def test_preflush_runs_preflight_off_the_event_loop(self, monkeypatch) -> None:
+    async def test_preflight_returns_resolved_model_off_the_event_loop(self, monkeypatch) -> None:
         # Discovery probes inside the preflight are blocking HTTP; the async
-        # boundary must push them to a worker thread.
+        # boundary must push them to a worker thread, and the resolved model is
+        # returned so the streaming response echoes it.
         import threading
 
-        from lilbee.server.chat_completions_api.routes import _preflush_or_none
+        from lilbee.server.chat_completions_api.routes import _preflight_resolved_model
         from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
 
         loop_thread = threading.current_thread()
@@ -1444,14 +1455,14 @@ class TestRouteDispatchErrorBranches:
 
         def _record(req: object) -> str:
             seen_threads.append(threading.current_thread())
-            return "vendor/m"
+            return "vendor/resolved"
 
         monkeypatch.setattr(
             "lilbee.server.chat_completions_api.routes.preflight_chat_request", _record
         )
         req = CanonicalChatRequest(
-            model="vendor/m",
+            model="vendor/requested",
             messages=(CanonicalMessage(role="user", content="hi"),),
         )
-        assert await _preflush_or_none(req) is None
+        assert await _preflight_resolved_model(req) == "vendor/resolved"
         assert seen_threads and seen_threads[0] is not loop_thread
