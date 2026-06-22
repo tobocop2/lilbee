@@ -165,3 +165,11 @@ class TestRemove:
         mock_svc.store.delete_memory.return_value = False
         result = runner.invoke(app, ["memory", "remove", "ghost"])
         assert "No memory ghost found." in result.output
+        assert result.exit_code == 1  # not-found exits non-zero, like `model remove`
+
+    def test_remove_unknown_id_json_exits_nonzero(self, mock_svc):
+        cfg.memory_enabled = True
+        mock_svc.store.delete_memory.return_value = False
+        result = runner.invoke(app, ["--json", "memory", "remove", "ghost"])
+        assert json.loads(result.output) == {"id": "ghost", "deleted": False}
+        assert result.exit_code == 1

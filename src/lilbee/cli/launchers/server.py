@@ -36,6 +36,7 @@ _SERVER_POLL_INTERVAL_S = 0.5
 _WARM_TIMEOUT_S = 600.0
 _HEALTH_PROBE_TIMEOUT_S = 2.0
 _HTTP_OK = 200
+_HEALTH_PATH = "/api/health"
 _TERMINATE_GRACE_S = 10
 _KILL_GRACE_S = 5
 # Spawn attempts; free_port()'s released probe port can be stolen before the server binds.
@@ -72,13 +73,28 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _probe_health(port: int) -> dict[str, object] | None:
+    """GET ``/api/health`` once; return the parsed body on 200, else None.
+
+    The single place the probe URL, timeout, error handling, and status check
+    live, so the three public probes below stay consistent.
+    """
+    try:
+        resp = httpx.get(f"http://{LOOPBACK}:{port}{_HEALTH_PATH}", timeout=_HEALTH_PROBE_TIMEOUT_S)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != _HTTP_OK:
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 def health_ok(port: int) -> bool:
     """Single-shot ``/api/health`` probe; True iff a 200 comes back fast."""
-    try:
-        resp = httpx.get(f"http://{LOOPBACK}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
-    except httpx.HTTPError:
-        return False
-    return resp.status_code == _HTTP_OK
+    return _probe_health(port) is not None
 
 
 def wait_for_health(port: int, timeout_s: float = _SERVER_BOOT_TIMEOUT_S) -> bool:
@@ -93,13 +109,8 @@ def wait_for_health(port: int, timeout_s: float = _SERVER_BOOT_TIMEOUT_S) -> boo
 
 def chat_ready(port: int) -> bool:
     """Single-shot probe: True iff ``/api/health`` reports the chat engine warm."""
-    try:
-        resp = httpx.get(f"http://{LOOPBACK}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
-    except httpx.HTTPError:
-        return False
-    if resp.status_code != _HTTP_OK:
-        return False
-    return bool(resp.json().get("chat_ready", False))
+    body = _probe_health(port)
+    return bool(body and body.get("chat_ready", False))
 
 
 def served_chat_ctx(port: int) -> int | None:
@@ -108,13 +119,10 @@ def served_chat_ctx(port: int) -> int | None:
     A launcher passes this to the client so it trims history to the model's
     actual window instead of overflowing on a long agentic session.
     """
-    try:
-        resp = httpx.get(f"http://{LOOPBACK}:{port}/api/health", timeout=_HEALTH_PROBE_TIMEOUT_S)
-    except httpx.HTTPError:
+    body = _probe_health(port)
+    if body is None:
         return None
-    if resp.status_code != _HTTP_OK:
-        return None
-    ctx = resp.json().get("chat_ctx")
+    ctx = body.get("chat_ctx")
     return ctx if isinstance(ctx, int) and ctx > 0 else None
 
 
@@ -182,6 +190,7 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
         else [sys.executable, "-m", "lilbee", "serve", "--port", str(port)]
     )
 
+    log_file: IO[bytes] | None = None
     if os.environ.get("LILBEE_LAUNCHER_SERVE_QUIET"):
         stdout: int | IO[bytes] = subprocess.DEVNULL
         stderr: int | IO[bytes] = subprocess.DEVNULL
@@ -197,12 +206,18 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
         stdout = log_file
         stderr = subprocess.STDOUT
 
-    # Only caller-controlled value is the validated integer port; no shell.
-    return subprocess.Popen(  # noqa: S603
-        cmd,
-        stdout=stdout,
-        stderr=stderr,
-    )
+    try:
+        # Only caller-controlled value is the validated integer port; no shell.
+        return subprocess.Popen(  # noqa: S603
+            cmd,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    finally:
+        # Popen dups the fd into the child; the parent's handle is no longer
+        # needed and would otherwise leak for the launcher's whole lifetime.
+        if log_file is not None:
+            log_file.close()
 
 
 def stop_spawned_server(proc: subprocess.Popen[bytes]) -> None:

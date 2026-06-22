@@ -169,6 +169,7 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
         run_sync_background(con)
         return
 
+    from lilbee.cli.sync import _format_sync_summary
     from lilbee.data.ingest import sync
 
     try:
@@ -176,18 +177,12 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
     except RuntimeError as exc:
         con.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
-    total = (
-        len(result.added)
-        + len(result.updated)
-        + len(result.removed)
-        + len(result.failed)
-        + len(result.skipped)
+    summary = _format_sync_summary(
+        len(result.added),
+        len(result.updated),
+        len(result.removed),
+        len(result.failed),
+        len(result.skipped),
     )
-    if total:
-        con.print(
-            f"[{theme.MUTED}]Synced: {len(result.added)} added, "
-            f"{len(result.updated)} updated, "
-            f"{len(result.removed)} removed, "
-            f"{len(result.skipped)} skipped, "
-            f"{len(result.failed)} failed[/{theme.MUTED}]"
-        )
+    if summary:
+        con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")

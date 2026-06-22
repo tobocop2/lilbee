@@ -80,6 +80,14 @@ class TestHealthProbes:
         )
         assert server_mod.chat_ready(8080) is False
 
+    def test_health_ok_true_on_non_json_200_body(self, monkeypatch) -> None:
+        """A 200 with a non-JSON body still counts as healthy (empty parsed body)."""
+        monkeypatch.setattr(
+            server_mod.httpx, "get", lambda *_a, **_k: httpx.Response(200, text="OK")
+        )
+        assert server_mod.health_ok(8080) is True
+        assert server_mod.chat_ready(8080) is False  # no chat_ready field in body
+
     def test_served_chat_ctx_none_on_transport_error(self, monkeypatch) -> None:
         def _boom(*_a, **_k):
             raise httpx.ConnectError("refused")

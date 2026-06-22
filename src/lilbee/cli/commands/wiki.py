@@ -178,7 +178,7 @@ def wiki_status(
         )
         return
 
-    color = "green" if cfg.wiki else "red"
+    color = theme.SUCCESS if cfg.wiki else theme.ERROR
     label = "enabled" if cfg.wiki else "disabled"
     console.print(f"Wiki: [{color}]{label}[/{color}]")
     console.print(f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]")
