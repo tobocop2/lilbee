@@ -272,14 +272,17 @@ async def add(
 
         for url in urls:
             try:
-                require_valid_crawl_url(url)
+                # URL validation resolves the host (blocking DNS); run it off the
+                # event loop like the sibling crawl tool does.
+                await anyio.to_thread.run_sync(require_valid_crawl_url, url)
             except ValueError as exc:
                 errors.append(f"{url}: {exc}")
                 continue
             crawled_paths = await crawl_and_save(url, render_mode=render_mode)
             crawled_count += len(crawled_paths)
 
-    copy_result = copy_files(valid, force=force)
+    # Copying files is blocking disk I/O; keep it off the event loop.
+    copy_result = await anyio.to_thread.run_sync(functools.partial(copy_files, valid, force=force))
 
     from lilbee.app.ingest import temporary_ocr_config
 
@@ -309,13 +312,20 @@ async def crawl(
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
 
     ``depth=None`` crawls the whole site, ``0`` is single-URL, positive ints cap
-    follow depth. ``max_pages=None`` is unlimited. ``render_mode``
+    follow depth. ``max_pages=None`` uses the protective safety cap, ``0`` is
+    unlimited, positive ints cap the page count. ``render_mode``
     ("http"/"browser") overrides the configured crawl render mode.
     """
     from lilbee.crawler import crawler_available
 
     if not crawler_available():
         return _error("Web crawling requires: pip install 'lilbee[crawler]'")
+    # Mirror the REST CrawlRequest bounds so a negative value is a clean error,
+    # not an unbounded crawl.
+    if depth is not None and depth < 0:
+        return _error("depth must be 0 or greater (omit it to crawl the whole site)")
+    if max_pages is not None and max_pages < 0:
+        return _error("max_pages must be 0 or greater (0 = unlimited, omit for the safety cap)")
     try:
         # URL validation resolves the host (blocking DNS), so it runs off the loop.
         # The crawl itself must be scheduled ON the loop: start_crawl uses
@@ -378,6 +388,9 @@ def init(path: str = "") -> dict[str, Any]:
     os.environ["LILBEE_DATA"] = str(base)
     overlay_persisted_settings(base)
     reset_services()
+    # The new vault may have a different cfg.wiki; re-tune the search tool's scope
+    # hint so it advertises the scopes this corpus actually has.
+    _tune_search_scope_for_corpus()
 
     return {"command": "init", "path": str(root), "created": created}
 
