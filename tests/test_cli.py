@@ -3721,6 +3721,43 @@ class TestSelfCheck:
             ),
         )
 
+    def test_download_failure_cleans_temp_dir(self, tmp_path: Path, monkeypatch) -> None:
+        import urllib.error
+        import urllib.request
+
+        from lilbee.cli.commands import setup
+
+        d = tmp_path / "dl"
+        d.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
+
+        def _down(*_a, **_k):
+            raise urllib.error.URLError("offline")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _down)
+        with pytest.raises(RuntimeError):
+            setup._download_self_check_model("repo/x", "f.gguf")
+        assert not d.exists()
+
+    def test_self_check_server_cleans_work_dir_on_start_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        d = tmp_path / "wd"
+        d.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
+        fake_swap = mock.MagicMock()
+        fake_swap.start.side_effect = RuntimeError("engine died")
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: fake_swap
+        )
+        with pytest.raises(RuntimeError):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+        assert not d.exists()
+        fake_swap.shutdown.assert_called_once()
+
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")

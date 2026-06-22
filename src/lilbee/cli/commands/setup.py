@@ -55,6 +55,8 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     dest = dest_dir / filename
     console.print(f"Downloading {url}")
     last_exc: BaseException | None = None
+    # Any exit other than a successful return drops the temp dir, so a failed
+    # download never leaves an empty/partial dir behind.
     try:
         for attempt in range(3):
             try:
@@ -64,12 +66,10 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
             except (OSError, urllib.error.URLError) as exc:
                 last_exc = exc
                 console.print(f"download attempt {attempt + 1} failed: {exc!r}")
+        raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
     except BaseException:
         shutil.rmtree(dest_dir, ignore_errors=True)
         raise
-    # All attempts failed: drop the empty temp dir before raising.
-    shutil.rmtree(dest_dir, ignore_errors=True)
-    raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
 
 
 _self_check_chat_path_option = typer.Option(
