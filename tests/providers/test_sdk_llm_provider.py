@@ -222,6 +222,33 @@ class TestChatNonStream:
         assert result.content == "ok"
         assert [tc.name for tc in result.tool_calls] == ["get_weather"]
 
+    def test_chat_with_tools_preserves_tool_linkage_fields(self) -> None:
+        """A tool conversation's tool_calls/tool_call_id reach the backend intact.
+
+        Stripping messages to role+content would sever the link between an
+        assistant tool call and its result, breaking multi-turn tool use.
+        """
+        backend = FakeBackend(supports_tools_result=True)
+        provider = SdkLLMProvider(backend)
+        messages = [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "w", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        ]
+        provider.chat_with_tools(
+            messages,  # type: ignore[arg-type]
+            tools=[{"type": "function", "function": {"name": "w"}}],
+        )
+        sent = backend.complete_calls[-1].messages
+        assert sent[1].get("tool_calls") == messages[1]["tool_calls"]
+        assert sent[2].get("tool_call_id") == "c1"
+
     def test_tools_and_tool_choice_threaded_into_request_options(self) -> None:
         backend = FakeBackend(supports_tools_result=True)
         provider = SdkLLMProvider(backend)

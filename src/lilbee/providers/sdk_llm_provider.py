@@ -225,7 +225,10 @@ class SdkLLMProvider(LLMProvider):
         already forwards tools/tool_choice, so route through it instead of refusing.
         """
         result = self.chat(
-            [{"role": m["role"], "content": m["content"]} for m in messages],
+            # Pass each message through whole: a tool conversation carries
+            # ``tool_calls`` / ``tool_call_id`` / ``name`` that link an assistant
+            # call to its result, and stripping to role+content breaks that chain.
+            [dict(m) for m in messages],
             stream=False,
             options=options,
             model=model,

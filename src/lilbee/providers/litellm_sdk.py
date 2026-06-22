@@ -92,8 +92,9 @@ install_litellm_log_filter()
 def _sdk_attr(obj: object, name: str) -> Any:
     """Read an optional attribute off a litellm response/chunk object (absent -> None).
 
-    The single dynamic-read boundary for the SDK's loosely-typed objects, whose tool-call
-    fields are absent (not just ``None``) across litellm chunk shapes.
+    Shared helper for the view adapters' dynamic reads of the SDK's loosely-typed
+    objects, whose tool-call fields are absent (not just ``None``) across litellm
+    chunk shapes.
     """
     return getattr(obj, name, None)
 
