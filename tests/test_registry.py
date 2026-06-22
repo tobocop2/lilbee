@@ -880,6 +880,28 @@ class TestModelRegistryRemove:
         assert not (blobs / "shard3digest").exists()
         assert registry.is_installed(f"{_REPO}/Sibling.gguf")
 
+    def test_remove_reads_manifests_once_for_multi_shard(self, tmp_path: Path) -> None:
+        """Freeing N shard blobs must not re-walk the manifest tree per shard;
+        list_installed is read once and shared across the blob GC calls."""
+        registry = ModelRegistry(tmp_path)
+        sib = tmp_path / "sib.gguf"
+        sib.write_bytes(b"GGUF" + b"\x09" * 30)
+        registry.install(_REPO, "Sibling.gguf", sib, _make_manifest(gguf_filename="Sibling.gguf"))
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        blobs = tmp_path / f"models--{repo_to_dir(_REPO)}" / "blobs"
+        (blobs / "shard2digest").write_bytes(b"x" * 10)
+        (blobs / "shard3digest").write_bytes(b"x" * 10)
+        manifest = registry._read_manifest(_REPO, _FILENAME)
+        assert manifest is not None
+        manifest.shard_blobs = ["shard2digest", "shard3digest"]
+        registry._write_manifest(manifest)
+
+        # Primary + 2 shards = 3 blob GC calls, but only one manifest-tree walk.
+        with mock.patch.object(registry, "list_installed", wraps=registry.list_installed) as spy:
+            registry.remove(_REF)
+        assert spy.call_count == 1
+
     def test_remove_keeps_shard_blob_referenced_by_sibling(self, tmp_path: Path) -> None:
         """A shard digest still referenced by a sibling's shard_blobs survives."""
         registry = ModelRegistry(tmp_path)

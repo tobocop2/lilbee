@@ -470,10 +470,12 @@ class ModelRegistry:
             repo_dir.rmdir()
         # Free the primary blob and every extra shard blob; a split GGUF has more
         # than one, and leaving the others orphans them when a sibling quant keeps
-        # the repo cache dir alive.
+        # the repo cache dir alive. The surviving manifests for this repo are read
+        # once here rather than per digest (list_installed walks the whole tree).
+        siblings = [m for m in self.list_installed() if m.hf_repo == manifest.hf_repo]
         for digest in [manifest.blob, *shard_blobs]:
             if digest is not None:
-                self._gc_blob(manifest.hf_repo, digest)
+                self._gc_blob(manifest.hf_repo, digest, siblings=siblings)
         log.info("Removed model %s", ref)
         return True
 
@@ -489,7 +491,9 @@ class ModelRegistry:
             return [_blob_digest(path) for path in shards[1:]]
         return []
 
-    def _gc_blob(self, hf_repo: str, digest: str) -> None:
+    def _gc_blob(
+        self, hf_repo: str, digest: str, *, siblings: list[ModelManifest] | None = None
+    ) -> None:
         """Drop blob bytes and HuggingFace cache cruft now that *digest*
         and possibly the whole repo are unused.
 
@@ -498,6 +502,10 @@ class ModelRegistry:
         ``snapshots/``, and stale ``blobs/`` all go with it. Otherwise
         only the specific blob file is removed when no remaining
         manifest still references its digest.
+
+        ``siblings`` is the surviving-manifest list for *hf_repo*; callers
+        freeing several blobs at once pass it in so the manifest tree is walked
+        once instead of per digest. Defaults to reading it when omitted.
         """
         cache_path = self._repo_cache_dir(hf_repo)
         try:
@@ -505,7 +513,8 @@ class ModelRegistry:
         except ValueError:
             log.warning("Refusing to remove cache outside models_dir: %s", cache_path)
             return
-        siblings = [m for m in self.list_installed() if m.hf_repo == hf_repo]
+        if siblings is None:
+            siblings = [m for m in self.list_installed() if m.hf_repo == hf_repo]
         if not siblings:
             if cache_path.exists():
                 shutil.rmtree(cache_path)
