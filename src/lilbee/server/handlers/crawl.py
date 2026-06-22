@@ -15,6 +15,7 @@ async def crawl_stream(
     depth: int | None = None,
     max_pages: int | None = None,
     render_mode: CrawlRenderMode | None = None,
+    include_subdomains: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream crawl progress as SSE events.
     Emits crawl_start, crawl_page, crawl_done events, then a final done event
@@ -40,6 +41,7 @@ async def crawl_stream(
                 max_pages=max_pages,
                 on_progress=sse.callback,
                 cancel=sse.cancel,
+                include_subdomains=include_subdomains,
                 render_mode=render_mode,
             )
         finally:

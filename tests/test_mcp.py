@@ -769,7 +769,11 @@ class TestCrawl:
         assert result["task_id"] == "abc123"
         assert result["url"] == "https://example.com"
         mock_start.assert_called_once_with(
-            "https://example.com", depth=None, max_pages=None, render_mode=None
+            "https://example.com",
+            depth=None,
+            max_pages=None,
+            render_mode=None,
+            include_subdomains=False,
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
@@ -782,7 +786,11 @@ class TestCrawl:
         result = await crawl(url="https://example.com", depth=2, max_pages=10)
         assert result["task_id"] == "def456"
         mock_start.assert_called_once_with(
-            "https://example.com", depth=2, max_pages=10, render_mode=None
+            "https://example.com",
+            depth=2,
+            max_pages=10,
+            render_mode=None,
+            include_subdomains=False,
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
@@ -803,6 +811,16 @@ class TestCrawl:
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="sub123")
+    async def test_forwards_include_subdomains(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        """include_subdomains reaches start_crawl (MCP/REST parity with CLI/TUI)."""
+        await crawl(url="https://example.com", include_subdomains=True)
+        assert mock_start.call_args.kwargs["include_subdomains"] is True
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="ghi789")
     async def test_passes_render_mode(self, mock_start, _mock_dns, _mock_avail, isolated_env):
         """An explicit render_mode is forwarded to start_crawl."""
@@ -814,6 +832,7 @@ class TestCrawl:
             depth=None,
             max_pages=None,
             render_mode=CrawlRenderMode.BROWSER,
+            include_subdomains=False,
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)

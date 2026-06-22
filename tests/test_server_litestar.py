@@ -1308,6 +1308,24 @@ class TestCrawlRoute:
         assert mock_stream.call_args.kwargs["render_mode"] is CrawlRenderMode.BROWSER
 
     @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_forwards_include_subdomains(self, mock_stream, client):
+        """include_subdomains in the body reaches the handler (CLI/TUI parity)."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post(
+            "/api/crawl", json={"url": "https://example.com", "include_subdomains": True}
+        )
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs["include_subdomains"] is True
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
+    def test_post_crawl_include_subdomains_defaults_false(self, mock_stream, client):
+        """Omitted include_subdomains defaults to False (host-only scope)."""
+        mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
+        resp = client.post("/api/crawl", json={"url": "https://example.com"})
+        assert resp.status_code == 201
+        assert mock_stream.call_args.kwargs["include_subdomains"] is False
+
+    @mock.patch("lilbee.server.handlers.crawl_stream")
     def test_post_crawl_accepts_zero_max_pages_as_unlimited(self, mock_stream, client):
         """max_pages=0 is the explicit unlimited sentinel honored by TUI/crawler."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")

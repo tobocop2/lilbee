@@ -226,6 +226,7 @@ class CrawlRequest(BaseModel):
     depth: int | None = Field(default=None, ge=0)
     max_pages: int | None = Field(default=None, ge=0)
     render_mode: CrawlRenderMode | None = Field(default=None)
+    include_subdomains: bool = Field(default=False)
 
 
 class DocumentInfo(BaseModel):

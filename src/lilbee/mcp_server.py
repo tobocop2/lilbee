@@ -308,6 +308,7 @@ async def crawl(
     depth: int | None = None,
     max_pages: int | None = None,
     render_mode: CrawlRenderMode | None = None,
+    include_subdomains: bool = False,
 ) -> dict[str, Any]:
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
 
@@ -315,6 +316,7 @@ async def crawl(
     follow depth. ``max_pages=None`` uses the protective safety cap, ``0`` is
     unlimited, positive ints cap the page count. ``render_mode``
     ("http"/"browser") overrides the configured crawl render mode.
+    ``include_subdomains`` widens whole-site scope to the host's subdomains.
     """
     from lilbee.crawler import crawler_available
 
@@ -334,7 +336,13 @@ async def crawl(
     except ValueError as exc:
         return _error(str(exc))
 
-    task_id = start_crawl(url, depth=depth, max_pages=max_pages, render_mode=render_mode)
+    task_id = start_crawl(
+        url,
+        depth=depth,
+        max_pages=max_pages,
+        render_mode=render_mode,
+        include_subdomains=include_subdomains,
+    )
     return {"status": "started", "task_id": task_id, "url": url}
 
 

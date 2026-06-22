@@ -149,6 +149,39 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.embedding is None
 
+    def test_download_progress_off_when_globally_suppressed(self, monkeypatch):
+        """quiet/JSON modes suppress HF progress bars; the embedding config mirrors that."""
+        from lilbee.data.chunk import _show_download_progress
+
+        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        assert _show_download_progress() is False
+
+    def test_download_progress_on_when_not_suppressed(self, monkeypatch):
+        from lilbee.data.chunk import _show_download_progress
+
+        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+        assert _show_download_progress() is True
+
+    def test_download_progress_default_off_when_unset(self, monkeypatch):
+        """lilbee defaults the env var on at import, so the bar stays off by default."""
+        from lilbee.data.chunk import _show_download_progress
+
+        monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
+        # Unset env reads as "not disabled" -> progress allowed; lilbee's __init__
+        # sets it to "1" in real runs, so this documents the bare-helper contract.
+        assert _show_download_progress() is True
+
+    def test_heading_path_shares_char_budget(self, monkeypatch):
+        """The heading-aware path uses the same token->char budget as the default path."""
+        from lilbee.core.config import cfg
+        from lilbee.data.chunk import CHARS_PER_TOKEN, _char_budget
+
+        monkeypatch.setattr(cfg, "chunk_size", 256)
+        monkeypatch.setattr(cfg, "chunk_overlap", 40)
+        max_chars, max_overlap = _char_budget()
+        assert max_chars == 256 * CHARS_PER_TOKEN
+        assert max_overlap == 40 * CHARS_PER_TOKEN
+
 
 class TestMarkdownChunking:
     def test_splits_on_headings(self):

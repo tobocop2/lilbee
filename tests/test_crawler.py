@@ -184,11 +184,14 @@ class TestCrawlMetadata:
         assert loaded["https://example.com"].file == "example.com/index.md"
         assert loaded["https://example.com"].content_hash == "abc123"
 
-    def test_load_corrupted_json(self, isolated_env):
+    def test_load_corrupted_json(self, isolated_env, caplog):
         meta_path = cfg.data_dir / "crawl_meta.json"
         meta_path.write_text("not valid json")
-        meta = load_crawl_metadata()
+        with caplog.at_level("WARNING"):
+            meta = load_crawl_metadata()
         assert meta == {}
+        # A corrupt sidecar re-crawls everything; the operator gets told why.
+        assert any("Discarding unreadable crawl metadata" in r.message for r in caplog.records)
 
     def test_load_malformed_entry_skipped(self, isolated_env):
         """Entries that fail CrawlMeta(**data) are skipped with a warning."""
@@ -2175,6 +2178,22 @@ class TestCrawlCancel:
         from lilbee.crawler.crawl4ai_fetcher import _safe_aclose
 
         await _safe_aclose(None)  # must not raise
+
+    async def test_safe_aclose_logs_and_swallows_teardown_error(self, caplog):
+        """A failing aclose() must not propagate; it is logged at debug instead."""
+        from lilbee.crawler.crawl4ai_fetcher import _safe_aclose
+
+        async def _gen():
+            try:
+                yield 1
+            finally:
+                raise RuntimeError("boom in cleanup")
+
+        stream = _gen()
+        await stream.__anext__()  # enter the generator so aclose triggers the finally
+        with caplog.at_level("DEBUG"):
+            await _safe_aclose(stream)  # must not raise
+        assert any("aclose() raised during teardown" in r.getMessage() for r in caplog.records)
 
     async def test_hard_cap_on_visible_counter(self):
         """counter never exceeds the resolved max_pages, even if crawl4ai yields more.

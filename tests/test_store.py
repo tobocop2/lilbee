@@ -649,6 +649,38 @@ class TestChunkTypeFilter:
         assert all(r.chunk_type == "wiki" for r in results)
         assert len(results) == 1
 
+    def test_vector_search_debug_logs_real_distance(self, store, test_config, caplog):
+        """The debug log reads LanceDB's '_distance' column, not a missing 'distance'.
+
+        With an orthogonal query the top distance is well above 0, so a wrong key
+        (defaulting to 0) would be visible in the logged values.
+        """
+        dim = test_config.embedding_dim
+        store.add_chunks(
+            [
+                {
+                    "source": "doc0.md",
+                    "content_type": "text",
+                    "chunk_type": "raw",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "some text",
+                    "chunk_index": 0,
+                    "vector": [1.0] + [0.0] * (dim - 1),
+                }
+            ]
+        )
+        query_vec = [0.0] * (dim - 1) + [1.0]
+        with caplog.at_level("DEBUG"):
+            store.search(query_vec, top_k=5, max_distance=0)
+        distance_logs = [
+            r.getMessage() for r in caplog.records if "Top 5 distances" in r.getMessage()
+        ]
+        assert distance_logs
+        assert "0.0" not in distance_logs[0].replace("Top 5 distances: ", "")
+
     def test_hybrid_search_filters_by_chunk_type(self, store, test_config):
         """Hybrid search with chunk_type filters results."""
         store.add_chunks(_make_records(n=2, chunk_type="raw"))
@@ -1210,6 +1242,22 @@ class TestGetSourcesPagination:
         store.upsert_source("other.py", "h99", 1)
         result = store.get_sources(search="readme", limit=5)
         assert len(result) == 5
+
+    def test_search_treats_underscore_literally(self, store):
+        # Without escaping, '_' is a LIKE single-char wildcard, so 'a_b' would
+        # also match 'axb'. The ESCAPE clause makes it match literally.
+        store.upsert_source("a_b.md", "h1", 1)
+        store.upsert_source("axb.md", "h2", 1)
+        matches = {s["filename"] for s in store.get_sources(search="a_b")}
+        assert matches == {"a_b.md"}
+
+    def test_search_treats_percent_literally(self, store):
+        # '%' is the LIKE any-length wildcard; a literal search must not match
+        # an unrelated filename just because the pattern contains '%'.
+        store.upsert_source("50%done.md", "h1", 1)
+        store.upsert_source("50xdone.md", "h2", 1)
+        matches = {s["filename"] for s in store.get_sources(search="50%done")}
+        assert matches == {"50%done.md"}
 
 
 class TestCountSources:

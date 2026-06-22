@@ -347,6 +347,19 @@ def _persist_skip_markers(
     write_skip_markers(cfg.data_root, markers)
 
 
+def _force_rebuild_store(store: Any) -> None:
+    """Drop the store and re-embed the preserved memories table (blocking).
+
+    Run off the event loop by ``sync``. ``drop_all`` keeps the memories table, so
+    its vectors are refreshed under the (possibly changed) embedding model;
+    a no-op when empty or no embedder.
+    """
+    store.drop_all()
+    embedder = get_services().embedder
+    if embedder.embedding_available():
+        store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -365,12 +378,9 @@ async def sync(
     _store = get_services().store
 
     if force_rebuild:
-        _store.drop_all()
-        # drop_all preserves the memories table, so refresh its vectors under the
-        # (possibly changed) embedding model. No-op when empty or no embedder.
-        _embedder = get_services().embedder
-        if _embedder.embedding_available():
-            _store.rebuild_memory_embeddings(lambda texts: _embedder.embed_batch(texts))
+        # drop_all + memory re-embedding are heavy blocking store work; run them
+        # off the event loop so a rebuild doesn't stall other admitted requests.
+        await asyncio.to_thread(_force_rebuild_store, _store)
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
