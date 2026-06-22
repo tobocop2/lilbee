@@ -149,7 +149,9 @@ class ModelGrid(Widget, can_focus=True):
         self._last_click_at: float = 0.0
         # render_line is called once per terminal row, so each card is asked for
         # _CARD_HEIGHT times per repaint; cache the built lines so a card renders
-        # once. Cleared whenever the dataset, highlight, or width changes.
+        # once. Flushed on set_rows and highlight changes, and on a resize that
+        # shifts the column count; col_width is part of the key, so a width change
+        # at the same column count is served fresh without an explicit flush.
         self._card_cache: dict[tuple[int, int, bool, str], _CardLines] = {}
 
     @property
