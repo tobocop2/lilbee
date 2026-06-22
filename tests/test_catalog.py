@@ -1899,6 +1899,18 @@ class TestFindMmprojFile:
 
         assert find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF") is None
 
+    def test_returns_none_when_repo_cache_has_no_mmproj(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The matched repo's cache exists but holds only a non-mmproj GGUF, so
+        the scoped walk finds nothing and returns None."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        self._write_repo_mmproj(tmp_path, "noctrex/LightOnOCR-2-1B-GGUF", "model-Q4_K_M.gguf")
+
+        from lilbee.catalog import find_mmproj_file
+
+        assert find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF") is None
+
 
 class TestResolveMmprojFilename:
     def test_exact_filename_passthrough(self) -> None:
