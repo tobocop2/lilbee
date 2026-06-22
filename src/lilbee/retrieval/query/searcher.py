@@ -259,11 +259,11 @@ class Searcher:
             if not query_concepts:
                 return results
             boosted = self._concepts.boost_results(results, query_concepts)
-            # boost_results mutates relevance_score/distance but preserves input
-            # order; re-sort so the boost actually re-ranks for callers that consume
-            # search() order directly (CLI search, MCP lilbee_search). order_by_fusion
-            # normalizes per scoring family so HyDE (distance) hits can't outrank a
-            # strong hybrid (RRF) hit purely on scale.
+            # boost_results returns copies with adjusted relevance_score/distance in
+            # input order; re-sort so the boost actually re-ranks for callers that
+            # consume search() order directly (CLI search, MCP lilbee_search).
+            # order_by_fusion normalizes per scoring family so HyDE (distance) hits
+            # can't outrank a strong hybrid (RRF) hit purely on scale.
             return order_by_fusion(boosted)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
@@ -452,6 +452,9 @@ class Searcher:
             if self._config.hyde:
                 self._merge_hyde_results(question, results, seen, top_k, chunk_type)
         results = self._apply_concept_boost(results, question)
+        # Apply the date-range filter here so the bare search() path (e.g. /api/search)
+        # honors a "recent"/"today" query, matching the chat/ask path.
+        results = self._apply_temporal_filter(results, question)
         return results[: top_k * 2]
 
     def build_rag_context(
@@ -476,7 +479,7 @@ class Searcher:
         results = prepare_results(results)
         if self._config.reranker_model:
             results = self._reranker.rerank(question, results)
-        results = self._apply_temporal_filter(results, question)
+        # Temporal filtering already ran inside search(); no need to repeat it here.
         results = self.select_context(results, question)
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         results = self._fit_context_budget(results, system, question, history)

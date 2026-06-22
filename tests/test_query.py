@@ -1211,6 +1211,21 @@ class TestTemporalFilter:
         searcher = get_services().searcher
         assert searcher._apply_temporal_filter(results, "how does auth work") == results
 
+    def test_bare_search_applies_temporal_filter(self, mock_svc, monkeypatch):
+        """The bare search() path runs the temporal filter, matching chat/ask."""
+        searcher = get_services().searcher
+        mock_svc.store.search.return_value = [_make_result()]
+        monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
+        seen: list[str] = []
+
+        def _temporal(results, question):
+            seen.append(question)
+            return results
+
+        monkeypatch.setattr(searcher, "_apply_temporal_filter", _temporal)
+        searcher.search("recent changes")
+        assert seen == ["recent changes"]
+
     def test_disabled_via_config(self, mock_svc):
         old = cfg.temporal_filtering
         cfg.temporal_filtering = False

@@ -58,7 +58,7 @@ def _leiden_partition(
     ]
     _modularity, partition = leiden(edges=edges, seed=_LEIDEN_SEED)  # type: ignore[call-arg]
 
-    degree_map: dict[str, int] = Counter()
+    degree_map: Counter[str] = Counter()
     for row in edge_rows:
         degree_map[row["source"]] += 1
         degree_map[row["target"]] += 1

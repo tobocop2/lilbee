@@ -8,8 +8,10 @@ Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
   caller-supplied cap.
 - ``stream_chat_with_cap``: the high-level orchestrator. Wraps a
   provider call with the filter; when the cap fires, re-issues the
-  chat with a "stop thinking, answer directly" nudge. All chat surfaces
-  (HTTP/SSE, CLI, TUI) consume this so cap behavior is uniform.
+  chat with a "stop thinking, answer directly" nudge. The ask/search
+  streaming path and CLI/TUI consume it directly; the canonical
+  chat-dispatch path mirrors the same filter + cap-nudge behavior over
+  its own async driver.
 - ``effective_reasoning_cap``: resolves the cap from the global config
   with per-model ``ModelDefaults`` overrides.
 """
