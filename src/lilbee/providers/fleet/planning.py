@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,8 +27,11 @@ from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
     PeakEstimator,
+    Placement,
+    placement_from_spec,
     plan_placement,
 )
+from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.vram import estimate_instance_footprint
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -692,6 +696,63 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     return max(0, model_cache.free_system_memory() - floor)
 
 
+def _resolve_placement(
+    placement: PlacementSpec | None,
+    inputs: list[ModelPlacementInput],
+    model_refs: dict[WorkerRole, str],
+    devices: list[FleetDevice],
+    *,
+    unified_budget: int | None,
+) -> Placement:
+    """Resolve a Placement from the manual spec when set, else the auto planner."""
+    estimate_peak = _peak_estimator(model_refs)
+    if placement is not None:
+        return placement_from_spec(
+            placement,
+            tuple(model_refs),
+            {d.index: d.free_bytes for d in devices},
+            estimate_peak=estimate_peak,
+        )
+    return plan_placement(
+        inputs,
+        [(d.index, d.free_bytes) for d in devices],
+        estimate_peak=estimate_peak,
+        unified_budget=unified_budget,
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedPlacement:
+    """Devices + resolved instance plans + model refs for the placement view."""
+
+    devices: tuple[FleetDevice, ...]
+    instances: tuple[InstancePlan, ...]
+    unplaceable_roles: tuple[WorkerRole, ...]
+    model_refs: dict[WorkerRole, str]
+
+
+def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement:
+    """Probe devices and resolve the auto-or-manual placement, without launching."""
+    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
+
+    apply_fleet_gpu_env()
+    binary = resolve_llama_server()
+    apply_cuda_runtime_env()
+    devices = resolve_devices(binary)
+    unified_budget = _unified_memory_budget(devices)
+    inputs, model_refs, _ = _server_model_inputs(None, unified_budget=unified_budget)
+    resolved = _resolve_placement(
+        placement, inputs, model_refs, devices, unified_budget=unified_budget
+    )
+    return ResolvedPlacement(
+        devices=tuple(devices),
+        instances=resolved.instances,
+        unplaceable_roles=resolved.unplaceable_roles,
+        model_refs=model_refs,
+    )
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
@@ -699,13 +760,12 @@ def plan_launches(
     devices: list[FleetDevice],
 ) -> list[InstanceLaunch]:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
+    from lilbee.core.config import cfg
+
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, reservation = _server_model_inputs(roles, unified_budget=unified_budget)
-    placement = plan_placement(
-        inputs,
-        [(d.index, d.free_bytes) for d in devices],
-        estimate_peak=_peak_estimator(model_refs),
-        unified_budget=unified_budget,
+    placement = _resolve_placement(
+        cfg.placement, inputs, model_refs, devices, unified_budget=unified_budget
     )
     for role in placement.unplaceable_roles:
         log.warning(
