@@ -1380,6 +1380,20 @@ class TestPipelineToTask:
         assert _query.pipeline_to_task("sentence-similarity") == "embedding"
 
 
+class TestGetInstalledModels:
+    def test_returns_installed_names(self) -> None:
+        manager = MagicMock()
+        manager.list_installed.return_value = ["a/b", "c/d"]
+        assert _query._get_installed_models(manager) == {"a/b", "c/d"}
+
+    def test_manager_failure_returns_empty_and_logs(self, caplog) -> None:
+        manager = MagicMock()
+        manager.list_installed.side_effect = RuntimeError("registry broken")
+        with caplog.at_level("WARNING"):
+            assert _query._get_installed_models(manager) == set()
+        assert any("treating as none installed" in r.getMessage() for r in caplog.records)
+
+
 class TestFeaturedVisionModel:
     def test_featured_vision_is_lightonocr(self) -> None:
         assert len(FEATURED_VISION) == 1

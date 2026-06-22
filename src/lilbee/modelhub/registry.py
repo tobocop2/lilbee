@@ -513,6 +513,11 @@ class ModelRegistry:
         if any(digest == m.blob or digest in m.shard_blobs for m in siblings):
             return
         blob_file = cache_path / "blobs" / digest
+        try:
+            validate_path_within(blob_file, self._root)
+        except ValueError:
+            log.warning("Refusing to remove blob outside models_dir: %s", blob_file)
+            return
         if blob_file.exists():
             blob_file.unlink()
 

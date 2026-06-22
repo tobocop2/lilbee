@@ -1,6 +1,7 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
 import functools
+import logging
 from typing import Any, NamedTuple
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
@@ -10,6 +11,8 @@ from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import GGUF_GLOB, format_native_gguf_ref, hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+
+log = logging.getLogger(__name__)
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -134,10 +137,16 @@ def pipeline_to_task(pipeline_tag: str) -> ModelTask:
 
 
 def _get_installed_models(model_manager: Any) -> set[str]:
-    """Get set of installed model names from model_manager."""
+    """Get set of installed model names from model_manager.
+
+    Treats a manager failure as "nothing installed" so the browse list still
+    renders, but logs it: silently swallowing would hide a broken registry that
+    makes every model look uninstalled.
+    """
     try:
         return set(model_manager.list_installed())
     except Exception:
+        log.warning("Could not read installed models; treating as none installed", exc_info=True)
         return set()
 
 

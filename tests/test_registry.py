@@ -1158,6 +1158,30 @@ class TestModelRegistryGCBlobPathGuard:
             "Refusing to remove cache outside models_dir" in r.message for r in caplog.records
         )
 
+    def test_refuses_blob_digest_with_traversal(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A digest with ``..`` resolves outside the repo's blobs dir; the blob
+        path guard must refuse to unlink it. A sibling manifest keeps the repo
+        cache alive so the no-siblings rmtree branch isn't taken first."""
+        import logging
+
+        from lilbee.modelhub import registry as registry_mod
+
+        registry = ModelRegistry(tmp_path)
+        src = _write_source(tmp_path)
+        registry.install(_REPO, _FILENAME, src, _make_manifest())
+        # A file outside the registry root that a traversal digest would target.
+        victim = tmp_path.parent / "victim.bin"
+        victim.write_bytes(b"keep me")
+        traversal_digest = f"../../../{victim.name}"
+        with caplog.at_level(logging.WARNING, logger=registry_mod.__name__):
+            registry._gc_blob(_REPO, traversal_digest)
+        assert victim.exists()
+        assert any(
+            "Refusing to remove blob outside models_dir" in r.message for r in caplog.records
+        )
+
 
 class TestShardAccounting:
     def test_single_file_returns_none_and_empty(self, tmp_path: Path) -> None:
