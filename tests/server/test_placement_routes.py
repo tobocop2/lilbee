@@ -29,7 +29,10 @@ def _view(manual=False):
 
 
 def test_get_placement(monkeypatch):
-    monkeypatch.setattr(handlers, "placement", lambda: _view())
+    async def _placement():
+        return _view()
+
+    monkeypatch.setattr(handlers, "placement", _placement)
     with create_test_client([placement_route]) as client:
         r = client.get("/api/placement")
         assert r.status_code == 200
@@ -38,11 +41,12 @@ def test_get_placement(monkeypatch):
 
 def test_put_sets(monkeypatch):
     seen = {}
-    monkeypatch.setattr(
-        handlers,
-        "placement_set",
-        lambda spec_json: seen.setdefault("json", spec_json) or _view(True),
-    )
+
+    async def _set(spec_json):
+        seen["json"] = spec_json
+        return _view(True)
+
+    monkeypatch.setattr(handlers, "placement_set", _set)
     with create_test_client([placement_set_route]) as client:
         r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
         assert r.status_code == 200
@@ -50,15 +54,25 @@ def test_put_sets(monkeypatch):
 
 
 def test_delete_clears(monkeypatch):
-    monkeypatch.setattr(handlers, "placement_clear", lambda: _view())
+    cleared = {"called": False}
+
+    async def _clear():
+        cleared["called"] = True
+        return _view()
+
+    monkeypatch.setattr(handlers, "placement_clear", _clear)
     with create_test_client([placement_clear_route]) as client:
-        assert client.delete("/api/placement").status_code == 200
+        r = client.delete("/api/placement")
+        assert r.status_code == 200
+        assert r.json()["manual"] is False
+        assert r.json()["gpus"][0]["label"] == "CUDA0"
+        assert cleared["called"]
 
 
 def test_preview_unfit_returns_422(monkeypatch):
     from lilbee.providers.fleet.placement_spec import PlacementError
 
-    def boom(spec_json):
+    async def boom(spec_json):
         raise PlacementError("chat needs 70 GiB but device 0 has 40 GiB free")
 
     monkeypatch.setattr(handlers, "placement_preview", boom)
@@ -69,7 +83,10 @@ def test_preview_unfit_returns_422(monkeypatch):
 
 
 def test_preview_auto(monkeypatch):
-    monkeypatch.setattr(handlers, "placement_preview", lambda spec_json: _view())
+    async def _preview(spec_json):
+        return _view()
+
+    monkeypatch.setattr(handlers, "placement_preview", _preview)
     with create_test_client([placement_preview_route]) as client:
         r = client.post("/api/placement/preview", json={})
         assert r.status_code == 200
@@ -78,11 +95,12 @@ def test_preview_auto(monkeypatch):
 
 def test_preview_with_spec(monkeypatch):
     captured = {}
-    monkeypatch.setattr(
-        handlers,
-        "placement_preview",
-        lambda spec_json: captured.setdefault("json", spec_json) or _view(True),
-    )
+
+    async def _preview(spec_json):
+        captured["json"] = spec_json
+        return _view(True)
+
+    monkeypatch.setattr(handlers, "placement_preview", _preview)
     with create_test_client([placement_preview_route]) as client:
         r = client.post("/api/placement/preview", json={"spec": {"chat": {"devices": [0]}}})
         assert r.status_code == 200
@@ -90,7 +108,10 @@ def test_preview_with_spec(monkeypatch):
 
 
 def test_put_missing_spec_returns_422(monkeypatch):
-    monkeypatch.setattr(handlers, "placement_set", lambda spec_json: _view(True))
+    async def _set(spec_json):
+        return _view(True)
+
+    monkeypatch.setattr(handlers, "placement_set", _set)
     with create_test_client([placement_set_route]) as client:
         r = client.put("/api/placement", json={})
         assert r.status_code == 422
@@ -99,10 +120,8 @@ def test_put_missing_spec_returns_422(monkeypatch):
 def test_get_gpus(monkeypatch):
     from lilbee.server.models import GpuInfoResponse
 
-    monkeypatch.setattr(
-        handlers,
-        "gpus",
-        lambda: [
+    async def _gpus():
+        return [
             GpuInfoResponse(
                 index=0,
                 backend="CUDA",
@@ -111,8 +130,9 @@ def test_get_gpus(monkeypatch):
                 total_bytes=80 * GIB,
                 free_bytes=72 * GIB,
             )
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(handlers, "gpus", _gpus)
     with create_test_client([gpus_route]) as client:
         r = client.get("/api/gpus")
         assert r.status_code == 200

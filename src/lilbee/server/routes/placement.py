@@ -22,7 +22,7 @@ def _spec_json(body: PlacementSpecBody) -> str | None:
 @read_only
 async def placement_route() -> PlacementResponse:
     """Current effective placement."""
-    return handlers.placement()  # type: ignore[return-value]
+    return await handlers.placement()
 
 
 @post("/api/placement/preview", status_code=200)
@@ -30,7 +30,7 @@ async def placement_route() -> PlacementResponse:
 async def placement_preview_route(data: PlacementSpecBody) -> PlacementResponse:
     """Preview a candidate spec (or auto when no spec)."""
     try:
-        return handlers.placement_preview(_spec_json(data))  # type: ignore[return-value]
+        return await handlers.placement_preview(_spec_json(data))
     except PlacementError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -41,7 +41,7 @@ async def placement_set_route(data: PlacementSpecBody) -> PlacementResponse:
     if data.spec is None:
         raise HTTPException(status_code=422, detail="spec is required")
     try:
-        return handlers.placement_set(json.dumps(data.spec))  # type: ignore[return-value]
+        return await handlers.placement_set(json.dumps(data.spec))
     except PlacementError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -49,11 +49,11 @@ async def placement_set_route(data: PlacementSpecBody) -> PlacementResponse:
 @delete("/api/placement", status_code=200)
 async def placement_clear_route() -> PlacementResponse:
     """Clear the manual placement, returning to auto."""
-    return handlers.placement_clear()  # type: ignore[return-value]
+    return await handlers.placement_clear()
 
 
 @get("/api/gpus")
 @read_only
 async def gpus_route() -> list[GpuInfoResponse]:
     """Detected GPUs with free/total VRAM."""
-    return handlers.gpus()  # type: ignore[return-value]
+    return await handlers.gpus()
