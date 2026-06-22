@@ -242,14 +242,6 @@ def _require_litellm() -> Any:
     return litellm
 
 
-def _cache_ollama_defaults(model: str, params_text: str) -> None:
-    """Parse Ollama parameters and store in the model defaults cache."""
-    from lilbee.providers.model_defaults import parse_kv_parameters, set_defaults
-
-    defaults = parse_kv_parameters(params_text)
-    set_defaults(model, defaults)
-
-
 def _route_model(ref: ProviderModelRef, api_base: str | None) -> str:
     """Format *ref* for litellm using the OpenAI ``provider/model`` convention.
 
@@ -673,8 +665,7 @@ class LitellmSdkBackend:
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
         """Get model info via the Ollama ``/api/show`` endpoint.
 
-        Parses and caches per-model generation defaults from the
-        ``parameters`` field. Also extracts the ``capabilities`` list
+        Returns the raw ``parameters`` text and the ``capabilities`` list
         (newer Ollama versions) so callers can check for vision support.
         Returns ``None`` for servers without a metadata endpoint (LM Studio).
         """
@@ -700,10 +691,8 @@ class LitellmSdkBackend:
 
         params = data.get("parameters", "")
         if isinstance(params, str) and params:
-            _cache_ollama_defaults(model, params)
             result["parameters"] = params
         elif params:
-            _cache_ollama_defaults(model, str(params))
             result["parameters"] = str(params)
 
         capabilities = data.get("capabilities")
