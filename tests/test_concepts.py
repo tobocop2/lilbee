@@ -518,6 +518,13 @@ class TestBoostResults:
         boosted = cg.boost_results(results, ["python"])
         assert boosted[0].distance == 0.5
 
+    def test_boost_results_returns_unchanged_when_table_missing(self, cg, mock_svc):
+        """No chunk_concepts table -> results pass through (table opened once, up front)."""
+        results = [_make_result(distance=0.5, chunk_index=0)]
+        mock_svc.store.open_table.return_value = None
+        boosted = cg.boost_results(results, ["python"])
+        assert boosted == results
+
     def test_boost_results_empty_query_concepts(self, cg):
         results = [_make_result()]
         boosted = cg.boost_results(results, [])
