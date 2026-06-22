@@ -1861,15 +1861,25 @@ class TestFindMmprojFile:
         result = find_mmproj_file("LightOnOCR-2")
         assert result is None
 
+    @staticmethod
+    def _write_repo_mmproj(models_dir: Path, hf_repo: str, filename: str) -> Path:
+        """Write *filename* into *hf_repo*'s HF cache subtree, as hf_hub_download would."""
+        snapshot = models_dir / f"models--{hf_repo.replace('/', '--')}" / "snapshots" / "rev0"
+        snapshot.mkdir(parents=True, exist_ok=True)
+        mmproj = snapshot / filename
+        mmproj.write_bytes(b"fake")
+        return mmproj
+
     def test_finds_mmproj_with_fnmatch_pattern(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """find_mmproj_file matches using VISION_MMPROJ_FILES patterns."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
 
-        # Test with LightOnOCR-2 (featured vision model)
-        mmproj = tmp_path / "model-mmproj-f16.gguf"
-        mmproj.write_bytes(b"fake")
+        # Test with LightOnOCR-2 (featured vision model), in its own cache subtree.
+        mmproj = self._write_repo_mmproj(
+            tmp_path, "noctrex/LightOnOCR-2-1B-GGUF", "model-mmproj-f16.gguf"
+        )
 
         from lilbee.catalog import find_mmproj_file
 
@@ -1882,14 +1892,29 @@ class TestFindMmprojFile:
         """find_mmproj_file also matches against hf_repo."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
 
-        mmproj = tmp_path / "model-mmproj-f16.gguf"
-        mmproj.write_bytes(b"fake")
+        mmproj = self._write_repo_mmproj(
+            tmp_path, "noctrex/LightOnOCR-2-1B-GGUF", "model-mmproj-f16.gguf"
+        )
 
         from lilbee.catalog import find_mmproj_file
 
         # Match against hf_repo instead of display name
         result = find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF")
         assert result == mmproj
+
+    def test_does_not_return_other_repos_mmproj(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An mmproj that belongs to a different repo must not be returned for a
+        repo whose own mmproj isn't present (cross-contamination guard)."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        # A different vision repo's mmproj sits in the cache, but the featured
+        # LightOnOCR repo has none of its own.
+        self._write_repo_mmproj(tmp_path, "someone/other-vision-GGUF", "mmproj-f16.gguf")
+
+        from lilbee.catalog import find_mmproj_file
+
+        assert find_mmproj_file("noctrex/LightOnOCR-2-1B-GGUF") is None
 
 
 class TestResolveMmprojFilename:

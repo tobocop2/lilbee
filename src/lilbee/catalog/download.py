@@ -293,10 +293,19 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     return mmproj_files[0]
 
 
-def _mmproj_in_models_dir_matching(pattern: str) -> Path | None:
-    """Return the first ``*.gguf`` under the models dir that matches."""
-    models_dir: Path = _models_dir()
-    for p in models_dir.rglob("*.gguf"):
+def _mmproj_in_repo_cache(hf_repo: str, pattern: str) -> Path | None:
+    """Return an mmproj ``*.gguf`` from *hf_repo*'s own HF cache subtree, or None.
+
+    Scoped to the repo's ``models--<org>--<repo>`` directory so a different vision
+    repo's mmproj is never returned. An unscoped models-dir walk would let a chat
+    model inherit another model's mmproj and be misreported as vision-capable.
+    """
+    from huggingface_hub.constants import REPO_ID_SEPARATOR
+
+    repo_cache = _models_dir() / f"models--{hf_repo.replace('/', REPO_ID_SEPARATOR)}"
+    if not repo_cache.exists():
+        return None
+    for p in repo_cache.rglob("*.gguf"):
         if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
             return p
     return None
@@ -320,7 +329,7 @@ def find_mmproj_file(model_ref: str) -> Path | None:
         if model_ref not in entry.hf_repo and entry.hf_repo not in model_ref:
             continue
         pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
-        match = _mmproj_in_models_dir_matching(pattern)
+        match = _mmproj_in_repo_cache(entry.hf_repo, pattern)
         if match is not None:
             return match
     return None
