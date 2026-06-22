@@ -1088,3 +1088,18 @@ async def test_populate_library_renders_with_empty_frontier_when_attr_missing() 
 
         ml = screen.query_one("#list-library", ModelList)
         assert ml.option_count > 0
+
+
+class TestModelFieldForTask:
+    def test_each_task_maps_to_its_role_field(self):
+        from lilbee.cli.tui.screens.catalog import _model_field_for_task
+
+        assert _model_field_for_task(ModelTask.CHAT) == "chat_model"
+        assert _model_field_for_task(ModelTask.EMBEDDING) == "embedding_model"
+        assert _model_field_for_task(ModelTask.VISION) == "vision_model"
+        assert _model_field_for_task(ModelTask.RERANK) == "reranker_model"
+
+    def test_accepts_str_task_from_frontier_rows(self):
+        from lilbee.cli.tui.screens.catalog import _model_field_for_task
+
+        assert _model_field_for_task("vision") == "vision_model"

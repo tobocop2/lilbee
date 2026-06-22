@@ -93,6 +93,21 @@ _HF_LOAD_MORE_TRIGGER = 4
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
 
+# Which config model-role field a selected model is assigned to, keyed by its task.
+# Remote/frontier rows surface into their matching task tab, so selecting one must
+# persist to that role, not always to chat_model.
+_TASK_TO_MODEL_FIELD: dict[ModelTask, str] = {
+    ModelTask.CHAT: "chat_model",
+    ModelTask.EMBEDDING: "embedding_model",
+    ModelTask.VISION: "vision_model",
+    ModelTask.RERANK: "reranker_model",
+}
+
+
+def _model_field_for_task(task: ModelTask | str) -> str:
+    return _TASK_TO_MODEL_FIELD.get(ModelTask(task), "chat_model")
+
+
 _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
 _WORKER_FETCH_REMOTE = "fetch_remote_models"
@@ -1706,13 +1721,13 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            apply_active_model(self.app, "chat_model", row.ref)
+            apply_active_model(self.app, _model_field_for_task(row.remote_model.task), row.ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
         """Activate a cloud model, or jump to settings when the key is missing."""
         if row.key_status == KeyStatus.READY:
-            apply_active_model(self.app, "chat_model", row.ref)
+            apply_active_model(self.app, _model_field_for_task(row.task), row.ref)
             self.notify(msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider))
             return
         key_field = f"{row.provider_id}_api_key"
