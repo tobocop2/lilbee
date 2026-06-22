@@ -75,6 +75,11 @@ class Config(BaseSettings):
     # ~-substitution / left-truncation for project paths. Toggled by F4.
     show_lilbee_path: bool = ConfigField(default=False, writable=True)
 
+    # Whether an agent launcher (today only `launch opencode`) injects lilbee's
+    # MCP search tool into the agent's session config. Generic name so future
+    # launchers can read the same field. Per-launch --mcp/--no-mcp overrides it.
+    agent_mcp_enabled: bool = ConfigField(default=True, writable=True)
+
     chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf", min_length=1)
     embedding_model: str = Field(
         default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",

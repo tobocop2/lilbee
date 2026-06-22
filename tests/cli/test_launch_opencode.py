@@ -328,6 +328,27 @@ def test_opencode_config_pins_default_model_when_ref_given():
     assert block["model"] == "lilbee/a/M/m.gguf"
 
 
+def test_opencode_config_includes_mcp_by_default():
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"])
+    assert block["mcp"]["lilbee"]["url"] == "http://127.0.0.1:9/mcp"
+
+
+def test_opencode_config_omits_mcp_block_when_disabled():
+    """include_mcp=False drops the mcp block entirely but keeps lilbee as provider."""
+    from lilbee.cli.agent_configs.opencode import opencode_config
+
+    block = opencode_config(
+        base_url="http://127.0.0.1:9",
+        api_key="k",
+        model_refs=["a/M/m.gguf"],
+        include_mcp=False,
+    )
+    assert "mcp" not in block
+    assert "lilbee" in block["provider"]
+
+
 def test_opencode_config_omits_model_key_without_default_ref():
     from lilbee.cli.agent_configs.opencode import opencode_config
 
@@ -374,6 +395,51 @@ def test_launch_opencode_installs_skill_into_global_skills_dir(tmp_path):
     skill_path = tmp_path / ".config" / "opencode" / "skills" / "lilbee-mcp" / "SKILL.md"
     assert skill_path.exists()
     assert "lilbee-mcp" in skill_path.read_text()
+
+
+def _config_block_from_launch(args: list[str]) -> dict:
+    """Invoke ``launch opencode`` (with given extra args) and return the
+    opencode config block prepare() injected into the child env."""
+    import json
+
+    from lilbee.cli.launchers.opencode import _OPENCODE_CONFIG_ENV_VAR
+
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed) as mock_run,
+    ):
+        runner.invoke(app, ["launch", *args])
+    env = mock_run.call_args.kwargs["env"]
+    return json.loads(env[_OPENCODE_CONFIG_ENV_VAR])
+
+
+def test_launch_opencode_no_mcp_omits_block_and_skips_skill(tmp_path):
+    """--no-mcp drops the mcp block and does not install the lilbee-mcp skill."""
+    block = _config_block_from_launch(["opencode", "--no-mcp"])
+    assert "mcp" not in block
+    assert "lilbee" in block["provider"]  # still the model provider
+    skill_path = tmp_path / ".config" / "opencode" / "skills" / "lilbee-mcp"
+    assert not skill_path.exists()
+
+
+def test_launch_opencode_mcp_flag_overrides_disabled_config(tmp_path, monkeypatch):
+    """--mcp forces the block on even when agent_mcp_enabled is False."""
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "agent_mcp_enabled", False)
+    block = _config_block_from_launch(["opencode", "--mcp"])
+    assert "mcp" in block
+
+
+def test_launch_opencode_defaults_to_config_when_no_flag(tmp_path, monkeypatch):
+    """With no flag, the config field decides; agent_mcp_enabled=False omits mcp."""
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "agent_mcp_enabled", False)
+    block = _config_block_from_launch(["opencode"])
+    assert "mcp" not in block
 
 
 def test_launch_opencode_skips_skill_install_when_already_present(tmp_path):

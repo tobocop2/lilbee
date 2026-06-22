@@ -11,6 +11,12 @@ opencode sends a prompt, the model calls `lilbee_search`, opencode runs the tool
 against an indexed workspace, and the model writes a final answer from the
 results. Each family below completed that loop.
 
+To bring your own MCP servers instead of lilbee's search tool, launch with
+`--no-mcp`: lilbee stays the model provider but omits its MCP block, leaving
+your own opencode MCP config untouched. The default is set by the
+`agent_mcp_enabled` config field (env `LILBEE_AGENT_MCP_ENABLED`); `--mcp` /
+`--no-mcp` override it for a single launch.
+
 ## Verified families
 
 | Family | Example model | Notes |

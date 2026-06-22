@@ -730,6 +730,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Trades cold-start time per role for first-call latency"
         ),
     ),
+    "agent_mcp_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.SYSTEM,
+        help_text=(
+            "Inject lilbee's MCP search tool into agent launchers (e.g. `launch opencode`). "
+            "Disable to bring your own MCP servers; lilbee stays the model provider"
+        ),
+    ),
     "max_tokens": SettingDef(
         int,
         nullable=True,
