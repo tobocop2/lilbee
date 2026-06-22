@@ -1352,7 +1352,11 @@ class TestSyncSkippedMessageBranches:
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = "stub/vision"
-        assert "vision OCR returned no text" in sync_skipped_message("a.pdf")
+        msg = sync_skipped_message("a.pdf")
+        assert "vision OCR returned no text" in msg
+        # The log path must be the resolved, per-platform location (not a
+        # hardcoded macOS string), so it's correct on Linux/Windows too.
+        assert str(cfg.data_root / "logs" / "server.log") in msg
 
     def test_returns_no_vision_when_vision_model_unset(self) -> None:
         from lilbee.cli.tui.messages import sync_skipped_message
