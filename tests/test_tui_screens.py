@@ -3250,60 +3250,157 @@ async def test_chat_cancel_stream_while_streaming():
 
 
 async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels stream and defers service reset."""
+    """apply_model_change cancels the stream and spawns the off-thread reload."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = True
         with (
             patch.object(screen, "action_cancel_stream") as mock_cancel,
-            patch.object(screen, "call_later") as mock_later,
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
             mock_cancel.assert_called_once()
-            mock_later.assert_called_once_with(screen._deferred_service_reset)
+            mock_worker.assert_called_once()
 
 
-async def testapply_model_change_resets_immediately_when_not_streaming():
-    """apply_model_change resets services immediately when not streaming."""
+async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming():
+    """Not streaming: the reload runs in a worker, never on the event loop, so the
+    swap can't freeze the TUI."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
-        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
+        with (
+            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
+            patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
+        ):
             screen.apply_model_change()
-            mock_reset.assert_called_once()
+            mock_cancel.assert_not_called()
+            mock_worker.assert_called_once()
+            # The reload runs in the worker, not inline on the event loop.
+            mock_get.assert_not_called()
 
 
-async def test_deferred_service_reset_retries_while_workers_active():
-    """_deferred_service_reset retries via call_later when workers exist."""
+async def test_apply_model_change_ignores_reentry_while_swapping():
+    """A second swap while one is loading is ignored, not a duplicate worker.
+
+    The model bar stays clickable during a swap; a re-click (or a rapid second
+    /model) must not spawn a second reload worker and a duplicate done toast.
+    """
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        with (
-            patch.object(
-                type(screen), "workers", new_callable=MagicMock, return_value=[MagicMock()]
-            ),
-            patch.object(screen, "call_later") as mock_later,
-            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
-        ):
-            screen._deferred_service_reset()
-            mock_later.assert_called_once_with(screen._deferred_service_reset)
-            mock_reset.assert_not_called()
+        screen.swapping_model = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            mock_worker.assert_not_called()
 
 
-async def test_deferred_service_reset_resets_when_no_workers():
-    """_deferred_service_reset calls reset_services when workers drained."""
+async def test_reload_chat_worker_reloads_only_chat_and_unblocks():
+    """The worker reloads the CHAT role (keeping the store) and unblocks input."""
+    from lilbee.providers.roles import WorkerRole
+
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        # Cancel background workers so the screen's worker manager is empty
-        for w in list(screen.workers):
-            w.cancel()
-        await pilot.pause()
-        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
-            screen._deferred_service_reset()
-            mock_reset.assert_called_once()
+        screen.swapping_model = True
+        services_mock = MagicMock()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services_mock),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
+            # Only the chat role is reloaded, synchronously (wait=True), so the
+            # store and searcher are kept rather than torn down.
+            services_mock.reload_role.assert_called_once_with(WorkerRole.CHAT, wait=True)
+            # The input is unblocked only after the worker finishes the reload.
+            assert screen.swapping_model is False
+            assert any("Now using" in str(call.args[0]) for call in mock_notify.call_args_list), (
+                mock_notify.call_args_list
+            )
+
+
+async def test_reload_chat_worker_failure_unblocks_and_errors():
+    """A reload failure still unblocks the input and surfaces an error toast."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        services_mock = MagicMock()
+        services_mock.reload_role.side_effect = RuntimeError("boom")
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services_mock),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
+            assert screen.swapping_model is False
+            assert any(
+                "Could not switch model" in str(call.args[0]) for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_apply_model_change_blocks_input_during_swap():
+    """apply_model_change disables the chat input so a prompt can't race the load."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = False
+        # Stub the worker so the swap stays in its in-progress state long enough
+        # to observe the input gate (the real worker would unblock on completion).
+        with patch.object(screen, "_reload_chat_model_worker"):
+            screen.apply_model_change()
+            # swapping_model is set synchronously; its watcher disables the input.
+            assert screen.swapping_model is True
+            assert screen.query_one("#chat-input").disabled is True
+
+
+async def test_submit_rejected_while_swapping_model():
+    """A submit mid-swap is rejected with a 'still switching' toast, not sent."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        with (
+            patch.object(screen, "_send_message") as mock_send,
+            patch.object(app, "notify") as mock_notify,
+        ):
+            rejected = screen._reject_submit_when_busy()
+            assert rejected is True
+            mock_send.assert_not_called()
+            assert any(
+                "switching model" in str(call.args[0]).lower()
+                for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_submit_rejected_while_streaming():
+    """A submit while a response is streaming is rejected with the busy toast."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = False
+        screen.streaming = True
+        with patch.object(app, "notify") as mock_notify:
+            assert screen._reject_submit_when_busy() is True
+            assert any(
+                "answering" in str(call.args[0]).lower() for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_submit_not_rejected_when_idle():
+    """When neither swapping nor streaming, the submit is allowed through."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = False
+        screen.streaming = False
+        assert screen._reject_submit_when_busy() is False
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():
@@ -12335,10 +12432,13 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
     from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
+            # The persist + role reload now runs in a thread worker; await it.
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
         # Label was repainted via model_picker_label; the chat_model field
@@ -12347,13 +12447,13 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         assert str(button.label).strip() != ""
 
 
-async def test_settings_model_picker_dismissed_reloads_worker_for_role():
-    """Picking from Settings respawns just the role that changed.
+async def test_settings_model_picker_dismissed_reloads_worker_once():
+    """Picking from Settings respawns just the role that changed, exactly once.
 
-    Without this, the new model is written to cfg but the live worker
-    keeps the old model loaded until restart. With it, the rerank /
-    vision / embed worker reflects the new selection on the next call,
-    and an in-flight chat stream is unaffected.
+    The reload is owned by ``apply_model_pick`` (off the event loop); the Settings
+    on_done must NOT also reload, or the fleet restarts twice and the second
+    reload blocks the UI thread. ``model_pick`` is the only path that reloads, so
+    asserting a single reload there guards that regression.
     """
     from unittest.mock import patch
 
@@ -12362,23 +12462,21 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
+            # apply_model_pick's worker owns the single reload; the Settings on_done
+            # only repaints the button, so there is exactly one reload_role call.
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
-            # The single reload now runs in _after_model_pick (settings module);
-            # apply_model_pick is called with reload_worker=False to avoid a double.
-            patch(
-                "lilbee.cli.tui.screens.settings.get_services",
-                return_value=services_mock,
-            ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
-        services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
 
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():
@@ -12443,6 +12541,28 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
         mock_apply.assert_not_called()
 
 
+class _SyncWorkerApp:
+    """Stub App for unit tests of the model-swap persist path.
+
+    The persist now offloads its config write + role reload to a thread worker;
+    this stub runs that worker (and its main-thread completion callback)
+    synchronously so a non-async unit test still exercises the path inline.
+    """
+
+    def notify(self, *_args, **_kwargs) -> None:
+        pass
+
+    def run_worker(self, work, **_kwargs):
+        work()
+
+    def call_from_thread(self, fn, *args, **kwargs):
+        fn(*args, **kwargs)
+
+    @property
+    def app(self) -> _SyncWorkerApp:
+        return self
+
+
 def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monkeypatch):
     """Nullable fields treat ref='' as 'disable'; ref=None is still cancel."""
     from unittest.mock import patch
@@ -12455,7 +12575,8 @@ def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monk
         raise RuntimeError("button absent in unit test")
 
     screen.query_one = _raise
-    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: type("_A", (), {})()))
+    sync_app = _SyncWorkerApp()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: sync_app))
     with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
         screen._on_model_picker_dismissed("vision_model", None)
         mock_apply.assert_not_called()
@@ -12569,7 +12690,7 @@ def test_settings_on_model_picker_dismissed_swallows_query_failures(monkeypatch)
         raise RuntimeError("button removed")
 
     screen.query_one = _raise
-    fake_app = type("FakeApp", (), {})()
+    fake_app = _SyncWorkerApp()
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
     with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"):
         screen._on_model_picker_dismissed("chat_model", "fake/x.gguf")

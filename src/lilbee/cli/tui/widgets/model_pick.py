@@ -10,6 +10,7 @@ from lilbee.app.services import get_services
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
 
 if TYPE_CHECKING:
@@ -19,6 +20,10 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.screens.model_picker import PickerScope
 
 log = logging.getLogger(__name__)
+
+# Name for the thread worker that persists + reloads a non-chat role off the
+# event loop (the chat scope has its own worker in chat.py).
+_PERSIST_WORKER_NAME = "model_swap_persist"
 
 
 def config_key_for_scope(scope: PickerScope) -> str:
@@ -117,8 +122,41 @@ def _on_embed_confirm(
 def _persist(
     app: App, key: str, ref: str, on_done: Callable[[], None], reload_worker: bool
 ) -> None:
-    apply_active_model(app, key, ref)
+    """Persist the picked ref and reload the affected worker without freezing the UI.
+
+    A worker reload is a multi-second fleet restart, so when one is needed the
+    write and reload run in a thread worker behind an indicator toast and
+    ``on_done`` runs back on the main thread. The chat scope passes
+    ``reload_worker=False`` and resets services itself (see
+    ``ChatScreen.apply_model_change``), so its cheap config write stays inline.
+    """
     role = MODEL_FIELD_TO_ROLE.get(key)
-    if reload_worker and role is not None:
-        get_services().reload_role(role)
-    on_done()
+    if not (reload_worker and role is not None):
+        apply_active_model(app, key, ref)
+        on_done()
+        return
+
+    target_role = role  # narrowed to non-None; bind for the worker closure
+    app.notify(msg.MODEL_SWAP_APPLYING)
+
+    def _runner() -> None:
+        try:
+            # set_active_model toasts and publishes a signal, both event-loop-only,
+            # so the write runs on the main thread; the slow part is the reload below.
+            call_from_thread(app, apply_active_model, app, key, ref)
+            # wait=True runs the reload in this worker thread (already off the event
+            # loop) so a failure is caught here and the done toast fires only once
+            # the fleet has actually restarted, not before.
+            get_services().reload_role(target_role, wait=True)
+        except Exception as exc:  # any reload failure becomes a toast, never a crash
+            call_from_thread(
+                app, app.notify, msg.MODEL_SWAP_FAILED.format(error=exc), severity="error"
+            )
+            return
+        call_from_thread(app, _finish)
+
+    def _finish() -> None:
+        on_done()
+        app.notify(msg.MODEL_SWAP_DONE.format(name=ref))
+
+    app.run_worker(_runner, thread=True, exit_on_error=False, name=_PERSIST_WORKER_NAME)

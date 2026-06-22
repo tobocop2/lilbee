@@ -377,6 +377,10 @@ class FleetProvider:
         # Set when a reload arrives mid-reload: the in-flight pass may have
         # already snapshotted its plan, so the change must be re-applied.
         self._reload_pending = False
+        # Notified when ``_reloading`` clears, so a ``reload_role(wait=True)`` caller
+        # can block until the reload it requested (or the in-flight one that will
+        # run its pending pass) has finished.
+        self._reload_done = threading.Condition(self._lock)
 
     def _ensure_swap(self) -> SwapManager | None:
         """Start the llama-swap process exactly once across concurrent callers.
@@ -998,7 +1002,7 @@ class FleetProvider:
         """
         return
 
-    def reload_role(self, role: WorkerRole) -> None:
+    def reload_role(self, role: WorkerRole, *, wait: bool = False) -> None:
         """Apply a model/settings change for *role* with current cfg.
 
         Dispatched to a background thread because the slow restart (rewrite config +
@@ -1008,15 +1012,27 @@ class FleetProvider:
         reload while one is in flight sets the pending flag (the in-flight pass may
         have already snapshotted its plan), and the in-flight thread runs one more
         pass per pending flag so the change is applied, not dropped.
+
+        ``wait=True`` runs the reload in the caller's thread and returns only once
+        the restart (and any reload already in flight that will run the pending
+        pass) has finished and the proxy is healthy again, so a caller already off
+        the event loop gets a real completion signal. The role's model still loads
+        lazily on its next request. It propagates a reload failure as an exception.
         """
         with self._lock:
             if self._swap is None:
                 return
             if self._reloading:
                 self._reload_pending = True
+                if wait:
+                    while self._reloading:
+                        self._reload_done.wait()
                 return
             self._reloading = True
             self._reload_pending = False
+        if wait:
+            self._reload_blocking()
+            return
         threading.Thread(
             target=self._reload_blocking,
             name=f"fleet-reload-{role.value}",
@@ -1042,6 +1058,7 @@ class FleetProvider:
                     self._reload_pending = False
                     if not rerun:
                         self._reloading = False
+                        self._reload_done.notify_all()
                 if rerun:
                     log.warning(
                         "Engine reload failed; retrying with the pending change.", exc_info=True
@@ -1052,6 +1069,7 @@ class FleetProvider:
             with self._lock:
                 if not self._reload_pending:
                     self._reloading = False
+                    self._reload_done.notify_all()
                     return
                 self._reload_pending = False
 

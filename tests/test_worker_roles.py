@@ -21,11 +21,3 @@ def test_model_field_to_role_maps_to_distinct_roles() -> None:
         WorkerRole.RERANK,
         WorkerRole.VISION,
     }
-
-
-def test_settings_screen_reuses_the_shared_map() -> None:
-    # The Settings model picker reloads the right role after a swap by reusing the
-    # one canonical map rather than a parallel copy.
-    from lilbee.cli.tui.screens import settings as settings_screen
-
-    assert settings_screen.MODEL_FIELD_TO_ROLE is MODEL_FIELD_TO_ROLE

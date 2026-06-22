@@ -407,12 +407,13 @@ class LLMProvider(Protocol):
         """
         return
 
-    def reload_role(self, role: WorkerRole) -> None:
+    def reload_role(self, role: WorkerRole, *, wait: bool = False) -> None:
         """Drop and respawn just *role*'s model so it picks up changed cfg.
 
         Default no-op for providers without per-role model servers. The fleet
         respawns only that role's server; other roles and their in-flight work
-        are left untouched.
+        are left untouched. ``wait=True`` blocks until the respawn finishes (for a
+        caller already off the event loop); the default returns immediately.
         """
         return
 
