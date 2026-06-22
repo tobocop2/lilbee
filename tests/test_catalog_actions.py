@@ -1103,3 +1103,12 @@ class TestModelFieldForTask:
         from lilbee.cli.tui.screens.catalog import _model_field_for_task
 
         assert _model_field_for_task("vision") == "vision_model"
+
+
+class TestEstimateMinRamGb:
+    def test_applies_floor_and_factor_rounded(self):
+        from lilbee.catalog.models import estimate_min_ram_gb
+
+        assert estimate_min_ram_gb(0.1) == 2.0  # floor
+        assert estimate_min_ram_gb(4.0) == 6.0  # 4 * 1.5
+        assert estimate_min_ram_gb(3.0) == 4.5  # rounded to 1 dp

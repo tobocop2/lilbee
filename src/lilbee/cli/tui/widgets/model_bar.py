@@ -16,6 +16,7 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
+from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -501,7 +502,9 @@ class RoleRow(Widget, can_focus=False):
         self.set_class(active, "-active")
         self.set_class(not active, "-off")
         bg, fg = _SCOPE_PILL_COLORS[self.scope] if active else _OFF_PILL_COLORS
-        with contextlib.suppress(Exception):
+        # Tolerate "children not mounted yet" only; a real pill/repaint failure
+        # should surface rather than be silently swallowed.
+        with contextlib.suppress(NoMatches):
             self.query_one(".model-bar-pill", Static).update(
                 pill(_SCOPE_TO_LABEL[self.scope], bg, fg)
             )

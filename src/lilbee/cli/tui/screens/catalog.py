@@ -28,6 +28,7 @@ from lilbee.catalog import (
     get_families,
     resolve_filename,
 )
+from lilbee.catalog.models import estimate_min_ram_gb
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
@@ -1831,7 +1832,7 @@ class CatalogScreen(Screen[None]):
             hf_repo=variant.hf_repo,
             gguf_filename=variant.filename,
             size_gb=variant.size_mb / 1024,
-            min_ram_gb=max(2.0, (variant.size_mb / 1024) * 1.5),
+            min_ram_gb=estimate_min_ram_gb(variant.size_mb / 1024),
             description=family.description,
             featured=True,
             downloads=0,
