@@ -86,6 +86,7 @@ def retry_skipped_message(count: int) -> str:
 
 
 CMD_DELETE_NO_DOCS = "No documents indexed"
+CMD_DELETE_READ_FAILED = "Could not read the document list"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
 CMD_DELETE_SUCCESS = "Deleted {name}"

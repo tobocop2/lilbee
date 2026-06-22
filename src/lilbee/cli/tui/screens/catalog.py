@@ -889,13 +889,10 @@ class CatalogScreen(Screen[None]):
         search = self._get_search_text()
         installed_rows: list[LocalCatalogRow] = []
         for source in (self._all_family_rows, self._all_hf_rows, self._all_remote_rows):
-            with contextlib.suppress(AttributeError):
-                installed_rows.extend(r for r in source() if r.installed)
+            installed_rows.extend(r for r in source() if r.installed)
         if search:
             installed_rows = [r for r in installed_rows if matches_search(r, search)]
-        frontier: list[FrontierCatalogRow] = []
-        with contextlib.suppress(AttributeError):
-            frontier = self._build_frontier_rows(search)
+        frontier = self._build_frontier_rows(search)
         self._render_library_list(installed_rows, frontier)
         self._render_library_grid(installed_rows, frontier)
 
@@ -1414,9 +1411,14 @@ class CatalogScreen(Screen[None]):
         """
         if self._search_focused:
             return
-        digit_to_index = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5}
-        index = digit_to_index.get(event.key)
-        if index is None:
+        # 1-based digit -> 0-based tab index; bounded by the tab count so the
+        # 1..6 contract derives from ALL_TAB_IDS rather than a parallel map.
+        from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
+
+        if not event.key.isdigit():
+            return
+        index = int(event.key) - 1
+        if not 0 <= index < len(ALL_TAB_IDS):
             return
         event.stop()
         event.prevent_default()

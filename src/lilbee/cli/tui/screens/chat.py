@@ -893,7 +893,7 @@ class ChatScreen(Screen[None]):
             sources = get_services().store.get_sources()
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
-            call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
+            call_from_thread(self, self.notify, msg.CMD_DELETE_READ_FAILED, severity="error")
             return
 
         known = {s.get("filename", s.get("source", "?")) for s in sources}

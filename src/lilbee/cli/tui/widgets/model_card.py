@@ -25,6 +25,7 @@ from textual.reactive import reactive
 from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
+    NATIVE_BACKEND,
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
@@ -103,7 +104,8 @@ def _render_local(row: LocalCatalogRow, *, selected: bool) -> Content:
     if row.featured:
         primary_pills.append(pill("pick", "$warning", "$text"))
     primary_pills.append(pill(row.task, bg, "$text"))
-    if row.backend:
+    # Drop the implied 'native' backend pill (parity with ModelGrid / ModelList).
+    if row.backend and row.backend != NATIVE_BACKEND:
         primary_pills.append(pill(row.backend, "$accent", "$text"))
     primary_line = Content(" ").join(primary_pills)
 

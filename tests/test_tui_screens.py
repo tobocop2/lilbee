@@ -2776,7 +2776,8 @@ async def test_chat_slash_delete_store_error(mock_svc):
             await app.screen.workers.wait_for_complete()
             await _pilot.pause()
             mock_notify.assert_called_once()
-            assert "No documents" in mock_notify.call_args[0][0]
+            # A read failure is distinct from the genuinely-empty case.
+            assert "Could not read" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_empty_sources(mock_svc):

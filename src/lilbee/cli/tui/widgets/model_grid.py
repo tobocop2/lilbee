@@ -24,6 +24,7 @@ from textual.widget import Widget
 
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
+    NATIVE_BACKEND,
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
@@ -428,7 +429,7 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     # Drop the 'native' backend pill on cards to free horizontal space; the
     # backend is implied for local models. Remote backends (ollama, etc.)
     # still surface their pill since that's a meaningful distinction.
-    if row.backend and row.backend != "native":
+    if row.backend and row.backend != NATIVE_BACKEND:
         primary_pills.append(pill(row.backend, "$accent", "$text"))
     primary_line = Content(" ").join(primary_pills)
 
