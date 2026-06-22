@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 import lilbee.cli.placement as cli_placement
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.cli.placement import placement_app
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.roles import WorkerRole
 
 runner = CliRunner()
@@ -52,8 +53,23 @@ def test_set_reads_spec_file(tmp_path: object, monkeypatch: object) -> None:
     f.write_text('{"chat": {"devices": [0]}}')
     result = runner.invoke(placement_app, ["set", "--spec", str(f)])
     assert result.exit_code == 0
-    from lilbee.providers.fleet.placement_spec import PlacementSpec
+    assert isinstance(seen["spec"], PlacementSpec)
+    assert seen["spec"].roles[WorkerRole.CHAT].devices == (0,)
 
+
+def test_set_reads_spec_from_stdin(monkeypatch: object) -> None:
+    """set --spec - reads JSON from stdin and passes a PlacementSpec to set_placement."""
+    seen: dict[str, object] = {}
+
+    def _fake_set(spec: object) -> PlacementView:
+        seen["spec"] = spec
+        return _view(True)
+
+    monkeypatch.setattr(cli_placement, "set_placement", _fake_set)
+    result = runner.invoke(
+        placement_app, ["set", "--spec", "-"], input='{"chat": {"devices": [0]}}'
+    )
+    assert result.exit_code == 0
     assert isinstance(seen["spec"], PlacementSpec)
     assert seen["spec"].roles[WorkerRole.CHAT].devices == (0,)
 
@@ -100,20 +116,16 @@ def test_preview_with_spec_file(tmp_path: object, monkeypatch: object) -> None:
     f.write_text('{"chat": {"devices": [0]}}')
     result = runner.invoke(placement_app, ["preview", "--spec", str(f)])
     assert result.exit_code == 0
-    from lilbee.providers.fleet.placement_spec import PlacementSpec
-
     assert isinstance(seen["spec"], PlacementSpec)
 
 
 def test_preview_placement_error(monkeypatch: object) -> None:
     """preview prints the error and exits 1 when preview_placement raises PlacementError."""
-    from lilbee.providers.fleet.placement_spec import PlacementError
 
-    monkeypatch.setattr(
-        cli_placement,
-        "preview_placement",
-        lambda spec: (_ for _ in ()).throw(PlacementError("bad spec")),
-    )
+    def _raise(spec: object) -> PlacementView:
+        raise PlacementError("bad spec")
+
+    monkeypatch.setattr(cli_placement, "preview_placement", _raise)
     result = runner.invoke(placement_app, ["preview"])
     assert result.exit_code == 1
     assert "bad spec" in result.stdout
@@ -121,11 +133,11 @@ def test_preview_placement_error(monkeypatch: object) -> None:
 
 def test_set_placement_error(tmp_path: object, monkeypatch: object) -> None:
     """set prints the error and exits 1 when set_placement raises PlacementError."""
-    from lilbee.providers.fleet.placement_spec import PlacementError
 
-    monkeypatch.setattr(
-        cli_placement, "set_placement", lambda spec: (_ for _ in ()).throw(PlacementError("no fit"))
-    )
+    def _raise(spec: object) -> PlacementView:
+        raise PlacementError("no fit")
+
+    monkeypatch.setattr(cli_placement, "set_placement", _raise)
     f = tmp_path / "spec.json"
     f.write_text('{"chat": {"devices": [0]}}')
     result = runner.invoke(placement_app, ["set", "--spec", str(f)])
