@@ -8176,54 +8176,6 @@ class TestWikiRootShortcuts:
             assert "Log" not in top_labels
 
 
-class TestWikiSelectedSource:
-    """_selected_source covers all three branches: no-cursor, group-node, leaf.
-
-    Patches ``query_one`` to swap in a faked Tree whose ``cursor_node``
-    is set explicitly per branch. Directly invoking the real widget
-    cursor is flaky because setting ``cursor_line = -1`` doesn't always
-    nullify ``cursor_node`` in the Textual version in use.
-    """
-
-    async def test_all_branches(self, tmp_path):
-        from unittest.mock import MagicMock
-
-        from textual.widgets import Tree
-
-        from lilbee.cli.tui.screens.wiki import WikiScreen
-
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        wiki_root = cfg.data_root / cfg.wiki_dir
-        _create_wiki_page(wiki_root, "summaries", "my-doc", "My Doc")
-
-        app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            screen = app.screen
-            assert isinstance(screen, WikiScreen)
-            real_tree = screen.query_one("#wiki-page-list", Tree)
-            fake_tree = MagicMock(spec=Tree)
-
-            # Branch 1: cursor_node is None → returns None (line 284).
-            fake_tree.cursor_node = None
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                assert screen._selected_source() is None
-
-            # Branch 2: group node carries data=None, not a slug string.
-            group_node = real_tree.root.children[0]
-            fake_tree.cursor_node = group_node
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                assert screen._selected_source() is None
-
-            # Branch 3: leaf with a real slug reaches line 288 and delegates
-            # to _source_for_slug. The return value may be None when the
-            # frontmatter omits a source; the point is line 288 is executed.
-            leaf_node = group_node.children[0]
-            fake_tree.cursor_node = leaf_node
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                screen._selected_source()
-
-
 class TestWikiScreenSearch:
     async def test_search_filters_pages(self, tmp_path):
         """Search input filters the page list."""
@@ -11974,58 +11926,6 @@ async def test_chat_crawl_dialog_callback_none_noop():
             app.screen.dismiss(None)
             await _pilot.pause()
         mock_start.assert_not_called()
-
-
-async def test_wiki_source_for_slug_returns_source():
-    """_source_for_slug extracts source from page frontmatter."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": ["doc.txt", "other.txt"]}
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page):
-            result = app.screen._source_for_slug("summaries/doc")
-        assert result == "doc.txt"
-
-
-async def test_wiki_source_for_slug_returns_none_for_missing():
-    """_source_for_slug returns None when page not found."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=None):
-            result = app.screen._source_for_slug("summaries/missing")
-        assert result is None
-
-
-async def test_wiki_source_for_slug_returns_none_for_empty_sources():
-    """_source_for_slug returns None when sources list is empty."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": []}
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page):
-            result = app.screen._source_for_slug("summaries/doc")
-        assert result is None
-
-
-async def test_wiki_selected_source_returns_none_for_branch_without_slug():
-    """_selected_source returns None when the highlighted tree node is a branch (no slug)."""
-    from textual.widgets import Tree
-
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        tree = app.screen.query_one("#wiki-page-list", Tree)
-        tree.reset("Wiki")
-        tree.root.add("Branch")  # branch with no data=slug
-        tree.focus()
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.pause()
-        result = app.screen._selected_source()
-        assert result is None
 
 
 # =============================================================================

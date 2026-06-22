@@ -10,6 +10,7 @@ import shlex
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -98,6 +99,15 @@ _STREAM_FLUSH_INTERVAL = 0.05
 
 # Auto-scroll throttle. ~6 fps so heavy token streams don't peg the renderer.
 _STREAM_SCROLL_INTERVAL = 0.15
+
+
+@dataclass
+class _StreamTimings:
+    """Last-fired monotonic timestamps for the stream flush and auto-scroll."""
+
+    last_flush: float
+    last_scroll: float = 0.0
+
 
 # ``/crawl`` command flags.
 _CRAWL_FLAG_DEPTH = "--depth"
@@ -1332,7 +1342,7 @@ class ChatScreen(Screen[None]):
         worker = _get_worker()
         reason_buf: list[str] = []
         content_buf: list[str] = []
-        timings = [time.monotonic(), 0.0]  # [last_flush, last_scroll]
+        timings = _StreamTimings(last_flush=time.monotonic())
 
         def flush() -> None:
             if reason_buf:
@@ -1367,15 +1377,15 @@ class ChatScreen(Screen[None]):
             response_parts.append(token.content)
             content_buf.append(token.content)
 
-    def _maybe_flush_and_scroll(self, flush: Callable[[], None], timings: list[float]) -> None:
+    def _maybe_flush_and_scroll(self, flush: Callable[[], None], timings: _StreamTimings) -> None:
         """Run *flush* and the auto-scroll on their respective intervals."""
         now = time.monotonic()
-        if now - timings[0] >= _STREAM_FLUSH_INTERVAL:
+        if now - timings.last_flush >= _STREAM_FLUSH_INTERVAL:
             flush()
-            timings[0] = now
-        if now - timings[1] >= _STREAM_SCROLL_INTERVAL:
+            timings.last_flush = now
+        if now - timings.last_scroll >= _STREAM_SCROLL_INTERVAL:
             call_from_thread(self, self._scroll_to_bottom)
-            timings[1] = now
+            timings.last_scroll = now
 
     def _finalize_stream(
         self, widget: AssistantMessage, sources: list[str], response_parts: list[str]

@@ -23,7 +23,6 @@ from textual.widgets.tree import TreeNode
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
-from lilbee.wiki.browse import read_page
 
 log = logging.getLogger(__name__)
 
@@ -316,29 +315,6 @@ class WikiScreen(Screen[None]):
             self._SEARCH_FILTER_DEBOUNCE_SECONDS,
             lambda: self._load_pages(filter_text=filter_text),
         )
-
-    def _selected_source(self) -> str | None:
-        """Return the source name for the highlighted wiki page, or None."""
-        tree = self.query_one("#wiki-page-list", Tree)
-        node = tree.cursor_node
-        if node is None:
-            return None
-        slug = node.data
-        if not isinstance(slug, str):
-            return None
-        return self._source_for_slug(slug)
-
-    def _source_for_slug(self, slug: str) -> str | None:
-        """Extract the primary source filename from a wiki page's frontmatter."""
-        root = _wiki_root()
-        page = read_page(root, slug)
-        if page is None:
-            return None
-        sources = page.frontmatter.get("sources")
-        # frontmatter values are untyped (Any from YAML); guard against non-list shapes
-        if isinstance(sources, list) and sources:
-            return str(sources[0])
-        return None
 
     def action_focus_search(self) -> None:
         """Focus the search input -- bound to / key."""
