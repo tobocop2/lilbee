@@ -415,31 +415,3 @@ def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
         return _hf_file_size(hf_repo, filename) or _SIZE_UNKNOWN
     except Exception:
         return _SIZE_UNKNOWN
-
-
-def fetch_model_file_size(hf_repo: str) -> float:
-    """Fetch the best GGUF file size from HuggingFace tree API.
-    Returns size in GB, or 0.0 if unavailable.
-    """
-    try:
-        resp = httpx.get(
-            f"{HF_API_URL}/{hf_repo}/tree/main",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        resp.raise_for_status()
-        files = resp.json()
-    except Exception:
-        return 0.0
-
-    gguf_files = [
-        (f.get("path", ""), f.get("size", 0) or f.get("lfs", {}).get("size", 0))
-        for f in files
-        if isinstance(f, dict) and f.get("path", "").endswith(".gguf")
-    ]
-    if not gguf_files:
-        return 0.0
-
-    best_name = pick_best_gguf([name for name, _ in gguf_files])
-    size_bytes = next((s for n, s in gguf_files if n == best_name), 0)
-    return round(size_bytes / (1024**3), 1) if size_bytes else 0.0

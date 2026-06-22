@@ -1420,40 +1420,6 @@ class TestSortModels:
         assert len(sorted_m) == len(models)
 
 
-class TestFetchModelFileSize:
-    def test_returns_size_from_tree_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from unittest.mock import MagicMock
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = [
-            {"path": "model-Q4_K_M.gguf", "size": 5_000_000_000},
-            {"path": "model-Q8_0.gguf", "size": 9_000_000_000},
-            {"path": "README.md", "size": 100},
-        ]
-        mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr("lilbee.catalog.download.httpx.get", lambda *a, **kw: mock_resp)
-
-        result = catalog.fetch_model_file_size("user/repo")
-        assert result == round(5_000_000_000 / (1024**3), 1)
-
-    def test_returns_zero_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "lilbee.catalog.download.httpx.get",
-            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail")),
-        )
-        assert catalog.fetch_model_file_size("user/repo") == 0.0
-
-    def test_returns_zero_no_gguf_files(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from unittest.mock import MagicMock
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = [{"path": "README.md", "size": 100}]
-        mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr("lilbee.catalog.download.httpx.get", lambda *a, **kw: mock_resp)
-
-        assert catalog.fetch_model_file_size("user/repo") == 0.0
-
-
 class TestHfCacheEviction:
     """Tests for HfClient.fetch_models cache eviction and size cap."""
 

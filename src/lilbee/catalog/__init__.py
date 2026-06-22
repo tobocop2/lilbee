@@ -9,7 +9,6 @@ Three levels:
 from lilbee.catalog.download import (
     DownloadConfig,
     download_model,
-    fetch_model_file_size,
     find_mmproj_file,
     resolve_filename,
 )
@@ -75,7 +74,6 @@ __all__ = [
     "download_task_name",
     "enrich_catalog",
     "extract_quant",
-    "fetch_model_file_size",
     "find_catalog_entry",
     "find_mmproj_file",
     "get_catalog",
