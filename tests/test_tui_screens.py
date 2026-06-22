@@ -8201,7 +8201,15 @@ class TestWikiScreenSearch:
             assert "summaries/beta-doc" not in screen._page_slugs
 
     async def test_search_debounce_collapses_rapid_keystrokes(self, tmp_path):
-        """Two rapid edits trigger a single filter pass, not one per keystroke."""
+        """Two rapid edits schedule a single filter pass, not one per keystroke.
+
+        Driven through the handler with a fake ``set_timer`` so the assertion is on
+        the debounce bookkeeping, not on a real timer firing within a wall-clock
+        window (that timing race starved and flaked under parallel CI load).
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
         cfg.wiki = True
         cfg.data_root = tmp_path
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -8209,21 +8217,33 @@ class TestWikiScreenSearch:
 
         app = WikiTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            from textual.widgets import Input as TextualInput
-
             from lilbee.cli.tui.screens.wiki import WikiScreen
 
             screen = app.screen
             assert isinstance(screen, WikiScreen)
-            search = app.screen.query_one("#wiki-search", TextualInput)
-            # Both edits land before any pause so the first debounce timer cannot
-            # expire in the gap (that race made this flaky on slow CI runners);
-            # the second Changed resets the timer, so exactly one pass fires.
-            with patch.object(screen, "_load_pages") as mock_load:
-                search.value = "A"
-                search.value = "Al"
-                await pilot.pause(0.25)
-            assert mock_load.call_count == 1
+
+            scheduled: list[tuple[object, MagicMock]] = []
+
+            def _fake_set_timer(_delay, callback):
+                timer = MagicMock()
+                scheduled.append((callback, timer))
+                return timer
+
+            with (
+                patch.object(screen, "_load_pages") as mock_load,
+                patch.object(screen, "set_timer", side_effect=_fake_set_timer),
+            ):
+                screen._on_search_changed(SimpleNamespace(value="A"))
+                screen._on_search_changed(SimpleNamespace(value="Al"))
+                # The second edit cancels the first pending timer; both scheduled.
+                assert len(scheduled) == 2
+                _, first_timer = scheduled[0]
+                first_timer.stop.assert_called_once()
+                # Firing only the surviving (latest) debounce runs one filter pass.
+                latest_callback, _ = scheduled[-1]
+                latest_callback()
+                await pilot.pause()
+            mock_load.assert_called_once_with(filter_text="Al")
 
     async def test_escape_clears_search(self, tmp_path):
         """Escape clears search text when search has a value."""
