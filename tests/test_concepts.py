@@ -205,6 +205,20 @@ class TestExtractConcepts:
         assert locked_during == [True]  # lock held while nlp() runs
         assert not cg._nlp_lock.locked()  # released afterwards
 
+    @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
+    def test_repeated_query_reuses_memo(self, mock_spacy, cg):
+        """One search() extracts the same query twice (expand + boost); the second
+        call hits the single-entry memo instead of re-running spaCy."""
+        nlp = MagicMock(return_value=_make_mock_doc(["good concept"]))
+        mock_spacy.return_value = nlp
+        first = cg.extract_concepts("same query")
+        second = cg.extract_concepts("same query")
+        assert first == second == ["good concept"]
+        assert nlp.call_count == 1  # second call served from the memo
+        # A different query is not served from the memo.
+        cg.extract_concepts("other query")
+        assert nlp.call_count == 2
+
 
 class TestExtractConceptsBatch:
     @patch("lilbee.retrieval.concepts.graph._ensure_spacy_model")
@@ -503,6 +517,24 @@ class TestBoostResults:
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
         assert boosted[0].distance == 0.5
+
+    def test_boost_results_returns_unchanged_when_table_missing(self, cg, mock_svc):
+        """No chunk_concepts table -> results pass through (table opened once, up front)."""
+        results = [_make_result(distance=0.5, chunk_index=0)]
+        mock_svc.store.open_table.return_value = None
+        boosted = cg.boost_results(results, ["python"])
+        assert boosted == results
+
+    def test_boost_results_opens_table_once_for_many_results(self, cg, mock_svc):
+        """The chunk_concepts table is opened once per call, not once per result (N+1)."""
+        results = [_make_result(distance=0.5, chunk_index=i) for i in range(4)]
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
+            {"concept": "python"}
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        cg.boost_results(results, ["python"])
+        mock_svc.store.open_table.assert_called_once()
 
     def test_boost_results_empty_query_concepts(self, cg):
         results = [_make_result()]

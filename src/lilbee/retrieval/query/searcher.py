@@ -60,6 +60,11 @@ log = logging.getLogger(__name__)
 # scores for the expansion-skip heuristic.
 _MIN_BM25_PROBE_RESULTS = 2
 
+# Structured-query mode names (the ``mode:`` prefix shortcut). Single source for
+# both the prefix parser and the dispatch in ``_search_structured``. "term"/"vec"/
+# "hyde" pick a retrieval strategy; "wiki"/"raw" are ChunkType scope shortcuts.
+_STRUCTURED_QUERY_MODES = ("term", "vec", "hyde", ChunkType.WIKI.value, ChunkType.RAW.value)
+
 
 def _bm25_confidence(score: float | None) -> float:
     """Squash a raw, unbounded BM25 score into the (0, 1) confidence that the
@@ -259,11 +264,11 @@ class Searcher:
             if not query_concepts:
                 return results
             boosted = self._concepts.boost_results(results, query_concepts)
-            # boost_results mutates relevance_score/distance but preserves input
-            # order; re-sort so the boost actually re-ranks for callers that consume
-            # search() order directly (CLI search, MCP lilbee_search). order_by_fusion
-            # normalizes per scoring family so HyDE (distance) hits can't outrank a
-            # strong hybrid (RRF) hit purely on scale.
+            # boost_results returns copies with adjusted relevance_score/distance in
+            # input order; re-sort so the boost actually re-ranks for callers that
+            # consume search() order directly (CLI search, MCP lilbee_search).
+            # order_by_fusion normalizes per scoring family so HyDE (distance) hits
+            # can't outrank a strong hybrid (RRF) hit purely on scale.
             return order_by_fusion(boosted)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
@@ -307,9 +312,11 @@ class Searcher:
         return chunk_type
 
     def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
-        for prefix in ("term:", "vec:", "hyde:", "wiki:", "raw:"):
-            if question.strip().lower().startswith(prefix):
-                return prefix[:-1], question.strip()[len(prefix) :].strip()
+        stripped = question.strip()
+        for mode in _STRUCTURED_QUERY_MODES:
+            prefix = f"{mode}:"
+            if stripped.lower().startswith(prefix):
+                return mode, stripped[len(prefix) :].strip()
         return None, question
 
     def _search_structured(
@@ -330,7 +337,10 @@ class Searcher:
             return self._hyde_search(query, top_k, chunk_type=chunk_type)
         if mode in (ChunkType.WIKI, ChunkType.RAW):
             # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
-            effective = chunk_type if chunk_type is not None else ChunkType(mode)
+            # Route the prefix-derived type through the same wiki-disabled guard the
+            # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
+            requested = chunk_type if chunk_type is not None else ChunkType(mode)
+            effective = self._normalize_chunk_type(requested)
             query_vec = self._embedder.embed_query(query)
             return self._store.search(
                 query_vec, top_k=top_k, query_text=query, chunk_type=effective
@@ -426,13 +436,20 @@ class Searcher:
         config, the filter is normalized to ``None`` (mixed pool) and a
         warning is logged: with wiki off the chunks table has no wiki rows,
         so honouring the filter would silently return zero results.
+
+        A ``mode:`` prefix (``term:``/``vec:``/``hyde:``/``wiki:``/``raw:``)
+        forces a single explicit retrieval strategy and so skips expansion and
+        concept boost, but the temporal date-range filter still applies -- it is
+        a filter, not a re-ranking, and a "recent" query must be honored in any
+        mode.
         """
         if top_k == 0:
             top_k = self._config.top_k
         chunk_type = self._normalize_chunk_type(chunk_type)
         mode, clean_query = self._parse_structured_query(question)
         if mode is not None:
-            return self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
+            structured = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
+            return self._apply_temporal_filter(structured, clean_query)
         query_vec = self._embedder.embed_query(question)
         results = self._store.search(
             query_vec,
@@ -440,13 +457,18 @@ class Searcher:
             query_text=question,
             chunk_type=chunk_type,
         )
-        if self._should_skip_expansion(question, chunk_type):
-            return results[: top_k * 2]
-        seen = {(r.source, r.chunk_index) for r in results}
-        self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
-        if self._config.hyde:
-            self._merge_hyde_results(question, results, seen, top_k, chunk_type)
+        # Query expansion (variant + HyDE searches) is skipped for short/term
+        # queries, but concept boost is a separate graph re-rank that should still
+        # apply -- the early return used to drop it on the skip path.
+        if not self._should_skip_expansion(question, chunk_type):
+            seen = {(r.source, r.chunk_index) for r in results}
+            self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
+            if self._config.hyde:
+                self._merge_hyde_results(question, results, seen, top_k, chunk_type)
         results = self._apply_concept_boost(results, question)
+        # Apply the date-range filter here so the bare search() path (e.g. /api/search)
+        # honors a "recent"/"today" query, matching the chat/ask path.
+        results = self._apply_temporal_filter(results, question)
         return results[: top_k * 2]
 
     def build_rag_context(
@@ -471,7 +493,7 @@ class Searcher:
         results = prepare_results(results)
         if self._config.reranker_model:
             results = self._reranker.rerank(question, results)
-        results = self._apply_temporal_filter(results, question)
+        # Temporal filtering already ran inside search(); no need to repeat it here.
         results = self.select_context(results, question)
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         results = self._fit_context_budget(results, system, question, history)

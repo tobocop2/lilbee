@@ -1105,6 +1105,25 @@ class TestShouldSkipExpansion:
         assert get_services().searcher._should_skip_expansion("test") is False
 
 
+class TestSearchAppliesConceptBoostOnExpansionSkip:
+    def test_concept_boost_runs_even_when_expansion_skipped(self, mock_svc, monkeypatch):
+        """Skipping query expansion must not also skip the concept-graph re-rank."""
+        searcher = get_services().searcher
+        mock_svc.store.search.return_value = [_make_result()]
+        monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
+        called: list[bool] = []
+
+        def _boost(results, question):
+            called.append(True)
+            return results
+
+        monkeypatch.setattr(searcher, "_apply_concept_boost", _boost)
+        searcher.search("test query")
+        assert called == [True]
+        # Expansion was skipped: no variant searches ran.
+        mock_svc.store.search.assert_called_once()
+
+
 class TestBm25Confidence:
     def test_squashes_and_floors(self):
         from lilbee.retrieval.query.searcher import _bm25_confidence
@@ -1191,6 +1210,39 @@ class TestTemporalFilter:
         results = [_make_result()]
         searcher = get_services().searcher
         assert searcher._apply_temporal_filter(results, "how does auth work") == results
+
+    def test_bare_search_applies_temporal_filter(self, mock_svc, monkeypatch):
+        """The bare search() path runs the temporal filter, matching chat/ask."""
+        searcher = get_services().searcher
+        mock_svc.store.search.return_value = [_make_result()]
+        monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
+        seen: list[str] = []
+
+        def _temporal(results, question):
+            seen.append(question)
+            return results
+
+        monkeypatch.setattr(searcher, "_apply_temporal_filter", _temporal)
+        searcher.search("recent changes")
+        assert seen == ["recent changes"]
+
+    def test_structured_query_still_applies_temporal_filter(self, mock_svc, monkeypatch):
+        """A ``mode:`` prefix skips expansion/boost but the date filter still runs."""
+        cfg.wiki = True
+        try:
+            searcher = get_services().searcher
+            mock_svc.store.search.return_value = [_make_result()]
+            seen: list[str] = []
+
+            def _temporal(results, question):
+                seen.append(question)
+                return results
+
+            monkeypatch.setattr(searcher, "_apply_temporal_filter", _temporal)
+            searcher.search("wiki: recent changes")
+            assert seen == ["recent changes"]  # prefix stripped, filter applied
+        finally:
+            cfg.wiki = False
 
     def test_disabled_via_config(self, mock_svc):
         old = cfg.temporal_filtering
@@ -1719,11 +1771,24 @@ class TestStructuredQueryScopeInteraction:
         kwargs = mock_svc.store.search.call_args.kwargs
         assert kwargs.get("chunk_type") == "raw"
 
-    def test_wiki_prefix_alone_still_filters_to_wiki(self, mock_svc):
+    def test_wiki_prefix_alone_filters_to_wiki_when_enabled(self, mock_svc):
+        cfg.wiki = True
+        try:
+            mock_svc.store.search.return_value = []
+            get_services().searcher.search("wiki: energy")
+            kwargs = mock_svc.store.search.call_args.kwargs
+            assert kwargs.get("chunk_type") == "wiki"
+        finally:
+            cfg.wiki = False
+
+    def test_wiki_prefix_falls_back_to_full_pool_when_wiki_disabled(self, mock_svc):
+        """The ``wiki:`` prefix goes through the same wiki-disabled guard as the
+        explicit chunk_type arg, so it can't search an empty wiki pool."""
+        cfg.wiki = False
         mock_svc.store.search.return_value = []
         get_services().searcher.search("wiki: energy")
         kwargs = mock_svc.store.search.call_args.kwargs
-        assert kwargs.get("chunk_type") == "wiki"
+        assert kwargs.get("chunk_type") is None
 
 
 class TestStructuredQueryWikiRaw:
@@ -1738,10 +1803,14 @@ class TestStructuredQueryWikiRaw:
         assert query == "python typing"
 
     def test_wiki_mode_passes_chunk_type(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result()]
-        get_services().searcher._search_structured("wiki", "test", 5)
-        mock_svc.store.search.assert_called_once()
-        assert mock_svc.store.search.call_args[1]["chunk_type"] == "wiki"
+        cfg.wiki = True
+        try:
+            mock_svc.store.search.return_value = [_make_result()]
+            get_services().searcher._search_structured("wiki", "test", 5)
+            mock_svc.store.search.assert_called_once()
+            assert mock_svc.store.search.call_args[1]["chunk_type"] == "wiki"
+        finally:
+            cfg.wiki = False
 
     def test_raw_mode_passes_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
