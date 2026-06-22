@@ -8237,9 +8237,33 @@ class TestWikiScreenSearch:
             assert isinstance(screen, WikiScreen)
             search = app.screen.query_one("#wiki-search", TextualInput)
             search.value = "Alpha"
-            await pilot.pause()
+            # Wait out the search debounce so the filter pass runs.
+            await pilot.pause(0.25)
             assert "summaries/alpha-doc" in screen._page_slugs
             assert "summaries/beta-doc" not in screen._page_slugs
+
+    async def test_search_debounce_collapses_rapid_keystrokes(self, tmp_path):
+        """Two rapid edits trigger a single filter pass, not one per keystroke."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "alpha-doc", "Alpha Document")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Input as TextualInput
+
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+            search = app.screen.query_one("#wiki-search", TextualInput)
+            with patch.object(screen, "_load_pages") as mock_load:
+                search.value = "A"
+                await pilot.pause()
+                search.value = "Al"
+                await pilot.pause(0.25)
+            assert mock_load.call_count == 1
 
     async def test_escape_clears_search(self, tmp_path):
         """Escape clears search text when search has a value."""

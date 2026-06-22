@@ -16,6 +16,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Input, Markdown, Static, Tree
 from textual.widgets.tree import TreeNode
 
@@ -96,9 +97,12 @@ class WikiScreen(Screen[None]):
         Binding("G", "jump_bottom", "End", show=False),
     ]
 
+    _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.12
+
     def __init__(self) -> None:
         super().__init__()
         self._page_slugs: list[str] = []
+        self._search_filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -286,8 +290,15 @@ class WikiScreen(Screen[None]):
 
     @on(Input.Changed, "#wiki-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Filter pages when search input changes."""
-        self._load_pages(filter_text=event.value.strip())
+        """Re-filter after a short debounce so a multi-key term re-walks the wiki
+        tree once on pause, not once per keystroke."""
+        filter_text = event.value.strip()
+        if self._search_filter_timer is not None:
+            self._search_filter_timer.stop()
+        self._search_filter_timer = self.set_timer(
+            self._SEARCH_FILTER_DEBOUNCE_SECONDS,
+            lambda: self._load_pages(filter_text=filter_text),
+        )
 
     def _selected_source(self) -> str | None:
         """Return the source name for the highlighted wiki page, or None."""
