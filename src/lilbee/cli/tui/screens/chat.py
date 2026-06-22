@@ -1523,6 +1523,13 @@ class ChatScreen(Screen[None]):
         The input re-enables once the fleet has restarted with the new model (which
         loads on the next request).
         """
+        if self.swapping_model:
+            # A swap is already loading; a second one (rapid /model, or the model
+            # bar re-clicked while the input is disabled) would spawn a duplicate
+            # worker and a duplicate completion toast. The in-flight reload already
+            # coalesces onto the latest cfg, so ignore the re-entry.
+            self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
+            return
         if self.streaming:
             self.action_cancel_stream()
         self.swapping_model = True

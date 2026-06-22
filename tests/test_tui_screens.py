@@ -3282,6 +3282,21 @@ async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming
             mock_get.assert_not_called()
 
 
+async def test_apply_model_change_ignores_reentry_while_swapping():
+    """A second swap while one is loading is ignored, not a duplicate worker.
+
+    The model bar stays clickable during a swap; a re-click (or a rapid second
+    /model) must not spawn a second reload worker and a duplicate done toast.
+    """
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            mock_worker.assert_not_called()
+
+
 async def test_reload_chat_worker_reloads_only_chat_and_unblocks():
     """The worker reloads the CHAT role (keeping the store) and unblocks input."""
     from lilbee.providers.roles import WorkerRole
@@ -12507,7 +12522,7 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
             await app.workers.wait_for_complete()
             await pilot.pause()
-            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
 
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():

@@ -151,8 +151,13 @@ def _persist(
 
     def _runner() -> None:
         try:
-            apply_active_model(app, key, ref)
-            get_services().reload_role(target_role)
+            # set_active_model toasts and publishes a signal, both event-loop-only,
+            # so the write runs on the main thread; the slow part is the reload below.
+            call_from_thread(app, apply_active_model, app, key, ref)
+            # wait=True runs the reload in this worker thread (already off the event
+            # loop) so a failure is caught here and the done toast fires only once
+            # the fleet has actually restarted, not before.
+            get_services().reload_role(target_role, wait=True)
         except Exception as exc:  # any reload failure becomes a toast, never a crash
             call_from_thread(
                 app, app.notify, msg.MODEL_SWAP_FAILED.format(error=exc), severity="error"

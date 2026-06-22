@@ -1030,7 +1030,7 @@ class TestModelPickerButton:
                 await pilot.pause()
                 await app.workers.wait_for_complete()
             assert cfg.embedding_model == new_ref
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
 
     async def test_embed_picker_dismiss_confirm_no_keeps_old_ref(self) -> None:
         """Pressing No on the confirm modal leaves cfg untouched and notifies cancel."""
@@ -1087,7 +1087,7 @@ class TestModelPickerButton:
                 await app.workers.wait_for_complete()
                 await pilot.pause()
             assert cfg.embedding_model == new_ref
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
 
     async def test_embed_picker_dismiss_reloads_only_embed_role(self) -> None:
         """Embed swap respawns just the embed worker. Chat stream stays untouched.
@@ -1120,7 +1120,7 @@ class TestModelPickerButton:
                 btn._on_picker_dismissed(new_ref)
                 await app.workers.wait_for_complete()
                 await pilot.pause()
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
             mock_reset.assert_not_called()
 
     async def test_chat_picker_dismiss_does_not_reload_role(self) -> None:

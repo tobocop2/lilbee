@@ -70,7 +70,7 @@ async def test_apply_model_pick_persists_and_reloads_vision() -> None:
             await pilot.pause()
             mock_apply.assert_called_once()
             assert mock_apply.call_args.args[1:] == ("vision_model", "hf:org/vlm-q4")
-            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
 
 async def test_apply_model_pick_reload_failure_shows_error_toast() -> None:

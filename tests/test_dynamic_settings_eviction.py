@@ -30,7 +30,7 @@ class _RecordingProvider:
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         self.calls.append(model_path)
 
-    def reload_role(self, role: object) -> None:
+    def reload_role(self, role: object, *, wait: bool = False) -> None:
         self.reloaded_roles.append(role)
 
     def drop_loaded_models_async(self) -> None:
