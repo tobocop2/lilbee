@@ -15,6 +15,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lilbee.core.system import scaled_chat_ctx_target_default
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 
 from .defaults import (
     DEFAULT_ALLOWED_NER_LABELS,
@@ -420,6 +421,14 @@ class Config(BaseSettings):
     # (default) lets llama.cpp pick (index 0).
     main_gpu: int | None = ConfigField(default=None, writable=True)
 
+    # Manual GPU placement override. When set, it fully replaces the automatic
+    # placement planner: each active role pins to the listed device indices, with
+    # an optional tensor_split and replica count. Persisted as a JSON scalar (the
+    # config.toml store is flat); edited via the placement CLI/MCP/HTTP/TUI surfaces
+    # rather than the generic settings list, so public=False. None hands off to the
+    # VRAM-aware auto planner.
+    placement: PlacementSpec | None = ConfigField(default=None, writable=True, public=False)
+
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
 
@@ -751,6 +760,20 @@ class Config(BaseSettings):
                     return None
             return ",".join(parts)
         return str(v)
+
+    @field_validator("placement", mode="before")
+    @classmethod
+    def _parse_placement(cls, v: Any) -> PlacementSpec | None:
+        """Blank/None -> None; a JSON string -> PlacementSpec; a spec passes through."""
+        if v is None:
+            return None
+        if isinstance(v, PlacementSpec):
+            return v
+        if isinstance(v, str):
+            if v.strip() == "":
+                return None
+            return PlacementSpec.from_json(v)
+        raise PlacementError("placement must be a JSON string or PlacementSpec")
 
     @field_validator("semantic_chunking", mode="before")
     @classmethod
