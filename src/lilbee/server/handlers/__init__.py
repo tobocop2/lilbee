@@ -186,8 +186,9 @@ async def placement_clear() -> PlacementResponse:
 async def gpus() -> list[GpuInfoResponse]:
     """Detected GPUs with free/total VRAM."""
     from lilbee.app.placement import get_placement
+    from lilbee.server.models import GpuInfoResponse as _GpuInfoResponse
 
-    return [GpuInfoResponse(**vars(g)) for g in get_placement().gpus]
+    return [_GpuInfoResponse(**vars(g)) for g in get_placement().gpus]
 
 
 __all__ = [
