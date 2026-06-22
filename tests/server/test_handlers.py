@@ -502,7 +502,7 @@ class TestAddIngestMutex:
         lock = await get_services().ingest_lock_registry.try_acquire("holdme.txt")
         assert lock is not None
         try:
-            events = await self._collect(add_files_stream({"paths": [str(src)]}))
+            events = await self._collect(add_files_stream([str(src)]))
         finally:
             lock.release()
 
@@ -528,7 +528,7 @@ class TestAddIngestMutex:
                 new_callable=Mock,
                 return_value=_make_kreuzberg_result(),
             ):
-                events = await self._collect(add_files_stream({"paths": [str(held), str(free)]}))
+                events = await self._collect(add_files_stream([str(held), str(free)]))
         finally:
             lock.release()
 
@@ -536,6 +536,11 @@ class TestAddIngestMutex:
         already = [d for t, d in events if t == "already_ingesting"]
         assert {"source": "held.txt"} in already
         assert "done" in event_types
+        # The contended path must not be ingested under the holder's lock: only
+        # the free path is copied (regression guard for the lock-bypass bug).
+        summary = [d for t, d in events if t == "done" and "copied" in d][-1]
+        assert "free.txt" in summary["copied"]
+        assert "held.txt" not in summary["copied"]
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
         """Disjoint sources do not contend: both requests complete with done."""
@@ -553,7 +558,7 @@ class TestAddIngestMutex:
                 new_callable=Mock,
                 return_value=_make_kreuzberg_result(),
             ):
-                async for frame in add_files_stream({"paths": [str(path)]}):
+                async for frame in add_files_stream([str(path)]):
                     text += frame
             return _parse_sse_events(text.encode())
 
@@ -575,7 +580,7 @@ class TestAddIngestMutex:
             raise RuntimeError("ingest exploded")
 
         with mock.patch("lilbee.data.ingest.sync", new=_boom):
-            events = await self._collect(add_files_stream({"paths": [str(src)]}))
+            events = await self._collect(add_files_stream([str(src)]))
 
         assert any(t == "error" for t, _ in events)
 
@@ -594,7 +599,7 @@ class TestAddIngestMutex:
         async def _hang(*_args, **_kwargs):
             await asyncio.sleep(30)
 
-        gen = add_files_stream({"paths": [str(src)]})
+        gen = add_files_stream([str(src)])
         with mock.patch("lilbee.data.ingest.sync", new=_hang):
             outer = asyncio.create_task(gen.__anext__())
             await asyncio.sleep(0.05)

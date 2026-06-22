@@ -50,11 +50,13 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
 async def add_route(data: AddRequest) -> Stream:
     """Add files to the knowledge base with streaming SSE progress."""
     try:
-        handlers.validate_add_paths(data.model_dump())
+        paths, force, enable_ocr, ocr_timeout = handlers.validate_add_paths(data.model_dump())
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     return Stream(
-        handlers.add_files_stream(data.model_dump()),
+        handlers.add_files_stream(
+            paths, force=force, enable_ocr=enable_ocr, ocr_timeout=ocr_timeout
+        ),
         media_type="text/event-stream",
         status_code=201,
     )

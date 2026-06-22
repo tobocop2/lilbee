@@ -96,7 +96,11 @@ async def search(
     """Search and return grouped DocumentResults."""
     if not q or not q.strip():
         raise ValueError("query must not be empty")
-    results = get_services().searcher.search(q, top_k=top_k, chunk_type=chunk_type)
+    # search() blocks on retrieval; run it off the event loop so other admitted
+    # requests stay responsive, matching the sibling ask() handler.
+    results = await asyncio.to_thread(
+        get_services().searcher.search, q, top_k=top_k, chunk_type=chunk_type
+    )
     results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     return group(results)
 
@@ -111,15 +115,20 @@ async def ask(
     if not question or not question.strip():
         raise ValueError("question must not be empty")
     opts = _resolve_generation_options(options)
+    searcher = get_services().searcher
     # ask_raw blocks for retrieval plus the whole generation; run it off the
     # event loop so other admitted requests stay responsive.
     result = await asyncio.to_thread(
-        get_services().searcher.ask_raw,
+        searcher.ask_raw,
         question,
         top_k=top_k,
         options=opts,
         chunk_type=chunk_type,
     )
+    # Mirror the streaming ask path: auto-extract memories from a real answer,
+    # but never from the search-needs-embedder refusal ask_raw returns.
+    if not searcher.search_unavailable():
+        await _store_extracted_memories(question, result.answer)
     return AskResponse(
         answer=result.answer,
         sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
@@ -183,16 +192,24 @@ def _run_llm_stream(
         put(None)
 
 
+async def _store_extracted_memories(question: str, answer: str) -> list[Any]:
+    """Run the auto-extraction LLM pass off the event loop and return stored memories.
+
+    Returns an empty list (no-op) when the answer is empty or auto-extraction is
+    off, so one-shot and streaming callers share one extraction path.
+    """
+    if not answer or not auto_extract_enabled():
+        return []
+    return await asyncio.to_thread(auto_extract, question, answer)
+
+
 async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator[str, None]:
     """Yield a ``memory_extracted`` SSE event if the turn auto-saved any memories.
 
-    Runs the extraction LLM pass off the event loop. Silent (yields nothing)
-    when the answer is empty, auto-extraction is off, or nothing was extracted,
-    so existing consumers are unaffected.
+    Silent (yields nothing) when the answer is empty, auto-extraction is off, or
+    nothing was extracted, so existing consumers are unaffected.
     """
-    if not answer or not auto_extract_enabled():
-        return
-    stored = await asyncio.to_thread(auto_extract, question, answer)
+    stored = await _store_extracted_memories(question, answer)
     if not stored:
         return
     event = MemoryExtractedEvent(
@@ -312,11 +329,17 @@ async def chat(
     chunk_type: ChunkType | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources via canonical dispatch."""
+    searcher = get_services().searcher
+    if searcher.search_unavailable():
+        # Search mode with no embedder can't ground; refuse cleanly with the same
+        # message ask returns instead of silently answering off-corpus.
+        return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
     sources, messages = _build_chat_messages(question, history, top_k, chunk_type)
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
     answer = text if cfg.show_reasoning else strip_reasoning(text)
+    await _store_extracted_memories(question, answer)
     return AskResponse(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
@@ -349,6 +372,13 @@ async def _stream_chat_response(
         yield warming
 
     searcher = get_services().searcher
+    if searcher.search_unavailable():
+        # Search mode with no embedder can't ground; refuse cleanly with the same
+        # token the ask stream emits instead of silently answering off-corpus.
+        yield sse_event(SseEvent.TOKEN, {"token": SEARCH_NEEDS_EMBEDDER})
+        yield sse_event(SseEvent.SOURCES, [])
+        yield sse_done({})
+        return
     if searcher.skip_retrieval():
         # Chat-only mode (or no embedder): answer directly with no RAG context.
         sources: list[SearchChunk] = []

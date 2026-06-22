@@ -8,6 +8,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
+from lilbee.catalog.types import ModelSource
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
@@ -34,7 +35,7 @@ class PullRequest(BaseModel):
     """Request body for /api/models/pull."""
 
     model: str
-    source: str = "native"
+    source: str = ModelSource.NATIVE.value
     allow_unsupported: bool = False
 
 
@@ -94,6 +95,7 @@ async def models_catalog_route(
     task: str | None = Parameter(query="task", default=None),
     search: str = Parameter(query="search", default=""),
     size: str | None = Parameter(query="size", default=None),
+    installed: bool | None = Parameter(query="installed", default=None),
     featured: bool | None = Parameter(query="featured", default=None),
     sort: str = Parameter(query="sort", default="featured"),
     limit: int = Parameter(query="limit", default=20, le=1000),
@@ -105,6 +107,7 @@ async def models_catalog_route(
             task=task,
             search=search,
             size=size,
+            installed=installed,
             featured=featured,
             sort=sort,
             limit=limit,
@@ -125,10 +128,14 @@ async def models_installed_route() -> ModelsInstalledResponse:
 async def models_pull_route(data: PullRequest) -> Stream:
     """Pull a model with streaming SSE progress events."""
     # Validate before opening the stream so an unsupported arch is a real 409, not
-    # an in-stream abort after the 200 SSE headers have flushed.
-    await handlers.enforce_pull_arch_compat(
-        data.model, source=data.source, allow_unsupported=data.allow_unsupported
-    )
+    # an in-stream abort after the 200 SSE headers have flushed. An unknown source
+    # is a client error (422), mirroring the catalog route, not a 500.
+    try:
+        await handlers.enforce_pull_arch_compat(
+            data.model, source=data.source, allow_unsupported=data.allow_unsupported
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return Stream(
         handlers.models_pull(
             data.model, source=data.source, allow_unsupported=data.allow_unsupported
@@ -144,6 +151,11 @@ async def models_show_route(data: SetModelRequest) -> ModelsShowResponse:
 
 
 @delete("/api/models/{model:str}", status_code=200)
-async def models_delete_route(model: str, source: str = "native") -> ModelsDeleteResponse:
+async def models_delete_route(
+    model: str, source: str = ModelSource.NATIVE.value
+) -> ModelsDeleteResponse:
     """Delete a model from the specified source."""
-    return await handlers.models_delete(model, source=source)
+    try:
+        return await handlers.models_delete(model, source=source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

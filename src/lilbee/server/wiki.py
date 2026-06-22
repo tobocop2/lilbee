@@ -78,13 +78,17 @@ async def wiki_list_route() -> list[dict[str, Any]]:
     """
     _require_wiki()
     root = _wiki_root()
+    # The index regen walks and rewrites files and list_pages walks the tree;
+    # offload both so the listing doesn't block the event loop.
+    return await asyncio.to_thread(_list_wiki_pages_sync, root)
 
+
+def _list_wiki_pages_sync(root: Path) -> list[dict[str, Any]]:
+    """Blocking body of :func:`wiki_list_route`: refresh index, then walk pages."""
     index_path = root / "index.md"
     if index_path.is_file():
         update_wiki_index()
-
-    pages = list_pages(root)
-    return [p.to_dict() for p in pages]
+    return [p.to_dict() for p in list_pages(root)]
 
 
 @get("/api/wiki/drafts")
@@ -159,7 +163,8 @@ async def wiki_citations_reverse_route(
     _require_wiki()
     if not source:
         return []
-    records = svc_mod.get_services().store.get_citations_for_source(source)
+    # get_citations_for_source queries LanceDB; offload like wiki_lint_route.
+    records = await asyncio.to_thread(svc_mod.get_services().store.get_citations_for_source, source)
     return [WikiCitationRecord(**r) for r in records]
 
 
@@ -171,7 +176,7 @@ async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     slug = slug.lstrip("/")
     if slug.endswith("/citations"):
         real_slug = slug.removesuffix("/citations")
-        return _citations_for_slug(real_slug)
+        return await _citations_for_slug(real_slug)
     result = read_page(_wiki_root(), slug)
     if result is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
@@ -182,13 +187,16 @@ async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     )
 
 
-def _citations_for_slug(slug: str) -> WikiCitationsResult:
+async def _citations_for_slug(slug: str) -> WikiCitationsResult:
     """Return citation chain for a wiki page."""
     path = _find_page(slug)
     if path is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
     wiki_source = f"{cfg.wiki_dir}/{slug}.md"
-    records = svc_mod.get_services().store.get_citations_for_wiki(wiki_source)
+    # get_citations_for_wiki queries LanceDB; offload like wiki_lint_route.
+    records = await asyncio.to_thread(
+        svc_mod.get_services().store.get_citations_for_wiki, wiki_source
+    )
     return WikiCitationsResult(slug=slug, citations=[WikiCitationRecord(**r) for r in records])
 
 

@@ -13,7 +13,7 @@ from litestar.params import Parameter
 from litestar.response import Stream
 
 from lilbee.core.results import DocumentResult
-from lilbee.data.store import EmbeddingModelMismatchError, scope_to_chunk_type
+from lilbee.data.store import EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
@@ -33,6 +33,7 @@ from lilbee.server.models import (
     AskRequest,
     AskResponse,
     ChatRequest,
+    decode_chunk_type,
 )
 
 _BAD_REQUEST_STATUS = 400
@@ -142,11 +143,11 @@ async def search_route(
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""
     try:
-        chunk_type = scope_to_chunk_type(chunk_type)
+        parsed_chunk_type = decode_chunk_type(chunk_type)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     try:
-        return await handlers.search(q, top_k=top_k, chunk_type=chunk_type)
+        return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
     except EmbeddingModelMismatchError as exc:
         raise _embedding_mismatch_http(exc) from exc
     except ValueError as exc:

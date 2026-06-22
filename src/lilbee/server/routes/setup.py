@@ -6,7 +6,8 @@ SSE event sequence mirrors what the TUI does in
 matching ``setup`` progress indicator.
 
 Endpoints:
-    GET  /setup/crawler/status → { installed, component, browsers_path }
+    GET  /setup/crawler/status → { installed, package_installed,
+                                   chromium_installed, component, browsers_path }
     POST /setup/crawler         → text/event-stream of setup_start →
                                    setup_progress → setup_done → done
 """
