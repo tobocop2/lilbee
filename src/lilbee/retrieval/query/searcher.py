@@ -330,7 +330,10 @@ class Searcher:
             return self._hyde_search(query, top_k, chunk_type=chunk_type)
         if mode in (ChunkType.WIKI, ChunkType.RAW):
             # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
-            effective = chunk_type if chunk_type is not None else ChunkType(mode)
+            # Route the prefix-derived type through the same wiki-disabled guard the
+            # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
+            requested = chunk_type if chunk_type is not None else ChunkType(mode)
+            effective = self._normalize_chunk_type(requested)
             query_vec = self._embedder.embed_query(query)
             return self._store.search(
                 query_vec, top_k=top_k, query_text=query, chunk_type=effective
@@ -440,12 +443,14 @@ class Searcher:
             query_text=question,
             chunk_type=chunk_type,
         )
-        if self._should_skip_expansion(question, chunk_type):
-            return results[: top_k * 2]
-        seen = {(r.source, r.chunk_index) for r in results}
-        self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
-        if self._config.hyde:
-            self._merge_hyde_results(question, results, seen, top_k, chunk_type)
+        # Query expansion (variant + HyDE searches) is skipped for short/term
+        # queries, but concept boost is a separate graph re-rank that should still
+        # apply -- the early return used to drop it on the skip path.
+        if not self._should_skip_expansion(question, chunk_type):
+            seen = {(r.source, r.chunk_index) for r in results}
+            self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
+            if self._config.hyde:
+                self._merge_hyde_results(question, results, seen, top_k, chunk_type)
         results = self._apply_concept_boost(results, question)
         return results[: top_k * 2]
 
