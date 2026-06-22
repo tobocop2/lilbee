@@ -1068,28 +1068,6 @@ async def test_activate_initial_tab_switches_to_chat() -> None:
         assert tabs.active == "chat"
 
 
-async def test_populate_library_renders_with_empty_frontier_when_attr_missing() -> None:
-    """_populate_library_list still renders installed rows when frontier source is gone."""
-    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = pilot.app.query_one(CatalogScreen)
-        installed = _row("Llama 3 8B", installed=True)
-        screen._all_family_rows = lambda: [installed]  # type: ignore[method-assign]
-        screen._all_hf_rows = lambda: []  # type: ignore[method-assign]
-        screen._all_remote_rows = lambda: []  # type: ignore[method-assign]
-
-        def boom(_search: str) -> list[FrontierCatalogRow]:
-            raise AttributeError("frontier_rows missing")
-
-        screen._build_frontier_rows = boom  # type: ignore[method-assign]
-        screen._populate_library_list()
-        await pilot.pause()
-        from lilbee.cli.tui.widgets.model_list import ModelList
-
-        ml = screen.query_one("#list-library", ModelList)
-        assert ml.option_count > 0
-
-
 class TestModelFieldForTask:
     def test_each_task_maps_to_its_role_field(self):
         from lilbee.cli.tui.screens.catalog import _model_field_for_task

@@ -3430,6 +3430,8 @@ class TestStreamFlushCoalescing:
 
         from lilbee.cli.tui.screens.chat import ChatScreen
 
+        from lilbee.cli.tui.screens.chat import _StreamTimings
+
         screen = MagicMock(spec=ChatScreen)
         flush_calls: list[None] = []
 
@@ -3437,11 +3439,11 @@ class TestStreamFlushCoalescing:
             flush_calls.append(None)
 
         # Past timings: long enough ago that both the flush and the scroll fire.
-        timings = [0.0, 0.0]
+        timings = _StreamTimings(last_flush=0.0, last_scroll=0.0)
         with mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"):
             ChatScreen._maybe_flush_and_scroll(screen, fake_flush, timings)
         assert len(flush_calls) == 1
-        assert timings[0] > 0  # last_flush bumped
+        assert timings.last_flush > 0  # last_flush bumped
 
     def test_maybe_flush_skips_flush_within_interval(self):
         """Inside the flush window, flush() is not called and timings stay unchanged."""
@@ -3449,6 +3451,8 @@ class TestStreamFlushCoalescing:
         from unittest.mock import MagicMock
 
         from lilbee.cli.tui.screens.chat import ChatScreen
+
+        from lilbee.cli.tui.screens.chat import _StreamTimings
 
         screen = MagicMock(spec=ChatScreen)
         flush_calls: list[None] = []
@@ -3458,8 +3462,8 @@ class TestStreamFlushCoalescing:
 
         # Set timings to 'right now' so the interval check fails.
         now = time.monotonic()
-        timings = [now, now]
+        timings = _StreamTimings(last_flush=now, last_scroll=now)
         with mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"):
             ChatScreen._maybe_flush_and_scroll(screen, fake_flush, timings)
         assert flush_calls == []
-        assert timings == [now, now]
+        assert timings.last_flush == now and timings.last_scroll == now
