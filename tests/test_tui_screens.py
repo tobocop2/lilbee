@@ -2776,7 +2776,8 @@ async def test_chat_slash_delete_store_error(mock_svc):
             await app.screen.workers.wait_for_complete()
             await _pilot.pause()
             mock_notify.assert_called_once()
-            assert "No documents" in mock_notify.call_args[0][0]
+            # A read failure is distinct from the genuinely-empty case.
+            assert "Could not read" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_empty_sources(mock_svc):
@@ -3897,8 +3898,13 @@ async def test_command_provider_delete_doc(mock_svc):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        provider._delete_doc("notes.md")
+        with patch(
+            "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
+        ) as mock_invalidate:
+            provider._delete_doc("notes.md")
         mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
+        # Palette delete invalidates the doc cache like the chat /delete path.
+        mock_invalidate.assert_called_once()
 
 
 async def test_command_provider_action_sync():
@@ -3933,7 +3939,7 @@ async def test_command_provider_action_version():
 
 
 async def test_command_provider_action_reset_pushes_confirm():
-    """Palette 'Reset knowledge base' invokes ChatScreen._cmd_reset to push the ConfirmDialog."""
+    """Palette 'Reset knowledge base' invokes ChatScreen.request_reset (the public entry)."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -3942,11 +3948,11 @@ async def test_command_provider_action_reset_pushes_confirm():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         chat = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
-        with patch.object(chat, "_cmd_reset") as mock_reset:
+        with patch.object(chat, "request_reset") as mock_reset:
             provider = LilbeeCommandProvider(app.screen, match_style=None)
             provider._action_reset()
             await pilot.pause()
-            mock_reset.assert_called_once_with("")
+            mock_reset.assert_called_once_with()
 
 
 async def test_command_provider_action_reset_no_chat_screen():
@@ -8170,54 +8176,6 @@ class TestWikiRootShortcuts:
             assert "Log" not in top_labels
 
 
-class TestWikiSelectedSource:
-    """_selected_source covers all three branches: no-cursor, group-node, leaf.
-
-    Patches ``query_one`` to swap in a faked Tree whose ``cursor_node``
-    is set explicitly per branch. Directly invoking the real widget
-    cursor is flaky because setting ``cursor_line = -1`` doesn't always
-    nullify ``cursor_node`` in the Textual version in use.
-    """
-
-    async def test_all_branches(self, tmp_path):
-        from unittest.mock import MagicMock
-
-        from textual.widgets import Tree
-
-        from lilbee.cli.tui.screens.wiki import WikiScreen
-
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        wiki_root = cfg.data_root / cfg.wiki_dir
-        _create_wiki_page(wiki_root, "summaries", "my-doc", "My Doc")
-
-        app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            screen = app.screen
-            assert isinstance(screen, WikiScreen)
-            real_tree = screen.query_one("#wiki-page-list", Tree)
-            fake_tree = MagicMock(spec=Tree)
-
-            # Branch 1: cursor_node is None → returns None (line 284).
-            fake_tree.cursor_node = None
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                assert screen._selected_source() is None
-
-            # Branch 2: group node carries data=None, not a slug string.
-            group_node = real_tree.root.children[0]
-            fake_tree.cursor_node = group_node
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                assert screen._selected_source() is None
-
-            # Branch 3: leaf with a real slug reaches line 288 and delegates
-            # to _source_for_slug. The return value may be None when the
-            # frontmatter omits a source; the point is line 288 is executed.
-            leaf_node = group_node.children[0]
-            fake_tree.cursor_node = leaf_node
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                screen._selected_source()
-
-
 class TestWikiScreenSearch:
     async def test_search_filters_pages(self, tmp_path):
         """Search input filters the page list."""
@@ -8237,9 +8195,55 @@ class TestWikiScreenSearch:
             assert isinstance(screen, WikiScreen)
             search = app.screen.query_one("#wiki-search", TextualInput)
             search.value = "Alpha"
-            await pilot.pause()
+            # Wait out the search debounce so the filter pass runs.
+            await pilot.pause(0.25)
             assert "summaries/alpha-doc" in screen._page_slugs
             assert "summaries/beta-doc" not in screen._page_slugs
+
+    async def test_search_debounce_collapses_rapid_keystrokes(self, tmp_path):
+        """Two rapid edits schedule a single filter pass, not one per keystroke.
+
+        Driven through the handler with a fake ``set_timer`` so the assertion is on
+        the debounce bookkeeping, not on a real timer firing within a wall-clock
+        window (that timing race starved and flaked under parallel CI load).
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "alpha-doc", "Alpha Document")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+
+            scheduled: list[tuple[object, MagicMock]] = []
+
+            def _fake_set_timer(_delay, callback):
+                timer = MagicMock()
+                scheduled.append((callback, timer))
+                return timer
+
+            with (
+                patch.object(screen, "_load_pages") as mock_load,
+                patch.object(screen, "set_timer", side_effect=_fake_set_timer),
+            ):
+                screen._on_search_changed(SimpleNamespace(value="A"))
+                screen._on_search_changed(SimpleNamespace(value="Al"))
+                # The second edit cancels the first pending timer; both scheduled.
+                assert len(scheduled) == 2
+                _, first_timer = scheduled[0]
+                first_timer.stop.assert_called_once()
+                # Firing only the surviving (latest) debounce runs one filter pass.
+                latest_callback, _ = scheduled[-1]
+                latest_callback()
+                await pilot.pause()
+            mock_load.assert_called_once_with(filter_text="Al")
 
     async def test_escape_clears_search(self, tmp_path):
         """Escape clears search text when search has a value."""
@@ -11946,58 +11950,6 @@ async def test_chat_crawl_dialog_callback_none_noop():
         mock_start.assert_not_called()
 
 
-async def test_wiki_source_for_slug_returns_source():
-    """_source_for_slug extracts source from page frontmatter."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": ["doc.txt", "other.txt"]}
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page):
-            result = app.screen._source_for_slug("summaries/doc")
-        assert result == "doc.txt"
-
-
-async def test_wiki_source_for_slug_returns_none_for_missing():
-    """_source_for_slug returns None when page not found."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=None):
-            result = app.screen._source_for_slug("summaries/missing")
-        assert result is None
-
-
-async def test_wiki_source_for_slug_returns_none_for_empty_sources():
-    """_source_for_slug returns None when sources list is empty."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": []}
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page):
-            result = app.screen._source_for_slug("summaries/doc")
-        assert result is None
-
-
-async def test_wiki_selected_source_returns_none_for_branch_without_slug():
-    """_selected_source returns None when the highlighted tree node is a branch (no slug)."""
-    from textual.widgets import Tree
-
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        tree = app.screen.query_one("#wiki-page-list", Tree)
-        tree.reset("Wiki")
-        tree.root.add("Branch")  # branch with no data=slug
-        tree.focus()
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.pause()
-        result = app.screen._selected_source()
-        assert result is None
-
-
 # =============================================================================
 # Coverage fill: catalog.py branches
 # =============================================================================
@@ -12416,6 +12368,12 @@ async def test_settings_model_picker_dismissed_reloads_worker_for_role():
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
+                return_value=services_mock,
+            ),
+            # The single reload now runs in _after_model_pick (settings module);
+            # apply_model_pick is called with reload_worker=False to avoid a double.
+            patch(
+                "lilbee.cli.tui.screens.settings.get_services",
                 return_value=services_mock,
             ),
         ):
@@ -12892,3 +12850,19 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             after = len(list(screen._grid_container.query(".section-heading")))
             assert after > before, "expected an additional section heading"
+
+
+class TestWikiSafeCoerce:
+    def test_safe_float_handles_non_numeric(self):
+        from lilbee.cli.tui.screens.wiki import _safe_float
+
+        assert _safe_float("0.8") == 0.8
+        assert _safe_float(None) is None
+        assert _safe_float("high") is None  # non-numeric frontmatter must not crash
+
+    def test_safe_int_handles_non_numeric(self):
+        from lilbee.cli.tui.screens.wiki import _safe_int
+
+        assert _safe_int(3) == 3
+        assert _safe_int(None) == 0
+        assert _safe_int("lots", default=0) == 0

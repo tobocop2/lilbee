@@ -344,3 +344,12 @@ class TestOverlayPersistedSettings:
             assert cfg.chat_model == original
         finally:
             cfg.chat_model = original
+
+
+class TestListSettingRegexMarker:
+    def test_only_regex_list_validates_as_regex(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        assert SETTINGS_MAP["crawl_exclude_patterns"].validate_regex is True
+        # Chromium flag list must not be regex-validated.
+        assert SETTINGS_MAP["crawl_browser_extra_args"].validate_regex is False

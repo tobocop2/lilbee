@@ -21,6 +21,7 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
+from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 
@@ -67,20 +68,21 @@ def _make_wiki() -> Screen:
     return WikiScreen()
 
 
-_BASE_VIEWS: dict[str, Callable[[], Screen]] = {
+# Screen factory per managed view name (Chat is special-cased in switch_view and
+# has no factory). The active set + order + wiki gate come from msg.get_nav_views,
+# so the view universe lives in exactly one place (messages.ALL_NAV_VIEWS).
+_VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
     "Catalog": _make_catalog,
     "Status": _make_status,
     "Settings": _make_settings,
     "Tasks": _make_tasks,
+    "Wiki": _make_wiki,
 }
 
 
 def get_views() -> dict[str, Callable[[], Screen]]:
-    """Return the active view factories, including wiki when enabled."""
-    views = dict(_BASE_VIEWS)
-    if cfg.wiki:
-        views["Wiki"] = _make_wiki
-    return views
+    """Return the active view factories, derived from the nav view list."""
+    return {name: _VIEW_FACTORIES[name] for name in msg.get_nav_views() if name in _VIEW_FACTORIES}
 
 
 class LilbeeApp(App[None]):
@@ -163,7 +165,7 @@ class LilbeeApp(App[None]):
         if self._test_skip_auto_init:
             return
         self._canonicalize_persisted_models()
-        self.title = f"lilbee: {cfg.chat_model}"
+        self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the default.
         persisted = cfg.theme or _DEFAULT_THEME
@@ -277,19 +279,24 @@ class LilbeeApp(App[None]):
         self.theme = name
         apply_settings_update({"theme": name})
 
+    def _reject_if_downloading(self, value: object) -> bool:
+        """Toast and return True if *value* is a model ref still downloading, so a
+        half-pulled file can't land in a model slot."""
+        if not isinstance(value, str):
+            return False
+        downloading = self.task_bar.downloading_label_for(value)
+        if downloading is None:
+            return False
+        self.notify(msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning")
+        return True
+
     def set_active_model(self, key: str, value: str) -> None:
         """Persist an active model ref through the shared write boundary.
 
         Refs whose download is still queued or active are refused before the
         boundary runs, so a half-pulled file cannot land in a model slot.
         """
-
-        downloading = self.task_bar.downloading_label_for(value)
-        if downloading is not None:
-            self.notify(
-                msg.MODEL_BEING_DOWNLOADED.format(name=downloading),
-                severity="warning",
-            )
+        if self._reject_if_downloading(value):
             return
         try:
             apply_settings_update({key: value})
@@ -305,7 +312,10 @@ class LilbeeApp(App[None]):
         or values rejected by pydantic validation. Callers either catch and toast or let it
         propagate.
         """
-
+        # A model-role ref still downloading must not land in a slot (parity with
+        # set_active_model); toast and skip rather than half-pull.
+        if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
+            return
         apply_settings_update({key: value})
         normalized = getattr(cfg, key)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:

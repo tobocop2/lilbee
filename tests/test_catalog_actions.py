@@ -122,6 +122,20 @@ async def test_on_key_non_digit_is_passthrough() -> None:
         screen.on_key(event)
 
 
+async def test_on_key_out_of_range_digit_is_passthrough() -> None:
+    """A digit past the tab count is ignored, not clamped, and does not switch tabs."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        before = tabs.active
+        event = Key(key="9", character="9")
+        screen.on_key(event)
+        await pilot.pause()
+        assert tabs.active == before
+
+
 async def test_on_key_digit_swallowed_when_input_focused() -> None:
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -1068,23 +1082,25 @@ async def test_activate_initial_tab_switches_to_chat() -> None:
         assert tabs.active == "chat"
 
 
-async def test_populate_library_renders_with_empty_frontier_when_attr_missing() -> None:
-    """_populate_library_list still renders installed rows when frontier source is gone."""
-    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = pilot.app.query_one(CatalogScreen)
-        installed = _row("Llama 3 8B", installed=True)
-        screen._all_family_rows = lambda: [installed]  # type: ignore[method-assign]
-        screen._all_hf_rows = lambda: []  # type: ignore[method-assign]
-        screen._all_remote_rows = lambda: []  # type: ignore[method-assign]
+class TestModelFieldForTask:
+    def test_each_task_maps_to_its_role_field(self):
+        from lilbee.cli.tui.screens.catalog import _model_field_for_task
 
-        def boom(_search: str) -> list[FrontierCatalogRow]:
-            raise AttributeError("frontier_rows missing")
+        assert _model_field_for_task(ModelTask.CHAT) == "chat_model"
+        assert _model_field_for_task(ModelTask.EMBEDDING) == "embedding_model"
+        assert _model_field_for_task(ModelTask.VISION) == "vision_model"
+        assert _model_field_for_task(ModelTask.RERANK) == "reranker_model"
 
-        screen._build_frontier_rows = boom  # type: ignore[method-assign]
-        screen._populate_library_list()
-        await pilot.pause()
-        from lilbee.cli.tui.widgets.model_list import ModelList
+    def test_accepts_str_task_from_frontier_rows(self):
+        from lilbee.cli.tui.screens.catalog import _model_field_for_task
 
-        ml = screen.query_one("#list-library", ModelList)
-        assert ml.option_count > 0
+        assert _model_field_for_task("vision") == "vision_model"
+
+
+class TestEstimateMinRamGb:
+    def test_applies_floor_and_factor_rounded(self):
+        from lilbee.catalog.models import estimate_min_ram_gb
+
+        assert estimate_min_ram_gb(0.1) == 2.0  # floor
+        assert estimate_min_ram_gb(4.0) == 6.0  # 4 * 1.5
+        assert estimate_min_ram_gb(3.0) == 4.5  # rounded to 1 dp

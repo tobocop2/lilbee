@@ -53,7 +53,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
 )
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick
-from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS, cfg
+from lilbee.core.config import cfg
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
 
 if TYPE_CHECKING:
@@ -370,7 +370,7 @@ class SettingsScreen(Screen[None]):
         raw = ta.text
         parsed = self._parse_value(defn, raw)
         assert isinstance(parsed, list)  # noqa: S101 -- mypy narrowing, defn.type is list above
-        err = self._validate_regex_list(parsed)
+        err = self._validate_regex_list(parsed) if defn.validate_regex else None
         error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
         if err is not None:
             line_no, err_text = err
@@ -393,9 +393,10 @@ class SettingsScreen(Screen[None]):
         defn = SETTINGS_MAP.get(key)
         if defn is None:
             return
-        defaults = list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
-        text = "\n".join(defaults)
-        ta = self.query_one(f"#ed-{key}", ListTextArea)
+        default = get_default(key)
+        defaults = list(default) if isinstance(default, list) else []
+        text = "\n".join(str(item) for item in defaults)
+        ta = self.query_one(f"#{EDITOR_ID_PREFIX}{key}", ListTextArea)
         ta.load_text(text)
         self._persist_value(key, defn, text)
         error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
@@ -486,7 +487,11 @@ class SettingsScreen(Screen[None]):
 
     def _on_model_picker_dismissed(self, key: str, ref: str | None) -> None:
         """Persist the picker selection, refresh the button, and reload the role's server."""
-        apply_model_pick(self, key=key, ref=ref, on_done=lambda: self._after_model_pick(key))
+        # _after_model_pick already reloads the role; let it own the single reload
+        # so the role server isn't respawned twice for one pick.
+        apply_model_pick(
+            self, key=key, ref=ref, reload_worker=False, on_done=lambda: self._after_model_pick(key)
+        )
 
     def _after_model_pick(self, key: str) -> None:
         """Refresh the picker button and reload the role's fleet server after a swap."""
@@ -632,6 +637,13 @@ class SettingsScreen(Screen[None]):
         if tabs.active != next_id:
             tabs.active = next_id
 
+    def _focus_adjacent(self, direction: int) -> None:
+        """Move focus to the next/previous widget app-wide (direction 1 / -1)."""
+        if direction == 1:
+            self.app.action_focus_next()
+        else:
+            self.app.action_focus_previous()
+
     def _move_focus_within_pane(self, *, direction: int) -> None:
         focused = self.app.focused
         tabs = self.query_one("#settings-tabs", TabbedContent)
@@ -639,11 +651,11 @@ class SettingsScreen(Screen[None]):
         try:
             body = self.query_one(f"#{active_pane_id}-body", _LazyGroupBody)
         except Exception:
-            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            self._focus_adjacent(direction)
             return
         focusables = [w for w in body.query("*") if w.focusable]
         if not focusables or focused is None or focused not in focusables:
-            self.app.action_focus_next() if direction == 1 else self.app.action_focus_previous()
+            self._focus_adjacent(direction)
             return
         index = focusables.index(focused)
         next_index = index + direction

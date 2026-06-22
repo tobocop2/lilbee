@@ -71,6 +71,9 @@ class SettingDef:
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
+    # List editors validate each line as a regex only when this is set; flag-style
+    # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
+    validate_regex: bool = False
 
 
 def get_default(key: str) -> object:
@@ -648,6 +651,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.CRAWLING,
         render=RenderStyle.LIST_COLLAPSED,
+        validate_regex=True,
         help_text=(
             "Regex patterns that skip URLs at link-discovery time during "
             "recursive crawls. One per line."
