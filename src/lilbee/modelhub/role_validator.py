@@ -2,9 +2,8 @@
 
 import os
 import sys
-from typing import Any
 
-from lilbee.catalog import find_catalog_entry
+from lilbee.catalog import CatalogModel, find_catalog_entry
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
@@ -62,7 +61,7 @@ def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
     return ref.split("/", 1)[0] in PROVIDER_PREFIXES
 
 
-def _canonical_featured_ref(ref: str, entry: Any, want: ModelTask) -> str:
+def _canonical_featured_ref(ref: str, entry: CatalogModel, want: ModelTask) -> str:
     """Role-check a featured entry and pick the canonical ref to persist."""
     if entry.task != want:
         raise TaskMismatchError(ref, ModelTask(entry.task), want)
@@ -105,7 +104,7 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     if _skips_catalog_check(ref, allow_bypass=allow_bypass):
         return ref
     want = ModelTask(_MODEL_FIELD_TO_TASK[field_name])
-    entry: Any = find_catalog_entry(ref)
+    entry = find_catalog_entry(ref)
     if entry is not None:
         return _canonical_featured_ref(ref, entry, want)
     return _validate_installed_ref(ref, want)

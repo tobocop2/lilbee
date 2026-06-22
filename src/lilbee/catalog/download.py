@@ -285,7 +285,7 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     if not mmproj_files:
         return None
 
-    # Prefer F16 over F32 (smaller), and any over BF16
+    # Prefer an F16 mmproj when one is offered; otherwise take the first match.
     for preference in ("f16", "F16"):
         for f in mmproj_files:
             if preference in f:
