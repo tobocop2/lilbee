@@ -95,7 +95,8 @@ _TIER_PROMPTS: dict[str, str] = {
     # verified via lilbee_search rather than hallucinated.
     "giant": (
         "make a procedural level generator that places wall and floor tiles and "
-        "scatters collectibles using pathfinding"
+        "scatters collectibles using pathfinding. Pick sensible defaults yourself "
+        "and never ask me questions."
     ),
 }
 

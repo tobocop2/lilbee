@@ -52,6 +52,10 @@ _OPENCODE_SHARE_DIR = Path.home() / ".local" / "share" / "opencode"
 _GODOT_CORPUS = Path(os.environ.get("LILBEE_QA_CORPUS", str(Path.home() / "godot_corpus")))
 # opencode's built-in tools that compete with lilbee_search; disabled per cell so
 # the model uses lilbee's MCP search instead of webfetch/read/grep (search mode).
+# ``question`` is off too: a model (especially a giant on the codegen prompt) that
+# calls it renders an interactive multiple-choice prompt and blocks forever waiting
+# for a keypress the headless harness never sends, which reads as a pane-idle
+# timeout. With the tool gone the model picks its own defaults and proceeds.
 _TOOLS_OFF = (
     "webfetch",
     "read",
@@ -65,6 +69,7 @@ _TOOLS_OFF = (
     "todowrite",
     "todoread",
     "task",
+    "question",
 )
 
 # Substrings whose appearance in the pane means the cell can't recover --
