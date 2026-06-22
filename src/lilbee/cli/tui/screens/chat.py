@@ -946,9 +946,12 @@ class ChatScreen(Screen[None]):
             )
             return
 
-        get_services().store.remove_documents([name])
+        from lilbee.app.ingest import remove_documents_durably
         from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
+        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
+        # non-destructive delete; the file stays on disk).
+        remove_documents_durably([name])
         invalidate_document_cache()
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 

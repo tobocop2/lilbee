@@ -113,9 +113,12 @@ class LilbeeCommandProvider(Provider):
             app.title = msg.app_title(value)
 
     def _delete_doc(self, name: str) -> None:
+        from lilbee.app.ingest import remove_documents_durably
         from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
-        get_services().store.remove_documents([name])
+        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
+        # non-destructive delete; the file stays on disk).
+        remove_documents_durably([name])
         # Invalidate the document cache like the chat /delete path, so the
         # deleted file stops being offered by autocomplete and the palette.
         invalidate_document_cache()

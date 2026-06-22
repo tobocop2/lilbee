@@ -3083,3 +3083,35 @@ class TestUnsupportedFileInSync:
 
             with pytest.raises(ValueError, match="Unsupported file slipped through"):
                 await sync(quiet=True)
+
+
+class TestRemoveDocumentsDurably:
+    def test_writes_skip_marker_for_kept_file(self, isolated_env, mock_svc):
+        """A durable delete keeps the file but skip-marks it so sync won't re-ingest."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import load_skip_markers, load_skip_reasons
+        from lilbee.data.store.types import RemoveResult
+
+        doc = isolated_env / "keep.txt"
+        doc.write_text("content")
+        mock_svc.store.remove_documents.side_effect = None
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["keep.txt"], not_found=[]
+        )
+
+        remove_documents_durably(["keep.txt"])
+
+        assert doc.exists()  # non-destructive: file stays on disk
+        assert load_skip_markers(cfg.data_root)["keep.txt"] == file_hash(doc)
+        assert "keep.txt" in load_skip_reasons(cfg.data_root)
+
+    def test_no_marker_when_nothing_removed(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+        from lilbee.data.store.types import RemoveResult
+
+        mock_svc.store.remove_documents.side_effect = None
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=[], not_found=["gone"])
+        remove_documents_durably(["gone"])
+        assert load_skip_markers(cfg.data_root) == {}
