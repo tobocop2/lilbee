@@ -192,13 +192,22 @@ Adding a model: add its `[[model]]` entry to `models.toml` with `tier = "small" 
 - `tools/qa/opencode/results/<family>.pane.txt` — full final opencode pane per cell. **This is the per-model demo evidence**: the actual TUI interaction (prompt, tool call, answer, citations).
 - `tools/qa/opencode/logs/<family>.log` — `lilbee serve` stderr per cell (worker / dispatch errors scraped from here).
 
-## Deferred (designed but not yet implemented)
+## Production-readiness scenarios (now in `stress.py`)
 
-- **S4** long-history windowing (`bb-xdic`).
-- **S5** mid-stream cancellation.
-- **S6** backpressure / 429 surfacing.
+The long-session, cancellation, and backpressure behaviours once listed here as
+deferred matrix scenarios are covered today, mostly by `stress.py` (the
+concurrency probe that drives many agentic sessions against one served model):
 
-These will run only on the qwen3 happy-path cell once added (bead `bb-m8fi` tracks the follow-up).
+- **Long-history windowing** — a session whose conversation outgrows the model's
+  window resolves to a clean `context_length_exceeded` with the server still
+  serving, never a crash. The served window comes from the provider's
+  `served_chat_ctx` / `_fit_chat_context` and opencode's `limit.context` trim;
+  `stress.py` asserts the overflow is graceful.
+- **Backpressure / 429** — `stress.py` treats a `429` as acceptable retryable
+  backpressure and fails only on a hard `5xx` / connection drop.
+- **Mid-stream cancellation** — a product capability
+  (`Services.cancel_inference()`, bound to the TUI's Ctrl+C /
+  `action_cancel_stream`); there is no dedicated matrix scenario for it.
 
 ## Prior findings (historical, pre-tiered prompts)
 
