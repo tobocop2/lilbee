@@ -340,6 +340,21 @@ def test_chat_stream_yields_deltas() -> None:
     assert chunks == ["He", "llo"]
 
 
+def test_chat_stream_forwards_caller_timeout() -> None:
+    """A caller deadline must reach the streaming request, not be silently dropped."""
+    client = _client()
+    seen: dict[str, object] = {}
+    real_stream = client._http.stream
+
+    def _spy_stream(method, url, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return real_stream(method, url, **kwargs)
+
+    client._http.stream = _spy_stream  # type: ignore[method-assign]
+    list(client.chat([{"role": "user", "content": "hi"}], stream=True, timeout=7.5))
+    assert seen["timeout"] == 7.5
+
+
 def test_chat_result_reads_usage_from_response() -> None:
     """chat_result threads llama-server's usage block into ChatResult. (F4)"""
 
