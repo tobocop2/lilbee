@@ -60,7 +60,7 @@ SYNC_SKIPPED_NO_VISION = (
 )
 SYNC_SKIPPED_VISION_FAILED = (
     "Skipped (vision OCR returned no text): {files}. "
-    "See ~/Library/Application Support/lilbee/logs/worker-vision.log "
+    "See ~/Library/Application Support/lilbee/logs/server.log "
     "for the underlying error."
 )
 CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
