@@ -277,6 +277,12 @@ class TestAsk:
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
+    def test_ask_rejects_empty_question(self, mock_svc):
+        result = runner.invoke(app, ["ask", "   "])
+        assert result.exit_code != 0
+        assert "must not be empty" in result.output
+        mock_svc.searcher.ask_stream.assert_not_called()
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
@@ -1173,6 +1179,31 @@ class TestSearch:
         data = json.loads(result.output.strip())
         assert data["results"] == []
 
+    def test_search_caps_top_k(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "q", "--top-k", "500"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+
+    def test_search_rejects_empty_query(self, mock_svc):
+        result = runner.invoke(app, ["search", "   "])
+        assert result.exit_code != 0
+        assert "must not be empty" in result.output
+
+    def test_search_applies_max_distance_filter(self, mock_svc, monkeypatch):
+        """CLI search drops chunks beyond cfg.max_distance, like REST and MCP."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "max_distance", 0.5)
+        near = _MOCK_SEARCH_RESULTS[0]  # distance 0.25
+        far = _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": "far.pdf", "distance": 0.9})
+        mock_svc.searcher.search.return_value = [near, far]
+        result = runner.invoke(app, ["--json", "search", "q"])
+        assert result.exit_code == 0
+        sources = [r["source"] for r in json.loads(result.output.strip())["results"]]
+        assert "manual.pdf" in sources
+        assert "far.pdf" not in sources
+
     def test_search_human_output(self, mock_svc):
         mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
         result = runner.invoke(app, ["search", "engine oil"])
@@ -1848,6 +1879,16 @@ class TestRebuildJson:
 
 
 class TestAddJson:
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json_suppresses_eager_start(self, mock_sync, isolated_env, tmp_path):
+        """Headless json add only needs embed; it must not eager-warm every role."""
+        src = tmp_path / "source" / "m.txt"
+        src.parent.mkdir()
+        src.write_text("x")
+        cfg.worker_pool_eager_start = True
+        runner.invoke(app, ["--json", "add", str(src)])
+        assert cfg.worker_pool_eager_start is False
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "manual.txt"
@@ -3679,6 +3720,48 @@ class TestSelfCheck:
                 return_value=embed_dims,
             ),
         )
+
+    def test_download_failure_cleans_temp_dir(self, tmp_path: Path, monkeypatch) -> None:
+        import urllib.error
+        import urllib.request
+
+        from lilbee.cli.commands import setup
+
+        d = tmp_path / "dl"
+        d.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
+
+        def _down(*_a, **_k):
+            raise urllib.error.URLError("offline")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _down)
+        with pytest.raises(RuntimeError):
+            setup._download_self_check_model("repo/x", "f.gguf")
+        assert not d.exists()
+
+    def test_self_check_server_cleans_work_dir_on_start_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        d = tmp_path / "wd"
+        d.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
+        # The llama-server binary isn't present in CI; stub the resolver so the
+        # function reaches the swap.start cleanup path under test.
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+        )
+        fake_swap = mock.MagicMock()
+        fake_swap.start.side_effect = RuntimeError("engine died")
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: fake_swap
+        )
+        with pytest.raises(RuntimeError):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+        assert not d.exists()
+        fake_swap.shutdown.assert_called_once()
 
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"

@@ -515,6 +515,31 @@ def test_run_launcher_serves_remote_configured_chat_model():
     warm.assert_not_called()
 
 
+def test_run_launcher_stops_spawned_server_when_prepare_raises():
+    """A raise from prepare() (e.g. declining setup) must still stop a freshly
+    spawned server, not leak it."""
+    import typer
+
+    from lilbee.cli.launchers.launcher import run_launcher
+
+    launcher = MagicMock()
+    launcher.find_binary.return_value = "/usr/local/bin/client"
+    launcher.prepare.side_effect = typer.Exit(0)
+    fake_proc = MagicMock()
+    with (
+        patch.object(cfg, "chat_model", "ollama/qwen3:8b"),
+        patch(
+            "lilbee.cli.launchers.launcher.ensure_server_running",
+            return_value=(("tok", 1234), fake_proc),
+        ),
+        patch("lilbee.cli.launchers.launcher.installed_chat_model_refs", return_value=[]),
+        patch("lilbee.cli.launchers.launcher.stop_spawned_server") as stop,
+        pytest.raises(typer.Exit),
+    ):
+        run_launcher(launcher)
+    stop.assert_called_once_with(fake_proc)
+
+
 def test_run_launcher_warns_and_skips_warm_when_no_models_at_all(capsys):
     """No native models and a native-configured ref: warn, don't warm."""
     import typer
@@ -867,3 +892,21 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
 
     budget = launch_mod.chat_warm_budget_s()
     assert budget == max(launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total)))
+
+
+def test_install_skill_is_atomic_on_failure(tmp_path, monkeypatch):
+    """A failed copy must not leave a half-written skill dir (which exists()
+    would skip forever) or any staging litter."""
+    from lilbee.cli.launchers import opencode
+
+    dest = tmp_path / "skills" / "lilbee-mcp"
+    monkeypatch.setattr(opencode, "_opencode_skill_dest", lambda: dest)
+
+    def _boom(*_a, **_k):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(opencode.os, "replace", _boom)
+    with pytest.raises(OSError):
+        opencode._install_lilbee_skill()
+    assert not dest.exists()
+    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))

@@ -106,11 +106,13 @@ def render_warm(base_url: str, timeout_s: float) -> bool | None:
         TextColumn("{task.fields[detail]}"),
         TimeElapsedColumn(),
     )
+    saw_event = False
     try:
         with Progress(*columns, console=console, transient=True) as progress:
             task_id = progress.add_task("Preparing chat model", total=None, detail="")
             reached_ready = False
             for snap in _iter_warm_events(base_url, timeout_s):
+                saw_event = True
                 _apply(progress, task_id, snap)
                 if snap.phase is WarmPhase.READY:
                     reached_ready = True
@@ -119,4 +121,7 @@ def render_warm(base_url: str, timeout_s: float) -> bool | None:
                     return False
             return reached_ready
     except httpx.HTTPError:
-        return None
+        # Only None means "stream never ran, poll instead". If it opened and
+        # yielded events before dropping, report not-ready so the caller does not
+        # double-spend the full warm budget on a second poll.
+        return None if not saw_event else False

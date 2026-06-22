@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 
 from lilbee.core.config import Config, cfg
-from lilbee.core.security import validate_path_within
+from lilbee.core.security import PathTraversalError, validate_path_within
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, Store
 from lilbee.wiki.citation import (
@@ -194,6 +194,12 @@ def lint_wiki_page(
     # wiki_source is like "wiki/summaries/doc.md": strip the wiki_dir prefix
     relative = str(wiki_source).removeprefix(str(config.wiki_dir) + "/")
     wiki_path = wiki_root / relative
+    # wiki_source reaches here straight from the CLI/MCP, so a traversal source
+    # ("../../etc/passwd") would otherwise read and disclose an arbitrary file.
+    try:
+        validate_path_within(wiki_path, wiki_root)
+    except PathTraversalError:
+        return issues
     if wiki_path.exists():
         text = wiki_path.read_text(encoding="utf-8", errors="replace")
         issues.extend(_lint_unmarked(wiki_source, text))

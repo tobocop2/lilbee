@@ -203,9 +203,13 @@ def _validate(updates: dict[str, Any]) -> None:
         raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")
     effective_chunk_size = new_chunk_size if new_chunk_size is not None else cfg.chunk_size
     new_overlap = _as_int_setting(updates.get("chunk_overlap"))
-    if new_overlap is not None and new_overlap >= effective_chunk_size:
+    # Compare the effective overlap against the effective chunk_size so that
+    # lowering chunk_size alone (below the already-persisted overlap) is caught,
+    # not just an explicit new overlap.
+    effective_overlap = new_overlap if new_overlap is not None else cfg.chunk_overlap
+    if effective_overlap >= effective_chunk_size:
         raise ValueError(
-            f"chunk_overlap ({new_overlap}) must be < chunk_size ({effective_chunk_size})"
+            f"chunk_overlap ({effective_overlap}) must be < chunk_size ({effective_chunk_size})"
         )
 
 
@@ -330,9 +334,10 @@ def apply_settings_update(
     """Validate, apply, persist, and invalidate caches for a batch of updates.
 
     Atomic on validation: a rejection rolls every field back and writes
-    nothing. Atomic on disk failure: an ``OSError`` from the TOML write
-    also restores the in-memory snapshot before re-raising. Cache
-    invalidation runs only after a successful persist.
+    nothing. Atomic on disk failure: an ``OSError`` from the TOML write, or a
+    parse error reloading a corrupt config.toml, restores the in-memory
+    snapshot before re-raising. Cache invalidation runs only after a
+    successful persist.
 
     Pass ``allow_model_roles=False`` to reject ``chat_model`` /
     ``embedding_model`` / ``vision_model`` / ``reranker_model`` at the
@@ -364,12 +369,18 @@ def apply_settings_update(
         if dim is not None:
             effective_updates["embedding_dim"] = dim
     to_persist, to_delete, snapshot = _apply_with_rollback(effective_updates)
+    # embedding_dim is derived and applied to cfg in-memory, but the overlay
+    # loader ignores it on reload (it is re-derived), so don't write it to disk.
+    to_persist.pop("embedding_dim", None)
     try:
         if to_persist:
             persistent_settings.update_values(cfg.data_root, to_persist)
         if to_delete:
             persistent_settings.delete_values(cfg.data_root, to_delete)
-    except OSError:
+    except (OSError, ValueError):
+        # OSError from the write, or a TOMLDecodeError (ValueError) when
+        # update/delete reloads a corrupt on-disk config.toml: either way the
+        # in-memory snapshot must be restored so cfg matches what was persisted.
         _restore_snapshot(snapshot)
         raise
     _invalidate_caches(set(effective_updates))
