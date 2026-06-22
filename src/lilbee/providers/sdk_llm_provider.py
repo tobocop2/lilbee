@@ -66,7 +66,9 @@ def inject_provider_keys() -> None:
     shell.
     """
     for _, cfg_field, env_var, _ in PROVIDER_KEYS:
-        value = getattr(cfg, cfg_field, "")
+        # No default: every PROVIDER_KEYS field is a declared config attribute, so
+        # a typo in the table should surface as AttributeError, not silently read "".
+        value = getattr(cfg, cfg_field)
         if value and not os.environ.get(env_var):
             os.environ[env_var] = value
 
@@ -223,7 +225,10 @@ class SdkLLMProvider(LLMProvider):
         already forwards tools/tool_choice, so route through it instead of refusing.
         """
         result = self.chat(
-            [{"role": m["role"], "content": m["content"]} for m in messages],
+            # Pass each message through whole: a tool conversation carries
+            # ``tool_calls`` / ``tool_call_id`` / ``name`` that link an assistant
+            # call to its result, and stripping to role+content breaks that chain.
+            [dict(m) for m in messages],
             stream=False,
             options=options,
             model=model,
@@ -314,19 +319,19 @@ class SdkLLMProvider(LLMProvider):
         )
 
     def list_models(self) -> list[str]:
-        """List models across every configured local server (empty list on SDK errors)."""
+        """List models across every configured local server.
+
+        A single unreachable server is logged and skipped so its outage does not
+        drop the models served by the other reachable servers.
+        """
         names: list[str] = []
-        for _spec, base_url in configured_local_servers():
+        for spec, base_url in configured_local_servers():
             try:
                 names.extend(self._backend.list_models(base_url=base_url, api_key=self._api_key))
             except NotImplementedError:
                 continue
-            except ProviderError:
-                raise
             except Exception as exc:
-                raise ProviderError(
-                    f"Listing models failed: {exc}", provider=self._backend.provider_name
-                ) from exc
+                log.debug("Skipping unreachable local server %s: %s", spec.key, exc)
         return names
 
     def list_chat_models(self, provider: str) -> list[str]:

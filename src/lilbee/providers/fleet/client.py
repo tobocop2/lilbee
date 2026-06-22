@@ -403,13 +403,13 @@ class LlamaServerClient:
 
         ``messages`` accepts both plain ``{role, content: str}`` and multipart
         ``content`` lists (vision image parts), so the vision path reuses this.
-        ``timeout`` overrides the client default for the non-streaming request,
-        so a caller-enforced deadline (vision OCR) ends the request itself.
+        ``timeout`` overrides the client default for either path, so a
+        caller-enforced deadline (vision OCR) ends the request itself.
         """
         payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
-        if stream:
-            return self._chat_stream(payload)
         request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
+        if stream:
+            return self._chat_stream(payload, request_timeout)
         with self._track():
             resp = self._http.post(
                 _CHAT_PATH, json={**payload, "stream": False}, timeout=request_timeout
@@ -419,10 +419,14 @@ class LlamaServerClient:
             # coerce to "" (like chat_result/chat_tools) so callers never see "None".
             return resp.json()["choices"][0]["message"].get("content") or ""
 
-    def _chat_stream(self, payload: dict[str, Any]) -> Iterator[str]:
+    def _chat_stream(
+        self, payload: dict[str, Any], timeout: Any = httpx.USE_CLIENT_DEFAULT
+    ) -> Iterator[str]:
         with (
             self._track(),
-            self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
+            self._http.stream(
+                "POST", _CHAT_PATH, json={**payload, "stream": True}, timeout=timeout
+            ) as resp,
         ):
             _raise_for_status(resp)
             for line in resp.iter_lines():

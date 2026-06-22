@@ -92,8 +92,9 @@ install_litellm_log_filter()
 def _sdk_attr(obj: object, name: str) -> Any:
     """Read an optional attribute off a litellm response/chunk object (absent -> None).
 
-    The single dynamic-read boundary for the SDK's loosely-typed objects, whose tool-call
-    fields are absent (not just ``None``) across litellm chunk shapes.
+    Shared helper for the view adapters' dynamic reads of the SDK's loosely-typed
+    objects, whose tool-call fields are absent (not just ``None``) across litellm
+    chunk shapes.
     """
     return getattr(obj, name, None)
 
@@ -241,14 +242,6 @@ def _require_litellm() -> Any:
     return litellm
 
 
-def _cache_ollama_defaults(model: str, params_text: str) -> None:
-    """Parse Ollama parameters and store in the model defaults cache."""
-    from lilbee.providers.model_defaults import parse_kv_parameters, set_defaults
-
-    defaults = parse_kv_parameters(params_text)
-    set_defaults(model, defaults)
-
-
 def _route_model(ref: ProviderModelRef, api_base: str | None) -> str:
     """Format *ref* for litellm using the OpenAI ``provider/model`` convention.
 
@@ -339,6 +332,16 @@ def _embedding_vector(item: Any) -> list[float]:
     """Return an embedding item's vector across the dict and object response shapes."""
     vector = item["embedding"] if isinstance(item, dict) else item.embedding
     return cast("list[float]", vector)
+
+
+def _response_model(response: Any) -> str | None:
+    """Return a litellm response's ``model`` across the dict and object shapes.
+
+    Optional (a proxy may omit it), so the lookup defaults to ``None``.
+    """
+    if isinstance(response, dict):
+        return response.get("model")
+    return cast("str | None", _sdk_attr(response, "model"))
 
 
 # Operation labels prefixed onto the fallback message for an unrecognised error.
@@ -536,11 +539,7 @@ class LitellmSdkBackend:
         # with the wrong vector. ``index`` is required (always present in a
         # spec-conforming response), mirroring the rerank path's direct read.
         vectors = [_embedding_vector(item) for item in sorted(data, key=_embedding_index)]
-        if isinstance(response, dict):
-            model = response.get("model")
-        else:
-            model = getattr(response, "model", None)
-        return EmbeddingResult(vectors=vectors, model=model)
+        return EmbeddingResult(vectors=vectors, model=_response_model(response))
 
     def rerank(self, request: RerankRequest) -> RerankResult:
         """Rerank documents via ``litellm.rerank`` (Cohere, Voyage, Jina, Together, HF TEI).
@@ -571,11 +570,7 @@ class LitellmSdkBackend:
             idx = item["index"] if isinstance(item, dict) else item.index
             score = item["relevance_score"] if isinstance(item, dict) else item.relevance_score
             scores[idx] = float(score)
-        if isinstance(response, dict):
-            model = response.get("model")
-        else:
-            model = getattr(response, "model", None)
-        return RerankResult(scores=scores, model=model)
+        return RerankResult(scores=scores, model=_response_model(response))
 
     def list_models(self, *, base_url: str, api_key: str) -> list[str]:
         """List models from Ollama (``/api/tags``) or an OpenAI-compatible ``/v1/models``."""
@@ -670,8 +665,7 @@ class LitellmSdkBackend:
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
         """Get model info via the Ollama ``/api/show`` endpoint.
 
-        Parses and caches per-model generation defaults from the
-        ``parameters`` field. Also extracts the ``capabilities`` list
+        Returns the raw ``parameters`` text and the ``capabilities`` list
         (newer Ollama versions) so callers can check for vision support.
         Returns ``None`` for servers without a metadata endpoint (LM Studio).
         """
@@ -697,10 +691,8 @@ class LitellmSdkBackend:
 
         params = data.get("parameters", "")
         if isinstance(params, str) and params:
-            _cache_ollama_defaults(model, params)
             result["parameters"] = params
         elif params:
-            _cache_ollama_defaults(model, str(params))
             result["parameters"] = str(params)
 
         capabilities = data.get("capabilities")

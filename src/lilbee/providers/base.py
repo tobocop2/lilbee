@@ -55,6 +55,23 @@ def filter_options(options: dict[str, Any]) -> dict[str, Any]:
     return LLMOptions(**options).to_dict()
 
 
+def normalize_generation_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate options and map them to the per-call set an OpenAI/llama-server body takes.
+
+    ``filter_options`` validates against :class:`LLMOptions`; ``num_predict`` then
+    becomes ``max_tokens`` and ``num_ctx`` is dropped (a model-load param, not a
+    per-call one). Shared by the fleet and SDK option translators so the mapping
+    lives in one place.
+    """
+    if not options:
+        return {}
+    filtered = filter_options(options)
+    if "num_predict" in filtered:
+        filtered["max_tokens"] = filtered.pop("num_predict")
+    filtered.pop("num_ctx", None)
+    return filtered
+
+
 class ProviderErrorKind(StrEnum):
     """Provider-agnostic category of a failed provider call.
 

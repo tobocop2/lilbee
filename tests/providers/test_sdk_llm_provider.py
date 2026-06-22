@@ -222,6 +222,33 @@ class TestChatNonStream:
         assert result.content == "ok"
         assert [tc.name for tc in result.tool_calls] == ["get_weather"]
 
+    def test_chat_with_tools_preserves_tool_linkage_fields(self) -> None:
+        """A tool conversation's tool_calls/tool_call_id reach the backend intact.
+
+        Stripping messages to role+content would sever the link between an
+        assistant tool call and its result, breaking multi-turn tool use.
+        """
+        backend = FakeBackend(supports_tools_result=True)
+        provider = SdkLLMProvider(backend)
+        messages = [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "w", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+        ]
+        provider.chat_with_tools(
+            messages,  # type: ignore[arg-type]
+            tools=[{"type": "function", "function": {"name": "w"}}],
+        )
+        sent = backend.complete_calls[-1].messages
+        assert sent[1].get("tool_calls") == messages[1]["tool_calls"]
+        assert sent[2].get("tool_call_id") == "c1"
+
     def test_tools_and_tool_choice_threaded_into_request_options(self) -> None:
         backend = FakeBackend(supports_tools_result=True)
         provider = SdkLLMProvider(backend)
@@ -526,23 +553,35 @@ class TestListModels:
         provider = SdkLLMProvider(backend)
         assert provider.list_models() == []
 
-    def test_wraps_unexpected_errors(self) -> None:
+    def test_unreachable_server_is_skipped_not_raised(self) -> None:
+        """An unexpected error from one server is swallowed (empty list), not raised."""
+
         class _FailingBackend(FakeBackend):
             def list_models(self, *, base_url: str, api_key: str) -> list[str]:
                 raise RuntimeError("boom")
 
         provider = SdkLLMProvider(_FailingBackend())
-        with pytest.raises(ProviderError, match="Listing models failed"):
-            provider.list_models()
+        assert provider.list_models() == []
 
-    def test_propagates_provider_error_unchanged(self) -> None:
-        class _WrappedError(FakeBackend):
+    def test_provider_error_from_one_server_does_not_drop_others(self) -> None:
+        """One unreachable server must not drop models served by another reachable one."""
+        from lilbee.providers.local_servers import LM_STUDIO, OLLAMA
+
+        down_url = "http://localhost:11434"
+        up_url = "http://localhost:1234"
+
+        class _PartlyDownBackend(FakeBackend):
             def list_models(self, *, base_url: str, api_key: str) -> list[str]:
-                raise ProviderError("already-typed", provider="fake")
+                if base_url == down_url:
+                    raise ProviderError("ollama down", provider="fake")
+                return ["lmstudio-model"]
 
-        provider = SdkLLMProvider(_WrappedError())
-        with pytest.raises(ProviderError, match="already-typed"):
-            provider.list_models()
+        provider = SdkLLMProvider(_PartlyDownBackend())
+        with mock.patch(
+            "lilbee.providers.sdk_llm_provider.configured_local_servers",
+            return_value=[(OLLAMA, down_url), (LM_STUDIO, up_url)],
+        ):
+            assert provider.list_models() == ["lmstudio-model"]
 
 
 class TestListChatModels:

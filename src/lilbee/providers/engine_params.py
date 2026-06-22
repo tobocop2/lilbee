@@ -18,7 +18,11 @@ if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
 from lilbee.core.config import DEFAULT_NUM_CTX, cfg
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES
-from lilbee.providers.base import ProviderError, ProviderErrorKind, filter_options
+from lilbee.providers.base import (
+    ProviderError,
+    ProviderErrorKind,
+    normalize_generation_options,
+)
 from lilbee.providers.gguf_meta import read_gguf_metadata, train_ctx_from_meta
 from lilbee.providers.model_cache import (
     compute_dynamic_ctx,
@@ -63,18 +67,10 @@ def chat_options_to_kwargs(options: dict[str, Any] | None) -> dict[str, Any]:
     """Translate user-facing chat options into generation kwargs.
 
     The output keys (``temperature``/``top_p``/``top_k``/``seed``/``max_tokens``/
-    ``repeat_penalty``) are accepted by llama-server's OpenAI body, so every
-    provider translates options identically. ``num_predict`` becomes
-    ``max_tokens`` and ``num_ctx`` is dropped (a model-load param, not per-call).
-    ``filter_options`` also validates against ``LLMOptions``.
+    ``repeat_penalty``) are accepted by llama-server's OpenAI body. ``top_k`` is
+    kept (local llama.cpp honors it), unlike the SDK/API translator which drops it.
     """
-    if not options:
-        return {}
-    filtered = filter_options(options)
-    if "num_predict" in filtered:
-        filtered["max_tokens"] = filtered.pop("num_predict")
-    filtered.pop("num_ctx", None)
-    return filtered
+    return normalize_generation_options(options)
 
 
 def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Path:

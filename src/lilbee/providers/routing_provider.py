@@ -142,8 +142,8 @@ class RoutingProvider(LLMProvider):
 
     def supports_tools(self, model_ref: str) -> bool:
         """Delegate the tool-capability probe to the backend the ref routes to."""
-        ref = parse_model_ref(model_ref or cfg.chat_model)
-        return self._pick_backend(ref).supports_tools(model_ref or cfg.chat_model)
+        resolved = model_ref or cfg.chat_model
+        return self._pick_backend(parse_model_ref(resolved)).supports_tools(resolved)
 
     def chat_with_tools(
         self,
