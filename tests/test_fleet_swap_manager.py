@@ -92,6 +92,37 @@ class TestStart:
         assert len(set(member_ports.values())) == 2
         assert proxy_port not in member_ports.values()
 
+    def test_redirects_llama_swap_stdio_to_a_log_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """llama-swap's stdout/stderr must go to a log file, never an inherited
+        terminal: an inherited fd bleeds its HTTP access log onto a TUI/CLI
+        parent's screen and corrupts the render."""
+        captured: dict[str, object] = {}
+
+        def _capturing_popen(*_args: object, **kwargs: object) -> _FakeProc:
+            captured.update(kwargs)
+            return _FakeProc(poll_result=None)
+
+        monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
+        monkeypatch.setattr(sm.subprocess, "Popen", _capturing_popen)
+        monkeypatch.setattr(sm, "_stop_process_tree", lambda p: None)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+
+        mgr = SwapManager(tmp_path)
+        mgr.start([_launch(WorkerRole.CHAT)])
+
+        log_path = tmp_path / "llama-swap.log"
+        assert log_path.exists()
+        # stdout is the opened log file (its .name is the path), not None
+        # (inherited terminal) nor a PIPE; stderr merges into the same file.
+        assert getattr(captured["stdout"], "name", None) == str(log_path)
+        assert captured["stdout"] is not subprocess.PIPE
+        assert captured["stderr"] is subprocess.STDOUT
+        # shutdown releases the captured handle.
+        mgr.shutdown()
+        assert mgr._log_file is None
+
     def test_raises_when_process_exits_before_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
