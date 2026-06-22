@@ -43,6 +43,7 @@ class LLMOptions(BaseModel):
     num_predict: int | None = None
     repeat_penalty: float | None = None
     num_ctx: int | None = None
+    stop: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only non-None values as a dict."""

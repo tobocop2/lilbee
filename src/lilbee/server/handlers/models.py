@@ -141,7 +141,8 @@ async def list_models() -> ModelsResponse:
     Uses the unfiltered installed set so a single ref lights up in every
     catalog section it legitimately matches.
     """
-    installed = set(get_services().model_manager.list_installed())
+    # list_installed walks the model filesystem; offload it like list_external_models.
+    installed = set(await asyncio.to_thread(get_services().model_manager.list_installed))
 
     return ModelsResponse(
         chat=_catalog_section(FEATURED_CHAT, cfg.chat_model, installed),
@@ -481,6 +482,7 @@ async def models_catalog(
         sort=parsed_sort,
         limit=limit,
         offset=offset,
+        model_manager=get_services().model_manager,
     )
 
     registry = get_services().registry

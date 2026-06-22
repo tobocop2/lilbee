@@ -1088,7 +1088,7 @@ class TestAddFiles:
 
         with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = []
-            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+            async for event in handlers.add_files_stream([str(test_file)]):
                 events.append(event)
             assert any("done" in e for e in events)
 
@@ -1102,7 +1102,7 @@ class TestAddFiles:
 
         with patch("lilbee.data.ingest.sync", side_effect=failing_sync):
             events = []
-            async for event in handlers.add_files_stream({"paths": [str(test_file)]}):
+            async for event in handlers.add_files_stream([str(test_file)]):
                 events.append(event)
 
         error_events = [e for e in events if e.startswith("event: error")]
@@ -2126,6 +2126,7 @@ class TestModelsCatalog:
             sort=CatalogSort.DOWNLOADS,
             limit=10,
             offset=5,
+            model_manager=mock_svc.model_manager,
         )
 
     @patch("lilbee.server.handlers.models.get_catalog")
@@ -2716,8 +2717,9 @@ class TestUpdateConfig:
             await handlers.update_config({"chunk_size": 5})
 
     async def test_chunk_size_at_minimum_accepted(self, tmp_path):
-        result = await handlers.update_config({"chunk_size": 64})
-        assert result.updated == ["chunk_size"]
+        # Lower the overlap alongside it so the overlap < chunk_size invariant holds.
+        result = await handlers.update_config({"chunk_size": 64, "chunk_overlap": 32})
+        assert set(result.updated) == {"chunk_size", "chunk_overlap"}
         assert cfg.chunk_size == 64
 
     async def test_chunk_overlap_at_or_above_chunk_size_rejected(self):

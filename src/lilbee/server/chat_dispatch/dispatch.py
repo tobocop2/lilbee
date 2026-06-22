@@ -163,7 +163,9 @@ async def dispatch_chat_stream(
             yield event
         yield MessageStop()
     finally:
-        stream.close()
+        # close() tears down the provider HTTP connection and can block; offload
+        # it like the open and per-frame reads so the event loop stays responsive.
+        await asyncio.to_thread(stream.close)
 
 
 async def _async_iter_provider_stream(

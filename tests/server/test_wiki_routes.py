@@ -863,13 +863,6 @@ class TestHelpers:
 
 
 class TestPydanticModels:
-    def test_wiki_page_summary_defaults(self):
-        from lilbee.server.models import WikiPageSummary
-
-        s = WikiPageSummary(slug="test", title="Test", page_type="summary")
-        assert s.source_count == 0
-        assert s.created_at == ""
-
     def test_wiki_citation_record_defaults(self):
         from lilbee.server.models import WikiCitationRecord
 

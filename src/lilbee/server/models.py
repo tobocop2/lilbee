@@ -11,21 +11,21 @@ from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.data.store import ChunkType, MemoryKind, SearchScope
+from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
 
-def _validate_chunk_type(value: str | None) -> ChunkType | None:
+def decode_chunk_type(value: str | None) -> ChunkType | None:
     """Decode a ``chunk_type`` string into a ``ChunkType`` at the HTTP boundary.
 
-    Matches the CLI/MCP behaviour: only ``"raw"`` or ``"wiki"`` filter the
-    pool; everything else (including ``None`` and the UI-side ``"both"``)
-    means no filter. Any other string raises ``ValueError``.
+    Delegates to the canonical :func:`scope_to_chunk_type` so query-param and
+    request-body routes share one decoder: only ``"raw"`` or ``"wiki"`` filter
+    the pool; everything else (including ``None`` and the UI-side ``"both"``)
+    means no filter. Any other string raises ``ValueError`` with boundary-
+    friendly guidance.
     """
-    if value is None or value == SearchScope.BOTH.value:
-        return None
     try:
-        return ChunkType(value)
+        return scope_to_chunk_type(value)
     except ValueError as exc:
         raise ValueError(
             f"chunk_type must be one of 'raw', 'wiki', 'both', or omitted; got {value!r}"
@@ -43,7 +43,7 @@ class AskRequest(BaseModel):
     @field_validator("chunk_type", mode="before")
     @classmethod
     def _check_chunk_type(cls, v: str | None) -> ChunkType | None:
-        return _validate_chunk_type(v)
+        return decode_chunk_type(v)
 
 
 class ChatRequest(BaseModel):
@@ -58,7 +58,7 @@ class ChatRequest(BaseModel):
     @field_validator("chunk_type", mode="before")
     @classmethod
     def _check_chunk_type(cls, v: str | None) -> ChunkType | None:
-        return _validate_chunk_type(v)
+        return decode_chunk_type(v)
 
 
 class SyncRequest(BaseModel):
@@ -215,14 +215,16 @@ class CrawlRequest(BaseModel):
     """Request body for /api/crawl.
 
     depth: null / omitted = whole-site unbounded recursion. 0 = single URL
-    only. Positive int = max depth. max_pages: null / omitted = no cap.
-    Positive int = explicit page cap. render_mode: null / omitted = configured
-    default; "http" is browserless, "browser" runs Chromium with JavaScript.
+    only. Positive int = max depth. max_pages: null / omitted = the protective
+    safety cap. 0 = explicitly unlimited (the CRAWL_PAGES_UNLIMITED sentinel the
+    TUI and crawler honor). Positive int = explicit page cap. render_mode: null /
+    omitted = configured default; "http" is browserless, "browser" runs Chromium
+    with JavaScript.
     """
 
     url: str
     depth: int | None = Field(default=None, ge=0)
-    max_pages: int | None = Field(default=None, ge=1)
+    max_pages: int | None = Field(default=None, ge=0)
     render_mode: CrawlRenderMode | None = Field(default=None)
 
 
@@ -351,16 +353,6 @@ class AddSummary(BaseModel):
     skipped: list[str]
     errors: list[str]
     sync: SyncSummary | None = None
-
-
-class WikiPageSummary(BaseModel):
-    """Summary of a wiki page for list endpoints."""
-
-    slug: str
-    title: str = ""
-    page_type: str = "unknown"
-    source_count: int = 0
-    created_at: str = ""
 
 
 class WikiCitationRecord(BaseModel):

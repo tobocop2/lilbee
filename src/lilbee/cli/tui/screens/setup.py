@@ -73,6 +73,7 @@ def _scan_installed_models() -> tuple[list[str], list[str]]:
                 chat.append(m.ref)
         return sorted(chat), sorted(embed)
     except Exception:
+        log.debug("Could not scan installed models for setup wizard", exc_info=True)
         return [], []
 
 

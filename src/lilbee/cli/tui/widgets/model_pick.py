@@ -11,7 +11,7 @@ from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -24,16 +24,6 @@ log = logging.getLogger(__name__)
 # Name for the thread worker that persists + reloads a non-chat role off the
 # event loop (the chat scope has its own worker in chat.py).
 _PERSIST_WORKER_NAME = "model_swap_persist"
-
-# Single source of truth for "after a model-key write, which worker pool role
-# needs to respawn so the next call picks up the new ref?". Used by both the
-# Settings picker dismiss path and the chat-screen model rail's button.
-_MODEL_KEY_TO_WORKER_ROLE: dict[str, WorkerRole] = {
-    "chat_model": WorkerRole.CHAT,
-    "embedding_model": WorkerRole.EMBED,
-    "reranker_model": WorkerRole.RERANK,
-    "vision_model": WorkerRole.VISION,
-}
 
 
 def config_key_for_scope(scope: PickerScope) -> str:
@@ -140,7 +130,7 @@ def _persist(
     ``reload_worker=False`` and resets services itself (see
     ``ChatScreen.apply_model_change``), so its cheap config write stays inline.
     """
-    role = _MODEL_KEY_TO_WORKER_ROLE.get(key)
+    role = MODEL_FIELD_TO_ROLE.get(key)
     if not (reload_worker and role is not None):
         apply_active_model(app, key, ref)
         on_done()

@@ -259,6 +259,8 @@ def mock_svc():
 
     searcher = MagicMock()
     searcher.build_rag_context.return_value = None
+    # These tests exercise the reasoning stream, not the no-embedder refusal.
+    searcher.search_unavailable.return_value = False
     services = make_mock_services(searcher=searcher)
     services.registry.list_installed = MagicMock(return_value=[_installed_manifest(cfg.chat_model)])
     set_services(services)

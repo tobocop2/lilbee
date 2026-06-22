@@ -97,11 +97,19 @@ def _install_lilbee_skill() -> Path | None:
     dest = _opencode_skill_dest()
     if dest.exists():
         return None
-    dest.mkdir(parents=True)
     source = resources.files(_SKILL_PACKAGE)
-    for entry in source.iterdir():
-        if entry.is_file() and not entry.name.startswith("__"):
-            (dest / entry.name).write_bytes(entry.read_bytes())
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Build in a temp dir and atomically rename, so a failed/partial copy never
+    # leaves a half-written skill dir that exists() would then skip forever.
+    staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=".lilbee-mcp-"))
+    try:
+        for entry in source.iterdir():
+            if entry.is_file() and not entry.name.startswith("__"):
+                (staging / entry.name).write_bytes(entry.read_bytes())
+        os.replace(staging, dest)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return dest
 
 

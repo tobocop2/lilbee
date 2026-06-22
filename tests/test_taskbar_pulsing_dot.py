@@ -248,6 +248,27 @@ async def test_taskbar_failure_flash_shows_count() -> None:
         assert "failed" in text.lower()
 
 
+async def test_taskbar_failure_flash_counts_only_new_batch() -> None:
+    """A later failure flashes count=1, not the cumulative persistent-history total."""
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(TaskBar)
+        t1 = app.task_bar.queue.enqueue(lambda: None, "a", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.fail_task(t1, "err1")
+        bar._refresh_display()
+        assert bar._flash_failed_count == 1
+        # End the flash, then fail a second task; history now holds two failures.
+        bar._flash_until_tick = None
+        bar._flash_outcome = None
+        t2 = app.task_bar.queue.enqueue(lambda: None, "b", TaskType.SYNC.value)
+        app.task_bar.queue.advance(TaskType.SYNC.value)
+        app.task_bar.queue.fail_task(t2, "err2")
+        bar._refresh_display()
+        assert bar._flash_failed_count == 1  # only the new failure, not 2
+
+
 @pytest.mark.asyncio
 async def test_taskbar_starts_in_idle_mode_when_queue_empty() -> None:
     """First mount with no work keeps the timer at the idle cadence."""

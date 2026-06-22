@@ -7,8 +7,19 @@ and ensures consistent messaging.
 
 from __future__ import annotations
 
+import logging
+
 from lilbee.core.config import cfg
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
+
+log = logging.getLogger(__name__)
+
+
+def app_title(model: str) -> str:
+    """The window title showing the active chat model. Single source so every
+    code path that sets the title uses the same format."""
+    return f"lilbee: {model}"
+
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
@@ -75,6 +86,7 @@ def retry_skipped_message(count: int) -> str:
 
 
 CMD_DELETE_NO_DOCS = "No documents indexed"
+CMD_DELETE_READ_FAILED = "Could not read the document list"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
 CMD_DELETE_SUCCESS = "Deleted {name}"
@@ -284,7 +296,10 @@ def _spacy_available() -> bool:
     except (ImportError, OSError):
         return False
     except Exception:
-        return True
+        # An unexpected spaCy-internal failure: don't claim availability (that
+        # would hide the install guidance); log it and treat spaCy as absent.
+        log.debug("spaCy availability check failed unexpectedly", exc_info=True)
+        return False
     return True
 
 
@@ -374,15 +389,17 @@ COMPAT_MODAL_BODY = (
     "so loading after download will probably fail. Pull anyway?"
 )
 DEFAULT_VIEW = "Chat"
-_BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
+WIKI_VIEW = "Wiki"
+# The full nav-view universe in order. Single source for the view set: the
+# settings bar pre-creates a tab per entry (toggling Wiki visibility at
+# runtime), get_nav_views() gates Wiki, and app.get_views() derives its
+# factory map from get_nav_views().
+ALL_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks", WIKI_VIEW)
 
 
 def get_nav_views() -> list[str]:
     """Return the active nav view names, including Wiki when enabled."""
-    views = list(_BASE_NAV_VIEWS)
-    if cfg.wiki:
-        views.append("Wiki")
-    return views
+    return [v for v in ALL_NAV_VIEWS if v != WIKI_VIEW or cfg.wiki]
 
 
 MODE_NORMAL = "NORMAL"

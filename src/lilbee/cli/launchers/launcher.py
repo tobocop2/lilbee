@@ -79,21 +79,24 @@ def run_launcher(launcher: Launcher) -> None:
     # port (the loser gets connection-refused). The spawned serve warms its own.
     cfg.worker_pool_eager_start = False
     (token, port), spawned = ensure_server_running()
-    native_refs = installed_chat_model_refs()
-    model_refs = with_configured_remote_chat(native_refs, cfg.chat_model)
-    _warn_on_model_pin_gaps(model_refs)
-    # Wait out the cold model load before handing off, so the client opens onto a
-    # warm engine instead of an apparently-dead stream. Only meaningful when a
-    # native chat model is installed to warm; a remote-configured model has no
-    # local load to wait for.
-    if native_refs:
-        wait_for_chat_warm(port)
-    extra_args, env = launcher.prepare(token=token, port=port, model_refs=model_refs)
-    # The client paints its own UI only after its runtime boots, a few silent
-    # seconds; announce the handoff so the warm bar isn't followed by a dead
-    # screen with no explanation.
-    typer.secho(f"Launching {launcher.name}...", fg=typer.colors.GREEN)
+    # Everything after the spawn runs under the finally so a raise from prepare()
+    # (e.g. the user declining opencode setup) or the warm wait can't leak the
+    # spawned `lilbee serve` process.
     try:
+        native_refs = installed_chat_model_refs()
+        model_refs = with_configured_remote_chat(native_refs, cfg.chat_model)
+        _warn_on_model_pin_gaps(model_refs)
+        # Wait out the cold model load before handing off, so the client opens onto a
+        # warm engine instead of an apparently-dead stream. Only meaningful when a
+        # native chat model is installed to warm; a remote-configured model has no
+        # local load to wait for.
+        if native_refs:
+            wait_for_chat_warm(port)
+        extra_args, env = launcher.prepare(token=token, port=port, model_refs=model_refs)
+        # The client paints its own UI only after its runtime boots, a few silent
+        # seconds; announce the handoff so the warm bar isn't followed by a dead
+        # screen with no explanation.
+        typer.secho(f"Launching {launcher.name}...", fg=typer.colors.GREEN)
         # binary resolved via the launcher's find_binary on PATH; no shell.
         result = subprocess.run([binary, *extra_args], env=env, check=False)  # noqa: S603
     finally:

@@ -7,11 +7,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.cli.tui.widgets.model_pick import (
-    _MODEL_KEY_TO_WORKER_ROLE,
     apply_model_pick,
     config_key_for_scope,
 )
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 
@@ -46,7 +45,8 @@ async def test_apply_model_pick_browse_unknown_key_is_noop() -> None:
     ],
 )
 def test_model_key_to_worker_role_covers_all_four(key: str, expected: WorkerRole) -> None:
-    assert _MODEL_KEY_TO_WORKER_ROLE[key] is expected
+    # model_pick reuses the canonical roles map rather than a private copy.
+    assert MODEL_FIELD_TO_ROLE[key] is expected
 
 
 async def test_apply_model_pick_persists_and_reloads_vision() -> None:

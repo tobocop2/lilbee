@@ -13,7 +13,7 @@ from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
-from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
+from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage, estimate_min_ram_gb
 from lilbee.catalog.refs import GGUF_GLOB, pick_best_gguf
 
 log = logging.getLogger(__name__)
@@ -243,7 +243,7 @@ class HfClient:
                     hf_repo=item.id,
                     gguf_filename=_resolve_sibling_gguf(item.siblings or []),
                     size_gb=size_gb,
-                    min_ram_gb=round(max(2.0, size_gb * 1.5), 1),
+                    min_ram_gb=estimate_min_ram_gb(size_gb),
                     description=card_desc[:120] if card_desc else "",
                     featured=False,
                     downloads=item.downloads or 0,
