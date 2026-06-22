@@ -28,9 +28,16 @@ from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
-    KeyStatus,
     LocalCatalogRow,
     SizeVariant,
+)
+from lilbee.cli.tui.widgets.catalog_card_shared import (
+    _FIT_LEVEL_BACKGROUND,
+    _build_local_status,
+    _build_specs,
+    _key_status_pill,
+    _render_fit_pill,
+    _truncate_name,
 )
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
 from lilbee.runtime.hardware import FitChip, FitLevel
@@ -344,18 +351,6 @@ class ModelGrid(Widget, can_focus=True):
         return Strip(joined.render_segments(Style.null())).simplify()
 
 
-_NAME_MAX_CHARS = 28
-"""Cap displayed model names so long refs don't blow up the grid layout."""
-
-_ELLIPSIS = "…"
-
-
-def _truncate_name(name: str) -> str:
-    if len(name) <= _NAME_MAX_CHARS:
-        return name
-    return name[: _NAME_MAX_CHARS - 1].rstrip() + _ELLIPSIS
-
-
 def _render_card_strip(
     row: CatalogRow, *, selected: bool, width: int, border_style: str
 ) -> _CardLines:
@@ -485,38 +480,14 @@ def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
     return [name, pill_line, Content(""), info, Content(""), Content("")]
 
 
-_FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {
-    FitLevel.FITS: "$success",
-    FitLevel.TIGHT: "$warning",
-    FitLevel.WONT_RUN: "$error",
-}
-
-
 _FIT_LEVEL_LABEL_COMPACT: dict[FitLevel, str] = {
     FitLevel.FITS: "fits",
     FitLevel.TIGHT: "tight",
     FitLevel.WONT_RUN: "won't run",
 }
 
-
-def _fit_pill(fit: FitChip) -> Content:
-    """Verbose fit chip with headroom GB, used by the detail drawer.
-
-    Headroom is signed; negative values mean the model overflows the host's
-    available memory by that much. The chip's background tracks the level so
-    colour-blind users still get the qualitative signal from the label itself.
-    Cards render the compact form (``fits`` / ``tight`` / ``won't run``)
-    via :func:`_fit_pill_compact` so the pill row fits the card width; the
-    headroom GB belongs in the wider drawer where it has room to breathe.
-    """
-    headroom_gb = fit.headroom_gb
-    if fit.level is FitLevel.FITS:
-        text = f"fits +{headroom_gb:.1f} GB"
-    elif fit.level is FitLevel.TIGHT:
-        text = f"tight +{max(0.0, headroom_gb):.1f} GB"
-    else:
-        text = f"won't {headroom_gb:.1f} GB"
-    return pill(text, _FIT_LEVEL_BACKGROUND[fit.level], "$text")
+# The verbose drawer fit pill is the shared renderer.
+_fit_pill = _render_fit_pill
 
 
 def _fit_pill_compact(fit: FitChip) -> Content:
@@ -524,22 +495,5 @@ def _fit_pill_compact(fit: FitChip) -> Content:
     return pill(_FIT_LEVEL_LABEL_COMPACT[fit.level], _FIT_LEVEL_BACKGROUND[fit.level], "$text")
 
 
-def _key_status_pill(status: KeyStatus) -> Content:
-    if status == KeyStatus.READY:
-        return pill("ready", "$success", "$text")
-    return pill("needs key", "$warning", "$text")
-
-
-def _build_specs(params: str, quant: str, size: str) -> Content:
-    parts = [p for p in (params, quant, size) if p and p != "--"]
-    if not parts:
-        return Content("--")
-    return Content(f" {MIDDLE_DOT} ".join(parts))
-
-
-def _build_local_status(row: LocalCatalogRow) -> Content | None:
-    if row.installed:
-        return pill("installed", "$success", "$text")
-    if row.sort_downloads > 0:
-        return Content.styled(f"↓ {row.downloads}", "$text-muted")
-    return None
+# _key_status_pill / _build_specs / _build_local_status live in
+# catalog_card_shared and are re-imported above.

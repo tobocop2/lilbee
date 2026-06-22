@@ -29,27 +29,20 @@ from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
-    KeyStatus,
     LocalCatalogRow,
 )
-from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
+from lilbee.cli.tui.widgets.catalog_card_shared import (
+    _build_local_status,
+    _build_specs,
+    _key_status_pill,
+    _truncate_name,
+)
+from lilbee.cli.tui.widgets.catalog_theme import TASK_COLORS
 
 if TYPE_CHECKING:
     pass
 
 _CSS_FILE = Path(__file__).parent / "model_card.tcss"
-
-_NAME_MAX_CHARS = 28
-"""Maximum displayed model-name length; longer names are ellipsis-truncated."""
-
-_ELLIPSIS = "…"
-
-
-def _truncate_name(name: str) -> str:
-    """Return *name* shortened to ``_NAME_MAX_CHARS`` with an ellipsis tail."""
-    if len(name) <= _NAME_MAX_CHARS:
-        return name
-    return name[: _NAME_MAX_CHARS - 1].rstrip() + _ELLIPSIS
 
 
 class ModelCard(containers.VerticalGroup):
@@ -147,24 +140,5 @@ def _compat_pill(compat: ModelCompat) -> Content | None:
     return pill(msg.COMPAT_PILL_UNKNOWN, "$panel", "$text-muted")
 
 
-def _key_status_pill(status: KeyStatus) -> Content:
-    if status == KeyStatus.READY:
-        return pill("ready", "$success", "$text")
-    return pill("needs key", "$warning", "$text")
-
-
-def _build_specs(params: str, quant: str, size: str) -> Content:
-    """Build the specs line: params · quant · size."""
-    parts = [p for p in (params, quant, size) if p and p != "--"]
-    if not parts:
-        return Content("--")
-    return Content(f" {MIDDLE_DOT} ".join(parts))
-
-
-def _build_local_status(row: LocalCatalogRow) -> Content | None:
-    """Build the status pill for installed or download count."""
-    if row.installed:
-        return pill("installed", "$success", "$text")
-    if row.sort_downloads > 0:
-        return Content.styled(f"↓ {row.downloads}", "$text-muted")
-    return None
+# _key_status_pill / _build_specs / _build_local_status live in
+# catalog_card_shared and are re-imported above.

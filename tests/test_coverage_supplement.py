@@ -1515,7 +1515,7 @@ class TestModelCardTruncate:
     """`_truncate_name` shortens names longer than the visible budget."""
 
     def test_long_name_is_truncated(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _NAME_MAX_CHARS, _truncate_name
+        from lilbee.cli.tui.widgets.catalog_card_shared import _NAME_MAX_CHARS, _truncate_name
 
         long_name = "x" * (_NAME_MAX_CHARS + 5)
         out = _truncate_name(long_name)
@@ -1526,7 +1526,7 @@ class TestModelGridTruncateAndPad:
     """The model_grid module has its own _truncate_name + render padding."""
 
     def test_grid_truncate_name_long(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import _NAME_MAX_CHARS, _truncate_name
+        from lilbee.cli.tui.widgets.catalog_card_shared import _NAME_MAX_CHARS, _truncate_name
 
         long_name = "x" * (_NAME_MAX_CHARS + 5)
         out = _truncate_name(long_name)
