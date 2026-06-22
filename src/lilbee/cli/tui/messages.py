@@ -59,8 +59,7 @@ SYNC_SKIPPED_NO_VISION = (
     "Configure a vision_model in Settings to OCR scanned PDFs."
 )
 SYNC_SKIPPED_VISION_FAILED = (
-    "Skipped (vision OCR returned no text): {files}. "
-    "See {log_path} for the underlying error."
+    "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )
 CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
 CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
