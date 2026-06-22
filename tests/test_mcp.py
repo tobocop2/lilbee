@@ -453,6 +453,14 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
+    def test_init_retunes_search_scope_for_new_vault(self, tmp_path):
+        """Switching vaults re-tunes the search-tool scope hint for the new corpus."""
+        target = tmp_path / "proj"
+        target.mkdir()
+        with mock.patch("lilbee.mcp_server._tune_search_scope_for_corpus") as mock_tune:
+            init(str(target))
+        mock_tune.assert_called_once()
+
     def test_bare_name_tag_rejected_after_init(self, tmp_path):
         """The cfg validator rejects bare ``name:tag`` shapes."""
         from pydantic import ValidationError
@@ -776,6 +784,22 @@ class TestCrawl:
         mock_start.assert_called_once_with(
             "https://example.com", depth=2, max_pages=10, render_mode=None
         )
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl")
+    async def test_rejects_negative_depth(self, mock_start, _mock_avail, isolated_env):
+        """A negative depth is a clean error, not an unbounded crawl (REST parity)."""
+        result = await crawl(url="https://example.com", depth=-1)
+        assert "error" in result
+        mock_start.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl")
+    async def test_rejects_negative_max_pages(self, mock_start, _mock_avail, isolated_env):
+        """A negative max_pages is a clean error (0 = unlimited, REST parity)."""
+        result = await crawl(url="https://example.com", max_pages=-5)
+        assert "error" in result
+        mock_start.assert_not_called()
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
