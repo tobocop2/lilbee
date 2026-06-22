@@ -60,7 +60,7 @@ class TestCrawlMaxPagesSentinel:
 
 
 class TestStoreExtractedMemories:
-    async def test_disabled_returns_empty(self, monkeypatch) -> None:
+    async def test_empty_answer_returns_empty(self, monkeypatch) -> None:
         monkeypatch.setattr(rag, "auto_extract_enabled", lambda: True)
         called = MagicMock()
         monkeypatch.setattr(rag, "auto_extract", called)
