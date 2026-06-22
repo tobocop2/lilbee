@@ -3428,9 +3428,7 @@ class TestStreamFlushCoalescing:
         """When the elapsed time crosses the threshold, flush() runs and timing advances."""
         from unittest.mock import MagicMock
 
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        from lilbee.cli.tui.screens.chat import _StreamTimings
+        from lilbee.cli.tui.screens.chat import ChatScreen, _StreamTimings
 
         screen = MagicMock(spec=ChatScreen)
         flush_calls: list[None] = []
@@ -3450,9 +3448,7 @@ class TestStreamFlushCoalescing:
         import time
         from unittest.mock import MagicMock
 
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        from lilbee.cli.tui.screens.chat import _StreamTimings
+        from lilbee.cli.tui.screens.chat import ChatScreen, _StreamTimings
 
         screen = MagicMock(spec=ChatScreen)
         flush_calls: list[None] = []

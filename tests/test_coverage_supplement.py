@@ -2356,6 +2356,14 @@ class TestAppSetActiveModelDownloadGuard:
         finally:
             cfg.chat_model = chat_default
 
+    async def test_reject_if_downloading_passes_non_string_value(self) -> None:
+        """A non-string setting value cannot be a model ref, so the guard lets it through."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        assert app._reject_if_downloading(True) is False
+        assert app._reject_if_downloading(7) is False
+
 
 class TestModelInfoExceptionBranches:
     """``_read_chat_arch`` / ``_read_embed_arch`` swallow read errors and return the info object."""

@@ -122,6 +122,20 @@ async def test_on_key_non_digit_is_passthrough() -> None:
         screen.on_key(event)
 
 
+async def test_on_key_out_of_range_digit_is_passthrough() -> None:
+    """A digit past the tab count is ignored, not clamped, and does not switch tabs."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        tabs = screen.query_one("#catalog-tabs", TabbedContent)
+        before = tabs.active
+        event = Key(key="9", character="9")
+        screen.on_key(event)
+        await pilot.pause()
+        assert tabs.active == before
+
+
 async def test_on_key_digit_swallowed_when_input_focused() -> None:
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
