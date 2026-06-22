@@ -221,18 +221,6 @@ def _parse_pending_kind(text: str) -> str | None:
     return None
 
 
-def _strip_drift_marker(text: str) -> str:
-    """Remove the drift-review marker so accepted content lands clean."""
-    return _DRIFT_MARKER_RE.sub("", text, count=1).lstrip()
-
-
-def _strip_pending_markers(text: str) -> str:
-    """Remove PENDING-PARSE/COLLISION markers on the way into a published page."""
-    text = _PENDING_PARSE_MARKER_RE.sub("", text, count=1)
-    text = _PENDING_COLLISION_MARKER_RE.sub("", text, count=1)
-    return text.lstrip()
-
-
 def _classify_and_strip_markers(text: str) -> tuple[str | None, float | None, str]:
     """Single-pass read: parse kind, drift ratio, and return marker-stripped body.
 
@@ -346,7 +334,9 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     if not draft.is_file():
         raise FileNotFoundError(f"draft not found: {slug}")
     raw = draft.read_text(encoding="utf-8")
-    pending_kind = _parse_pending_kind(raw)
+    # Single-pass classify + strip (kind plus the three-marker removal), instead
+    # of re-deriving the kind and re-stripping the markers separately.
+    pending_kind, _drift, clean = _classify_and_strip_markers(raw)
 
     if pending_kind == PendingKind.PARSE:
         draft.unlink()
@@ -356,8 +346,6 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
             slug,
         )
         return AcceptResult(slug=slug, requested_slug=slug, moved_to=draft, reindexed_chunks=0)
-
-    clean = _strip_pending_markers(_strip_drift_marker(raw))
 
     target_slug = _base_slug_for_collision(slug) if pending_kind == PendingKind.COLLISION else slug
     published = _find_published(wiki_root, target_slug)

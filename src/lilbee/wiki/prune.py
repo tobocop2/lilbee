@@ -23,6 +23,7 @@ from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
     WIKI_CONTENT_SUBDIRS,
+    WikiLogAction,
     WikiSubdir,
 )
 
@@ -189,7 +190,11 @@ def _finalize_prune(report: PruneReport, config: Config) -> None:
     )
     update_wiki_index(config)
     for rec in report.records:
-        append_wiki_log(f"pruned ({rec.action.value})", f"{rec.wiki_source}: {rec.reason}", config)
+        append_wiki_log(
+            WikiLogAction.PRUNE,
+            f"{rec.action.value} {rec.wiki_source}: {rec.reason}",
+            config,
+        )
 
 
 def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:
