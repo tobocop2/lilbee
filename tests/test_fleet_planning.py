@@ -82,16 +82,31 @@ def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
     assert planning_mod._role_ctx(WorkerRole.CHAT, Path("/m/c.gguf"), None) == 4096
 
 
-def test_role_ctx_embed_caps_to_chunk_size(monkeypatch) -> None:
-    # A 32K-trained embedder is sized to the chunk length, not its full context, so its
+def test_role_ctx_embed_covers_chunk_size_plus_margin(monkeypatch) -> None:
+    # A 32K-trained embedder is sized to the chunk length plus the truncation margin
+    # (so a full chunk_size input is not truncated), not its full context, so its
     # placement estimate doesn't balloon (200GB+) and starve the role alongside a giant.
     monkeypatch.setattr(
         "lilbee.providers.engine_params.train_ctx_from_meta",
         lambda _meta, *, fallback, model_path: 32768,
     )
     monkeypatch.setattr(cfg, "chunk_size", 512)
-    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}) == 512
-    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}) == 512
+    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}) == 520
+    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}) == 520
+
+
+def test_embed_ctx_token_cap_fits_full_chunk(monkeypatch) -> None:
+    # bb-4ry: the embed input truncates at ctx - _EMBED_CTX_MARGIN, so the server must
+    # be sized so a full chunk_size input survives (token_cap >= chunk_size), not 8 short.
+    from lilbee.providers.engine_params import _EMBED_CTX_MARGIN, resolve_embed_ctx
+
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.train_ctx_from_meta",
+        lambda _meta, *, fallback, model_path: 32768,
+    )
+    monkeypatch.setattr(cfg, "chunk_size", 512)
+    ctx = resolve_embed_ctx({}, Path("/m/e.gguf"))
+    assert ctx - _EMBED_CTX_MARGIN >= cfg.chunk_size
 
 
 def test_role_ctx_embed_uses_train_ctx_when_below_chunk_size(monkeypatch) -> None:
@@ -800,9 +815,11 @@ class TestBuildFleetWiring:
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
+        from lilbee.providers.engine_params import _EMBED_CTX_MARGIN
+
         launch = self._launch_for_role(tmp_path, monkeypatch, role, ctx=8192)
         # Truncate a few tokens below the per-slot ctx so the server's re-added BOS fits.
-        assert launch.token_cap == 8192 - planning_mod._EMBED_CTX_MARGIN
+        assert launch.token_cap == 8192 - _EMBED_CTX_MARGIN
 
     @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
     def test_launch_for_non_embed_roles_have_no_token_cap(

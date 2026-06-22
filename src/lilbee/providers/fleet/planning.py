@@ -43,10 +43,6 @@ _CHAT_SLOTS = 4
 _SPLIT_CHAT_SLOTS = 1
 _AUX_SLOTS = 1
 _EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
-# Truncate embed/rerank inputs a few tokens below the per-slot context: the server
-# re-tokenizes the truncated text with add_special, so a truncate-to-exactly-n_ctx
-# input overflows by the re-added BOS (plus detokenize/tokenize round-trip drift).
-_EMBED_CTX_MARGIN = 8
 # Roles whose loaders offload every layer regardless of cfg.n_gpu_layers; only
 # chat honors cfg.n_gpu_layers.
 _ALL_LAYER_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
@@ -565,7 +561,7 @@ def _launch_for(
     chat_reservation: int = 0,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
-    from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.engine_params import _EMBED_CTX_MARGIN, resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     model_path = resolve_model_path(model_ref)
