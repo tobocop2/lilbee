@@ -174,7 +174,14 @@ def _self_check_server(
         token_cap=ctx if is_embed else None,
     )
     swap = SwapManager(work_dir)
-    swap.start([launch])
+    try:
+        swap.start([launch])
+    except BaseException:
+        # start() raises on engine-load failure (the case self-check exists to
+        # catch); work_dir is never returned, so clean it here rather than orphan it.
+        swap.shutdown()
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
     return swap, LlamaServerClient(swap.endpoint(), launch.model_id), work_dir
 
 
