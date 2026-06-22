@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from lilbee.catalog.refs import NATIVE_GGUF_REF_MIN_SLASHES
-from lilbee.providers.base import filter_options
+from lilbee.providers.base import filter_options, normalize_generation_options
 from lilbee.providers.local_servers import (
     LOCAL_SERVER_KEYS,
     local_server_for_key,
@@ -161,16 +161,16 @@ def with_configured_remote_chat(refs: list[str], configured: str) -> list[str]:
 
 
 def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[str, Any]:
-    """Translate generation options for the target provider."""
-    filtered = filter_options(options)
-    if ref.is_api:
-        # API providers use max_tokens, not num_predict
-        if "num_predict" in filtered:
-            filtered["max_tokens"] = filtered.pop("num_predict")
-        # num_ctx is a model-load param, not per-call
-        filtered.pop("num_ctx", None)
-        # top_k kept for local llama.cpp, stripped for API providers: litellm
-        # forwards it (into extra_body for OpenAI-compatible) without erroring,
-        # but hosted APIs ignore it, so dropping it keeps the wire request clean.
-        filtered.pop("top_k", None)
-    return filtered
+    """Translate generation options for the target provider.
+
+    A local ref forced through the SDK keeps the raw filtered options; an API ref
+    gets the shared per-call mapping (``num_predict`` -> ``max_tokens``, drop
+    ``num_ctx``) plus a ``top_k`` drop: litellm would forward ``top_k`` (into
+    ``extra_body`` for OpenAI-compatible) without erroring, but hosted APIs ignore
+    it, so dropping it keeps the wire request clean.
+    """
+    if not ref.is_api:
+        return filter_options(options)
+    api_options = normalize_generation_options(options)
+    api_options.pop("top_k", None)
+    return api_options
