@@ -170,12 +170,19 @@ def _safe_strategy_cancel(strategy: Any) -> None:
 
 
 async def _safe_aclose(stream: Any) -> None:
-    """Close an async generator stream; no-op for list / single-result shapes."""
+    """Close an async generator stream; no-op for list / single-result shapes.
+
+    aclose() runs the generator's own cleanup, which can surface arbitrary
+    downstream errors. A teardown failure must not mask the crawl's real result,
+    so it is logged at debug rather than propagated or silently dropped.
+    """
     if stream is None:
         return
     if inspect.isasyncgen(stream):
-        with contextlib.suppress(Exception):
+        try:
             await stream.aclose()
+        except Exception as exc:
+            log.debug("crawl stream aclose() raised during teardown: %s", exc)
 
 
 async def _iter_crawl_stream(stream: Any) -> AsyncIterator[Any]:

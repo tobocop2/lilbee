@@ -548,7 +548,9 @@ class Store:
             max_distance,
         )
         if rows:
-            distances = [r.get("distance", 0) for r in rows[:5]]
+            # LanceDB names the similarity column "_distance"; "distance" would
+            # always miss and log 0.
+            distances = [r.get("_distance", 0) for r in rows[:5]]
             log.debug("Top 5 distances: %s", distances)
         results = [SearchChunk(**r) for r in rows]
         return self._filter_and_rerank(results, query_vector, top_k, max_distance)

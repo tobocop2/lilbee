@@ -433,6 +433,17 @@ def _capture_result_page_texts(
         page_texts_out.append(_page_text_record(source_name, 0, result.content, content_type))
 
 
+def _warn_empty_ocr(source_name: str, media: str) -> None:
+    """Warn that OCR yielded no text and point to the vision-model remedy."""
+    log.warning(
+        "Skipped %s: text extraction produced no usable text. "
+        "For better results on %s, configure a vision model "
+        "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
+        source_name,
+        media,
+    )
+
+
 async def _handle_scanned_pdf_fallback(
     path: Path,
     source_name: str,
@@ -482,12 +493,7 @@ async def _handle_scanned_pdf_fallback(
         page_texts_out=page_texts_out,
     )
     if not chunks:
-        log.warning(
-            "Skipped %s: text extraction produced no usable text. "
-            "For better results on scanned PDFs, configure a vision model "
-            "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
-            source_name,
-        )
+        _warn_empty_ocr(source_name, "scanned PDFs")
     return chunks
 
 
@@ -520,12 +526,7 @@ async def _handle_image(
         path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
     )
     if not chunks:
-        log.warning(
-            "Skipped %s: text extraction produced no usable text. "
-            "For better results on images, configure a vision model "
-            "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
-            source_name,
-        )
+        _warn_empty_ocr(source_name, "images")
     return chunks
 
 

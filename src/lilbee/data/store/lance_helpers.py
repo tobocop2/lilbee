@@ -154,12 +154,22 @@ def _has_vector_index(table: lancedb.table.Table) -> bool:
     return False
 
 
+def _escape_like_wildcards(value: str) -> str:
+    """Escape LIKE metacharacters so a search term matches literally.
+
+    ``%`` and ``_`` are wildcards inside a LIKE pattern; without escaping, a
+    search for ``a_b`` would also match ``axb``. Backslash is escaped first
+    because it is the ESCAPE character the predicate declares.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _sources_search_filter(search: str | None) -> str | None:
     """Case-insensitive filename WHERE clause, or ``None`` for empty *search*."""
     if not search:
         return None
-    escaped = escape_sql_string(search.lower())
-    return f"LOWER(filename) LIKE '%{escaped}%'"
+    escaped = escape_sql_string(_escape_like_wildcards(search.lower()))
+    return f"LOWER(filename) LIKE '%{escaped}%' ESCAPE '\\'"
 
 
 def refs_compatible(
