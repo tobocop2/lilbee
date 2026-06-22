@@ -185,13 +185,21 @@ class SourceStat(NamedTuple):
 
 
 def source_stat(record: SourceRecord) -> SourceStat | None:
-    """Stored stat for a source row, or None when unknown."""
-    size = record.get("size_bytes", SOURCE_STAT_UNKNOWN)
-    mtime = record.get("mtime_ns", SOURCE_STAT_UNKNOWN)
-    captured = record.get("stat_captured_ns", SOURCE_STAT_UNKNOWN)
-    if size == SOURCE_STAT_UNKNOWN or mtime == SOURCE_STAT_UNKNOWN:
+    """Stored stat for a source row, or None when unknown.
+
+    The stat columns are nullable ``int64``, so a row can carry an explicit
+    ``None`` (an import, or a write before the columns existed) as well as a
+    missing key or the ``SOURCE_STAT_UNKNOWN`` sentinel. All three mean "no
+    usable stat": return None so the caller re-hashes instead of crashing on
+    ``int(None)``.
+    """
+    size = record.get("size_bytes")
+    mtime = record.get("mtime_ns")
+    captured = record.get("stat_captured_ns")
+    if size is None or mtime is None or size == SOURCE_STAT_UNKNOWN or mtime == SOURCE_STAT_UNKNOWN:
         return None
-    return SourceStat(int(size), int(mtime), int(captured))
+    captured_ns = SOURCE_STAT_UNKNOWN if captured is None else int(captured)
+    return SourceStat(int(size), int(mtime), captured_ns)
 
 
 class SourceStatBackfill(NamedTuple):

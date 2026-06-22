@@ -1839,6 +1839,31 @@ class TestSourceStatColumns:
         store.upsert_source("a.md", "h1", 2)
         assert source_stat(store.get_sources()[0]) is None
 
+    def test_null_stat_columns_read_as_unknown_not_crash(self):
+        """A row whose nullable stat columns are NULL must read as unknown, not
+        crash with int(None). Regression: adding a file when the store already
+        held a null-stat row failed every add with 'int() argument ... NoneType'."""
+        from lilbee.data.store import source_stat
+
+        # NULL columns (present-but-None), as a nullable int64 column yields --
+        # distinct from a missing key, which .get already handled.
+        record = {"name": "a.pdf", "file_hash": "h", "size_bytes": None, "mtime_ns": None}
+        assert source_stat(record) is None  # type: ignore[arg-type]
+
+    def test_null_captured_with_valid_size_mtime_reads_stat(self):
+        """A null stat_captured_ns alongside valid size/mtime must not crash; the
+        capture time falls back to the unknown sentinel."""
+        from lilbee.data.store import SOURCE_STAT_UNKNOWN, SourceStat, source_stat
+
+        record = {
+            "name": "a.pdf",
+            "file_hash": "h",
+            "size_bytes": 10,
+            "mtime_ns": 20,
+            "stat_captured_ns": None,
+        }
+        assert source_stat(record) == SourceStat(10, 20, SOURCE_STAT_UNKNOWN)  # type: ignore[arg-type]
+
     def test_write_chunks_batch_persists_stat(self, store):
         from lilbee.data.store import ChunkWrite, SourceStat, source_stat
 
