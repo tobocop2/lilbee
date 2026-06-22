@@ -1226,6 +1226,24 @@ class TestTemporalFilter:
         searcher.search("recent changes")
         assert seen == ["recent changes"]
 
+    def test_structured_query_still_applies_temporal_filter(self, mock_svc, monkeypatch):
+        """A ``mode:`` prefix skips expansion/boost but the date filter still runs."""
+        cfg.wiki = True
+        try:
+            searcher = get_services().searcher
+            mock_svc.store.search.return_value = [_make_result()]
+            seen: list[str] = []
+
+            def _temporal(results, question):
+                seen.append(question)
+                return results
+
+            monkeypatch.setattr(searcher, "_apply_temporal_filter", _temporal)
+            searcher.search("wiki: recent changes")
+            assert seen == ["recent changes"]  # prefix stripped, filter applied
+        finally:
+            cfg.wiki = False
+
     def test_disabled_via_config(self, mock_svc):
         old = cfg.temporal_filtering
         cfg.temporal_filtering = False

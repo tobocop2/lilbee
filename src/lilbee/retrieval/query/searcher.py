@@ -436,13 +436,20 @@ class Searcher:
         config, the filter is normalized to ``None`` (mixed pool) and a
         warning is logged: with wiki off the chunks table has no wiki rows,
         so honouring the filter would silently return zero results.
+
+        A ``mode:`` prefix (``term:``/``vec:``/``hyde:``/``wiki:``/``raw:``)
+        forces a single explicit retrieval strategy and so skips expansion and
+        concept boost, but the temporal date-range filter still applies -- it is
+        a filter, not a re-ranking, and a "recent" query must be honored in any
+        mode.
         """
         if top_k == 0:
             top_k = self._config.top_k
         chunk_type = self._normalize_chunk_type(chunk_type)
         mode, clean_query = self._parse_structured_query(question)
         if mode is not None:
-            return self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
+            structured = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
+            return self._apply_temporal_filter(structured, clean_query)
         query_vec = self._embedder.embed_query(question)
         results = self._store.search(
             query_vec,

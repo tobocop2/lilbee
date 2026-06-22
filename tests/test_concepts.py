@@ -525,6 +525,17 @@ class TestBoostResults:
         boosted = cg.boost_results(results, ["python"])
         assert boosted == results
 
+    def test_boost_results_opens_table_once_for_many_results(self, cg, mock_svc):
+        """The chunk_concepts table is opened once per call, not once per result (N+1)."""
+        results = [_make_result(distance=0.5, chunk_index=i) for i in range(4)]
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
+            {"concept": "python"}
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        cg.boost_results(results, ["python"])
+        mock_svc.store.open_table.assert_called_once()
+
     def test_boost_results_empty_query_concepts(self, cg):
         results = [_make_result()]
         boosted = cg.boost_results(results, [])
