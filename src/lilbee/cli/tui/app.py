@@ -21,6 +21,7 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
+from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 
@@ -278,19 +279,24 @@ class LilbeeApp(App[None]):
         self.theme = name
         apply_settings_update({"theme": name})
 
+    def _reject_if_downloading(self, value: object) -> bool:
+        """Toast and return True if *value* is a model ref still downloading, so a
+        half-pulled file can't land in a model slot."""
+        if not isinstance(value, str):
+            return False
+        downloading = self.task_bar.downloading_label_for(value)
+        if downloading is None:
+            return False
+        self.notify(msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning")
+        return True
+
     def set_active_model(self, key: str, value: str) -> None:
         """Persist an active model ref through the shared write boundary.
 
         Refs whose download is still queued or active are refused before the
         boundary runs, so a half-pulled file cannot land in a model slot.
         """
-
-        downloading = self.task_bar.downloading_label_for(value)
-        if downloading is not None:
-            self.notify(
-                msg.MODEL_BEING_DOWNLOADED.format(name=downloading),
-                severity="warning",
-            )
+        if self._reject_if_downloading(value):
             return
         try:
             apply_settings_update({key: value})
@@ -306,7 +312,10 @@ class LilbeeApp(App[None]):
         or values rejected by pydantic validation. Callers either catch and toast or let it
         propagate.
         """
-
+        # A model-role ref still downloading must not land in a slot (parity with
+        # set_active_model); toast and skip rather than half-pull.
+        if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
+            return
         apply_settings_update({key: value})
         normalized = getattr(cfg, key)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:

@@ -2293,6 +2293,33 @@ class TestAppSetActiveModelDownloadGuard:
         finally:
             cfg.chat_model = chat_default
 
+    async def test_set_setting_blocks_model_role_while_downloading(self) -> None:
+        """set_setting applies the same download guard for model-role keys."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+        from lilbee.core.config import cfg
+
+        chat_default = cfg.chat_model
+        ref = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+        notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        app = LilbeeApp()
+        try:
+            app.task_bar.queue.enqueue(lambda: None, "Qwen2.5 0.5B", TaskType.DOWNLOAD.value)
+            with (
+                mock.patch.object(
+                    app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
+                ),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values"
+                ) as mock_update_values,
+            ):
+                app.set_setting("chat_model", ref)
+            assert cfg.chat_model == chat_default
+            mock_update_values.assert_not_called()
+            assert len(notify_calls) == 1
+        finally:
+            cfg.chat_model = chat_default
+
     async def test_unrelated_download_does_not_block_assignment(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.task_queue import TaskType

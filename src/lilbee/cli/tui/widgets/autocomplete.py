@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -28,13 +29,6 @@ _MAX_VISIBLE = 8  # max dropdown items shown at once
 _MAX_PATH_COMPLETIONS = 20
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
-
-
-# Cached document list for ``/delete`` and ``/reset`` Tab completion.
-# Invalidated by ``invalidate_document_cache`` on document mutations so
-# Tab returns the live set. Order is stable across reads because the
-# dropdown renders in fetch order.
-_doc_cache: list[str] | None = None
 
 
 def get_completions(text: str) -> list[str]:
@@ -89,24 +83,27 @@ def _setting_options() -> list[str]:
     return [k for k in SETTINGS_MAP if _is_settable(k)]
 
 
-def _document_options() -> list[str]:
-    global _doc_cache
-    if _doc_cache is not None:
-        return _doc_cache
+@functools.lru_cache(maxsize=1)
+def _document_options_cached() -> tuple[str, ...]:
+    # Cached for ``/delete`` and ``/reset`` Tab completion; cleared by
+    # invalidate_document_cache on document mutations. Order is stable (fetch
+    # order) so the dropdown is deterministic.
     try:
-        _doc_cache = [
+        return tuple(
             s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()
-        ]
+        )
     except Exception:
         log.debug("Failed to list documents for autocomplete", exc_info=True)
-        _doc_cache = []
-    return _doc_cache
+        return ()
+
+
+def _document_options() -> list[str]:
+    return list(_document_options_cached())
 
 
 def invalidate_document_cache() -> None:
     """Drop the cached document list; the next Tab refetches from the store."""
-    global _doc_cache
-    _doc_cache = None
+    _document_options_cached.cache_clear()
 
 
 def _theme_options() -> list[str]:
