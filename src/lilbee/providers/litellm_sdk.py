@@ -342,6 +342,16 @@ def _embedding_vector(item: Any) -> list[float]:
     return cast("list[float]", vector)
 
 
+def _response_model(response: Any) -> str | None:
+    """Return a litellm response's ``model`` across the dict and object shapes.
+
+    Optional (a proxy may omit it), so the lookup defaults to ``None``.
+    """
+    if isinstance(response, dict):
+        return response.get("model")
+    return cast("str | None", _sdk_attr(response, "model"))
+
+
 # Operation labels prefixed onto the fallback message for an unrecognised error.
 _CHAT_FAILED = "Chat failed"
 _EMBED_FAILED = "Embedding failed"
@@ -537,11 +547,7 @@ class LitellmSdkBackend:
         # with the wrong vector. ``index`` is required (always present in a
         # spec-conforming response), mirroring the rerank path's direct read.
         vectors = [_embedding_vector(item) for item in sorted(data, key=_embedding_index)]
-        if isinstance(response, dict):
-            model = response.get("model")
-        else:
-            model = getattr(response, "model", None)
-        return EmbeddingResult(vectors=vectors, model=model)
+        return EmbeddingResult(vectors=vectors, model=_response_model(response))
 
     def rerank(self, request: RerankRequest) -> RerankResult:
         """Rerank documents via ``litellm.rerank`` (Cohere, Voyage, Jina, Together, HF TEI).
@@ -572,11 +578,7 @@ class LitellmSdkBackend:
             idx = item["index"] if isinstance(item, dict) else item.index
             score = item["relevance_score"] if isinstance(item, dict) else item.relevance_score
             scores[idx] = float(score)
-        if isinstance(response, dict):
-            model = response.get("model")
-        else:
-            model = getattr(response, "model", None)
-        return RerankResult(scores=scores, model=model)
+        return RerankResult(scores=scores, model=_response_model(response))
 
     def list_models(self, *, base_url: str, api_key: str) -> list[str]:
         """List models from Ollama (``/api/tags``) or an OpenAI-compatible ``/v1/models``."""
