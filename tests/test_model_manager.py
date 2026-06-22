@@ -1175,6 +1175,16 @@ class TestKnownModelCache:
         assert "ollama/gemma4:26b" in refs
         assert "openai/gpt-4o" in refs
 
+    def test_gather_swallows_registry_failure(self, monkeypatch) -> None:
+        """A broken native registry contributes no refs rather than raising, so a
+        remote-only resolution stays responsive (the documented contract)."""
+        from lilbee.modelhub.model_manager import discovery
+
+        self._stub_compose(monkeypatch, remote=[("a:1", "Ollama")])
+        discovery.get_services().registry.list_installed.side_effect = OSError("boom")
+        refs = discovery.gather_known_model_refs()
+        assert refs == {"ollama/a:1"}
+
     def test_refs_caches_until_ttl_expiry(self, monkeypatch) -> None:
         """Repeated reads inside the TTL window do not re-run discovery."""
         from lilbee.modelhub.model_manager.discovery import KnownModelCache
