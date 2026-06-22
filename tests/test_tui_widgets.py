@@ -6578,3 +6578,10 @@ class TestCatalogFocusEdgeGuards:
         assert screen.load_more_called is True
         assert screen.focus_next_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
+
+
+class TestAppTitleSingleSource:
+    def test_app_title_format(self):
+        from lilbee.cli.tui import messages as msg
+
+        assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"

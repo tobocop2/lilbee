@@ -163,7 +163,7 @@ class LilbeeApp(App[None]):
         if self._test_skip_auto_init:
             return
         self._canonicalize_persisted_models()
-        self.title = f"lilbee: {cfg.chat_model}"
+        self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the default.
         persisted = cfg.theme or _DEFAULT_THEME

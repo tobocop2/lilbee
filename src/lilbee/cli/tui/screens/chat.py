@@ -1019,7 +1019,7 @@ class ChatScreen(Screen[None]):
     def _cmd_model(self, args: str) -> None:
         if args:
             apply_active_model(self.app, "chat_model", args)
-            self.app.title = f"lilbee -- {cfg.chat_model}"
+            self.app.title = msg.app_title(cfg.chat_model)
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self.apply_model_change()
             self.refresh_model_bar()

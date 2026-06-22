@@ -10,6 +10,13 @@ from __future__ import annotations
 from lilbee.core.config import cfg
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
+
+def app_title(model: str) -> str:
+    """The window title showing the active chat model. Single source so every
+    code path that sets the title uses the same format."""
+    return f"lilbee: {model}"
+
+
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
 CMD_ADD_SUCCESS = "Added {count} file(s), syncing..."
