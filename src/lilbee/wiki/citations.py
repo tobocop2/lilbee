@@ -70,10 +70,16 @@ def _find_excerpt_location(
     excerpt: str,
     chunks: list[SearchChunk],
 ) -> tuple[int, int, int, int]:
-    """Find page/line location of an excerpt within chunks."""
+    """Find page/line location of an excerpt within chunks.
+
+    Matches on whitespace-normalized text, the same way ``verify_citations``
+    does, so a citation that verifies doesn't then lose its location to a
+    raw-vs-normalized whitespace mismatch.
+    """
     if excerpt:
+        needle = normalize_whitespace(excerpt)
         for chunk in chunks:
-            if excerpt in chunk.chunk:
+            if needle in normalize_whitespace(chunk.chunk):
                 return chunk.page_start, chunk.page_end, chunk.line_start, chunk.line_end
     return 0, 0, 0, 0
 
