@@ -94,8 +94,7 @@ async def test_apply_model_pick_reload_failure_shows_error_toast() -> None:
             await app.workers.wait_for_complete()
             await pilot.pause()
             assert any(
-                "Could not switch model" in str(call.args[0])
-                for call in mock_notify.call_args_list
+                "Could not switch model" in str(call.args[0]) for call in mock_notify.call_args_list
             ), mock_notify.call_args_list
 
 
