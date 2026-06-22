@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
-from textual.widgets import DataTable
+from textual.widgets import DataTable, TextArea
 
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -397,3 +399,88 @@ async def test_apply_empty_spec_calls_set_placement_none(monkeypatch):
         await pilot.pause()
 
     assert set_calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_apply_disables_input_while_running(monkeypatch):
+    """ctrl+s sets applying=True and disables the TextArea until set_placement returns."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    gate = threading.Event()
+
+    def _blocking_set(spec):  # type: ignore[no-untyped-def]
+        gate.wait()
+
+    monkeypatch.setattr(screen_mod, "set_placement", _blocking_set)
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen._spec_text = '{"chat": {"devices": [0]}}'
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert screen.applying is True
+        text_area = screen.query_one(screen_mod._SPEC_AREA_ID, TextArea)
+        assert text_area.disabled is True
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert screen.applying is False
+        assert text_area.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_apply_ignored_while_applying(monkeypatch):
+    """ctrl+s is a no-op when applying is already True (double-apply guard)."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    set_calls: list[object] = []
+    gate = threading.Event()
+
+    def _blocking_set(spec):  # type: ignore[no-untyped-def]
+        set_calls.append(spec)
+        gate.wait()
+
+    monkeypatch.setattr(screen_mod, "set_placement", _blocking_set)
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        screen._spec_text = '{"chat": {"devices": [0]}}'
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert screen.applying is True
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert len(set_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_ignored_while_applying(monkeypatch):
+    """ctrl+x is a no-op when applying is already True."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    set_calls: list[object] = []
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        monkeypatch.setattr(screen_mod, "set_placement", lambda spec: set_calls.append(spec))
+        screen.applying = True
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+
+    assert set_calls == []

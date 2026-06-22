@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, ClassVar
@@ -10,6 +11,8 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.css.query import NoMatches
+from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Static, TextArea
 
@@ -76,9 +79,16 @@ class PlacementScreen(Screen[None]):
         Binding("ctrl+x", "clear", "Clear", show=True),
     ]
 
+    applying: reactive[bool] = reactive(False)
+
     def __init__(self) -> None:
         super().__init__()
         self._spec_text: str = ""
+
+    def watch_applying(self, applying: bool) -> None:
+        """Disable the spec editor while an apply/clear is in flight."""
+        with contextlib.suppress(NoMatches):
+            self.query_one(_SPEC_AREA_ID, TextArea).disabled = applying
 
     def compose(self) -> ComposeResult:
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
@@ -159,11 +169,14 @@ class PlacementScreen(Screen[None]):
 
     def action_apply(self) -> None:
         """Apply the current spec and reload services."""
+        if self.applying:
+            return
         try:
             spec = self._parse_spec()
         except (ValueError, json.JSONDecodeError, KeyError) as exc:
             self.notify(str(exc), severity="error")
             return
+        self.applying = True
         self._apply_worker(spec)
 
     @work(thread=True, exit_on_error=False)
@@ -175,9 +188,14 @@ class PlacementScreen(Screen[None]):
             call_from_thread(self, self._render_view, view)
         except Exception as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
+        finally:
+            call_from_thread(self, setattr, self, "applying", False)
 
     def action_clear(self) -> None:
         """Clear the manual spec (restore auto placement)."""
+        if self.applying:
+            return
+        self.applying = True
         self._clear_worker()
 
     @work(thread=True, exit_on_error=False)
@@ -189,6 +207,8 @@ class PlacementScreen(Screen[None]):
             call_from_thread(self, self._render_view, view)
         except Exception as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
+        finally:
+            call_from_thread(self, setattr, self, "applying", False)
 
     def action_go_back(self) -> None:
         """Pop back to the previous screen."""
