@@ -948,6 +948,7 @@ class TestModelPickerButton:
                 ),
             ):
                 btn._on_picker_dismissed(new_ref)
+                await app.workers.wait_for_complete()
                 await pilot.pause()
             store_mock.initialize_meta_if_legacy.assert_called_once()
             assert cfg.embedding_model == new_ref
@@ -1027,6 +1028,7 @@ class TestModelPickerButton:
                 assert isinstance(app.screen, ConfirmDialog)
                 await pilot.press("y")
                 await pilot.pause()
+                await app.workers.wait_for_complete()
             assert cfg.embedding_model == new_ref
             services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
 
@@ -1082,6 +1084,7 @@ class TestModelPickerButton:
                 ),
             ):
                 btn._on_picker_dismissed(new_ref)
+                await app.workers.wait_for_complete()
                 await pilot.pause()
             assert cfg.embedding_model == new_ref
             services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
@@ -1115,6 +1118,7 @@ class TestModelPickerButton:
                 ),
             ):
                 btn._on_picker_dismissed(new_ref)
+                await app.workers.wait_for_complete()
                 await pilot.pause()
             services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
             mock_reset.assert_not_called()

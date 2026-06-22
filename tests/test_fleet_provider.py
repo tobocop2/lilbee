@@ -1126,8 +1126,10 @@ def test_drop_loaded_models_async_tears_down_off_thread() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
     swap = p._swap
     p.drop_loaded_models_async()
-    assert _wait_until(lambda: p._swap is None)
-    assert swap.shutdowns == 1
+    # Wait on the actual shutdown rather than ``_swap is None``: the worker clears
+    # the ref before it calls swap.shutdown(), so the latter is the later signal.
+    assert _wait_until(lambda: swap.shutdowns == 1)
+    assert p._swap is None
 
 
 def test_drop_loaded_models_async_noop_without_swap() -> None:
