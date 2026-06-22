@@ -526,23 +526,35 @@ class TestListModels:
         provider = SdkLLMProvider(backend)
         assert provider.list_models() == []
 
-    def test_wraps_unexpected_errors(self) -> None:
+    def test_unreachable_server_is_skipped_not_raised(self) -> None:
+        """An unexpected error from one server is swallowed (empty list), not raised."""
+
         class _FailingBackend(FakeBackend):
             def list_models(self, *, base_url: str, api_key: str) -> list[str]:
                 raise RuntimeError("boom")
 
         provider = SdkLLMProvider(_FailingBackend())
-        with pytest.raises(ProviderError, match="Listing models failed"):
-            provider.list_models()
+        assert provider.list_models() == []
 
-    def test_propagates_provider_error_unchanged(self) -> None:
-        class _WrappedError(FakeBackend):
+    def test_provider_error_from_one_server_does_not_drop_others(self) -> None:
+        """One unreachable server must not drop models served by another reachable one."""
+        from lilbee.providers.local_servers import LM_STUDIO, OLLAMA
+
+        down_url = "http://localhost:11434"
+        up_url = "http://localhost:1234"
+
+        class _PartlyDownBackend(FakeBackend):
             def list_models(self, *, base_url: str, api_key: str) -> list[str]:
-                raise ProviderError("already-typed", provider="fake")
+                if base_url == down_url:
+                    raise ProviderError("ollama down", provider="fake")
+                return ["lmstudio-model"]
 
-        provider = SdkLLMProvider(_WrappedError())
-        with pytest.raises(ProviderError, match="already-typed"):
-            provider.list_models()
+        provider = SdkLLMProvider(_PartlyDownBackend())
+        with mock.patch(
+            "lilbee.providers.sdk_llm_provider.configured_local_servers",
+            return_value=[(OLLAMA, down_url), (LM_STUDIO, up_url)],
+        ):
+            assert provider.list_models() == ["lmstudio-model"]
 
 
 class TestListChatModels:
