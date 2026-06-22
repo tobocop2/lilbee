@@ -53,6 +53,22 @@ When reporting a worker crash, attach the last ~100 lines of the worker log plus
 tail -n 100 "<data root>/logs/worker-embed.log"
 ```
 
+## Fleet refuses to start after a hardware change
+
+If you have a manual placement spec set and a GPU is removed, replaced, or
+renumbered, the fleet will refuse to start with an error naming the card that
+no longer fits. The error is intentional: lilbee won't silently start in a
+broken state.
+
+To return to automatic placement:
+
+```bash
+lilbee placement clear
+```
+
+After that, the auto planner takes over again and places models across whatever
+GPUs are now available.
+
 ## Using with the Obsidian plugin
 
 The [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee) in managed mode runs this server for you, with each vault's data root under the plugin's shared install at `vaults/<id>/`. The same `logs/` layout applies inside that directory.

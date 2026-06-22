@@ -213,6 +213,49 @@ flowchart TD
   RAM on a unified-memory host drives the OS into a swap-thrash OOM livelock that
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
+
+#### Manual placement
+
+By default the auto planner runs every time a fleet is built. When a `placement`
+spec is set, it replaces the planner entirely: the spec's assignments are used
+as-is and the VRAM bin-pack does not run.
+
+The spec is per-role. Each role entry accepts:
+
+- `devices` (required): list of GPU indices to use for that role.
+- `tensor_split` (optional): per-device weight proportions for a tensor-split
+  instance. When omitted, a single-card placement is assumed.
+- `replicas` (optional): how many independent servers to run for embed and
+  vision roles. Defaults to 1.
+
+```json
+{
+  "chat":    { "devices": [0, 1], "tensor_split": [1, 1] },
+  "embed":   { "devices": [2], "replicas": 2 },
+  "rerank":  { "devices": [2] },
+  "vision":  { "devices": [3] }
+}
+```
+
+The `placement` field is stored as a JSON scalar in `config.toml` (a single
+`placement = '{"chat": ...}'` key), because the config store is a flat
+key-value file and cannot represent the nested shape natively. The placement
+surfaces (CLI, HTTP, MCP, TUI) handle encoding and decoding; editing
+`config.toml` by hand is not the intended path.
+
+When a pinned placement no longer fits the card it names, lilbee surfaces a
+hard error that identifies the card by name (e.g. `CUDA0: RTX 4090
+(23.7 GiB free, 24.0 GiB total)`) rather than failing silently. This makes
+hardware-change failures explicit.
+
+All four surfaces go through the one `app/placement.py` use-case:
+CLI (`lilbee placement show/preview/set/clear`), HTTP
+(`GET/POST/PUT/DELETE /api/placement`, `GET /api/gpus`), MCP
+(`get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
+and the TUI Placement screen. The `preview` operation is a dry-run: it shows
+what the auto planner would assign (or what a candidate spec would assign)
+including each card's backend+index label, name, and free/total VRAM, without
+touching the running fleet.
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
   vision roles can run as N independent servers, one per GPU, so large-scale ingest
   fans embedding / OCR across the whole box. The single roles (chat) are placed
