@@ -11,6 +11,7 @@ from pathlib import Path
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.system import is_ignored_dir
+from lilbee.data.store.types import RemoveResult
 
 
 @dataclass
@@ -45,6 +46,43 @@ def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
         else:
             shutil.copy2(p, dest)
         result.copied.append(p.name)
+    return result
+
+
+_REMOVED_SKIP_REASON = "removed via delete (re-add the file or run retry-skipped to restore)"
+
+
+def remove_documents_durably(names: list[str]) -> RemoveResult:
+    """Remove documents from the index and skip-mark them so sync won't re-ingest.
+
+    The source files stay on disk (non-destructive), but each removed file gets a
+    skip-marker keyed on its current hash, so the next sync treats it as
+    unchanged-and-skipped instead of re-ingesting it and resurrecting the doc.
+    Editing the file (new hash), ``retry-skipped``, or ``rebuild`` restores it.
+    """
+    from lilbee.app.services import get_services
+    from lilbee.data.ingest.discovery import file_hash
+    from lilbee.data.ingest.skip_marker import (
+        load_skip_markers,
+        load_skip_reasons,
+        write_skip_markers,
+        write_skip_reasons,
+    )
+
+    result = get_services().store.remove_documents(names)
+    if not result.removed:
+        return result
+    markers = load_skip_markers(cfg.data_root)
+    reasons = load_skip_reasons(cfg.data_root)
+    for name in result.removed:
+        path = cfg.documents_dir / name
+        # Imported sources have no file on disk; sync never re-ingests them, so a
+        # marker is only needed for real files that would otherwise be re-found.
+        if path.exists():
+            markers[name] = file_hash(path)
+            reasons[name] = _REMOVED_SKIP_REASON
+    write_skip_markers(cfg.data_root, markers)
+    write_skip_reasons(cfg.data_root, reasons)
     return result
 
 
