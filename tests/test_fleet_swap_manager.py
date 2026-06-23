@@ -344,29 +344,33 @@ class TestProcessTeardown:
         assert child in reaped
         assert port_server in reaped
 
-    def test_own_llama_swaps_returns_only_own_swap_children(
+    def test_own_llama_swaps_resolves_registered_pids_and_prunes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Scoped to this process's children and to the llama-swap binary: a
-        # sibling lilbee's swap (not our child) and our non-swap children are
-        # excluded, so reaping can never touch another instance's fleet.
-        class _Kid:
-            def __init__(self, argv: str) -> None:
-                self.pid = abs(hash(argv)) % 100000
+        # Keyed on the recorded-pid registry (immune to reparenting), not the
+        # live child tree. A live llama-swap pid is returned; a dead pid and a
+        # reused pid now running something else are dropped from the registry.
+        class _Proc:
+            def __init__(self, pid: int, argv: str) -> None:
+                self.pid = pid
                 self._argv = argv
 
             def cmdline(self) -> list[str]:
                 return [self._argv]
 
-        swap_kid = _Kid("/x/bin/llama-swap")
-        server_kid = _Kid("/x/bin/llama-server")
-        monkeypatch.setattr(
-            sm.psutil,
-            "Process",
-            lambda *a: type("P", (), {"children": lambda self, **k: [swap_kid, server_kid]})(),
-        )
+        live = {10: "/x/bin/llama-swap", 11: "/x/bin/python"}  # 11 = reused pid
+
+        def _fake_process(pid: int) -> _Proc:
+            if pid not in live:
+                raise sm.psutil.NoSuchProcess(pid)
+            return _Proc(pid, live[pid])
+
+        monkeypatch.setattr(sm.psutil, "Process", _fake_process)
+        monkeypatch.setattr(sm, "_OWN_SWAP_PIDS", {10, 11, 12})  # 12 = dead
         result = sm._own_llama_swaps()
-        assert result == [swap_kid]
+        assert [p.pid for p in result] == [10]
+        # The dead (12) and pid-reused (11) entries are pruned; the live one stays.
+        assert sm._OWN_SWAP_PIDS == {10}
 
     def test_reap_survivors_kills_after_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stubborn = _FakeChild(running=True)

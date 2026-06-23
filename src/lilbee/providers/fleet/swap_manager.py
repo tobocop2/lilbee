@@ -15,6 +15,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +99,21 @@ def _platform_const(module: object, name: str, default: int) -> int:
 _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
+# Every llama-swap pid THIS process has started, across all SwapManager / provider
+# instances. Process-global (not per-manager) so a duplicate a warm-up/reset/reload
+# race spawned on a since-discarded provider is still reaped at shutdown -- and
+# reaping keys on the recorded pid, not the live parent, so a llama-swap that
+# llama-swap's own restart leaves reparented to init is still caught. Scoped to
+# our own starts, so a sibling lilbee at the same data_dir is never touched.
+_OWN_SWAP_PIDS: set[int] = set()
+_OWN_SWAP_PIDS_LOCK = threading.Lock()
+
+
+def _register_own_swap(pid: int) -> None:
+    """Record a llama-swap pid this process started, for authoritative teardown."""
+    with _OWN_SWAP_PIDS_LOCK:
+        _OWN_SWAP_PIDS.add(pid)
+
 
 def _state_filename(owner_pid: int) -> str:
     """The per-owner state filename for the lilbee process *owner_pid*."""
@@ -168,6 +184,7 @@ class SwapManager:
             start_new_session=True,
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
+        _register_own_swap(self._proc.pid)
         self._write_state()
         self._await_health()
 
@@ -375,26 +392,34 @@ def _await_killed(procs: list[psutil.Process]) -> None:
 
 
 def _own_llama_swaps() -> list[psutil.Process]:
-    """Every live llama-swap this process started (its own direct children).
+    """Every live llama-swap this process started, by recorded pid.
 
-    Scoped to children of the current process: a sibling lilbee at the same
-    data_dir owns its swaps as *its* children, never ours, so this can never
-    reap another instance's fleet. Catches the tracked swap and any duplicate
-    this process leaked (an untracked swap a race or reload left behind is still
-    our child while we are alive).
+    Keyed on the process-global pid registry rather than the live process tree:
+    a llama-swap that has been reparented to init (llama-swap restarts an upstream
+    by respawning, and a leaked duplicate ends owned by init once its provider is
+    gone) is no longer our child, so a ``children()`` scan would miss it -- but
+    its pid is still valid and killable. A recorded pid that now belongs to a
+    different process (pid reuse) or to something that is not llama-swap is
+    skipped via the binary-name check, and dead pids are pruned from the registry.
     """
-    try:
-        kids = psutil.Process().children(recursive=False)
-    except psutil.NoSuchProcess:  # pragma: no cover - self always exists
-        return []
+    with _OWN_SWAP_PIDS_LOCK:
+        pids = sorted(_OWN_SWAP_PIDS)
     swaps: list[psutil.Process] = []
-    for proc in kids:
+    dead: set[int] = set()
+    for pid in pids:
         try:
+            proc = psutil.Process(pid)
             binary = Path(next(iter(proc.cmdline()), "")).name
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            dead.add(pid)
             continue
         if _LLAMA_SWAP_PROCESS_NAME in binary:
             swaps.append(proc)
+        else:
+            dead.add(pid)  # pid reused by an unrelated process
+    if dead:
+        with _OWN_SWAP_PIDS_LOCK:
+            _OWN_SWAP_PIDS.difference_update(dead)
     return swaps
 
 
@@ -418,6 +443,9 @@ def _stop_own_fleet(member_ports: tuple[int, ...]) -> None:
         else:
             _terminate_proc_group(swap)
     _reap_survivors(children + _find_orphan_servers(member_ports))
+    if swaps:
+        with _OWN_SWAP_PIDS_LOCK:
+            _OWN_SWAP_PIDS.difference_update(swap.pid for swap in swaps)
 
 
 def _terminate_proc_group(proc: psutil.Process) -> None:
