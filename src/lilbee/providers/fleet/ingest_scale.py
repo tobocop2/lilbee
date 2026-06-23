@@ -34,9 +34,9 @@ _counter = _IngestScaleCounter()
 
 
 def _provider() -> LLMProvider:  # late-bound so tests can patch it and to avoid an import cycle
-    from lilbee.app.services import get_services  # pragma: no cover - patched in tests
+    from lilbee.app.services import get_services
 
-    return get_services().provider  # pragma: no cover - patched in tests
+    return get_services().provider
 
 
 def ingest_scale() -> contextlib.AbstractContextManager[None]:

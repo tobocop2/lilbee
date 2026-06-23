@@ -61,6 +61,15 @@ def test_routing_provider_release_ingest_pool_noop_without_local():
     rp.release_ingest_pool()  # must not raise
 
 
+def test_provider_resolver_returns_provider_from_get_services(monkeypatch):
+    """``_provider()`` imports ``get_services`` at call time and returns ``.provider``."""
+    sentinel = mock.Mock()
+    services = mock.Mock()
+    services.provider = sentinel
+    monkeypatch.setattr("lilbee.app.services.get_services", lambda: services)
+    assert ingest_scale._provider() is sentinel
+
+
 def test_sdk_llm_provider_release_ingest_pool_is_callable_noop():
     """``SdkLLMProvider.release_ingest_pool`` is a callable no-op."""
     from lilbee.providers.sdk_backend import LlmSdkBackend
