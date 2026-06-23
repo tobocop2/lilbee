@@ -257,6 +257,8 @@ class SwapManager:
 
     def unload(self, model_id: str) -> bool:
         """Unload one model from llama-swap, freeing its VRAM; best-effort, never raises."""
+        if self._port is None:
+            return False
         try:
             resp = httpx.post(
                 f"{self.endpoint()}{_UNLOAD_PATH}",

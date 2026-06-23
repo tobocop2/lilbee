@@ -1124,6 +1124,13 @@ class TestUnload:
         )
         assert mgr.unload("embed-1") is False
 
+    def test_returns_false_and_never_raises_before_start(self, tmp_path: Path) -> None:
+        # _port is None before start(); unload() must not let endpoint()'s
+        # ProviderError escape the never-raise contract.
+        mgr = SwapManager(tmp_path)
+        assert mgr._port is None
+        assert mgr.unload("embed-1") is False
+
 
 class TestIsLive:
     def test_true_when_proc_alive_and_running_answers(
