@@ -26,6 +26,7 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
+from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.fleet.windowing import window_messages
@@ -218,7 +219,8 @@ class _VisionRequestGate:
                 self._in_flight -= 1
 
     def _checkout(self) -> threading.BoundedSemaphore:
-        capacity = max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
+        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        capacity = max(1, replicas * cfg.vision_ocr_concurrency)
         with self._lock:
             # Resize only when idle: rebuilding while old-semaphore holders are
             # in flight would briefly double the real cap, so a capacity change

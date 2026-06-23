@@ -28,6 +28,7 @@ from lilbee.providers.fleet.placement import (
     PeakEstimator,
     plan_placement,
 )
+from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import estimate_instance_footprint
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -350,16 +351,8 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
 
 
 def _replica_count(role: WorkerRole, device_count: int) -> int:
-    """Requested data-parallel instances for *role*: embed/vision honor their
-    ``*_replicas`` knob (0 = auto = one per GPU); others run one. The auto count
-    falls to one GPU-less. Capping to residual VRAM happens in placement."""
-    from lilbee.core.config import cfg
-
-    if role is WorkerRole.EMBED:
-        return cfg.embed_replicas or max(1, device_count)
-    if role is WorkerRole.VISION:
-        return cfg.vision_replicas or max(1, device_count)
-    return 1
+    """Requested data-parallel instances for *role* via the shared resolver."""
+    return resolve_replica_count(role, device_count)
 
 
 def _cache_type_flag() -> str | None:

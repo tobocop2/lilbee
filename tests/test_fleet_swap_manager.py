@@ -1171,9 +1171,7 @@ class TestIsLive:
         monkeypatch.setattr("lilbee.providers.fleet.swap_manager.httpx.get", boom)
         assert mgr.is_live() is False
 
-    def test_false_and_no_raise_when_proc_alive_but_port_not_yet_set(
-        self, tmp_path: Path
-    ) -> None:
+    def test_false_and_no_raise_when_proc_alive_but_port_not_yet_set(self, tmp_path: Path) -> None:
         # Startup-window race: _proc is alive (poll() returns None) but _port is
         # still None. is_live() must return False, not let endpoint()'s
         # ProviderError escape a -> bool method.

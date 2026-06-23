@@ -83,9 +83,12 @@ def _max_concurrent() -> int:
     few-core box with several GPUs would starve the extra cards.
     """
     from lilbee.core.config import cfg
+    from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
+    from lilbee.providers.roles import WorkerRole
 
     if cfg.vision_model:
-        return max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
+        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        return max(1, replicas * cfg.vision_ocr_concurrency)
     embed_slots = cfg.embed_replicas if cfg.embed_replicas > 1 else 0
     return max(cpu_quota(), embed_slots)
 

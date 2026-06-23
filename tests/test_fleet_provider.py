@@ -701,6 +701,9 @@ def test_pdf_ocr_runs_pages_concurrently_and_preserves_order(monkeypatch) -> Non
 
     monkeypatch.setattr(cfg, "vision_model", "")
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    # Auto replicas (vision_replicas left at its 0 default) resolves to one per
+    # GPU; pin the probe to a single GPU so the gate admits 1 x 4 = 4 in flight.
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     n = 8
     monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: n)
     monkeypatch.setattr(
@@ -1159,9 +1162,20 @@ def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
     for name in _GPU_VISIBLE_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cfg, "gpu_devices", "0")
-    gpu_env.apply_fleet_gpu_env()
-    for name in _GPU_VISIBLE_ENV_VARS:
-        assert os.environ[name] == "0"
+    # apply_fleet_gpu_env writes these vars in place; monkeypatch.delenv does not
+    # track app-side additions, so restore the pre-apply snapshot to avoid leaking
+    # the pin (CUDA_VISIBLE_DEVICES=0) into later tests that read os.environ.
+    snapshot = {name: os.environ.get(name) for name in _GPU_VISIBLE_ENV_VARS}
+    try:
+        gpu_env.apply_fleet_gpu_env()
+        for name in _GPU_VISIBLE_ENV_VARS:
+            assert os.environ[name] == "0"
+    finally:
+        for name, value in snapshot.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def test_apply_fleet_gpu_env_clears_empty_cuda_visible_devices(monkeypatch) -> None:
