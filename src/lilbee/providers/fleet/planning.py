@@ -764,9 +764,8 @@ def plan_launches(
 
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, reservation = _server_model_inputs(roles, unified_budget=unified_budget)
-    placement = _resolve_placement(
-        cfg.placement, inputs, model_refs, devices, unified_budget=unified_budget
-    )
+    spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
+    placement = _resolve_placement(spec, inputs, model_refs, devices, unified_budget=unified_budget)
     for role in placement.unplaceable_roles:
         log.warning(
             "%s model %s does not fit available memory and will not be served; "

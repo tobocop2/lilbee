@@ -27,6 +27,12 @@ def test_active_spec_reads_cfg(monkeypatch):
     assert app_placement._active_spec() is None
 
 
+def test_active_spec_parses_stored_json(monkeypatch):
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 1))})
+    monkeypatch.setattr(app_placement.cfg, "placement", spec.to_json())
+    assert app_placement._active_spec() == spec
+
+
 def test_get_placement_renders_view(monkeypatch):
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
@@ -71,7 +77,7 @@ def test_set_persists_and_resets(monkeypatch):
         app_placement.set_placement(spec)
         assert writes["placement"] == spec.to_json()
         assert writes["reset"] is True
-        assert app_placement.cfg.placement == spec
+        assert app_placement.cfg.placement == spec.to_json()
     finally:
         app_placement.cfg.placement = prior
 

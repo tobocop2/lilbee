@@ -6,15 +6,16 @@ from lilbee.providers.fleet.placement_spec import PlacementSpec, RolePlacement
 from lilbee.providers.roles import WorkerRole
 
 
-def test_parses_json_string_to_spec():
+def test_validates_json_string_and_stores_it():
     cfg = Config(placement='{"chat": {"devices": [0, 1]}}')
-    assert isinstance(cfg.placement, PlacementSpec)
-    assert cfg.placement.roles[WorkerRole.CHAT].devices == (0, 1)
+    assert isinstance(cfg.placement, str)
+    spec = PlacementSpec.from_json(cfg.placement)
+    assert spec.roles[WorkerRole.CHAT].devices == (0, 1)
 
 
-def test_accepts_spec_object():
+def test_accepts_spec_object_and_stores_its_json():
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
-    assert Config(placement=spec).placement == spec
+    assert Config(placement=spec).placement == spec.to_json()
 
 
 def test_blank_is_none():

@@ -49,7 +49,8 @@ class PlacementView:
 
 
 def _active_spec() -> PlacementSpec | None:
-    return cfg.placement
+    raw = cfg.placement
+    return PlacementSpec.from_json(raw) if raw else None
 
 
 def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -> PlacementView:
@@ -107,8 +108,10 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     resolved = resolve_placement_plan(spec)
     if spec is None:
         settings.delete_values(cfg.data_root, [_PLACEMENT_KEY])
+        cfg.placement = None
     else:
-        settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec.to_json()})
-    cfg.placement = spec
+        spec_json = spec.to_json()
+        settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
+        cfg.placement = spec_json
     reset_services()
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
