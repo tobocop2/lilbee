@@ -140,6 +140,10 @@ class SwapManager:
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
         self.reap_stale()
+        # Singleton guard: one llama-swap per process. Reap any llama-swap this
+        # process already started (a leaked duplicate from a prior race/reload)
+        # before spawning, so they can never accumulate and double-book a GPU.
+        _stop_own_fleet(tuple(self._member_ports))
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
@@ -263,14 +267,18 @@ class SwapManager:
         return self._proc is not None
 
     def shutdown(self) -> None:
-        """Stop llama-swap and every server it spawned (a no-op when not running).
+        """Stop every llama-swap this process started and reap their servers.
 
-        Unlinks only this owner's state file; another instance's record stays.
+        Authoritative teardown keyed on this process's own children, not on the
+        single tracked ``Popen``: a warm-up/reset race or a reload can leave a
+        second, untracked llama-swap this process spawned, and trusting only the
+        tracked handle would leak it (it ends reparented to init, still holding
+        the engine binary open). Every llama-swap among our own children is
+        stopped and their upstreams reaped, so no duplicate survives. Unlinks
+        only this owner's state file; another instance's record stays.
         """
-        proc = self._proc
-        if proc is not None:
-            _stop_process_tree(proc)
-            self._state_path.unlink(missing_ok=True)
+        _stop_own_fleet(tuple(self._member_ports))
+        self._state_path.unlink(missing_ok=True)
         self._proc = None
         self._port = None
         self._close_log()
@@ -335,22 +343,6 @@ def _pick_free_ports(count: int) -> list[int]:
             sock.close()
 
 
-def _stop_process_tree(proc: subprocess.Popen[bytes]) -> None:
-    """Stop llama-swap and reap any llama-server that outlives it.
-
-    llama-swap starts each server in its own process group (its Setpgid), so
-    signalling llama-swap's group never reaches the servers; a survivor keeps
-    its port bound and that port's next bind fails. The children are captured
-    while llama-swap is still alive, then swept after it stops.
-    """
-    children = _live_children(proc.pid)
-    if sys.platform == "win32":
-        _hard_stop(proc)
-    else:
-        _terminate_group(proc)
-    _reap_survivors(children)
-
-
 def _live_children(pid: int) -> list[psutil.Process]:
     """The process's current descendants, or none when it already exited."""
     try:
@@ -382,26 +374,77 @@ def _await_killed(procs: list[psutil.Process]) -> None:
         log.warning("Process %s survived SIGKILL; its VRAM may still be held.", proc.pid)
 
 
-def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
-    """SIGTERM the process group, escalating to SIGKILL on timeout."""
+def _own_llama_swaps() -> list[psutil.Process]:
+    """Every live llama-swap this process started (its own direct children).
+
+    Scoped to children of the current process: a sibling lilbee at the same
+    data_dir owns its swaps as *its* children, never ours, so this can never
+    reap another instance's fleet. Catches the tracked swap and any duplicate
+    this process leaked (an untracked swap a race or reload left behind is still
+    our child while we are alive).
+    """
+    try:
+        kids = psutil.Process().children(recursive=False)
+    except psutil.NoSuchProcess:  # pragma: no cover - self always exists
+        return []
+    swaps: list[psutil.Process] = []
+    for proc in kids:
+        try:
+            binary = Path(next(iter(proc.cmdline()), "")).name
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if _LLAMA_SWAP_PROCESS_NAME in binary:
+            swaps.append(proc)
+    return swaps
+
+
+def _stop_own_fleet(member_ports: tuple[int, ...]) -> None:
+    """Stop every llama-swap this process started and reap their upstreams.
+
+    Each llama-swap runs in its own session, and it starts each llama-server in
+    yet another process group, so signalling one group never reaches the others.
+    The upstreams are captured as descendants while their swap is still alive,
+    the swaps are stopped, then every survivor -- those descendants plus any
+    llama-server still bound to one of our member ports (a respawned upstream the
+    descendant snapshot missed) -- is reaped and confirmed gone.
+    """
+    swaps = _own_llama_swaps()
+    children: list[psutil.Process] = []
+    for swap in swaps:
+        children.extend(_live_children(swap.pid))
+    for swap in swaps:
+        if sys.platform == "win32":
+            _hard_stop_proc(swap)
+        else:
+            _terminate_proc_group(swap)
+    _reap_survivors(children + _find_orphan_servers(member_ports))
+
+
+def _terminate_proc_group(proc: psutil.Process) -> None:
+    """SIGTERM a process's group, escalating to SIGKILL on timeout."""
     try:
         pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:  # pragma: no cover - process exited between checks
+    except (ProcessLookupError, OSError):  # pragma: no cover - exited between checks
         return
-    os.killpg(pgid, signal.SIGTERM)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGTERM)
     try:
         proc.wait(timeout=_STOP_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        os.killpg(pgid, _SIGKILL)
+    except psutil.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, _SIGKILL)
+        _await_killed([proc])
 
 
-def _hard_stop(proc: subprocess.Popen[bytes]) -> None:
-    """Terminate the process, escalating to a hard kill on timeout (Windows path)."""
-    proc.terminate()
+def _hard_stop_proc(proc: psutil.Process) -> None:
+    """Terminate a process, escalating to a hard kill on timeout (Windows path)."""
+    with contextlib.suppress(psutil.NoSuchProcess):
+        proc.terminate()
     try:
         proc.wait(timeout=_STOP_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    except psutil.TimeoutExpired:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            proc.kill()
 
 
 def _load_state(path: Path) -> _SwapState | None:

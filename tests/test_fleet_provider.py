@@ -159,6 +159,17 @@ def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
 
 
+def test_ensure_swap_refused_after_shutdown(monkeypatch) -> None:
+    """bb-dpp source guard: once shut down (and likely discarded by reset_services),
+    a lingering warm-up/reload thread's _ensure_swap must not spawn a new llama-swap
+    on the dead provider -- that is exactly the duplicate that leaks on teardown."""
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    p._shutdown_swap()  # latches _shut_down (and reaps via a fresh SwapManager)
+    assert p._ensure_swap() is None
+    assert swap.started == []  # no swap started after shutdown
+
+
 def test_adopt_swap_retires_old_clients_without_closing(monkeypatch) -> None:
     # Re-adopting (a reload) must not close old clients in place (a
     # reader may still hold one); they are retired for deferred close.
