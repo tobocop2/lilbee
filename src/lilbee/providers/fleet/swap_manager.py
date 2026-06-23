@@ -15,7 +15,6 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,21 +98,6 @@ def _platform_const(module: object, name: str, default: int) -> int:
 _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
-# Every llama-swap pid THIS process has started, across all SwapManager / provider
-# instances. Process-global (not per-manager) so a duplicate a warm-up/reset/reload
-# race spawned on a since-discarded provider is still reaped at shutdown -- and
-# reaping keys on the recorded pid, not the live parent, so a llama-swap that
-# llama-swap's own restart leaves reparented to init is still caught. Scoped to
-# our own starts, so a sibling lilbee at the same data_dir is never touched.
-_OWN_SWAP_PIDS: set[int] = set()
-_OWN_SWAP_PIDS_LOCK = threading.Lock()
-
-
-def _register_own_swap(pid: int) -> None:
-    """Record a llama-swap pid this process started, for authoritative teardown."""
-    with _OWN_SWAP_PIDS_LOCK:
-        _OWN_SWAP_PIDS.add(pid)
-
 
 def _state_filename(owner_pid: int) -> str:
     """The per-owner state filename for the lilbee process *owner_pid*."""
@@ -156,10 +140,11 @@ class SwapManager:
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
         self.reap_stale()
-        # Singleton guard: one llama-swap per process. Reap any llama-swap this
-        # process already started (a leaked duplicate from a prior race/reload)
-        # before spawning, so they can never accumulate and double-book a GPU.
-        _stop_own_fleet(tuple(self._member_ports))
+        # Singleton guard: one llama-swap per data_dir for this lilbee. Reap any
+        # llama-swap we already started against this config (a leaked duplicate
+        # from a prior race/reload) before spawning, so they cannot accumulate
+        # and double-book a GPU.
+        _stop_own_fleet(self._config_path, tuple(self._member_ports))
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
@@ -184,7 +169,6 @@ class SwapManager:
             start_new_session=True,
             creationflags=_CREATE_NEW_PROCESS_GROUP,
         )
-        _register_own_swap(self._proc.pid)
         self._write_state()
         self._await_health()
 
@@ -284,17 +268,17 @@ class SwapManager:
         return self._proc is not None
 
     def shutdown(self) -> None:
-        """Stop every llama-swap this process started and reap their servers.
+        """Stop every llama-swap this lilbee owns at our config and reap servers.
 
-        Authoritative teardown keyed on this process's own children, not on the
-        single tracked ``Popen``: a warm-up/reset race or a reload can leave a
-        second, untracked llama-swap this process spawned, and trusting only the
-        tracked handle would leak it (it ends reparented to init, still holding
-        the engine binary open). Every llama-swap among our own children is
-        stopped and their upstreams reaped, so no duplicate survives. Unlinks
-        only this owner's state file; another instance's record stays.
+        Authoritative teardown keyed on config-path identity, not the single
+        tracked ``Popen``: a warm-up/reset race or a reload can leave several
+        llama-swap processes this lilbee spawned, any of them reparented to init
+        (still holding the engine binary open) -- trusting one handle would leak
+        them. Every llama-swap running against our config is reaped (sparing a
+        live sibling lilbee at the same data_dir). Unlinks only this owner's state
+        file; another instance's record stays.
         """
-        _stop_own_fleet(tuple(self._member_ports))
+        _stop_own_fleet(self._config_path, tuple(self._member_ports))
         self._state_path.unlink(missing_ok=True)
         self._proc = None
         self._port = None
@@ -391,49 +375,60 @@ def _await_killed(procs: list[psutil.Process]) -> None:
         log.warning("Process %s survived SIGKILL; its VRAM may still be held.", proc.pid)
 
 
-def _own_llama_swaps() -> list[psutil.Process]:
-    """Every live llama-swap this process started, by recorded pid.
+def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
+    """Every live llama-swap (any owner) running against *config_path*.
 
-    Keyed on the process-global pid registry rather than the live process tree:
-    a llama-swap that has been reparented to init (llama-swap restarts an upstream
-    by respawning, and a leaked duplicate ends owned by init once its provider is
-    gone) is no longer our child, so a ``children()`` scan would miss it -- but
-    its pid is still valid and killable. A recorded pid that now belongs to a
-    different process (pid reuse) or to something that is not llama-swap is
-    skipped via the binary-name check, and dead pids are pruned from the registry.
+    Identity is the ``-config <path>`` argument, which every llama-swap this
+    lilbee starts carries and which survives reparenting to init -- so this finds
+    a leaked duplicate or a swap reparented away from us, neither of which a
+    tracked Popen handle nor a ``children()`` scan would catch.
     """
-    with _OWN_SWAP_PIDS_LOCK:
-        pids = sorted(_OWN_SWAP_PIDS)
+    target = str(config_path)
     swaps: list[psutil.Process] = []
-    dead: set[int] = set()
-    for pid in pids:
+    for proc in psutil.process_iter():
         try:
-            proc = psutil.Process(pid)
-            binary = Path(next(iter(proc.cmdline()), "")).name
+            cmdline = proc.cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            dead.add(pid)
             continue
-        if _LLAMA_SWAP_PROCESS_NAME in binary:
+        binary = Path(next(iter(cmdline), "")).name
+        if _LLAMA_SWAP_PROCESS_NAME in binary and target in cmdline:
             swaps.append(proc)
-        else:
-            dead.add(pid)  # pid reused by an unrelated process
-    if dead:
-        with _OWN_SWAP_PIDS_LOCK:
-            _OWN_SWAP_PIDS.difference_update(dead)
     return swaps
 
 
-def _stop_own_fleet(member_ports: tuple[int, ...]) -> None:
-    """Stop every llama-swap this process started and reap their upstreams.
+def _live_sibling_swap_pids(data_dir: Path) -> set[int]:
+    """Swap pids a live *other* owner recorded at *data_dir* (spare these).
 
-    Each llama-swap runs in its own session, and it starts each llama-server in
-    yet another process group, so signalling one group never reaches the others.
-    The upstreams are captured as descendants while their swap is still alive,
-    the swaps are stopped, then every survivor -- those descendants plus any
-    llama-server still bound to one of our member ports (a respawned upstream the
-    descendant snapshot missed) -- is reaped and confirmed gone.
+    A concurrent sibling lilbee on the same data_dir (e.g. ``lilbee sync`` beside
+    the server) shares the config path, so a config-path reap would otherwise
+    kill its healthy swap. Its state file names the swap pid to protect.
     """
-    swaps = _own_llama_swaps()
+    our_pid = os.getpid()
+    protected: set[int] = set()
+    for state_path in data_dir.glob(_STATE_FILE_GLOB):
+        state = _load_state(state_path)
+        if state is None or state.owner_pid in (None, our_pid):
+            continue
+        if _owner_alive(state.owner_pid, state.owner_created_at):
+            protected.add(state.pid)
+    return protected
+
+
+def _stop_own_fleet(config_path: Path, member_ports: tuple[int, ...]) -> None:
+    """Stop every llama-swap this lilbee owns at *config_path* and reap upstreams.
+
+    Keyed on config-path identity rather than a tracked Popen or the live process
+    tree: a warm-up/reload race can leave several llama-swap processes this lilbee
+    started, any of which may be reparented to init, so no single handle or child
+    scan finds them all. Every llama-swap running against our config is reaped
+    EXCEPT one a live *other* owner recorded -- a concurrent sibling lilbee at the
+    same data_dir is left alone. Each swap runs each llama-server in its own
+    process group, so the upstreams are swept separately: captured descendants
+    plus any llama-server still bound to one of our member ports (a respawned
+    upstream the descendant snapshot missed), then confirmed gone.
+    """
+    protected = _live_sibling_swap_pids(config_path.parent)
+    swaps = [swap for swap in _swaps_for_config(config_path) if swap.pid not in protected]
     children: list[psutil.Process] = []
     for swap in swaps:
         children.extend(_live_children(swap.pid))
@@ -443,9 +438,6 @@ def _stop_own_fleet(member_ports: tuple[int, ...]) -> None:
         else:
             _terminate_proc_group(swap)
     _reap_survivors(children + _find_orphan_servers(member_ports))
-    if swaps:
-        with _OWN_SWAP_PIDS_LOCK:
-            _OWN_SWAP_PIDS.difference_update(swap.pid for swap in swaps)
 
 
 def _terminate_proc_group(proc: psutil.Process) -> None:
