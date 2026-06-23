@@ -35,11 +35,7 @@ log = logging.getLogger(__name__)
 EMBED_FALLBACK_CTX = 2048
 """Context used for embed/rerank when a GGUF reports junk (e.g. context_length=0)."""
 
-# Truncate embed/rerank inputs a few tokens below the per-slot context: the server
-# re-tokenizes the truncated text with add_special, so a truncate-to-exactly-n_ctx
-# input overflows by the re-added BOS (plus detokenize/tokenize round-trip drift).
-# The embed server is therefore sized chunk_size + this margin, so a full
-# chunk_size input survives truncation instead of losing its tail tokens.
+# Sized above chunk_size so BOS re-added on re-tokenization doesn't overflow a full-chunk input.
 _EMBED_CTX_MARGIN = 8
 
 

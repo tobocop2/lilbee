@@ -561,7 +561,10 @@ def _launch_for(
     chat_reservation: int = 0,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
-    from lilbee.providers.engine_params import _EMBED_CTX_MARGIN, resolve_model_path
+    from lilbee.providers.engine_params import (
+        _EMBED_CTX_MARGIN,
+        resolve_model_path,
+    )  # circular: fleet.planning -> engine_params -> app.services
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
     model_path = resolve_model_path(model_ref)

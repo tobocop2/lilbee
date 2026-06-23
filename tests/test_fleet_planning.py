@@ -96,7 +96,7 @@ def test_role_ctx_embed_covers_chunk_size_plus_margin(monkeypatch) -> None:
 
 
 def test_embed_ctx_token_cap_fits_full_chunk(monkeypatch) -> None:
-    # bb-4ry: the embed input truncates at ctx - _EMBED_CTX_MARGIN, so the server must
+    # The embed input truncates at ctx - _EMBED_CTX_MARGIN, so the server must
     # be sized so a full chunk_size input survives (token_cap >= chunk_size), not 8 short.
     from lilbee.providers.engine_params import _EMBED_CTX_MARGIN, resolve_embed_ctx
 
