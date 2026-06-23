@@ -91,9 +91,7 @@ class Config(BaseSettings):
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
-    # Re-validate the index before a one-shot ``lilbee ask``. Disable on large
-    # static corpora where the pre-answer sync re-hashes the whole index and
-    # stalls every question; ``--no-sync`` overrides it per invocation.
+    # Gate for the pre-ask sync; --no-sync overrides per invocation.
     auto_sync: bool = ConfigField(default=True, writable=True)
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)

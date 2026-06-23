@@ -173,7 +173,7 @@ def ask(
         False, "--no-sync", help="Skip the pre-answer auto-sync (useful on large static corpora)."
     ),
 ) -> None:
-    """Ask a one-shot question (auto-syncs first unless --no-sync or auto_sync=false)."""
+    """Ask a one-shot question."""
     apply_overrides(
         data_dir=data_dir,
         model=model,
