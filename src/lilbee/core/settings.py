@@ -107,8 +107,8 @@ def overlay_persisted_settings(root: Path) -> None:
     for key, raw in persisted.items():
         if key not in overlayable:
             continue
-        # Env var explicitly set: env overrides config.toml, so keep the env value.
-        if f"{env_prefix}{key.upper()}" in os.environ:
+        # Non-empty env var wins over config.toml (matches pydantic env_ignore_empty=True).
+        if os.environ.get(f"{env_prefix}{key.upper()}", "") != "":
             continue
         # Legacy: set_setting used to persist None as "". Skip rather than
         # warn so a stale config doesn't spam logs on every CLI invocation.

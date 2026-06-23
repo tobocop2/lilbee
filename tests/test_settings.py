@@ -359,6 +359,20 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.vision_replicas = original
 
+    def test_empty_env_var_does_not_suppress_config_toml(self, tmp_path, monkeypatch):
+        """An empty LILBEE_<FIELD> env var is treated as unset; config.toml wins."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.setenv("LILBEE_VISION_REPLICAS", "")
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 3
+        finally:
+            cfg.vision_replicas = original
+
     def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
         """Without the env var, config.toml is still overlaid onto cfg."""
         from lilbee.core.config import cfg
