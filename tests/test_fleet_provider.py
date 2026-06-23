@@ -2065,9 +2065,6 @@ class TestWarmProgressTracking:
         assert p.warm_progress().phase is WarmPhase.READY
 
 
-# --- _require_clients re-probe on a dead swap ---------------------------------
-
-
 def test_require_clients_reprobes_dead_swap(monkeypatch) -> None:
     """Empty pool + dead swap triggers a one-shot rebuild; clients are returned after."""
     from unittest import mock

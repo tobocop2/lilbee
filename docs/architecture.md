@@ -216,7 +216,10 @@ flowchart TD
 - **Resident tiers and the elastic ingest pool**: placement reserves a persistent
   query fleet first: chat, one embed server (`embed-0`), rerank, and one vision
   server (`vision-0`). These stay resident so a chat request issued during ingest
-  always has capacity. Extra embed and vision replicas (`embed-1..N`, additional
+  always has capacity. This reservation applies to discrete-GPU placement; the
+  shared-memory path on a unified-memory or CPU host packs the same pool
+  differently and does not hold back the elastic replicas. Extra embed and vision
+  replicas (`embed-1..N`, additional
   vision) are placed only into the VRAM that remains after the query fleet is
   committed. When an ingest finishes, each extra replica is unloaded individually
   via llama-swap's `POST /api/models/unload`, freeing its VRAM without disturbing
