@@ -345,19 +345,6 @@ async def test_go_back_single_screen(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_placement_screen_app_harness(monkeypatch):
-    """PlacementScreenApp mounts PlacementScreen successfully."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    app = screen_mod.PlacementScreenApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        assert isinstance(app.screen, screen_mod.PlacementScreen)
-
-
-@pytest.mark.asyncio
 async def test_preview_bad_json_notifies(monkeypatch):
     """ctrl+r with invalid JSON shows an error notification, not a crash."""
     from lilbee.cli.tui.screens import placement as screen_mod

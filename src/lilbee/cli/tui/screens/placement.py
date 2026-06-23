@@ -25,12 +25,6 @@ if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
 
 
-class _LilbeeAppTestHost(LilbeeApp):
-    """LilbeeApp subclass that skips the heavyweight on_mount for test/demo harnesses."""
-
-    _test_skip_auto_init = True
-
-
 log = logging.getLogger(__name__)
 
 _GPU_TABLE_ID = "#placement-gpus"
@@ -216,12 +210,3 @@ class PlacementScreen(Screen[None]):
             self.app.pop_screen()
         else:
             self.app.switch_view("Chat")
-
-
-class PlacementScreenApp(_LilbeeAppTestHost):
-    """Minimal app harness that mounts PlacementScreen for test/demo use."""
-
-    CSS = ""
-
-    def on_mount(self) -> None:
-        self.push_screen(PlacementScreen())
