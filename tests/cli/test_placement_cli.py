@@ -143,3 +143,21 @@ def test_set_placement_error(tmp_path: object, monkeypatch: object) -> None:
     result = runner.invoke(placement_app, ["set", "--spec", str(f)])
     assert result.exit_code == 1
     assert "no fit" in result.stdout
+
+
+def test_set_missing_spec_file_exits_clean(tmp_path: object, monkeypatch: object) -> None:
+    """set --spec with a nonexistent file exits 1 without a traceback."""
+    monkeypatch.setattr(cli_placement, "set_placement", lambda spec: _view(True))
+    missing = tmp_path / "nope.json"
+    result = runner.invoke(placement_app, ["set", "--spec", str(missing)])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_preview_missing_spec_file_exits_clean(tmp_path: object, monkeypatch: object) -> None:
+    """preview --spec with a nonexistent file exits 1 without a traceback."""
+    monkeypatch.setattr(cli_placement, "preview_placement", lambda spec: _view(True))
+    missing = tmp_path / "nope.json"
+    result = runner.invoke(placement_app, ["preview", "--spec", str(missing)])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)

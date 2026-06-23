@@ -93,7 +93,7 @@ def preview(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     try:
         _render_view(preview_placement(_read_spec(spec)))
-    except PlacementError as exc:
+    except (PlacementError, OSError) as exc:
         console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(code=1) from exc
 
@@ -108,7 +108,7 @@ def set_cmd(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     try:
         _render_view(set_placement(_read_spec(spec)))
-    except PlacementError as exc:
+    except (PlacementError, OSError) as exc:
         console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(code=1) from exc
 
