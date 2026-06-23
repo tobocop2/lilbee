@@ -59,6 +59,11 @@ class _FakeSwap:
     def endpoint(self) -> str:
         return "http://fake-endpoint"
 
+    def is_live(self) -> bool:
+        # Default: the fake swap is considered live so existing tests that have
+        # an empty client pool still raise ProviderError, not trigger a rebuild.
+        return True
+
     def role_ready(self, role: WorkerRole) -> bool:
         return role in self.ready
 
@@ -2055,3 +2060,67 @@ class TestWarmProgressTracking:
         p._warm_tracker.begin("repo/m.gguf")
         p._warm_tracker.ready()
         assert p.warm_progress().phase is WarmPhase.READY
+
+
+# --- _require_clients re-probe on a dead swap ---------------------------------
+
+
+def test_require_clients_reprobes_dead_swap(monkeypatch) -> None:
+    """Empty pool + dead swap triggers a one-shot rebuild; clients are returned after."""
+    from unittest import mock
+
+    p = FleetProvider()
+    p._clients = {}
+    dead = mock.Mock()
+    dead.is_live.return_value = False
+    p._swap = dead
+    rebuilt = {"called": False}
+
+    def fake_rebuild() -> None:
+        rebuilt["called"] = True
+        p._clients = {WorkerRole.CHAT: [_fake_client()]}
+
+    monkeypatch.setattr(p, "_rebuild_swap", fake_rebuild, raising=False)
+    clients = p._require_clients(WorkerRole.CHAT)
+    assert rebuilt["called"] is True
+    assert len(clients) == 1
+
+
+def test_require_clients_no_reprobe_when_swap_none(monkeypatch) -> None:
+    """Empty pool + no swap at all (unconfigured role) still raises, no rebuild."""
+    from lilbee.providers.base import ProviderError
+
+    rebuilt = {"called": False}
+
+    def fake_rebuild() -> None:
+        rebuilt["called"] = True
+
+    p = FleetProvider()
+    p._swap = None
+    p._clients = {}
+    monkeypatch.setattr(p, "_rebuild_swap", fake_rebuild, raising=False)
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        p._require_clients(WorkerRole.CHAT)
+    assert rebuilt["called"] is False
+
+
+def test_require_clients_no_reprobe_when_swap_live(monkeypatch) -> None:
+    """Empty pool + live swap (real misconfiguration) still raises, no rebuild."""
+    from unittest import mock
+
+    from lilbee.providers.base import ProviderError
+
+    rebuilt = {"called": False}
+
+    def fake_rebuild() -> None:
+        rebuilt["called"] = True
+
+    p = FleetProvider()
+    live = mock.Mock()
+    live.is_live.return_value = True
+    p._swap = live
+    p._clients = {}
+    monkeypatch.setattr(p, "_rebuild_swap", fake_rebuild, raising=False)
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        p._require_clients(WorkerRole.CHAT)
+    assert rebuilt["called"] is False

@@ -482,10 +482,19 @@ class FleetProvider:
         means the role is unconfigured or did not fit memory. llama-swap loads each
         upstream on its first request, so a returned client may still be cold. No
         in-process fallback, so a missing pool is a hard error.
+
+        When the pool is empty but a swap was previously built and its process has
+        since exited (detected via ``is_live()``), a one-shot rebuild is attempted
+        before raising so a transient llama-swap restart recovers transparently.
         """
         self._ensure_swap()
         with self._lock:
             clients = self._clients.get(role)
+            swap = self._swap
+        if not clients and swap is not None and not swap.is_live():
+            self._rebuild_swap()
+            with self._lock:
+                clients = self._clients.get(role)
         if not clients:
             raise ProviderError(
                 f"No {role.value} model server is running. Make sure a {role.value} "
@@ -493,6 +502,11 @@ class FleetProvider:
                 provider=_PROVIDER_NAME,
             )
         return list(clients)
+
+    def _rebuild_swap(self) -> None:
+        """Drop a dead swap and build a fresh one (new port, re-adopt clients)."""
+        self._drop_swap_refs()
+        self._ensure_swap()
 
     def release_ingest_pool(self) -> None:
         """Unload the elastic ingest replicas (embed/vision replica>=1), freeing VRAM.
