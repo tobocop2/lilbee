@@ -341,11 +341,14 @@ class Config(BaseSettings):
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
 
     # Data-parallel replicas of the embed / vision role across GPUs: N independent
-    # servers (one per spare GPU), round-robined, so large-scale ingest fans the
-    # embedding / OCR work across the whole box. 1 = a single server (the default).
-    # Capped at runtime by the GPUs with room after the chat model is placed.
-    embed_replicas: int = ConfigField(default=1, ge=1, writable=True)
-    vision_replicas: int = ConfigField(default=1, ge=1, writable=True)
+    # servers, round-robined, so large-scale ingest fans the embedding / OCR work
+    # across the whole box. 0 means "auto": one replica per detected GPU, capped by
+    # the VRAM left after the persistent query fleet (chat, one embed, rerank, one
+    # vision) is reserved. A positive value pins the count. The extra replicas are
+    # ingest-only and reclaimed when ingest ends; the persistent query embedder /
+    # vision (replica 0) always exists if its model fits.
+    embed_replicas: int = ConfigField(default=0, ge=0, writable=True)
+    vision_replicas: int = ConfigField(default=0, ge=0, writable=True)
 
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)

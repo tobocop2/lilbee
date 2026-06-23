@@ -349,15 +349,16 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
 
 
-def _replica_count(role: WorkerRole) -> int:
+def _replica_count(role: WorkerRole, device_count: int) -> int:
     """Requested data-parallel instances for *role*: embed/vision honor their
-    ``*_replicas`` knob (capped by available GPUs at placement); others run one."""
+    ``*_replicas`` knob (0 = auto = one per GPU); others run one. The auto count
+    falls to one GPU-less. Capping to residual VRAM happens in placement."""
     from lilbee.core.config import cfg
 
     if role is WorkerRole.EMBED:
-        return max(1, cfg.embed_replicas)
+        return cfg.embed_replicas or max(1, device_count)
     if role is WorkerRole.VISION:
-        return max(1, cfg.vision_replicas)
+        return cfg.vision_replicas or max(1, device_count)
     return 1
 
 
@@ -390,12 +391,14 @@ def _estimate_role(
     slots: int | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
+    device_count: int = 0,
 ) -> ModelPlacementInput:
     """Estimate one role-model's footprint via gguf-parser (+ mmproj for vision).
 
     ``slots`` defaults to the role's resolved batching slots (chat and vision are
     memory-aware); ``chat_reservation`` shrinks chat to leave room for the search
-    roles. Charges the unified footprint with no discrete GPU, else the VRAM one.
+    roles; ``device_count`` resolves an auto (0) replica knob to one per GPU.
+    Charges the unified footprint with no discrete GPU, else the VRAM one.
     """
     from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -428,7 +431,7 @@ def _estimate_role(
     return ModelPlacementInput(
         role=role,
         est_vram_bytes=est.footprint(unified=unified_budget is not None),
-        replicas=_replica_count(role),
+        replicas=_replica_count(role, device_count),
     )
 
 
@@ -504,14 +507,16 @@ def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
     unified_budget: int | None = None,
+    device_count: int = 0,
 ) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int]:
     """Build placement inputs for the configured server roles.
 
     The search and vision roles are estimated first; chat is then sized against the
     budget minus the search footprint (the ``reservation``) so a large chat cannot
-    starve embed/rerank on a shared-memory host. When *roles* is given, only those
-    are considered. Skips an unconfigured optional role, a vision model with no
-    resolvable mmproj projector, and a role whose model is not installed on disk.
+    starve embed/rerank on a shared-memory host. ``device_count`` resolves an auto
+    replica knob to one per GPU. When *roles* is given, only those are considered.
+    Skips an unconfigured optional role, a vision model with no resolvable mmproj
+    projector, and a role whose model is not installed on disk.
     """
     from lilbee.core.config import cfg
     from lilbee.providers.base import ProviderError
@@ -529,7 +534,11 @@ def _server_model_inputs(
             return  # no projector -> vision can't run on a server
         try:
             estimate = _estimate_role(
-                role, ref, unified_budget=unified_budget, chat_reservation=chat_reservation
+                role,
+                ref,
+                unified_budget=unified_budget,
+                chat_reservation=chat_reservation,
+                device_count=device_count,
             )
         except (ProviderError, OSError):
             # The configured model is not installed/resolvable. Skip this role
@@ -700,7 +709,9 @@ def plan_launches(
 ) -> list[InstanceLaunch]:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, reservation = _server_model_inputs(roles, unified_budget=unified_budget)
+    inputs, model_refs, reservation = _server_model_inputs(
+        roles, unified_budget=unified_budget, device_count=len(devices)
+    )
     placement = plan_placement(
         inputs,
         [(d.index, d.free_bytes) for d in devices],

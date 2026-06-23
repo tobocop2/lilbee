@@ -364,7 +364,7 @@ def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypa
     seen: dict[str, int] = {}
     sizes = {WorkerRole.EMBED: 2 * _GB, WorkerRole.RERANK: 3 * _GB}
 
-    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0):
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0):
         if role is WorkerRole.CHAT:
             seen["chat_reservation"] = chat_reservation
         return ModelPlacementInput(role, sizes.get(role, 10 * _GB))
@@ -384,7 +384,7 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
     monkeypatch.setattr(cfg, "vision_model", "")
     seen: dict[str, int] = {}
 
-    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0):
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0):
         if role is WorkerRole.CHAT:
             seen["chat_reservation"] = chat_reservation
         return ModelPlacementInput(role, 2 * _GB)
@@ -398,10 +398,26 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
 def test_replica_count_reads_per_role_knobs(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "embed_replicas", 3)
     monkeypatch.setattr(cfg, "vision_replicas", 2)
-    assert planning_mod._replica_count(WorkerRole.EMBED) == 3
-    assert planning_mod._replica_count(WorkerRole.VISION) == 2
-    assert planning_mod._replica_count(WorkerRole.CHAT) == 1  # chat never replicates
-    assert planning_mod._replica_count(WorkerRole.RERANK) == 1  # rerank never replicates
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=4) == 3
+    assert planning_mod._replica_count(WorkerRole.VISION, device_count=4) == 2
+    assert (
+        planning_mod._replica_count(WorkerRole.CHAT, device_count=4) == 1
+    )  # chat never replicates
+    assert planning_mod._replica_count(WorkerRole.RERANK, device_count=4) == 1  # rerank never
+
+
+def test_replica_count_auto_uses_device_count(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "embed_replicas", 0)  # 0 = auto = one per GPU
+    monkeypatch.setattr(cfg, "vision_replicas", 0)
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=4) == 4
+    assert planning_mod._replica_count(WorkerRole.VISION, device_count=3) == 3
+    # An explicit positive knob wins over the auto device count.
+    monkeypatch.setattr(cfg, "embed_replicas", 2)
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=4) == 2
+    # Auto on a GPU-less host still resolves to at least one instance.
+    monkeypatch.setattr(cfg, "embed_replicas", 0)
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=0) == 1
+    assert planning_mod._replica_count(WorkerRole.CHAT, device_count=4) == 1
 
 
 def test_estimate_role_carries_replica_count(monkeypatch, tmp_path) -> None:
@@ -412,8 +428,20 @@ def test_estimate_role_carries_replica_count(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
     monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
-    inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
-    assert inp.replicas == 4
+    inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, device_count=2)
+    assert inp.replicas == 4  # explicit knob wins over the device count
+
+
+def test_estimate_role_auto_replicas_follow_device_count(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cfg, "embed_replicas", 0)  # 0 = auto = one per GPU
+    model = tmp_path / "e.gguf"
+    model.write_bytes(b"x" * 1000)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
+    inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, device_count=3)
+    assert inp.replicas == 3
 
 
 def test_search_reservation_scales_with_replicas() -> None:

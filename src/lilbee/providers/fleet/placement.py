@@ -101,27 +101,36 @@ def plan_placement(
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
 
-    # Single-instance roles first; then data-parallel replicas fill the remaining
-    # headroom. Within the singles, place the search-critical roles (embed/rerank)
-    # before chat: chat tensor-splits across cards and, placed first, can claim
-    # them all and leave an essential search role unplaceable. Search-first here
-    # mirrors the shared-memory path's reservation.
+    # Reserve the persistent query fleet first, then fill residual VRAM with the
+    # elastic ingest pool. The persistent singles are: every replicas<=1 role plus
+    # replica 0 of each replicated role (the query embedder / vision that a search
+    # issued during ingest must always reach). Within the singles, place the
+    # search-critical roles (embed/rerank) before chat: chat tensor-splits across
+    # cards and, placed first, can claim them all and leave an essential search role
+    # unplaceable. Search-first here mirrors the shared-memory path's reservation.
+    # The extra replicas (1..N-1) are placed only into what VRAM remains, so a chat
+    # issued during ingest always fits and the query embedder always exists.
     singles = [m for m in models if m.replicas <= 1]
     replicated = [m for m in models if m.replicas > 1]
-    for model in sorted(singles, key=_shared_pool_order):
+    persistent_singles = singles + [_persistent_single(m) for m in replicated]
+    for model in sorted(persistent_singles, key=_shared_pool_order):
         plan = _place_single(model, remaining, estimate_peak)
         if plan is None:
             unplaceable.append(model.role)
         else:
             instances.append(plan)
+    placed_roles = {plan.role for plan in instances}
     for model in replicated:
-        replica_plans = _place_replicas(model, remaining)
-        if replica_plans:
-            instances.extend(replica_plans)
-        else:
-            unplaceable.append(model.role)
+        if model.role not in placed_roles:
+            continue  # the persistent single did not fit -> already unplaceable
+        instances.extend(_place_replicas(model, remaining, start=1))
 
     return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+
+
+def _persistent_single(model: ModelPlacementInput) -> ModelPlacementInput:
+    """The replica-0 persistent instance of a replicated role, sized as one server."""
+    return ModelPlacementInput(role=model.role, est_vram_bytes=model.est_vram_bytes, replicas=1)
 
 
 def _place_single(
@@ -161,16 +170,20 @@ def _place_split(
     return None
 
 
-def _place_replicas(model: ModelPlacementInput, remaining: dict[int, float]) -> list[InstancePlan]:
-    """Place up to ``model.replicas`` instances, one per distinct GPU (most-free first).
+def _place_replicas(
+    model: ModelPlacementInput, remaining: dict[int, float], *, start: int = 0
+) -> list[InstancePlan]:
+    """Place the elastic replicas ``start..model.replicas-1``, one per distinct GPU
+    (most-free first).
 
     Spreads for throughput: each replica lands on a card not yet hosting one of this
     role's replicas, only co-locating a second round once every card has one. Stops
-    early when no card has room, so the pool shrinks to what fits.
+    early when no card has room, so the pool shrinks to the residual VRAM. ``start``
+    skips the indices already placed as persistent singles (1 for the elastic batch).
     """
     plans: list[InstancePlan] = []
     used: set[int] = set()
-    for replica in range(model.replicas):
+    for replica in range(start, model.replicas):
         candidates = [idx for idx, free in remaining.items() if free >= model.est_vram_bytes]
         if not candidates:
             break
