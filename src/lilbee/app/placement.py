@@ -69,7 +69,8 @@ def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -
     for plan in resolved.instances:
         existing = by_role.get(plan.role)
         if existing is not None:
-            by_role[plan.role] = replace(existing, replicas=existing.replicas + 1)
+            devices = tuple(sorted(set(existing.devices) | set(plan.devices)))
+            by_role[plan.role] = replace(existing, devices=devices, replicas=existing.replicas + 1)
         else:
             by_role[plan.role] = RolePlacementView(
                 role=plan.role,

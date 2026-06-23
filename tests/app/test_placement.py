@@ -115,7 +115,7 @@ def test_set_validates_before_persist(monkeypatch):
     assert wrote["any"] is False
 
 
-def test_view_multi_replica_keeps_first_devices():
+def test_view_multi_replica_unions_devices():
     resolved = ResolvedPlacement(
         devices=(
             FleetDevice("CUDA", 0, "NVIDIA A100", 80 * GIB, 72 * GIB),
@@ -133,4 +133,4 @@ def test_view_multi_replica_keeps_first_devices():
     assert len(embed_views) == 1
     role_view = embed_views[0]
     assert role_view.replicas == 2
-    assert role_view.devices == (0,)
+    assert role_view.devices == (0, 1)
