@@ -823,6 +823,9 @@ def test_pdf_ocr_spends_one_document_budget_across_pages(monkeypatch) -> None:
     p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
     monkeypatch.setattr(cfg, "vision_model", "")
     monkeypatch.setattr(cfg, "vision_load_budget_s", 300.0)
+    # Pin the device-count probe so _checkout() does not run a real subprocess
+    # and spend ~4s that would bleed into the budget timing assertion.
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
     monkeypatch.setattr(
         "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
@@ -2124,3 +2127,16 @@ def test_require_clients_no_reprobe_when_swap_live(monkeypatch) -> None:
     with pytest.raises(ProviderError, match="No chat model server is running"):
         p._require_clients(WorkerRole.CHAT)
     assert rebuilt["called"] is False
+
+
+def test_rebuild_swap_calls_drop_then_ensure(monkeypatch) -> None:
+    """_rebuild_swap calls _drop_swap_refs then _ensure_swap, in that order."""
+    p = FleetProvider()
+    order: list[str] = []
+
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda: order.append("drop"), raising=False)
+    monkeypatch.setattr(p, "_ensure_swap", lambda: order.append("ensure"), raising=False)
+
+    p._rebuild_swap()
+
+    assert order == ["drop", "ensure"]
