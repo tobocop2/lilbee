@@ -72,7 +72,7 @@ _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
 _RUNNING_PATH = "/running"
 _UNLOAD_PATH = "/api/models/unload"
-_UNLOAD_TIMEOUT_S = 10.0
+_HTTP_TIMEOUT_S = 10.0
 _HTTP_ERROR_THRESHOLD = 400
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
@@ -263,7 +263,7 @@ class SwapManager:
             resp = httpx.post(
                 f"{self.endpoint()}{_UNLOAD_PATH}",
                 json={"model": model_id},
-                timeout=_UNLOAD_TIMEOUT_S,
+                timeout=_HTTP_TIMEOUT_S,
             )
         except (OSError, httpx.HTTPError):
             return False
@@ -273,8 +273,10 @@ class SwapManager:
         """Whether the swap process is up and its proxy answers ``/running``."""
         if self._proc is None or self._proc.poll() is not None:
             return False
+        if self._port is None:
+            return False
         try:
-            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_UNLOAD_TIMEOUT_S)
+            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
         except (OSError, httpx.HTTPError):
             return False
         return resp.status_code < _HTTP_ERROR_THRESHOLD
