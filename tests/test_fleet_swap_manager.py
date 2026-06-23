@@ -389,6 +389,30 @@ class TestProcessTeardown:
         result = sm._swaps_for_config(Path("/data/llama-swap.json"))
         assert [p.pid for p in result] == [10]
 
+    def test_live_sibling_swap_pids_protects_only_live_other_owner(self, tmp_path: Path) -> None:
+        # Only a swap recorded by a LIVE OTHER owner is protected: our own record
+        # is excluded (we reap our own), and a dead owner's record is not spared.
+        def _write(owner_pid: int, owner_created_at: float, swap_pid: int) -> None:
+            (tmp_path / sm._state_filename(owner_pid)).write_text(
+                json.dumps(
+                    {
+                        "pid": swap_pid,
+                        "pgid": swap_pid,
+                        "owner_pid": owner_pid,
+                        "owner_created_at": owner_created_at,
+                        "created_at": None,
+                        "member_ports": [],
+                    }
+                )
+            )
+
+        other_pid = os.getppid()  # a real live process that is not us
+        other_created = sm.psutil.Process(other_pid).create_time()
+        _write(os.getpid(), sm.psutil.Process().create_time(), 111)  # ours -> excluded
+        _write(other_pid, other_created, 222)  # live other -> protected
+        _write(999_999, 1.0, 333)  # dead owner -> not protected
+        assert sm._live_sibling_swap_pids(tmp_path) == {222}
+
     def test_reap_survivors_kills_after_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stubborn = _FakeChild(running=True)
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], [stubborn]))
