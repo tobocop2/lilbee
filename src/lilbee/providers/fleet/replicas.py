@@ -38,7 +38,7 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
 
 @functools.cache
 def gpu_device_count() -> int:
-    """Effective GPU count lilbee will use, cached so per-OCR checkouts don't re-probe.
+    """Effective GPU count lilbee will use; fixed for the process lifetime (cached).
 
     Resolved the same way planning does (binary ``--list-devices`` view), and
     floored at one so auto means "one replica" on a GPU-less host.

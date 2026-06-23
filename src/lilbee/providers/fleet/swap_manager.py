@@ -73,7 +73,6 @@ _HEALTH_PATH = "/health"
 _RUNNING_PATH = "/running"
 _UNLOAD_PATH = "/api/models/unload"
 _HTTP_TIMEOUT_S = 10.0
-_HTTP_ERROR_THRESHOLD = 400
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
@@ -267,7 +266,7 @@ class SwapManager:
             )
         except (OSError, httpx.HTTPError):
             return False
-        return resp.status_code < _HTTP_ERROR_THRESHOLD
+        return resp.status_code < httpx.codes.BAD_REQUEST
 
     def is_live(self) -> bool:
         """Whether the swap process is up and its proxy answers ``/running``."""
@@ -279,7 +278,7 @@ class SwapManager:
             resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
         except (OSError, httpx.HTTPError):
             return False
-        return resp.status_code < _HTTP_ERROR_THRESHOLD
+        return resp.status_code < httpx.codes.BAD_REQUEST
 
     def reload(self, launches: list[InstanceLaunch]) -> None:
         """Apply a changed model set by restarting llama-swap with a fresh config."""
