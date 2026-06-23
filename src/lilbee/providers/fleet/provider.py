@@ -26,7 +26,11 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
-from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
+from lilbee.providers.fleet.replicas import (
+    REPLICATED_ROLES,
+    gpu_device_count,
+    resolve_replica_count,
+)
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.fleet.windowing import window_messages
@@ -51,8 +55,6 @@ if TYPE_CHECKING:
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
-# Roles that can have replica >= 1 elastic instances (embed / vision data-parallel pools).
-_ELASTIC_ROLES = (WorkerRole.EMBED, WorkerRole.VISION)
 # Tokens held back from the served context for the model's own generation when the
 # request does not cap it, plus a margin for chat-template overhead and estimate drift.
 _DEFAULT_GENERATION_RESERVE = 1024
@@ -450,7 +452,7 @@ class FleetProvider:
         self._elastic_members = [
             launch.model_id
             for launch in launches
-            if launch.role in _ELASTIC_ROLES and launch.replica >= 1
+            if launch.role in REPLICATED_ROLES and launch.replica >= 1
         ]
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
@@ -504,7 +506,7 @@ class FleetProvider:
         return list(clients)
 
     def _rebuild_swap(self) -> None:
-        """Drop a dead swap and build a fresh one (new port, re-adopt clients)."""
+        """Drop a dead swap and build a fresh one (new port); ``_ensure_swap`` adopts clients."""
         self._drop_swap_refs()
         self._ensure_swap()
 
