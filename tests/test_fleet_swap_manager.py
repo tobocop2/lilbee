@@ -56,7 +56,7 @@ def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
     monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
     monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: proc)
     # Isolate lifecycle tests from the real process-tree teardown.
-    monkeypatch.setattr(sm, "_stop_process_tree", lambda p: None)
+    monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
 
 
 def _patch_http(monkeypatch: pytest.MonkeyPatch, responder) -> None:
@@ -106,7 +106,7 @@ class TestStart:
 
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
         monkeypatch.setattr(sm.subprocess, "Popen", _capturing_popen)
-        monkeypatch.setattr(sm, "_stop_process_tree", lambda p: None)
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
         mgr = SwapManager(tmp_path)
@@ -208,17 +208,29 @@ class TestLifecycle:
     def test_shutdown_is_noop_when_not_started(self, tmp_path: Path) -> None:
         SwapManager(tmp_path).shutdown()  # must not raise
 
+    def test_shutdown_reaps_owned_fleet_even_without_a_tracked_proc(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """bb-dpp: a duplicate llama-swap this lilbee leaked is never recorded in
+        ``_proc``, so shutdown must reap by config-path identity regardless.
+        Teardown runs even when no swap is tracked."""
+        reaped: list[Path] = []
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: reaped.append(cfg))
+        mgr = SwapManager(tmp_path)
+        mgr.shutdown()  # never started -> _proc is None
+        assert reaped == [mgr._config_path]  # the config-path reaper still ran
+
     def test_shutdown_terminates_and_clears(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         terminated: list[object] = []
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        monkeypatch.setattr(sm, "_stop_process_tree", lambda p: terminated.append(p))
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: terminated.append(cfg))
         mgr = SwapManager(tmp_path)
         mgr.start([_launch(WorkerRole.CHAT)])
         mgr.shutdown()
-        assert terminated  # the process tree was torn down
+        assert terminated  # the owned fleet was torn down
         with pytest.raises(ProviderError):
             mgr.endpoint()  # port cleared after shutdown
 
@@ -262,16 +274,16 @@ class TestProcessTeardown:
         assert len(set(ports)) == 3
         assert all(1024 < port <= 65535 for port in ports)
 
-    def test_terminate_group_posix_sigterm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_terminate_proc_group_posix_sigterm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sm.os, "getpgid", lambda _pid: 99, raising=False)
         signals: list[int] = []
         monkeypatch.setattr(
             sm.os, "killpg", lambda _pgid, signum: signals.append(signum), raising=False
         )
-        sm._terminate_group(_FakeProc(poll_result=None))
+        sm._terminate_proc_group(_FakeProc(poll_result=None))
         assert signals == [sm.signal.SIGTERM]
 
-    def test_terminate_group_escalates_to_sigkill_on_timeout(
+    def test_terminate_proc_group_escalates_to_sigkill_on_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sm.os, "getpgid", lambda _pid: 99, raising=False)
@@ -279,43 +291,127 @@ class TestProcessTeardown:
         monkeypatch.setattr(
             sm.os, "killpg", lambda _pgid, signum: signals.append(signum), raising=False
         )
+        monkeypatch.setattr(sm, "_await_killed", lambda procs: None)
 
         class _Stuck(_FakeProc):
             def wait(self, timeout: float | None = None) -> int:
-                raise subprocess.TimeoutExpired("llama-swap", timeout or 0)
+                raise sm.psutil.TimeoutExpired(timeout or 0)
 
-        sm._terminate_group(_Stuck(poll_result=None))
+        sm._terminate_proc_group(_Stuck(poll_result=None))
         assert signals == [sm.signal.SIGTERM, sm._SIGKILL]
 
-    def test_stop_process_tree_windows_hard_stops(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sm.sys, "platform", "win32")
-        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+    _CFG = Path("/data/llama-swap.json")
+
+    def test_stop_own_fleet_windows_hard_stops_each_swap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         proc = _FakeProc(poll_result=None)
-        sm._stop_process_tree(proc)
+        monkeypatch.setattr(sm.sys, "platform", "win32")
+        monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [proc])
+        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: set())
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [])
+        monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
+        sm._stop_own_fleet(self._CFG, ())
         assert proc.terminated is True
 
-    def test_stop_process_tree_posix_terminates_group(
+    def test_stop_own_fleet_posix_terminates_each_owned_swap(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        proc = _FakeProc(poll_result=None)
         monkeypatch.setattr(sm.sys, "platform", "linux")
+        monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [proc])
+        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: set())
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [])
         groups: list[object] = []
-        monkeypatch.setattr(sm, "_terminate_group", lambda p: groups.append(p))
-        sm._stop_process_tree(_FakeProc(poll_result=None))
-        assert groups
+        monkeypatch.setattr(sm, "_terminate_proc_group", lambda p: groups.append(p))
+        monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
+        sm._stop_own_fleet(self._CFG, ())
+        assert groups == [proc]
 
-    def test_stop_process_tree_reaps_surviving_children(
+    def test_stop_own_fleet_spares_live_sibling_swap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A swap a live OTHER owner recorded (a concurrent sibling lilbee at the
+        # same data_dir) must never be reaped, even though it shares the config.
+        ours = _FakeProc(poll_result=None)
+        ours.pid = 100
+        sibling = _FakeProc(poll_result=None)
+        sibling.pid = 200
+        terminated: list[int] = []
+        monkeypatch.setattr(sm.sys, "platform", "linux")
+        monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [ours, sibling])
+        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: {200})
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [])
+        monkeypatch.setattr(sm, "_terminate_proc_group", lambda p: terminated.append(p.pid))
+        monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
+        sm._stop_own_fleet(self._CFG, ())
+        assert terminated == [100]  # ours reaped, the sibling's swap spared
+
+    def test_stop_own_fleet_reaps_children_and_port_servers(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # llama-swap puts each server in its own process group, so the group
-        # kill misses them; a survivor must be swept or it keeps its port.
-        survivor = _FakeChild(running=True)
+        # llama-swap puts each server in its own process group, so terminating
+        # the swap misses them; both a captured descendant and a member-port
+        # server the snapshot missed (a respawned upstream) must be swept.
+        child = _FakeChild(running=True)
+        port_server = _FakeChild(running=True)
+        reaped: list[object] = []
         monkeypatch.setattr(sm.sys, "platform", "linux")
-        monkeypatch.setattr(sm, "_live_children", lambda _pid: [survivor])
-        monkeypatch.setattr(sm, "_terminate_group", lambda p: None)
-        monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
-        sm._stop_process_tree(_FakeProc(poll_result=None))
-        assert survivor.terminated is True
+        monkeypatch.setattr(sm, "_swaps_for_config", lambda _cfg: [_FakeProc(poll_result=None)])
+        monkeypatch.setattr(sm, "_live_sibling_swap_pids", lambda _dir: set())
+        monkeypatch.setattr(sm, "_live_children", lambda _pid: [child])
+        monkeypatch.setattr(sm, "_find_orphan_servers", lambda ports: [port_server])
+        monkeypatch.setattr(sm, "_terminate_proc_group", lambda p: None)
+        monkeypatch.setattr(sm, "_reap_survivors", lambda procs: reaped.extend(procs))
+        sm._stop_own_fleet(self._CFG, (1234,))
+        assert child in reaped
+        assert port_server in reaped
+
+    def test_swaps_for_config_matches_only_our_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Identity is the -config path argument: a llama-swap on a different
+        # config (another data_dir) and a non-swap process are both excluded.
+        class _Proc:
+            def __init__(self, pid: int, argv: list[str]) -> None:
+                self.pid = pid
+                self._argv = argv
+
+            def cmdline(self) -> list[str]:
+                return self._argv
+
+        swap_bin = "/x/bin/llama-swap"
+        ours = _Proc(10, [swap_bin, "-config", "/data/llama-swap.json", "-listen", "x"])
+        other = _Proc(11, [swap_bin, "-config", "/other/llama-swap.json"])
+        notswap = _Proc(12, ["/x/bin/python", "-config", "/data/llama-swap.json"])
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda: [ours, other, notswap])
+        result = sm._swaps_for_config(Path("/data/llama-swap.json"))
+        assert [p.pid for p in result] == [10]
+
+    def test_live_sibling_swap_pids_protects_only_live_other_owner(self, tmp_path: Path) -> None:
+        # Only a swap recorded by a LIVE OTHER owner is protected: our own record
+        # is excluded (we reap our own), and a dead owner's record is not spared.
+        def _write(owner_pid: int, owner_created_at: float, swap_pid: int) -> None:
+            (tmp_path / sm._state_filename(owner_pid)).write_text(
+                json.dumps(
+                    {
+                        "pid": swap_pid,
+                        "pgid": swap_pid,
+                        "owner_pid": owner_pid,
+                        "owner_created_at": owner_created_at,
+                        "created_at": None,
+                        "member_ports": [],
+                    }
+                )
+            )
+
+        other_pid = os.getppid()  # a real live process that is not us
+        other_created = sm.psutil.Process(other_pid).create_time()
+        _write(os.getpid(), sm.psutil.Process().create_time(), 111)  # ours -> excluded
+        _write(other_pid, other_created, 222)  # live other -> protected
+        _write(999_999, 1.0, 333)  # dead owner -> not protected
+        assert sm._live_sibling_swap_pids(tmp_path) == {222}
 
     def test_reap_survivors_kills_after_grace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         stubborn = _FakeChild(running=True)
@@ -375,13 +471,13 @@ class TestProcessTeardown:
             proc.kill()
             proc.wait()
 
-    def test_hard_stop_kills_on_timeout(self) -> None:
+    def test_hard_stop_proc_kills_on_timeout(self) -> None:
         class _Stuck(_FakeProc):
             def wait(self, timeout: float | None = None) -> int:
-                raise subprocess.TimeoutExpired("llama-swap", timeout or 0)
+                raise sm.psutil.TimeoutExpired(timeout or 0)
 
         proc = _Stuck(poll_result=None)
-        sm._hard_stop(proc)
+        sm._hard_stop_proc(proc)
         assert proc.killed is True
 
 
