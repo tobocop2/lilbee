@@ -90,7 +90,7 @@ def _max_concurrent() -> int:
     if cfg.vision_model:
         replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
         return max(1, replicas * cfg.vision_ocr_concurrency)
-    embed_slots = cfg.embed_replicas if cfg.embed_replicas > 1 else 0
+    embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
     return max(cpu_quota(), embed_slots)
 
 
