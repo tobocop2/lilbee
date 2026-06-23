@@ -375,6 +375,7 @@ def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 3)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     with prov_mod._VISION_GATE.slot():
@@ -395,6 +396,7 @@ def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 1)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
@@ -438,6 +440,7 @@ def test_vision_gate_slot_decrements_in_flight_when_acquire_raises(monkeypatch) 
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 1)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
@@ -470,6 +473,7 @@ def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 1)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
