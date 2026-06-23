@@ -434,6 +434,19 @@ def _stop_own_fleet(member_ports: tuple[int, ...]) -> None:
     descendant snapshot missed) -- is reaped and confirmed gone.
     """
     swaps = _own_llama_swaps()
+    with _OWN_SWAP_PIDS_LOCK:
+        _dbg_registry = sorted(_OWN_SWAP_PIDS)
+    _dbg_all = subprocess.run(
+        ["pgrep", "-af", "llama-swap"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    log.warning(
+        "DBG _stop_own_fleet: pid=%s registry=%s own_swaps=%s member_ports=%s all_llama_swap=%r",
+        os.getpid(),
+        _dbg_registry,
+        [s.pid for s in swaps],
+        member_ports,
+        _dbg_all,
+    )
     children: list[psutil.Process] = []
     for swap in swaps:
         children.extend(_live_children(swap.pid))
@@ -446,6 +459,10 @@ def _stop_own_fleet(member_ports: tuple[int, ...]) -> None:
     if swaps:
         with _OWN_SWAP_PIDS_LOCK:
             _OWN_SWAP_PIDS.difference_update(swap.pid for swap in swaps)
+    _dbg_after = subprocess.run(
+        ["pgrep", "-af", "llama-swap"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    log.warning("DBG _stop_own_fleet done: surviving_llama_swap=%r", _dbg_after)
 
 
 def _terminate_proc_group(proc: psutil.Process) -> None:
