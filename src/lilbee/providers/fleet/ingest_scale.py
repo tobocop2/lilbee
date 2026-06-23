@@ -8,27 +8,37 @@ from collections.abc import Iterator
 
 from lilbee.providers.base import LLMProvider
 
-_lock = threading.Lock()
-_active = 0
+
+class _IngestScaleCounter:
+    """Refcounts active ingests; releases the elastic pool when the last one ends."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = 0
+
+    @contextlib.contextmanager
+    def scope(self) -> Iterator[None]:
+        with self._lock:
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active -= 1
+                last = self._active == 0
+            if last:
+                _provider().release_ingest_pool()
+
+
+_counter = _IngestScaleCounter()
 
 
 def _provider() -> LLMProvider:  # late-bound so tests can patch it and to avoid an import cycle
-    from lilbee.app.services import get_services
+    from lilbee.app.services import get_services  # pragma: no cover - patched in tests
 
-    return get_services().provider
+    return get_services().provider  # pragma: no cover - patched in tests
 
 
-@contextlib.contextmanager
-def ingest_scale() -> Iterator[None]:
-    """Bracket an ingest run; release the elastic pool when the last active one exits."""
-    global _active
-    with _lock:
-        _active += 1
-    try:
-        yield
-    finally:
-        with _lock:
-            _active -= 1
-            last = _active == 0
-        if last:
-            _provider().release_ingest_pool()
+def ingest_scale() -> contextlib.AbstractContextManager[None]:
+    """Bracket an ingest; release the elastic pool when the last active one exits."""
+    return _counter.scope()
