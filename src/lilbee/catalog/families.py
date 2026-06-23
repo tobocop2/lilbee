@@ -77,8 +77,9 @@ def _build_families(models: tuple[CatalogModel, ...], task: ModelTask) -> list[M
 def get_families() -> list[ModelFamily]:
     """Get all featured models grouped into families.
     Returns families ordered: chat, then embedding, then vision, then reranker.
-    Within each family, variants are ordered smallest to largest, with
-    the largest marked as recommended (for multi-variant families).
+    Within each family, variants preserve the order they appear in the featured
+    lists. The recommended flag on each variant comes from the catalog entry's
+    own ``recommended`` value, not from size.
     """
     return (
         _build_families(FEATURED_CHAT, ModelTask.CHAT)

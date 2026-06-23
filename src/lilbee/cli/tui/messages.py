@@ -59,9 +59,7 @@ SYNC_SKIPPED_NO_VISION = (
     "Configure a vision_model in Settings to OCR scanned PDFs."
 )
 SYNC_SKIPPED_VISION_FAILED = (
-    "Skipped (vision OCR returned no text): {files}. "
-    "See ~/Library/Application Support/lilbee/logs/worker-vision.log "
-    "for the underlying error."
+    "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )
 CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
 CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
@@ -76,7 +74,8 @@ def sync_skipped_message(files: str) -> str:
     do something they have already done.
     """
     if cfg.vision_model:
-        return SYNC_SKIPPED_VISION_FAILED.format(files=files)
+        log_path = cfg.data_root / "logs" / "server.log"
+        return SYNC_SKIPPED_VISION_FAILED.format(files=files, log_path=log_path)
     return SYNC_SKIPPED_NO_VISION.format(files=files)
 
 

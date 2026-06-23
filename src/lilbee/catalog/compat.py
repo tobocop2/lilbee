@@ -30,7 +30,13 @@ def classify(architecture: str) -> ModelCompat:
 
 
 def resolve_arch_for_pull(ref: str, hf_client: HfClient) -> str:
-    """Resolve general.architecture for *ref*: cache hit > Range-GET probe > empty (UNKNOWN)."""
+    """Resolve general.architecture for *ref*: cache hit > Range-GET probe > empty (UNKNOWN).
+
+    ``probe_architecture`` returns ``""`` on any failure (network, non-200, parse),
+    so an empty result means "undetermined", never a real verdict. Only a non-empty
+    arch is cached; otherwise a transient probe failure would be cached permanently
+    and disable the unsupported-arch guard for this ref on every later pull.
+    """
     cached = hf_client.get_cached_arch(ref)
     if cached is not None:
         return cached
@@ -38,7 +44,8 @@ def resolve_arch_for_pull(ref: str, hf_client: HfClient) -> str:
     if not url:
         return ""
     arch = probe_architecture(url)
-    hf_client.cache_arch(ref, arch)
+    if arch:
+        hf_client.cache_arch(ref, arch)
     return arch
 
 

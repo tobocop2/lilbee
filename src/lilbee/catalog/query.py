@@ -1,6 +1,7 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
 import functools
+import logging
 from typing import Any, NamedTuple
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
@@ -10,6 +11,8 @@ from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import GGUF_GLOB, format_native_gguf_ref, hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+
+log = logging.getLogger(__name__)
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -134,10 +137,16 @@ def pipeline_to_task(pipeline_tag: str) -> ModelTask:
 
 
 def _get_installed_models(model_manager: Any) -> set[str]:
-    """Get set of installed model names from model_manager."""
+    """Get set of installed model names from model_manager.
+
+    Treats a manager failure as "nothing installed" so the browse list still
+    renders, but logs it: silently swallowing would hide a broken registry that
+    makes every model look uninstalled.
+    """
     try:
         return set(model_manager.list_installed())
     except Exception:
+        log.warning("Could not read installed models; treating as none installed", exc_info=True)
         return set()
 
 
@@ -300,14 +309,21 @@ def reclassify_by_name(ref: str, declared_task: str) -> str:
     loaders, or embedders. Embedders on a chat decoder arch (e.g.
     ``Qwen3-Embedding-*``, a qwen3 backbone + pooling head) classify as chat by
     architecture, so the name is the only signal short of probing the GGUF
-    pooling type. Reranker is checked before embedding so ``bge-reranker`` (which
-    also matches the ``bge-`` embedder pattern) stays a reranker.
+    pooling type.
+
+    Check order (rerank, embedding, vision) matches
+    :func:`lilbee.modelhub.model_manager.discovery._classify_remote_task` so the
+    manifest and remote-discovery paths never disagree. Reranker is checked first
+    so ``bge-reranker`` (which also matches the ``bge-`` embedder pattern) stays a
+    reranker; embedding is checked before vision so an image embedder like
+    ``nomic-embed-vision`` (matching both ``embed`` and ``vision``) stays an
+    embedder.
     """
     name_lower = ref.lower()
     if any(rp in name_lower for rp in RERANKER_NAME_PATTERNS):
         return ModelTask.RERANK
-    if any(vp in name_lower for vp in VISION_NAME_PATTERNS):
-        return ModelTask.VISION
     if any(ep in name_lower for ep in EMBEDDING_NAME_PATTERNS):
         return ModelTask.EMBEDDING
+    if any(vp in name_lower for vp in VISION_NAME_PATTERNS):
+        return ModelTask.VISION
     return declared_task

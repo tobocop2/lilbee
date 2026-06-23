@@ -10,7 +10,7 @@ For day-to-day coding conventions and the full set of project rules, [`AGENTS.md
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - `git`
 
-No external services are required. lilbee downloads and runs models locally via in-process `llama.cpp` (native GGUF). There is no Ollama dependency, though lilbee can talk to a running Ollama or LM Studio if you have one.
+No external services are required. lilbee downloads models locally (native GGUF) and runs each one in its own bundled `llama-server` process, supervised by llama-swap. There is no Ollama dependency, though lilbee can talk to a running Ollama or LM Studio if you have one.
 
 ## Getting started
 

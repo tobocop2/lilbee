@@ -174,18 +174,28 @@ def _check_restart(provider: LLMProvider) -> None:
 
 
 def _check_no_orphans(provider: LLMProvider, baseline: dict[int, int]) -> None:
+    """Assert shutdown stranded no process or VRAM, reporting EVERY class at once.
+
+    Both ``llama-server`` and ``llama-swap`` are checked and all failures are
+    collected before failing: bailing on the first orphan once hid a leaked
+    llama-swap supervisor behind a leaked upstream (bb-dpp).
+    """
     provider.shutdown()
     time.sleep(2.0)
+    failures: list[str] = []
     for name in ("llama-server", "llama-swap"):
         survivors = subprocess.run(
             ["pgrep", "-fa", name], capture_output=True, text=True, check=False
         ).stdout.strip()
-        _require(not survivors, f"orphaned {name} processes after shutdown:\n{survivors}")
+        if survivors:
+            failures.append(f"orphaned {name} processes after shutdown:\n{survivors}")
     after = nvidia_smi_free_mib()
     for idx, free_after in after.items():
         free_before = baseline.get(idx, free_after)
         leaked = free_before - free_after
-        _require(leaked < 1024, f"GPU {idx} did not release VRAM: {leaked} MiB still held")
+        if leaked >= 1024:
+            failures.append(f"GPU {idx} did not release VRAM: {leaked} MiB still held")
+    _require(not failures, "; ".join(failures))
     print("[6] no orphaned llama-server / llama-swap processes; VRAM returned to baseline")
 
 
