@@ -27,13 +27,14 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
 
 
 def _fake_launch(
-    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0
+    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0, replica: int = 0
 ) -> MagicMock:
     launch = MagicMock()
     launch.role = role
     launch.slots = slots
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
+    launch.replica = replica
     return launch
 
 
@@ -734,6 +735,80 @@ def test_pdf_drain_budget_totals_pages_plus_load_grace(monkeypatch) -> None:
     assert prov_mod._pdf_drain_budget(2, 120.0) == 540.0
     assert prov_mod._pdf_drain_budget(5, None) is None
     assert prov_mod._pdf_drain_budget(5, 0.0) is None
+
+
+def test_release_ingest_pool_unloads_only_elastic_replicas() -> None:
+    from unittest import mock
+
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    p = FleetProvider()
+    p._elastic_members = ["embed-1", "embed-2", "vision-1"]
+    unloaded: list[str] = []
+    swap = mock.Mock()
+    swap.unload.side_effect = lambda mid: unloaded.append(mid) or True
+    p._swap = swap
+
+    p.release_ingest_pool()
+
+    assert unloaded == ["embed-1", "embed-2", "vision-1"]
+    swap.unload.assert_called()
+
+
+def test_release_ingest_pool_noop_when_no_swap() -> None:
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    p = FleetProvider()
+    p._elastic_members = ["embed-1"]
+    p._swap = None
+    p.release_ingest_pool()  # must not raise
+
+
+def test_release_ingest_pool_logs_unconfirmed(caplog) -> None:
+    import logging
+    from unittest import mock
+
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    p = FleetProvider()
+    p._elastic_members = ["embed-1"]
+    swap = mock.Mock()
+    swap.unload.return_value = False  # unload did not confirm
+    p._swap = swap
+
+    with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.provider"):
+        p.release_ingest_pool()
+
+    assert any("did not confirm" in r.message for r in caplog.records)
+
+
+def test_adopt_swap_records_elastic_members(monkeypatch) -> None:
+    from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    def _make_launch(role: WorkerRole, replica: int) -> InstanceLaunch:
+        return InstanceLaunch(
+            role=role,
+            argv=[],
+            env_overrides={},
+            model="dummy.gguf",
+            replica=replica,
+        )
+
+    launches = [
+        _make_launch(WorkerRole.CHAT, replica=0),
+        _make_launch(WorkerRole.EMBED, replica=0),
+        _make_launch(WorkerRole.EMBED, replica=1),
+        _make_launch(WorkerRole.RERANK, replica=0),
+        _make_launch(WorkerRole.VISION, replica=0),
+        _make_launch(WorkerRole.VISION, replica=1),
+    ]
+    swap = _install_engine(monkeypatch, launches=launches)
+    p = FleetProvider()
+    with p._lock:
+        p._adopt_swap(swap, launches)
+
+    assert p._elastic_members == ["embed-1", "vision-1"]
 
 
 def test_pdf_ocr_spends_one_document_budget_across_pages(monkeypatch) -> None:
