@@ -39,24 +39,24 @@ class FileChangePlan(NamedTuple):
     stat_backfills: list[SourceStatBackfill]
 
 
-# Minimum total chars for extracted text to be considered meaningful.
-# 50 chars ≈ 12 words: if a PDF yields less, it's almost certainly a scanned
-# document with no embedded text layer. Text PDFs with even just a title page
-# easily exceed this threshold; blank/scan-only PDFs yield 0 chars.
-MIN_MEANINGFUL_CHARS = 50
-
 PDF_CONTENT_TYPE = "pdf"
 IMAGE_CONTENT_TYPE = "image"
 MARKDOWN_OUTPUT = "markdown"
-TESSERACT_BACKEND = "tesseract"
+MARKDOWN_MIME = "text/markdown"
+
+
+class OcrBackendName(StrEnum):
+    """OCR backends lilbee selects in OcrConfig: kreuzberg's tesseract or lilbee's vision plugin."""
+
+    TESSERACT = "tesseract"
+    LILBEE_VISION = "lilbee-vision"
 
 
 class ExtractMode(StrEnum):
-    """Extraction topology: pagination / OCR / output format."""
+    """Extraction topology: paginated (PDFs/images) vs markdown output (text formats)."""
 
     MARKDOWN = "markdown"
     PAGINATED = "paginated"
-    PAGINATED_OCR = "paginated_ocr"
 
 
 class ChunkRecord(TypedDict):

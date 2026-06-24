@@ -82,11 +82,12 @@ def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks:
         chunk_text = text[i * len(text) // num_chunks : (i + 1) * len(text) // num_chunks]
         chunk = mock.MagicMock()
         chunk.content = chunk_text
-        chunk.metadata = {"chunk_index": i}
+        chunk.metadata = mock.MagicMock(chunk_index=i, first_page=None, last_page=None)
         chunks.append(chunk)
     result = mock.MagicMock()
     result.chunks = chunks
     result.content = text
+    result.pages = []
     return result
 
 

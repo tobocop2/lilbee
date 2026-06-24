@@ -231,6 +231,7 @@ class SwapManager:
             _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
             _STATE_KEY_MEMBER_PORTS: self._member_ports,
         }
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._state_path.with_name(
             f"{_STATE_TMP_PREFIX}{self._state_path.name}{_STATE_TMP_SUFFIX}"
         )

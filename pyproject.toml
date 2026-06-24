@@ -35,7 +35,7 @@ classifiers = [
 
 dependencies = [
     "lancedb",
-    "kreuzberg>=4.9.1,<5",
+    "kreuzberg>=5.0.0rc35",
     "filelock",
     "tree-sitter-language-pack>=1.8.0,<2.0",
     "typer>=0.12",
@@ -92,6 +92,7 @@ packages = ["src/lilbee"]
 # the index instead -- this source override is workspace metadata, not published deps.
 [tool.uv.sources]
 lilbee-engine = { path = "packaging/engine-wheel" }
+kreuzberg = { path = "/Users/tobias/projects/kreuzberg/.worktrees/rc35/packages/python/dist/kreuzberg-5.0.0rc35-cp310-abi3-macosx_11_0_arm64.whl" }  # LOCAL DEV ONLY (uncommitted)
 
 [dependency-groups]
 dev = [

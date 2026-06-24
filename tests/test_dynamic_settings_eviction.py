@@ -36,6 +36,11 @@ class _RecordingProvider:
     def drop_loaded_models_async(self) -> None:
         self.dropped += 1
 
+    def vision_ocr(
+        self, image_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
+    ) -> str:
+        return ""
+
 
 @pytest.fixture(autouse=True)
 def _isolated_cfg(tmp_path):
@@ -272,11 +277,17 @@ def test_reconcile_embedding_dim_leaves_dim_when_unreadable_or_matching(monkeypa
     assert cfg.embedding_dim == 768  # already matches -> untouched
 
 
-def test_chat_and_vision_model_change_reloads_those_roles():
+def test_chat_and_vision_model_change_reloads_those_roles(monkeypatch):
     """A chat_model / vision_model swap reloads that role's server so the next
     request uses the new model. The fleet serves the configured model per role
     and rejects per-call overrides, so the reload is required (not optional)."""
     from lilbee.providers.roles import WorkerRole
+
+    # The vision-model reload also (un)registers the OCR backend; keep that global
+    # kreuzberg state out of this unit test.
+    monkeypatch.setattr("kreuzberg.list_ocr_backends", list)
+    monkeypatch.setattr("kreuzberg.register_ocr_backend", lambda backend: None)
+    monkeypatch.setattr("kreuzberg.unregister_ocr_backend", lambda name: None)
 
     provider = _install_recording_provider()
     try:

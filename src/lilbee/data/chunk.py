@@ -38,7 +38,7 @@ def _show_download_progress() -> bool:
 
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
     """Build a kreuzberg ChunkingConfig from the current cfg."""
-    from kreuzberg import ChunkingConfig, EmbeddingConfig, EmbeddingModelType
+    from kreuzberg import ChunkingConfig, EmbeddingConfig
 
     max_chars, max_overlap = _char_budget()
 
@@ -46,14 +46,14 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
         return ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
             embedding=EmbeddingConfig(
-                model=EmbeddingModelType.preset(_SEMANTIC_EMBEDDING_PRESET),
+                model=_SEMANTIC_EMBEDDING_PRESET,
                 show_download_progress=_show_download_progress(),
             ),
             topic_threshold=cfg.topic_threshold,
-            max_chars=max_chars,
-            max_overlap=max_overlap,
+            max_characters=max_chars,
+            overlap=max_overlap,
         )
-    return ChunkingConfig(max_chars=max_chars, max_overlap=max_overlap)
+    return ChunkingConfig(max_characters=max_chars, overlap=max_overlap)
 
 
 def chunk_text(
@@ -72,10 +72,10 @@ def chunk_text(
     if heading_context:
         max_chars, max_overlap = _char_budget()
         chunking = ChunkingConfig(
-            max_chars=max_chars,
-            max_overlap=max_overlap,
+            max_characters=max_chars,
+            overlap=max_overlap,
             chunker_type=_MARKDOWN_CHUNKER,
-            prepend_heading_context=True,  # type: ignore[call-arg]
+            prepend_heading_context=True,
         )
     else:
         chunking = build_chunking_config(use_semantic=use_semantic)

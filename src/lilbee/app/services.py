@@ -185,12 +185,41 @@ def get_services() -> Services:
     # are skipped, so a setup with only chat + embed never spawns rerank or
     # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
     # where mount time matters more than first-call latency.
+    sync_vision_ocr_backend(provider)
+    # Eager start is the default: pay the spawn cost per role server at TUI mount
     if cfg.worker_pool_eager_start:
         from contextlib import suppress
 
         with suppress(Exception):
             provider.warm_up_pool()
     return _svc
+
+
+def sync_vision_ocr_backend(provider: LLMProvider) -> None:
+    """Register or unregister lilbee's vision model as kreuzberg's OCR backend.
+
+    Driven by ``cfg.vision_model``: registered while a model is set, removed when
+    cleared. The backend reads ``cfg.vision_model`` live, so a model swap needs no
+    re-registration, but it captures ``provider.vision_ocr``, so it must re-bind
+    whenever the provider is rebuilt (``reset_services``) -- otherwise the global
+    kreuzberg registry keeps routing OCR to the shut-down provider.
+    """
+    from kreuzberg import list_ocr_backends, register_ocr_backend, unregister_ocr_backend
+
+    from lilbee.core.config import cfg
+    from lilbee.data.ingest.types import OcrBackendName
+    from lilbee.data.ingest.vision_ocr_backend import VisionOcrBackend
+
+    registered = OcrBackendName.LILBEE_VISION in list_ocr_backends()
+    if cfg.vision_model:
+        # Re-register so the backend always binds to the current provider.
+        if registered:
+            unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+        register_ocr_backend(
+            VisionOcrBackend(ocr_fn=provider.vision_ocr, model_ref_fn=lambda: cfg.vision_model)
+        )
+    elif registered:
+        unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
 
 
 def set_services(services: Services | None) -> None:

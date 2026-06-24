@@ -221,11 +221,11 @@ def _finalize_download(
     if on_complete is not None:
         on_complete(entry, dest)
     if entry.task == ModelTask.VISION:
-        _download_mmproj(entry, on_progress=on_progress)
+        download_mmproj(entry, on_progress=on_progress)
     return dest
 
 
-def _download_mmproj(
+def download_mmproj(
     entry: CatalogModel,
     *,
     on_progress: ProgressCallback | None = None,

@@ -14,8 +14,7 @@ import functools
 import logging
 import re
 import threading
-import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from pathlib import Path
@@ -43,8 +42,6 @@ if TYPE_CHECKING:
         ChatStreamItem,
         ChatToolResult,
         ClosableIterator,
-        OcrBackend,
-        PageText,
     )
     from lilbee.providers.fleet.launch import InstanceLaunch
 
@@ -183,8 +180,8 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
 class _VisionRequestGate:
     """Process-wide cap on concurrent vision-server requests at the fleet's OCR slots.
 
-    The ingest file fan-out runs many files at once and each file's ``pdf_ocr`` opens
-    its own ``vision_ocr_concurrency`` page pool, so without a shared cap the aggregate
+    The ingest file fan-out runs many files at once and kreuzberg OCRs their pages
+    through per-image ``vision_ocr`` calls, so without a shared cap the aggregate
     over-subscribes a single-replica vision server into a 429 storm. The semaphore is
     rebuilt to the configured capacity (``vision_replicas * vision_ocr_concurrency``)
     only while the gate is idle, so a capacity change never doubles the live cap.
@@ -275,62 +272,6 @@ def _bounded_vision_chat(
         ) from None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-
-
-def _ocr_pdf_page(
-    idx: int,
-    png: bytes,
-    *,
-    clients: list[LlamaServerClient],
-    ocr_prompt: str,
-    deadline: float | None,
-    page_path: Path,
-) -> tuple[int, str]:
-    """OCR one rasterized page through the gated vision server; empty text on failure.
-
-    Acquires the gate before reading the clock so queue time isn't billed against the
-    page's share of the document-wide deadline; an exhausted budget skips the page
-    rather than running it un-timed.
-    """
-    from lilbee.vision import build_vision_messages
-
-    messages = build_vision_messages(ocr_prompt, png)
-    with _VISION_GATE.slot():
-        remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
-        if remaining == 0.0:
-            log.warning(
-                "Vision OCR budget exhausted before page %d of %s; skipping.",
-                idx + 1,
-                page_path.name,
-            )
-            return idx, ""
-        try:
-            return idx, _call_with_failover(
-                clients, lambda client: _vision_call(client, messages, remaining)
-            )
-        except ProviderError:
-            # One failed/timed-out page yields empty text; siblings continue.
-            log.warning(
-                "Vision OCR failed for page %d of %s; skipping that page.",
-                idx + 1,
-                page_path.name,
-                exc_info=True,
-            )
-            return idx, ""
-
-
-def _pdf_drain_budget(total_pages: int, per_page_timeout_s: float | None) -> float | None:
-    """Total OCR wall-clock budget = pages*per_page + load grace, or None for no cap.
-
-    Mirrors the in-process drain budget: one document-wide deadline rather than a
-    per-page cap, so a slow page borrows from fast ones and the vision model's cold
-    first-inference is absorbed by the grace instead of tripping a fixed page limit.
-    """
-    from lilbee.core.config import cfg
-
-    if not per_page_timeout_s or per_page_timeout_s <= 0:
-        return None
-    return total_pages * per_page_timeout_s + cfg.vision_load_budget_s
 
 
 class FleetProvider:
@@ -700,87 +641,9 @@ class FleetProvider:
                 clients, lambda client: _vision_call(client, messages, timeout)
             )
 
-    def pdf_ocr(
-        self,
-        path: Path,
-        *,
-        backend: OcrBackend,
-        model: str = "",
-        per_page_timeout_s: float | None = None,
-        quiet: bool = True,
-        on_progress: Callable[..., None] | None = None,
-    ) -> list[PageText]:
-        """OCR each rasterized PDF page through the vision server.
-
-        ``backend`` is ``Literal["vision"]`` (tesseract is run inline by the
-        ingest caller, never here). ``per_page_timeout_s`` caps each page's
-        request; ``quiet`` is accepted for protocol parity (the server emits no
-        Rich progress to suppress). Pages are numbered 1-based to match
-        ``PageText`` / ``ExtractEvent`` everywhere else in lilbee.
-        """
-        from lilbee.core.config import cfg
-        from lilbee.runtime.progress import EventType, ExtractEvent
-        from lilbee.vision import (
-            PageText,
-            pdf_page_count,
-            rasterize_pdf,
-            resolve_ocr_prompt,
-        )
-
-        del quiet  # protocol parity; no server-side Rich progress to suppress.
-        self._require_configured_model(model, str(cfg.vision_model), WorkerRole.VISION)
-        clients = self._require_clients(WorkerRole.VISION)
-        # The model is fixed for the whole document, so resolve its prompt once.
-        ocr_prompt = resolve_ocr_prompt(model or str(cfg.vision_model))
-        log.debug("OCR prompt for %s -> %r", model or cfg.vision_model, ocr_prompt)
-        total = pdf_page_count(path)
-        # One document-wide deadline (pages*per_page + load grace), not a per-page
-        # cap: each page gets whatever budget remains, so a slow page borrows from
-        # fast ones and the cold first-inference is covered, matching in-process OCR.
-        budget = _pdf_drain_budget(total, per_page_timeout_s)
-        deadline = (time.monotonic() + budget) if budget is not None else None
-
-        _ocr = functools.partial(
-            _ocr_pdf_page,
-            clients=clients,
-            ocr_prompt=ocr_prompt,
-            deadline=deadline,
-            page_path=path,
-        )
-
-        # OCR pages concurrently (a single-page decode underuses the GPU; the vision
-        # server runs cfg.vision_ocr_concurrency batching slots). A bounded sliding
-        # window keeps that many pages in flight without rasterizing the whole PDF
-        # into memory; results are reassembled in page order.
-        concurrency = max(1, cfg.vision_ocr_concurrency)
-        raster = rasterize_pdf(path)
-        results: dict[int, str] = {}
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            pending: set[Future[tuple[int, str]]] = set()
-
-            def _submit_next() -> bool:
-                page = next(raster, None)
-                if page is None:
-                    return False
-                idx, png_bytes = page
-                pending.add(pool.submit(_ocr, idx, bytes(png_bytes)))
-                return True
-
-            for _ in range(concurrency):
-                if not _submit_next():
-                    break
-            while pending:
-                completed, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for done in completed:
-                    page_idx, text = done.result()
-                    results[page_idx] = text
-                    if on_progress is not None:
-                        on_progress(
-                            EventType.EXTRACT,
-                            ExtractEvent(file=path.name, page=page_idx + 1, total_pages=total),
-                        )
-                    _submit_next()
-        return [PageText(idx + 1, results[idx]) for idx in sorted(results)]
+    # PDF/image OCR now runs inside kreuzberg via the registered lilbee-vision
+    # backend (see data.ingest.vision_ocr_backend); this provider only exposes
+    # single-image vision_ocr, which that backend calls.
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         clients = self._require_clients(WorkerRole.RERANK)

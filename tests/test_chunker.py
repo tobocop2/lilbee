@@ -118,14 +118,16 @@ class TestBuildChunkingConfig:
         assert result.embedding is not None
 
     def test_semantic_respects_max_chars_when_embedding_present(self, monkeypatch):
-        """With an embedding attached kreuzberg honors max_chars on the semantic path."""
+        """With an embedding attached kreuzberg honors max_characters on the semantic path."""
         from lilbee.core.config import cfg
         from lilbee.data.chunk import CHARS_PER_TOKEN, build_chunking_config
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         result = build_chunking_config()
-        assert result.max_chars == 512 * CHARS_PER_TOKEN
+        assert result.max_characters == 512 * CHARS_PER_TOKEN
+        assert result.embedding is not None
+        assert result.embedding.model == "fast"
 
     def test_char_budget_when_disabled(self, monkeypatch):
         from lilbee.core.config import cfg
@@ -136,8 +138,8 @@ class TestBuildChunkingConfig:
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
         result = build_chunking_config()
         assert result.chunker_type == "text"
-        assert result.max_chars == 512 * CHARS_PER_TOKEN
-        assert result.max_overlap == 100 * CHARS_PER_TOKEN
+        assert result.max_characters == 512 * CHARS_PER_TOKEN
+        assert result.overlap == 100 * CHARS_PER_TOKEN
         assert result.embedding is None
 
     def test_disabled_does_not_attach_embedding(self, monkeypatch):

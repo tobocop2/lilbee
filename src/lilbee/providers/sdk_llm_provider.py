@@ -36,7 +36,6 @@ from lilbee.providers.base import (
 from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
 from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
-from lilbee.providers.roles import OcrBackend
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     CompletionRequest,
@@ -44,7 +43,6 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
-from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
 
@@ -300,23 +298,6 @@ class SdkLLMProvider(LLMProvider):
                 provider=self._backend.provider_name,
             )
         return result.text
-
-    def pdf_ocr(
-        self,
-        path: Path,
-        *,
-        backend: OcrBackend,
-        model: str = "",
-        per_page_timeout_s: float | None = None,
-        quiet: bool = True,
-        on_progress: Callable[..., None] | None = None,
-    ) -> list[PageText]:
-        """SDK backend cannot rasterise PDFs locally; ingest callers fall back."""
-        del path, backend, model, per_page_timeout_s, quiet, on_progress
-        raise NotImplementedError(
-            "Hosted models do not support scanned-PDF OCR. "
-            "Set LILBEE_VISION_MODEL to a local GGUF vision model to enable it."
-        )
 
     def list_models(self) -> list[str]:
         """List models across every configured local server.

@@ -272,6 +272,12 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
     changed_role_fields = changed_keys & MODEL_ROLE_FIELDS
     for field in changed_role_fields:
         services.reload_role(MODEL_FIELD_TO_ROLE[field])
+    if "vision_model" in changed_role_fields:
+        # Register/unregister lilbee's kreuzberg OCR backend on any vision-model
+        # change (REST/MCP/TUI/CLI all funnel here), not just the REST route.
+        from lilbee.app.services import sync_vision_ocr_backend
+
+        sync_vision_ocr_backend(services.provider)
     role_agnostic = (changed_keys & LOAD_AFFECTING_KEYS) - MODEL_ROLE_FIELDS
     if role_agnostic:
         services.provider.drop_loaded_models_async()

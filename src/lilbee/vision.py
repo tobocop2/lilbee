@@ -1,34 +1,9 @@
-"""Helpers for PDF rasterisation and vision-model OCR.
+"""Vision-model OCR helpers: prompt resolution and OpenAI-compatible image messages.
 
-Multi-page vision OCR runs through ``FleetProvider.pdf_ocr``, which rasterises
-each page and sends it to the vision server; this module hosts the small helpers
-(page count, rasterisation, prompt + chat-message construction, and the shared
-:class:`PageText` / :class:`PdfOcrChunk` types) that the provider and its callers
-share.
+PDF rasterisation and the page loop now live inside kreuzberg (the registered
+lilbee-vision OCR backend); this module only builds the single-image request the
+provider's ``vision_ocr`` sends to the vision server.
 """
-
-import logging
-from collections.abc import Iterator
-from pathlib import Path
-from typing import NamedTuple
-
-log = logging.getLogger(__name__)
-
-
-class PageText(NamedTuple):
-    """Extracted text for a single PDF page."""
-
-    page: int
-    text: str
-
-
-class PdfOcrChunk(NamedTuple):
-    """One streaming PDF-OCR worker frame: page index, total pages, page text."""
-
-    page: int
-    total: int
-    text: str
-
 
 OCR_PROMPT = (
     "Extract ALL text from this page as clean markdown. "
@@ -51,25 +26,6 @@ def resolve_ocr_prompt(model_ref: str) -> str:
         if family in needle:
             return prompt
     return OCR_PROMPT
-
-
-_RASTER_DPI = 150
-
-
-def pdf_page_count(path: Path) -> int:
-    """Return the number of pages in a PDF without rasterizing."""
-    from kreuzberg import PdfPageIterator  # lazy: heavy dependency
-
-    it = PdfPageIterator(str(path), dpi=_RASTER_DPI)
-    return len(it)
-
-
-def rasterize_pdf(path: Path) -> Iterator[tuple[int, bytes]]:
-    """Yield (0-based index, PNG bytes) for each page of a PDF."""
-    from kreuzberg import PdfPageIterator  # lazy: heavy dependency
-
-    with PdfPageIterator(str(path), dpi=_RASTER_DPI) as pages:
-        yield from pages
 
 
 def _png_to_data_url(png_bytes: bytes) -> str:

@@ -483,6 +483,33 @@ class TestPullModelData:
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
 
+    def test_already_installed_vision_ensures_mmproj(self):
+        """A cached vision model with a missing mmproj gets its projector fetched (bb-7yd)."""
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        entry = SimpleNamespace(task=ModelTask.VISION, hf_repo="org/vis-GGUF")
+        with (
+            patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+            patch("lilbee.catalog.download_mmproj") as dl,
+        ):
+            model_mod._ensure_vision_projector("org/vis-GGUF/model.gguf")
+        dl.assert_called_once_with(entry)
+
+    def test_ensure_vision_projector_noop_for_non_vision(self):
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        entry = SimpleNamespace(task=ModelTask.CHAT, hf_repo="org/chat-GGUF")
+        with (
+            patch("lilbee.catalog.resolve_pull_target", return_value=entry),
+            patch("lilbee.catalog.download_mmproj") as dl,
+        ):
+            model_mod._ensure_vision_projector("org/chat-GGUF/model.gguf")
+        dl.assert_not_called()
+
     def test_pull_native_invokes_manager_and_callbacks(self, fake_manager, native_manifests):
         events = []
         target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
