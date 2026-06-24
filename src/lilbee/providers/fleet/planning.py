@@ -45,6 +45,13 @@ _CHAT_SLOTS = 4
 # A tensor-split chat fills its cards with one full-context sequence; concurrent
 # slots are for a chat that fits a single GPU, not a multi-card giant.
 _SPLIT_CHAT_SLOTS = 1
+# Floor context the PLACEMENT estimate reserves KV for, so a large model is never
+# single-carded into a KV corner too small for real use (a 17GB model on a 24GB
+# card leaves ~no KV room -> n_ctx collapses to a few hundred tokens). Sizing the
+# placement reserve against this floor forces a tensor-split when one card cannot
+# hold weights + a usable context; the served ctx is then grown to the chosen
+# cards' real headroom by resolve_chat_ctx (single) / fit_split_ctx (split).
+_MIN_USABLE_CHAT_CTX = 8192
 _AUX_SLOTS = 1
 _EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 # Truncate embed/rerank inputs a few tokens below the per-slot context: the server
@@ -407,7 +414,11 @@ def _estimate_role(
     path = resolve_model_path(model_ref)
     mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
     meta = read_gguf_metadata(path)
-    ctx = _role_ctx(role, path, meta)
+    # Size the single-instance footprint against the placement reserve (a usable
+    # KV floor for chat), so a model that fits weights-only on one card but not
+    # weights + a usable context falls through to a tensor-split instead of being
+    # single-carded into a tiny n_ctx. Non-chat roles keep their launch ctx.
+    ctx = _placement_estimate_ctx(role, path, meta)
     rerank_mode = _role_rerank_mode(role, meta)
     if slots is None:
         slots = _slots_for(
@@ -437,12 +448,21 @@ def _estimate_role(
 
 
 def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
-    """Per-slot context the placement estimate sizes a role against (the launch ceiling)."""
+    """Per-slot context the placement estimate sizes a role against.
+
+    For chat this reserves KV for a usable floor (``_MIN_USABLE_CHAT_CTX``, or the
+    user's ``cfg.num_ctx`` pin), capped by the model's trained ceiling -- not the
+    single-GPU dynamic ctx (which shrinks to fit one card and then confirms a
+    single-card placement) nor the full trained ceiling (which over-reserves). A
+    model that cannot hold weights + this floor on one card is tensor-split.
+    """
     from lilbee.core.config import cfg
     from lilbee.providers.engine_params import chat_ctx_ceiling
 
     if role is WorkerRole.CHAT:
-        return cfg.num_ctx if cfg.num_ctx is not None else chat_ctx_ceiling(meta, model_path)
+        if cfg.num_ctx is not None:
+            return cfg.num_ctx
+        return min(chat_ctx_ceiling(meta, model_path), _MIN_USABLE_CHAT_CTX)
     return _role_ctx(role, model_path, meta)
 
 

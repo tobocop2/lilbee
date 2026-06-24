@@ -425,15 +425,56 @@ def test_search_reservation_scales_with_replicas() -> None:
     assert planning_mod._search_reservation(inputs) == 3 * 2 * _GB + 1 * _GB
 
 
-def test_placement_estimate_ctx_chat_uses_ceiling(monkeypatch) -> None:
+def test_placement_estimate_ctx_chat_reserves_usable_floor(monkeypatch) -> None:
+    """A long-context model reserves the usable floor, not its full trained ceiling.
+
+    Reserving the full ceiling over-charges KV and can wrongly reject a split;
+    the served ctx is grown to the chosen cards' headroom after placement.
+    """
     monkeypatch.setattr(cfg, "num_ctx", None)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 131072
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {})
+        == planning_mod._MIN_USABLE_CHAT_CTX
+    )
+
+
+def test_placement_estimate_ctx_chat_capped_by_short_ceiling(monkeypatch) -> None:
+    """A short-context model reserves only its ceiling, below the usable floor."""
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 2048)
+    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 2048
 
 
 def test_placement_estimate_ctx_chat_honors_num_ctx_pin(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", 16384)
     assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 16384
+
+
+def test_estimate_role_chat_footprint_sized_at_usable_floor(monkeypatch) -> None:
+    """The single-instance chat footprint reserves KV for the usable floor, not the
+    single-card dynamic ctx (which collapses when a big model barely fits one card).
+
+    Regression for bb-9rn: sizing at the floor is what lets a too-tight single-card
+    placement fall through to a tensor-split instead of a 512-token corner.
+    """
+    captured: dict[str, int] = {}
+
+    def _est(model_path, *, ctx, slots, **_kwargs) -> GgufVramEstimate:
+        captured["ctx"] = ctx
+        return GgufVramEstimate(vram_bytes=10**8, ram_bytes=0, unified_bytes=10**8)
+
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
+    monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 262144)
+
+    planning_mod._estimate_role(WorkerRole.CHAT, "org/chat.gguf")
+    assert captured["ctx"] == planning_mod._MIN_USABLE_CHAT_CTX
 
 
 def test_placement_estimate_ctx_non_chat_delegates_to_role_ctx(monkeypatch) -> None:
