@@ -5,6 +5,11 @@ PlacementScreen {
         padding: 0 1;
     }
 
+    #placement-title {
+        height: 1;
+        margin-bottom: 1;
+    }
+
     #placement-gpus {
         height: auto;
         max-height: 12;
@@ -12,19 +17,51 @@ PlacementScreen {
         margin-bottom: 1;
     }
 
-    #placement-role-summary {
+    #placement-editor {
         height: auto;
-        margin-bottom: 1;
-        color: $text;
     }
 
-    #placement-spec {
-        height: 1fr;
-        min-height: 8;
-        border: solid $surface-lighten-2;
+    .role-row {
+        height: 3;
+        align-vertical: middle;
+    }
 
-        &:focus-within {
-            border: tall $primary;
-        }
+    .role-name {
+        width: 9;
+        content-align: left middle;
+    }
+
+    .dev-toggle {
+        min-width: 5;
+        width: 5;
+        margin: 0 1 0 0;
+    }
+
+    .dev-toggle.on {
+        background: $success;
+        color: $text;
+        text-style: bold;
+    }
+
+    .rep-btn {
+        min-width: 5;
+        width: 5;
+        margin: 0 1 0 0;
+    }
+
+    .rep-count {
+        width: 5;
+        content-align: center middle;
+    }
+
+    #placement-generated {
+        height: auto;
+        margin-top: 1;
+        color: $text-muted;
+    }
+
+    #placement-hint {
+        height: auto;
+        color: $text-muted;
     }
 }

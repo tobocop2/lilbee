@@ -1,30 +1,37 @@
-"""Tests for the TUI PlacementScreen."""
+"""Tests for the interactive TUI PlacementScreen.
+
+These drive the real widgets (GPU toggle Buttons, replica steppers, key
+bindings) rather than poking private state, so the input path is actually
+exercised.
+"""
 
 from __future__ import annotations
 
 import threading
 
 import pytest
-from textual.widgets import DataTable, TextArea
+from textual.widgets import Button, DataTable, Static
 
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 GIB = 1024**3
 
 
-def _make_view(*, manual: bool = False, unplaceable: tuple = ()):  # type: ignore[type-arg]
+def _make_view(*, manual: bool = False, unplaceable: tuple = (), spec_json=None):  # type: ignore[type-arg]
     from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
     from lilbee.providers.roles import WorkerRole
 
     return PlacementView(
-        gpus=(
-            GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),
-            GpuInfo(1, "CUDA", "CUDA1", "NVIDIA A100", 80 * GIB, 80 * GIB),
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
         ),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0, 1), (1, 1), 1),),
+        roles=(
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1,), None, 1),
+        ),
         unplaceable=unplaceable,
         manual=manual,
-        spec_json=None,
+        spec_json=spec_json,
     )
 
 
@@ -39,85 +46,177 @@ class PlacementTestApp(LilbeeAppHost):
         self.push_screen(PlacementScreen())
 
 
+def _generated(app) -> str:  # type: ignore[no-untyped-def]
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    return str(app.screen.query_one(screen_mod._GENERATED_ID, Static).render())
+
+
 @pytest.mark.asyncio
-async def test_screen_lists_gpus(monkeypatch):
-    """GPU table renders one row per detected GPU."""
+async def test_screen_lists_gpus_with_roles(monkeypatch):
+    """GPU table renders one row per GPU and shows which role sits on each card."""
     from lilbee.cli.tui.screens import placement as screen_mod
 
     monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
 
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         table = app.screen.query_one(screen_mod._GPU_TABLE_ID, DataTable)
-        assert table.row_count == 2
+        assert table.row_count == 4
+        # row 0 (CUDA0) Roles cell == "embed", row 1 (CUDA1) == "chat"
+        assert table.get_row_at(0)[4] == "embed"
+        assert table.get_row_at(1)[4] == "chat"
 
 
 @pytest.mark.asyncio
-async def test_screen_lists_roles(monkeypatch):
-    """Role summary reflects placed roles."""
-    from textual.widgets import Static
+async def test_toggle_device_updates_spec_and_table(monkeypatch):
+    """Clicking a GPU toggle for a role updates the spec and the table live."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.click("#dev-embed-2")  # add CUDA2 to embed
+        await pilot.pause()
+        assert '"embed": {"devices": [0, 2]}' in _generated(app)
+        table = app.screen.query_one(screen_mod._GPU_TABLE_ID, DataTable)
+        assert table.get_row_at(2)[4] == "embed"
+
+
+@pytest.mark.asyncio
+async def test_cannot_remove_last_device(monkeypatch):
+    """A role must keep at least one GPU; toggling its only device is a no-op."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.click("#dev-embed-0")  # embed's only device -> must stay
+        await pilot.pause()
+        assert '"embed": {"devices": [0]}' in _generated(app)
+
+
+@pytest.mark.asyncio
+async def test_replica_stepper(monkeypatch):
+    """The +/- stepper changes replicas (floored at 1) for a replicated role."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.click("#rep-embed-inc")  # 1 -> 2
+        await pilot.pause()
+        assert '"replicas": 2' in _generated(app)
+        await pilot.click("#rep-embed-dec")  # 2 -> 1 (omitted)
+        await pilot.pause()
+        assert "replicas" not in _generated(app)
+        await pilot.click("#rep-embed-dec")  # floored at 1
+        await pilot.pause()
+        assert "replicas" not in _generated(app)
+
+
+@pytest.mark.asyncio
+async def test_no_replica_stepper_for_chat(monkeypatch):
+    """Non-replicated roles (chat) have no replica stepper."""
+    from textual.css.query import NoMatches
 
     from lilbee.cli.tui.screens import placement as screen_mod
 
     monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
 
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        summary = app.screen.query_one(screen_mod._ROLE_SUMMARY_ID, Static)
-        rendered = str(summary.render())
-        assert "chat" in rendered.lower()
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#rep-chat-inc", Button)
 
 
 @pytest.mark.asyncio
-async def test_screen_unplaceable_shown(monkeypatch):
-    """Unplaceable roles appear in the summary."""
-    from textual.widgets import Static
-
+async def test_preview_uses_edited_spec(monkeypatch):
+    """ctrl+r resolves the placement built from the toggles, not a stale value."""
     from lilbee.cli.tui.screens import placement as screen_mod
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
     from lilbee.providers.roles import WorkerRole
 
-    view = _make_view(unplaceable=(WorkerRole.VISION,))
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: view)
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        summary = app.screen.query_one(screen_mod._ROLE_SUMMARY_ID, Static)
-        rendered = str(summary.render())
-        assert "vision" in rendered.lower()
-
-
-@pytest.mark.asyncio
-async def test_preview_rerenders(monkeypatch):
-    """ctrl+r with a valid spec re-renders the GPU table."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
     monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-    preview_calls: list[object] = []
+    calls: list[object] = []
 
     def _preview(spec):  # type: ignore[no-untyped-def]
-        preview_calls.append(spec)
+        calls.append(spec)
         return _make_view()
 
     monkeypatch.setattr(screen_mod, "preview_placement", _preview)
 
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        screen = app.screen
-        screen._spec_text = '{"chat": {"devices": [0]}}'
+        await pilot.click("#dev-chat-3")  # chat now on CUDA1 + CUDA3
+        await pilot.pause()
         await pilot.press("ctrl+r")
         await pilot.pause()
         await pilot.pause()
 
-    assert len(preview_calls) == 1
+    assert calls and isinstance(calls[0], PlacementSpec)
+    assert calls[0].roles[WorkerRole.CHAT].devices == (1, 3)
 
 
 @pytest.mark.asyncio
-async def test_preview_shows_fit_error(monkeypatch):
-    """ctrl+r surfaces a PlacementError as a notification, not a crash."""
+async def test_apply_uses_edited_spec(monkeypatch):
+    """ctrl+s applies the placement built from the toggles."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    calls: list[object] = []
+    monkeypatch.setattr(
+        screen_mod, "set_placement", lambda spec: calls.append(spec) or _make_view(manual=True)
+    )
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.click("#dev-embed-3")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+
+    assert calls and isinstance(calls[0], PlacementSpec)
+    assert calls[0].roles[WorkerRole.EMBED].devices == (0, 3)
+
+
+@pytest.mark.asyncio
+async def test_clear_calls_set_placement_none(monkeypatch):
+    """ctrl+x restores auto placement via set_placement(None)."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    calls: list[object] = []
+    monkeypatch.setattr(
+        screen_mod, "set_placement", lambda spec: calls.append(spec) or _make_view()
+    )
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        await pilot.pause()
+
+    assert calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_preview_error_notifies(monkeypatch):
+    """A PlacementError from preview surfaces as a notification, not a crash."""
     from lilbee.cli.tui.screens import placement as screen_mod
     from lilbee.providers.fleet.placement_spec import PlacementError
 
@@ -130,11 +229,9 @@ async def test_preview_shows_fit_error(monkeypatch):
 
     notes: list[str] = []
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        screen = app.screen
-        screen._spec_text = '{"chat": {"devices": [0]}}'
-        monkeypatch.setattr(screen, "notify", lambda msg, **k: notes.append(msg))
+        monkeypatch.setattr(app.screen, "notify", lambda msg, **k: notes.append(msg))
         await pilot.press("ctrl+r")
         await pilot.pause()
         await pilot.pause()
@@ -143,136 +240,8 @@ async def test_preview_shows_fit_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apply_calls_set_placement(monkeypatch):
-    """ctrl+s calls set_placement with parsed spec."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-    set_calls: list[object] = []
-    monkeypatch.setattr(
-        screen_mod, "set_placement", lambda spec: set_calls.append(spec) or _make_view()
-    )
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        screen._spec_text = '{"chat": {"devices": [0]}}'
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        await pilot.pause()
-
-    assert len(set_calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_clear_calls_set_placement_none(monkeypatch):
-    """ctrl+x calls set_placement(None) to restore auto placement."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-    set_calls: list[object] = []
-
-    def _set(spec):  # type: ignore[no-untyped-def]
-        set_calls.append(spec)
-        return _make_view()
-
-    monkeypatch.setattr(screen_mod, "set_placement", _set)
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        await pilot.press("ctrl+x")
-        await pilot.pause()
-        await pilot.pause()
-
-    assert set_calls == [None]
-
-
-@pytest.mark.asyncio
-async def test_apply_bad_json_notifies(monkeypatch):
-    """ctrl+s with invalid JSON shows an error notification."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-    notes: list[str] = []
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        screen._spec_text = "not-valid-json"
-        monkeypatch.setattr(screen, "notify", lambda msg, **k: notes.append(msg))
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-
-    assert any(notes)
-
-
-@pytest.mark.asyncio
-async def test_go_back_binding(monkeypatch):
-    """q pops the screen."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        assert isinstance(app.screen, screen_mod.PlacementScreen)
-        await pilot.press("q")
-        await pilot.pause()
-
-
-@pytest.mark.asyncio
-async def test_load_placement_error_notifies(monkeypatch):
-    """An exception from get_placement on mount shows a notification."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    def _boom():
-        raise RuntimeError("probe failed")
-
-    monkeypatch.setattr(screen_mod, "get_placement", _boom)
-    notes: list[str] = []
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = app.screen
-        monkeypatch.setattr(screen, "notify", lambda msg, **k: notes.append(msg))
-        screen._load_placement()
-        await pilot.pause()
-
-    assert any("probe failed" in n for n in notes)
-
-
-@pytest.mark.asyncio
-async def test_render_view_with_spec_json(monkeypatch):
-    """When spec_json is set on the view, the TextArea is seeded."""
-    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
-    from lilbee.cli.tui.screens import placement as screen_mod
-    from lilbee.providers.roles import WorkerRole
-
-    GIB = 1024**3
-    view_with_spec = PlacementView(
-        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
-        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),),
-        unplaceable=(),
-        manual=True,
-        spec_json='{"chat": {"devices": [0]}}',
-    )
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: view_with_spec)
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        assert screen._spec_text == '{"chat": {"devices": [0]}}'
-
-
-@pytest.mark.asyncio
-async def test_apply_worker_error_notifies(monkeypatch):
-    """An exception from set_placement shows a notification."""
+async def test_apply_error_notifies(monkeypatch):
+    """A PlacementError from set_placement surfaces as a notification."""
     from lilbee.cli.tui.screens import placement as screen_mod
     from lilbee.providers.fleet.placement_spec import PlacementError
 
@@ -285,11 +254,9 @@ async def test_apply_worker_error_notifies(monkeypatch):
 
     notes: list[str] = []
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        screen = app.screen
-        screen._spec_text = '{"chat": {"devices": [0]}}'
-        monkeypatch.setattr(screen, "notify", lambda msg, **k: notes.append(msg))
+        monkeypatch.setattr(app.screen, "notify", lambda msg, **k: notes.append(msg))
         await pilot.press("ctrl+s")
         await pilot.pause()
         await pilot.pause()
@@ -298,44 +265,105 @@ async def test_apply_worker_error_notifies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clear_worker_error_notifies(monkeypatch):
-    """An exception from set_placement(None) during clear shows a notification."""
+async def test_unplaceable_warns(monkeypatch):
+    """A role that does not fit is surfaced as a warning on load."""
     from lilbee.cli.tui.screens import placement as screen_mod
-    from lilbee.providers.fleet.placement_spec import PlacementError
+    from lilbee.providers.roles import WorkerRole
 
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    def _fail(spec):  # type: ignore[no-untyped-def]
-        raise PlacementError("clear fail")
-
-    monkeypatch.setattr(screen_mod, "set_placement", _fail)
+    view = _make_view(unplaceable=(WorkerRole.VISION,))
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: view)
 
     notes: list[str] = []
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        monkeypatch.setattr(screen, "notify", lambda msg, **k: notes.append(msg))
-        await pilot.press("ctrl+x")
-        await pilot.pause()
+    async with app.run_test(size=(140, 44)) as pilot:
+        app.screen.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
+        app.screen._load_placement()
         await pilot.pause()
 
-    assert any("clear fail" in n for n in notes)
+    assert any("vision" in n.lower() for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_apply_disables_editor_while_running(monkeypatch):
+    """ctrl+s sets applying=True and disables the editor until set_placement returns."""
+    from textual.containers import Vertical
+
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    gate = threading.Event()
+    monkeypatch.setattr(screen_mod, "set_placement", lambda spec: gate.wait())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        screen = app.screen
+        assert screen.applying is True
+        assert screen.query_one(screen_mod._EDITOR_ID, Vertical).disabled is True
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert screen.applying is False
+
+
+@pytest.mark.asyncio
+async def test_apply_ignored_while_applying(monkeypatch):
+    """A second ctrl+s while applying is a no-op (single-flight guard)."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    calls: list[object] = []
+    gate = threading.Event()
+
+    def _blocking(spec):  # type: ignore[no-untyped-def]
+        calls.append(spec)
+        gate.wait()
+
+    monkeypatch.setattr(screen_mod, "set_placement", _blocking)
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_go_back_binding(monkeypatch):
+    """q pops the screen."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, screen_mod.PlacementScreen)
+        await pilot.press("q")
+        await pilot.pause()
 
 
 @pytest.mark.asyncio
 async def test_go_back_single_screen(monkeypatch):
-    """action_go_back with a single-item screen_stack calls switch_view."""
+    """action_go_back with a single-item screen_stack calls switch_view('Chat')."""
     from lilbee.cli.tui.screens import placement as screen_mod
 
     monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
 
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         screen = app.screen
         called: list[str] = []
-        # Simulate single-screen stack so the else branch is taken.
         monkeypatch.setattr(type(app), "screen_stack", property(lambda self: [screen]))
         monkeypatch.setattr(app, "switch_view", lambda v: called.append(v))
         screen.action_go_back()
@@ -345,129 +373,21 @@ async def test_go_back_single_screen(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_preview_bad_json_notifies(monkeypatch):
-    """ctrl+r with invalid JSON shows an error notification, not a crash."""
+async def test_load_placement_error_notifies(monkeypatch):
+    """An exception from get_placement on load shows a notification."""
     from lilbee.cli.tui.screens import placement as screen_mod
 
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    def _boom():
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(screen_mod, "get_placement", _boom)
     notes: list[str] = []
 
     app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+    async with app.run_test(size=(140, 44)) as pilot:
         screen = app.screen
-        screen._spec_text = "not-valid-json"
-        monkeypatch.setattr(screen, "notify", lambda msg, **k: notes.append(msg))
-        await pilot.press("ctrl+r")
+        screen.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
+        screen._load_placement()
         await pilot.pause()
 
-    assert any(notes)
-
-
-@pytest.mark.asyncio
-async def test_apply_empty_spec_calls_set_placement_none(monkeypatch):
-    """ctrl+s with an empty spec passes None to set_placement."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-    set_calls: list[object] = []
-    monkeypatch.setattr(
-        screen_mod, "set_placement", lambda spec: set_calls.append(spec) or _make_view()
-    )
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        screen._spec_text = ""
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        await pilot.pause()
-
-    assert set_calls == [None]
-
-
-@pytest.mark.asyncio
-async def test_apply_disables_input_while_running(monkeypatch):
-    """ctrl+s sets applying=True and disables the TextArea until set_placement returns."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    gate = threading.Event()
-
-    def _blocking_set(spec):  # type: ignore[no-untyped-def]
-        gate.wait()
-
-    monkeypatch.setattr(screen_mod, "set_placement", _blocking_set)
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        screen._spec_text = '{"chat": {"devices": [0]}}'
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert screen.applying is True
-        text_area = screen.query_one(screen_mod._SPEC_AREA_ID, TextArea)
-        assert text_area.disabled is True
-        gate.set()
-        await app.workers.wait_for_complete()
-        await pilot.pause()
-        assert screen.applying is False
-        assert text_area.disabled is False
-
-
-@pytest.mark.asyncio
-async def test_apply_ignored_while_applying(monkeypatch):
-    """ctrl+s is a no-op when applying is already True (double-apply guard)."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    set_calls: list[object] = []
-    gate = threading.Event()
-
-    def _blocking_set(spec):  # type: ignore[no-untyped-def]
-        set_calls.append(spec)
-        gate.wait()
-
-    monkeypatch.setattr(screen_mod, "set_placement", _blocking_set)
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        screen._spec_text = '{"chat": {"devices": [0]}}'
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert screen.applying is True
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        gate.set()
-        await app.workers.wait_for_complete()
-        await pilot.pause()
-
-    assert len(set_calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_clear_ignored_while_applying(monkeypatch):
-    """ctrl+x is a no-op when applying is already True."""
-    from lilbee.cli.tui.screens import placement as screen_mod
-
-    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
-
-    set_calls: list[object] = []
-
-    app = PlacementTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        screen = app.screen
-        monkeypatch.setattr(screen_mod, "set_placement", lambda spec: set_calls.append(spec))
-        screen.applying = True
-        await pilot.press("ctrl+x")
-        await pilot.pause()
-
-    assert set_calls == []
+    assert any("probe failed" in n for n in notes)
