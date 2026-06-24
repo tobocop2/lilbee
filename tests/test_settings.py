@@ -388,6 +388,23 @@ class TestOverlayPersistedSettings:
             cfg.vision_replicas = original
 
 
+class TestAutoSyncConfig:
+    def test_auto_sync_defaults_true(self):
+        from lilbee.core.config import Config
+
+        assert Config().auto_sync is True
+
+    def test_auto_sync_is_writable(self):
+        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
+
+        assert "auto_sync" in WRITABLE_CONFIG_FIELDS
+
+    def test_auto_sync_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        assert "auto_sync" in SETTINGS_MAP
+
+
 class TestListSettingRegexMarker:
     def test_only_regex_list_validates_as_regex(self):
         from lilbee.app.settings_map import SETTINGS_MAP

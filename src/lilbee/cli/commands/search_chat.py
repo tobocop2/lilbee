@@ -169,8 +169,11 @@ def ask(
     repeat_penalty: float | None = repeat_penalty_option,
     num_ctx: int | None = num_ctx_option,
     seed: int | None = seed_option,
+    no_sync: bool = typer.Option(
+        False, "--no-sync", help="Skip the pre-answer auto-sync (useful on large static corpora)."
+    ),
 ) -> None:
-    """Ask a one-shot question (auto-syncs first)."""
+    """Ask a one-shot question."""
     apply_overrides(
         data_dir=data_dir,
         model=model,
@@ -192,12 +195,13 @@ def ask(
         if pulled is not None:
             apply_settings_update({"chat_model": pulled})
         get_services().embedder.validate_model()
-        if cfg.json_mode:
-            from rich.console import Console as _QuietConsole
+        if cfg.auto_sync and not no_sync:
+            if cfg.json_mode:
+                from rich.console import Console as _QuietConsole
 
-            auto_sync(_QuietConsole(quiet=True))
-        else:
-            auto_sync(console)
+                auto_sync(_QuietConsole(quiet=True))
+            else:
+                auto_sync(console)
 
         chunk_type = scope_to_chunk_type(scope)
 
