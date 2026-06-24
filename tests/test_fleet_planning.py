@@ -425,13 +425,23 @@ def test_search_reservation_scales_with_replicas() -> None:
     assert planning_mod._search_reservation(inputs) == 3 * 2 * _GB + 1 * _GB
 
 
-def test_placement_estimate_ctx_chat_reserves_usable_floor(monkeypatch) -> None:
-    """A long-context model reserves the usable floor, not its full trained ceiling.
+def test_placement_estimate_ctx_chat_reserves_target(monkeypatch) -> None:
+    """A long-context model reserves the chat ctx target, not its full trained ceiling.
 
-    Reserving the full ceiling over-charges KV and can wrongly reject a split;
-    the served ctx is grown to the chosen cards' headroom after placement.
+    Reserving the full ceiling over-charges KV and can wrongly reject a split; the
+    target is the context we intend to serve, capped by the model and floored at a
+    usable minimum.
     """
     monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
+    monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
+    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 24576
+
+
+def test_placement_estimate_ctx_chat_floored_when_target_tiny(monkeypatch) -> None:
+    """A tiny target is floored at the usable minimum so placement still reserves room."""
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
     assert (
         planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {})
@@ -451,11 +461,11 @@ def test_placement_estimate_ctx_chat_honors_num_ctx_pin(monkeypatch) -> None:
     assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 16384
 
 
-def test_estimate_role_chat_footprint_sized_at_usable_floor(monkeypatch) -> None:
-    """The single-instance chat footprint reserves KV for the usable floor, not the
+def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
+    """The single-instance chat footprint reserves KV for the target ctx, not the
     single-card dynamic ctx (which collapses when a big model barely fits one card).
 
-    Regression for bb-9rn: sizing at the floor is what lets a too-tight single-card
+    Regression for bb-9rn: sizing at the target is what lets a too-tight single-card
     placement fall through to a tensor-split instead of a 512-token corner.
     """
     captured: dict[str, int] = {}
@@ -465,6 +475,7 @@ def test_estimate_role_chat_footprint_sized_at_usable_floor(monkeypatch) -> None
         return GgufVramEstimate(vram_bytes=10**8, ram_bytes=0, unified_bytes=10**8)
 
     monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
     monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
     monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
     monkeypatch.setattr(
@@ -474,7 +485,7 @@ def test_estimate_role_chat_footprint_sized_at_usable_floor(monkeypatch) -> None
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 262144)
 
     planning_mod._estimate_role(WorkerRole.CHAT, "org/chat.gguf")
-    assert captured["ctx"] == planning_mod._MIN_USABLE_CHAT_CTX
+    assert captured["ctx"] == 24576
 
 
 def test_placement_estimate_ctx_non_chat_delegates_to_role_ctx(monkeypatch) -> None:
@@ -693,10 +704,35 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=9000, unified=900)
         )
-        shared = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1, unified_budget=10**9)
-        discrete = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1)
+        shared = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, unified_budget=10**9)
+        discrete = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
         assert shared.est_vram_bytes == 900
         assert discrete.est_vram_bytes == 9000
+
+
+    def test_estimate_role_chat_charged_at_serve_budget(self, monkeypatch) -> None:
+        """A chat instance's placement footprint is scaled up by the placement/serve
+        budget ratio, so a model that would starve its KV on one card is tensor-split.
+
+        Regression for bb-9rn: without this, a 17GB model fits one 24GB card at the 0.9
+        placement headroom but its served ctx (sized at 0.75) collapses to ~512 tokens.
+        """
+        monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+        monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
+        monkeypatch.setattr(
+            planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=10000)
+        )
+
+        chat = planning_mod._estimate_role(WorkerRole.CHAT, "ref")
+        embed = planning_mod._estimate_role(WorkerRole.EMBED, "ref")
+        # chat charged at the serve budget: 10000 * (USABLE_VRAM_FRACTION / 0.75); embed raw.
+        assert chat.est_vram_bytes == int(10000 * (planning_mod.USABLE_VRAM_FRACTION / 0.75))
+        assert embed.est_vram_bytes == 10000
 
     def test_launch_for_vision_passes_mmproj(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "v.gguf"
@@ -723,8 +759,8 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=7777)
         )
-        inp = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=2)
-        assert inp.role == WorkerRole.CHAT
+        inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=2)
+        assert inp.role == WorkerRole.EMBED
         assert inp.est_vram_bytes == 7777
 
     def test_launch_for_builds_instance_with_pinning(self, tmp_path, monkeypatch) -> None:

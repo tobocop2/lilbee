@@ -32,7 +32,7 @@ from lilbee.providers.fleet.placement import (
     plan_placement,
 )
 from lilbee.providers.fleet.placement_spec import PlacementSpec
-from lilbee.providers.fleet.vram import estimate_instance_footprint
+from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
@@ -440,11 +440,27 @@ def _estimate_role(
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
     )
-    return ModelPlacementInput(
-        role=role,
-        est_vram_bytes=est.footprint(unified=unified_budget is not None),
-        replicas=_replica_count(role),
-    )
+    fp = est.footprint(unified=unified_budget is not None)
+    if role is WorkerRole.CHAT and unified_budget is None:
+        fp = _chat_serve_budget_footprint(fp)
+    return ModelPlacementInput(role=role, est_vram_bytes=fp, replicas=_replica_count(role))
+
+
+def _chat_serve_budget_footprint(footprint: int) -> int:
+    """Charge a chat instance against the serve budget, not the placement headroom.
+
+    The planner fits instances within ``USABLE_VRAM_FRACTION`` of a card, but a
+    single-card chat then sizes its KV cache against the smaller
+    ``cfg.gpu_memory_fraction`` budget (``resolve_chat_ctx``). A model that fills a
+    card at 0.9 leaves no room for KV at 0.75 and collapses to a few hundred tokens,
+    so scale its placement footprint by the budget ratio: it then needs a
+    tensor-split (pooling VRAM across cards) whenever single-carding it would starve
+    its context. Small models are unaffected -- they fit the serve budget with KV
+    room to spare.
+    """
+    from lilbee.core.config import cfg
+
+    return int(footprint * (USABLE_VRAM_FRACTION / cfg.gpu_memory_fraction))
 
 
 def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
@@ -462,7 +478,9 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
     if role is WorkerRole.CHAT:
         if cfg.num_ctx is not None:
             return cfg.num_ctx
-        return min(chat_ctx_ceiling(meta, model_path), _MIN_USABLE_CHAT_CTX)
+        return min(
+            chat_ctx_ceiling(meta, model_path), max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX)
+        )
     return _role_ctx(role, model_path, meta)
 
 
