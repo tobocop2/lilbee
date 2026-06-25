@@ -24,7 +24,6 @@ from lilbee.data.ingest.types import (
 )
 from lilbee.data.ingest.vision_ocr_backend import backend_options_for, ocr_request
 from lilbee.data.store import ChunkType, PageTextRecord
-from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -114,30 +113,31 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
     if cfg.vision_model:
         options = backend_options_for(ocr_token) if ocr_token else None
         return OcrConfig(backend=OcrBackendName.LILBEE_VISION, backend_options=options)
-    return OcrConfig(backend=OcrBackendName.TESSERACT)
+    # kreuzberg requires a non-empty language list (4.x defaulted to English;
+    # 5.x errors on an empty one). cfg.ocr_language is validated non-empty.
+    return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(cfg.ocr_language))
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode."""
     from kreuzberg import ExtractionConfig, PageConfig
 
+    # Files are extracted one per call, so kreuzberg parallelizes OCR across the
+    # pages of each document internally; cross-file concurrency is the pipeline's
+    # semaphore. (max_concurrent_extractions only bounds multi-file batch calls,
+    # which lilbee never makes, so it is intentionally not set here.)
     chunking = build_chunking_config()
     ocr = _ocr_config(ocr_token)
-    # Bound batch extraction to the CPU budget so kreuzberg and the pipeline
-    # semaphore stop competing for cores.
-    max_concurrent = cpu_quota()
     if mode is ExtractMode.PAGINATED:
         return ExtractionConfig(
             chunking=chunking,
             pages=PageConfig(extract_pages=True, insert_page_markers=False),
             ocr=ocr,
-            max_concurrent_extractions=max_concurrent,
         )
     return ExtractionConfig(
         chunking=chunking,
         output_format=MARKDOWN_OUTPUT,
         ocr=ocr,
-        max_concurrent_extractions=max_concurrent,
     )
 
 

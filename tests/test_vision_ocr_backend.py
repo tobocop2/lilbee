@@ -110,6 +110,20 @@ class TestProcessImage:
         be.process_image(b"PNG", _cfg(backend_options="not-json"))
         assert calls[0][3] == 0.0
 
+    def test_malformed_config_string_falls_back_to_defaults(self):
+        # A non-JSON config string yields an empty view: resolved prompt, zero timeout.
+        be, calls = _backend(model="vendor/glm-ocr")
+        be.process_image(b"PNG", "}{ not json")
+        _, _, prompt, timeout = calls[0]
+        assert prompt == "OCR"
+        assert timeout == 0.0
+
+    def test_non_object_json_config_falls_back_to_defaults(self):
+        # Valid JSON that isn't an object (e.g. a bare number) is treated as empty.
+        be, calls = _backend(model="vendor/glm-ocr")
+        be.process_image(b"PNG", "123")
+        assert calls[0][2] == "OCR"
+
 
 class TestRegistry:
     def test_token_registered_within_scope_and_cleaned_after(self):

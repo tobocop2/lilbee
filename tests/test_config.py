@@ -145,6 +145,34 @@ class TestEnvVarOverrides:
             c = Config()
             assert c.chat_model == ref
 
+
+class TestOcrLanguage:
+    def test_defaults_to_english(self, tmp_path):
+        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+            assert Config().ocr_language == ["eng"]
+
+    def test_env_plus_separated(self, tmp_path):
+        env = _clean_env(tmp_path) | {"LILBEE_OCR_LANGUAGE": "eng+deu"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().ocr_language == ["eng", "deu"]
+
+    def test_env_comma_separated(self, tmp_path):
+        env = _clean_env(tmp_path) | {"LILBEE_OCR_LANGUAGE": "deu, fra"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().ocr_language == ["deu", "fra"]
+
+    def test_direct_list(self):
+        assert Config(ocr_language=["spa"]).ocr_language == ["spa"]
+
+    def test_empty_list_falls_back_to_english(self):
+        assert Config(ocr_language=[]).ocr_language == ["eng"]
+
+    def test_blank_string_falls_back_to_english(self):
+        assert Config(ocr_language="").ocr_language == ["eng"]
+
+    def test_blank_entries_are_dropped(self):
+        assert Config(ocr_language=["", "eng", "  "]).ocr_language == ["eng"]
+
     def test_chat_mode_defaults_to_search_when_none_or_empty(self):
         """The validator coerces None / "" to 'search' so old configs round-trip."""
         from lilbee.core.config.model import Config as ConfigCls

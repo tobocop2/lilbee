@@ -132,6 +132,10 @@ class Config(BaseSettings):
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
+    # Tesseract OCR language codes for the scanned-document fallback (used when no
+    # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
+    # LILBEE_OCR_LANGUAGE="eng+deu". kreuzberg requires a non-empty list.
+    ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
     server_host: str = "127.0.0.1"
@@ -677,6 +681,18 @@ class Config(BaseSettings):
             except ValueError:
                 pass  # fall through to bool() coercion below for unrecognised strings
         return bool(v)
+
+    @field_validator("ocr_language", mode="before")
+    @classmethod
+    def _parse_ocr_language(cls, v: Any) -> list[str]:
+        """Accept a list or a comma/plus-separated string; never return empty.
+
+        Tesseract uses ``+`` to join languages and kreuzberg errors on an empty
+        list, so blank input falls back to English.
+        """
+        items = v.replace("+", ",").split(",") if isinstance(v, str) else (v or [])
+        langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        return langs or ["eng"]
 
     @field_validator("flash_attention", mode="before")
     @classmethod

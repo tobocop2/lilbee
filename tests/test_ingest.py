@@ -282,7 +282,7 @@ class TestSync:
         assert result.added == []
 
     async def test_unsupported_extension_skipped(self, mock_extract_file, isolated_env):
-        (isolated_env / "data.zip").write_bytes(b"binary data")
+        (isolated_env / "data.exe").write_bytes(b"binary data")
         from lilbee.data.ingest import sync
 
         assert (await sync()).added == []
@@ -1423,14 +1423,14 @@ class TestClassifyFile:
         "filename, expected",
         [
             ("doc.pdf", "pdf"),
-            ("f.md", "text"),
-            ("f.txt", "text"),
-            ("f.html", "text"),
-            ("f.rst", "text"),
+            ("f.md", "md"),
+            ("f.txt", "txt"),
+            ("f.html", "html"),
+            ("f.rst", "rst"),
             ("f.py", "code"),
             ("f.js", "code"),
             ("f.go", "code"),
-            ("f.zip", None),
+            ("f.zip", "zip"),
             ("f.exe", None),
         ],
     )
@@ -1846,8 +1846,8 @@ class TestClassifyNewFormats:
             ("scan.tif", "image"),
             ("img.bmp", "image"),
             ("img.webp", "image"),
-            ("data.csv", "data"),
-            ("data.tsv", "data"),
+            ("data.csv", "csv"),
+            ("data.tsv", "tsv"),
         ],
     )
     def test_classify(self, filename, expected):
@@ -1948,6 +1948,17 @@ class TestExtractionConfig:
         assert config.get("ocr") is not None
         # No vision model configured -> kreuzberg's tesseract backend OCRs scanned pages.
         assert config["ocr"].backend == "tesseract"
+        # kreuzberg 5.x errors on image OCR with an empty language list; lilbee must
+        # set an explicit default to preserve 4.x behavior (regression guard).
+        assert config["ocr"].language == ["eng"]
+
+    def test_tesseract_ocr_language_from_config(self, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "ocr_language", ["deu", "fra"])
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config["ocr"].language == ["deu", "fra"]
 
     @pytest.mark.parametrize(
         "content_type, expected_mode_name",
@@ -1991,7 +2002,7 @@ class TestClassifyKreuzbergParityFormats:
             ("scan.j2k", "image"),
             ("scan.j2c", "image"),
             ("scan.jpx", "image"),
-            ("page.htm", "text"),
+            ("page.htm", "htm"),
             ("memo.doc", "doc"),
             ("deck.ppt", "ppt"),
             ("ledger.xls", "xls"),
@@ -2000,11 +2011,10 @@ class TestClassifyKreuzbergParityFormats:
             ("ledger.ods", "ods"),
             ("mail.eml", "eml"),
             ("mail.msg", "msg"),
-            ("table.dbf", "data"),
-            # Containers stay unsupported on purpose: one file fans out to many
-            # inner documents, which the source/citation model can't express yet.
-            ("archive.pst", None),
-            ("archive.7z", None),
+            ("table.dbf", "dbf"),
+            # Containers are supported too (kreuzberg extracts their combined text).
+            ("archive.pst", "pst"),
+            ("archive.7z", "7z"),
         ],
     )
     def test_classify(self, filename, expected):
@@ -2019,10 +2029,10 @@ class TestClassifyStructuredFormats:
         [
             ("data.xml", "xml"),
             ("data.json", "json"),
-            ("data.jsonl", "json"),
-            ("config.yaml", "text"),
-            ("config.yml", "text"),
-            ("data.csv", "data"),
+            ("data.jsonl", "jsonl"),
+            ("config.yaml", "yaml"),
+            ("config.yml", "yml"),
+            ("data.csv", "csv"),
         ],
     )
     def test_classify(self, filename, expected):

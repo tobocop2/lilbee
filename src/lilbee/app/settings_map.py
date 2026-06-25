@@ -721,6 +721,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
+    "ocr_language": SettingDef(
+        list,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Tesseract OCR language codes when no vision model is set (e.g. eng, eng+deu)",
+    ),
     "worker_pool_eager_start": SettingDef(
         bool,
         nullable=False,

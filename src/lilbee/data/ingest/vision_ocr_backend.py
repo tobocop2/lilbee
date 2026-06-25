@@ -74,19 +74,12 @@ def backend_options_for(token: str) -> str:
     return json.dumps({_REQUEST_TOKEN_KEY: token})
 
 
-def _config_to_dict(config: str | dict[str, Any]) -> dict[str, Any]:
-    """Normalize the OcrConfig kreuzberg hands process_image into a dict.
-
-    kreuzberg serializes the OcrConfig to a JSON string for the callback (rc.35);
-    an already-parsed dict is accepted as-is for forward compatibility.
-    """
-    if isinstance(config, str):
-        try:
-            raw: object = json.loads(config)
-        except (ValueError, TypeError):
-            return {}
-    else:
-        raw = config
+def _config_to_dict(config: str) -> dict[str, Any]:
+    """Parse the OcrConfig JSON string kreuzberg passes to process_image into a dict."""
+    try:
+        raw: object = json.loads(config)
+    except (ValueError, TypeError):
+        return {}
     return cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
 
 
@@ -155,9 +148,9 @@ class VisionOcrBackend:
     def backend_type(self) -> str:
         return "custom"
 
-    def process_image(self, image_bytes: bytes, config: str | dict[str, Any]) -> dict[str, Any]:
+    def process_image(self, image_bytes: bytes, config: str) -> dict[str, Any]:
         # kreuzberg serializes the OcrConfig to a JSON string for the callback;
-        # normalize before reading fields.
+        # parse before reading fields.
         view = _OcrConfigView(_config_to_dict(config))
         model = self._model_ref_fn()
         prompt = view.vlm_prompt or resolve_ocr_prompt(model)
