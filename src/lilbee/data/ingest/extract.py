@@ -1,4 +1,4 @@
-"""Document extraction: one kreuzberg pass that natively extracts text and OCRs
+"""Document extraction: one xberg pass that natively extracts text and OCRs
 scanned pages/images through the registered backend; chunk + embed the result."""
 
 from __future__ import annotations
@@ -32,11 +32,11 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from kreuzberg import ExtractionConfig, OcrConfig
+    from xberg import ExtractionConfig, OcrConfig
 
     # extract_* return the pyo3 result (attribute access), not the public
-    # ExtractionResult TypedDict (kreuzberg-7ih).
-    from kreuzberg._kreuzberg import ExtractionResult
+    # ExtractionResult TypedDict (xberg-7ih).
+    from xberg._xberg import ExtractionResult
 
 log = logging.getLogger(__name__)
 
@@ -103,26 +103,26 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
     """Pick the OCR backend for this extraction.
 
     Mirrors the prior fallback policy: OCR off when ``enable_ocr`` is False; lilbee's
-    vision backend when a vision model is configured; otherwise kreuzberg's tesseract.
-    kreuzberg auto-OCRs only the pages that lack a text layer.
+    vision backend when a vision model is configured; otherwise xberg's tesseract.
+    xberg auto-OCRs only the pages that lack a text layer.
     """
-    from kreuzberg import OcrConfig
+    from xberg import OcrConfig
 
     if _effective_enable_ocr() is False:
         return OcrConfig(enabled=False)
     if cfg.vision_model:
         options = backend_options_for(ocr_token) if ocr_token else None
         return OcrConfig(backend=OcrBackendName.LILBEE_VISION, backend_options=options)
-    # kreuzberg requires a non-empty language list (4.x defaulted to English;
+    # xberg requires a non-empty language list (4.x defaulted to English;
     # 5.x errors on an empty one). cfg.ocr_language is validated non-empty.
     return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(cfg.ocr_language))
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode."""
-    from kreuzberg import ExtractionConfig, PageConfig
+    from xberg import ExtractionConfig, PageConfig
 
-    # Files are extracted one per call, so kreuzberg parallelizes OCR across the
+    # Files are extracted one per call, so xberg parallelizes OCR across the
     # pages of each document internally; cross-file concurrency is the pipeline's
     # semaphore. (max_concurrent_extractions only bounds multi-file batch calls,
     # which lilbee never makes, so it is intentionally not set here.)
@@ -161,7 +161,7 @@ async def chunk_and_embed_pages(
     if not page_texts:
         return []
 
-    # chunk_text runs kreuzberg's synchronous extractor; offload it so a long
+    # chunk_text runs xberg's synchronous extractor; offload it so a long
     # document does not stall sibling files sharing this event loop.
     all_chunks = await asyncio.to_thread(_chunk_pages, page_texts)
     if not all_chunks:
@@ -229,15 +229,15 @@ async def ingest_document(
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
 ) -> list[ChunkRecord]:
-    """Extract, chunk, and embed a document in a single kreuzberg pass.
+    """Extract, chunk, and embed a document in a single xberg pass.
 
-    kreuzberg extracts native text and, where a page has none, OCRs it through the
+    xberg extracts native text and, where a page has none, OCRs it through the
     registered backend (lilbee's vision model, or tesseract). Per-page OCR progress
     is streamed as a running count via ``ocr_request``. ``quiet`` is accepted for
     pipeline call compatibility.
     """
     del quiet
-    from kreuzberg import extract_file
+    from xberg import extract_file
 
     page_seen = 0
 
@@ -306,7 +306,7 @@ async def ingest_markdown(
     if not raw_text.strip():
         return []
 
-    # chunk_text runs kreuzberg's synchronous extractor; offload it so a large
+    # chunk_text runs xberg's synchronous extractor; offload it so a large
     # markdown doc does not stall sibling files sharing this event loop.
     texts = await asyncio.to_thread(
         chunk_text, raw_text, mime_type="text/markdown", heading_context=True

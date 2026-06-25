@@ -1,4 +1,4 @@
-"""lilbee's vision model exposed as a kreuzberg custom OCR backend."""
+"""lilbee's vision model exposed as a xberg custom OCR backend."""
 
 from __future__ import annotations
 
@@ -16,22 +16,22 @@ from lilbee.vision import resolve_ocr_prompt
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-# Token key inside OcrConfig.backend_options JSON. kreuzberg does not propagate
-# contextvars into process_image (kreuzberg-4w9), so per-request state travels as
+# Token key inside OcrConfig.backend_options JSON. xberg does not propagate
+# contextvars into process_image (xberg-4w9), so per-request state travels as
 # a token on the config and is resolved through the registry below.
 _REQUEST_TOKEN_KEY = "req"  # noqa: S105  # JSON key name, not a secret
 
 
 @dataclass(frozen=True)
 class OcrRequestContext:
-    """Per-extraction state the backend needs but kreuzberg won't carry for it."""
+    """Per-extraction state the backend needs but xberg won't carry for it."""
 
     on_page: Callable[[], None] | None = None
     timeout: float = 0.0
 
 
 class _OcrRequestRegistry:
-    """Token-keyed request contexts; lock-guarded (process_image runs on kreuzberg threads)."""
+    """Token-keyed request contexts; lock-guarded (process_image runs on xberg threads)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -75,7 +75,7 @@ def backend_options_for(token: str) -> str:
 
 
 def _config_to_dict(config: str) -> dict[str, Any]:
-    """Parse the OcrConfig JSON string kreuzberg passes to process_image into a dict."""
+    """Parse the OcrConfig JSON string xberg passes to process_image into a dict."""
     try:
         raw: object = json.loads(config)
     except (ValueError, TypeError):
@@ -84,7 +84,7 @@ def _config_to_dict(config: str) -> dict[str, Any]:
 
 
 class _OcrConfigView:
-    """Typed reader over the kreuzberg OcrConfig (normalized to a dict)."""
+    """Typed reader over the xberg OcrConfig (normalized to a dict)."""
 
     def __init__(self, config: dict[str, Any]) -> None:
         self._config = config
@@ -122,7 +122,7 @@ def _lilbee_version() -> str:
 
 
 class VisionOcrBackend:
-    """Routes kreuzberg OCR calls to lilbee's vision model through the injected
+    """Routes xberg OCR calls to lilbee's vision model through the injected
     ``ocr_fn`` (single-image OCR) and ``model_ref_fn`` (the active vision model)."""
 
     def __init__(self, *, ocr_fn: _OcrFn, model_ref_fn: Callable[[], str]) -> None:
@@ -149,7 +149,7 @@ class VisionOcrBackend:
         return "custom"
 
     def process_image(self, image_bytes: bytes, config: str) -> dict[str, Any]:
-        # kreuzberg serializes the OcrConfig to a JSON string for the callback;
+        # xberg serializes the OcrConfig to a JSON string for the callback;
         # parse before reading fields.
         view = _OcrConfigView(_config_to_dict(config))
         model = self._model_ref_fn()
@@ -158,8 +158,8 @@ class VisionOcrBackend:
         text = self._ocr_fn(image_bytes, model, prompt, timeout=ctx.timeout if ctx else 0.0)
         if ctx is not None and ctx.on_page is not None:
             ctx.on_page()
-        # kreuzberg deserializes this dict into its OCR result struct; all of these
-        # keys are required (kreuzberg-1mc).
+        # xberg deserializes this dict into its OCR result struct; all of these
+        # keys are required (xberg-1mc).
         return {
             "content": text,
             "mime_type": MARKDOWN_MIME,

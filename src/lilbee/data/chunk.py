@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING
 from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
-    from kreuzberg import ChunkingConfig
+    from xberg import ChunkingConfig
 
 CHARS_PER_TOKEN = 4
 
 _SEMANTIC_CHUNKER = "semantic"
 _MARKDOWN_CHUNKER = "markdown"
-# Kreuzberg silently falls back to a non-semantic path when embedding is None.
+# Xberg silently falls back to a non-semantic path when embedding is None.
 _SEMANTIC_EMBEDDING_PRESET = "fast"
 _DISABLE_PROGRESS_ENV = "HF_HUB_DISABLE_PROGRESS_BARS"
 
@@ -37,8 +37,8 @@ def _show_download_progress() -> bool:
 
 
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
-    """Build a kreuzberg ChunkingConfig from the current cfg."""
-    from kreuzberg import ChunkingConfig, EmbeddingConfig
+    """Build an xberg ChunkingConfig from the current cfg."""
+    from xberg import ChunkingConfig, EmbeddingConfig, EmbeddingModelType
 
     max_chars, max_overlap = _char_budget()
 
@@ -46,7 +46,9 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
         return ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
             embedding=EmbeddingConfig(
-                model=_SEMANTIC_EMBEDDING_PRESET,
+                # xberg's .pyi omits the per-variant constructors alef #147 added at
+                # runtime; preset() works but isn't declared in the stub yet.
+                model=EmbeddingModelType.preset(_SEMANTIC_EMBEDDING_PRESET),  # type: ignore[attr-defined]
                 show_download_progress=_show_download_progress(),
             ),
             topic_threshold=cfg.topic_threshold,
@@ -67,7 +69,7 @@ def chunk_text(
     if not text or not text.strip():
         return []
 
-    from kreuzberg import ChunkingConfig, ExtractionConfig, extract_bytes_sync
+    from xberg import ChunkingConfig, ExtractionConfig, extract_bytes_sync
 
     if heading_context:
         max_chars, max_overlap = _char_budget()

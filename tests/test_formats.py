@@ -1,8 +1,8 @@
 """Real-file format tests: full sync() pipeline with actual files on disk.
 
-All document formats go through kreuzberg. Code files still use tree-sitter.
-Embeddings are mocked (no live LLM server needed). kreuzberg is mocked for document
-extraction since we're testing the pipeline, not kreuzberg itself.
+All document formats go through xberg. Code files still use tree-sitter.
+Embeddings are mocked (no live LLM server needed). xberg is mocked for document
+extraction since we're testing the pipeline, not xberg itself.
 """
 
 from __future__ import annotations
@@ -49,8 +49,8 @@ def mock_svc():
     set_services(None)
 
 
-def _make_kreuzberg_result(text="Extracted content. " * 10, num_chunks=1):
-    """Build a mock kreuzberg ExtractionResult."""
+def _make_xberg_result(text="Extracted content. " * 10, num_chunks=1):
+    """Build a mock xberg ExtractionResult."""
     chunks = []
     for i in range(num_chunks):
         chunk_text = text[i * len(text) // num_chunks : (i + 1) * len(text) // num_chunks]
@@ -74,14 +74,14 @@ def _make_kreuzberg_result(text="Extracted content. " * 10, num_chunks=1):
 
 
 # ---------------------------------------------------------------------------
-# Document formats (all go through kreuzberg)
+# Document formats (all go through xberg)
 # ---------------------------------------------------------------------------
 
 
 @mock.patch(
-    "kreuzberg.extract_file",
+    "xberg.extract_file",
     new_callable=mock.AsyncMock,
-    return_value=_make_kreuzberg_result(),
+    return_value=_make_xberg_result(),
 )
 class TestSyncDocx:
     async def test_docx_discovered_and_ingested(self, mock_extract_file, isolated_env):
@@ -93,9 +93,9 @@ class TestSyncDocx:
 
 
 @mock.patch(
-    "kreuzberg.extract_file",
+    "xberg.extract_file",
     new_callable=mock.AsyncMock,
-    return_value=_make_kreuzberg_result(),
+    return_value=_make_xberg_result(),
 )
 class TestSyncXlsx:
     async def test_xlsx_discovered_and_ingested(self, mock_extract_file, isolated_env):
@@ -107,9 +107,9 @@ class TestSyncXlsx:
 
 
 @mock.patch(
-    "kreuzberg.extract_file",
+    "xberg.extract_file",
     new_callable=mock.AsyncMock,
-    return_value=_make_kreuzberg_result(),
+    return_value=_make_xberg_result(),
 )
 class TestSyncPptx:
     async def test_pptx_discovered_and_ingested(self, mock_extract_file, isolated_env):
@@ -126,9 +126,9 @@ class TestSyncPptx:
 
 
 @mock.patch(
-    "kreuzberg.extract_file",
+    "xberg.extract_file",
     new_callable=mock.AsyncMock,
-    return_value=_make_kreuzberg_result(),
+    return_value=_make_xberg_result(),
 )
 class TestSyncEpub:
     async def test_epub_discovered_and_ingested(self, mock_extract_file, isolated_env):
@@ -145,9 +145,9 @@ class TestSyncEpub:
 
 
 @mock.patch(
-    "kreuzberg.extract_file",
+    "xberg.extract_file",
     new_callable=mock.AsyncMock,
-    return_value=_make_kreuzberg_result(),
+    return_value=_make_xberg_result(),
 )
 class TestSyncImage:
     async def test_image_discovered_and_ingested(self, mock_extract_file, isolated_env):
@@ -224,9 +224,9 @@ class TestSyncCode:
 
 
 @mock.patch(
-    "kreuzberg.extract_file",
+    "xberg.extract_file",
     new_callable=mock.AsyncMock,
-    return_value=_make_kreuzberg_result(),
+    return_value=_make_xberg_result(),
 )
 class TestSyncCsvTsv:
     async def test_csv_discovered_and_ingested(self, mock_extract_file, isolated_env):

@@ -179,7 +179,7 @@ Or crawl a whole site, not just one page. With recursive crawling on, lilbee fol
 
 lilbee splits indexing by what's being read:
 
-- **Prose and structured documents** (PDFs, Office files, ebooks, HTML, 90+ formats) go through [Kreuzberg] with heading-aware chunking, so each chunk keeps its section context.
+- **Prose and structured documents** (PDFs, Office files, ebooks, HTML, 90+ formats) go through [Xberg] with heading-aware chunking, so each chunk keeps its section context.
 - **Code** goes through [tree-sitter]'s AST-aware splitter across [150+ languages](https://github.com/Goldziher/tree-sitter-language-pack), so chunks map to functions, classes, and modules instead of arbitrary line ranges.
 - **Scanned PDFs and photos** go through OCR: Tesseract for plain text, or a local / remote vision model that keeps tables and layout as markdown.
 
@@ -358,7 +358,7 @@ Pull a chat and embedding model first; all recipes pin the server to `127.0.0.1:
 
 ## Supported formats
 
-Document extraction powered by [Kreuzberg], code chunking by [tree-sitter]. lilbee handles every format Kreuzberg can extract (100+) and tracks its list directly, so support grows as Kreuzberg adds formats. The table below covers the common ones.
+Document extraction powered by [Xberg], code chunking by [tree-sitter]. lilbee handles every format Xberg can extract (100+) and tracks its list directly, so support grows as Xberg adds formats. The table below covers the common ones.
 
 | Format       | Extensions                                                                                                                                              | Requires                                                                                                                                                                                         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -402,7 +402,7 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 lilbee stands on a stack of established open-source projects, all bundled into one install:
 
-- [Kreuzberg] parses 90+ document formats with heading-aware chunking.
+- [Xberg] parses 90+ document formats with heading-aware chunking.
 - [llama.cpp] is the local model runtime: lilbee bundles its `llama-server` and starts it for you, so every chat, embedding, vision, and reranker call goes through it. [llama-swap] keeps a server per role resident together behind one endpoint, and [gguf-parser] estimates each model's memory footprint so lilbee loads what fits. Without llama.cpp there is no lilbee.
 - [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [LanceDB] is the embedded vector store.
@@ -423,7 +423,7 @@ lilbee is built and maintained by one person. If it is useful to you, you can ch
 
 Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
 
-[Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
+[Xberg]: https://github.com/xberg-io/xberg
 [LanceDB]: https://lancedb.com
 [llama.cpp]: https://github.com/ggml-org/llama.cpp
 [llama-swap]: https://github.com/mostlygeek/llama-swap

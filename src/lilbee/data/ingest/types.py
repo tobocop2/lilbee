@@ -48,7 +48,7 @@ class FileChangePlan(NamedTuple):
 
 
 class OcrBackendName(StrEnum):
-    """OCR backends lilbee selects in OcrConfig: kreuzberg's tesseract or lilbee's vision plugin."""
+    """OCR backends lilbee selects in OcrConfig: xberg's tesseract or lilbee's vision plugin."""
 
     TESSERACT = "tesseract"
     LILBEE_VISION = "lilbee-vision"

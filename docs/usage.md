@@ -1018,7 +1018,7 @@ chunk is more likely to contain the full section that matches rather than the
 first half of it plus unrelated setup.
 
 **Trade-off:** Enabling semantic chunking triggers a one-time download of
-kreuzberg's ONNX embedding model (separate from the chunk-to-vector embedder)
+xberg's ONNX embedding model (separate from the chunk-to-vector embedder)
 and runs roughly 9x more downstream embedding calls during indexing. Indexing
 takes longer; retrieval latency is unchanged.
 

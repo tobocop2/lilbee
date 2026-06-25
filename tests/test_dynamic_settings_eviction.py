@@ -284,10 +284,10 @@ def test_chat_and_vision_model_change_reloads_those_roles(monkeypatch):
     from lilbee.providers.roles import WorkerRole
 
     # The vision-model reload also (un)registers the OCR backend; keep that global
-    # kreuzberg state out of this unit test.
-    monkeypatch.setattr("kreuzberg.list_ocr_backends", list)
-    monkeypatch.setattr("kreuzberg.register_ocr_backend", lambda backend: None)
-    monkeypatch.setattr("kreuzberg.unregister_ocr_backend", lambda name: None)
+    # xberg state out of this unit test.
+    monkeypatch.setattr("xberg.list_ocr_backends", list)
+    monkeypatch.setattr("xberg.register_ocr_backend", lambda backend: None)
+    monkeypatch.setattr("xberg.unregister_ocr_backend", lambda name: None)
 
     provider = _install_recording_provider()
     try:

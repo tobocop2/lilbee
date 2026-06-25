@@ -189,7 +189,7 @@ Default: **every import lives at module top**, ordered stdlib, third-party, loca
 **Permitted reasons for a function-local import:**
 
 1. **Circular import.** Module A's top-level already imports module B, and module B needs a symbol from A. Put A's import of B inside the one function in B that needs it, with a comment `# circular: B -> A via <symbol>`.
-2. **Heavy third-party lib.** Module-top import takes **>50 ms measured by `python -X importtime`** or loads native libraries. Known-heavy libs in this project: `litellm` (provider SDK fanout), `lancedb` (arrow + datafusion), `kreuzberg` (OCR stack), `gguf` (numpy), `sentence_transformers`, `spacy`, `crawl4ai`, `textual` when imported outside the TUI screen modules. (The local inference engine is the out-of-process `llama-server`, reached over HTTP, so it adds no heavy Python import.) Use importtime before declaring a lib heavy.
+2. **Heavy third-party lib.** Module-top import takes **>50 ms measured by `python -X importtime`** or loads native libraries. Known-heavy libs in this project: `litellm` (provider SDK fanout), `lancedb` (arrow + datafusion), `xberg` (OCR stack), `gguf` (numpy), `sentence_transformers`, `spacy`, `crawl4ai`, `textual` when imported outside the TUI screen modules. (The local inference engine is the out-of-process `llama-server`, reached over HTTP, so it adds no heavy Python import.) Use importtime before declaring a lib heavy.
 3. **CLI startup path.** The import lives inside a Typer command body so `lilbee --help` stays fast. Treat this as a sub-case of (2): the CLI loader stays lean so unused subcommands don't pay for their dependencies.
 
 **Never lazy-import the following:**

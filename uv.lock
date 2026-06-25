@@ -1453,14 +1453,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kreuzberg"
-version = "5.0.0rc32"
-source = { path = "../../../../kreuzberg/.worktrees/rc32/dist/kreuzberg-5.0.0rc32-cp310-abi3-macosx_11_0_arm64.whl" }
-wheels = [
-    { filename = "kreuzberg-5.0.0rc32-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:79477dcd3e77e8401baa82620cb51ae500f3c553c3a251e8f204ca64cc76da9d" },
-]
-
-[[package]]
 name = "lance-namespace"
 version = "0.5.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1603,7 +1595,6 @@ dependencies = [
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "jinja2" },
-    { name = "kreuzberg" },
     { name = "lancedb" },
     { name = "lilbee-engine" },
     { name = "litestar" },
@@ -1618,6 +1609,7 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
     { name = "uvicorn" },
+    { name = "xberg" },
 ]
 
 [package.optional-dependencies]
@@ -1669,7 +1661,6 @@ requires-dist = [
     { name = "httpx" },
     { name = "huggingface-hub", specifier = ">=1.11.0" },
     { name = "jinja2", specifier = ">=2.11.3" },
-    { name = "kreuzberg", path = "../../../../kreuzberg/.worktrees/rc32/dist/kreuzberg-5.0.0rc32-cp310-abi3-macosx_11_0_arm64.whl" },
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
     { name = "lilbee-engine", directory = "packaging/engine-wheel" },
@@ -1690,6 +1681,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
+    { name = "xberg", path = "../../../../xberg-alef-trial-wheel/xberg-1.0.0rc1-cp310-abi3-macosx_11_0_arm64.whl" },
 ]
 provides-extras = ["litellm", "graph", "crawler", "cuda12", "release"]
 
@@ -4372,6 +4364,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/82/dd/e5176e4b241c9f528402cebb238a36785a628179d7d8b71091154b3e4c9e/wrapt-2.1.2-cp314-cp314t-win_amd64.whl", hash = "sha256:08ffa54146a7559f5b8df4b289b46d963a8e74ed16ba3687f99896101a3990c5", size = 63969 },
     { url = "https://files.pythonhosted.org/packages/5c/99/79f17046cf67e4a95b9987ea129632ba8bcec0bc81f3fb3d19bdb0bd60cd/wrapt-2.1.2-cp314-cp314t-win_arm64.whl", hash = "sha256:72aaa9d0d8e4ed0e2e98019cea47a21f823c9dd4b43c7b77bba6679ffcca6a00", size = 60554 },
     { url = "https://files.pythonhosted.org/packages/1a/c7/8528ac2dfa2c1e6708f647df7ae144ead13f0a31146f43c7264b4942bf12/wrapt-2.1.2-py3-none-any.whl", hash = "sha256:b8fd6fa2b2c4e7621808f8c62e8317f4aae56e59721ad933bac5239d913cf0e8", size = 43993 },
+]
+
+[[package]]
+name = "xberg"
+version = "1.0.0rc1"
+source = { path = "../../../../xberg-alef-trial-wheel/xberg-1.0.0rc1-cp310-abi3-macosx_11_0_arm64.whl" }
+wheels = [
+    { filename = "xberg-1.0.0rc1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:b8b30e44015999d52cf802a5aa8f7e54d89c87422797dc024402ee2a9cf8e015" },
 ]
 
 [[package]]

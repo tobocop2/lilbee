@@ -20,7 +20,7 @@ _PDF_MIME = "application/pdf"
 
 
 def _content_type_for(ext: str, mime: str) -> str:
-    """content_type for a kreuzberg format: PDFs and images grouped, others keyed by extension."""
+    """content_type for a xberg format: PDFs and images grouped, others keyed by extension."""
     if mime == _PDF_MIME:
         return PDF_CONTENT_TYPE
     if mime.startswith("image/"):
@@ -30,13 +30,13 @@ def _content_type_for(ext: str, mime: str) -> str:
 
 @cache
 def supported_extension_map() -> dict[str, str]:
-    """Extension -> content_type for every format kreuzberg can extract.
+    """Extension -> content_type for every format xberg can extract.
 
-    Built from ``kreuzberg.list_supported_formats()`` so lilbee covers the full set
+    Built from ``xberg.list_supported_formats()`` so lilbee covers the full set
     without a hand-maintained list. Source-code files are routed separately (their
     extensions are absent here), so ``classify_file`` falls through to the code path.
     """
-    from kreuzberg import list_supported_formats
+    from xberg import list_supported_formats
 
     out: dict[str, str] = {}
     for fmt in list_supported_formats():
@@ -60,9 +60,9 @@ def _relative_name(path: Path) -> str:
 
 
 def classify_file(path: Path) -> str | None:
-    """Classify a file by extension: a kreuzberg content_type, "code", or None.
+    """Classify a file by extension: a xberg content_type, "code", or None.
 
-    kreuzberg-extractable formats win; source code (not in kreuzberg's set) routes
+    xberg-extractable formats win; source code (not in xberg's set) routes
     to the code chunker; anything else is unsupported.
     """
     doc_type = supported_extension_map().get(path.suffix.lower())

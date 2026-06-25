@@ -132,13 +132,13 @@ def _real_ingest_result(name, *, file_hash, page_text="page one of a.pdf", stat=
     )
 
 
-def _make_kreuzberg_result(
+def _make_xberg_result(
     text="Some extracted text. " * 20,
     num_chunks=1,
     has_pages=False,
     document=None,
 ):
-    """Build a mock kreuzberg ExtractionResult."""
+    """Build a mock xberg ExtractionResult."""
     chunks = []
     for i in range(num_chunks):
         chunk_text = text[i * len(text) // num_chunks : (i + 1) * len(text) // num_chunks]
@@ -168,7 +168,7 @@ def _make_kreuzberg_result(
 
 
 def _make_empty_result():
-    """Build a mock kreuzberg ExtractionResult with no chunks."""
+    """Build a mock xberg ExtractionResult with no chunks."""
     result = mock.MagicMock()
     result.chunks = []
     result.content = ""
@@ -177,7 +177,7 @@ def _make_empty_result():
 
 
 @mock.patch(
-    "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+    "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
 )
 class TestSync:
     async def test_empty_documents_dir(self, mock_extract_file, isolated_env):
@@ -378,7 +378,7 @@ class TestSync:
     def test_flush_writes_marks_files_failed_on_write_error(self, _mock_extract_file):
         # A failed batch write moves every buffered file to ``failed`` and out of
         # added/updated, since none of its chunks persisted; the buffer still clears.
-        # ``_mock_extract_file`` is the class-level kreuzberg patch, unused here.
+        # ``_mock_extract_file`` is the class-level xberg patch, unused here.
         from lilbee.app.services import get_services
         from lilbee.data.ingest import pipeline
         from lilbee.data.ingest.types import _IngestResult
@@ -684,7 +684,7 @@ class TestSync:
 
 
 @mock.patch(
-    "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+    "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
 )
 class TestSyncCancellation:
     """Tests for cancel support and atomic per-file delete in sync."""
@@ -828,7 +828,7 @@ class TestIngestHelpers:
     """Cover edge cases in ingest_document and ingest_code_sync."""
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_empty_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_empty_result()
     )
     async def testingest_document_empty_chunks(self, mock_extract_file, isolated_env):
         """Document that produces no chunks returns empty list."""
@@ -883,10 +883,10 @@ class TestIngestHelpers:
         assert "# File: pkg/mod.py" in joined
         assert str(f) not in joined  # absolute path must never leak into content
 
-    @mock.patch("kreuzberg.extract_file", new_callable=mock.AsyncMock)
+    @mock.patch("xberg.extract_file", new_callable=mock.AsyncMock)
     async def testingest_document_pdf_with_pages(self, mock_kf, isolated_env):
         """PDF document returns records with page metadata."""
-        mock_kf.return_value = _make_kreuzberg_result(
+        mock_kf.return_value = _make_xberg_result(
             text="Page 1 content. " * 10 + "Page 2 content. " * 10,
             num_chunks=2,
             has_pages=True,
@@ -903,7 +903,7 @@ class TestIngestHelpers:
 
 class TestCancellation:
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_cancelled_error_propagates(self, mock_extract_file, isolated_env):
         """CancelledError in _process_one is re-raised, not swallowed."""
@@ -924,7 +924,7 @@ class TestCancellation:
                 await ingest_batch([entry], added, {}, {}, {}, quiet=True)
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_task_cancelled_error_does_not_orphan_siblings(
         self, mock_extract_file, isolated_env
@@ -1320,9 +1320,9 @@ class TestStatShortCircuit:
 
         monkeypatch.setattr(pipeline, "_plan_file_changes", _spy_plan)
         with mock.patch(
-            "kreuzberg.extract_file",
+            "xberg.extract_file",
             new_callable=mock.AsyncMock,
-            return_value=_make_kreuzberg_result(),
+            return_value=_make_xberg_result(),
         ):
             await sync(quiet=True)
         assert plan_threads
@@ -1337,9 +1337,9 @@ class TestStatShortCircuit:
         mock_svc.store.upsert_source("legacy.txt", file_hash(f), 1, source_type="document")
 
         with mock.patch(
-            "kreuzberg.extract_file",
+            "xberg.extract_file",
             new_callable=mock.AsyncMock,
-            return_value=_make_kreuzberg_result(),
+            return_value=_make_xberg_result(),
         ):
             result = await sync(quiet=True)
         assert result.unchanged == 1
@@ -1946,9 +1946,9 @@ class TestExtractionConfig:
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.get("pages") is not None
         assert config.get("ocr") is not None
-        # No vision model configured -> kreuzberg's tesseract backend OCRs scanned pages.
+        # No vision model configured -> xberg's tesseract backend OCRs scanned pages.
         assert config["ocr"].backend == "tesseract"
-        # kreuzberg 5.x errors on image OCR with an empty language list; lilbee must
+        # xberg 5.x errors on image OCR with an empty language list; lilbee must
         # set an explicit default to preserve 4.x behavior (regression guard).
         assert config["ocr"].language == ["eng"]
 
@@ -1991,8 +1991,8 @@ class TestExtractionConfig:
             assert config["chunking"].topic_threshold == pytest.approx(0.42, abs=1e-5)
 
 
-class TestClassifyKreuzbergParityFormats:
-    """Formats kreuzberg extracts that the map must not silently drop."""
+class TestClassifyXbergParityFormats:
+    """Formats xberg extracts that the map must not silently drop."""
 
     @pytest.mark.parametrize(
         "filename, expected",
@@ -2012,7 +2012,7 @@ class TestClassifyKreuzbergParityFormats:
             ("mail.eml", "eml"),
             ("mail.msg", "msg"),
             ("table.dbf", "dbf"),
-            # Containers are supported too (kreuzberg extracts their combined text).
+            # Containers are supported too (xberg extracts their combined text).
             ("archive.pst", "pst"),
             ("archive.7z", "7z"),
         ],
@@ -2042,7 +2042,7 @@ class TestClassifyStructuredFormats:
 
 
 @mock.patch(
-    "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+    "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
 )
 class TestSyncStructuredFormats:
     async def test_xml_file_ingested(
@@ -2252,9 +2252,9 @@ class TestIngestMarkdownEdgeCases:
 class TestPageTextAccumulator:
     """`page_texts_out` captures clean per-page text for the export dataset."""
 
-    @mock.patch("kreuzberg.extract_file", new_callable=mock.AsyncMock)
+    @mock.patch("xberg.extract_file", new_callable=mock.AsyncMock)
     async def test_pdf_pages_captured(self, mock_kf, isolated_env):
-        mock_kf.return_value = _make_kreuzberg_result(num_chunks=2, has_pages=True)
+        mock_kf.return_value = _make_xberg_result(num_chunks=2, has_pages=True)
         from lilbee.data.ingest import ingest_document
 
         f = isolated_env / "test.pdf"
@@ -2264,9 +2264,9 @@ class TestPageTextAccumulator:
         assert [p["page"] for p in pages] == [1, 2]
         assert all(p["content_type"] == "pdf" for p in pages)
 
-    @mock.patch("kreuzberg.extract_file", new_callable=mock.AsyncMock)
+    @mock.patch("xberg.extract_file", new_callable=mock.AsyncMock)
     async def test_non_paginated_doc_captured_as_page_zero(self, mock_kf, isolated_env):
-        mock_kf.return_value = _make_kreuzberg_result(text="Plain body. " * 10, has_pages=False)
+        mock_kf.return_value = _make_xberg_result(text="Plain body. " * 10, has_pages=False)
         from lilbee.data.ingest import ingest_document
 
         f = isolated_env / "note.txt"
@@ -2289,12 +2289,12 @@ class TestPageTextAccumulator:
         assert pages[0]["page"] == 0
         assert "markdown body" in pages[0]["text"]
 
-    @mock.patch("kreuzberg.extract_file", new_callable=mock.AsyncMock)
+    @mock.patch("xberg.extract_file", new_callable=mock.AsyncMock)
     async def test_ocr_pages_captured(self, mock_kf, isolated_env, mock_svc):
-        # kreuzberg OCRs scanned pages in-pass; the OCR'd text arrives in result.pages.
+        # xberg OCRs scanned pages in-pass; the OCR'd text arrives in result.pages.
         cfg.enable_ocr = True
         cfg.vision_model = ""
-        mock_kf.return_value = _make_kreuzberg_result(
+        mock_kf.return_value = _make_xberg_result(
             text="OCR page text. " * 10, num_chunks=2, has_pages=True
         )
         from lilbee.data.ingest import ingest_document
@@ -2309,12 +2309,12 @@ class TestPageTextAccumulator:
 
 class TestIngestDocumentEdgeCases:
     async def test_empty_extraction_returns_empty(self, isolated_env):
-        """Structured formats now go through kreuzberg: empty result yields no chunks."""
+        """Structured formats now go through xberg: empty result yields no chunks."""
         from lilbee.data.ingest import ingest_document
 
         empty_result = mock.MagicMock(chunks=[])
         mock_extract = mock.AsyncMock(return_value=empty_result)
-        with mock.patch("kreuzberg.extract_file", mock_extract):
+        with mock.patch("xberg.extract_file", mock_extract):
             result = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
@@ -2323,12 +2323,12 @@ class TestIngestDocumentEdgeCases:
 
         no_chunks_result = mock.MagicMock(chunks=[])
         mock_extract = mock.AsyncMock(return_value=no_chunks_result)
-        with mock.patch("kreuzberg.extract_file", mock_extract):
+        with mock.patch("xberg.extract_file", mock_extract):
             result = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
 
-class TestChunkViaKreuzberg:
+class TestChunkViaXberg:
     def test_empty_returns_empty(self):
         from lilbee.data.chunk import chunk_text
 
@@ -2348,7 +2348,7 @@ class TestConceptIndexing:
             yield
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_concept_extraction_called_during_ingest(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2365,7 +2365,7 @@ class TestConceptIndexing:
         mock_svc.concepts.extract_concepts_batch.assert_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_concept_disabled_skips_extraction(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2380,7 +2380,7 @@ class TestConceptIndexing:
         mock_svc.concepts.extract_concepts_batch.assert_not_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_concept_failure_does_not_break_ingest(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2397,7 +2397,7 @@ class TestConceptIndexing:
         assert "concept_test2.txt" in result.added
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_concept_write_failure_does_not_fail_files(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2419,7 +2419,7 @@ class TestConceptIndexing:
         assert result.failed == []
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_cluster_rebuild_called_after_sync(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2436,7 +2436,7 @@ class TestConceptIndexing:
         mock_svc.concepts.rebuild_clusters.assert_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_cluster_rebuild_failure_does_not_break_sync(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2454,7 +2454,7 @@ class TestConceptIndexing:
         assert "rebuild_test.txt" in result.added
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_graph_none_skips_indexing(self, mock_extract_file, isolated_env, mock_svc):
         """When get_graph() returns None, concept indexing is skipped gracefully."""
@@ -2468,7 +2468,7 @@ class TestConceptIndexing:
         assert "graph_none_test.txt" in result.added
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_concepts_unavailable_skips_rebuild(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2485,7 +2485,7 @@ class TestConceptIndexing:
         mock_svc.concepts.rebuild_clusters.assert_not_called()
 
     @mock.patch(
-        "kreuzberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_kreuzberg_result()
+        "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
     )
     async def test_concepts_unavailable_skips_indexing(
         self, mock_extract_file, isolated_env, mock_svc
@@ -2589,7 +2589,7 @@ class TestChunkAndEmbedPagesEmpty:
 
 
 class TestIngestDocumentOcrPath:
-    @mock.patch("kreuzberg.extract_file", new_callable=mock.AsyncMock)
+    @mock.patch("xberg.extract_file", new_callable=mock.AsyncMock)
     async def test_empty_pdf_warns_no_usable_text(self, mock_kf, isolated_env, mock_svc, caplog):
         mock_kf.return_value = mock.MagicMock(chunks=[])
         from lilbee.data.ingest import ingest_document
@@ -2600,15 +2600,15 @@ class TestIngestDocumentOcrPath:
         assert result == []
         assert "no usable text" in caplog.text
 
-    @mock.patch("kreuzberg.extract_file", new_callable=mock.AsyncMock)
+    @mock.patch("xberg.extract_file", new_callable=mock.AsyncMock)
     async def test_streams_per_page_progress_ticks(self, mock_kf, isolated_env, mock_svc):
         import json
 
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        result_obj = _make_kreuzberg_result(num_chunks=1, has_pages=True)
+        result_obj = _make_xberg_result(num_chunks=1, has_pages=True)
 
         async def fake_extract(path, *, config):
-            # Simulate kreuzberg calling the registered backend once per scanned page.
+            # Simulate xberg calling the registered backend once per scanned page.
             from lilbee.data.ingest.vision_ocr_backend import ocr_requests
 
             token = json.loads(config["ocr"].backend_options)["req"]

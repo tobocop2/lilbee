@@ -19,19 +19,19 @@ def isolated_cfg():
 
 
 class TestSyncVisionOcrBackend:
-    def _patch_kreuzberg(self, monkeypatch, *, listed):
+    def _patch_xberg(self, monkeypatch, *, listed):
         reg = MagicMock()
         unreg = MagicMock()
-        monkeypatch.setattr("kreuzberg.list_ocr_backends", lambda: listed)
-        monkeypatch.setattr("kreuzberg.register_ocr_backend", reg)
-        monkeypatch.setattr("kreuzberg.unregister_ocr_backend", unreg)
+        monkeypatch.setattr("xberg.list_ocr_backends", lambda: listed)
+        monkeypatch.setattr("xberg.register_ocr_backend", reg)
+        monkeypatch.setattr("xberg.unregister_ocr_backend", unreg)
         return reg, unreg
 
     def test_registers_when_model_set_and_absent(self, monkeypatch):
         from lilbee.app.services import sync_vision_ocr_backend
 
         monkeypatch.setattr(cfg, "vision_model", "vendor/glm-ocr")
-        reg, unreg = self._patch_kreuzberg(monkeypatch, listed=["tesseract"])
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
         sync_vision_ocr_backend(MagicMock())
         reg.assert_called_once()
         unreg.assert_not_called()
@@ -40,12 +40,12 @@ class TestSyncVisionOcrBackend:
         """A rebuilt provider must replace the stale binding: unregister then re-register.
 
         ``reset_services`` shuts the old provider down; if sync left the prior
-        registration in place, kreuzberg would keep routing OCR to the dead provider.
+        registration in place, xberg would keep routing OCR to the dead provider.
         """
         from lilbee.app.services import sync_vision_ocr_backend
 
         monkeypatch.setattr(cfg, "vision_model", "vendor/glm-ocr")
-        reg, unreg = self._patch_kreuzberg(monkeypatch, listed=["lilbee-vision"])
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee-vision"])
         sync_vision_ocr_backend(MagicMock())
         unreg.assert_called_once_with("lilbee-vision")
         reg.assert_called_once()
@@ -54,7 +54,7 @@ class TestSyncVisionOcrBackend:
         from lilbee.app.services import sync_vision_ocr_backend
 
         monkeypatch.setattr(cfg, "vision_model", "")
-        reg, unreg = self._patch_kreuzberg(monkeypatch, listed=["lilbee-vision"])
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee-vision"])
         sync_vision_ocr_backend(MagicMock())
         unreg.assert_called_once_with("lilbee-vision")
         reg.assert_not_called()
@@ -63,7 +63,7 @@ class TestSyncVisionOcrBackend:
         from lilbee.app.services import sync_vision_ocr_backend
 
         monkeypatch.setattr(cfg, "vision_model", "")
-        reg, unreg = self._patch_kreuzberg(monkeypatch, listed=["tesseract"])
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
         sync_vision_ocr_backend(MagicMock())
         reg.assert_not_called()
         unreg.assert_not_called()
@@ -77,7 +77,7 @@ class TestSyncVisionOcrBackend:
         set_services(make_mock_services())
         try:
             monkeypatch.setattr(cfg, "vision_model", "org/V-GGUF/v-Q4_K_M.gguf")
-            reg, _unreg = self._patch_kreuzberg(monkeypatch, listed=["tesseract"])
+            reg, _unreg = self._patch_xberg(monkeypatch, listed=["tesseract"])
             _reload_changed_roles({"vision_model"})
             reg.assert_called_once()
         finally:

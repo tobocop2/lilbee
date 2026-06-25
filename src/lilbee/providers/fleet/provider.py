@@ -180,7 +180,7 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
 class _VisionRequestGate:
     """Process-wide cap on concurrent vision-server requests at the fleet's OCR slots.
 
-    The ingest file fan-out runs many files at once and kreuzberg OCRs their pages
+    The ingest file fan-out runs many files at once and xberg OCRs their pages
     through per-image ``vision_ocr`` calls, so without a shared cap the aggregate
     over-subscribes a single-replica vision server into a 429 storm. The semaphore is
     rebuilt to the configured capacity (``vision_replicas * vision_ocr_concurrency``)
@@ -641,7 +641,7 @@ class FleetProvider:
                 clients, lambda client: _vision_call(client, messages, timeout)
             )
 
-    # PDF/image OCR now runs inside kreuzberg via the registered lilbee-vision
+    # PDF/image OCR now runs inside xberg via the registered lilbee-vision
     # backend (see data.ingest.vision_ocr_backend); this provider only exposes
     # single-image vision_ocr, which that backend calls.
 

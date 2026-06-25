@@ -175,7 +175,7 @@ them back.
 ### 5. Your first answer feels thin -- self-tune and retry
 
 When the user asks a broad question against a dense pile of reference
-docs (godot class XMLs, an API reference, kreuzberg-style docstrings)
+docs (godot class XMLs, an API reference, xberg-style docstrings)
 and your first `lilbee_search` returns only one or two relevant hits
 where you'd expect a family, the retrieval defaults are too narrow for
 the shape of what's indexed. Self-tune in-place rather than handing the

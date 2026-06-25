@@ -121,7 +121,7 @@ def get_services() -> Services:
     Service modules are imported inside the function to keep CLI
     startup fast: ``services`` is on every CLI import path, and the
     concrete service modules transitively pull in heavy libraries
-    (lancedb, kreuzberg). Deferring the loads until first
+    (lancedb, xberg). Deferring the loads until first
     ``get_services()`` call makes ``lilbee --help`` and TUI splash
     render in milliseconds instead of seconds.
     """
@@ -196,15 +196,15 @@ def get_services() -> Services:
 
 
 def sync_vision_ocr_backend(provider: LLMProvider) -> None:
-    """Register or unregister lilbee's vision model as kreuzberg's OCR backend.
+    """Register or unregister lilbee's vision model as xberg's OCR backend.
 
     Driven by ``cfg.vision_model``: registered while a model is set, removed when
     cleared. The backend reads ``cfg.vision_model`` live, so a model swap needs no
     re-registration, but it captures ``provider.vision_ocr``, so it must re-bind
     whenever the provider is rebuilt (``reset_services``) -- otherwise the global
-    kreuzberg registry keeps routing OCR to the shut-down provider.
+    xberg registry keeps routing OCR to the shut-down provider.
     """
-    from kreuzberg import list_ocr_backends, register_ocr_backend, unregister_ocr_backend
+    from xberg import list_ocr_backends, register_ocr_backend, unregister_ocr_backend
 
     from lilbee.core.config import cfg
     from lilbee.data.ingest.types import OcrBackendName

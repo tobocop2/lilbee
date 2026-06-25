@@ -106,7 +106,7 @@ class TestChunkText:
 
 class TestBuildChunkingConfig:
     def test_semantic_enabled_uses_semantic_chunker_with_embedding(self, monkeypatch):
-        """Semantic path requires an EmbeddingConfig or kreuzberg silently falls back."""
+        """Semantic path requires an EmbeddingConfig or xberg silently falls back."""
         from lilbee.core.config import cfg
         from lilbee.data.chunk import build_chunking_config
 
@@ -118,7 +118,7 @@ class TestBuildChunkingConfig:
         assert result.embedding is not None
 
     def test_semantic_respects_max_chars_when_embedding_present(self, monkeypatch):
-        """With an embedding attached kreuzberg honors max_characters on the semantic path."""
+        """With an embedding attached xberg honors max_characters on the semantic path."""
         from lilbee.core.config import cfg
         from lilbee.data.chunk import CHARS_PER_TOKEN, build_chunking_config
 
@@ -127,7 +127,10 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.max_characters == 512 * CHARS_PER_TOKEN
         assert result.embedding is not None
-        assert result.embedding.model == "fast"
+        # Built via the real EmbeddingModelType.preset() constructor (xberg/alef #147),
+        # not the bare-string shorthand.
+        assert result.embedding.model.type == "preset"
+        assert str(result.embedding.model) == '{"type":"preset","name":"fast"}'
 
     def test_char_budget_when_disabled(self, monkeypatch):
         from lilbee.core.config import cfg
@@ -592,7 +595,7 @@ class Greeter:
 
 class TestHeadingContextNoDuplicate:
     def test_heading_context_no_duplicate(self):
-        """kreuzberg >= 4.8.5 should not duplicate headings with prepend_heading_context."""
+        """xberg >= 4.8.5 should not duplicate headings with prepend_heading_context."""
         md = "# Title\n\n" + "Word " * 500 + "\n\n## Section\n\n" + "More " * 500
         chunks = chunk_text(md, mime_type="text/markdown", heading_context=True)
         for c in chunks:
@@ -610,5 +613,5 @@ class TestChunkTextEmptyResult:
 
         mock_result = MagicMock()
         mock_result.chunks = []
-        with patch("kreuzberg.extract_bytes_sync", return_value=mock_result):
+        with patch("xberg.extract_bytes_sync", return_value=mock_result):
             assert chunk_text("some text") == []

@@ -1,4 +1,4 @@
-"""Tests for the lilbee vision OCR backend (kreuzberg custom OCR plugin)."""
+"""Tests for the lilbee vision OCR backend (xberg custom OCR plugin)."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _backend(ocr_fn=None, model="vendor/glm-ocr"):
 
 
 def _cfg(*, vlm_prompt=None, backend_options=None):
-    """The OcrConfig JSON string kreuzberg hands process_image."""
+    """The OcrConfig JSON string xberg hands process_image."""
     return json.dumps({"vlm_prompt": vlm_prompt, "backend_options": backend_options})
 
 

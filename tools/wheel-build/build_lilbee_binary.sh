@@ -76,7 +76,7 @@ uv run --no-sync python -m nuitka \
     --include-package=tiktoken           --include-package-data=tiktoken \
     --include-package=tiktoken_ext       --include-package-data=tiktoken_ext \
     --include-package-data=numpy \
-    --include-package=kreuzberg          --include-package-data=kreuzberg \
+    --include-package=xberg          --include-package-data=xberg \
     --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
     --include-package=crawl4ai           --include-package-data=crawl4ai \
     --include-package=fake_useragent     --include-package-data=fake_useragent \

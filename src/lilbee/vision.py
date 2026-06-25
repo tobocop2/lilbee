@@ -1,6 +1,6 @@
 """Vision-model OCR helpers: prompt resolution and OpenAI-compatible image messages.
 
-PDF rasterisation and the page loop now live inside kreuzberg (the registered
+PDF rasterisation and the page loop now live inside xberg (the registered
 lilbee-vision OCR backend); this module only builds the single-image request the
 provider's ``vision_ocr`` sends to the vision server.
 """
