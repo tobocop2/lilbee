@@ -120,4 +120,12 @@ def __getattr__(name: str) -> object:
         from lilbee.api import Lilbee
 
         return Lilbee
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    # Resolve real submodules on attribute access (e.g. ``lilbee.providers`` from a
+    # mock.patch string target) without forcing eager imports at package load.
+    # Unknown names still raise AttributeError.
+    import importlib
+
+    try:
+        return importlib.import_module(f"{__name__}.{name}")
+    except ModuleNotFoundError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None

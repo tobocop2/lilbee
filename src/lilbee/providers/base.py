@@ -223,11 +223,26 @@ final token-usage summary, or the finish-reason terminator (each emitted once,
 last, when the backend reports them)."""
 
 
+@dataclass(frozen=True)
+class EmbeddingEndpoint:
+    """OpenAI-compatible embeddings endpoint, for routing third-party embedders
+    (e.g. xberg's semantic chunker) at lilbee's own fleet instead of a download."""
+
+    base_url: str
+    model: str
+    api_key: str
+
+
 class LLMProvider(Protocol):
     """Protocol for pluggable LLM backends."""
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts, return list of vectors."""
+        ...
+
+    def embedding_endpoint(self) -> EmbeddingEndpoint | None:
+        """The OpenAI-compatible embeddings endpoint to hand to a third-party
+        embedder, or None when there isn't a routable one (caller falls back)."""
         ...
 
     @overload

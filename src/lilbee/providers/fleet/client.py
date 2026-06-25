@@ -335,6 +335,16 @@ class LlamaServerClient:
         self._unhealthy_since = 0.0
 
     @property
+    def base_url(self) -> str:
+        """The llama-swap endpoint this client posts to."""
+        return self._base
+
+    @property
+    def model(self) -> str:
+        """The replica model id llama-swap routes this client's requests by."""
+        return self._model
+
+    @property
     def healthy(self) -> bool:
         """Routable: healthy, or unhealthy past the ``_UNHEALTHY_RETRY_S`` cool-down."""
         with self._in_flight_lock:

@@ -249,6 +249,28 @@ class TestRoutingProvider:
         kwargs = mock_litellm.chat.call_args.kwargs
         assert kwargs["stream"] is False
 
+    def test_embedding_endpoint_delegates_to_local_for_native_model(self, monkeypatch) -> None:
+        from lilbee.core.config import cfg
+
+        rp = self._make_provider()
+        sentinel = object()
+        mock_local = mock.MagicMock()
+        mock_local.embedding_endpoint.return_value = sentinel
+        rp._local = mock_local
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        assert rp.embedding_endpoint() is sentinel
+
+    def test_embedding_endpoint_delegates_to_sdk_for_remote_model(self, monkeypatch) -> None:
+        from lilbee.core.config import cfg
+
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.embedding_endpoint.return_value = None
+        rp._sdk_provider = mock_sdk
+        monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
+        assert rp.embedding_endpoint() is None
+        mock_sdk.embedding_endpoint.assert_called_once()
+
     def test_supports_tools_delegates_to_sdk_backend_for_remote_ref(self) -> None:
         rp = self._make_provider()
         mock_sdk = mock.MagicMock()

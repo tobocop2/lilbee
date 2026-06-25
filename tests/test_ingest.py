@@ -1985,6 +1985,8 @@ class TestExtractionConfig:
 
         monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "topic_threshold", 0.42)
+        # No live fleet in unit tests: semantic chunking falls back to the preset.
+        monkeypatch.setattr("lilbee.data.chunk._semantic_embedding_endpoint", lambda: None)
         for mode in ExtractMode:
             config = extraction_config(mode)
             assert config["chunking"].chunker_type == "semantic"

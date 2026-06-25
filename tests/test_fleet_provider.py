@@ -151,6 +151,24 @@ def test_embed_routes_to_least_busy_replica() -> None:
     busy.embed.assert_not_called()
 
 
+def test_embedding_endpoint_exposes_embed_replica() -> None:
+    client = _fake_client()
+    client.base_url = "http://127.0.0.1:9001"
+    client.model = "embed-x"
+    p = _provider_with_clients({WorkerRole.EMBED: [client]})
+    ep = p.embedding_endpoint()
+    assert ep is not None
+    # base_url carries /v1 (the HTTP client appends /embeddings); model is the bare id.
+    assert ep.base_url == "http://127.0.0.1:9001/v1"
+    assert ep.model == "embed-x"
+    assert ep.api_key  # OpenAI clients require a (ignored) bearer token
+
+
+def test_embedding_endpoint_none_when_embed_absent() -> None:
+    p = _provider_with_clients({})
+    assert p.embedding_endpoint() is None
+
+
 def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
     launches = [_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED)]
     _install_engine(monkeypatch, launches=launches)

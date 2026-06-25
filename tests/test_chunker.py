@@ -13,6 +13,32 @@ import pytest
 from lilbee.data.chunk import chunk_text
 
 
+class _FakeProvider:
+    def __init__(self, endpoint):
+        self._endpoint = endpoint
+
+    def embedding_endpoint(self):
+        return self._endpoint
+
+
+class _FakeServices:
+    def __init__(self, endpoint):
+        self.provider = _FakeProvider(endpoint)
+
+
+def _patch_embedding_endpoint(monkeypatch, endpoint):
+    """Point chunk._semantic_embedding_endpoint's get_services() at a fake provider."""
+    monkeypatch.setattr("lilbee.app.services.get_services", lambda: _FakeServices(endpoint))
+
+
+@pytest.fixture(autouse=True)
+def _no_fleet_embedding_endpoint(monkeypatch):
+    """No live fleet in unit tests: the provider reports no embeddings endpoint, so
+    semantic chunking falls back to xberg's preset embedder (and the real
+    _semantic_embedding_endpoint runs instead of placing the fleet's embed role)."""
+    _patch_embedding_endpoint(monkeypatch, None)
+
+
 @dataclass
 class _FakeMeta:
     """Stand-in for tree-sitter ChunkContext.metadata in chunk_code tests."""
@@ -127,10 +153,31 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.max_characters == 512 * CHARS_PER_TOKEN
         assert result.embedding is not None
-        # Built via the real EmbeddingModelType.preset() constructor (xberg/alef #147),
-        # not the bare-string shorthand.
+        # No fleet endpoint (the autouse fixture) -> the bundled preset embedder,
+        # built via the real EmbeddingModelType.preset() constructor (xberg/alef #147).
         assert result.embedding.model.type == "preset"
         assert str(result.embedding.model) == '{"type":"preset","name":"fast"}'
+
+    def test_semantic_routes_embeddings_through_fleet(self, monkeypatch):
+        """With a fleet embeddings endpoint, semantic chunking embeds via the Llm
+        variant (bb-548 Surface 1) rather than downloading the preset."""
+        from lilbee.core.config import cfg
+        from lilbee.data.chunk import build_chunking_config
+        from lilbee.providers.base import EmbeddingEndpoint
+
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        _patch_embedding_endpoint(
+            monkeypatch,
+            EmbeddingEndpoint(
+                base_url="http://127.0.0.1:9001", model="nomic-embed", api_key="lilbee-local"
+            ),
+        )
+        result = build_chunking_config()
+        assert result.embedding is not None
+        assert result.embedding.model.type == "llm"
+        # The Llm variant carries lilbee's fleet endpoint, so xberg POSTs there.
+        assert "127.0.0.1:9001" in str(result.embedding.model)
+        assert "nomic-embed" in str(result.embedding.model)
 
     def test_char_budget_when_disabled(self, monkeypatch):
         from lilbee.core.config import cfg
