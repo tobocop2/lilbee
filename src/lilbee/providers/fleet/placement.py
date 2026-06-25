@@ -239,27 +239,29 @@ def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:
 def placement_from_spec(
     spec: PlacementSpec,
     active_roles: tuple[WorkerRole, ...],
-    device_free: dict[int, int],
+    device_capacity: dict[int, int],
     *,
     estimate_peak: PeakEstimator,
 ) -> Placement:
     """Build a Placement from a manual *spec*, charging each card and failing loud.
 
-    Every active role must have an entry; every device must exist; each card must
-    fit the sum of the per-device peaks charged to it. Mirrors the auto planner's
-    USABLE_VRAM_FRACTION headroom and busiest-card accounting.
+    ``device_capacity`` is each card's total VRAM (not instantaneous free): the
+    plan defines the fleet's full intended residency, so charging it against live
+    free VRAM would double-count models already loaded. Every active role must
+    have an entry; every device must exist; each card must fit the sum of the
+    per-device peaks charged to it, within the USABLE_VRAM_FRACTION headroom.
     """
-    remaining = {idx: free * USABLE_VRAM_FRACTION for idx, free in device_free.items()}
+    remaining = {idx: total * USABLE_VRAM_FRACTION for idx, total in device_capacity.items()}
     instances: list[InstancePlan] = []
     for role in active_roles:
         rp = spec.roles.get(role)
         if rp is None:
             raise PlacementError(f"{role.value} has a model but no placement entry in placement")
         for idx in rp.devices:
-            if idx not in device_free:
+            if idx not in device_capacity:
                 raise PlacementError(
                     f"{role.value} pinned to device {idx} but only "
-                    f"{len(device_free)} GPU(s) detected"
+                    f"{len(device_capacity)} GPU(s) detected"
                 )
         ratio = rp.tensor_split or tuple(1 for _ in rp.devices)
         per_device = estimate_peak(role, ratio)
@@ -269,7 +271,7 @@ def placement_from_spec(
                     raise PlacementError(
                         f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
                         f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
-                        f"({device_free[idx] / 1024**3:.1f} GiB free, 90% headroom)"
+                        f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom)"
                     )
             for idx, peak in zip(rp.devices, per_device, strict=True):
                 remaining[idx] -= peak

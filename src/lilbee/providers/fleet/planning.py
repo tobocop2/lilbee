@@ -747,16 +747,22 @@ def _resolve_placement(
 ) -> Placement:
     """Resolve a Placement from the manual spec when set, else the auto planner."""
     estimate_peak = _peak_estimator(model_refs)
+    # Size placement against each card's TOTAL capacity, not its instantaneous
+    # free VRAM. plan_launches always plans the complete fleet, so the plan
+    # defines the full intended residency; charging it against live free_bytes
+    # double-counts models the fleet has already loaded (a warm get_placement or
+    # reload would then falsely report the plan as unplaceable). bb-a8f.
+    capacity = {d.index: d.total_bytes for d in devices}
     if placement is not None:
         return placement_from_spec(
             placement,
             tuple(model_refs),
-            {d.index: d.free_bytes for d in devices},
+            capacity,
             estimate_peak=estimate_peak,
         )
     return plan_placement(
         inputs,
-        [(d.index, d.free_bytes) for d in devices],
+        [(idx, total) for idx, total in capacity.items()],
         estimate_peak=estimate_peak,
         unified_budget=unified_budget,
     )

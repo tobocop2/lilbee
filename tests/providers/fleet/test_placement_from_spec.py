@@ -61,7 +61,7 @@ def test_errors_when_does_not_fit_naming_card():
     est = _peak({WorkerRole.CHAT: [70]})
     with pytest.raises(
         PlacementError,
-        match=r"chat .* device 0 .* 70.0 GiB .* 36.0 GiB usable .*40.0 GiB free",
+        match=r"chat .* device 0 .* 70.0 GiB .* 36.0 GiB usable .*40.0 GiB total",
     ):
         placement_from_spec(spec, (WorkerRole.CHAT,), {0: 40 * GIB}, estimate_peak=est)
 
