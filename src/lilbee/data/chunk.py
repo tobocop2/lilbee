@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import cfg
@@ -10,15 +9,10 @@ from lilbee.core.config import cfg
 if TYPE_CHECKING:
     from xberg import ChunkingConfig, EmbeddingConfig
 
-    from lilbee.providers.base import EmbeddingEndpoint
-
 CHARS_PER_TOKEN = 4
 
 _SEMANTIC_CHUNKER = "semantic"
 _MARKDOWN_CHUNKER = "markdown"
-# Xberg silently falls back to a non-semantic path when embedding is None.
-_SEMANTIC_EMBEDDING_PRESET = "fast"
-_DISABLE_PROGRESS_ENV = "HF_HUB_DISABLE_PROGRESS_BARS"
 
 
 def _char_budget() -> tuple[int, int]:
@@ -28,53 +22,20 @@ def _char_budget() -> tuple[int, int]:
     return max_chars, max_overlap
 
 
-def _show_download_progress() -> bool:
-    """Honor lilbee's global progress-bar suppression (set for quiet/JSON modes).
-
-    lilbee defaults ``HF_HUB_DISABLE_PROGRESS_BARS`` on in ``__init__``; mirroring
-    it here keeps the embedding-model download silent instead of hardcoding a bar
-    that would corrupt JSON output.
-    """
-    return os.environ.get(_DISABLE_PROGRESS_ENV, "0").lower() not in ("1", "true")
-
-
-def _semantic_embedding_endpoint() -> EmbeddingEndpoint | None:
-    """lilbee's own embeddings endpoint for semantic-chunk boundary detection, so
-    xberg reuses the fleet instead of downloading a preset. None -> use the preset
-    (no fleet endpoint, e.g. a remote provider)."""
-    from lilbee.app.services import get_services
-
-    return get_services().provider.embedding_endpoint()
-
-
 def _semantic_embedding_config() -> EmbeddingConfig:
-    """EmbeddingConfig for semantic chunking: route boundary-detection embeddings
-    at lilbee's fleet via the Llm variant when available, else xberg's 'fast' preset.
-    """
+    """EmbeddingConfig for semantic chunking. Boundary-detection embeddings route to
+    lilbee's embedder, registered as xberg's plugin backend in
+    ``app.services.sync_embedding_backend``, so the model that vectorizes chunks for
+    retrieval is the one that decides where they split."""
     from xberg import EmbeddingConfig, EmbeddingModelType
 
-    # The public xberg.LlmConfig is a distinct class from the one EmbeddingModelType.llm()
-    # accepts; the constructor's isinstance check only passes the internal type (alef-m07).
-    from xberg._xberg import LlmConfig
+    # Lazy: importing ingest.types at module scope cycles back through chunk.py.
+    from lilbee.data.ingest.types import EmbeddingBackendName
 
-    endpoint = _semantic_embedding_endpoint()
-    # xberg's .pyi omits the per-variant constructors alef #147 added at runtime;
-    # .llm()/.preset() work but aren't declared in the stub yet (alef-m07).
-    if endpoint is not None:
-        # endpoint.model is the bare id the endpoint routes by (no provider prefix);
-        # endpoint.base_url already carries the /v1 the client appends /embeddings to.
-        model = EmbeddingModelType.llm(  # type: ignore[attr-defined]  # style-check: allow-smell
-            LlmConfig(
-                model=endpoint.model,
-                base_url=endpoint.base_url,
-                api_key=endpoint.api_key,
-            )
-        )
-    else:
-        model = EmbeddingModelType.preset(  # type: ignore[attr-defined]  # style-check: allow-smell
-            _SEMANTIC_EMBEDDING_PRESET
-        )
-    return EmbeddingConfig(model=model, show_download_progress=_show_download_progress())
+    # xberg's .pyi omits the per-variant constructors (alef #147); .plugin() works at runtime.
+    name = EmbeddingBackendName.LILBEE
+    model = EmbeddingModelType.plugin(name)  # type: ignore[attr-defined]  # style-check: allow-smell
+    return EmbeddingConfig(model=model)
 
 
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:

@@ -53,12 +53,6 @@ def _client(handler=_handler) -> LlamaServerClient:
     return client
 
 
-def test_base_url_and_model_properties_expose_endpoint() -> None:
-    client = _unprobed_client()
-    assert client.base_url == "http://gpu0"
-    assert client.model == "test-model"
-
-
 def test_rerank_scores_pairs_via_rank_pooling() -> None:
     seen: dict[str, list] = {}
 

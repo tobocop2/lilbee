@@ -731,10 +731,3 @@ class TestShutdown:
         provider.shutdown()
         assert backend.complete_calls == []
         assert backend.embed_calls == []
-
-
-class TestEmbeddingEndpoint:
-    def test_returns_none(self) -> None:
-        # Remote SDK backends expose no fleet endpoint to route a third-party
-        # embedder through; semantic chunking falls back to its own preset.
-        assert SdkLLMProvider(FakeBackend()).embedding_endpoint() is None

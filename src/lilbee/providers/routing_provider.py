@@ -16,7 +16,6 @@ from lilbee.providers.base import (
     ChatStreamItem,
     ChatToolResult,
     ClosableIterator,
-    EmbeddingEndpoint,
     LLMProvider,
     ProviderError,
 )
@@ -82,10 +81,6 @@ class RoutingProvider(LLMProvider):
     def embed(self, texts: list[str]) -> list[list[float]]:
         ref = parse_model_ref(cfg.embedding_model)
         return self._pick_backend(ref).embed(texts)
-
-    def embedding_endpoint(self) -> EmbeddingEndpoint | None:
-        ref = parse_model_ref(cfg.embedding_model)
-        return self._pick_backend(ref).embedding_endpoint()
 
     @overload
     def chat(

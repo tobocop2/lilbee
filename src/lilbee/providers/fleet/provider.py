@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.base import EmbeddingEndpoint, ProviderError, ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
@@ -625,24 +625,6 @@ class FleetProvider:
     def embed(self, texts: list[str]) -> list[list[float]]:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.embed(texts))
-
-    def embedding_endpoint(self) -> EmbeddingEndpoint | None:
-        """The EMBED role's OpenAI endpoint, so a third-party embedder (xberg's
-        semantic chunker) reuses the fleet instead of downloading a model. Places
-        the role on demand; returns None if the fleet can't serve embeddings.
-        """
-        try:
-            clients = self._require_clients(WorkerRole.EMBED)
-        except ProviderError:
-            return None
-        client = clients[0]
-        # The caller's HTTP client appends /embeddings, so base_url must carry the
-        # /v1 prefix; the model is the bare replica id llama-swap routes by (a
-        # provider-prefixed name 404s). llama-server ignores the bearer token but
-        # OpenAI clients still require one.
-        return EmbeddingEndpoint(
-            base_url=f"{client.base_url}/v1", model=client.model, api_key="lilbee-local"
-        )
 
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None

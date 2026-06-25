@@ -13,32 +13,6 @@ import pytest
 from lilbee.data.chunk import chunk_text
 
 
-class _FakeProvider:
-    def __init__(self, endpoint):
-        self._endpoint = endpoint
-
-    def embedding_endpoint(self):
-        return self._endpoint
-
-
-class _FakeServices:
-    def __init__(self, endpoint):
-        self.provider = _FakeProvider(endpoint)
-
-
-def _patch_embedding_endpoint(monkeypatch, endpoint):
-    """Point chunk._semantic_embedding_endpoint's get_services() at a fake provider."""
-    monkeypatch.setattr("lilbee.app.services.get_services", lambda: _FakeServices(endpoint))
-
-
-@pytest.fixture(autouse=True)
-def _no_fleet_embedding_endpoint(monkeypatch):
-    """No live fleet in unit tests: the provider reports no embeddings endpoint, so
-    semantic chunking falls back to xberg's preset embedder (and the real
-    _semantic_embedding_endpoint runs instead of placing the fleet's embed role)."""
-    _patch_embedding_endpoint(monkeypatch, None)
-
-
 @dataclass
 class _FakeMeta:
     """Stand-in for tree-sitter ChunkContext.metadata in chunk_code tests."""
@@ -153,31 +127,10 @@ class TestBuildChunkingConfig:
         result = build_chunking_config()
         assert result.max_characters == 512 * CHARS_PER_TOKEN
         assert result.embedding is not None
-        # No fleet endpoint (the autouse fixture) -> the bundled preset embedder,
-        # built via the real EmbeddingModelType.preset() constructor (xberg/alef #147).
-        assert result.embedding.model.type == "preset"
-        assert str(result.embedding.model) == '{"type":"preset","name":"fast"}'
-
-    def test_semantic_routes_embeddings_through_fleet(self, monkeypatch):
-        """With a fleet embeddings endpoint, semantic chunking embeds via the Llm
-        variant (bb-548 Surface 1) rather than downloading the preset."""
-        from lilbee.core.config import cfg
-        from lilbee.data.chunk import build_chunking_config
-        from lilbee.providers.base import EmbeddingEndpoint
-
-        monkeypatch.setattr(cfg, "semantic_chunking", True)
-        _patch_embedding_endpoint(
-            monkeypatch,
-            EmbeddingEndpoint(
-                base_url="http://127.0.0.1:9001", model="nomic-embed", api_key="lilbee-local"
-            ),
-        )
-        result = build_chunking_config()
-        assert result.embedding is not None
-        assert result.embedding.model.type == "llm"
-        # The Llm variant carries lilbee's fleet endpoint, so xberg POSTs there.
-        assert "127.0.0.1:9001" in str(result.embedding.model)
-        assert "nomic-embed" in str(result.embedding.model)
+        # Boundary detection routes to lilbee's embedder via xberg's plugin backend
+        # (registered in app.services.sync_embedding_backend), not the ONNX preset.
+        assert result.embedding.model.type == "plugin"
+        assert str(result.embedding.model) == '{"type":"plugin","name":"lilbee"}'
 
     def test_char_budget_when_disabled(self, monkeypatch):
         from lilbee.core.config import cfg
@@ -200,28 +153,6 @@ class TestBuildChunkingConfig:
         monkeypatch.setattr(cfg, "semantic_chunking", False)
         result = build_chunking_config()
         assert result.embedding is None
-
-    def test_download_progress_off_when_globally_suppressed(self, monkeypatch):
-        """quiet/JSON modes suppress HF progress bars; the embedding config mirrors that."""
-        from lilbee.data.chunk import _show_download_progress
-
-        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-        assert _show_download_progress() is False
-
-    def test_download_progress_on_when_not_suppressed(self, monkeypatch):
-        from lilbee.data.chunk import _show_download_progress
-
-        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
-        assert _show_download_progress() is True
-
-    def test_download_progress_default_off_when_unset(self, monkeypatch):
-        """lilbee defaults the env var on at import, so the bar stays off by default."""
-        from lilbee.data.chunk import _show_download_progress
-
-        monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
-        # Unset env reads as "not disabled" -> progress allowed; lilbee's __init__
-        # sets it to "1" in real runs, so this documents the bare-helper contract.
-        assert _show_download_progress() is True
 
     def test_heading_path_shares_char_budget(self, monkeypatch):
         """The heading-aware path uses the same token->char budget as the default path."""

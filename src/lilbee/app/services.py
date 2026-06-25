@@ -186,6 +186,7 @@ def get_services() -> Services:
     # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
     # where mount time matters more than first-call latency.
     sync_vision_ocr_backend(provider)
+    sync_embedding_backend(provider)
     # Eager start is the default: pay the spawn cost per role server at TUI mount
     if cfg.worker_pool_eager_start:
         from contextlib import suppress
@@ -220,6 +221,33 @@ def sync_vision_ocr_backend(provider: LLMProvider) -> None:
         )
     elif registered:
         unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+
+
+def sync_embedding_backend(provider: LLMProvider) -> None:
+    """Register lilbee's embedder as xberg's plugin embedding backend.
+
+    The semantic chunker uses it to detect topic boundaries with the same model
+    that vectorizes chunks, instead of xberg's bundled ONNX preset. The backend
+    reads ``cfg.embedding_dim`` live and routes through ``provider.embed`` (which
+    resolves the embedding model per call), so a model swap needs no
+    re-registration -- but it captures ``provider.embed``, so it must re-bind
+    whenever the provider is rebuilt (``reset_services``).
+    """
+    from xberg import (
+        list_embedding_backends,
+        register_embedding_backend,
+        unregister_embedding_backend,
+    )
+
+    from lilbee.core.config import cfg
+    from lilbee.data.embedding_backend import LilbeeEmbeddingBackend
+    from lilbee.data.ingest.types import EmbeddingBackendName
+
+    if EmbeddingBackendName.LILBEE in list_embedding_backends():
+        unregister_embedding_backend(EmbeddingBackendName.LILBEE)
+    register_embedding_backend(
+        LilbeeEmbeddingBackend(embed_fn=provider.embed, dim_fn=lambda: cfg.embedding_dim)
+    )
 
 
 def set_services(services: Services | None) -> None:

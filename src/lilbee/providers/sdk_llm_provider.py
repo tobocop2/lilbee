@@ -26,7 +26,6 @@ from lilbee.providers.base import (
     ChatStreamItem,
     ChatToolResult,
     ClosableIterator,
-    EmbeddingEndpoint,
     FinishReason,
     LLMProvider,
     ProviderError,
@@ -103,12 +102,6 @@ class SdkLLMProvider(LLMProvider):
             log.debug("backend.configure_logging failed", exc_info=True)
         inject_provider_keys()
         self._initialized = True
-
-    def embedding_endpoint(self) -> EmbeddingEndpoint | None:
-        # Remote SDK backends: keep a third-party embedder (xberg's semantic
-        # chunker) on its own preset rather than routing it through the user's
-        # API credentials/quota.
-        return None
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts via the configured backend."""

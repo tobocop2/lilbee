@@ -54,6 +54,14 @@ class OcrBackendName(StrEnum):
     LILBEE_VISION = "lilbee-vision"
 
 
+class EmbeddingBackendName(StrEnum):
+    """Embedding backends registered with xberg. lilbee registers its own embedder
+    as a plugin so the semantic chunker detects boundaries with the same model that
+    vectorizes chunks."""
+
+    LILBEE = "lilbee"
+
+
 class ExtractMode(StrEnum):
     """Extraction topology: paginated (PDFs/images) vs markdown output (text formats)."""
 
