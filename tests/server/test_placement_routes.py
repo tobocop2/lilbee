@@ -39,34 +39,54 @@ def test_get_placement(monkeypatch):
         assert r.json()["gpus"][0]["label"] == "CUDA0"
 
 
-def test_put_sets(monkeypatch):
-    seen = {}
-
-    async def _set(spec_json):
-        seen["json"] = spec_json
-        return _view(True)
-
-    monkeypatch.setattr(handlers, "placement_set", _set)
+def test_put_refused_on_daemon():
+    """PUT placement is refused on the HTTP daemon (rebuilds the shared fleet)."""
     with create_test_client([placement_set_route]) as client:
         r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
-        assert r.status_code == 200
-        assert '"chat"' in seen["json"]
+        assert r.status_code == 409
+        assert "CLI" in r.text
 
 
-def test_delete_clears(monkeypatch):
-    cleared = {"called": False}
-
-    async def _clear():
-        cleared["called"] = True
-        return _view()
-
-    monkeypatch.setattr(handlers, "placement_clear", _clear)
+def test_delete_refused_on_daemon():
+    """DELETE placement is refused on the HTTP daemon (rebuilds the shared fleet)."""
     with create_test_client([placement_clear_route]) as client:
         r = client.delete("/api/placement")
-        assert r.status_code == 200
-        assert r.json()["manual"] is False
-        assert r.json()["gpus"][0]["label"] == "CUDA0"
-        assert cleared["called"]
+        assert r.status_code == 409
+        assert "CLI" in r.text
+
+
+def test_preview_requires_auth():
+    """preview is not read-only: it runs subprocess probes and must require auth (bb-895)."""
+    from lilbee.server.auth import is_read_only
+
+    assert not is_read_only(placement_preview_route.fn)
+    assert is_read_only(placement_route.fn)
+    assert is_read_only(gpus_route.fn)
+
+
+def test_preview_provider_error_returns_503(monkeypatch):
+    from lilbee.providers.base import ProviderError
+
+    async def boom(spec_json):
+        raise ProviderError("llama-server binary not found")
+
+    monkeypatch.setattr(handlers, "placement_preview", boom)
+    with create_test_client([placement_preview_route]) as client:
+        r = client.post("/api/placement/preview", json={"spec": {"chat": {"devices": [0]}}})
+        assert r.status_code == 503
+        assert "llama-server" in r.text
+
+
+def test_get_placement_provider_error_returns_503(monkeypatch):
+    from lilbee.providers.base import ProviderError
+
+    async def boom():
+        raise ProviderError("no engine")
+
+    monkeypatch.setattr(handlers, "placement", boom)
+    with create_test_client([placement_route]) as client:
+        r = client.get("/api/placement")
+        assert r.status_code == 503
 
 
 def test_preview_unfit_returns_422(monkeypatch):
@@ -107,14 +127,11 @@ def test_preview_with_spec(monkeypatch):
         assert '"chat"' in captured["json"]
 
 
-def test_put_missing_spec_returns_422(monkeypatch):
-    async def _set(spec_json):
-        return _view(True)
-
-    monkeypatch.setattr(handlers, "placement_set", _set)
+def test_put_refused_regardless_of_body():
+    """PUT is refused even with an empty body (refusal precedes validation)."""
     with create_test_client([placement_set_route]) as client:
         r = client.put("/api/placement", json={})
-        assert r.status_code == 422
+        assert r.status_code == 409
 
 
 def test_get_gpus(monkeypatch):

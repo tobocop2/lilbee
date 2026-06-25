@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 import lilbee.cli.placement as cli_placement
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.cli.placement import placement_app
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.roles import WorkerRole
 
@@ -161,3 +162,56 @@ def test_preview_missing_spec_file_exits_clean(tmp_path: object, monkeypatch: ob
     result = runner.invoke(placement_app, ["preview", "--spec", str(missing)])
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def _raises_provider_error() -> PlacementView:
+    raise ProviderError("llama-server binary not found")
+
+
+def test_show_provider_error_exits_clean(monkeypatch: object) -> None:
+    """show exits 1 with a clean message when get_placement raises ProviderError."""
+    monkeypatch.setattr(cli_placement, "get_placement", _raises_provider_error)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 1
+    assert "llama-server binary not found" in result.stdout
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_clear_provider_error_exits_clean(monkeypatch: object) -> None:
+    """clear exits 1 with a clean message when set_placement raises ProviderError."""
+
+    def _raise(spec: object) -> PlacementView:
+        raise ProviderError("no engine")
+
+    monkeypatch.setattr(cli_placement, "set_placement", _raise)
+    result = runner.invoke(placement_app, ["clear"])
+    assert result.exit_code == 1
+    assert "no engine" in result.stdout
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_preview_provider_error_exits_clean(monkeypatch: object) -> None:
+    """preview exits 1 cleanly when preview_placement raises ProviderError."""
+
+    def _raise(spec: object) -> PlacementView:
+        raise ProviderError("no engine")
+
+    monkeypatch.setattr(cli_placement, "preview_placement", _raise)
+    result = runner.invoke(placement_app, ["preview"])
+    assert result.exit_code == 1
+    assert "no engine" in result.stdout
+
+
+def test_set_inline_json_spec(monkeypatch: object) -> None:
+    """set --spec accepts inline JSON (not only a file path)."""
+    seen: dict[str, object] = {}
+
+    def _fake_set(spec: object) -> PlacementView:
+        seen["spec"] = spec
+        return _view(True)
+
+    monkeypatch.setattr(cli_placement, "set_placement", _fake_set)
+    result = runner.invoke(placement_app, ["set", "--spec", '{"chat": {"devices": [0, 1]}}'])
+    assert result.exit_code == 0
+    assert isinstance(seen["spec"], PlacementSpec)
+    assert seen["spec"].roles[WorkerRole.CHAT].devices == (0, 1)

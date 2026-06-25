@@ -92,6 +92,31 @@ def test_preview_placement_tool_error(monkeypatch):
     assert "no GPUs available" in out["error"]
 
 
+def test_get_placement_tool_provider_error(monkeypatch):
+    """get_placement surfaces ProviderError as a structured error, not a raw exception."""
+    from lilbee.providers.base import ProviderError
+
+    def boom():
+        raise ProviderError("llama-server binary not found")
+
+    monkeypatch.setattr(mcp_server, "get_placement", boom)
+    out = mcp_server.get_placement_tool()
+    assert "error" in out
+    assert "llama-server" in out["error"]
+
+
+def test_clear_placement_tool_provider_error(monkeypatch):
+    """clear_placement surfaces ProviderError as a structured error."""
+    from lilbee.providers.base import ProviderError
+
+    def boom(spec):
+        raise ProviderError("no engine")
+
+    monkeypatch.setattr(mcp_server, "set_placement", boom)
+    out = mcp_server.clear_placement_tool()
+    assert out.get("error") == "no engine"
+
+
 @pytest.mark.asyncio
 async def test_placement_tools_wire_names():
     """Placement tools must be registered under clean wire names (no _tool suffix)."""

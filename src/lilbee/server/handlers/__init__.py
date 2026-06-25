@@ -168,21 +168,6 @@ async def placement_preview(spec_json: str | None) -> PlacementResponse:
     return _placement_response(preview_placement(spec))
 
 
-async def placement_set(spec_json: str) -> PlacementResponse:
-    """Validate, persist, and apply a manual placement spec."""
-    from lilbee.app.placement import set_placement
-    from lilbee.providers.fleet.placement_spec import PlacementSpec
-
-    return _placement_response(set_placement(PlacementSpec.from_json(spec_json)))
-
-
-async def placement_clear() -> PlacementResponse:
-    """Clear the manual placement, returning to auto."""
-    from lilbee.app.placement import set_placement
-
-    return _placement_response(set_placement(None))
-
-
 async def gpus() -> list[GpuInfoResponse]:
     """Detected GPUs with free/total VRAM."""
     from lilbee.app.placement import get_placement
@@ -222,9 +207,7 @@ __all__ = [
     "models_pull",
     "models_show",
     "placement",
-    "placement_clear",
     "placement_preview",
-    "placement_set",
     "search",
     "set_chat_model",
     "set_embedding_model",

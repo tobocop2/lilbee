@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -16,7 +17,10 @@ from lilbee.app.placement import (
 )
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+
+_PLACEMENT_ERRORS = (PlacementError, ProviderError, OSError)
 
 placement_app = typer.Typer(
     name="placement",
@@ -31,8 +35,22 @@ def _read_spec(spec: str | None) -> PlacementSpec | None:
     """Parse a spec from a file path or stdin ('-'); return None when omitted."""
     if spec is None:
         return None
-    raw = sys.stdin.read() if spec == "-" else Path(spec).read_text()
+    if spec == "-":
+        raw = sys.stdin.read()
+    elif spec.lstrip().startswith("{"):
+        raw = spec  # inline JSON rather than a file path
+    else:
+        raw = Path(spec).read_text()
     return PlacementSpec.from_json(raw)
+
+
+def _guard(action: Callable[[], PlacementView]) -> None:
+    """Run a placement action and render it, turning known failures into a clean exit."""
+    try:
+        _render_view(action())
+    except _PLACEMENT_ERRORS as exc:
+        console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        raise typer.Exit(code=1) from exc
 
 
 def _render_view(view: PlacementView) -> None:
@@ -78,7 +96,7 @@ def show(
 ) -> None:
     """Show the current effective placement."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    _render_view(get_placement())
+    _guard(get_placement)
 
 
 @placement_app.command("preview")
@@ -91,11 +109,7 @@ def preview(
 ) -> None:
     """Preview what a spec (or auto) would place, without applying it."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    try:
-        _render_view(preview_placement(_read_spec(spec)))
-    except (PlacementError, OSError) as exc:
-        console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
-        raise typer.Exit(code=1) from exc
+    _guard(lambda: preview_placement(_read_spec(spec)))
 
 
 @placement_app.command("set")
@@ -106,11 +120,7 @@ def set_cmd(
 ) -> None:
     """Validate, persist, and apply a manual placement spec."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    try:
-        _render_view(set_placement(_read_spec(spec)))
-    except (PlacementError, OSError) as exc:
-        console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
-        raise typer.Exit(code=1) from exc
+    _guard(lambda: set_placement(_read_spec(spec)))
 
 
 @placement_app.command("clear")
@@ -120,4 +130,4 @@ def clear(
 ) -> None:
     """Clear the manual placement and return to automatic placement."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    _render_view(set_placement(None))
+    _guard(lambda: set_placement(None))

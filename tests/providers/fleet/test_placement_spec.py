@@ -63,3 +63,38 @@ def test_rejects_json_array_at_top_level():
 def test_rejects_non_dict_role_entry():
     with pytest.raises(PlacementError, match="placement entry must be an object"):
         PlacementSpec.from_json('{"chat": [0, 1]}')
+
+
+def test_rejects_duplicate_devices():
+    with pytest.raises(PlacementError, match="duplicate device indices"):
+        PlacementSpec.from_json('{"chat": {"devices": [0, 0]}}')
+
+
+def test_rejects_negative_device_index():
+    with pytest.raises(PlacementError, match="device indices must be >= 0"):
+        PlacementSpec.from_json('{"chat": {"devices": [-1]}}')
+
+
+def test_rejects_non_positive_tensor_split_weight():
+    with pytest.raises(PlacementError, match="tensor_split weights must be > 0"):
+        PlacementSpec.from_json('{"chat": {"devices": [0, 1], "tensor_split": [0, 1]}}')
+
+
+def test_rejects_negative_tensor_split_weight():
+    with pytest.raises(PlacementError, match="tensor_split weights must be > 0"):
+        PlacementSpec.from_json('{"chat": {"devices": [0, 1], "tensor_split": [1, -2]}}')
+
+
+def test_rejects_unknown_entry_key():
+    with pytest.raises(PlacementError, match="unknown placement key"):
+        PlacementSpec.from_json('{"chat": {"devices": [0], "tensor-split": [1]}}')
+
+
+def test_rejects_non_integer_device():
+    with pytest.raises(PlacementError, match="devices must be integers"):
+        PlacementSpec.from_json('{"chat": {"devices": ["bad"]}}')
+
+
+def test_rejects_non_list_devices():
+    with pytest.raises(PlacementError, match="devices must be a list"):
+        PlacementSpec.from_json('{"chat": {"devices": 5}}')

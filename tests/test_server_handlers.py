@@ -4345,18 +4345,6 @@ class TestPlacementHandlers:
             resp = await handlers.placement_preview('{"chat": {"devices": [0]}}')
         assert resp.manual is False
 
-    async def test_placement_set_returns_response(self):
-        view = _stub_placement_view()
-        with patch("lilbee.app.placement.set_placement", return_value=view):
-            resp = await handlers.placement_set('{"chat": {"devices": [0]}}')
-        assert resp.manual is False
-
-    async def test_placement_clear_returns_response(self):
-        view = _stub_placement_view()
-        with patch("lilbee.app.placement.set_placement", return_value=view):
-            resp = await handlers.placement_clear()
-        assert resp.manual is False
-
     async def test_gpus_returns_list(self):
         from lilbee.app.placement import GpuInfo, PlacementView
 
