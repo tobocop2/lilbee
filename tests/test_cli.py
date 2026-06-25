@@ -3056,13 +3056,15 @@ class TestWikiStatus:
         cfg.wiki = True
         cfg.wiki_dir = "wiki"
         (isolated_env / "wiki" / "summaries").mkdir(parents=True)
-        (isolated_env / "wiki" / "summaries" / "a.md").write_text("content")
+        # An unmarked claim (a sentence with no citation) -> lint flags a warning.
+        (isolated_env / "wiki" / "summaries" / "a.md").write_text("Python is a typed language.\n")
         (isolated_env / "wiki" / "drafts").mkdir(parents=True)
         (isolated_env / "wiki" / "drafts" / "b.md").write_text("content")
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = runner.invoke(app, ["wiki", "status"])
         assert result.exit_code == 0
         assert "1" in result.output  # summaries count
+        assert "warning(s)" in result.output  # the unmarked claim is linted
 
     def test_status_json_output(self, mock_svc, isolated_env):
         cfg.wiki = True

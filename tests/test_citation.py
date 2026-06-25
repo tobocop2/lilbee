@@ -201,9 +201,12 @@ class TestVerifyCitation:
         rec = _citation_record(excerpt="gradual\n  typing")
         assert verify_citation(rec, "supports gradual typing here") == CitationStatus.VALID
 
-    def test_case_insensitive_matching(self):
+    def test_case_sensitive_matching(self):
+        # Verification is case-sensitive (xberg.verify_excerpt, adopted via bb-548):
+        # a case mismatch fails, an exact-case (whitespace-normalized) match passes.
         rec = _citation_record(excerpt="Gradual Typing")
-        assert verify_citation(rec, "gradual typing module") == CitationStatus.VALID
+        assert verify_citation(rec, "gradual typing module") == CitationStatus.EXCERPT_MISSING
+        assert verify_citation(rec, "uses Gradual Typing here") == CitationStatus.VALID
 
 
 class TestFindUnmarkedClaims:
