@@ -257,15 +257,26 @@ what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
 
+- **Resident tiers and the elastic ingest pool**: placement reserves a persistent
+  query fleet first: chat, one embed server (`embed-0`), rerank, and one vision
+  server (`vision-0`). These stay resident so a chat request issued during ingest
+  always has capacity. This reservation applies to discrete-GPU placement; the
+  shared-memory path on a unified-memory or CPU host packs the same pool
+  differently and does not hold back the elastic replicas. Extra embed and vision
+  replicas (`embed-1..N`, additional
+  vision) are placed only into the VRAM that remains after the query fleet is
+  committed. When an ingest finishes, each extra replica is unloaded individually
+  via llama-swap's `POST /api/models/unload`, freeing its VRAM without disturbing
+  the resident servers. If llama-swap is restarted or found dead, the fleet
+  re-probes once and rebuilds its model config before reporting a failure.
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
-  vision roles can run as N independent servers, one per GPU, so large-scale ingest
-  fans embedding / OCR across the whole box. The single roles (chat) are placed
-  first; each replica then lands on a distinct card with the most free VRAM (only
-  co-locating a second once every card has one), capped by what fits. The provider
-  holds a client pool per role and round-robins to the least-busy replica. With no
-  discrete GPU the replicas run as co-resident processes against the shared pool.
-  Each replica is its own llama-swap model id (`<role>-<n>`); a role is ready once
-  any replica is.
+  vision roles can run as N independent servers, fanning embedding and OCR across
+  the box during ingest. Setting either value to `0` (the default) means auto: one
+  replica per GPU, capped by how much VRAM remains after the query fleet is placed.
+  A positive value pins the replica count to exactly that number. The provider
+  holds a client pool per role and round-robins to the least-busy replica. Each
+  replica is its own llama-swap model id (`<role>-<n>`); a role is ready once any
+  replica is. Replicas are ingest-only and reclaimed after ingest completes.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and

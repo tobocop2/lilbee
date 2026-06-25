@@ -26,6 +26,11 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
+from lilbee.providers.fleet.replicas import (
+    REPLICATED_ROLES,
+    gpu_device_count,
+    resolve_replica_count,
+)
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.fleet.windowing import window_messages
@@ -218,7 +223,8 @@ class _VisionRequestGate:
                 self._in_flight -= 1
 
     def _checkout(self) -> threading.BoundedSemaphore:
-        capacity = max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
+        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        capacity = max(1, replicas * cfg.vision_ocr_concurrency)
         with self._lock:
             # Resize only when idle: rebuilding while old-semaphore holders are
             # in flight would briefly double the real cap, so a capacity change
@@ -338,6 +344,9 @@ class FleetProvider:
 
     def __init__(self) -> None:
         self._swap: SwapManager | None = None
+        # Model ids of elastic ingest replicas (embed/vision replica>=1); populated
+        # by _adopt_swap and consumed by release_ingest_pool.
+        self._elastic_members: list[str] = []
         # A pool of OpenAI clients per placed role (one per data-parallel replica),
         # all pointed at the llama-swap endpoint and routed by replica model id;
         # rebuilt whenever the swap process (re)starts. Requests round-robin the pool.
@@ -440,6 +449,11 @@ class FleetProvider:
                 )
             )
         self._clients = clients
+        self._elastic_members = [
+            launch.model_id
+            for launch in launches
+            if launch.role in REPLICATED_ROLES and launch.replica >= 1
+        ]
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
@@ -470,10 +484,19 @@ class FleetProvider:
         means the role is unconfigured or did not fit memory. llama-swap loads each
         upstream on its first request, so a returned client may still be cold. No
         in-process fallback, so a missing pool is a hard error.
+
+        When the pool is empty but a swap was previously built and its process has
+        since exited (detected via ``is_live()``), a one-shot rebuild is attempted
+        before raising so a transient llama-swap restart recovers transparently.
         """
         self._ensure_swap()
         with self._lock:
             clients = self._clients.get(role)
+            swap = self._swap
+        if not clients and swap is not None and not swap.is_live():
+            self._rebuild_swap()
+            with self._lock:
+                clients = self._clients.get(role)
         if not clients:
             raise ProviderError(
                 f"No {role.value} model server is running. Make sure a {role.value} "
@@ -481,6 +504,28 @@ class FleetProvider:
                 provider=_PROVIDER_NAME,
             )
         return list(clients)
+
+    def _rebuild_swap(self) -> None:
+        """Drop a dead swap and build a fresh one (new port); ``_ensure_swap`` adopts clients."""
+        self._drop_swap_refs()
+        self._ensure_swap()
+
+    def release_ingest_pool(self) -> None:
+        """Unload the elastic ingest replicas (embed/vision replica>=1), freeing VRAM.
+
+        Best-effort and non-disruptive: the persistent query fleet (chat, embed-0,
+        rerank, vision-0) stays loaded. Called when the last active ingest finishes.
+        """
+        with self._lock:
+            swap = self._swap
+            members = list(self._elastic_members)
+        if swap is None:
+            return
+        for model_id in members:
+            if not swap.unload(model_id):
+                log.info("ingest pool: unload of %s did not confirm (swap may be cold)", model_id)
+            else:
+                log.info("ingest pool: unloaded %s", model_id)
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role*'s upstream is loaded and ready, without starting the swap.

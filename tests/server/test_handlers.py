@@ -350,33 +350,45 @@ class TestOptionsPassthrough:
 
     async def test_ask_passes_options(self, isolated_env):
         from lilbee.server.app import create_app
+        from lilbee.server.handlers.sse import _resolve_generation_options
 
-        async with AsyncTestClient(create_app()) as client:
-            resp = await client.post(
-                "/api/ask",
-                json={"question": "test", "options": {"temperature": 0.3}},
-                headers=_auth_headers(),
-            )
+        with mock.patch(
+            "lilbee.server.handlers.rag._resolve_generation_options",
+            wraps=_resolve_generation_options,
+        ) as spy:
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/ask",
+                    json={"question": "test", "options": {"temperature": 0.3}},
+                    headers=_auth_headers(),
+                )
         assert resp.status_code == 201
-        body = resp.json()
-        assert "answer" in body
+        assert "answer" in resp.json()
+        # The body's options must actually reach the generation-options resolver,
+        # not just produce a successful response.
+        spy.assert_any_call({"temperature": 0.3})
 
     async def test_chat_passes_options(self, isolated_env):
         from lilbee.server.app import create_app
+        from lilbee.server.handlers.sse import _resolve_generation_options
 
-        async with AsyncTestClient(create_app()) as client:
-            resp = await client.post(
-                "/api/chat",
-                json={
-                    "question": "test",
-                    "history": [],
-                    "options": {"seed": 42},
-                },
-                headers=_auth_headers(),
-            )
+        with mock.patch(
+            "lilbee.server.handlers.rag._resolve_generation_options",
+            wraps=_resolve_generation_options,
+        ) as spy:
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/chat",
+                    json={
+                        "question": "test",
+                        "history": [],
+                        "options": {"seed": 42},
+                    },
+                    headers=_auth_headers(),
+                )
         assert resp.status_code == 201
-        body = resp.json()
-        assert "answer" in body
+        assert "answer" in resp.json()
+        spy.assert_any_call({"seed": 42})
 
     async def test_ask_without_options(self, isolated_env):
         """Request without options field still works."""

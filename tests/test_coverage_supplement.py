@@ -561,7 +561,7 @@ class TestAppCanonicalizeFallbackNotice:
                 ) as mock_update_values,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                app._canonicalize_persisted_models()
+                await app._canonicalize_persisted_models()
                 mock_update_values.assert_called_once()
                 persisted_args = mock_update_values.call_args.args
                 assert persisted_args[0] == cfg.data_root
@@ -611,7 +611,7 @@ class TestAppCanonicalizeFallbackNotice:
             caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
         ):
             # Must not raise.
-            app._canonicalize_persisted_models()
+            await app._canonicalize_persisted_models()
         assert any("ollama/nomic-embed-text" in r.getMessage() for r in caplog.records), (
             "a rejected swap must be logged at WARNING"
         )
@@ -651,7 +651,7 @@ class TestAppCanonicalizeFallbackNotice:
                 mock.patch("lilbee.cli.tui.app.apply_settings_update") as mock_apply,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                app._canonicalize_persisted_models()
+                await app._canonicalize_persisted_models()
                 mock_apply.assert_not_called()
             assert cfg.embedding_model == snapshot_embed, "an un-fallbackable ref is left intact"
             assert notifications, "the user must be told why before the wizard opens"
@@ -1352,7 +1352,11 @@ class TestSyncSkippedMessageBranches:
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = "stub/vision"
-        assert "vision OCR returned no text" in sync_skipped_message("a.pdf")
+        msg = sync_skipped_message("a.pdf")
+        assert "vision OCR returned no text" in msg
+        # The log path must be the resolved, per-platform location (not a
+        # hardcoded macOS string), so it's correct on Linux/Windows too.
+        assert str(cfg.data_root / "logs" / "server.log") in msg
 
     def test_returns_no_vision_when_vision_model_unset(self) -> None:
         from lilbee.cli.tui.messages import sync_skipped_message

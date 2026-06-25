@@ -196,6 +196,30 @@ class TestRerankerConfig:
         assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
 
 
+class TestReplicaDefaults:
+    """embed/vision replica counts default to 0 = auto (one per GPU at placement)."""
+
+    def test_replicas_default_to_auto_zero(self):
+        from lilbee.core.config import Config
+
+        assert Config().embed_replicas == 0
+        assert Config().vision_replicas == 0
+
+    def test_replicas_accept_zero(self):
+        from lilbee.core.config import Config
+
+        assert Config(embed_replicas=0, vision_replicas=0).embed_replicas == 0
+
+    def test_replicas_reject_negative(self):
+        import pydantic
+        import pytest
+
+        from lilbee.core.config import Config
+
+        with pytest.raises(pydantic.ValidationError):
+            Config(embed_replicas=-1)
+
+
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 

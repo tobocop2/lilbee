@@ -36,10 +36,12 @@ log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 _CONFIG_FILENAME = "llama-swap.json"
-# llama-swap's own stdout/stderr (its HTTP access log) is captured here instead of
-# inherited from the parent: a TUI or CLI parent owns the terminal, and an inherited
-# fd would bleed llama-swap's request log straight onto the screen and corrupt the
-# render. Per-model upstream logs are unaffected (those go to llama-swap's /logs API).
+# llama-swap's own stdout/stderr (its HTTP access log) is captured to a file under
+# the data root's ``logs/`` (beside server.log etc.) instead of inherited from the
+# parent: a TUI or CLI parent owns the terminal, and an inherited fd would bleed
+# llama-swap's request log onto the screen and corrupt the render. Per-model
+# upstream logs are unaffected (those go to llama-swap's /logs API).
+_LOGS_SUBDIR = "logs"
 _LOG_FILENAME = "llama-swap.log"
 # Cross-run reaping: each owner lilbee writes its own state file (named with its
 # pid) recording its swap's pid/pgid plus the owner's pid and create time, so the
@@ -69,6 +71,8 @@ _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
 _RUNNING_PATH = "/running"
+_UNLOAD_PATH = "/api/models/unload"
+_HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
@@ -120,7 +124,7 @@ class SwapManager:
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir
         self._config_path = data_dir / _CONFIG_FILENAME
-        self._log_path = data_dir / _LOG_FILENAME
+        self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME
         self._state_path = data_dir / _state_filename(os.getpid())
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
@@ -147,6 +151,7 @@ class SwapManager:
         # Capture llama-swap's stdout/stderr to a file so its access log never
         # reaches an inherited terminal (a TUI/CLI parent) and garbles the screen.
         self._close_log()
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
         self._proc = subprocess.Popen(  # noqa: S603 - argv[0] is the resolved llama-swap
             [
@@ -248,6 +253,32 @@ class SwapManager:
         """Whether at least one of *role*'s replica servers is loaded and ready."""
         prefix = role_model_prefix(role)
         return any(model.startswith(prefix) for model in self._ready_models())
+
+    def unload(self, model_id: str) -> bool:
+        """Unload one model from llama-swap, freeing its VRAM; best-effort, never raises."""
+        if self._port is None:
+            return False
+        try:
+            resp = httpx.post(
+                f"{self.endpoint()}{_UNLOAD_PATH}",
+                json={"model": model_id},
+                timeout=_HTTP_TIMEOUT_S,
+            )
+        except (OSError, httpx.HTTPError):
+            return False
+        return resp.status_code < httpx.codes.BAD_REQUEST
+
+    def is_live(self) -> bool:
+        """Whether the swap process is up and its proxy answers ``/running``."""
+        if self._proc is None or self._proc.poll() is not None:
+            return False
+        if self._port is None:
+            return False
+        try:
+            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
+        except (OSError, httpx.HTTPError):
+            return False
+        return resp.status_code < httpx.codes.BAD_REQUEST
 
     def reload(self, launches: list[InstanceLaunch]) -> None:
         """Apply a changed model set by restarting llama-swap with a fresh config."""

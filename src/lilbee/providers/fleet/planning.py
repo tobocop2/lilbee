@@ -32,6 +32,7 @@ from lilbee.providers.fleet.placement import (
     plan_placement,
 )
 from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -360,16 +361,9 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
 
 
-def _replica_count(role: WorkerRole) -> int:
-    """Requested data-parallel instances for *role*: embed/vision honor their
-    ``*_replicas`` knob (capped by available GPUs at placement); others run one."""
-    from lilbee.core.config import cfg
-
-    if role is WorkerRole.EMBED:
-        return max(1, cfg.embed_replicas)
-    if role is WorkerRole.VISION:
-        return max(1, cfg.vision_replicas)
-    return 1
+def _replica_count(role: WorkerRole, device_count: int) -> int:
+    """Requested data-parallel instances for *role* via the shared resolver."""
+    return resolve_replica_count(role, device_count)
 
 
 def _cache_type_flag() -> str | None:
@@ -401,12 +395,14 @@ def _estimate_role(
     slots: int | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
+    device_count: int = 0,
 ) -> ModelPlacementInput:
     """Estimate one role-model's footprint via gguf-parser (+ mmproj for vision).
 
     ``slots`` defaults to the role's resolved batching slots (chat and vision are
     memory-aware); ``chat_reservation`` shrinks chat to leave room for the search
-    roles. Charges the unified footprint with no discrete GPU, else the VRAM one.
+    roles; ``device_count`` resolves an auto (0) replica knob to one per GPU.
+    Charges the unified footprint with no discrete GPU, else the VRAM one.
     """
     from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -443,7 +439,9 @@ def _estimate_role(
     fp = est.footprint(unified=unified_budget is not None)
     if role is WorkerRole.CHAT and unified_budget is None:
         fp = _chat_serve_budget_footprint(fp)
-    return ModelPlacementInput(role=role, est_vram_bytes=fp, replicas=_replica_count(role))
+    return ModelPlacementInput(
+        role=role, est_vram_bytes=fp, replicas=_replica_count(role, device_count)
+    )
 
 
 def _chat_serve_budget_footprint(footprint: int) -> int:
@@ -546,14 +544,16 @@ def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
     unified_budget: int | None = None,
+    device_count: int = 0,
 ) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int]:
     """Build placement inputs for the configured server roles.
 
     The search and vision roles are estimated first; chat is then sized against the
     budget minus the search footprint (the ``reservation``) so a large chat cannot
-    starve embed/rerank on a shared-memory host. When *roles* is given, only those
-    are considered. Skips an unconfigured optional role, a vision model with no
-    resolvable mmproj projector, and a role whose model is not installed on disk.
+    starve embed/rerank on a shared-memory host. ``device_count`` resolves an auto
+    replica knob to one per GPU. When *roles* is given, only those are considered.
+    Skips an unconfigured optional role, a vision model with no resolvable mmproj
+    projector, and a role whose model is not installed on disk.
     """
     from lilbee.core.config import cfg
     from lilbee.providers.base import ProviderError
@@ -571,7 +571,11 @@ def _server_model_inputs(
             return  # no projector -> vision can't run on a server
         try:
             estimate = _estimate_role(
-                role, ref, unified_budget=unified_budget, chat_reservation=chat_reservation
+                role,
+                ref,
+                unified_budget=unified_budget,
+                chat_reservation=chat_reservation,
+                device_count=device_count,
             )
         except (ProviderError, OSError):
             # The configured model is not installed/resolvable. Skip this role
@@ -801,7 +805,9 @@ def plan_launches(
     from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, reservation = _server_model_inputs(roles, unified_budget=unified_budget)
+    inputs, model_refs, reservation = _server_model_inputs(
+        roles, unified_budget=unified_budget, device_count=len(devices)
+    )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     placement = _resolve_placement(spec, inputs, model_refs, devices, unified_budget=unified_budget)
     for role in placement.unplaceable_roles:

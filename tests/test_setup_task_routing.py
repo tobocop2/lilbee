@@ -29,7 +29,9 @@ def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = N
 
 
 def _patch_setup_ram(ram_gb: float = 16.0):
-    return patch("lilbee.modelhub.models.get_system_ram_gb", return_value=ram_gb)
+    # setup.py does `from lilbee.modelhub.models import get_system_ram_gb`, so the
+    # name must be patched where it's looked up, not at its definition module.
+    return patch("lilbee.cli.tui.screens.setup.get_system_ram_gb", return_value=ram_gb)
 
 
 def _no_api_fallback():
