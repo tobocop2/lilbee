@@ -725,7 +725,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         list,
         nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Tesseract OCR language codes when no vision model is set (e.g. eng, eng+deu)",
+        help_text="Tesseract OCR languages when no vision model is set; '+'-join, e.g. eng+deu",
     ),
     "worker_pool_eager_start": SettingDef(
         bool,

@@ -164,6 +164,12 @@ class TestOcrLanguage:
     def test_direct_list(self):
         assert Config(ocr_language=["spa"]).ocr_language == ["spa"]
 
+    def test_persisted_newline_form_round_trips(self):
+        """app.settings joins list values with '\\n' before writing config.toml;
+        the validator must split on it so a multi-language value reloads intact."""
+        persisted = "\n".join(["eng", "deu"])
+        assert Config(ocr_language=persisted).ocr_language == ["eng", "deu"]
+
     def test_empty_list_falls_back_to_english(self):
         assert Config(ocr_language=[]).ocr_language == ["eng"]
 

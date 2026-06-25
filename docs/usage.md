@@ -1080,6 +1080,19 @@ brew install tesseract          # macOS
 sudo apt install tesseract-ocr  # Ubuntu/Debian
 ```
 
+By default Tesseract reads English (`eng`). To OCR other languages, set the
+language codes; xberg downloads the Tesseract data on first use. Join multiple
+languages with `+` (Tesseract's own convention), for example `eng+deu` for
+English and German. The setting is the same value everywhere:
+
+```bash
+export LILBEE_OCR_LANGUAGE=eng+deu   # environment
+lilbee set ocr_language eng+deu      # CLI / persisted to config.toml
+```
+
+You can also set it in the `/settings` screen in the TUI, or over the HTTP and
+MCP settings APIs. Commas work in place of `+` if you prefer (`eng,deu`).
+
 ### Vision models
 
 lilbee runs vision OCR in one of two ways:

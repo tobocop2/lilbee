@@ -685,12 +685,18 @@ class Config(BaseSettings):
     @field_validator("ocr_language", mode="before")
     @classmethod
     def _parse_ocr_language(cls, v: Any) -> list[str]:
-        """Accept a list or a comma/plus-separated string; never return empty.
+        """Accept a list or a ``+``/comma/newline-separated string; never empty.
 
-        Tesseract uses ``+`` to join languages and xberg errors on an empty
-        list, so blank input falls back to English.
+        Tesseract joins languages with ``+`` (e.g. ``eng+deu``), so that is the
+        canonical user-facing form. Commas are also accepted. Newlines are
+        accepted because ``app.settings`` joins list values with ``\\n`` when it
+        persists them to config.toml; without splitting on it a multi-language
+        value would reload as one malformed token. Blank input falls back to
+        English, since xberg errors on an empty list.
         """
-        items = v.replace("+", ",").split(",") if isinstance(v, str) else (v or [])
+        if isinstance(v, str):
+            v = v.replace("+", ",").replace("\n", ",").split(",")
+        items = v or []
         langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
         return langs or ["eng"]
 
