@@ -1063,6 +1063,7 @@ vision model is configured, it takes precedence.
 | | Tesseract | Vision model |
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
+| **Languages** | 100+ via `LILBEE_OCR_LANGUAGE` (e.g. `eng+deu`) | Many scripts (model-dependent) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
 | **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
