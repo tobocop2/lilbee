@@ -134,6 +134,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
     ),
+    "auto_sync": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Run a sync before `lilbee ask` (disable on large static corpora)",
+    ),
     "semantic_chunking": SettingDef(
         bool,
         nullable=False,

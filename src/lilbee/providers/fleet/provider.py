@@ -347,6 +347,13 @@ class FleetProvider:
         # Model ids of elastic ingest replicas (embed/vision replica>=1); populated
         # by _adopt_swap and consumed by release_ingest_pool.
         self._elastic_members: list[str] = []
+        # Latched once shutdown runs. A discarded provider (reset_services swaps
+        # in a new one) can still have an in-flight warm-up or reload daemon
+        # thread; without this latch that thread could start a llama-swap after
+        # shutdown already ran, leaving a process no live provider owns.
+        # _ensure_swap checks it under the build lock so a post-shutdown build is
+        # refused (the swap_manager reaper is the backstop if one slips through).
+        self._shut_down = False
         # A pool of OpenAI clients per placed role (one per data-parallel replica),
         # all pointed at the llama-swap endpoint and routed by replica model id;
         # rebuilt whenever the swap process (re)starts. Requests round-robin the pool.
@@ -408,6 +415,11 @@ class FleetProvider:
             with self._lock:
                 if self._swap is not None:
                     return self._swap
+                if self._shut_down:
+                    # Provider was shut down (and likely discarded by reset_services)
+                    # while this warm-up/reload thread was in flight; do not spawn a
+                    # llama-swap no live provider would ever reap.
+                    return None
             from lilbee.core.config import cfg
 
             swap = SwapManager(cfg.data_dir)
@@ -566,9 +578,17 @@ class FleetProvider:
         with self._build_lock:
             with self._lock:
                 swap = self._swap
+                self._shut_down = True
             self._drop_swap_refs()
-            if swap is not None:
-                swap.shutdown()
+            # Always tear down via the swap manager, even when this provider holds
+            # no tracked swap: an in-flight build may have started one this thread
+            # never adopted, and SwapManager.shutdown reaps every llama-swap this
+            # process spawned (keyed on our own children), not just a tracked handle.
+            if swap is None:
+                from lilbee.core.config import cfg
+
+                swap = SwapManager(cfg.data_dir)
+            swap.shutdown()
 
     def _drop_swap_refs(self) -> None:
         """Clear the swap, its clients, and the chat capacity so the next call rebuilds."""

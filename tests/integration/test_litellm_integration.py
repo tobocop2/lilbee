@@ -13,7 +13,12 @@ import pytest
 litellm = pytest.importorskip("litellm")
 
 from lilbee.core.config import cfg  # noqa: E402
-from lilbee.providers.base import ChatResult, ToolCallDelta  # noqa: E402
+from lilbee.providers.base import (  # noqa: E402
+    ChatResult,
+    StreamFinish,
+    TokenUsage,
+    ToolCallDelta,
+)
 from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
 
@@ -87,7 +92,7 @@ class TestSdkChat:
         assert len(result.text) > 0
 
     def test_chat_stream_yields_tokens(self) -> None:
-        """Streaming chat yields text and (optionally) tool-call deltas."""
+        """Streaming chat yields text, tool-call deltas, and a closing finish frame."""
         cfg.chat_model = OLLAMA_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.chat(
@@ -98,9 +103,10 @@ class TestSdkChat:
 
         items = list(result)
         assert len(items) > 0
-        assert all(isinstance(t, (str, ToolCallDelta)) for t in items)
+        assert all(isinstance(t, (str, ToolCallDelta, TokenUsage, StreamFinish)) for t in items)
         full_text = "".join(t for t in items if isinstance(t, str))
         assert len(full_text) > 0
+        assert any(isinstance(t, StreamFinish) for t in items)
 
     def test_chat_with_model_override(self) -> None:
         """Model override in chat() works."""
