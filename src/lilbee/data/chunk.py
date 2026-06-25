@@ -63,7 +63,7 @@ def _semantic_embedding_config() -> EmbeddingConfig:
     if endpoint is not None:
         # endpoint.model is the bare id the endpoint routes by (no provider prefix);
         # endpoint.base_url already carries the /v1 the client appends /embeddings to.
-        model = EmbeddingModelType.llm(  # type: ignore[attr-defined]
+        model = EmbeddingModelType.llm(  # type: ignore[attr-defined]  # style-check: allow-smell
             LlmConfig(
                 model=endpoint.model,
                 base_url=endpoint.base_url,
@@ -71,7 +71,9 @@ def _semantic_embedding_config() -> EmbeddingConfig:
             )
         )
     else:
-        model = EmbeddingModelType.preset(_SEMANTIC_EMBEDDING_PRESET)  # type: ignore[attr-defined]
+        model = EmbeddingModelType.preset(  # type: ignore[attr-defined]  # style-check: allow-smell
+            _SEMANTIC_EMBEDDING_PRESET
+        )
     return EmbeddingConfig(model=model, show_download_progress=_show_download_progress())
 
 

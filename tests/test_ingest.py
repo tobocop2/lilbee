@@ -176,9 +176,7 @@ def _make_empty_result():
     return result
 
 
-@mock.patch(
-    "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
-)
+@mock.patch("xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result())
 class TestSync:
     async def test_empty_documents_dir(self, mock_extract_file, isolated_env):
         from lilbee.data.ingest import SyncResult, sync
@@ -683,9 +681,7 @@ class TestSync:
         assert "qflaky.txt" not in result.updated
 
 
-@mock.patch(
-    "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
-)
+@mock.patch("xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result())
 class TestSyncCancellation:
     """Tests for cancel support and atomic per-file delete in sync."""
 
@@ -2043,9 +2039,7 @@ class TestClassifyStructuredFormats:
         assert classify_file(Path(filename)) == expected
 
 
-@mock.patch(
-    "xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result()
-)
+@mock.patch("xberg.extract_file", new_callable=mock.AsyncMock, return_value=_make_xberg_result())
 class TestSyncStructuredFormats:
     async def test_xml_file_ingested(
         self,
