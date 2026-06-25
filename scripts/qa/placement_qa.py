@@ -306,6 +306,69 @@ def run_http() -> None:
 
 
 # --------------------------------------------------------------------------
+# Section 6: TUI surface (real PlacementScreen via Textual pilot)
+# --------------------------------------------------------------------------
+def run_tui() -> None:
+    section("6. TUI SURFACE (PlacementScreen via Textual pilot)")
+    try:
+        import asyncio
+
+        from textual.widgets import DataTable, Static
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens import placement as scr
+        from lilbee.cli.tui.screens.placement import PlacementScreen
+    except Exception as exc:  # noqa: BLE001
+        rec("T-import", "TUI imports", False, f"{type(exc).__name__}: {exc}")
+        return
+
+    class _Host(LilbeeApp):
+        _test_skip_auto_init = True
+
+        def on_mount(self) -> None:
+            self.push_screen(PlacementScreen())
+
+    def generated(app: object) -> str:
+        return str(app.screen.query_one(scr._GENERATED_ID, Static).render())
+
+    async def drive() -> None:
+        app = _Host()
+        async with app.run_test(size=(150, 48)) as pilot:
+            await pilot.pause()
+            try:
+                table = app.screen.query_one(scr._GPU_TABLE_ID, DataTable)
+            except Exception as exc:  # noqa: BLE001
+                rec("T-mount", "PlacementScreen mounts", False, f"{type(exc).__name__}: {exc}")
+                return
+            rec("T-mount", "PlacementScreen mounts with a GPU table", True, f"rows={table.row_count}")
+            if table.row_count == 0:
+                rec("T-gpus", "GPU table populated", False, "0 GPUs detected -- run on a multi-GPU pod for full TUI coverage")
+                return
+            rec("T-gpus", "GPU table lists detected GPUs", table.row_count >= 1, f"rows={table.row_count}")
+            last = table.row_count - 1
+            btn = f"#dev-chat-{last}"
+            try:
+                await pilot.click(btn)
+                await pilot.pause()
+                ok = f"{last}" in generated(app)
+                rec("T-toggle", f"clicking {btn} updates the generated spec", ok, generated(app)[:90])
+            except Exception as exc:  # noqa: BLE001
+                rec("T-toggle", "device toggle button", False, f"{type(exc).__name__}: {exc}")
+            try:
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+                still = app.screen.query_one(scr._GPU_TABLE_ID, DataTable).row_count >= 1
+                rec("T-preview", "ctrl+r preview keeps the screen populated (no blank-on-error)", still)
+            except Exception as exc:  # noqa: BLE001
+                rec("T-preview", "ctrl+r preview", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        asyncio.run(drive())
+    except Exception as exc:  # noqa: BLE001
+        rec("T-run", "TUI pilot session", False, f"{type(exc).__name__}: {exc}")
+
+
+# --------------------------------------------------------------------------
 def summary() -> int:
     section("SUMMARY")
     passed = sum(1 for _, _, ok, _ in RESULTS if ok)
@@ -319,7 +382,7 @@ def summary() -> int:
 
 
 def main() -> int:
-    runners: list[Callable[[], None]] = [run_validation, run_app_layer, run_cli, run_mcp, run_http]
+    runners: list[Callable[[], None]] = [run_validation, run_app_layer, run_cli, run_mcp, run_http, run_tui]
     for fn in runners:
         try:
             fn()
