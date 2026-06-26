@@ -63,6 +63,18 @@ jobs:
             backend: cu125
             cuda: "12.5.0"
             asset_name: lilbee-linux-x86_64-cu125
+          # Pre-Haswell-safe cell: swaps in lancedb==X.Y.Z+compat from the tobocop2-wheels
+          # index and holds the launcher to an x86-64-v2 baseline, so the binary runs on
+          # Sandy Bridge / Bulldozer CPUs that SIGILL on the stock lancedb wheel. Fully
+          # self-contained -- no pyproject/uv.lock footprint, so it cannot affect any
+          # other cell or job. Fails at the override step until that index is live; the
+          # job's continue-on-error keeps that failure off the release path.
+          - os: ubuntu-22.04
+            backend: cu124
+            cuda: "12.4.0"
+            asset_name: lilbee-compat-linux-x86_64-cu124
+            compat: true
+            march: "x86-64-v2"
           # Windows cu121 dropped: MSVC 14.44 on windows-2022 requires CUDA 12.4+.
           - os: windows-2022
             backend: cu124
@@ -145,11 +157,28 @@ jobs:
         # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
         run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
+      # compat cell only: replace the stock lancedb the sync installed with the
+      # pre-Haswell build from the private index. --no-deps leaves the rest of the
+      # synced venv untouched, so this swap is local to this cell -- pyproject and
+      # uv.lock never change, and no other cell or job sees it. Fails here until the
+      # index serves the wheel; continue-on-error keeps it off the release path.
+      - name: Swap in the pre-Haswell lancedb
+        if: matrix.compat
+        shell: bash
+        run: |
+          uv pip install --reinstall --no-deps \
+            --extra-index-url https://tobocop2.github.io/wheels/simple/ \
+            lancedb==0.29.2+compat
+
       - name: Build executable
         shell: bash
         env:
           ASSET_NAME: ${{ matrix.asset_name }}
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+          # compat cell only: hold Nuitka's C output to the pre-Haswell baseline so the
+          # launcher layer (not just lancedb) runs on old silicon. Empty elsewhere.
+          CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
+          CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
       - name: Smoke test
