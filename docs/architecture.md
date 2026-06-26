@@ -193,8 +193,9 @@ flowchart TD
 - **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
   A model that fits one GPU is a single pinned instance; small models co-locate; a
   model too big for one GPU is tensor-split across the **fewest cards whose per-device
-  footprint each fits**, proportionally to each card's free VRAM (so unequal GPUs
-  don't OOM the smaller one). A tensor-split chat serves **one full-context sequence**
+  footprint each fits**, charged against each card's total VRAM capacity (so a warm
+  fleet's own resident models aren't double-counted, and unequal GPUs don't OOM the
+  smaller one). A tensor-split chat serves **one full-context sequence**
   (`--parallel 1`): a giant filling several cards has no room to divide its context
   across batching slots, so the planner reserves and launches it at the single-sequence
   footprint rather than `ceiling x` the single-GPU slot count (multi-slot batching is
@@ -224,7 +225,7 @@ The spec is per-role. Each role entry accepts:
 
 - `devices` (required): list of GPU indices to use for that role.
 - `tensor_split` (optional): per-device weight proportions for a tensor-split
-  instance. When omitted, a single-card placement is assumed.
+  instance. When omitted, the model is split evenly across the listed devices.
 - `replicas` (optional): how many independent servers to run for embed and
   vision roles. Defaults to 1.
 
@@ -301,7 +302,8 @@ touching the running fleet.
   (named with its pid, written atomically so a concurrent scan never reads a torn
   file) recording the running llama-swap's pid, process group, and create time, the
   member servers' ports, plus the owner's pid and create time; before the next build
-  plans placement (so the device probe sees the real free VRAM), every state file is
+  launches the fleet (so the cards are actually free for it and the context sizer
+  reads true free VRAM), every state file is
   scanned and each dead owner's surviving llama-swap and its servers are reaped
   (guarded against pid reuse by create-time matches for both the swap and the owner,
   falling back to a command-line match for legacy files, and left alone while the
