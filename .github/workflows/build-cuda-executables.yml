@@ -160,15 +160,16 @@ jobs:
       # compat cell only: replace the stock lancedb the sync installed with the
       # pre-Haswell build from the private index. --no-deps leaves the rest of the
       # synced venv untouched, so this swap is local to this cell -- pyproject and
-      # uv.lock never change, and no other cell or job sees it. Fails here until the
-      # index serves the wheel; continue-on-error keeps it off the release path.
+      # uv.lock never change, and no other cell or job sees it. Pinned to the index's
+      # latest +compat (the fork tracks upstream, not lilbee's stock pin); bump when
+      # the fork republishes. continue-on-error keeps a missing wheel off the release.
       - name: Swap in the pre-Haswell lancedb
         if: matrix.compat
         shell: bash
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://tobocop2.github.io/wheels/simple/ \
-            lancedb==0.29.2+compat
+            lancedb==0.34.0b3+compat
 
       - name: Build executable
         shell: bash
