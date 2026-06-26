@@ -8,13 +8,15 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol
 
 from lilbee.data.ingest.types import MARKDOWN_MIME, OcrBackendName
 from lilbee.vision import resolve_ocr_prompt
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
+
+    from xberg import OcrConfig
 
 # Token key inside OcrConfig.backend_options JSON. xberg does not propagate
 # contextvars into process_image (xberg-4w9), so per-request state travels as
@@ -74,36 +76,30 @@ def backend_options_for(token: str) -> str:
     return json.dumps({_REQUEST_TOKEN_KEY: token})
 
 
-def _config_to_dict(config: str) -> dict[str, Any]:
-    """Parse the OcrConfig JSON string xberg passes to process_image into a dict."""
-    try:
-        raw: object = json.loads(config)
-    except (ValueError, TypeError):
-        return {}
-    return cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
-
-
 class _OcrConfigView:
-    """Typed reader over the xberg OcrConfig (normalized to a dict)."""
+    """Typed reader over the xberg OcrConfig object passed to process_image.
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    xberg hands the callback a native OcrConfig (alef typed trait callbacks), so
+    its fields are read directly as attributes.
+    """
+
+    def __init__(self, config: OcrConfig) -> None:
         self._config = config
 
     @property
     def vlm_prompt(self) -> str | None:
-        return self._config.get("vlm_prompt")
+        return self._config.vlm_prompt
 
     @property
     def request_token(self) -> str | None:
-        raw = self._config.get("backend_options")
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except (ValueError, TypeError):
-                return None
-        if not isinstance(raw, dict):
+        raw = self._config.backend_options
+        if raw is None:
             return None
-        token = raw.get(_REQUEST_TOKEN_KEY)
+        try:
+            options = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        token = options.get(_REQUEST_TOKEN_KEY) if isinstance(options, dict) else None
         return token if isinstance(token, str) else None
 
 
@@ -148,10 +144,10 @@ class VisionOcrBackend:
     def backend_type(self) -> str:
         return "custom"
 
-    def process_image(self, image_bytes: bytes, config: str) -> dict[str, Any]:
-        # xberg serializes the OcrConfig to a JSON string for the callback;
-        # parse before reading fields.
-        view = _OcrConfigView(_config_to_dict(config))
+    def process_image(self, image_bytes: bytes, config: OcrConfig) -> dict[str, Any]:
+        # xberg passes the OcrConfig as a native object (alef typed trait
+        # callbacks); read the request token and prompt override off it.
+        view = _OcrConfigView(config)
         model = self._model_ref_fn()
         prompt = view.vlm_prompt or resolve_ocr_prompt(model)
         ctx = ocr_requests.get(view.request_token)

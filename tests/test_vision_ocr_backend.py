@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from lilbee.data.ingest.types import MARKDOWN_MIME, OcrBackendName
 from lilbee.data.ingest.vision_ocr_backend import (
     VisionOcrBackend,
@@ -25,8 +23,14 @@ def _backend(ocr_fn=None, model="vendor/glm-ocr"):
 
 
 def _cfg(*, vlm_prompt=None, backend_options=None):
-    """The OcrConfig JSON string xberg hands process_image."""
-    return json.dumps({"vlm_prompt": vlm_prompt, "backend_options": backend_options})
+    """The native xberg OcrConfig object xberg hands process_image."""
+    from xberg import OcrConfig
+
+    return OcrConfig(
+        backend=OcrBackendName.LILBEE_VISION,
+        vlm_prompt=vlm_prompt,
+        backend_options=backend_options,
+    )
 
 
 class TestProtocol:
@@ -106,23 +110,12 @@ class TestProcessImage:
         assert calls[0][3] == 0.0
 
     def test_malformed_backend_options_ignored(self):
+        # Non-JSON and valid-but-non-object backend_options both resolve to no token.
         be, calls = _backend()
         be.process_image(b"PNG", _cfg(backend_options="not-json"))
+        be.process_image(b"PNG", _cfg(backend_options="123"))
         assert calls[0][3] == 0.0
-
-    def test_malformed_config_string_falls_back_to_defaults(self):
-        # A non-JSON config string yields an empty view: resolved prompt, zero timeout.
-        be, calls = _backend(model="vendor/glm-ocr")
-        be.process_image(b"PNG", "}{ not json")
-        _, _, prompt, timeout = calls[0]
-        assert prompt == "OCR"
-        assert timeout == 0.0
-
-    def test_non_object_json_config_falls_back_to_defaults(self):
-        # Valid JSON that isn't an object (e.g. a bare number) is treated as empty.
-        be, calls = _backend(model="vendor/glm-ocr")
-        be.process_image(b"PNG", "123")
-        assert calls[0][2] == "OCR"
+        assert calls[1][3] == 0.0
 
 
 class TestRegistry:
