@@ -302,7 +302,7 @@ def run_http() -> None:
         code, _ = curl("POST", "/api/placement/preview", '{"spec":{"chat":{"devices":[0]}}}', auth=False)
         rec("H-preview-noauth", "preview without key -> 401/403 (bb-895)", code in (401, 403), f"code={code}")
     else:
-        rec("H-preview-noauth", "preview auth enforcement (bb-895)", True, "server has no auth key; see unit test test_preview_requires_auth")
+        rec("H-preview-noauth", "preview auth enforcement (bb-895)", True, "server has no auth key; see unit test test_placement_routes_require_auth")
 
 
 # --------------------------------------------------------------------------
