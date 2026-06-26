@@ -161,6 +161,14 @@ jobs:
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             backend: vulkan
+          # Pre-Haswell-safe Windows build for the scoop lilbee-compat manifest.
+          # Same soft, self-contained model as the Linux compat cell; MSVC's default
+          # baseline is already conservative, so no -march override is needed here.
+          - os: windows-latest
+            asset_name: lilbee-compat-windows-x86_64.exe
+            backend: vulkan
+            compat: true
+            soft: true
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
