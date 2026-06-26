@@ -168,7 +168,7 @@ jobs:
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://tobocop2.github.io/wheels/simple/ \
-            lancedb==0.33.0+compat
+            lancedb==0.29.2+compat
 
       - name: Build executable
         shell: bash
