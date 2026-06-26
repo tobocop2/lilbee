@@ -130,6 +130,9 @@ jobs:
       && (needs.gate.outputs.ci_passed == 'true' || needs.test.result == 'success' || inputs.skip_tests)
     # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
     timeout-minutes: 300
+    # Only soft cells (the pre-Haswell compat build) may fail without failing the
+    # release; every default binary stays hard-required.
+    continue-on-error: ${{ matrix.soft == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -138,6 +141,19 @@ jobs:
             container: quay.io/pypa/manylinux_2_34_x86_64
             asset_name: lilbee-linux-x86_64
             backend: vulkan
+          # Pre-Haswell-safe Linux build: the same Vulkan binary with the stock
+          # lancedb swapped for the +compat wheel and the launcher held to an
+          # x86-64-v2 baseline, so it runs on Sandy Bridge / Bulldozer CPUs. Soft and
+          # self-contained -- no pyproject/uv.lock footprint, and a failure (until the
+          # wheel index is live) never blocks the release. This is the binary the CPU
+          # package channels (AUR/snap/flatpak/nix/homebrew) would carry as a -compat.
+          - os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_34_x86_64
+            asset_name: lilbee-compat-linux-x86_64
+            backend: vulkan
+            compat: true
+            soft: true
+            march: x86-64-v2
           - os: macos-latest
             asset_name: lilbee-macos-arm64
             backend: metal
@@ -238,11 +254,25 @@ jobs:
         # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
         run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
+      # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
+      # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
+      - name: Swap in the pre-Haswell lancedb
+        if: matrix.compat
+        shell: bash
+        run: |
+          uv pip install --reinstall --no-deps \
+            --extra-index-url https://tobocop2.github.io/wheels/simple/ \
+            lancedb==0.29.2+compat
+
       - name: Build executable
         shell: bash
         env:
           ASSET_NAME: ${{ matrix.asset_name }}
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+          # compat cell only: hold Nuitka's C output to the pre-Haswell baseline so
+          # the launcher layer (not just lancedb) runs on old silicon. Empty elsewhere.
+          CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
+          CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
       - name: Smoke test
