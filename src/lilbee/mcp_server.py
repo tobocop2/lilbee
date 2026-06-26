@@ -1158,8 +1158,7 @@ def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
     """Set and apply a manual multi-GPU placement spec (persists to config)."""
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    # A set always builds a spec (even {}) so an empty or invalid one is rejected;
-    # clearing back to auto is the separate clear_placement tool.
+    # Always build a spec (even {}) so an empty/invalid one is rejected, not cleared.
     return _placement_result(lambda: set_placement(PlacementSpec.from_json(json.dumps(spec))))
 
 

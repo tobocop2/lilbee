@@ -108,3 +108,14 @@ def test_rejects_fractional_float_device():
 def test_accepts_integral_float_device():
     spec = PlacementSpec.from_json('{"chat": {"devices": [2.0]}}')
     assert spec.roles[WorkerRole.CHAT].devices == (2,)
+
+
+def test_rejects_boolean_device():
+    # bool is an int subclass; without the guard ``true`` would silently pin device 1.
+    with pytest.raises(PlacementError, match="devices must be integers"):
+        PlacementSpec.from_json('{"chat": {"devices": [true]}}')
+
+
+def test_rejects_boolean_replicas():
+    with pytest.raises(PlacementError, match="replicas must be integers"):
+        PlacementSpec.from_json('{"embed": {"devices": [0], "replicas": true}}')

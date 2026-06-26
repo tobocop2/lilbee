@@ -55,13 +55,13 @@ def test_delete_refused_on_daemon():
         assert "CLI" in r.text
 
 
-def test_preview_requires_auth():
-    """preview is not read-only: it runs subprocess probes and must require auth (bb-895)."""
+def test_placement_routes_require_auth():
+    """No placement route is read-only: they all run subprocess device probes."""
     from lilbee.server.auth import is_read_only
 
     assert not is_read_only(placement_preview_route.fn)
-    assert is_read_only(placement_route.fn)
-    assert is_read_only(gpus_route.fn)
+    assert not is_read_only(placement_route.fn)
+    assert not is_read_only(gpus_route.fn)
 
 
 def test_preview_provider_error_returns_503(monkeypatch):
@@ -86,6 +86,18 @@ def test_get_placement_provider_error_returns_503(monkeypatch):
     monkeypatch.setattr(handlers, "placement", boom)
     with create_test_client([placement_route]) as client:
         r = client.get("/api/placement")
+        assert r.status_code == 503
+
+
+def test_get_gpus_provider_error_returns_503(monkeypatch):
+    from lilbee.providers.base import ProviderError
+
+    async def boom():
+        raise ProviderError("no engine")
+
+    monkeypatch.setattr(handlers, "gpus", boom)
+    with create_test_client([gpus_route]) as client:
+        r = client.get("/api/gpus")
         assert r.status_code == 503
 
 

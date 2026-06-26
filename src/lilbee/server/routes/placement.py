@@ -1,8 +1,10 @@
 """Placement routes: inspect and preview GPU placement.
 
-Mutation (set/clear) is intentionally not served here. Applying a placement
-rebuilds the shared fleet, which is unsafe on the always-concurrent HTTP
-daemon, so PUT/DELETE are refused and placement is changed from the CLI or TUI.
+Every route requires auth: even the reads run resolve_placement_plan, which
+spawns subprocess device probes, so none are marked @read_only. Mutation
+(set/clear) is intentionally not served here: applying a placement rebuilds the
+shared fleet, which is unsafe on the always-concurrent HTTP daemon, so PUT/DELETE
+are refused and placement is changed from the CLI or TUI.
 """
 
 from __future__ import annotations
@@ -15,7 +17,6 @@ from litestar.exceptions import HTTPException
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
-from lilbee.server.auth import read_only
 from lilbee.server.models import GpuInfoResponse, PlacementResponse, PlacementSpecBody
 
 _HTTP_UNPROCESSABLE = 422
@@ -38,7 +39,6 @@ def _refused() -> HTTPException:
 
 
 @get("/api/placement")
-@read_only
 async def placement_route() -> PlacementResponse:
     """Current effective placement."""
     try:
@@ -71,7 +71,6 @@ async def placement_clear_route() -> None:
 
 
 @get("/api/gpus")
-@read_only
 async def gpus_route() -> list[GpuInfoResponse]:
     """Detected GPUs with free/total VRAM."""
     try:
