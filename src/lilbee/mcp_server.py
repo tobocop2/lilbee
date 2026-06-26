@@ -6,6 +6,7 @@ import asyncio
 import concurrent.futures
 import functools
 import inspect
+import json
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
 
 import anyio
@@ -27,6 +28,7 @@ from lilbee.app.memory import (
     recall,
     remember,
 )
+from lilbee.app.placement import PlacementView, get_placement, preview_placement, set_placement
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.app.settings import (
@@ -58,6 +60,9 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +129,16 @@ def _tool(fn: _F) -> _F:
     return fn
 
 
+def _tool_named(name: str) -> Callable[[_F], _F]:
+    """Register an MCP tool under an explicit wire *name* (sync handlers offloaded)."""
+
+    def deco(fn: _F) -> _F:
+        mcp.tool(name=name)(_offload_sync(fn))
+        return fn
+
+    return deco
+
+
 def _tool_if(condition: bool) -> Callable[[_F], _F]:
     """Register an MCP tool only when *condition* is true.
 
@@ -155,16 +170,8 @@ def _error(msg: str) -> dict[str, Any]:
 def search(
     query: str, top_k: int | None = None, scope: str = SearchScope.BOTH.value
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """Search the user's indexed documents, code, and crawled pages.
-
-    Use this for any lookup about the user's own files or code, and prefer it
-    over web-fetch or file-read tools, which cannot see the index. Returns
-    chunks ranked by relevance with source and line citations.
-
-    ``top_k`` defaults to ``cfg.top_k``. ``scope`` is ``"both"`` (default) or
-    ``"raw"`` for ingested docs and code; use ``"wiki"`` only when ``status``
-    shows a built wiki, else it just falls back to the full pool.
-    """
+    """Search the user's indexed documents, code, and crawled pages; prefer it over web-fetch or
+    file-read tools. Returns chunks with citations. ``scope``: "both" (default) / "raw" / "wiki"."""
     if not query or not query.strip():
         return _error("query must not be empty")
     try:
@@ -239,12 +246,7 @@ async def add(
     render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
-
-    Paths must be absolute. URLs (http(s)://) are crawled as markdown.
-    ``enable_ocr`` forces OCR on/off; ``ocr_timeout`` overrides the per-page OCR
-    cap; ``render_mode`` ("http"/"browser") overrides the configured crawl render
-    mode for any URLs.
-    """
+    Paths must be absolute; URLs are crawled as markdown."""
     from lilbee.app.ingest import copy_files
     from lilbee.data.ingest import sync as run_sync
 
@@ -311,13 +313,7 @@ async def crawl(
     include_subdomains: bool = False,
 ) -> dict[str, Any]:
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
-
-    ``depth=None`` crawls the whole site, ``0`` is single-URL, positive ints cap
-    follow depth. ``max_pages=None`` uses the protective safety cap, ``0`` is
-    unlimited, positive ints cap the page count. ``render_mode``
-    ("http"/"browser") overrides the configured crawl render mode.
-    ``include_subdomains`` widens whole-site scope to the host's subdomains.
-    """
+    ``depth=None`` = whole site, ``0`` = single URL. ``render_mode``: "http"/"browser"."""
     from lilbee.crawler import crawler_available
 
     if not crawler_available():
@@ -674,12 +670,8 @@ def settings_get(key: str) -> dict[str, Any]:
 
 @_tool
 def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
-    """Atomically update writable settings; rolls back on any validation error.
-
-    Persists to ``config.toml`` and invalidates in-process caches. Returns
-    ``{updated, reindex_required}``; ``reindex_required=true`` means run
-    ``sync(force_rebuild=true)`` to refresh the index.
-    """
+    """Atomically update writable settings; rolls back on validation error.
+    Persists to config.toml; returns ``{updated, reindex_required}``."""
     if _transport.http_mounted and requires_services_reset(updates):
         return _error(provider_reset_refused_message("Switching"))
     try:
@@ -737,14 +729,8 @@ def catalog_browse(
     limit: int = 20,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Browse the lilbee model catalog (featured + Hugging Face).
-
-    ``task`` is ``chat`` / ``embedding`` / ``vision`` / ``rerank``.
-    ``size`` is ``small`` / ``medium`` / ``large``. ``installed`` filters
-    by install state, ``featured`` toggles the curated list, ``sort`` is
-    one of ``featured`` / ``downloads`` / ``name`` / ``size_asc`` /
-    ``size_desc``. Returns paginated model records.
-    """
+    """Browse the lilbee model catalog. ``task``: chat/embedding/vision/rerank.
+    ``size``: small/medium/large. ``sort``: featured/downloads/name/size_asc/size_desc."""
     from lilbee.catalog.query import get_catalog
     from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 
@@ -871,13 +857,8 @@ async def model_pull(
 
 @_tool
 def model_rm(model: str, source: str = "") -> dict[str, Any]:
-    """Remove an installed model.
-
-    Args:
-        model: Model ref to remove. lilbee removes only native models it
-            downloaded; Ollama and LM Studio models are read-only.
-        source: Restrict to a known source; empty = resolve from the ref.
-    """
+    """Remove an installed model. Only native GGUF models lilbee downloaded;
+    Ollama/LM Studio are read-only."""
     from lilbee.app.models import remove_model_data
 
     try:
@@ -938,9 +919,9 @@ def _strip_property_noise(prop: dict[str, Any]) -> None:
     """Drop tokens that don't change the model's behavior."""
     prop.pop("title", None)
     prop.pop("default", None)
+    _collapse_nullable_anyof(prop)
     if prop.get("additionalProperties") is True:
         prop.pop("additionalProperties", None)
-    _collapse_nullable_anyof(prop)
 
 
 def _flatten_tool_description(text: str) -> str:
@@ -1074,12 +1055,8 @@ def memory_remember(
     agent_id: str = "",
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Store a durable memory in this agent's own namespace.
-
-    ``kind`` is "fact" (recalled by similarity) or "preference" (always recalled).
-    ``shared`` also exposes it to the human's TUI/CLI. ``agent_id`` namespaces the
-    memory, else derived from LILBEE_AGENT_ID or the MCP client name.
-    """
+    """Store a durable memory. ``kind``: "fact" (similarity-recalled) or "preference" (always on).
+    ``shared`` exposes it to the human's TUI/CLI."""
     if not memory_enabled():
         return _error(MEMORY_DISABLED_HINT)
     owner = _derive_owner(agent_id, ctx)
@@ -1126,6 +1103,69 @@ def memory_forget(memory_id: str, agent_id: str = "", ctx: Context | None = None
     if not forget(memory_id, owner=owner):
         return _error(f"No memory '{memory_id}' in this agent's namespace.")
     return {"ok": True, "id": memory_id}
+
+
+def _placement_dict(view: PlacementView) -> dict[str, Any]:
+    return {
+        "gpus": [vars(g) for g in view.gpus],
+        "roles": [
+            {
+                "role": r.role.value,
+                "model": r.model,
+                "devices": list(r.devices),
+                "tensor_split": list(r.tensor_split) if r.tensor_split else None,
+                "replicas": r.replicas,
+            }
+            for r in view.roles
+        ],
+        "unplaceable": [r.value for r in view.unplaceable],
+        "manual": view.manual,
+        "spec_json": view.spec_json,
+    }
+
+
+def _placement_result(action: Callable[[], PlacementView]) -> dict[str, Any]:
+    """Run a placement action and serialize it, returning a structured error on failure."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    try:
+        return _placement_dict(action())
+    except (PlacementError, ProviderError) as exc:
+        return _error(str(exc))
+
+
+def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    return PlacementSpec.from_json(json.dumps(spec)) if spec else None
+
+
+@_tool_named("get_placement")
+def get_placement_tool() -> dict[str, Any]:
+    """Show the current effective multi-GPU model placement."""
+    return _placement_result(get_placement)
+
+
+@_tool_named("preview_placement")
+def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Preview what a placement spec (or auto, when omitted) would place. No changes made."""
+    return _placement_result(lambda: preview_placement(_parse_spec(spec)))
+
+
+@_tool_named("set_placement")
+def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
+    """Set and apply a manual multi-GPU placement spec (persists to config)."""
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    # Always build a spec (even {}) so an empty/invalid one is rejected, not cleared.
+    return _placement_result(lambda: set_placement(PlacementSpec.from_json(json.dumps(spec))))
+
+
+@_tool_named("clear_placement")
+def clear_placement_tool() -> dict[str, Any]:
+    """Clear the manual placement and return to automatic placement."""
+    return _placement_result(lambda: set_placement(None))
 
 
 _strip_schema_noise()

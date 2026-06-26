@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
 from lilbee.providers.roles import WorkerRole
 
@@ -101,27 +102,36 @@ def plan_placement(
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
 
-    # Single-instance roles first; then data-parallel replicas fill the remaining
-    # headroom. Within the singles, place the search-critical roles (embed/rerank)
-    # before chat: chat tensor-splits across cards and, placed first, can claim
-    # them all and leave an essential search role unplaceable. Search-first here
-    # mirrors the shared-memory path's reservation.
+    # Reserve the persistent query fleet first, then fill residual VRAM with the
+    # elastic ingest pool. The persistent singles are: every replicas<=1 role plus
+    # replica 0 of each replicated role (the query embedder / vision that a search
+    # issued during ingest must always reach). Within the singles, place the
+    # search-critical roles (embed/rerank) before chat: chat tensor-splits across
+    # cards and, placed first, can claim them all and leave an essential search role
+    # unplaceable. Search-first here mirrors the shared-memory path's reservation.
+    # The extra replicas (1..N-1) are placed only into what VRAM remains, so a chat
+    # issued during ingest always fits and the query embedder always exists.
     singles = [m for m in models if m.replicas <= 1]
     replicated = [m for m in models if m.replicas > 1]
-    for model in sorted(singles, key=_shared_pool_order):
+    persistent_singles = singles + [_persistent_single(m) for m in replicated]
+    for model in sorted(persistent_singles, key=_shared_pool_order):
         plan = _place_single(model, remaining, estimate_peak)
         if plan is None:
             unplaceable.append(model.role)
         else:
             instances.append(plan)
+    placed_roles = {plan.role for plan in instances}
     for model in replicated:
-        replica_plans = _place_replicas(model, remaining)
-        if replica_plans:
-            instances.extend(replica_plans)
-        else:
-            unplaceable.append(model.role)
+        if model.role not in placed_roles:
+            continue  # the persistent single did not fit -> already unplaceable
+        instances.extend(_place_replicas(model, remaining, start=1))
 
     return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+
+
+def _persistent_single(model: ModelPlacementInput) -> ModelPlacementInput:
+    """The replica-0 persistent instance of a replicated role, sized as one server."""
+    return ModelPlacementInput(role=model.role, est_vram_bytes=model.est_vram_bytes, replicas=1)
 
 
 def _place_single(
@@ -161,16 +171,20 @@ def _place_split(
     return None
 
 
-def _place_replicas(model: ModelPlacementInput, remaining: dict[int, float]) -> list[InstancePlan]:
-    """Place up to ``model.replicas`` instances, one per distinct GPU (most-free first).
+def _place_replicas(
+    model: ModelPlacementInput, remaining: dict[int, float], *, start: int = 0
+) -> list[InstancePlan]:
+    """Place the elastic replicas ``start..model.replicas-1``, one per distinct GPU
+    (most-free first).
 
     Spreads for throughput: each replica lands on a card not yet hosting one of this
     role's replicas, only co-locating a second round once every card has one. Stops
-    early when no card has room, so the pool shrinks to what fits.
+    early when no card has room, so the pool shrinks to the residual VRAM. ``start``
+    skips the indices already placed as persistent singles (1 for the elastic batch).
     """
     plans: list[InstancePlan] = []
     used: set[int] = set()
-    for replica in range(model.replicas):
+    for replica in range(start, model.replicas):
         candidates = [idx for idx, free in remaining.items() if free >= model.est_vram_bytes]
         if not candidates:
             break
@@ -220,3 +234,70 @@ def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:
     if not candidates:
         return None
     return max(candidates, key=lambda idx: remaining[idx])
+
+
+def placement_from_spec(
+    spec: PlacementSpec,
+    active_roles: tuple[WorkerRole, ...],
+    device_capacity: dict[int, int],
+    *,
+    estimate_peak: PeakEstimator,
+) -> Placement:
+    """Build a Placement from a manual *spec*, charging each card and failing loud.
+
+    ``device_capacity`` is each card's total VRAM (not instantaneous free): the
+    plan defines the fleet's full intended residency, so charging it against live
+    free VRAM would double-count models already loaded. Every active role must
+    have an entry; every device must exist; each card must fit the sum of the
+    per-device peaks charged to it, within the USABLE_VRAM_FRACTION headroom.
+    """
+    remaining = {idx: total * USABLE_VRAM_FRACTION for idx, total in device_capacity.items()}
+    instances: list[InstancePlan] = []
+    for role in active_roles:
+        rp = _required_entry(spec, role, device_capacity)
+        ratio = rp.tensor_split or tuple(1 for _ in rp.devices)
+        per_device = estimate_peak(role, ratio)
+        split = ratio if len(rp.devices) > 1 else ()
+        for replica in range(rp.replicas):
+            _charge_devices(role, rp.devices, per_device, remaining, device_capacity)
+            instances.append(
+                InstancePlan(
+                    role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
+                )
+            )
+    return Placement(instances=tuple(instances), unplaceable_roles=())
+
+
+def _required_entry(
+    spec: PlacementSpec, role: WorkerRole, device_capacity: dict[int, int]
+) -> RolePlacement:
+    """Return *role*'s placement entry, failing loud if absent or pinned off-hardware."""
+    rp = spec.roles.get(role)
+    if rp is None:
+        raise PlacementError(f"{role.value} has a model but no placement entry in placement")
+    for idx in rp.devices:
+        if idx not in device_capacity:
+            raise PlacementError(
+                f"{role.value} pinned to device {idx} but only "
+                f"{len(device_capacity)} GPU(s) detected"
+            )
+    return rp
+
+
+def _charge_devices(
+    role: WorkerRole,
+    devices: tuple[int, ...],
+    per_device: tuple[int, ...],
+    remaining: dict[int, float],
+    device_capacity: dict[int, int],
+) -> None:
+    """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows."""
+    for idx, peak in zip(devices, per_device, strict=True):
+        if peak > remaining[idx]:
+            raise PlacementError(
+                f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
+                f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
+                f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom)"
+            )
+    for idx, peak in zip(devices, per_device, strict=True):
+        remaining[idx] -= peak

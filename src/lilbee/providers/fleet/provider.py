@@ -25,6 +25,11 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
+from lilbee.providers.fleet.replicas import (
+    REPLICATED_ROLES,
+    gpu_device_count,
+    resolve_replica_count,
+)
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.fleet.windowing import window_messages
@@ -215,7 +220,8 @@ class _VisionRequestGate:
                 self._in_flight -= 1
 
     def _checkout(self) -> threading.BoundedSemaphore:
-        capacity = max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
+        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        capacity = max(1, replicas * cfg.vision_ocr_concurrency)
         with self._lock:
             # Resize only when idle: rebuilding while old-semaphore holders are
             # in flight would briefly double the real cap, so a capacity change
@@ -279,6 +285,16 @@ class FleetProvider:
 
     def __init__(self) -> None:
         self._swap: SwapManager | None = None
+        # Model ids of elastic ingest replicas (embed/vision replica>=1); populated
+        # by _adopt_swap and consumed by release_ingest_pool.
+        self._elastic_members: list[str] = []
+        # Latched once shutdown runs. A discarded provider (reset_services swaps
+        # in a new one) can still have an in-flight warm-up or reload daemon
+        # thread; without this latch that thread could start a llama-swap after
+        # shutdown already ran, leaving a process no live provider owns.
+        # _ensure_swap checks it under the build lock so a post-shutdown build is
+        # refused (the swap_manager reaper is the backstop if one slips through).
+        self._shut_down = False
         # A pool of OpenAI clients per placed role (one per data-parallel replica),
         # all pointed at the llama-swap endpoint and routed by replica model id;
         # rebuilt whenever the swap process (re)starts. Requests round-robin the pool.
@@ -340,11 +356,17 @@ class FleetProvider:
             with self._lock:
                 if self._swap is not None:
                     return self._swap
+                if self._shut_down:
+                    # Provider was shut down (and likely discarded by reset_services)
+                    # while this warm-up/reload thread was in flight; do not spawn a
+                    # llama-swap no live provider would ever reap.
+                    return None
             from lilbee.core.config import cfg
 
             swap = SwapManager(cfg.data_dir)
-            # A dead owner's surviving llama-swap holds VRAM; reap before planning
-            # so the device probe sees the real free memory.
+            # A dead owner's surviving llama-swap holds VRAM; reap it before launching
+            # so the cards are actually free for this fleet (and the context sizer
+            # reads true free VRAM).
             swap.reap_stale()
             launches = planning.plan_all_launches()
             if not launches:
@@ -381,6 +403,11 @@ class FleetProvider:
                 )
             )
         self._clients = clients
+        self._elastic_members = [
+            launch.model_id
+            for launch in launches
+            if launch.role in REPLICATED_ROLES and launch.replica >= 1
+        ]
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
@@ -411,10 +438,19 @@ class FleetProvider:
         means the role is unconfigured or did not fit memory. llama-swap loads each
         upstream on its first request, so a returned client may still be cold. No
         in-process fallback, so a missing pool is a hard error.
+
+        When the pool is empty but a swap was previously built and its process has
+        since exited (detected via ``is_live()``), a one-shot rebuild is attempted
+        before raising so a transient llama-swap restart recovers transparently.
         """
         self._ensure_swap()
         with self._lock:
             clients = self._clients.get(role)
+            swap = self._swap
+        if not clients and swap is not None and not swap.is_live():
+            self._rebuild_swap()
+            with self._lock:
+                clients = self._clients.get(role)
         if not clients:
             raise ProviderError(
                 f"No {role.value} model server is running. Make sure a {role.value} "
@@ -422,6 +458,28 @@ class FleetProvider:
                 provider=_PROVIDER_NAME,
             )
         return list(clients)
+
+    def _rebuild_swap(self) -> None:
+        """Drop a dead swap and build a fresh one (new port); ``_ensure_swap`` adopts clients."""
+        self._drop_swap_refs()
+        self._ensure_swap()
+
+    def release_ingest_pool(self) -> None:
+        """Unload the elastic ingest replicas (embed/vision replica>=1), freeing VRAM.
+
+        Best-effort and non-disruptive: the persistent query fleet (chat, embed-0,
+        rerank, vision-0) stays loaded. Called when the last active ingest finishes.
+        """
+        with self._lock:
+            swap = self._swap
+            members = list(self._elastic_members)
+        if swap is None:
+            return
+        for model_id in members:
+            if not swap.unload(model_id):
+                log.info("ingest pool: unload of %s did not confirm (swap may be cold)", model_id)
+            else:
+                log.info("ingest pool: unloaded %s", model_id)
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role*'s upstream is loaded and ready, without starting the swap.
@@ -462,9 +520,17 @@ class FleetProvider:
         with self._build_lock:
             with self._lock:
                 swap = self._swap
+                self._shut_down = True
             self._drop_swap_refs()
-            if swap is not None:
-                swap.shutdown()
+            # Always tear down via the swap manager, even when this provider holds
+            # no tracked swap: an in-flight build may have started one this thread
+            # never adopted, and SwapManager.shutdown reaps every llama-swap this
+            # process spawned (keyed on our own children), not just a tracked handle.
+            if swap is None:
+                from lilbee.core.config import cfg
+
+                swap = SwapManager(cfg.data_dir)
+            swap.shutdown()
 
     def _drop_swap_refs(self) -> None:
         """Clear the swap, its clients, and the chat capacity so the next call rebuilds."""

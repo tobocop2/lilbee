@@ -82,16 +82,31 @@ def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
     assert planning_mod._role_ctx(WorkerRole.CHAT, Path("/m/c.gguf"), None) == 4096
 
 
-def test_role_ctx_embed_caps_to_chunk_size(monkeypatch) -> None:
-    # A 32K-trained embedder is sized to the chunk length, not its full context, so its
+def test_role_ctx_embed_covers_chunk_size_plus_margin(monkeypatch) -> None:
+    # A 32K-trained embedder is sized to the chunk length plus the truncation margin
+    # (so a full chunk_size input is not truncated), not its full context, so its
     # placement estimate doesn't balloon (200GB+) and starve the role alongside a giant.
     monkeypatch.setattr(
         "lilbee.providers.engine_params.train_ctx_from_meta",
         lambda _meta, *, fallback, model_path: 32768,
     )
     monkeypatch.setattr(cfg, "chunk_size", 512)
-    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}) == 512
-    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}) == 512
+    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}) == 520
+    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}) == 520
+
+
+def test_embed_ctx_token_cap_fits_full_chunk(monkeypatch) -> None:
+    # The embed input truncates at ctx - _EMBED_CTX_MARGIN, so the server must
+    # be sized so a full chunk_size input survives (token_cap >= chunk_size), not 8 short.
+    from lilbee.providers.engine_params import _EMBED_CTX_MARGIN, resolve_embed_ctx
+
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.train_ctx_from_meta",
+        lambda _meta, *, fallback, model_path: 32768,
+    )
+    monkeypatch.setattr(cfg, "chunk_size", 512)
+    ctx = resolve_embed_ctx({}, Path("/m/e.gguf"))
+    assert ctx - _EMBED_CTX_MARGIN >= cfg.chunk_size
 
 
 def test_role_ctx_embed_uses_train_ctx_when_below_chunk_size(monkeypatch) -> None:
@@ -364,7 +379,7 @@ def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypa
     seen: dict[str, int] = {}
     sizes = {WorkerRole.EMBED: 2 * _GB, WorkerRole.RERANK: 3 * _GB}
 
-    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0):
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0):
         if role is WorkerRole.CHAT:
             seen["chat_reservation"] = chat_reservation
         return ModelPlacementInput(role, sizes.get(role, 10 * _GB))
@@ -384,7 +399,7 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
     monkeypatch.setattr(cfg, "vision_model", "")
     seen: dict[str, int] = {}
 
-    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0):
+    def _estimate(role, ref, *, unified_budget=None, chat_reservation=0, device_count=0):
         if role is WorkerRole.CHAT:
             seen["chat_reservation"] = chat_reservation
         return ModelPlacementInput(role, 2 * _GB)
@@ -398,10 +413,26 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
 def test_replica_count_reads_per_role_knobs(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "embed_replicas", 3)
     monkeypatch.setattr(cfg, "vision_replicas", 2)
-    assert planning_mod._replica_count(WorkerRole.EMBED) == 3
-    assert planning_mod._replica_count(WorkerRole.VISION) == 2
-    assert planning_mod._replica_count(WorkerRole.CHAT) == 1  # chat never replicates
-    assert planning_mod._replica_count(WorkerRole.RERANK) == 1  # rerank never replicates
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=4) == 3
+    assert planning_mod._replica_count(WorkerRole.VISION, device_count=4) == 2
+    assert (
+        planning_mod._replica_count(WorkerRole.CHAT, device_count=4) == 1
+    )  # chat never replicates
+    assert planning_mod._replica_count(WorkerRole.RERANK, device_count=4) == 1  # rerank never
+
+
+def test_replica_count_auto_uses_device_count(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "embed_replicas", 0)  # 0 = auto = one per GPU
+    monkeypatch.setattr(cfg, "vision_replicas", 0)
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=4) == 4
+    assert planning_mod._replica_count(WorkerRole.VISION, device_count=3) == 3
+    # An explicit positive knob wins over the auto device count.
+    monkeypatch.setattr(cfg, "embed_replicas", 2)
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=4) == 2
+    # Auto on a GPU-less host still resolves to at least one instance.
+    monkeypatch.setattr(cfg, "embed_replicas", 0)
+    assert planning_mod._replica_count(WorkerRole.EMBED, device_count=0) == 1
+    assert planning_mod._replica_count(WorkerRole.CHAT, device_count=4) == 1
 
 
 def test_estimate_role_carries_replica_count(monkeypatch, tmp_path) -> None:
@@ -412,8 +443,20 @@ def test_estimate_role_carries_replica_count(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
     monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
     monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
-    inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
-    assert inp.replicas == 4
+    inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, device_count=2)
+    assert inp.replicas == 4  # explicit knob wins over the device count
+
+
+def test_estimate_role_auto_replicas_follow_device_count(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cfg, "embed_replicas", 0)  # 0 = auto = one per GPU
+    model = tmp_path / "e.gguf"
+    model.write_bytes(b"x" * 1000)
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=10))
+    inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, device_count=3)
+    assert inp.replicas == 3
 
 
 def test_search_reservation_scales_with_replicas() -> None:
@@ -425,15 +468,67 @@ def test_search_reservation_scales_with_replicas() -> None:
     assert planning_mod._search_reservation(inputs) == 3 * 2 * _GB + 1 * _GB
 
 
-def test_placement_estimate_ctx_chat_uses_ceiling(monkeypatch) -> None:
+def test_placement_estimate_ctx_chat_reserves_target(monkeypatch) -> None:
+    """A long-context model reserves the chat ctx target, not its full trained ceiling.
+
+    Reserving the full ceiling over-charges KV and can wrongly reject a split; the
+    target is the context we intend to serve, capped by the model and floored at a
+    usable minimum.
+    """
     monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
     monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
-    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 131072
+    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 24576
+
+
+def test_placement_estimate_ctx_chat_floored_when_target_tiny(monkeypatch) -> None:
+    """A tiny target is floored at the usable minimum so placement still reserves room."""
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 1024)
+    monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 131072)
+    assert (
+        planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {})
+        == planning_mod._MIN_USABLE_CHAT_CTX
+    )
+
+
+def test_placement_estimate_ctx_chat_capped_by_short_ceiling(monkeypatch) -> None:
+    """A short-context model reserves only its ceiling, below the usable floor."""
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 2048)
+    assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 2048
 
 
 def test_placement_estimate_ctx_chat_honors_num_ctx_pin(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", 16384)
     assert planning_mod._placement_estimate_ctx(WorkerRole.CHAT, Path("/m.gguf"), {}) == 16384
+
+
+def test_estimate_role_chat_footprint_sized_at_target_ctx(monkeypatch) -> None:
+    """The single-instance chat footprint reserves KV for the target ctx, not the
+    single-card dynamic ctx (which collapses when a big model barely fits one card).
+
+    Regression for bb-9rn: sizing at the target is what lets a too-tight single-card
+    placement fall through to a tensor-split instead of a 512-token corner.
+    """
+    captured: dict[str, int] = {}
+
+    def _est(model_path, *, ctx, slots, **_kwargs) -> GgufVramEstimate:
+        captured["ctx"] = ctx
+        return GgufVramEstimate(vram_bytes=10**8, ram_bytes=0, unified_bytes=10**8)
+
+    monkeypatch.setattr(cfg, "num_ctx", None)
+    monkeypatch.setattr(cfg, "chat_n_ctx_target", 24576)
+    monkeypatch.setattr(planning_mod, "estimate_instance_footprint", _est)
+    monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    monkeypatch.setattr("lilbee.providers.engine_params.chat_ctx_ceiling", lambda _m, _p: 262144)
+
+    planning_mod._estimate_role(WorkerRole.CHAT, "org/chat.gguf")
+    assert captured["ctx"] == 24576
 
 
 def test_placement_estimate_ctx_non_chat_delegates_to_role_ctx(monkeypatch) -> None:
@@ -652,10 +747,34 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=9000, unified=900)
         )
-        shared = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1, unified_budget=10**9)
-        discrete = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=1)
+        shared = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1, unified_budget=10**9)
+        discrete = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=1)
         assert shared.est_vram_bytes == 900
         assert discrete.est_vram_bytes == 9000
+
+    def test_estimate_role_chat_charged_at_serve_budget(self, monkeypatch) -> None:
+        """A chat instance's placement footprint is scaled up by the placement/serve
+        budget ratio, so a model that would starve its KV on one card is tensor-split.
+
+        Regression for bb-9rn: without this, a 17GB model fits one 24GB card at the 0.9
+        placement headroom but its served ctx (sized at 0.75) collapses to ~512 tokens.
+        """
+        monkeypatch.setattr(cfg, "gpu_memory_fraction", 0.75)
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path", lambda _r: Path("/m/c.gguf")
+        )
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 16)
+        monkeypatch.setattr(planning_mod, "_slots_for", lambda *a, **k: 1)
+        monkeypatch.setattr(
+            planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=10000)
+        )
+
+        chat = planning_mod._estimate_role(WorkerRole.CHAT, "ref")
+        embed = planning_mod._estimate_role(WorkerRole.EMBED, "ref")
+        # chat charged at the serve budget: 10000 * (USABLE_VRAM_FRACTION / 0.75); embed raw.
+        assert chat.est_vram_bytes == int(10000 * (planning_mod.USABLE_VRAM_FRACTION / 0.75))
+        assert embed.est_vram_bytes == 10000
 
     def test_launch_for_vision_passes_mmproj(self, tmp_path, monkeypatch) -> None:
         model = tmp_path / "v.gguf"
@@ -682,8 +801,8 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod, "estimate_instance_footprint", _fixed_estimator(vram=7777)
         )
-        inp = planning_mod._estimate_role(WorkerRole.CHAT, "ref", slots=2)
-        assert inp.role == WorkerRole.CHAT
+        inp = planning_mod._estimate_role(WorkerRole.EMBED, "ref", slots=2)
+        assert inp.role == WorkerRole.EMBED
         assert inp.est_vram_bytes == 7777
 
     def test_launch_for_builds_instance_with_pinning(self, tmp_path, monkeypatch) -> None:
@@ -800,9 +919,11 @@ class TestBuildFleetWiring:
 
     @pytest.mark.parametrize("role", [WorkerRole.EMBED, WorkerRole.RERANK])
     def test_launch_for_embed_roles_set_token_cap(self, tmp_path, monkeypatch, role) -> None:
+        from lilbee.providers.engine_params import _EMBED_CTX_MARGIN
+
         launch = self._launch_for_role(tmp_path, monkeypatch, role, ctx=8192)
         # Truncate a few tokens below the per-slot ctx so the server's re-added BOS fits.
-        assert launch.token_cap == 8192 - planning_mod._EMBED_CTX_MARGIN
+        assert launch.token_cap == 8192 - _EMBED_CTX_MARGIN
 
     @pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION])
     def test_launch_for_non_embed_roles_have_no_token_cap(

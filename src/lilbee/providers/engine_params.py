@@ -35,11 +35,14 @@ log = logging.getLogger(__name__)
 EMBED_FALLBACK_CTX = 2048
 """Context used for embed/rerank when a GGUF reports junk (e.g. context_length=0)."""
 
+# Sized above chunk_size so BOS re-added on re-tokenization doesn't overflow a full-chunk input.
+_EMBED_CTX_MARGIN = 8
+
 
 def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
-    """Embed/rerank context: the configured chunk length, capped by the model's trained context."""
+    """Embed/rerank context: chunk length plus truncation margin, capped by trained context."""
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
-    return min(train_ctx, cfg.chunk_size)
+    return min(train_ctx, cfg.chunk_size + _EMBED_CTX_MARGIN)
 
 
 _LLM_RERANK_HEADROOM = 512

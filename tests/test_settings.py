@@ -196,6 +196,30 @@ class TestRerankerConfig:
         assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
 
 
+class TestReplicaDefaults:
+    """embed/vision replica counts default to 0 = auto (one per GPU at placement)."""
+
+    def test_replicas_default_to_auto_zero(self):
+        from lilbee.core.config import Config
+
+        assert Config().embed_replicas == 0
+        assert Config().vision_replicas == 0
+
+    def test_replicas_accept_zero(self):
+        from lilbee.core.config import Config
+
+        assert Config(embed_replicas=0, vision_replicas=0).embed_replicas == 0
+
+    def test_replicas_reject_negative(self):
+        import pydantic
+        import pytest
+
+        from lilbee.core.config import Config
+
+        with pytest.raises(pydantic.ValidationError):
+            Config(embed_replicas=-1)
+
+
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 
@@ -344,6 +368,65 @@ class TestOverlayPersistedSettings:
             assert cfg.chat_model == original
         finally:
             cfg.chat_model = original
+
+    def test_env_var_wins_over_config_toml(self, tmp_path, monkeypatch):
+        """An explicit LILBEE_<FIELD> env var overrides config.toml, as documented."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            cfg.vision_replicas = 4  # value as loaded from LILBEE_VISION_REPLICAS
+            monkeypatch.setenv("LILBEE_VISION_REPLICAS", "4")
+            (tmp_path / "config.toml").write_text("vision_replicas = 2\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 4
+        finally:
+            cfg.vision_replicas = original
+
+    def test_empty_env_var_does_not_suppress_config_toml(self, tmp_path, monkeypatch):
+        """An empty LILBEE_<FIELD> env var is treated as unset; config.toml wins."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.setenv("LILBEE_VISION_REPLICAS", "")
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 3
+        finally:
+            cfg.vision_replicas = original
+
+    def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
+        """Without the env var, config.toml is still overlaid onto cfg."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 3
+        finally:
+            cfg.vision_replicas = original
+
+
+class TestAutoSyncConfig:
+    def test_auto_sync_defaults_true(self):
+        from lilbee.core.config import Config
+
+        assert Config().auto_sync is True
+
+    def test_auto_sync_is_writable(self):
+        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
+
+        assert "auto_sync" in WRITABLE_CONFIG_FIELDS
+
+    def test_auto_sync_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        assert "auto_sync" in SETTINGS_MAP
 
 
 class TestListSettingRegexMarker:

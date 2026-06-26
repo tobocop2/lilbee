@@ -71,6 +71,8 @@ _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
 _RUNNING_PATH = "/running"
+_UNLOAD_PATH = "/api/models/unload"
+_HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
@@ -140,6 +142,11 @@ class SwapManager:
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
         self.reap_stale()
+        # Singleton guard: one llama-swap per data_dir for this lilbee. Reap any
+        # llama-swap we already started against this config (a leaked duplicate
+        # from a prior race/reload) before spawning, so they cannot accumulate
+        # and double-book a GPU.
+        _stop_own_fleet(self._config_path, tuple(self._member_ports))
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
@@ -253,6 +260,32 @@ class SwapManager:
         prefix = role_model_prefix(role)
         return any(model.startswith(prefix) for model in self._ready_models())
 
+    def unload(self, model_id: str) -> bool:
+        """Unload one model from llama-swap, freeing its VRAM; best-effort, never raises."""
+        if self._port is None:
+            return False
+        try:
+            resp = httpx.post(
+                f"{self.endpoint()}{_UNLOAD_PATH}",
+                json={"model": model_id},
+                timeout=_HTTP_TIMEOUT_S,
+            )
+        except (OSError, httpx.HTTPError):
+            return False
+        return resp.status_code < httpx.codes.BAD_REQUEST
+
+    def is_live(self) -> bool:
+        """Whether the swap process is up and its proxy answers ``/running``."""
+        if self._proc is None or self._proc.poll() is not None:
+            return False
+        if self._port is None:
+            return False
+        try:
+            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
+        except (OSError, httpx.HTTPError):
+            return False
+        return resp.status_code < httpx.codes.BAD_REQUEST
+
     def reload(self, launches: list[InstanceLaunch]) -> None:
         """Apply a changed model set by restarting llama-swap with a fresh config."""
         self.shutdown()
@@ -264,14 +297,18 @@ class SwapManager:
         return self._proc is not None
 
     def shutdown(self) -> None:
-        """Stop llama-swap and every server it spawned (a no-op when not running).
+        """Stop every llama-swap this lilbee owns at our config and reap servers.
 
-        Unlinks only this owner's state file; another instance's record stays.
+        Authoritative teardown keyed on config-path identity, not the single
+        tracked ``Popen``: a warm-up/reset race or a reload can leave several
+        llama-swap processes this lilbee spawned, any of them reparented to init
+        (still holding the engine binary open) -- trusting one handle would leak
+        them. Every llama-swap running against our config is reaped (sparing a
+        live sibling lilbee at the same data_dir). Unlinks only this owner's state
+        file; another instance's record stays.
         """
-        proc = self._proc
-        if proc is not None:
-            _stop_process_tree(proc)
-            self._state_path.unlink(missing_ok=True)
+        _stop_own_fleet(self._config_path, tuple(self._member_ports))
+        self._state_path.unlink(missing_ok=True)
         self._proc = None
         self._port = None
         self._close_log()
@@ -336,22 +373,6 @@ def _pick_free_ports(count: int) -> list[int]:
             sock.close()
 
 
-def _stop_process_tree(proc: subprocess.Popen[bytes]) -> None:
-    """Stop llama-swap and reap any llama-server that outlives it.
-
-    llama-swap starts each server in its own process group (its Setpgid), so
-    signalling llama-swap's group never reaches the servers; a survivor keeps
-    its port bound and that port's next bind fails. The children are captured
-    while llama-swap is still alive, then swept after it stops.
-    """
-    children = _live_children(proc.pid)
-    if sys.platform == "win32":
-        _hard_stop(proc)
-    else:
-        _terminate_group(proc)
-    _reap_survivors(children)
-
-
 def _live_children(pid: int) -> list[psutil.Process]:
     """The process's current descendants, or none when it already exited."""
     try:
@@ -383,26 +404,96 @@ def _await_killed(procs: list[psutil.Process]) -> None:
         log.warning("Process %s survived SIGKILL; its VRAM may still be held.", proc.pid)
 
 
-def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
-    """SIGTERM the process group, escalating to SIGKILL on timeout."""
+def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
+    """Every live llama-swap (any owner) running against *config_path*.
+
+    Identity is the ``-config <path>`` argument, which every llama-swap this
+    lilbee starts carries and which survives reparenting to init -- so this finds
+    a leaked duplicate or a swap reparented away from us, neither of which a
+    tracked Popen handle nor a ``children()`` scan would catch.
+    """
+    target = str(config_path)
+    swaps: list[psutil.Process] = []
+    for proc in psutil.process_iter():
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        binary = Path(next(iter(cmdline), "")).name
+        if _LLAMA_SWAP_PROCESS_NAME in binary and target in cmdline:
+            swaps.append(proc)
+    return swaps
+
+
+def _live_sibling_swap_pids(data_dir: Path) -> set[int]:
+    """Swap pids a live *other* owner recorded at *data_dir* (spare these).
+
+    A concurrent sibling lilbee on the same data_dir (e.g. ``lilbee sync`` beside
+    the server) shares the config path, so a config-path reap would otherwise
+    kill its healthy swap. Its state file names the swap pid to protect.
+    """
+    our_pid = os.getpid()
+    protected: set[int] = set()
+    for state_path in data_dir.glob(_STATE_FILE_GLOB):
+        state = _load_state(state_path)
+        if state is None or state.owner_pid in (None, our_pid):
+            continue
+        if _owner_alive(state.owner_pid, state.owner_created_at):
+            protected.add(state.pid)
+    return protected
+
+
+def _stop_own_fleet(config_path: Path, member_ports: tuple[int, ...]) -> None:
+    """Stop every llama-swap this lilbee owns at *config_path* and reap upstreams.
+
+    Keyed on config-path identity rather than a tracked Popen or the live process
+    tree: a warm-up/reload race can leave several llama-swap processes this lilbee
+    started, any of which may be reparented to init, so no single handle or child
+    scan finds them all. Every llama-swap running against our config is reaped
+    EXCEPT one a live *other* owner recorded -- a concurrent sibling lilbee at the
+    same data_dir is left alone. Each swap runs each llama-server in its own
+    process group, so the upstreams are swept separately: captured descendants
+    plus any llama-server still bound to one of our member ports (a respawned
+    upstream the descendant snapshot missed), then confirmed gone.
+    """
+    protected = _live_sibling_swap_pids(config_path.parent)
+    swaps = [swap for swap in _swaps_for_config(config_path) if swap.pid not in protected]
+    children: list[psutil.Process] = []
+    for swap in swaps:
+        children.extend(_live_children(swap.pid))
+    for swap in swaps:
+        if sys.platform == "win32":
+            _hard_stop_proc(swap)
+        else:
+            _terminate_proc_group(swap)
+    _reap_survivors(children + _find_orphan_servers(member_ports))
+
+
+def _terminate_proc_group(proc: psutil.Process) -> None:
+    """SIGTERM a process's group, escalating to SIGKILL on timeout."""
     try:
         pgid = os.getpgid(proc.pid)
-    except ProcessLookupError:  # pragma: no cover - process exited between checks
+    except (ProcessLookupError, OSError):  # pragma: no cover - exited between checks
         return
-    os.killpg(pgid, signal.SIGTERM)
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGTERM)
     try:
         proc.wait(timeout=_STOP_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        os.killpg(pgid, _SIGKILL)
+    except psutil.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, _SIGKILL)
+        _await_killed([proc])
 
 
-def _hard_stop(proc: subprocess.Popen[bytes]) -> None:
-    """Terminate the process, escalating to a hard kill on timeout (Windows path)."""
-    proc.terminate()
+def _hard_stop_proc(proc: psutil.Process) -> None:
+    """Terminate a process, escalating to a hard kill on timeout (Windows path)."""
+    with contextlib.suppress(psutil.NoSuchProcess):
+        proc.terminate()
     try:
         proc.wait(timeout=_STOP_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    except psutil.TimeoutExpired:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            proc.kill()
 
 
 def _load_state(path: Path) -> _SwapState | None:

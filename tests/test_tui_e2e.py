@@ -296,7 +296,7 @@ class TestViewCycling:
                 await pilot.press("escape")
                 await pilot.pause()
 
-                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Placement", "Chat"]
                 for view in expected:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
@@ -498,7 +498,7 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Placement", "Chat"]
                 for view in expected:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
@@ -548,7 +548,7 @@ class TestScreenTransitions:
                 assert app.active_view == "Tasks"
 
     async def test_forward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Catalog->Status->Settings->Tasks->Wiki->Chat via nav_next."""
+        """Chat->Catalog->Status->Settings->Tasks->Wiki->Placement->Chat via nav_next."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -559,14 +559,14 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Placement", "Chat"]
                 for view in full_cycle:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
                     assert app.active_view == view
 
     async def test_backward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Wiki->Tasks->Settings->Status->Catalog->Chat via nav_prev."""
+        """Chat->Placement->Wiki->Tasks->Settings->Status->Catalog->Chat via nav_prev."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -577,7 +577,15 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level [ binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                backward_cycle = ["Wiki", "Tasks", "Settings", "Status", "Catalog", "Chat"]
+                backward_cycle = [
+                    "Placement",
+                    "Wiki",
+                    "Tasks",
+                    "Settings",
+                    "Status",
+                    "Catalog",
+                    "Chat",
+                ]
                 for view in backward_cycle:
                     await pilot.press("left_square_bracket")
                     await pilot.pause()

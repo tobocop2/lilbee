@@ -134,6 +134,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
     ),
+    "auto_sync": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Run a sync before `lilbee ask` (disable on large static corpora)",
+    ),
     "semantic_chunking": SettingDef(
         bool,
         nullable=False,
@@ -776,13 +782,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=False,
         group=SettingGroup.GENERATION,
-        help_text="Embedding servers to run in parallel, one per GPU, for large-scale ingest",
+        help_text="Embedding servers in parallel (0 = auto, one per GPU; positive pins the count)",
     ),
     "vision_replicas": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.GENERATION,
-        help_text="Vision OCR servers to run in parallel, one per GPU, for large-scale ingest",
+        help_text="Vision OCR servers in parallel (0 = auto, one per GPU; positive pins the count)",
     ),
     "candidate_multiplier": SettingDef(
         int,

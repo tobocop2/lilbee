@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
 
@@ -561,3 +562,40 @@ class MemoryExtractedEvent(BaseModel):
 
     count: int
     items: list[MemoryExtractedItem]
+
+
+class GpuInfoResponse(BaseModel):
+    """One GPU as returned by GET /api/gpus and embedded in PlacementResponse."""
+
+    index: int
+    backend: str
+    label: str
+    name: str
+    total_bytes: int
+    free_bytes: int
+
+
+class RolePlacementResponse(BaseModel):
+    """Where one role's model is placed in the resolved plan."""
+
+    role: WorkerRole
+    model: str
+    devices: list[int]
+    tensor_split: list[int] | None
+    replicas: int
+
+
+class PlacementResponse(BaseModel):
+    """Response for placement read, preview, set, and clear routes."""
+
+    gpus: list[GpuInfoResponse]
+    roles: list[RolePlacementResponse]
+    unplaceable: list[str]
+    manual: bool
+    spec_json: str | None
+
+
+class PlacementSpecBody(BaseModel):
+    """Request body for placement routes that accept a manual spec."""
+
+    spec: dict[str, dict[str, object]] | None = None

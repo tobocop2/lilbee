@@ -7493,11 +7493,11 @@ async def test_app_nav_prev_cycles_views():
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.active_view == "Wiki"
+        assert app.active_view == "Placement"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.active_view == "Tasks"
+        assert app.active_view == "Wiki"
 
 
 async def test_app_nav_next_cycles_views():

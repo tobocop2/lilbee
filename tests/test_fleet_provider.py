@@ -27,13 +27,14 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
 
 
 def _fake_launch(
-    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0
+    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0, replica: int = 0
 ) -> MagicMock:
     launch = MagicMock()
     launch.role = role
     launch.slots = slots
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
+    launch.replica = replica
     return launch
 
 
@@ -57,6 +58,11 @@ class _FakeSwap:
 
     def endpoint(self) -> str:
         return "http://fake-endpoint"
+
+    def is_live(self) -> bool:
+        # Default: the fake swap is considered live so existing tests that have
+        # an empty client pool still raise ProviderError, not trigger a rebuild.
+        return True
 
     def role_ready(self, role: WorkerRole) -> bool:
         return role in self.ready
@@ -157,6 +163,17 @@ def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
     p = FleetProvider()
     p._ensure_swap()
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
+
+
+def test_ensure_swap_refused_after_shutdown(monkeypatch) -> None:
+    """bb-dpp source guard: once shut down (and likely discarded by reset_services),
+    a lingering warm-up/reload thread's _ensure_swap must not spawn a new llama-swap
+    on the dead provider -- that is exactly the duplicate that leaks on teardown."""
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    p._shutdown_swap()  # latches _shut_down (and reaps via a fresh SwapManager)
+    assert p._ensure_swap() is None
+    assert swap.started == []  # no swap started after shutdown
 
 
 def test_adopt_swap_retires_old_clients_without_closing(monkeypatch) -> None:
@@ -369,6 +386,7 @@ def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 3)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
     with prov_mod._VISION_GATE.slot():
@@ -389,6 +407,7 @@ def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 1)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
@@ -432,6 +451,7 @@ def test_vision_gate_slot_decrements_in_flight_when_acquire_raises(monkeypatch) 
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 1)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
@@ -464,6 +484,7 @@ def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 1)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
@@ -649,6 +670,80 @@ def test_supports_tools_tolerates_unstattable_path(monkeypatch, _clear_tools_cac
         lambda _p: {"chat_template": _TOOL_AWARE_TEMPLATE},
     )
     assert FleetProvider().supports_tools("org/repo/chat.gguf") is True
+
+
+def test_release_ingest_pool_unloads_only_elastic_replicas() -> None:
+    from unittest import mock
+
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    p = FleetProvider()
+    p._elastic_members = ["embed-1", "embed-2", "vision-1"]
+    unloaded: list[str] = []
+    swap = mock.Mock()
+    swap.unload.side_effect = lambda mid: unloaded.append(mid) or True
+    p._swap = swap
+
+    p.release_ingest_pool()
+
+    assert unloaded == ["embed-1", "embed-2", "vision-1"]
+    swap.unload.assert_called()
+
+
+def test_release_ingest_pool_noop_when_no_swap() -> None:
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    p = FleetProvider()
+    p._elastic_members = ["embed-1"]
+    p._swap = None
+    p.release_ingest_pool()  # must not raise
+
+
+def test_release_ingest_pool_logs_unconfirmed(caplog) -> None:
+    import logging
+    from unittest import mock
+
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    p = FleetProvider()
+    p._elastic_members = ["embed-1"]
+    swap = mock.Mock()
+    swap.unload.return_value = False  # unload did not confirm
+    p._swap = swap
+
+    with caplog.at_level(logging.INFO, logger="lilbee.providers.fleet.provider"):
+        p.release_ingest_pool()
+
+    assert any("did not confirm" in r.message for r in caplog.records)
+
+
+def test_adopt_swap_records_elastic_members(monkeypatch) -> None:
+    from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    def _make_launch(role: WorkerRole, replica: int) -> InstanceLaunch:
+        return InstanceLaunch(
+            role=role,
+            argv=[],
+            env_overrides={},
+            model="dummy.gguf",
+            replica=replica,
+        )
+
+    launches = [
+        _make_launch(WorkerRole.CHAT, replica=0),
+        _make_launch(WorkerRole.EMBED, replica=0),
+        _make_launch(WorkerRole.EMBED, replica=1),
+        _make_launch(WorkerRole.RERANK, replica=0),
+        _make_launch(WorkerRole.VISION, replica=0),
+        _make_launch(WorkerRole.VISION, replica=1),
+    ]
+    swap = _install_engine(monkeypatch, launches=launches)
+    p = FleetProvider()
+    with p._lock:
+        p._adopt_swap(swap, launches)
+
+    assert p._elastic_members == ["embed-1", "vision-1"]
 
 
 # --- llama-swap lifecycle ----------------------------------------------------
@@ -1030,9 +1125,20 @@ def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
     for name in _GPU_VISIBLE_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cfg, "gpu_devices", "0")
-    gpu_env.apply_fleet_gpu_env()
-    for name in _GPU_VISIBLE_ENV_VARS:
-        assert os.environ[name] == "0"
+    # apply_fleet_gpu_env writes these vars in place; monkeypatch.delenv does not
+    # track app-side additions, so restore the pre-apply snapshot to avoid leaking
+    # the pin (CUDA_VISIBLE_DEVICES=0) into later tests that read os.environ.
+    snapshot = {name: os.environ.get(name) for name in _GPU_VISIBLE_ENV_VARS}
+    try:
+        gpu_env.apply_fleet_gpu_env()
+        for name in _GPU_VISIBLE_ENV_VARS:
+            assert os.environ[name] == "0"
+    finally:
+        for name, value in snapshot.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def test_apply_fleet_gpu_env_clears_empty_cuda_visible_devices(monkeypatch) -> None:
@@ -1792,3 +1898,77 @@ class TestWarmProgressTracking:
         p._warm_tracker.begin("repo/m.gguf")
         p._warm_tracker.ready()
         assert p.warm_progress().phase is WarmPhase.READY
+
+
+def test_require_clients_reprobes_dead_swap(monkeypatch) -> None:
+    """Empty pool + dead swap triggers a one-shot rebuild; clients are returned after."""
+    from unittest import mock
+
+    p = FleetProvider()
+    p._clients = {}
+    dead = mock.Mock()
+    dead.is_live.return_value = False
+    p._swap = dead
+    rebuilt = {"called": False}
+
+    def fake_rebuild() -> None:
+        rebuilt["called"] = True
+        p._clients = {WorkerRole.CHAT: [_fake_client()]}
+
+    monkeypatch.setattr(p, "_rebuild_swap", fake_rebuild, raising=False)
+    clients = p._require_clients(WorkerRole.CHAT)
+    assert rebuilt["called"] is True
+    assert len(clients) == 1
+
+
+def test_require_clients_no_reprobe_when_swap_none(monkeypatch) -> None:
+    """Empty pool + no swap at all (unconfigured role) still raises, no rebuild."""
+    from lilbee.providers.base import ProviderError
+
+    rebuilt = {"called": False}
+
+    def fake_rebuild() -> None:
+        rebuilt["called"] = True
+
+    p = FleetProvider()
+    p._swap = None
+    p._clients = {}
+    monkeypatch.setattr(p, "_rebuild_swap", fake_rebuild, raising=False)
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        p._require_clients(WorkerRole.CHAT)
+    assert rebuilt["called"] is False
+
+
+def test_require_clients_no_reprobe_when_swap_live(monkeypatch) -> None:
+    """Empty pool + live swap (real misconfiguration) still raises, no rebuild."""
+    from unittest import mock
+
+    from lilbee.providers.base import ProviderError
+
+    rebuilt = {"called": False}
+
+    def fake_rebuild() -> None:
+        rebuilt["called"] = True
+
+    p = FleetProvider()
+    live = mock.Mock()
+    live.is_live.return_value = True
+    p._swap = live
+    p._clients = {}
+    monkeypatch.setattr(p, "_rebuild_swap", fake_rebuild, raising=False)
+    with pytest.raises(ProviderError, match="No chat model server is running"):
+        p._require_clients(WorkerRole.CHAT)
+    assert rebuilt["called"] is False
+
+
+def test_rebuild_swap_calls_drop_then_ensure(monkeypatch) -> None:
+    """_rebuild_swap calls _drop_swap_refs then _ensure_swap, in that order."""
+    p = FleetProvider()
+    order: list[str] = []
+
+    monkeypatch.setattr(p, "_drop_swap_refs", lambda: order.append("drop"), raising=False)
+    monkeypatch.setattr(p, "_ensure_swap", lambda: order.append("ensure"), raising=False)
+
+    p._rebuild_swap()
+
+    assert order == ["drop", "ensure"]

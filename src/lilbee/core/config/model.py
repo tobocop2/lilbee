@@ -91,6 +91,8 @@ class Config(BaseSettings):
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    # Gate for the pre-ask sync; --no-sync overrides per invocation.
+    auto_sync: bool = ConfigField(default=True, writable=True)
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
@@ -345,11 +347,14 @@ class Config(BaseSettings):
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
 
     # Data-parallel replicas of the embed / vision role across GPUs: N independent
-    # servers (one per spare GPU), round-robined, so large-scale ingest fans the
-    # embedding / OCR work across the whole box. 1 = a single server (the default).
-    # Capped at runtime by the GPUs with room after the chat model is placed.
-    embed_replicas: int = ConfigField(default=1, ge=1, writable=True)
-    vision_replicas: int = ConfigField(default=1, ge=1, writable=True)
+    # servers, round-robined, so large-scale ingest fans the embedding / OCR work
+    # across the whole box. 0 means "auto": one replica per detected GPU, capped by
+    # the VRAM left after the persistent query fleet (chat, one embed, rerank, one
+    # vision) is reserved. A positive value pins the count. The extra replicas are
+    # ingest-only and reclaimed when ingest ends; the persistent query embedder /
+    # vision (replica 0) always exists if its model fits.
+    embed_replicas: int = ConfigField(default=0, ge=0, writable=True)
+    vision_replicas: int = ConfigField(default=0, ge=0, writable=True)
 
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
@@ -423,6 +428,14 @@ class Config(BaseSettings):
     # a single visible device, llama.cpp ignores this. ``None``
     # (default) lets llama.cpp pick (index 0).
     main_gpu: int | None = ConfigField(default=None, writable=True)
+
+    # Manual GPU placement override stored as a JSON scalar (the config.toml store
+    # is flat, and core must not depend on the provider PlacementSpec type). When
+    # set, it fully replaces the automatic placement planner: each active role pins
+    # to the listed device indices, with an optional tensor_split and replica count.
+    # Edited via the placement CLI/MCP/HTTP/TUI surfaces rather than the generic
+    # settings list, so public=False. None hands off to the VRAM-aware auto planner.
+    placement: str | None = ConfigField(default=None, writable=True, public=False)
 
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
@@ -773,6 +786,25 @@ class Config(BaseSettings):
                     return None
             return ",".join(parts)
         return str(v)
+
+    @field_validator("placement", mode="before")
+    @classmethod
+    def _parse_placement(cls, v: Any) -> str | None:
+        """Blank/None -> None; validate a JSON string or PlacementSpec; store JSON."""
+        from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+
+        if v is None:
+            return None
+        if isinstance(v, PlacementSpec):
+            json_str = v.to_json()
+            PlacementSpec.from_json(json_str)  # re-validate a directly-built spec
+            return json_str
+        if isinstance(v, str):
+            if v.strip() == "":
+                return None
+            PlacementSpec.from_json(v)
+            return v
+        raise PlacementError("placement must be a JSON string or PlacementSpec")
 
     @field_validator("semantic_chunking", mode="before")
     @classmethod

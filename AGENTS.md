@@ -75,6 +75,7 @@ All settings override via environment variables:
 - `LILBEE_ANN_INDEX_THRESHOLD` — chunk count at/above which sync builds an approximate (ANN) vector index for fast search at scale (default: `50000`, `0` = always exact flat search)
 - `LILBEE_MAX_DISTANCE` — cosine distance threshold, 0-1 (default: `0.9`). Higher = more results, lower = stricter filtering
 - `LILBEE_ADAPTIVE_THRESHOLD` — enable adaptive threshold widening (default: `false`). When true, widens distance threshold if too few results found
+- `LILBEE_AUTO_SYNC` — run a sync before `lilbee ask` (default: `true`); set to `false` on large static corpora to skip the pre-answer re-hash
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
 - `LILBEE_RERANKER_TYPE` — reranker serving mode: `auto` (default), `cross_encoder`, or `llm`.
 - `LILBEE_RERANKER_PROMPT` — relevance prompt for LLM rerankers (blank uses the built-in template).

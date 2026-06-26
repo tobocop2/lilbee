@@ -310,6 +310,28 @@ class TestAsk:
         assert result.exit_code == 0
         assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") is None
 
+    @mock.patch("lilbee.cli.commands.search_chat.auto_sync")
+    def test_ask_syncs_by_default(self, mock_auto, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        mock_auto.assert_called_once()
+
+    @mock.patch("lilbee.cli.commands.search_chat.auto_sync")
+    def test_ask_no_sync_flag_skips_auto_sync(self, mock_auto, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "--no-sync", "q"])
+        assert result.exit_code == 0
+        mock_auto.assert_not_called()
+
+    @mock.patch("lilbee.cli.commands.search_chat.auto_sync")
+    def test_ask_auto_sync_config_false_skips(self, mock_auto, mock_svc, monkeypatch):
+        monkeypatch.setattr(cfg, "auto_sync", False)
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        mock_auto.assert_not_called()
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_invalid_scope_exits_nonzero(self, mock_sync, mock_svc):
         result = runner.invoke(app, ["ask", "--scope", "bogus", "q"])

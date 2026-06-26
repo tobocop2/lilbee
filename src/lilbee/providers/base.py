@@ -416,6 +416,10 @@ class LLMProvider(Protocol):
         """
         return
 
+    def release_ingest_pool(self) -> None:
+        """Unload elastic ingest replicas after the last active ingest exits. No-op default."""
+        return
+
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role* has a healthy server now, without starting one.
 
