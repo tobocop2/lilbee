@@ -27,6 +27,7 @@ jobs:
       tag: ${{ steps.info.outputs.tag }}
       version: ${{ steps.info.outputs.version }}
       sha_linux_compat: ${{ steps.info.outputs.sha_linux_compat }}
+      size_linux_compat: ${{ steps.info.outputs.size_linux_compat }}
       sha_windows_compat: ${{ steps.info.outputs.sha_windows_compat }}
     steps:
       - name: Resolve tag and compat asset digests
@@ -40,12 +41,16 @@ jobs:
           tag="${TAG}"
           version="${tag#v}"
           gh api "/repos/${REPO}/releases/tags/${tag}" \
-            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
 
           get_sha() {
             awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
           }
+          get_size() {
+            awk -F'\t' -v name="$1" '$1 == name { print $3 }' /tmp/assets.tsv
+          }
           sha_linux_compat=$(get_sha lilbee-compat-linux-x86_64)
+          size_linux_compat=$(get_size lilbee-compat-linux-x86_64)
           sha_windows_compat=$(get_sha lilbee-compat-windows-x86_64.exe)
 
           [ -n "$sha_linux_compat" ] || { echo "lilbee-compat-linux-x86_64 missing from release ${tag}; run release.yml (compat cell) first"; exit 1; }
@@ -54,6 +59,7 @@ jobs:
             echo "tag=$tag"
             echo "version=$version"
             echo "sha_linux_compat=$sha_linux_compat"
+            echo "size_linux_compat=$size_linux_compat"
             echo "sha_windows_compat=$sha_windows_compat"
           } >> "$GITHUB_OUTPUT"
 
@@ -152,6 +158,26 @@ jobs:
         run: |
           cp "${{ steps.build.outputs.snap }}" lilbee-compat-linux-x86_64.snap
           gh release upload "$TAG" lilbee-compat-linux-x86_64.snap --repo "$GITHUB_REPOSITORY" --clobber
+
+  flatpak:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-flatpak
+        with:
+          pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}
+          gpg-private-key: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_compat }}
+          size-linux: ${{ needs.resolve.outputs.size_linux_compat }}
+          tag: ${{ needs.resolve.outputs.tag }}
+          app-id: io.github.tobocop2.lilbee.compat
+          manifest-path: packaging/flatpak/io.github.tobocop2.lilbee.compat.yml
+          asset-name: lilbee-compat-linux-x86_64
+          bundle-name: lilbee-compat.flatpak
 
   scoop:
     needs: resolve
