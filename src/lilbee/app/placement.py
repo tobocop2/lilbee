@@ -8,7 +8,11 @@ from lilbee.app.services import reset_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.placement_spec import PlacementSpec
-from lilbee.providers.fleet.planning import ResolvedPlacement, resolve_placement_plan
+from lilbee.providers.fleet.planning import (
+    ResolvedPlacement,
+    clear_read_device_cache,
+    resolve_placement_plan,
+)
 from lilbee.providers.roles import WorkerRole
 
 _PLACEMENT_KEY = "placement"
@@ -115,4 +119,5 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
         settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
         cfg.placement = spec_json
     reset_services()
+    clear_read_device_cache()  # the reconfigure changes free VRAM; don't serve a stale probe
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)

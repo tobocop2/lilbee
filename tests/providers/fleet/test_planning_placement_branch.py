@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.placement import InstancePlan, Placement
@@ -5,6 +7,68 @@ from lilbee.providers.fleet.placement_spec import PlacementSpec, RolePlacement
 from lilbee.providers.roles import WorkerRole
 
 GIB = 1024**3
+
+
+def test_read_device_cache_collapses_repeat_probes(monkeypatch):
+    """A burst of reads within the TTL probes the engine once."""
+    cache = planning._ReadDeviceCache(ttl_s=1000)
+    calls = {"n": 0}
+
+    def fake(_binary):
+        calls["n"] += 1
+        return [FleetDevice("CUDA", 0, "A", GIB, GIB)]
+
+    monkeypatch.setattr(planning, "resolve_devices", fake)
+    first = cache.get(Path("/x"))
+    second = cache.get(Path("/x"))
+    assert calls["n"] == 1
+    assert first == second
+    cache.clear()
+    cache.get(Path("/x"))
+    assert calls["n"] == 2  # cleared -> re-probe
+
+
+def test_read_device_cache_ttl_zero_always_probes(monkeypatch):
+    """A zero TTL disables caching (every read re-probes)."""
+    cache = planning._ReadDeviceCache(ttl_s=0)
+    calls = {"n": 0}
+
+    def fake(_binary):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(planning, "resolve_devices", fake)
+    cache.get(Path("/x"))
+    cache.get(Path("/x"))
+    assert calls["n"] == 2
+
+
+def test_resolve_placement_plan_uses_read_cache(monkeypatch):
+    """The read/view path serves repeat plans from the device cache (one probe)."""
+    import lilbee.providers.fleet.cuda_runtime as cuda_runtime
+    import lilbee.providers.fleet.gpu_env as gpu_env
+
+    planning.clear_read_device_cache()
+    calls = {"n": 0}
+
+    def counting(_binary):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
+    monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
+    monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(planning, "resolve_devices", counting)
+    monkeypatch.setattr(
+        planning, "_server_model_inputs", lambda roles, *, unified_budget=None: ([], {}, 0)
+    )
+    monkeypatch.setattr(
+        planning, "_resolve_placement", lambda *a, **k: Placement(instances=(), unplaceable_roles=())
+    )
+    planning.resolve_placement_plan(None)
+    planning.resolve_placement_plan(None)
+    assert calls["n"] == 1
+    planning.clear_read_device_cache()
 
 
 def test_spec_branch_calls_placement_from_spec(monkeypatch):

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -724,6 +726,47 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     return devices
 
 
+_DEVICE_PROBE_TTL_S = 2.0
+
+
+class _ReadDeviceCache:
+    """Short-TTL device-probe cache for the read/view path.
+
+    Inspecting placement (GET placement/gpus, preview, ``placement show``)
+    resolves devices on every call, which spawns a ``llama-server --list-devices``
+    subprocess; a brief TTL collapses a burst of reads onto one probe. The launch
+    path is never served from here -- it reaps stale servers first and sizes KV
+    cache against live free VRAM, so it always probes fresh.
+    """
+
+    def __init__(self, ttl_s: float) -> None:
+        self._ttl_s = ttl_s
+        self._lock = threading.Lock()
+        self._at: float | None = None
+        self._devices: list[FleetDevice] | None = None
+
+    def get(self, binary: Path) -> list[FleetDevice]:
+        with self._lock:
+            fresh = self._at is not None and time.monotonic() - self._at < self._ttl_s
+            if self._devices is None or not fresh:
+                self._devices = resolve_devices(binary)
+                self._at = time.monotonic()
+            return self._devices
+
+    def clear(self) -> None:
+        with self._lock:
+            self._at = None
+            self._devices = None
+
+
+_read_device_cache = _ReadDeviceCache(_DEVICE_PROBE_TTL_S)
+
+
+def clear_read_device_cache() -> None:
+    """Drop the read-path device probe cache (e.g. after the fleet is reconfigured)."""
+    _read_device_cache.clear()
+
+
 def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     """Shared-RAM placement budget (free RAM minus the OS floor) when there is no
     discrete GPU, else ``None``. Discrete GPUs load into dedicated VRAM, so system
@@ -786,7 +829,7 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env()
-    devices = resolve_devices(binary)
+    devices = _read_device_cache.get(binary)
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, _ = _server_model_inputs(None, unified_budget=unified_budget)
     resolved = _resolve_placement(

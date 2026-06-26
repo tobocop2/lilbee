@@ -82,6 +82,24 @@ def test_set_persists_and_resets(monkeypatch):
         app_placement.cfg.placement = prior
 
 
+def test_set_clears_read_device_cache(monkeypatch):
+    """Applying a placement reconfigures the fleet, so the stale device probe is dropped."""
+    cleared = {"called": False}
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: None)
+    monkeypatch.setattr(app_placement, "reset_services", lambda: None)
+    monkeypatch.setattr(
+        app_placement, "clear_read_device_cache", lambda: cleared.__setitem__("called", True)
+    )
+    prior = app_placement.cfg.placement
+    try:
+        app_placement.set_placement(PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))}))
+        assert cleared["called"] is True
+    finally:
+        app_placement.cfg.placement = prior
+
+
 def test_set_none_clears(monkeypatch):
     deletes = {}
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
