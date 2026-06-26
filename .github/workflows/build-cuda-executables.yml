@@ -63,7 +63,7 @@ jobs:
             backend: cu125
             cuda: "12.5.0"
             asset_name: lilbee-linux-x86_64-cu125
-          # Pre-Haswell-safe cell: swaps in lancedb==X.Y.Z+compat from the tobocop2-wheels
+          # Pre-Haswell-safe cell: swaps in lancedb==X.Y.Z+compat from the lilbee.sh/compat
           # index and holds the launcher to an x86-64-v2 baseline, so the binary runs on
           # Sandy Bridge / Bulldozer CPUs that SIGILL on the stock lancedb wheel. Fully
           # self-contained -- no pyproject/uv.lock footprint, so it cannot affect any
@@ -168,7 +168,7 @@ jobs:
         shell: bash
         run: |
           uv pip install --reinstall --no-deps \
-            --extra-index-url https://tobocop2.github.io/wheels/simple/ \
+            --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.33.0+compat
 
       - name: Build executable

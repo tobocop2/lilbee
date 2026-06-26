@@ -271,7 +271,7 @@ jobs:
         shell: bash
         run: |
           uv pip install --reinstall --no-deps \
-            --extra-index-url https://tobocop2.github.io/wheels/simple/ \
+            --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.33.0+compat
 
       - name: Build executable

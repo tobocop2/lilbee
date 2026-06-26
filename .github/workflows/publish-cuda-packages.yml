@@ -25,6 +25,7 @@ jobs:
       tag: ${{ steps.info.outputs.tag }}
       version: ${{ steps.info.outputs.version }}
       sha_linux_cuda: ${{ steps.info.outputs.sha_linux_cuda }}
+      size_linux_cuda: ${{ steps.info.outputs.size_linux_cuda }}
     steps:
       - name: Resolve tag and CUDA asset digest
         id: info
@@ -37,12 +38,16 @@ jobs:
           tag="${TAG}"
           version="${tag#v}"
           gh api "/repos/${REPO}/releases/tags/${tag}" \
-            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))"' > /tmp/assets.tsv
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
 
           get_sha() {
             awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
           }
+          get_size() {
+            awk -F'\t' -v name="$1" '$1 == name { print $3 }' /tmp/assets.tsv
+          }
           sha_linux_cuda=$(get_sha lilbee-linux-x86_64-cu125)
+          size_linux_cuda=$(get_size lilbee-linux-x86_64-cu125)
 
           [ -n "$sha_linux_cuda" ] || { echo "lilbee-linux-x86_64-cu125 missing from release ${tag}; run build-cuda-executables.yml first"; exit 1; }
 
@@ -50,6 +55,7 @@ jobs:
             echo "tag=$tag"
             echo "version=$version"
             echo "sha_linux_cuda=$sha_linux_cuda"
+            echo "size_linux_cuda=$size_linux_cuda"
           } >> "$GITHUB_OUTPUT"
 
   homebrew:
@@ -102,3 +108,67 @@ jobs:
           version: ${{ needs.resolve.outputs.version }}
           systems-json: ${{ steps.sys.outputs.value }}
           commit-message: "lilbee-cuda ${{ needs.resolve.outputs.version }} (flake)"
+
+  snap:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download and verify the CUDA binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha_linux_cuda }}
+        run: |
+          set -euo pipefail
+          mkdir -p packaging/snap-cuda/payload
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            -p lilbee-linux-x86_64-cu125 -O packaging/snap-cuda/payload/lilbee-linux-x86_64-cu125
+          echo "$SHA  packaging/snap-cuda/payload/lilbee-linux-x86_64-cu125" | sha256sum -c -
+          chmod +x packaging/snap-cuda/payload/lilbee-linux-x86_64-cu125
+      - name: Render snapcraft.yaml
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: bash packaging/tools/render_snapcraft.sh packaging/snap-cuda/snapcraft.yaml "$VERSION"
+      - uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: packaging/snap-cuda
+      - name: Smoke test
+        env:
+          EXPECTED: lilbee ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo snap install "${{ steps.build.outputs.snap }}" --dangerous --classic
+          ACTUAL=$(/snap/bin/lilbee-cuda --version)
+          echo "snap: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          cp "${{ steps.build.outputs.snap }}" lilbee-linux-x86_64-cu125.snap
+          gh release upload "$TAG" lilbee-linux-x86_64-cu125.snap --repo "$GITHUB_REPOSITORY" --clobber
+
+  flatpak:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-flatpak
+        with:
+          pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}
+          gpg-private-key: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_cuda }}
+          size-linux: ${{ needs.resolve.outputs.size_linux_cuda }}
+          tag: ${{ needs.resolve.outputs.tag }}
+          app-id: io.github.tobocop2.lilbee.cuda
+          manifest-path: packaging/flatpak/io.github.tobocop2.lilbee.cuda.yml
+          asset-name: lilbee-linux-x86_64-cu125
+          bundle-name: lilbee-cuda.flatpak

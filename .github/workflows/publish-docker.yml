@@ -47,3 +47,15 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/lilbee:latest
           push: true
+
+      - name: Build & push CUDA image
+        uses: docker/build-push-action@v7
+        with:
+          context: packaging/docker
+          file: packaging/docker/Dockerfile.cuda
+          build-args: |
+            LILBEE_VERSION=${{ steps.info.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}-cuda
+            ghcr.io/${{ github.repository_owner }}/lilbee:cuda
+          push: true
