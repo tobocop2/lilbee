@@ -207,7 +207,7 @@ Every GIF on this page (plus the extras that don't fit here) is at [**lilbee.sh/
 
 ## Hardware requirements
 
-Standalone mode runs entirely on your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+, or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
+Standalone mode runs entirely on your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+ (older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)), or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
 
 <details>
 <summary>Full platform and resource breakdown</summary>
@@ -240,7 +240,7 @@ No external services either way; lilbee downloads and runs models locally. Optio
 
 | How                   | Command                                                                                  | Notes                                                                                                                                                                                                                 |
 | --------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **pip**               | `pip install --pre lilbee`                                                               | Recommended. The default wheel runs on any x86_64 CPU and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://lilbee.sh/cpu/` ([browse wheels](https://lilbee.sh/cpu/lilbee/)). |
+| **pip**               | `pip install --pre lilbee`                                                               | Recommended. The default wheel runs on any x86_64 CPU with AVX2 (2013+; older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)) and uses your GPU via Vulkan / Metal automatically. Intel Mac: add `--extra-index-url https://lilbee.sh/cpu/` ([browse wheels](https://lilbee.sh/cpu/lilbee/)). |
 | **uv**                | `uv tool install --prerelease=allow lilbee`                                              | Same wheel as pip; fetches a Python for you if you need one.                                                                                                                                                          |
 | **Homebrew**          | `brew tap tobocop2/lilbee && brew install lilbee`                                        | macOS arm64 / Linux x86_64. Bundled build; clears the macOS quarantine flag for you.                                                                                                                                  |
 | **AUR**               | `paru -S lilbee`                                                                         | Arch Linux. Wraps the Linux x86_64 binary; works with `yay` / `pacaur` / any helper.                                                                                                                                  |
@@ -274,6 +274,22 @@ lilbee               # launch the terminal app; pick a chat + embedding model on
 ```
 
 The [usage guide](docs/usage.md) covers the rest: TUI screens, slash commands, CLI, HTTP server, MCP, env vars, and `config.toml`.
+
+### On older CPUs (pre-AVX2)
+
+Got an Intel chip from before ~2013 (Nehalem, Sandy Bridge, Ivy Bridge) or an AMD one from before Zen (Bulldozer / Piledriver / Excavator)? Those lack AVX2, and the normal build crashes the instant it starts with an illegal-instruction error. The `lilbee-compat` build runs on any 64-bit x86 CPU back to ~2008 (SSE4.2).
+
+|              | Command                                                                                                                                                                                  |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Homebrew** | `brew install tobocop2/lilbee/lilbee-compat`                                                                                                                                            |
+| **AUR**      | `paru -S lilbee-compat`                                                                                                                                                                 |
+| **Nix**      | `nix run github:tobocop2/lilbee#lilbee-compat`                                                                                                                                          |
+| **Scoop**    | `scoop install lilbee-compat`                                                                                                                                                           |
+| **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.compat`                                                                                                                               |
+| **Snap**     | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64.snap && sudo snap install ./lilbee-compat-linux-x86_64.snap --dangerous --classic`    |
+| **Binary**   | [`lilbee-compat-linux-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-compat-windows-x86_64.exe`](https://github.com/tobocop2/lilbee/releases/latest)         |
+
+Same `lilbee` command after install. The crash comes from [lancedb](https://lancedb.github.io/lancedb/), whose wheels are compiled for Haswell (AVX2); this build links a [lancedb fork](https://github.com/tobocop2/lance) with runtime SIMD dispatch instead. A 👍 or comment on the upstream [lance PR](https://github.com/lance-format/lance/pull/6630) (and the [lancedb wheel PR](https://github.com/lancedb/lancedb/pull/3327)) helps it land so the fork can go away.
 
 ### Linux runtime requirements
 
