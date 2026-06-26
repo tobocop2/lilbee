@@ -391,3 +391,111 @@ async def test_load_placement_error_notifies(monkeypatch):
         await pilot.pause()
 
     assert any("probe failed" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_remove_one_of_multiple_devices(monkeypatch):
+    """Toggling off a device a role still shares with others removes just that one."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await pilot.click("#dev-embed-2")  # embed -> [0, 2]
+        await pilot.pause()
+        assert '"embed": {"devices": [0, 2]}' in _generated(app)
+        btn = app.screen.query_one("#dev-embed-2", Button)
+        app.screen.on_button_pressed(Button.Pressed(btn))  # remove CUDA2 (len > 1) -> [0]
+        await pilot.pause()
+        assert '"embed": {"devices": [0]}' in _generated(app)
+
+
+@pytest.mark.asyncio
+async def test_unknown_button_is_ignored(monkeypatch):
+    """A Button.Pressed whose id is neither dev- nor rep- is a no-op."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        before = _generated(app)
+        app.screen.on_button_pressed(Button.Pressed(Button("x", id="unrelated")))
+        await pilot.pause()
+        assert _generated(app) == before  # handler returned without re-rendering
+
+
+@pytest.mark.asyncio
+async def test_role_without_a_device_surfaces_error(monkeypatch):
+    """A role left with no GPU fails spec building: red in the panel, error on preview/apply."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        app.screen._edits[WorkerRole.EMBED].devices.clear()  # force the empty-devices guard
+        notes: list[str] = []
+        monkeypatch.setattr(app.screen, "notify", lambda msg, **k: notes.append(msg))
+
+        app.screen._refresh_generated()
+        await pilot.pause()
+        assert "needs at least one GPU" in _generated(app)
+
+        app.screen.action_preview()
+        await pilot.pause()
+        app.screen.action_apply()
+        await pilot.pause()
+
+    assert sum("needs at least one GPU" in n for n in notes) >= 2
+
+
+@pytest.mark.asyncio
+async def test_clear_ignored_while_applying(monkeypatch):
+    """ctrl+x while an apply/clear is in flight is a no-op (single-flight guard)."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+    calls: list[object] = []
+    monkeypatch.setattr(
+        screen_mod, "set_placement", lambda spec: calls.append(spec) or _make_view()
+    )
+
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        app.screen.applying = True
+        app.screen.action_clear()
+        await pilot.pause()
+
+    assert calls == []  # guard returned before scheduling the clear worker
+
+
+@pytest.mark.asyncio
+async def test_clear_error_notifies(monkeypatch):
+    """A failure inside the clear worker surfaces as a notification, not a crash."""
+    from lilbee.cli.tui.screens import placement as screen_mod
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    monkeypatch.setattr(screen_mod, "get_placement", lambda: _make_view())
+
+    def _boom(spec):  # type: ignore[no-untyped-def]
+        raise PlacementError("clear failed")
+
+    monkeypatch.setattr(screen_mod, "set_placement", _boom)
+
+    notes: list[str] = []
+    app = PlacementTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app.screen, "notify", lambda msg, **k: notes.append(msg))
+        await pilot.press("ctrl+x")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert any("clear failed" in n for n in notes)
