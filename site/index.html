@@ -250,6 +250,7 @@
         <button type="button" class="tab" role="tab" id="tab-snap" aria-controls="pane-snap" aria-selected="false" tabindex="-1">snap</button>
         <button type="button" class="tab" role="tab" id="tab-binary" aria-controls="pane-binary" aria-selected="false" tabindex="-1">binary</button>
         <button type="button" class="tab" role="tab" id="tab-cuda" aria-controls="pane-cuda" aria-selected="false" tabindex="-1">CUDA</button>
+        <button type="button" class="tab" role="tab" id="tab-compat" aria-controls="pane-compat" aria-selected="false" tabindex="-1">older CPU</button>
         <button type="button" class="tab" role="tab" id="tab-source" aria-controls="pane-source" aria-selected="false" tabindex="-1">source</button>
       </div>
 
@@ -262,7 +263,7 @@
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-pip">details</button>
         <div class="notes-body" id="notes-pip" hidden>
-          <p class="extras">needs Python 3.11+ &nbsp;.&nbsp; intel mac: add <code>--extra-index-url https://lilbee.sh/cpu/</code> &nbsp;.&nbsp; extras below, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code></p>
+          <p class="extras">needs Python 3.11+ &nbsp;.&nbsp; intel mac: add <code>--extra-index-url https://lilbee.sh/cpu/</code> &nbsp;.&nbsp; pre-2013 CPU without AVX2? see the <strong>older CPU</strong> tab &nbsp;.&nbsp; extras below, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code></p>
         </div>
       </div>
 
@@ -413,6 +414,19 @@
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-cuda">details</button>
         <div class="notes-body" id="notes-cuda" hidden>
           <p class="extras">only for the last bit of CUDA-native speed &nbsp;.&nbsp; the default wheel already uses your NVIDIA GPU through Vulkan &nbsp;.&nbsp; <code>cu121</code> / <code>cu124</code> indexes also available &nbsp;.&nbsp; works with <code>uv tool install</code> too</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-compat" aria-labelledby="tab-compat" hidden>
+        <div class="oschips"><span class="oschip">Linux x86_64</span><span class="oschip">Windows x86_64</span><span class="oschip">Intel Mac</span><span class="oschip dim">pre-2013 / no AVX2</span></div>
+        <div class="install">
+          <span class="prompt">$</span>
+          <span class="cmd">brew install tobocop2/lilbee/lilbee-compat</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-compat">details</button>
+        <div class="notes-body" id="notes-compat" hidden>
+          <p class="extras">for x86 CPUs without AVX2 &nbsp;.&nbsp; Intel before ~2013 (Nehalem / Sandy / Ivy Bridge) or pre-Zen AMD, where the normal build dies on launch with an illegal-instruction error &nbsp;.&nbsp; runs on any 64-bit x86 back to ~2008 (SSE4.2) &nbsp;.&nbsp; AUR <code>paru -S lilbee-compat</code> &nbsp;.&nbsp; Nix <code>nix run github:tobocop2/lilbee#lilbee-compat</code> &nbsp;.&nbsp; Scoop <code>scoop install lilbee-compat</code> &nbsp;.&nbsp; Flatpak <code>flatpak install lilbee io.github.tobocop2.lilbee.compat</code> &nbsp;.&nbsp; or the <a href="https://github.com/tobocop2/lilbee/releases/latest">lilbee-compat binary</a> for Linux / Windows &nbsp;.&nbsp; same <code>lilbee</code> command after install</p>
         </div>
       </div>
 
