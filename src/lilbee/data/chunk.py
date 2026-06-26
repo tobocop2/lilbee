@@ -32,10 +32,11 @@ def _semantic_embedding_config() -> EmbeddingConfig:
     # Lazy: importing ingest.types at module scope cycles back through chunk.py.
     from lilbee.data.ingest.types import EmbeddingBackendName
 
-    # xberg's .pyi omits the per-variant constructors (alef #147); .plugin() works at runtime.
-    name = EmbeddingBackendName.LILBEE
-    model = EmbeddingModelType.plugin(name)  # type: ignore[attr-defined]  # style-check: allow-smell
-    return EmbeddingConfig(model=model)
+    model = EmbeddingModelType.plugin(EmbeddingBackendName.LILBEE)
+    # xberg's public EmbeddingConfig still types `model` as the legacy
+    # str|int|LlmConfig alias, not the EmbeddingModelType class its own .plugin()
+    # returns; the constructor accepts the class instance at runtime.
+    return EmbeddingConfig(model=model)  # type: ignore[arg-type]
 
 
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
