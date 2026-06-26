@@ -264,15 +264,15 @@ jobs:
 
       # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
       # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
-      # Pinned to the index's latest +compat (the fork tracks upstream, not lilbee's
-      # stock pin); bump this when the fork republishes a newer one.
+      # Pinned to the latest stable lancedb for Python (0.33), served by the fork as
+      # +compat; lilbee's own stock pin can lag. Bump when the fork moves.
       - name: Swap in the pre-Haswell lancedb
         if: matrix.compat
         shell: bash
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://tobocop2.github.io/wheels/simple/ \
-            lancedb==0.34.0b3+compat
+            lancedb==0.33.0+compat
 
       - name: Build executable
         shell: bash
