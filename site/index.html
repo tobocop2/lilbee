@@ -248,9 +248,8 @@
         <button type="button" class="tab" role="tab" id="tab-nix" aria-controls="pane-nix" aria-selected="false" tabindex="-1">nix</button>
         <button type="button" class="tab" role="tab" id="tab-flatpak" aria-controls="pane-flatpak" aria-selected="false" tabindex="-1">flatpak</button>
         <button type="button" class="tab" role="tab" id="tab-snap" aria-controls="pane-snap" aria-selected="false" tabindex="-1">snap</button>
+        <button type="button" class="tab" role="tab" id="tab-scoop" aria-controls="pane-scoop" aria-selected="false" tabindex="-1">scoop</button>
         <button type="button" class="tab" role="tab" id="tab-binary" aria-controls="pane-binary" aria-selected="false" tabindex="-1">binary</button>
-        <button type="button" class="tab" role="tab" id="tab-cuda" aria-controls="pane-cuda" aria-selected="false" tabindex="-1">CUDA</button>
-        <button type="button" class="tab" role="tab" id="tab-compat" aria-controls="pane-compat" aria-selected="false" tabindex="-1">older CPU</button>
         <button type="button" class="tab" role="tab" id="tab-source" aria-controls="pane-source" aria-selected="false" tabindex="-1">source</button>
       </div>
 
@@ -261,9 +260,25 @@
           <span class="cmd">pip install --pre lilbee</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
         </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">pip install --pre lilbee 'lancedb==0.33.0+compat' --extra-index-url https://lilbee.sh/compat/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-pip">details</button>
         <div class="notes-body" id="notes-pip" hidden>
-          <p class="extras">needs Python 3.11+ &nbsp;.&nbsp; intel mac: add <code>--extra-index-url https://lilbee.sh/cpu/</code> &nbsp;.&nbsp; pre-2013 CPU without AVX2? see the <strong>older CPU</strong> tab &nbsp;.&nbsp; extras below, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code></p>
+          <p class="extras">needs Python 3.11+ &nbsp;.&nbsp; intel mac: add <code>--extra-index-url https://lilbee.sh/cpu/</code> &nbsp;.&nbsp; extras below, e.g. <code>pip install --pre 'lilbee[crawler,litellm]'</code></p>
         </div>
       </div>
 
@@ -273,6 +288,22 @@
           <span class="prompt">$</span>
           <span class="cmd">uv tool install --prerelease=allow lilbee</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">uv tool install --prerelease=allow lilbee --extra-index-url https://lilbee.sh/cu125/</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">uv tool install --prerelease=allow --extra-index-url https://lilbee.sh/compat/ --with 'lancedb==0.33.0+compat' lilbee</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-uv">details</button>
         <div class="notes-body" id="notes-uv" hidden>
@@ -287,6 +318,22 @@
           <span class="cmd">brew tap tobocop2/lilbee &amp;&amp; brew install lilbee</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
         </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">brew tap tobocop2/lilbee &amp;&amp; brew install lilbee-cuda</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">brew tap tobocop2/lilbee &amp;&amp; brew install lilbee-compat</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-brew">details</button>
         <div class="notes-body" id="notes-brew" hidden>
           <p class="extras">prebuilt bundle, built with Nuitka: its own Python interpreter and llama.cpp backend, nothing for you to compile &nbsp;.&nbsp; clears macOS quarantine for you &nbsp;.&nbsp; the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
@@ -299,6 +346,22 @@
           <span class="prompt">$</span>
           <span class="cmd">paru -S lilbee</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">paru -S lilbee-cuda</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">paru -S lilbee-compat</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-aur">details</button>
         <div class="notes-body" id="notes-aur" hidden>
@@ -313,6 +376,18 @@
           <span class="cmd">docker run --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:latest --help</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
         </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">docker run --gpus all --rm -v lilbee-data:/home/lilbee/data ghcr.io/tobocop2/lilbee:cuda --help</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <p class="variant-note">no compat image; run the self-contained <a href="https://github.com/tobocop2/lilbee/releases/latest">lilbee-compat binary</a> instead.</p>
+        </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-docker">details</button>
         <div class="notes-body" id="notes-docker" hidden>
           <p class="extras">image on the GitHub Container Registry &nbsp;.&nbsp; data lives at <code>/home/lilbee/data</code>, REST API on port 8000 &nbsp;.&nbsp; wraps the release binary, so the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
@@ -325,6 +400,22 @@
           <span class="prompt">$</span>
           <span class="cmd">nix run github:tobocop2/lilbee</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">nix run github:tobocop2/lilbee#lilbee-cuda</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">nix run github:tobocop2/lilbee#lilbee-compat</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-nix">details</button>
         <div class="notes-body" id="notes-nix" hidden>
@@ -339,6 +430,22 @@
           <span class="cmd">flatpak remote-add --if-not-exists lilbee https://tobocop2.github.io/flatpak-lilbee/lilbee.flatpakrepo &amp;&amp; flatpak install lilbee io.github.tobocop2.lilbee</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
         </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">flatpak install lilbee io.github.tobocop2.lilbee.cuda</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">flatpak install lilbee io.github.tobocop2.lilbee.compat</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-flatpak">details</button>
         <div class="notes-body" id="notes-flatpak" hidden>
           <p class="extras">run with <code>flatpak run io.github.tobocop2.lilbee</code>, worth an alias &nbsp;.&nbsp; needs the <a href="https://flathub.org/setup">Flathub remote</a> for the runtime &nbsp;.&nbsp; <code>flatpak update</code> picks up new releases &nbsp;.&nbsp; wraps the release binary, so the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
@@ -352,9 +459,50 @@
           <span class="cmd">curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64.snap &amp;&amp; sudo snap install ./lilbee-linux-x86_64.snap --dangerous --classic</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
         </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64-cu125.snap &amp;&amp; sudo snap install ./lilbee-linux-x86_64-cu125.snap --dangerous --classic</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64.snap &amp;&amp; sudo snap install ./lilbee-compat-linux-x86_64.snap --dangerous --classic</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-snap">details</button>
         <div class="notes-body" id="notes-snap" hidden>
           <p class="extras"><code>--dangerous</code> just means sideloaded and unsigned &nbsp;.&nbsp; no auto-update: rerun the same command to upgrade &nbsp;.&nbsp; wraps the release binary, so the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
+        </div>
+      </div>
+
+      <div class="installpane" role="tabpanel" id="pane-scoop" aria-labelledby="tab-scoop" hidden>
+        <div class="oschips"><span class="oschip">Windows x86_64</span></div>
+        <div class="install">
+          <span class="prompt">&gt;</span>
+          <span class="cmd">scoop bucket add lilbee https://github.com/tobocop2/lilbee &amp;&amp; scoop install lilbee</span>
+          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <p class="variant-note"><code>scoop install lilbee</code> auto-installs the CUDA build when an NVIDIA driver is present.</p>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <div class="install">
+            <span class="prompt">&gt;</span>
+            <span class="cmd">scoop install lilbee-compat</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-scoop">details</button>
+        <div class="notes-body" id="notes-scoop" hidden>
+          <p class="extras">Windows package manager &nbsp;.&nbsp; <code>scoop update lilbee</code> upgrades &nbsp;.&nbsp; wraps the release binary, so the <code>[crawler]</code> / <code>[litellm]</code> / <code>[graph]</code> extras are already included</p>
         </div>
       </div>
 
@@ -397,36 +545,58 @@
           </div>
         </div>
 
+        <div class="binary-section cuda">NVIDIA · CUDA</div>
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">Linux x86_64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64-cu125">download lilbee-linux-x86_64-cu125 &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">curl -L https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-linux-x86_64-cu125 -o lilbee &amp;&amp; chmod +x lilbee</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">Windows x86_64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-windows-x86_64-cu125.exe">download lilbee-windows-x86_64-cu125.exe &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">&gt;</span>
+            <span class="cmd">iwr https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-windows-x86_64-cu125.exe -OutFile lilbee.exe</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+
+        <div class="binary-section compat">older CPU · no AVX2</div>
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">Linux x86_64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64">download lilbee-compat-linux-x86_64 &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">$</span>
+            <span class="cmd">curl -L https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64 -o lilbee &amp;&amp; chmod +x lilbee</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+        <div class="binary-row">
+          <div class="binary-row-h">
+            <span class="oschip">Windows x86_64</span>
+            <a class="binary-dl" href="https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-windows-x86_64.exe">download lilbee-compat-windows-x86_64.exe &rarr;</a>
+          </div>
+          <div class="install">
+            <span class="prompt">&gt;</span>
+            <span class="cmd">iwr https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-windows-x86_64.exe -OutFile lilbee.exe</span>
+            <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+          </div>
+        </div>
+
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-binary">details</button>
         <div class="notes-body" id="notes-binary" hidden>
           <p class="extras"><span class="k">unsigned:</span> the macOS arm64 and Windows builds aren't code-signed. The macOS one-liner clears quarantine for you; Homebrew does the same. On Windows, SmartScreen may warn the first time.</p>
-          <p class="extras"><a href="https://github.com/tobocop2/lilbee/releases">CUDA-prebuilt Linux and Windows binaries, plus older versions, on the releases page &rarr;</a></p>
-        </div>
-      </div>
-
-      <div class="installpane" role="tabpanel" id="pane-cuda" aria-labelledby="tab-cuda" hidden>
-        <div class="oschips"><span class="oschip">Linux x86_64</span><span class="oschip">Windows x86_64</span><span class="oschip dim">NVIDIA GPU</span></div>
-        <div class="install">
-          <span class="prompt">$</span>
-          <span class="cmd">pip install --pre lilbee --extra-index-url https://lilbee.sh/cu125/</span>
-          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-        </div>
-        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-cuda">details</button>
-        <div class="notes-body" id="notes-cuda" hidden>
-          <p class="extras">only for the last bit of CUDA-native speed &nbsp;.&nbsp; the default wheel already uses your NVIDIA GPU through Vulkan &nbsp;.&nbsp; <code>cu121</code> / <code>cu124</code> indexes also available &nbsp;.&nbsp; works with <code>uv tool install</code> too</p>
-        </div>
-      </div>
-
-      <div class="installpane" role="tabpanel" id="pane-compat" aria-labelledby="tab-compat" hidden>
-        <div class="oschips"><span class="oschip">Linux x86_64</span><span class="oschip">Windows x86_64</span><span class="oschip">Intel Mac</span><span class="oschip dim">pre-2013 / no AVX2</span></div>
-        <div class="install">
-          <span class="prompt">$</span>
-          <span class="cmd">brew install tobocop2/lilbee/lilbee-compat</span>
-          <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
-        </div>
-        <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-compat">details</button>
-        <div class="notes-body" id="notes-compat" hidden>
-          <p class="extras">for x86 CPUs without AVX2 &nbsp;.&nbsp; Intel before ~2013 (Nehalem / Sandy / Ivy Bridge) or pre-Zen AMD, where the normal build dies on launch with an illegal-instruction error &nbsp;.&nbsp; runs on any 64-bit x86 back to ~2008 (SSE4.2) &nbsp;.&nbsp; AUR <code>paru -S lilbee-compat</code> &nbsp;.&nbsp; Nix <code>nix run github:tobocop2/lilbee#lilbee-compat</code> &nbsp;.&nbsp; Scoop <code>scoop install lilbee-compat</code> &nbsp;.&nbsp; Flatpak <code>flatpak install lilbee io.github.tobocop2.lilbee.compat</code> &nbsp;.&nbsp; or the <a href="https://github.com/tobocop2/lilbee/releases/latest">lilbee-compat binary</a> for Linux / Windows &nbsp;.&nbsp; same <code>lilbee</code> command after install</p>
+          <p class="extras">older CPU on Windows also via <code>scoop install lilbee-compat</code> &nbsp;.&nbsp; CUDA <code>cu124</code> / <code>cu121</code> for older drivers on the <a href="https://github.com/tobocop2/lilbee/releases">releases page</a></p>
         </div>
       </div>
 
@@ -436,6 +606,14 @@
           <span class="prompt">$</span>
           <span class="cmd">git clone https://github.com/tobocop2/lilbee &amp;&amp; cd lilbee &amp;&amp; uv sync &amp;&amp; uv run lilbee</span>
           <button type="button" class="copy" aria-label="Copy command">[ COPY ]</button>
+        </div>
+        <div class="variant cuda">
+          <span class="variant-tag">NVIDIA · CUDA</span>
+          <p class="variant-note">driven via Vulkan by default; for the CUDA path use pip or the <a href="https://github.com/tobocop2/lilbee/releases/latest">binary</a>.</p>
+        </div>
+        <div class="variant compat">
+          <span class="variant-tag">older CPU · no AVX2</span>
+          <p class="variant-note">add <code>--extra-index-url https://lilbee.sh/compat/</code> and pin <code>lancedb==0.33.0+compat</code> to your sync.</p>
         </div>
         <button type="button" class="notes-toggle" aria-expanded="false" aria-controls="notes-source">details</button>
         <div class="notes-body" id="notes-source" hidden>
