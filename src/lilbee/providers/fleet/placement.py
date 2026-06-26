@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
 from lilbee.providers.roles import WorkerRole
 
@@ -254,33 +254,50 @@ def placement_from_spec(
     remaining = {idx: total * USABLE_VRAM_FRACTION for idx, total in device_capacity.items()}
     instances: list[InstancePlan] = []
     for role in active_roles:
-        rp = spec.roles.get(role)
-        if rp is None:
-            raise PlacementError(f"{role.value} has a model but no placement entry in placement")
-        for idx in rp.devices:
-            if idx not in device_capacity:
-                raise PlacementError(
-                    f"{role.value} pinned to device {idx} but only "
-                    f"{len(device_capacity)} GPU(s) detected"
-                )
+        rp = _required_entry(spec, role, device_capacity)
         ratio = rp.tensor_split or tuple(1 for _ in rp.devices)
         per_device = estimate_peak(role, ratio)
+        split = ratio if len(rp.devices) > 1 else ()
         for replica in range(rp.replicas):
-            for idx, peak in zip(rp.devices, per_device, strict=True):
-                if peak > remaining[idx]:
-                    raise PlacementError(
-                        f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
-                        f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
-                        f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom)"
-                    )
-            for idx, peak in zip(rp.devices, per_device, strict=True):
-                remaining[idx] -= peak
+            _charge_devices(role, rp.devices, per_device, remaining, device_capacity)
             instances.append(
                 InstancePlan(
-                    role=role,
-                    devices=tuple(rp.devices),
-                    tensor_split=ratio if len(rp.devices) > 1 else (),
-                    replica=replica,
+                    role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
                 )
             )
     return Placement(instances=tuple(instances), unplaceable_roles=())
+
+
+def _required_entry(
+    spec: PlacementSpec, role: WorkerRole, device_capacity: dict[int, int]
+) -> RolePlacement:
+    """Return *role*'s placement entry, failing loud if absent or pinned off-hardware."""
+    rp = spec.roles.get(role)
+    if rp is None:
+        raise PlacementError(f"{role.value} has a model but no placement entry in placement")
+    for idx in rp.devices:
+        if idx not in device_capacity:
+            raise PlacementError(
+                f"{role.value} pinned to device {idx} but only "
+                f"{len(device_capacity)} GPU(s) detected"
+            )
+    return rp
+
+
+def _charge_devices(
+    role: WorkerRole,
+    devices: tuple[int, ...],
+    per_device: tuple[int, ...],
+    remaining: dict[int, float],
+    device_capacity: dict[int, int],
+) -> None:
+    """Subtract one instance's per-device peaks from *remaining*; fail loud if a card overflows."""
+    for idx, peak in zip(devices, per_device, strict=True):
+        if peak > remaining[idx]:
+            raise PlacementError(
+                f"{role.value} pinned to device {idx} needs {peak / 1024**3:.1f} GiB but "
+                f"device {idx} has {remaining[idx] / 1024**3:.1f} GiB usable "
+                f"({device_capacity[idx] / 1024**3:.1f} GiB total, 90% headroom)"
+            )
+    for idx, peak in zip(devices, per_device, strict=True):
+        remaining[idx] -= peak
