@@ -1843,3 +1843,16 @@ class TestImportRoute:
             auth_mod.session_manager.token = None
             auth_mod.session_manager._initialized = previous_init
         assert resp.status_code == 401
+
+
+class TestPlacementSetRoute:
+    def test_put_refused_on_daemon(self, client):
+        """PUT placement is refused on the shared HTTP daemon; change it from the CLI/TUI."""
+        resp = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
+        assert resp.status_code == 409
+        assert "CLI" in resp.json()["detail"]
+
+    def test_delete_refused_on_daemon(self, client):
+        """DELETE placement is refused on the shared HTTP daemon."""
+        resp = client.delete("/api/placement")
+        assert resp.status_code == 409

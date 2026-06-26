@@ -1,0 +1,48 @@
+import pytest
+from pydantic import ValidationError
+
+from lilbee.core.config.model import Config
+from lilbee.providers.fleet.placement_spec import PlacementSpec, RolePlacement
+from lilbee.providers.roles import WorkerRole
+
+
+def test_validates_json_string_and_stores_it():
+    cfg = Config(placement='{"chat": {"devices": [0, 1]}}')
+    assert isinstance(cfg.placement, str)
+    spec = PlacementSpec.from_json(cfg.placement)
+    assert spec.roles[WorkerRole.CHAT].devices == (0, 1)
+
+
+def test_accepts_spec_object_and_stores_its_json():
+    spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))})
+    assert Config(placement=spec).placement == spec.to_json()
+
+
+def test_rejects_directly_built_malformed_spec():
+    """A directly-constructed spec is re-validated, not stored unchecked."""
+    bad = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 0))})
+    with pytest.raises(ValidationError, match="duplicate device"):
+        Config(placement=bad)
+
+
+def test_blank_is_none():
+    assert Config(placement="").placement is None
+    assert Config(placement=None).placement is None
+
+
+def test_invalid_json_raises():
+    with pytest.raises(ValidationError):
+        Config(placement="{nope")
+
+
+def test_placement_is_writable_not_public():
+    from lilbee.config_meta import PUBLIC_CONFIG_FIELDS, WRITABLE_CONFIG_FIELDS
+
+    assert "placement" in WRITABLE_CONFIG_FIELDS
+    assert "placement" not in PUBLIC_CONFIG_FIELDS
+
+
+def test_unexpected_type_raises():
+    """A non-string, non-PlacementSpec value must fail validation."""
+    with pytest.raises(ValidationError):
+        Config(placement=42)

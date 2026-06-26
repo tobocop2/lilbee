@@ -50,6 +50,7 @@ from lilbee.data.store import (
     SourceType,
     source_stat,
 )
+from lilbee.providers.fleet.ingest_scale import ingest_scale
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
@@ -83,10 +84,13 @@ def _max_concurrent() -> int:
     few-core box with several GPUs would starve the extra cards.
     """
     from lilbee.core.config import cfg
+    from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
+    from lilbee.providers.roles import WorkerRole
 
     if cfg.vision_model:
-        return max(1, cfg.vision_replicas * cfg.vision_ocr_concurrency)
-    embed_slots = cfg.embed_replicas if cfg.embed_replicas > 1 else 0
+        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        return max(1, replicas * cfg.vision_ocr_concurrency)
+    embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
     return max(cpu_quota(), embed_slots)
 
 
@@ -375,105 +379,108 @@ async def sync(
     When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
     markers are cleared so this sync attempts every file.
     """
-    _store = get_services().store
+    with ingest_scale():
+        _store = get_services().store
 
-    if force_rebuild:
-        # drop_all + memory re-embedding are heavy blocking store work; run them
-        # off the event loop so a rebuild doesn't stall other admitted requests.
-        await asyncio.to_thread(_force_rebuild_store, _store)
+        if force_rebuild:
+            # drop_all + memory re-embedding are heavy blocking store work; run them
+            # off the event loop so a rebuild doesn't stall other admitted requests.
+            await asyncio.to_thread(_force_rebuild_store, _store)
 
-    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
-    disk_files = discover_files()
-    sources = _store.get_sources()
-    existing_sources = {s["filename"]: s for s in sources}
-    skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
-
-    removed: list[str] = []
-    failed: dict[str, None] = {}
-    skipped: dict[str, None] = {}
-    reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
-    flush_failed: set[str] = set()
-
-    # Find files to remove (document sources whose file is gone; imports are kept)
-    to_remove = _removable_sources(sources, disk_files)
-    if to_remove:
-        _store.remove_documents(to_remove)
-        removed.extend(to_remove)
-
-    # The planning pass stats (and where needed hashes) every file on disk;
-    # off the event loop so a large corpus doesn't freeze the TUI.
-    plan = await asyncio.to_thread(
-        _plan_file_changes, disk_files, existing_sources, cancel, skip_markers
-    )
-    files_to_process, added, updated = plan.files_to_process, plan.added, plan.updated
-    if plan.stat_backfills:
-        await asyncio.to_thread(_store.update_source_stats, plan.stat_backfills)
-    # Track skip markers for files processed this run, keyed by name → hash.
-    pending_hashes = {entry.name: entry.file_hash for entry in files_to_process}
-
-    # Snapshot the cumulative truncation counter so the delta over this sync can
-    # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
-    truncated_before = get_services().embedder.truncated_total
-
-    # Ingest files (with optional progress bar)
-    if files_to_process:
-        get_services().embedder.validate_model()
-        await ingest_batch(
-            files_to_process,
-            added,
-            updated,
-            failed,
-            skipped,
-            quiet=quiet,
-            on_progress=on_progress,
-            cancel=cancel,
-            flush_failed=flush_failed,
-            reasons=reasons,
+        disk_files = discover_files()
+        sources = _store.get_sources()
+        existing_sources = {s["filename"]: s for s in sources}
+        skip_markers = _load_pruned_skip_markers(
+            disk_files, clear_first=force_rebuild or retry_skipped
         )
 
-    # A flush failure is a transient store-side problem, not a verdict on the
-    # file: leaving it unmarked re-plans it next sync instead of skipping it.
-    marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
-    _persist_skip_markers(
-        skip_markers, pending_hashes, succeeded=[*added, *updated], failed=marker_failed
-    )
-    # Persist the human-readable reason for each skip-marked file (informational;
-    # the hash markers above drive the resume logic). Only marker_failed files,
-    # so a transient flush failure doesn't leave a stale reason behind.
-    write_skip_reasons(cfg.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
+        removed: list[str] = []
+        failed: dict[str, None] = {}
+        skipped: dict[str, None] = {}
+        reasons: dict[str, str] = {}  # filename → why it was skipped/failed (for reporting)
+        flush_failed: set[str] = set()
 
-    if files_to_process or removed:
-        _store.ensure_fts_index()
-        _store.ensure_vector_index()
-        _store.optimize_sources()
-        await _rebuild_concept_clusters()
-        # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
-        # post-ingest hook stays function-local at this boundary.
-        from lilbee.wiki.ingest import incremental_update
+        # Find files to remove (document sources whose file is gone; imports are kept)
+        to_remove = _removable_sources(sources, disk_files)
+        if to_remove:
+            _store.remove_documents(to_remove)
+            removed.extend(to_remove)
 
-        await incremental_update(set(added) | set(updated) | set(removed))
+        # The planning pass stats (and where needed hashes) every file on disk;
+        # off the event loop so a large corpus doesn't freeze the TUI.
+        plan = await asyncio.to_thread(
+            _plan_file_changes, disk_files, existing_sources, cancel, skip_markers
+        )
+        files_to_process, added, updated = plan.files_to_process, plan.added, plan.updated
+        if plan.stat_backfills:
+            await asyncio.to_thread(_store.update_source_stats, plan.stat_backfills)
+        # Track skip markers for files processed this run, keyed by name → hash.
+        pending_hashes = {entry.name: entry.file_hash for entry in files_to_process}
 
-    result = SyncResult(
-        added=list(added),
-        updated=list(updated),
-        removed=removed,
-        unchanged=plan.unchanged,
-        failed=list(failed),
-        skipped=list(skipped),
-        truncated=get_services().embedder.truncated_total - truncated_before,
-    )
-    on_progress(
-        EventType.DONE,
-        SyncDoneEvent(
-            added=len(result.added),
-            updated=len(result.updated),
-            removed=len(result.removed),
-            failed=len(result.failed),
-            skipped=len(result.skipped),
-        ),
-    )
-    return result
+        # Snapshot the cumulative truncation counter so the delta over this sync can
+        # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
+        truncated_before = get_services().embedder.truncated_total
+
+        # Ingest files (with optional progress bar)
+        if files_to_process:
+            get_services().embedder.validate_model()
+            await ingest_batch(
+                files_to_process,
+                added,
+                updated,
+                failed,
+                skipped,
+                quiet=quiet,
+                on_progress=on_progress,
+                cancel=cancel,
+                flush_failed=flush_failed,
+                reasons=reasons,
+            )
+
+        # A flush failure is a transient store-side problem, not a verdict on the
+        # file: leaving it unmarked re-plans it next sync instead of skipping it.
+        marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
+        _persist_skip_markers(
+            skip_markers, pending_hashes, succeeded=[*added, *updated], failed=marker_failed
+        )
+        # Persist the human-readable reason for each skip-marked file (informational;
+        # the hash markers above drive the resume logic). Only marker_failed files,
+        # so a transient flush failure doesn't leave a stale reason behind.
+        write_skip_reasons(cfg.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
+
+        if files_to_process or removed:
+            _store.ensure_fts_index()
+            _store.ensure_vector_index()
+            _store.optimize_sources()
+            await _rebuild_concept_clusters()
+            # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
+            # post-ingest hook stays function-local at this boundary.
+            from lilbee.wiki.ingest import incremental_update
+
+            await incremental_update(set(added) | set(updated) | set(removed))
+
+        result = SyncResult(
+            added=list(added),
+            updated=list(updated),
+            removed=removed,
+            unchanged=plan.unchanged,
+            failed=list(failed),
+            skipped=list(skipped),
+            truncated=get_services().embedder.truncated_total - truncated_before,
+        )
+        on_progress(
+            EventType.DONE,
+            SyncDoneEvent(
+                added=len(result.added),
+                updated=len(result.updated),
+                removed=len(result.removed),
+                failed=len(result.failed),
+                skipped=len(result.skipped),
+            ),
+        )
+        return result
 
 
 def _phase_progress_callback(

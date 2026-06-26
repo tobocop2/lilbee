@@ -213,15 +213,72 @@ flowchart TD
   RAM on a unified-memory host drives the OS into a swap-thrash OOM livelock that
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
+
+#### Manual placement
+
+By default the auto planner runs every time a fleet is built. When a `placement`
+spec is set, it replaces the planner entirely: the spec's assignments are used
+as-is and the VRAM bin-pack does not run.
+
+The spec is per-role. Each role entry accepts:
+
+- `devices` (required): list of GPU indices to use for that role.
+- `tensor_split` (optional): per-device weight proportions for a tensor-split
+  instance. When omitted, a single-card placement is assumed.
+- `replicas` (optional): how many independent servers to run for embed and
+  vision roles. Defaults to 1.
+
+```json
+{
+  "chat":    { "devices": [0, 1], "tensor_split": [1, 1] },
+  "embed":   { "devices": [2], "replicas": 2 },
+  "rerank":  { "devices": [2] },
+  "vision":  { "devices": [3] }
+}
+```
+
+The `placement` field is stored as a JSON scalar in `config.toml` (a single
+`placement = '{"chat": ...}'` key), because the config store is a flat
+key-value file and cannot represent the nested shape natively. The placement
+surfaces (CLI, HTTP, MCP, TUI) handle encoding and decoding; editing
+`config.toml` by hand is not the intended path.
+
+When a pinned placement no longer fits the card it names, lilbee surfaces a
+hard error that identifies the card by name (e.g. `CUDA0: RTX 4090
+(23.7 GiB free, 24.0 GiB total)`) rather than failing silently. This makes
+hardware-change failures explicit.
+
+The surfaces go through the one `app/placement.py` use-case:
+CLI (`lilbee placement show/preview/set/clear`), MCP
+(`get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
+and the TUI Placement screen. Over HTTP only the reads are served
+(`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`):
+applying or clearing placement rebuilds the shared fleet, so `PUT`/`DELETE
+/api/placement` are refused on the server. The `preview` operation is a dry-run: it shows
+what the auto planner would assign (or what a candidate spec would assign)
+including each card's backend+index label, name, and free/total VRAM, without
+touching the running fleet.
+
+- **Resident tiers and the elastic ingest pool**: placement reserves a persistent
+  query fleet first: chat, one embed server (`embed-0`), rerank, and one vision
+  server (`vision-0`). These stay resident so a chat request issued during ingest
+  always has capacity. This reservation applies to discrete-GPU placement; the
+  shared-memory path on a unified-memory or CPU host packs the same pool
+  differently and does not hold back the elastic replicas. Extra embed and vision
+  replicas (`embed-1..N`, additional
+  vision) are placed only into the VRAM that remains after the query fleet is
+  committed. When an ingest finishes, each extra replica is unloaded individually
+  via llama-swap's `POST /api/models/unload`, freeing its VRAM without disturbing
+  the resident servers. If llama-swap is restarted or found dead, the fleet
+  re-probes once and rebuilds its model config before reporting a failure.
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
-  vision roles can run as N independent servers, one per GPU, so large-scale ingest
-  fans embedding / OCR across the whole box. The single roles (chat) are placed
-  first; each replica then lands on a distinct card with the most free VRAM (only
-  co-locating a second once every card has one), capped by what fits. The provider
-  holds a client pool per role and round-robins to the least-busy replica. With no
-  discrete GPU the replicas run as co-resident processes against the shared pool.
-  Each replica is its own llama-swap model id (`<role>-<n>`); a role is ready once
-  any replica is.
+  vision roles can run as N independent servers, fanning embedding and OCR across
+  the box during ingest. Setting either value to `0` (the default) means auto: one
+  replica per GPU, capped by how much VRAM remains after the query fleet is placed.
+  A positive value pins the replica count to exactly that number. The provider
+  holds a client pool per role and round-robins to the least-busy replica. Each
+  replica is its own llama-swap model id (`<role>-<n>`); a role is ready once any
+  replica is. Replicas are ingest-only and reclaimed after ingest completes.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and

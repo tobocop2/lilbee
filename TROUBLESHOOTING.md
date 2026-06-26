@@ -62,6 +62,37 @@ tail -n 100 "<data root>/logs/llama-swap.log"
 tail -n 100 "<data root>/logs/server.log"
 ```
 
+## Fleet refuses to start after a hardware change
+
+If you have a manual placement spec set and a GPU is removed, replaced, or
+renumbered, the fleet will refuse to start with an error naming the card that
+no longer fits. The error is intentional: lilbee won't silently start in a
+broken state.
+
+To return to automatic placement:
+
+```bash
+lilbee placement clear
+```
+
+After that, the auto planner takes over again and places models across whatever
+GPUs are now available.
+## Ingest replicas and VRAM reclaim
+
+When an ingest job finishes, any extra embed or vision replicas that were started
+for it are unloaded automatically. This frees their VRAM so chat and search
+capacity is restored without a restart.
+
+If you set `embed_replicas` or `vision_replicas` explicitly in your config, that
+count is used during ingest and reclaimed the same way afterward. The default
+(`0`) picks one replica per GPU, capped by whatever VRAM remains after the
+persistent query servers (chat, embed-0, rerank, vision-0) are placed.
+
+If the fleet ever reports "no model server" transiently, lilbee now re-probes the
+engine and rebuilds a restarted llama-swap automatically before surfacing a
+failure. A single retry is attempted; if the rebuilt fleet still cannot serve the
+role, the normal `ProviderError` is returned.
+
 ## Using with the Obsidian plugin
 
 The [Obsidian plugin](https://github.com/tobocop2/obsidian-lilbee) in managed mode runs this server for you, with each vault's data root under the plugin's shared install at `vaults/<id>/`. The same `logs/` layout applies inside that directory.

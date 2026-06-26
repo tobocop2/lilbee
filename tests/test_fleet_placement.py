@@ -332,3 +332,85 @@ class TestReplicas:
         embeds = self._embeds(plan)
         assert len(embeds) == 2
         assert {i.replica for i in embeds} == {0, 1}
+
+
+class TestPersistentSingleElasticSplit:
+    """A replicated embed/vision role reserves replica 0 as a persistent single in the
+    singles phase, then places the extra replicas into the residual VRAM."""
+
+    def _embeds(self, plan: Placement) -> list[InstancePlan]:
+        return [i for i in plan.instances if i.role is WorkerRole.EMBED]
+
+    def test_replica_zero_is_a_persistent_single_before_the_elastic_batch(self) -> None:
+        # embed replicas=3: replica 0 is reserved as the persistent query embedder,
+        # alongside chat/rerank, and replicas 1..2 are the elastic ingest pool.
+        plan = plan_placement(
+            [
+                ModelPlacementInput(WorkerRole.CHAT, 5 * _GB),
+                ModelPlacementInput(WorkerRole.EMBED, 1 * _GB, replicas=3),
+            ],
+            [(0, 24 * _GB), (1, 24 * _GB), (2, 24 * _GB)],
+            estimate_peak=_never,
+        )
+        embeds = self._embeds(plan)
+        assert {i.replica for i in embeds} == {0, 1, 2}
+        # All three placed: one persistent single (replica 0) + two elastic.
+        assert len(embeds) == 3
+        assert plan.unplaceable_roles == ()
+
+    def test_query_embedder_persists_when_chat_claims_the_reserved_room(self) -> None:
+        # One card. Persistent fleet (chat + embed-0) is reserved first, so the
+        # query embedder always exists; the elastic replicas get only the residual,
+        # which here is exhausted, so embed-1/embed-2 never place.
+        plan = plan_placement(
+            [
+                ModelPlacementInput(WorkerRole.EMBED, 8 * _GB, replicas=3),
+                ModelPlacementInput(WorkerRole.CHAT, 10 * _GB),
+            ],
+            [(0, 24 * _GB)],  # 21.6 usable: embed-0 8 + chat 10 = 18, residual 3.6 < 8
+            estimate_peak=_never,
+        )
+        embeds = self._embeds(plan)
+        assert {i.replica for i in embeds} == {0}  # only the persistent query embedder
+        chat = [i for i in plan.instances if i.role is WorkerRole.CHAT]
+        assert len(chat) == 1
+        assert plan.unplaceable_roles == ()
+
+    def test_elastic_batch_capped_by_residual_vram(self) -> None:
+        # 2 cards (21.6 usable each). embed-0 single + chat take card room; the
+        # elastic batch fills only what residual VRAM is left, not all replicas.
+        plan = plan_placement(
+            [
+                ModelPlacementInput(WorkerRole.CHAT, 18 * _GB),
+                ModelPlacementInput(WorkerRole.EMBED, 10 * _GB, replicas=4),
+            ],
+            [(0, 24 * _GB), (1, 24 * _GB)],
+            estimate_peak=_never,
+        )
+        embeds = self._embeds(plan)
+        # embed-0 single lands on one card; chat lands on the other (18 fits, 21.6);
+        # residual on embed-0's card is 11.6 -> one elastic 10GB replica fits there.
+        assert 0 in {i.replica for i in embeds}  # persistent single always present
+        assert len(embeds) < 4  # capped by residual, not all 4 requested
+        assert plan.unplaceable_roles == ()
+
+    def test_replicated_role_unplaceable_when_persistent_single_does_not_fit(self) -> None:
+        # If replica 0 (the persistent single) fits nowhere, the role is unplaceable.
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 100 * _GB, replicas=2)],
+            [(0, 24 * _GB)],
+            estimate_peak=_never,
+        )
+        assert self._embeds(plan) == []
+        assert plan.unplaceable_roles == (WorkerRole.EMBED,)
+
+    def test_single_replica_role_is_unchanged(self) -> None:
+        # replicas=1 still places exactly one replica-0 single, no elastic batch.
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.EMBED, 1 * _GB, replicas=1)],
+            [(0, 24 * _GB)],
+            estimate_peak=_never,
+        )
+        embeds = self._embeds(plan)
+        assert len(embeds) == 1
+        assert embeds[0].replica == 0

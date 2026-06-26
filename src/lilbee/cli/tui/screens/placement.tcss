@@ -1,0 +1,67 @@
+PlacementScreen {
+
+    #placement-layout {
+        height: 1fr;
+        padding: 0 1;
+    }
+
+    #placement-title {
+        height: 1;
+        margin-bottom: 1;
+    }
+
+    #placement-gpus {
+        height: auto;
+        max-height: 12;
+        border: solid $surface-lighten-2;
+        margin-bottom: 1;
+    }
+
+    #placement-editor {
+        height: auto;
+    }
+
+    .role-row {
+        height: 3;
+        align-vertical: middle;
+    }
+
+    .role-name {
+        width: 9;
+        content-align: left middle;
+    }
+
+    .dev-toggle {
+        min-width: 5;
+        width: 5;
+        margin: 0 1 0 0;
+    }
+
+    .dev-toggle.on {
+        background: $success;
+        color: $text;
+        text-style: bold;
+    }
+
+    .rep-btn {
+        min-width: 5;
+        width: 5;
+        margin: 0 1 0 0;
+    }
+
+    .rep-count {
+        width: 5;
+        content-align: center middle;
+    }
+
+    #placement-generated {
+        height: auto;
+        margin-top: 1;
+        color: $text-muted;
+    }
+
+    #placement-hint {
+        height: auto;
+        color: $text-muted;
+    }
+}

@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,9 +29,13 @@ from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
     PeakEstimator,
+    Placement,
+    placement_from_spec,
     plan_placement,
 )
-from lilbee.providers.fleet.vram import estimate_instance_footprint
+from lilbee.providers.fleet.placement_spec import PlacementSpec
+from lilbee.providers.fleet.replicas import resolve_replica_count
+from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
@@ -41,6 +48,13 @@ _CHAT_SLOTS = 4
 # A tensor-split chat fills its cards with one full-context sequence; concurrent
 # slots are for a chat that fits a single GPU, not a multi-card giant.
 _SPLIT_CHAT_SLOTS = 1
+# Floor context the PLACEMENT estimate reserves KV for, so a large model is never
+# single-carded into a KV corner too small for real use (a 17GB model on a 24GB
+# card leaves ~no KV room -> n_ctx collapses to a few hundred tokens). Sizing the
+# placement reserve against this floor forces a tensor-split when one card cannot
+# hold weights + a usable context; the served ctx is then grown to the chosen
+# cards' real headroom by resolve_chat_ctx (single) / fit_split_ctx (split).
+_MIN_USABLE_CHAT_CTX = 8192
 _AUX_SLOTS = 1
 _EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 # Roles whose loaders offload every layer regardless of cfg.n_gpu_layers; only
@@ -345,16 +359,9 @@ def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
 
 
-def _replica_count(role: WorkerRole) -> int:
-    """Requested data-parallel instances for *role*: embed/vision honor their
-    ``*_replicas`` knob (capped by available GPUs at placement); others run one."""
-    from lilbee.core.config import cfg
-
-    if role is WorkerRole.EMBED:
-        return max(1, cfg.embed_replicas)
-    if role is WorkerRole.VISION:
-        return max(1, cfg.vision_replicas)
-    return 1
+def _replica_count(role: WorkerRole, device_count: int) -> int:
+    """Requested data-parallel instances for *role* via the shared resolver."""
+    return resolve_replica_count(role, device_count)
 
 
 def _cache_type_flag() -> str | None:
@@ -386,12 +393,14 @@ def _estimate_role(
     slots: int | None = None,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
+    device_count: int = 0,
 ) -> ModelPlacementInput:
     """Estimate one role-model's footprint via gguf-parser (+ mmproj for vision).
 
     ``slots`` defaults to the role's resolved batching slots (chat and vision are
     memory-aware); ``chat_reservation`` shrinks chat to leave room for the search
-    roles. Charges the unified footprint with no discrete GPU, else the VRAM one.
+    roles; ``device_count`` resolves an auto (0) replica knob to one per GPU.
+    Charges the unified footprint with no discrete GPU, else the VRAM one.
     """
     from lilbee.providers.engine_params import resolve_model_path
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -399,7 +408,11 @@ def _estimate_role(
     path = resolve_model_path(model_ref)
     mmproj = _vision_mmproj(model_ref) if role is WorkerRole.VISION else None
     meta = read_gguf_metadata(path)
-    ctx = _role_ctx(role, path, meta)
+    # Size the single-instance footprint against the placement reserve (a usable
+    # KV floor for chat), so a model that fits weights-only on one card but not
+    # weights + a usable context falls through to a tensor-split instead of being
+    # single-carded into a tiny n_ctx. Non-chat roles keep their launch ctx.
+    ctx = _placement_estimate_ctx(role, path, meta)
     rerank_mode = _role_rerank_mode(role, meta)
     if slots is None:
         slots = _slots_for(
@@ -421,20 +434,49 @@ def _estimate_role(
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
     )
+    fp = est.footprint(unified=unified_budget is not None)
+    if role is WorkerRole.CHAT and unified_budget is None:
+        fp = _chat_serve_budget_footprint(fp)
     return ModelPlacementInput(
-        role=role,
-        est_vram_bytes=est.footprint(unified=unified_budget is not None),
-        replicas=_replica_count(role),
+        role=role, est_vram_bytes=fp, replicas=_replica_count(role, device_count)
     )
 
 
+def _chat_serve_budget_footprint(footprint: int) -> int:
+    """Charge a chat instance against the serve budget, not the placement headroom.
+
+    The planner fits instances within ``USABLE_VRAM_FRACTION`` of a card, but a
+    single-card chat then sizes its KV cache against the smaller
+    ``cfg.gpu_memory_fraction`` budget (``resolve_chat_ctx``). A model that fills a
+    card at 0.9 leaves no room for KV at 0.75 and collapses to a few hundred tokens,
+    so scale its placement footprint by the budget ratio: it then needs a
+    tensor-split (pooling VRAM across cards) whenever single-carding it would starve
+    its context. Small models are unaffected -- they fit the serve budget with KV
+    room to spare.
+    """
+    from lilbee.core.config import cfg
+
+    return int(footprint * (USABLE_VRAM_FRACTION / cfg.gpu_memory_fraction))
+
+
 def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -> int:
-    """Per-slot context the placement estimate sizes a role against (the launch ceiling)."""
+    """Per-slot context the placement estimate sizes a role against.
+
+    For chat this reserves KV for a usable floor (``_MIN_USABLE_CHAT_CTX``, or the
+    user's ``cfg.num_ctx`` pin), capped by the model's trained ceiling -- not the
+    single-GPU dynamic ctx (which shrinks to fit one card and then confirms a
+    single-card placement) nor the full trained ceiling (which over-reserves). A
+    model that cannot hold weights + this floor on one card is tensor-split.
+    """
     from lilbee.core.config import cfg
     from lilbee.providers.engine_params import chat_ctx_ceiling
 
     if role is WorkerRole.CHAT:
-        return cfg.num_ctx if cfg.num_ctx is not None else chat_ctx_ceiling(meta, model_path)
+        if cfg.num_ctx is not None:
+            return cfg.num_ctx
+        return min(
+            chat_ctx_ceiling(meta, model_path), max(cfg.chat_n_ctx_target, _MIN_USABLE_CHAT_CTX)
+        )
     return _role_ctx(role, model_path, meta)
 
 
@@ -500,14 +542,16 @@ def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
     unified_budget: int | None = None,
+    device_count: int = 0,
 ) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int]:
     """Build placement inputs for the configured server roles.
 
     The search and vision roles are estimated first; chat is then sized against the
     budget minus the search footprint (the ``reservation``) so a large chat cannot
-    starve embed/rerank on a shared-memory host. When *roles* is given, only those
-    are considered. Skips an unconfigured optional role, a vision model with no
-    resolvable mmproj projector, and a role whose model is not installed on disk.
+    starve embed/rerank on a shared-memory host. ``device_count`` resolves an auto
+    replica knob to one per GPU. When *roles* is given, only those are considered.
+    Skips an unconfigured optional role, a vision model with no resolvable mmproj
+    projector, and a role whose model is not installed on disk.
     """
     from lilbee.core.config import cfg
     from lilbee.providers.base import ProviderError
@@ -525,7 +569,11 @@ def _server_model_inputs(
             return  # no projector -> vision can't run on a server
         try:
             estimate = _estimate_role(
-                role, ref, unified_budget=unified_budget, chat_reservation=chat_reservation
+                role,
+                ref,
+                unified_budget=unified_budget,
+                chat_reservation=chat_reservation,
+                device_count=device_count,
             )
         except (ProviderError, OSError):
             # The configured model is not installed/resolvable. Skip this role
@@ -678,6 +726,47 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     return devices
 
 
+_DEVICE_PROBE_TTL_S = 2.0
+
+
+class _ReadDeviceCache:
+    """Short-TTL device-probe cache for the read/view path.
+
+    Inspecting placement (GET placement/gpus, preview, ``placement show``)
+    resolves devices on every call, which spawns a ``llama-server --list-devices``
+    subprocess; a brief TTL collapses a burst of reads onto one probe. The launch
+    path is never served from here -- it reaps stale servers first and sizes KV
+    cache against live free VRAM, so it always probes fresh.
+    """
+
+    def __init__(self, ttl_s: float) -> None:
+        self._ttl_s = ttl_s
+        self._lock = threading.Lock()
+        self._at: float | None = None
+        self._devices: list[FleetDevice] | None = None
+
+    def get(self, binary: Path) -> list[FleetDevice]:
+        with self._lock:
+            fresh = self._at is not None and time.monotonic() - self._at < self._ttl_s
+            if self._devices is None or not fresh:
+                self._devices = resolve_devices(binary)
+                self._at = time.monotonic()
+            return self._devices
+
+    def clear(self) -> None:
+        with self._lock:
+            self._at = None
+            self._devices = None
+
+
+_read_device_cache = _ReadDeviceCache(_DEVICE_PROBE_TTL_S)
+
+
+def clear_read_device_cache() -> None:
+    """Drop the read-path device probe cache (e.g. after the fleet is reconfigured)."""
+    _read_device_cache.clear()
+
+
 def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     """Shared-RAM placement budget (free RAM minus the OS floor) when there is no
     discrete GPU, else ``None``. Discrete GPUs load into dedicated VRAM, so system
@@ -691,6 +780,69 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     return max(0, model_cache.free_system_memory() - floor)
 
 
+def _resolve_placement(
+    placement: PlacementSpec | None,
+    inputs: list[ModelPlacementInput],
+    model_refs: dict[WorkerRole, str],
+    devices: list[FleetDevice],
+    *,
+    unified_budget: int | None,
+) -> Placement:
+    """Resolve a Placement from the manual spec when set, else the auto planner."""
+    estimate_peak = _peak_estimator(model_refs)
+    # Size placement against each card's TOTAL capacity, not its instantaneous
+    # free VRAM. plan_launches always plans the complete fleet, so the plan
+    # defines the full intended residency; charging it against live free_bytes
+    # double-counts models the fleet has already loaded (a warm get_placement or
+    # reload would then falsely report the plan as unplaceable). bb-a8f.
+    capacity = {d.index: d.total_bytes for d in devices}
+    if placement is not None:
+        return placement_from_spec(
+            placement,
+            tuple(model_refs),
+            capacity,
+            estimate_peak=estimate_peak,
+        )
+    return plan_placement(
+        inputs,
+        [(idx, total) for idx, total in capacity.items()],
+        estimate_peak=estimate_peak,
+        unified_budget=unified_budget,
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedPlacement:
+    """Devices + resolved instance plans + model refs for the placement view."""
+
+    devices: tuple[FleetDevice, ...]
+    instances: tuple[InstancePlan, ...]
+    unplaceable_roles: tuple[WorkerRole, ...]
+    model_refs: dict[WorkerRole, str]
+
+
+def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement:
+    """Probe devices and resolve the auto-or-manual placement, without launching."""
+    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
+
+    apply_fleet_gpu_env()
+    binary = resolve_llama_server()
+    apply_cuda_runtime_env()
+    devices = _read_device_cache.get(binary)
+    unified_budget = _unified_memory_budget(devices)
+    inputs, model_refs, _ = _server_model_inputs(None, unified_budget=unified_budget)
+    resolved = _resolve_placement(
+        placement, inputs, model_refs, devices, unified_budget=unified_budget
+    )
+    return ResolvedPlacement(
+        devices=tuple(devices),
+        instances=resolved.instances,
+        unplaceable_roles=resolved.unplaceable_roles,
+        model_refs=model_refs,
+    )
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
@@ -698,14 +850,14 @@ def plan_launches(
     devices: list[FleetDevice],
 ) -> list[InstanceLaunch]:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
+    from lilbee.core.config import cfg
+
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, reservation = _server_model_inputs(roles, unified_budget=unified_budget)
-    placement = plan_placement(
-        inputs,
-        [(d.index, d.free_bytes) for d in devices],
-        estimate_peak=_peak_estimator(model_refs),
-        unified_budget=unified_budget,
+    inputs, model_refs, reservation = _server_model_inputs(
+        roles, unified_budget=unified_budget, device_count=len(devices)
     )
+    spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
+    placement = _resolve_placement(spec, inputs, model_refs, devices, unified_budget=unified_budget)
     for role in placement.unplaceable_roles:
         log.warning(
             "%s model %s does not fit available memory and will not be served; "

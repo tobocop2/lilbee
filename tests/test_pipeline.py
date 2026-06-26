@@ -328,3 +328,16 @@ class TestMaxConcurrent:
         monkeypatch.setattr(cfg, "vision_model", "")
         monkeypatch.setattr(cfg, "embed_replicas", 8)
         assert pipeline._max_concurrent() == 8
+
+    def test_auto_embed_replicas_fans_out_to_gpu_count(self, monkeypatch) -> None:
+        # embed_replicas=0 (the auto default) must fan out to one slot per GPU so
+        # a multi-GPU box does not stall extra cards waiting for ingest work.
+        import lilbee.providers.fleet.replicas as replicas_mod
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embed_replicas", 0)
+        monkeypatch.setattr(replicas_mod, "gpu_device_count", lambda: 4)
+        result = pipeline._max_concurrent()
+        assert result >= 4, f"expected at least 4 (one per GPU), got {result}"

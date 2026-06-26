@@ -16,6 +16,7 @@ from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.screens.placement import PlacementScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
@@ -75,7 +76,7 @@ def _patch_chat_setup():
 
 
 async def test_bracket_keys_cycle_all_screens():
-    """Press ] through all 5 views from normal mode (Escape first on Chat)."""
+    """Press ] through all 6 views from normal mode (Escape first on Chat)."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -85,7 +86,14 @@ async def test_bracket_keys_cycle_all_screens():
         await pilot.press("escape")
         await pilot.pause()
 
-        expected = [CatalogScreen, StatusScreen, SettingsScreen, TaskCenter, ChatScreen]
+        expected = [
+            CatalogScreen,
+            StatusScreen,
+            SettingsScreen,
+            TaskCenter,
+            PlacementScreen,
+            ChatScreen,
+        ]
         for screen_type in expected:
             await pilot.press("right_square_bracket")
             await pilot.pause()
@@ -130,11 +138,11 @@ async def test_bracket_keys_cycle_backward():
 
         await pilot.press("left_square_bracket")
         await pilot.pause()
-        assert isinstance(app.screen, TaskCenter)
+        assert isinstance(app.screen, PlacementScreen)
 
         await pilot.press("left_square_bracket")
         await pilot.pause()
-        assert isinstance(app.screen, SettingsScreen)
+        assert isinstance(app.screen, TaskCenter)
 
 
 async def test_bracket_keys_work_from_settings():

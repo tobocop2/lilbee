@@ -966,6 +966,64 @@ llama-server fleet, remote model names route to the SDK backend) and `remote`
 
 ---
 
+## Tuning GPU placement
+
+By default lilbee decides which GPUs each model goes on automatically. It
+bin-packs all four roles (chat, embed, rerank, vision) across your available
+GPUs and tensor-splits anything too large for one card.
+
+If you want to pin specific models to specific cards, you can set a placement
+spec. The spec is a JSON object with one entry per role you want to control:
+
+```json
+{
+  "chat":   { "devices": [0, 1], "tensor_split": [1, 1] },
+  "embed":  { "devices": [2] },
+  "rerank": { "devices": [2] },
+  "vision": { "devices": [3] }
+}
+```
+
+Each role takes `devices` (GPU indices), an optional `tensor_split` list for
+spreading a single model across cards, and an optional `replicas` count for the
+embed and vision roles. Omit a role and the auto planner handles it.
+
+**To see what the auto planner would assign** (without changing anything):
+
+```bash
+lilbee placement preview
+```
+
+**To apply a spec from a file:**
+
+```bash
+lilbee placement set --spec placement.json
+```
+
+**To see the current spec** (or confirm auto is active):
+
+```bash
+lilbee placement show
+```
+
+**To go back to automatic:**
+
+```bash
+lilbee placement clear
+```
+
+The same operations are available in the TUI under the Placement screen and over
+MCP (`set_placement`, `clear_placement`). Applying or clearing placement rebuilds
+the shared fleet, so it is not exposed over HTTP: `PUT`/`DELETE /api/placement`
+are refused on the server (use the CLI or TUI). The spec persists across restarts.
+
+If a pinned placement no longer fits the card it names (after a hardware
+change, for example), lilbee surfaces an error naming the card rather than
+starting in a broken state. `lilbee placement clear` returns to automatic
+placement in that case.
+
+---
+
 ## Cross-encoder reranking
 
 Built-in. Re-scores retrieval candidates with a cross-encoder for precision on
