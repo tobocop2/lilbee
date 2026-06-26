@@ -51,6 +51,22 @@ def test_set_placement_tool_unfit_returns_error(monkeypatch):
     assert "40 GiB free" in out["error"]
 
 
+def test_set_placement_tool_empty_spec_does_not_clear(monkeypatch):
+    """set_placement({}) builds an empty spec (rejected downstream), never a clear."""
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    seen = {}
+
+    def _capture(spec):
+        seen["spec"] = spec
+        return _view(True)
+
+    monkeypatch.setattr(mcp_server, "set_placement", _capture)
+    mcp_server.set_placement_tool({})
+    assert isinstance(seen["spec"], PlacementSpec)
+    assert seen["spec"].roles == {}
+
+
 def test_clear_placement_tool(monkeypatch):
     seen = {}
     monkeypatch.setattr(

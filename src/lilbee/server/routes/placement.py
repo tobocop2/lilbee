@@ -12,7 +12,6 @@ import json
 from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
 
-from lilbee.app.settings import provider_reset_refused_message
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
@@ -23,6 +22,10 @@ _HTTP_UNPROCESSABLE = 422
 _HTTP_CONFLICT = 409
 _HTTP_UNAVAILABLE = 503
 _INPUT_ERRORS = (PlacementError, ValueError, OSError)
+_REFUSED_DETAIL = (
+    "Changing placement on the HTTP server is unavailable: it rebuilds the shared "
+    "fleet for every connected client. Change it from the CLI or TUI."
+)
 
 
 def _spec_json(body: PlacementSpecBody) -> str | None:
@@ -31,9 +34,7 @@ def _spec_json(body: PlacementSpecBody) -> str | None:
 
 
 def _refused() -> HTTPException:
-    return HTTPException(
-        status_code=_HTTP_CONFLICT, detail=provider_reset_refused_message("Changing placement on")
-    )
+    return HTTPException(status_code=_HTTP_CONFLICT, detail=_REFUSED_DETAIL)
 
 
 @get("/api/placement")

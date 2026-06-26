@@ -1012,9 +1012,10 @@ lilbee placement show
 lilbee placement clear
 ```
 
-The same operations are available in the TUI under the Placement screen, and
-over HTTP (`PUT /api/placement`, `DELETE /api/placement`) and MCP
-(`set_placement`, `clear_placement`). The spec persists across restarts.
+The same operations are available in the TUI under the Placement screen and over
+MCP (`set_placement`, `clear_placement`). Applying or clearing placement rebuilds
+the shared fleet, so it is not exposed over HTTP: `PUT`/`DELETE /api/placement`
+are refused on the server (use the CLI or TUI). The spec persists across restarts.
 
 If a pinned placement no longer fits the card it names (after a hardware
 change, for example), lilbee surfaces an error naming the card rather than

@@ -98,3 +98,13 @@ def test_rejects_non_integer_device():
 def test_rejects_non_list_devices():
     with pytest.raises(PlacementError, match="devices must be a list"):
         PlacementSpec.from_json('{"chat": {"devices": 5}}')
+
+
+def test_rejects_fractional_float_device():
+    with pytest.raises(PlacementError, match="devices must be integers"):
+        PlacementSpec.from_json('{"chat": {"devices": [1.9]}}')
+
+
+def test_accepts_integral_float_device():
+    spec = PlacementSpec.from_json('{"chat": {"devices": [2.0]}}')
+    assert spec.roles[WorkerRole.CHAT].devices == (2,)

@@ -423,8 +423,9 @@ class FleetProvider:
             from lilbee.core.config import cfg
 
             swap = SwapManager(cfg.data_dir)
-            # A dead owner's surviving llama-swap holds VRAM; reap before planning
-            # so the device probe sees the real free memory.
+            # A dead owner's surviving llama-swap holds VRAM; reap it before launching
+            # so the cards are actually free for this fleet (and the context sizer
+            # reads true free VRAM).
             swap.reap_stale()
             launches = planning.plan_all_launches()
             if not launches:

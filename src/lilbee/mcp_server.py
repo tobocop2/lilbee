@@ -30,9 +30,6 @@ from lilbee.app.memory import (
 )
 from lilbee.app.placement import PlacementView, get_placement, preview_placement, set_placement
 from lilbee.app.search import clean_result
-
-if TYPE_CHECKING:
-    from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.app.settings import (
     SettingInfo,
@@ -63,6 +60,9 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     total_wiki_pages,
 )
+
+if TYPE_CHECKING:
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
 
 log = logging.getLogger(__name__)
 
@@ -1156,7 +1156,11 @@ def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]
 @_tool_named("set_placement")
 def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
     """Set and apply a manual multi-GPU placement spec (persists to config)."""
-    return _placement_result(lambda: set_placement(_parse_spec(spec)))
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    # A set always builds a spec (even {}) so an empty or invalid one is rejected;
+    # clearing back to auto is the separate clear_placement tool.
+    return _placement_result(lambda: set_placement(PlacementSpec.from_json(json.dumps(spec))))
 
 
 @_tool_named("clear_placement")

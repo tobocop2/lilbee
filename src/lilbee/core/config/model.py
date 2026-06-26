@@ -774,7 +774,9 @@ class Config(BaseSettings):
         if v is None:
             return None
         if isinstance(v, PlacementSpec):
-            return v.to_json()
+            json_str = v.to_json()
+            PlacementSpec.from_json(json_str)  # re-validate a directly-built spec
+            return json_str
         if isinstance(v, str):
             if v.strip() == "":
                 return None

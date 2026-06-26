@@ -248,11 +248,13 @@ hard error that identifies the card by name (e.g. `CUDA0: RTX 4090
 (23.7 GiB free, 24.0 GiB total)`) rather than failing silently. This makes
 hardware-change failures explicit.
 
-All four surfaces go through the one `app/placement.py` use-case:
-CLI (`lilbee placement show/preview/set/clear`), HTTP
-(`GET/POST/PUT/DELETE /api/placement`, `GET /api/gpus`), MCP
+The surfaces go through the one `app/placement.py` use-case:
+CLI (`lilbee placement show/preview/set/clear`), MCP
 (`get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
-and the TUI Placement screen. The `preview` operation is a dry-run: it shows
+and the TUI Placement screen. Over HTTP only the reads are served
+(`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`):
+applying or clearing placement rebuilds the shared fleet, so `PUT`/`DELETE
+/api/placement` are refused on the server. The `preview` operation is a dry-run: it shows
 what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.

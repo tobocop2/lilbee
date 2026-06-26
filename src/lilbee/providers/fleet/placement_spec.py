@@ -76,6 +76,8 @@ def _role_for(key: str) -> WorkerRole:
 def _coerce_int(role: WorkerRole, field: str, value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise PlacementError(f"{role.value}: {field} must be integers, got {value!r}")
+    if isinstance(value, float) and not value.is_integer():
+        raise PlacementError(f"{role.value}: {field} must be integers, got {value!r}")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
