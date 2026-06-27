@@ -16,6 +16,10 @@ from lilbee.cli.launchers.server import (
 from lilbee.core.config import cfg
 from lilbee.providers.model_ref import with_configured_remote_chat
 
+# The env var each launcher sets to the live session token; the written config
+# references it (opencode `{env:...}`, hermes `${...}`) so no literal lands on disk.
+LILBEE_TOKEN_ENV_VAR = "LILBEE_TOKEN"  # noqa: S105 (env var name, not a secret)
+
 
 class Launcher(Protocol):
     """A third-party AI client that lilbee knows how to launch."""
