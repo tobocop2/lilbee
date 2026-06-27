@@ -35,7 +35,7 @@ def test_provider_block_shape():
     assert prov["api_key"] == "${LILBEE_TOKEN}"
     assert prov["default_model"] == _REF
     assert prov["context_length"] == 8192
-    assert cfg_frag["model"] == _REF
+    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee"}
 
 
 def test_mcp_block_streamable_http_with_bearer():
@@ -69,7 +69,7 @@ def test_literal_api_key_inline_for_paste():
 
 def test_default_falls_back_to_first_model_ref():
     cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF])
-    assert cfg_frag["model"] == _REF
+    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee"}
     assert cfg_frag["providers"]["lilbee"]["default_model"] == _REF
 
 

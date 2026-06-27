@@ -946,6 +946,8 @@ def test_launch_opencode_refuses_to_overwrite_corrupt_config(tmp_path):
     assert "did not parse" in result.stderr
     assert config_path.read_text() == "{ not: valid json"  # untouched
     run.assert_not_called()
+    # Load-before-side-effects: a corrupt config aborts before the skill install too.
+    assert not (tmp_path / ".config" / "opencode" / "skills" / "lilbee-mcp").exists()
 
 
 def test_opencode_config_sets_generous_mcp_timeout():

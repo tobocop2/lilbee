@@ -113,10 +113,6 @@ class OpencodeLauncher:
     ) -> tuple[list[str], dict[str, str]]:
         if not _confirm_setup(self._assume_yes):
             raise typer.Exit(0)
-        # The lilbee-mcp guidance skill only helps when the MCP tool is wired in;
-        # skip it when MCP is disabled (a previously-installed skill is left alone).
-        if self._include_mcp:
-            install_bundled_skill(_opencode_skill_dest())
         # The token is referenced via {env:...}; opencode expands it at load, so the
         # written config never holds the literal. The launcher sets it in the env.
         block = opencode_config(
@@ -127,6 +123,8 @@ class OpencodeLauncher:
             default_ref=str(cfg.chat_model),
             include_mcp=self._include_mcp,
         )
+        # Load (and validate) before any side effect, so a corrupt config aborts
+        # without writing or installing anything.
         config = config_file.load_config_dict(
             _opencode_config_path(),
             parse=json.loads,
@@ -137,6 +135,10 @@ class OpencodeLauncher:
         if not self._include_mcp:
             prune_lilbee(config, _MCP_CONTAINER_KEY)
         config_file.atomic_write_text(_opencode_config_path(), json.dumps(config, indent=2))
+        # The lilbee-mcp guidance skill only helps when the MCP tool is wired in;
+        # skip it when MCP is disabled (a previously-installed skill is left alone).
+        if self._include_mcp:
+            install_bundled_skill(_opencode_skill_dest())
         return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})
 
 

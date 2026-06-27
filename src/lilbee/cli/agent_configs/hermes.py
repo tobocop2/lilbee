@@ -43,5 +43,7 @@ def hermes_config(
             }
         }
     if pin is not None:
-        config["model"] = pin
+        # Dict form binds the active model to the lilbee provider explicitly, so the
+        # pin is unambiguous even when another provider could serve the same ref.
+        config["model"] = {"default": pin, "provider": LILBEE_PROVIDER_KEY}
     return config
