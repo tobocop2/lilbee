@@ -27,7 +27,7 @@ jobs:
               useradd -m b
               chown -R b /pkg
               shellcheck tools/render_pkgbuild.sh
-              for pkg in lilbee lilbee-cuda; do
+              for pkg in lilbee lilbee-cuda lilbee-compat; do
                 shellcheck -s bash -e SC2034,SC2154 "aur/${pkg}/PKGBUILD"
                 out=$(namcap "aur/${pkg}/PKGBUILD")
                 if [ -n "$out" ]; then
