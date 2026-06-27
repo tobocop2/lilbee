@@ -397,6 +397,44 @@ h2.label { font-size: inherit; font-weight: inherit; }
 }
 .install .copy:hover { color: var(--accent-hot); background: rgba(235, 188, 186, 0.07); }
 
+/* hardware variants (older CPU, NVIDIA): same install-line aesthetic, labelled */
+.variant { margin-top: 0.85rem; }
+.variant-tag {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 0.3rem;
+}
+.variant .install { margin-top: 0; }
+.variant-note { margin-top: 0.3rem; font-size: 13px; color: var(--ink-3); }
+.variant-note code { color: var(--ink-2); }
+.variant-note a { color: var(--trust); }
+
+/* color-coded per variant, in-palette: gold = older CPU, iris = NVIDIA */
+.variant.compat .variant-tag { color: var(--gold); }
+.variant.compat .install { border-left: 2px solid var(--gold); }
+.variant.compat .variant-note { border-left: 2px solid var(--gold); padding-left: 0.7rem; }
+.variant.cuda .variant-tag { color: var(--iris); }
+.variant.cuda .install { border-left: 2px solid var(--iris); }
+.variant.cuda .variant-note { border-left: 2px solid var(--iris); padding-left: 0.7rem; }
+.binary-section.compat { color: var(--gold); }
+.binary-section.cuda { color: var(--iris); }
+
+/* labelled section divider inside the binary tab (older CPU, NVIDIA) */
+.binary-section {
+  margin: 1.2rem 0 0.2rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--rule-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
 /* install: which route ----------------------------------------------- */
 .routes {
   display: grid;

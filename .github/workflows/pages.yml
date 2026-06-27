@@ -137,6 +137,16 @@ jobs:
             touch wheel-indexes/.empty
           fi
 
+      - name: Build compat (pre-Haswell lancedb) index
+        # Serves lilbee.sh/compat/: the +compat lancedb wheels built by the
+        # tobocop2/lancedb fork and hosted as release assets there. Independent
+        # of the lilbee wheel set above.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -f wheel-indexes/.empty
+          python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/lancedb
+
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7
         with:

@@ -12,14 +12,31 @@ inputs:
     description: "Release version (e.g. 0.6.66b495)."
     required: true
   sha-linux:
-    description: "sha256 of the lilbee-linux-x86_64 release asset."
+    description: "sha256 of the Linux binary release asset."
     required: true
   size-linux:
-    description: "Size in bytes of the lilbee-linux-x86_64 release asset."
+    description: "Size in bytes of the Linux binary release asset."
     required: true
   tag:
     description: "Release tag the .flatpak bundle is attached to."
     required: true
+  # The four below default to the stock build; the compat channel overrides them.
+  app-id:
+    description: "Flatpak app-id to build, install, and bundle."
+    required: false
+    default: io.github.tobocop2.lilbee
+  manifest-path:
+    description: "Path to the Flatpak manifest."
+    required: false
+    default: packaging/flatpak/io.github.tobocop2.lilbee.yml
+  asset-name:
+    description: "Release asset the extra-data source points at."
+    required: false
+    default: lilbee-linux-x86_64
+  bundle-name:
+    description: "Filename of the single-file .flatpak bundle."
+    required: false
+    default: lilbee.flatpak
 
 runs:
   using: composite
@@ -73,15 +90,17 @@ runs:
         VERSION: ${{ inputs.version }}
         SHA_LINUX: ${{ inputs.sha-linux }}
         SIZE_LINUX: ${{ inputs.size-linux }}
+        MANIFEST: ${{ inputs.manifest-path }}
+        ASSET: ${{ inputs.asset-name }}
         GNUPGHOME: ${{ steps.gpg.outputs.gnupghome }}
         KEYID: ${{ steps.gpg.outputs.keyid }}
       run: |
         set -euo pipefail
         bash packaging/tools/render_flatpak_manifest.sh \
-          packaging/flatpak/io.github.tobocop2.lilbee.yml "$VERSION" "$SHA_LINUX" "$SIZE_LINUX"
+          "$MANIFEST" "$VERSION" "$SHA_LINUX" "$SIZE_LINUX" "$ASSET"
         flatpak-builder --user --force-clean --disable-rofiles-fuse \
           --repo=/tmp/pages/repo --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" \
-          /tmp/flatpak-build packaging/flatpak/io.github.tobocop2.lilbee.yml
+          /tmp/flatpak-build "$MANIFEST"
         flatpak build-update-repo --generate-static-deltas --prune --prune-depth=2 \
           --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" /tmp/pages/repo
 
@@ -89,19 +108,23 @@ runs:
       shell: bash
       env:
         EXPECTED: lilbee ${{ inputs.version }}
+        APP_ID: ${{ inputs.app-id }}
       run: |
         set -euo pipefail
         flatpak remote-add --user --no-gpg-verify lilbee-local file:///tmp/pages/repo
-        flatpak install --user -y --noninteractive lilbee-local io.github.tobocop2.lilbee
-        ACTUAL=$(flatpak run io.github.tobocop2.lilbee --version)
+        flatpak install --user -y --noninteractive lilbee-local "$APP_ID"
+        ACTUAL=$(flatpak run "$APP_ID" --version)
         echo "flatpak: $ACTUAL"
         test "$ACTUAL" = "$EXPECTED"
 
     - name: Build the single-file bundle
       shell: bash
+      env:
+        APP_ID: ${{ inputs.app-id }}
+        BUNDLE: ${{ inputs.bundle-name }}
       run: |
         set -euo pipefail
-        flatpak build-bundle /tmp/pages/repo /tmp/lilbee.flatpak io.github.tobocop2.lilbee \
+        flatpak build-bundle /tmp/pages/repo "/tmp/${BUNDLE}" "$APP_ID" \
           --repo-url=https://tobocop2.github.io/flatpak-lilbee/repo \
           --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
 
@@ -125,6 +148,7 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ inputs.tag }}
+        BUNDLE: ${{ inputs.bundle-name }}
       run: |
         set -euo pipefail
-        gh release upload "$TAG" /tmp/lilbee.flatpak --repo "$GITHUB_REPOSITORY" --clobber
+        gh release upload "$TAG" "/tmp/${BUNDLE}" --repo "$GITHUB_REPOSITORY" --clobber
