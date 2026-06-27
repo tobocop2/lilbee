@@ -16,7 +16,7 @@
   <a href="https://pypi.org/project/lilbee/"><img src="https://img.shields.io/pypi/v/lilbee?include_prereleases&label=PyPI&logo=pypi&logoColor=white" alt="lilbee on PyPI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platforms">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-ELv2-2C3E50" alt="License: Elastic License 2.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2C3E50" alt="License: MIT"></a>
   <a href="https://community.obsidian.md/plugins/lilbee"><img src="https://img.shields.io/badge/Obsidian-Community%20plugin-7c3aed?logo=obsidian&logoColor=white" alt="Obsidian community plugin"></a>
   <a href="https://glama.ai/mcp/servers/tobocop2/lilbee"><img src="https://glama.ai/mcp/servers/tobocop2/lilbee/badges/score.svg" alt="Glama MCP server score"></a>
 </p>
@@ -435,7 +435,7 @@ lilbee is built and maintained by one person. If it is useful to you, you can ch
 
 ## License
 
-Elastic License 2.0 (ELv2). See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 [Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
 [LanceDB]: https://lancedb.com

@@ -12,24 +12,12 @@
       systems = builtins.attrNames sources.systems;
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
-      # nixpkgs flags Elastic 2.0 as unfree; scope the allow to lilbee only.
-      mkPkgs =
-        system:
-        import nixpkgs {
-          inherit system;
-          config.allowUnfreePredicate =
-            pkg:
-            builtins.elem (nixpkgs.lib.getName pkg) [
-              "lilbee"
-              "lilbee-bin"
-              "lilbee-compat"
-            ];
-        };
+      mkPkgs = system: import nixpkgs { inherit system; };
 
       mkMeta = pkgs: {
         description = "Run and manage local AI models and search your files, code, and crawled web pages, with cited answers";
         homepage = "https://github.com/tobocop2/lilbee";
-        license = pkgs.lib.licenses.elastic20;
+        license = pkgs.lib.licenses.mit;
         mainProgram = "lilbee";
         platforms = systems;
         sourceProvenance = [ pkgs.lib.sourceTypes.binaryNativeCode ];

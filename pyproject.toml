@@ -3,7 +3,7 @@ name = "lilbee"
 version = "0.6.66b505"
 description = "Run and manage local AI models, then search your files, code, and the web pages you crawl, with answers that cite the source. Everything runs on your machine in one process: per-project libraries, semantic and hybrid search, vision OCR, an auto-built wiki, CLI, TUI, MCP server, REST API, and Python library. No model server, no database server. Works with your own Ollama or LM Studio models too."
 readme = "README.md"
-license = "Elastic-2.0"
+license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
