@@ -110,6 +110,8 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawl"    aria-controls="tutorial-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawlsite" aria-controls="tutorial-pane-crawlsite" aria-selected="false" tabindex="-1">crawl a site</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-catalog"  aria-controls="tutorial-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-multigpu" aria-controls="tutorial-pane-multigpu" aria-selected="false" tabindex="-1">multi-gpu</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-placement" aria-controls="tutorial-pane-placement" aria-selected="false" tabindex="-1">placement</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-ollama"   aria-controls="tutorial-pane-ollama"   aria-selected="false" tabindex="-1">ollama</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-lmstudio" aria-controls="tutorial-pane-lmstudio" aria-selected="false" tabindex="-1">lm studio</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-settings" aria-controls="tutorial-pane-settings" aria-selected="false" tabindex="-1">settings</button>
@@ -175,6 +177,20 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">Browse models on Hugging Face Hub, pull one live, switch a role without leaving the terminal.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-multigpu" aria-labelledby="tutorial-tab-multigpu" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-multi-gpu-self-index.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Index lilbee's own source on a four-GPU box, then ask how placement works: a 72B model loads tensor-split across three cards with the embedder on the fourth, and the answer is cited to lilbee's own code while the GPU monitor fills.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-placement" aria-labelledby="tutorial-tab-placement" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-manual-placement.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Pin placement by hand: forcing a 72B onto one card is refused with the exact shortfall before anything loads, while a three-card split is applied and reflected on the GPU monitor.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-ollama" aria-labelledby="tutorial-tab-ollama" hidden>
