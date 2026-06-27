@@ -3,7 +3,7 @@
     "description": "Run and manage local AI models, then search your files, code, and crawled web pages, with answers that cite the source. Pre-Haswell CPU build for older processors.",
     "homepage": "https://lilbee.sh/",
     "license": {
-        "identifier": "Elastic-2.0",
+        "identifier": "MIT",
         "url": "https://github.com/tobocop2/lilbee/blob/main/LICENSE"
     },
     "architecture": {
