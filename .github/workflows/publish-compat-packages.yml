@@ -1,0 +1,227 @@
+name: Publish compat packages
+
+# Pins a tag's pre-Haswell Linux binary into the lilbee-compat channels: the
+# Homebrew lilbee-compat formula, the AUR lilbee-compat PKGBUILD, the Nix flake
+# compat entry, and a lilbee-compat snap. Runs manually after release.yml has
+# attached lilbee-compat-linux-x86_64. Separate from publish-packages.yml (like
+# publish-cuda-packages.yml) so the default channels are never touched.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose lilbee-compat-linux-x86_64 is on the GH release (e.g. v0.6.66b505)."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-compat-packages-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.info.outputs.tag }}
+      version: ${{ steps.info.outputs.version }}
+      sha_linux_compat: ${{ steps.info.outputs.sha_linux_compat }}
+      size_linux_compat: ${{ steps.info.outputs.size_linux_compat }}
+      sha_windows_compat: ${{ steps.info.outputs.sha_windows_compat }}
+    steps:
+      - name: Resolve tag and compat asset digests
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG}"
+          version="${tag#v}"
+          gh api "/repos/${REPO}/releases/tags/${tag}" \
+            --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
+
+          get_sha() {
+            awk -F'\t' -v name="$1" '$1 == name { print $2 }' /tmp/assets.tsv
+          }
+          get_size() {
+            awk -F'\t' -v name="$1" '$1 == name { print $3 }' /tmp/assets.tsv
+          }
+          sha_linux_compat=$(get_sha lilbee-compat-linux-x86_64)
+          size_linux_compat=$(get_size lilbee-compat-linux-x86_64)
+          sha_windows_compat=$(get_sha lilbee-compat-windows-x86_64.exe)
+
+          [ -n "$sha_linux_compat" ] || { echo "lilbee-compat-linux-x86_64 missing from release ${tag}; run release.yml (compat cell) first"; exit 1; }
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha_linux_compat=$sha_linux_compat"
+            echo "size_linux_compat=$size_linux_compat"
+            echo "sha_windows_compat=$sha_windows_compat"
+          } >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-homebrew-formula
+        with:
+          tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          formula-path: Formula/lilbee-compat.rb
+          render-args: --compat --version ${{ needs.resolve.outputs.version }} --sha-linux-compat ${{ needs.resolve.outputs.sha_linux_compat }}
+          commit-message: "lilbee-compat ${{ needs.resolve.outputs.version }}"
+
+  aur:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-aur-package
+        with:
+          pkgname: lilbee-compat
+          pkgbuild-dir: packaging/aur/lilbee-compat
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_compat }}
+          aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+  nix-flake:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build systems JSON
+        id: sys
+        env:
+          SHA_LINUX_COMPAT: ${{ needs.resolve.outputs.sha_linux_compat }}
+        run: |
+          systems=$(jq -nc \
+            --arg sha "$SHA_LINUX_COMPAT" \
+            '{ "x86_64-linux": { asset: "lilbee-compat-linux-x86_64", sha256: $sha } }')
+          echo "value=${systems}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/publish-flake-sources
+        with:
+          target-file: sources-compat.json
+          version: ${{ needs.resolve.outputs.version }}
+          systems-json: ${{ steps.sys.outputs.value }}
+          commit-message: "lilbee-compat ${{ needs.resolve.outputs.version }} (flake)"
+
+  snap:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download and verify the release binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha_linux_compat }}
+        run: |
+          set -euo pipefail
+          mkdir -p packaging/snap-compat/payload
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            -p lilbee-compat-linux-x86_64 -O packaging/snap-compat/payload/lilbee-compat-linux-x86_64
+          echo "$SHA  packaging/snap-compat/payload/lilbee-compat-linux-x86_64" | sha256sum -c -
+          chmod +x packaging/snap-compat/payload/lilbee-compat-linux-x86_64
+      - name: Render snapcraft.yaml
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: bash packaging/tools/render_snapcraft.sh packaging/snap-compat/snapcraft.yaml "$VERSION"
+      - uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: packaging/snap-compat
+      - name: Smoke test
+        env:
+          EXPECTED: lilbee ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo snap install "${{ steps.build.outputs.snap }}" --dangerous --classic
+          ACTUAL=$(/snap/bin/lilbee-compat --version)
+          echo "snap: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        # Stable asset name so releases/latest/download/lilbee-compat-linux-x86_64.snap works.
+        run: |
+          cp "${{ steps.build.outputs.snap }}" lilbee-compat-linux-x86_64.snap
+          gh release upload "$TAG" lilbee-compat-linux-x86_64.snap --repo "$GITHUB_REPOSITORY" --clobber
+
+  flatpak:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/publish-flatpak
+        with:
+          pages-token: ${{ secrets.FLATPAK_PAGES_TOKEN }}
+          gpg-private-key: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          version: ${{ needs.resolve.outputs.version }}
+          sha-linux: ${{ needs.resolve.outputs.sha_linux_compat }}
+          size-linux: ${{ needs.resolve.outputs.size_linux_compat }}
+          tag: ${{ needs.resolve.outputs.tag }}
+          app-id: io.github.tobocop2.lilbee.compat
+          manifest-path: packaging/flatpak/io.github.tobocop2.lilbee.compat.yml
+          asset-name: lilbee-compat-linux-x86_64
+          bundle-name: lilbee-compat.flatpak
+
+  scoop:
+    needs: resolve
+    # The Windows compat binary is a soft cell in release.yml; skip scoop rather
+    # than fail if it wasn't attached.
+    if: needs.resolve.outputs.sha_windows_compat != ''
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Render manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA_WINDOWS_COMPAT: ${{ needs.resolve.outputs.sha_windows_compat }}
+        run: |
+          set -euo pipefail
+          python packaging/tools/render_scoop_manifest.py bucket/lilbee-compat.json \
+            --compat --version "$VERSION" --sha-windows-compat "$SHA_WINDOWS_COMPAT"
+      - name: Install from the rendered manifest and smoke test
+        uses: ./.github/actions/validate-scoop-install
+        with:
+          manifest-path: bucket/lilbee-compat.json
+          expected-version: lilbee ${{ needs.resolve.outputs.version }}
+      - name: Commit and push the manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "lilbee-bot"
+          git config user.email "lilbee-bot@users.noreply.github.com"
+          git add bucket/lilbee-compat.json
+          if git diff --cached --quiet; then
+            echo "no manifest changes; skipping push"
+            exit 0
+          fi
+          git commit -m "lilbee-compat ${VERSION} (scoop)"
+          for _ in 1 2 3; do
+            if git push origin main; then exit 0; fi
+            git pull --rebase origin main
+          done
+          echo "push failed after retries"; exit 1
