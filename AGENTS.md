@@ -448,9 +448,9 @@ lilbee --json sync
 
 Every command returns a single JSON object on stdout. Errors return non-zero exit + `{"error": "message"}`.
 
-### Opencode integration
+### Agent integrations
 
-opencode is the supported agent integration today. `lilbee launch opencode` is the fast path. Pull chat models via the TUI catalog first (`lilbee` -> `/models`). `lilbee agent-config opencode` prints the same config block without launching. `lilbee serve` exposes `/v1/models` and `/v1/chat/completions` directly for anything custom.
+opencode and hermes are the supported agent integrations. `lilbee launch opencode` / `lilbee launch hermes` are the fast paths. Pull chat models via the TUI catalog first (`lilbee` -> `/models`). Launching registers lilbee as a provider (and the MCP search tool) directly in the agent's own config, sharing the user's existing setup rather than isolating it: only the `lilbee` keys and the active model are written, the token lives in the agent's secret store (not the config file), and `--no-mcp` (or `agent_mcp_enabled=false`) leaves lilbee as the model provider only. `lilbee agent-config opencode|hermes` prints the same block for pasting. `lilbee serve` exposes `/v1/models` and `/v1/chat/completions` directly for anything custom.
 
 See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the full MCP reference and the JSON CLI fallback for non-MCP agents.
 
