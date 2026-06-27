@@ -245,7 +245,9 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
         return existing, None
     last_port = 0
     for _ in range(_SPAWN_ATTEMPTS):
-        last_port = free_port()
+        # Honor a user-pinned port so a persisted agent config keeps a valid URL;
+        # fall back to a free port when unset (0).
+        last_port = cfg.server_port or free_port()
         spawned = _spawn_and_wait(last_port)
         if spawned is not None:
             return _session_for_spawned(spawned), spawned

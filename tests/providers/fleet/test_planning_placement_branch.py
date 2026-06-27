@@ -63,7 +63,9 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
         planning, "_server_model_inputs", lambda roles, *, unified_budget=None: ([], {}, 0)
     )
     monkeypatch.setattr(
-        planning, "_resolve_placement", lambda *a, **k: Placement(instances=(), unplaceable_roles=())
+        planning,
+        "_resolve_placement",
+        lambda *a, **k: Placement(instances=(), unplaceable_roles=()),
     )
     planning.resolve_placement_plan(None)
     planning.resolve_placement_plan(None)

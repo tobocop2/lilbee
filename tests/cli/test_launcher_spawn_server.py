@@ -171,3 +171,28 @@ class TestEnsureServerRunningRetries:
         assert spawn.call_count == server_mod._SPAWN_ATTEMPTS
         for proc in procs:
             proc.terminate.assert_called_once()
+
+    def test_honors_configured_server_port(self, monkeypatch) -> None:
+        import typer
+
+        monkeypatch.setattr(cfg, "server_port", 8080)
+        monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
+        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1, 2, 3]))
+        seen: list[int] = []
+        monkeypatch.setattr(server_mod, "_spawn_and_wait", lambda port: seen.append(port) or None)
+        with pytest.raises(typer.Exit):
+            server_mod.ensure_server_running()
+        # The pinned port is used every attempt so a persisted URL stays valid.
+        assert seen == [8080] * server_mod._SPAWN_ATTEMPTS
+
+    def test_falls_back_to_free_port_when_server_port_unset(self, monkeypatch) -> None:
+        import typer
+
+        monkeypatch.setattr(cfg, "server_port", 0)
+        monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
+        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[7, 8, 9]))
+        seen: list[int] = []
+        monkeypatch.setattr(server_mod, "_spawn_and_wait", lambda port: seen.append(port) or None)
+        with pytest.raises(typer.Exit):
+            server_mod.ensure_server_running()
+        assert seen == [7, 8, 9]
