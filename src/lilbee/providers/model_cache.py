@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import platform
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 
@@ -118,27 +119,29 @@ def compute_dynamic_ctx(
     return max(floor, quantized)
 
 
-def get_available_memory(fraction: float) -> int:
+def get_available_memory(fraction: float, *, total: bool = False) -> int:
     """Return usable GPU/unified memory in bytes, scaled by *fraction*.
     - macOS (Apple Silicon): unified memory via psutil
     - Linux with NVIDIA GPU: pynvml -> nvidia-smi -> psutil fallback
     - Other: psutil system memory
+
+    With multiple NVIDIA GPUs, *total* sums every card's memory (whole-fleet
+    capacity, for deciding whether a model can run tensor-split across all of
+    them); the default sizes against the smallest single card.
     """
     import psutil
 
     system = platform.system()
 
     if system == "Darwin":
-        total = psutil.virtual_memory().total
-        return int(total * fraction)
+        return int(psutil.virtual_memory().total * fraction)
 
     if system in ("Linux", "Windows"):
-        nvidia_mem = _try_nvidia_memory()
+        nvidia_mem = _try_nvidia_memory(sum if total else min)
         if nvidia_mem is not None:
             return int(nvidia_mem * fraction)
 
-    total = psutil.virtual_memory().total
-    return int(total * fraction)
+    return int(psutil.virtual_memory().total * fraction)
 
 
 def free_system_memory() -> int:
@@ -164,11 +167,13 @@ def has_nvidia_gpu() -> bool:
     return _try_nvidia_memory() is not None
 
 
-def _try_nvidia_memory() -> int | None:
+def _try_nvidia_memory(reducer: Callable[[list[int]], int] = min) -> int | None:
     """NVIDIA GPU total memory via pynvml, then nvidia-smi.
 
-    Takes the MINIMUM total across visible devices: sizing against the smallest
-    card is conservative on a heterogeneous-GPU host.
+    *reducer* combines the per-device totals. ``min`` (the default) sizes against
+    the smallest card, the safe budget for a single server or a per-card
+    tensor-split share. ``sum`` gives whole-fleet capacity, used only by the
+    catalog fit chip to decide whether a model can run split across every card.
     """
     try:
         import pynvml  # type: ignore[import-untyped]
@@ -180,7 +185,7 @@ def _try_nvidia_memory() -> int | None:
         ]
         pynvml.nvmlShutdown()
         if totals:
-            return min(totals)
+            return reducer(totals)
     except Exception:  # noqa: S110 -- optional GPU detect; absence is expected on non-NVIDIA hosts
         pass
 
@@ -198,7 +203,7 @@ def _try_nvidia_memory() -> int | None:
         if result.returncode == 0:
             mibs = [int(line) for line in result.stdout.strip().splitlines() if line.strip()]
             if mibs:
-                return min(mibs) * 1024 * 1024
+                return reducer(mibs) * 1024 * 1024
     except Exception:  # noqa: S110 -- optional GPU detect; same rationale as above
         pass
 
