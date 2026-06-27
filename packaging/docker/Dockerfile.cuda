@@ -1,0 +1,25 @@
+FROM nvidia/cuda:12.5.1-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG LILBEE_VERSION
+# cu125 == CUDA 12.5, matching the nvidia/cuda:12.5.x-runtime base above.
+ARG CUDA_ASSET=lilbee-linux-x86_64-cu125
+RUN test -n "${LILBEE_VERSION}" || (echo "LILBEE_VERSION build arg required" && exit 1) && \
+    curl -fsSL -o /usr/local/bin/lilbee \
+        "https://github.com/tobocop2/lilbee/releases/download/v${LILBEE_VERSION}/${CUDA_ASSET}" && \
+    chmod +x /usr/local/bin/lilbee && \
+    /usr/local/bin/lilbee --version
+
+RUN useradd -m -u 1000 lilbee
+USER lilbee
+WORKDIR /home/lilbee/data
+ENV LILBEE_DATA_DIR=/home/lilbee/data
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/local/bin/lilbee"]
+CMD ["--help"]

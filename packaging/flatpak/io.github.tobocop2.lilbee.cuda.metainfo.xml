@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>io.github.tobocop2.lilbee.cuda</id>
+  <name>lilbee-cuda</name>
+  <summary>Local search engine you can talk to (NVIDIA CUDA build)</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Elastic-2.0</project_license>
+  <description>
+    <p>
+      lilbee runs and manages local AI models, indexes your files and code,
+      crawls the web pages you point it at, and answers questions with
+      citations down to the file and line. One install covers the TUI, CLI,
+      HTTP server, and MCP server. It works with your own Ollama or LM Studio
+      models too.
+    </p>
+    <p>
+      This build offloads inference to an NVIDIA GPU via CUDA. It needs a
+      recent NVIDIA proprietary driver on the host; without a usable GPU it
+      falls back to the CPU. Run it with GPU access enabled
+      (flatpak --device=all).
+    </p>
+  </description>
+  <url type="homepage">https://lilbee.sh</url>
+  <url type="bugtracker">https://github.com/tobocop2/lilbee/issues</url>
+  <provides>
+    <binary>lilbee</binary>
+  </provides>
+</component>
