@@ -8,8 +8,6 @@ from lilbee.cli.agent_configs.merge import LILBEE_PROVIDER_KEY
 
 _V1_SUFFIX = "/v1"
 _MCP_SUFFIX = "/mcp"
-_MCP_TRANSPORT = "streamable-http"
-_MCP_TIMEOUT_S = 120
 # hermes's custom provider defaults max_tokens to the full window, leaving ~no
 # room for input. Pin a sane output cap so the system prompt + history fit.
 _MAX_OUTPUT_TOKENS = 8192
@@ -41,16 +39,24 @@ def hermes_config(
         provider["context_length"] = chat_ctx
     config: dict[str, Any] = {"providers": {LILBEE_PROVIDER_KEY: provider}}
     if include_mcp:
+        # An `url` (no `transport` key) is hermes's HTTP MCP shape; `headers`
+        # carries the bearer with ${VAR} env resolution. A `transport` string
+        # makes hermes reject the entry (it must be a mapping) -> 0 connected.
         config["mcp_servers"] = {
             LILBEE_PROVIDER_KEY: {
                 "url": f"{base_url}{_MCP_SUFFIX}",
-                "transport": _MCP_TRANSPORT,
                 "headers": {"Authorization": f"Bearer {api_key}"},
-                "timeout": _MCP_TIMEOUT_S,
             }
         }
     if pin is not None:
         # Dict form binds the active model to the lilbee provider explicitly, so the
         # pin is unambiguous even when another provider could serve the same ref.
-        config["model"] = {"default": pin, "provider": LILBEE_PROVIDER_KEY}
+        # `model.max_tokens` is hermes's documented winning output cap: without it
+        # hermes requests the full window as output, so input+output overflows and
+        # it misreads the error as "prompt too long" and compresses to nothing.
+        config["model"] = {
+            "default": pin,
+            "provider": LILBEE_PROVIDER_KEY,
+            "max_tokens": _MAX_OUTPUT_TOKENS,
+        }
     return config

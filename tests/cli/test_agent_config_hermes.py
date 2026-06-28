@@ -36,18 +36,18 @@ def test_provider_block_shape():
     assert prov["max_tokens"] == 8192  # output cap so input fits the window
     assert prov["default_model"] == _REF
     assert prov["context_length"] == 8192
-    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee"}
+    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee", "max_tokens": 8192}
 
 
-def test_mcp_block_streamable_http_with_bearer():
+def test_mcp_block_url_with_bearer_header():
     cfg_frag = hermes_config(
         base_url="http://127.0.0.1:8080", api_key="${LILBEE_TOKEN}", model_refs=[_REF]
     )
     mcp = cfg_frag["mcp_servers"]["lilbee"]
     assert mcp["url"] == "http://127.0.0.1:8080/mcp"
-    assert mcp["transport"] == "streamable-http"
+    # url alone = HTTP transport; a `transport` string makes hermes reject the entry.
+    assert "transport" not in mcp
     assert mcp["headers"]["Authorization"] == "Bearer ${LILBEE_TOKEN}"
-    assert mcp["timeout"] == 120
 
 
 def test_no_mcp_omits_block():
@@ -70,7 +70,7 @@ def test_literal_api_key_inline_for_paste():
 
 def test_default_falls_back_to_first_model_ref():
     cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF])
-    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee"}
+    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee", "max_tokens": 8192}
     assert cfg_frag["providers"]["lilbee"]["default_model"] == _REF
 
 
