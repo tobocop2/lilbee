@@ -1,0 +1,26 @@
+# Hermes reel pod. Reuses the lilbee-agentqa volume (cached model + engine +
+# lilbee index from the opencode run), so this only installs hermes + records.
+#   sky launch -c lilbee-agentqa tools/qa/lilbee_reels/pod-hermes.sky.yaml --retry-until-up -y -d
+#   # then poll /workspace/reels-out/DONE-hermes, scp hermes.*, and sky down.
+name: lilbee-agentqa
+resources:
+  cloud: runpod
+  disk_size: 100
+  ordered:
+    - accelerators: A100-80GB-SXM:1
+    - accelerators: A100-80GB:1
+    - accelerators: H100:1
+volumes:
+  /workspace: lilbee-agentqa
+envs:
+  BRANCH: feat/agent-launcher-shared-home
+  BACKEND: cu124
+  REEL_MODEL: "unsloth/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M.gguf"
+  HF_TOKEN: ""
+setup: |
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${BRANCH}/tools/qa/opencode/pod_bootstrap.sh" -o /tmp/pod_bootstrap.sh
+  BRANCH="${BRANCH}" BACKEND="${BACKEND}" bash /tmp/pod_bootstrap.sh
+run: |
+  cd /workspace/lilbee
+  source /workspace/qa_env.sh
+  REEL_MODEL="${REEL_MODEL}" bash tools/qa/lilbee_reels/run-hermes.sh
