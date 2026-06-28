@@ -54,8 +54,8 @@ log "warm ready"
 PROMPT="Using my indexed lilbee source, first explain how lilbee registers itself into opencode's configuration, citing the exact files. Then add a 'lilbee launch --list' subcommand that prints the supported agent names by reading the real launcher module to match its style. Keep it minimal, pick sensible defaults, and do not ask me any questions."
 WS="$REPO"
 cat > "$OUT/opencode.tape" <<TAPE
-Output $OUT/opencode.gif
-Output $OUT/opencode.mp4
+Output opencode.gif
+Output opencode.mp4
 Set Shell bash
 Set Width 1600
 Set Height 900
@@ -74,11 +74,13 @@ Type "$PROMPT"
 Sleep 1s
 Enter
 Sleep 220s
-Screenshot $OUT/opencode.png
+Screenshot opencode.png
 TAPE
 
 log "recording opencode reel"
-( cd "$WS" && VHS_NO_SANDBOX=true vhs "$OUT/opencode.tape" > "$OUT/vhs-opencode.log" 2>&1 ) \
+# VHS must run from the tape's dir with RELATIVE Output paths (absolute trips its
+# parser on the pod); the tape itself cd's into the repo for the commands.
+( cd "$OUT" && VHS_NO_SANDBOX=true vhs opencode.tape > "$OUT/vhs-opencode.log" 2>&1 ) \
   && log "opencode reel recorded" \
   || { log "vhs FAILED"; tail -8 "$OUT/vhs-opencode.log"; echo "REELS_FAILED vhs" > "$OUT/DONE"; exit 4; }
 
