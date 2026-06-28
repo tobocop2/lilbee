@@ -775,6 +775,39 @@ def test_release_ingest_pool_unloads_only_elastic_replicas() -> None:
     swap.unload.assert_called()
 
 
+def test_adopt_swap_tracks_elastic_clients(monkeypatch) -> None:
+    # replica-0 is the persistent server; replica>=1 are the elastic ingest pool.
+    launches = [
+        _fake_launch(WorkerRole.EMBED, replica=0),
+        _fake_launch(WorkerRole.EMBED, replica=1),
+    ]
+    _install_engine(monkeypatch, launches=launches)
+    p = FleetProvider()
+    p._ensure_swap()
+    assert len(p._elastic_clients) == 1  # only the replica>=1 client is elastic
+    assert p._elastic_clients[0] in p._clients[WorkerRole.EMBED]
+
+
+def test_release_ingest_pool_marks_elastic_clients_unhealthy() -> None:
+    from unittest import mock
+
+    from lilbee.providers.fleet.provider import FleetProvider
+
+    # An unloaded replica left healthy + idle would be picked by least-busy routing
+    # and force a VRAM-contending reload; marking it unhealthy keeps query traffic
+    # on the persistent replica-0.
+    p = FleetProvider()
+    p._elastic_members = ["embed-1"]
+    elastic = mock.Mock()
+    p._elastic_clients = [elastic]
+    p._swap = mock.Mock()
+    p._swap.unload.return_value = True
+
+    p.release_ingest_pool()
+
+    elastic.mark_unhealthy.assert_called_once()
+
+
 def test_release_ingest_pool_noop_when_no_swap() -> None:
     from lilbee.providers.fleet.provider import FleetProvider
 
