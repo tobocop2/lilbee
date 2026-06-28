@@ -25,14 +25,15 @@
   <p class="sub">One command wires lilbee's local models into your agent. The model answers questions about the lilbee codebase from indexed source, then makes a real change to it. Recorded on a single A100 with Qwen3-Coder-Next, truecolor.</p>
 
   <div class="reel">
-    <h2><span class="tag">opencode</span> ask lilbee about lilbee, then change it</h2>
+    <h2><span class="tag">opencode</span> add a subcommand to lilbee, green test on camera</h2>
     <video src="agent-launcher-opencode.mp4" autoplay loop muted playsinline controls></video>
-    <div class="cap"><code>lilbee launch opencode</code> → pinned to the lilbee model with the <code>lilbee</code> MCP connected → it explains how lilbee registers into opencode's config (grounded in the indexed source), adds a <code>lilbee launch --list</code> subcommand, runs it, catches a bug, fixes it, and runs the checks.</div>
+    <div class="cap"><code>lilbee launch opencode</code> → pinned to the lilbee model with the <code>lilbee</code> MCP connected → it adds a <code>lilbee launch list</code> subcommand, writes a test, runs it, catches that <code>--list</code> wasn't the real syntax, fixes the test, and lands on <code>1 passed</code>.</div>
   </div>
 
-  <div class="reel pending">
+  <div class="reel">
     <h2><span class="tag" style="background:#bc8cff">hermes</span> same idea, your agent, shared setup</h2>
-    <div class="cap">Coming next: the hermes reel, recorded the same way.</div>
+    <video src="agent-launcher-hermes.mp4" autoplay loop muted playsinline controls></video>
+    <div class="cap"><code>lilbee launch hermes</code> → opens straight onto the lilbee model, no provider wiring → it reads <code>merge.py</code>, writes a focused test for <code>prune_lilbee</code>, runs it, and lands on a green pass.</div>
   </div>
 </div>
 </body>
