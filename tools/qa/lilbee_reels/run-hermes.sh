@@ -45,6 +45,7 @@ mkdir -p "$HOME/.hermes"
 cat > "$HOME/.hermes/config.yaml" <<'HCFG'
 display:
   interface: tui
+  skin: slate
 onboarding:
   seen:
     welcome: true
@@ -67,7 +68,7 @@ log "warm ready"
 
 # 5. Record the hermes reel: launch hermes (registers lilbee in ~/.hermes), ask a
 #    lilbee-codebase question + a small code change.
-PROMPT="Using my indexed lilbee source, explain how lilbee's fleet decides which GPU a model loads on, citing the files. Then add a small unit test under tests/ that verifies prune_lilbee removes the lilbee MCP entry while keeping sibling servers. Read the real code, keep it minimal, and do not ask me questions."
+PROMPT="Using my indexed lilbee source, briefly explain how lilbee's fleet decides which GPU a model loads on (cite the files). Then add a small unit test under tests/cli/ that verifies prune_lilbee removes the lilbee MCP entry while keeping sibling servers, and run ONLY that one test file with 'uv run pytest <thatfile> -q' to confirm it passes green. Do NOT run the full suite or 'make check'. Read the real code, keep it minimal, and do not ask me questions."
 cat > "$OUT/hermes.tape" <<TAPE
 Output hermes.gif
 Output hermes.mp4
@@ -90,7 +91,7 @@ Sleep 1s
 Enter
 Sleep 1s
 Enter
-Sleep 135s
+Sleep 185s
 Screenshot hermes.png
 TAPE
 

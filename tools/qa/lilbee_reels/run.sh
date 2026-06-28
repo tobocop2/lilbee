@@ -35,6 +35,7 @@ log "indexing lilbee source"
 mkdir -p "$HOME/.config/opencode"
 cat > "$HOME/.config/opencode/opencode.json" <<'OC'
 { "$schema": "https://opencode.ai/config.json",
+  "theme": "rose-pine",
   "permission": { "edit": "allow" },
   "tools": { "webfetch": false },
   "autoupdate": false }
@@ -64,7 +65,7 @@ log "warm ready"
 
 # 5. The reel tape: launch opencode (reuses the warm serve), ask one prompt that
 #    forces a lilbee_search over the lilbee source AND a real code change.
-PROMPT="Using my indexed lilbee source, first explain how lilbee registers itself into opencode's configuration, citing the exact files. Then add a 'lilbee launch --list' subcommand that prints the supported agent names by reading the real launcher module to match its style. Keep it minimal, pick sensible defaults, and do not ask me any questions."
+PROMPT="Using my indexed lilbee source, briefly explain how lilbee registers itself into opencode's config (cite the files). Then add a 'lilbee launch --list' subcommand that prints the supported agent names, reading the real launcher module to match its style. Add a focused test for it under tests/cli/ and run ONLY that one test file with 'uv run pytest <thatfile> -q' to confirm it passes green. Do NOT run the full suite or 'make check'. Keep it minimal and do not ask me questions."
 WS="$REPO"
 cat > "$OUT/opencode.tape" <<TAPE
 Output opencode.gif
@@ -86,7 +87,7 @@ Sleep 16s
 Type "$PROMPT"
 Sleep 1s
 Enter
-Sleep 130s
+Sleep 175s
 Screenshot opencode.png
 TAPE
 
