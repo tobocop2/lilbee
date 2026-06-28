@@ -16,7 +16,7 @@ import pytest
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
 from lilbee.providers.fleet.launch import InstanceLaunch
-from lilbee.providers.fleet.swap_manager import _UNLOAD_PATH, SwapManager
+from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import WorkerRole
 
 
@@ -1177,55 +1177,6 @@ def test_running_reflects_the_spawned_process(
     assert mgr.running is True
     mgr.shutdown()
     assert mgr.running is False
-
-
-class TestUnload:
-    def test_posts_model_id_to_unload_path(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mgr = SwapManager(tmp_path)
-        mgr._port = 41999
-        calls: dict[str, object] = {}
-
-        def fake_post(url: str, json: object, timeout: float) -> object:
-            calls["url"] = url
-            calls["json"] = json
-            return _fake_response(status=200)
-
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.httpx.post", fake_post)
-        assert mgr.unload("embed-1") is True
-        assert calls["url"] == f"http://127.0.0.1:41999{_UNLOAD_PATH}"
-        assert calls["json"] == {"model": "embed-1"}
-
-    def test_returns_false_and_never_raises_on_network_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mgr = SwapManager(tmp_path)
-        mgr._port = 41999
-
-        def boom(url: str, json: object, timeout: float) -> object:
-            raise OSError("connection refused")
-
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.httpx.post", boom)
-        assert mgr.unload("embed-1") is False
-
-    def test_returns_false_on_http_error_status(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        mgr = SwapManager(tmp_path)
-        mgr._port = 41999
-        monkeypatch.setattr(
-            "lilbee.providers.fleet.swap_manager.httpx.post",
-            lambda url, json, timeout: _fake_response(status=500),
-        )
-        assert mgr.unload("embed-1") is False
-
-    def test_returns_false_and_never_raises_before_start(self, tmp_path: Path) -> None:
-        # _port is None before start(); unload() must not let endpoint()'s
-        # ProviderError escape the never-raise contract.
-        mgr = SwapManager(tmp_path)
-        assert mgr._port is None
-        assert mgr.unload("embed-1") is False
 
 
 class TestIsLive:
