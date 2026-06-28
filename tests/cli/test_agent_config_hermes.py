@@ -33,6 +33,7 @@ def test_provider_block_shape():
     prov = cfg_frag["providers"]["lilbee"]
     assert prov["api"] == "http://127.0.0.1:8080/v1"
     assert prov["api_key"] == "${LILBEE_TOKEN}"
+    assert prov["max_tokens"] == 8192  # output cap so input fits the window
     assert prov["default_model"] == _REF
     assert prov["context_length"] == 8192
     assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee"}

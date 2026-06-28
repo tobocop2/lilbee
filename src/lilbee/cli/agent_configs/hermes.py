@@ -10,6 +10,9 @@ _V1_SUFFIX = "/v1"
 _MCP_SUFFIX = "/mcp"
 _MCP_TRANSPORT = "streamable-http"
 _MCP_TIMEOUT_S = 120
+# hermes's custom provider defaults max_tokens to the full window, leaving ~no
+# room for input. Pin a sane output cap so the system prompt + history fit.
+_MAX_OUTPUT_TOKENS = 8192
 
 
 def hermes_config(
@@ -27,7 +30,11 @@ def hermes_config(
     ``${LILBEE_TOKEN}`` reference for the launcher (hermes expands it from the env
     at load, so the on-disk file never holds the literal token)."""
     pin = default_ref or (model_refs[0] if model_refs else None)
-    provider: dict[str, Any] = {"api": f"{base_url}{_V1_SUFFIX}", "api_key": api_key}
+    provider: dict[str, Any] = {
+        "api": f"{base_url}{_V1_SUFFIX}",
+        "api_key": api_key,
+        "max_tokens": _MAX_OUTPUT_TOKENS,
+    }
     if pin is not None:
         provider["default_model"] = pin
     if chat_ctx is not None:
