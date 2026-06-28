@@ -42,10 +42,12 @@ log "hermes TUI deps ready"
 # 2. Pre-seed ~/.hermes so the launcher's non-destructive merge adds lilbee on top
 #    and hermes opens straight to the TUI (no setup wizard). Mark onboarding seen.
 mkdir -p "$HOME/.hermes"
+# skin: mono inherits the terminal palette (rose-pine via VHS) instead of
+# painting slate's hardcoded blue, so the TUI reads rose-pine end to end.
 cat > "$HOME/.hermes/config.yaml" <<'HCFG'
 display:
   interface: tui
-  skin: slate
+  skin: mono
 onboarding:
   seen:
     welcome: true
@@ -68,15 +70,21 @@ log "warm ready"
 
 # 5. Record the hermes reel: launch hermes (registers lilbee in ~/.hermes), ask a
 #    lilbee-codebase question + a small code change.
-PROMPT="Be concise and efficient; minimal explanation. Read src/lilbee/cli/agent_configs/merge.py, then write tests/cli/test_prune_siblings.py with one test that verifies prune_lilbee removes the lilbee MCP entry while keeping sibling servers, and run exactly 'uv run pytest tests/cli/test_prune_siblings.py -q'. Stop as soon as it passes green. Do NOT run the full suite or make check, and do NOT explore beyond what you need."
+PROMPT="Add a 'lilbee launch list' subcommand that prints the agents you can launch, reading the launcher registry in src/lilbee/cli/launchers/__init__.py. Run it to make sure it works, then add a focused test under tests/cli/ and run just that test."
+# Same verified rose-pine recipe as the opencode tape (named theme + window chrome).
 cat > "$OUT/hermes.tape" <<TAPE
 Output hermes.gif
 Output hermes.mp4
 Set Shell bash
-Set Width 1600
+Set Width 1400
 Set Height 900
 Set FontSize 14
-Set Theme { "name": "rose-pine", "background": "#191724", "foreground": "#e0def4", "cursor": "#e0def4", "selection": "#403d52", "black": "#26233a", "red": "#eb6f92", "green": "#9ccfd8", "yellow": "#f6c177", "blue": "#31748f", "magenta": "#c4a7e7", "cyan": "#ebbcba", "white": "#e0def4", "brightBlack": "#6e6a86", "brightRed": "#eb6f92", "brightGreen": "#9ccfd8", "brightYellow": "#f6c177", "brightBlue": "#31748f", "brightMagenta": "#c4a7e7", "brightCyan": "#ebbcba", "brightWhite": "#e0def4" }
+Set Padding 20
+Set Theme "rose-pine"
+Set Margin 30
+Set MarginFill "#100f1a"
+Set BorderRadius 10
+Set WindowBar Colorful
 Env PATH "/root/lilbee_venv/bin:/usr/local/bin:/root/.local/bin:/usr/local/go/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 Env LILBEE_DATA "$DATA"
 Env LILBEE_CHAT_MODEL "$REEL_MODEL"
@@ -102,5 +110,7 @@ log "recording hermes reel"
 
 mkdir -p "$OUT/frames-hermes"
 ffmpeg -y -loglevel error -i "$OUT/hermes.mp4" -vf fps=1 "$OUT/frames-hermes/f_%04d.png" 2>/dev/null || true
-echo "REELS_DONE hermes $(date -u +%FT%TZ)" > "$OUT/DONE-hermes"
+BG=$(ffmpeg -v error -i "$OUT/hermes.png" -vf "crop=2:2:700:650,scale=1:1" -f rawvideo -pix_fmt rgb24 - 2>/dev/null | xxd -p | head -c6)
+log "hermes reel bg hex => #$BG  (rose-pine base ~#1c1c2c)"
+echo "REELS_DONE hermes bg=#$BG $(date -u +%FT%TZ)" > "$OUT/DONE-hermes"
 log "DONE (hermes)."

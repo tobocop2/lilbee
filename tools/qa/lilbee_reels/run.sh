@@ -65,16 +65,24 @@ log "warm ready"
 
 # 5. The reel tape: launch opencode (reuses the warm serve), ask one prompt that
 #    forces a lilbee_search over the lilbee source AND a real code change.
-PROMPT="Be concise and efficient; minimal explanation. Add a 'lilbee launch --list' subcommand that prints the supported agent names, reading src/lilbee/cli/launchers/__init__.py to match its style. Then write tests/cli/test_launch_list.py with one test and run exactly 'uv run pytest tests/cli/test_launch_list.py -q'. Stop as soon as it passes green. Do NOT run the full suite or make check, and do NOT explore beyond what you need."
+PROMPT="Add a 'lilbee launch list' subcommand that prints the agents you can launch, reading the launcher registry in src/lilbee/cli/launchers/__init__.py. Run it to make sure it works, then add a focused test under tests/cli/ and run just that test."
 WS="$REPO"
+# Verified rose-pine recipe: VHS's BUILT-IN named theme (an inline JSON theme
+# silently falls back to gray), plus the macOS window chrome the existing agent
+# demos use. Matches demos/mcp-code.png (bg ~#1c1c2c).
 cat > "$OUT/opencode.tape" <<TAPE
 Output opencode.gif
 Output opencode.mp4
 Set Shell bash
-Set Width 1600
+Set Width 1400
 Set Height 900
 Set FontSize 14
-Set Theme { "name": "rose-pine", "background": "#191724", "foreground": "#e0def4", "cursor": "#e0def4", "selection": "#403d52", "black": "#26233a", "red": "#eb6f92", "green": "#9ccfd8", "yellow": "#f6c177", "blue": "#31748f", "magenta": "#c4a7e7", "cyan": "#ebbcba", "white": "#e0def4", "brightBlack": "#6e6a86", "brightRed": "#eb6f92", "brightGreen": "#9ccfd8", "brightYellow": "#f6c177", "brightBlue": "#31748f", "brightMagenta": "#c4a7e7", "brightCyan": "#ebbcba", "brightWhite": "#e0def4" }
+Set Padding 20
+Set Theme "rose-pine"
+Set Margin 30
+Set MarginFill "#100f1a"
+Set BorderRadius 10
+Set WindowBar Colorful
 Env PATH "/root/lilbee_venv/bin:/root/.opencode/bin:/usr/local/go/bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Env LILBEE_DATA "$DATA"
 Env LILBEE_CHAT_MODEL "$REEL_MODEL"
@@ -102,5 +110,9 @@ log "recording opencode reel"
 mkdir -p "$OUT/frames-opencode"
 ffmpeg -y -loglevel error -i "$OUT/opencode.mp4" -vf fps=1 "$OUT/frames-opencode/f_%04d.png" 2>/dev/null || true
 
-echo "REELS_DONE opencode $(date -u +%FT%TZ)" > "$OUT/DONE"
+# Sanity: log the reel's background hex (rose-pine base is ~#1c1c2c, purple-tinted;
+# a neutral gray like #131313 means the theme didn't apply). PIL-free via ffmpeg.
+BG=$(ffmpeg -v error -i "$OUT/opencode.png" -vf "crop=2:2:700:650,scale=1:1" -f rawvideo -pix_fmt rgb24 - 2>/dev/null | xxd -p | head -c6)
+log "opencode reel bg hex => #$BG  (rose-pine base ~#1c1c2c)"
+echo "REELS_DONE opencode bg=#$BG $(date -u +%FT%TZ)" > "$OUT/DONE"
 log "DONE (opencode). reels in $OUT"
