@@ -35,7 +35,16 @@ cat > "$HOME/.config/opencode/opencode.json" <<'OC'
   "tools": { "webfetch": false },
   "autoupdate": false }
 OC
-mkdir -p "$DATA/launchers"; echo '{"accepted": true}' > "$DATA/launchers/opencode-setup.json"
+# Pre-accept the launcher's first-run consent at the EXACT cfg.data_dir (a shell
+# guess at the path misses it, and the prompt then eats the typed reel prompt).
+( cd "$REPO" && LILBEE_DATA="$DATA" uv run python -c "
+from lilbee.core.config import cfg
+import json
+m = cfg.data_dir / 'launchers' / 'opencode-setup.json'
+m.parent.mkdir(parents=True, exist_ok=True)
+m.write_text(json.dumps({'accepted': True}))
+print('setup marker ->', m)
+" )
 
 # 4. Pre-warm a serve so the launch is instant and the answer is the subject.
 log "warming serve on $PORT"
@@ -66,10 +75,10 @@ Env LILBEE_DATA "$DATA"
 Env LILBEE_CHAT_MODEL "$REEL_MODEL"
 Env COLORTERM "truecolor"
 Sleep 2s
-Type "cd $WS && lilbee launch opencode"
+Type "cd $WS && lilbee launch opencode -y"
 Sleep 500ms
 Enter
-Sleep 12s
+Sleep 16s
 Type "$PROMPT"
 Sleep 1s
 Enter
