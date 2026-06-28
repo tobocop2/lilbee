@@ -347,6 +347,9 @@ class FleetProvider:
         # Model ids of elastic ingest replicas (embed/vision replica>=1); populated
         # by _adopt_swap and consumed by release_ingest_pool.
         self._elastic_members: list[str] = []
+        # The client objects for those elastic replicas, so release_ingest_pool can
+        # mark them unhealthy and keep query routing on the persistent replica-0.
+        self._elastic_clients: list[LlamaServerClient] = []
         # Latched once shutdown runs. A discarded provider (reset_services swaps
         # in a new one) can still have an in-flight warm-up or reload daemon
         # thread; without this latch that thread could start a llama-swap after
@@ -451,22 +454,25 @@ class FleetProvider:
         # token_cap truncates oversize embed/rerank inputs to the per-slot context
         # (the in-process backstop); the longer timeout covers a cold upstream load.
         clients: dict[WorkerRole, list[LlamaServerClient]] = {}
+        elastic_clients: list[LlamaServerClient] = []
         for launch in launches:
-            clients.setdefault(launch.role, []).append(
-                LlamaServerClient(
-                    endpoint,
-                    launch.model_id,
-                    token_cap=launch.token_cap,
-                    timeout=_request_timeout_s(launch.weights_bytes),
-                    rerank_mode=launch.rerank_mode,
-                )
+            client = LlamaServerClient(
+                endpoint,
+                launch.model_id,
+                token_cap=launch.token_cap,
+                timeout=_request_timeout_s(launch.weights_bytes),
+                rerank_mode=launch.rerank_mode,
             )
+            clients.setdefault(launch.role, []).append(client)
+            if launch.role in REPLICATED_ROLES and launch.replica >= 1:
+                elastic_clients.append(client)
         self._clients = clients
         self._elastic_members = [
             launch.model_id
             for launch in launches
             if launch.role in REPLICATED_ROLES and launch.replica >= 1
         ]
+        self._elastic_clients = elastic_clients
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
@@ -528,12 +534,21 @@ class FleetProvider:
 
         Best-effort and non-disruptive: the persistent query fleet (chat, embed-0,
         rerank, vision-0) stays loaded. Called when the last active ingest finishes.
+
+        The replica clients are marked unhealthy first, so least-busy routing keeps
+        query traffic on the persistent replica-0 instead of picking an idle
+        replica we just unloaded -- which would force an on-demand reload that
+        contends for VRAM with a large chat model and surfaces as a 500. A reload
+        re-adopts a fresh, healthy pool.
         """
         with self._lock:
             swap = self._swap
             members = list(self._elastic_members)
+            clients = list(self._elastic_clients)
         if swap is None:
             return
+        for client in clients:
+            client.mark_unhealthy()
         for model_id in members:
             if not swap.unload(model_id):
                 log.info("ingest pool: unload of %s did not confirm (swap may be cold)", model_id)
