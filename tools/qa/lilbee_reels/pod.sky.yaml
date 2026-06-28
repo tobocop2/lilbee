@@ -1,7 +1,7 @@
 # Dedicated pod for the agent-launcher reels (opencode + hermes) on the LILBEE
 # codebase. Separate from the QA matrix pod: its own fresh volume (never the
-# protected lilbee-qa volume), a single A100 (the reel model is Qwen3-Coder-30B-A3B,
-# ~17GB, which fits one card), and a run that indexes the lilbee source, records
+# protected lilbee-qa volume), a single A100 (the reel model Qwen3-Coder-Next
+# (Q4, ~48GB) fits one 80GB card), and a run that indexes the lilbee source, records
 # both reels, then signals done so the driver can tear the pod down immediately.
 #
 # Launch (from repo root, branch under test must be pushed):
@@ -15,8 +15,7 @@ name: lilbee-agentqa
 resources:
   cloud: runpod
   disk_size: 100
-  # One 80GB card holds Qwen3-Coder-30B-A3B (Q4, ~17GB) + the embedder with room
-  # to spare. The giant-family matrix (3-card) is a separate, later run.
+  # One 80GB card holds Qwen3-Coder-Next (Q4, ~48GB) + the embedder. The giant-family matrix (3-card) is a separate, later run.
   ordered:
     - accelerators: A100-80GB-SXM:1
     - accelerators: A100-80GB:1
@@ -28,7 +27,8 @@ volumes:
 envs:
   BRANCH: feat/agent-launcher-shared-home
   BACKEND: cu124
-  REEL_MODEL: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"
+  # Qwen3-Coder-Next (Feb 2026): 80B-A3B agentic coder, 256K ctx, Q4 ~48GB fits one 80GB card.
+  REEL_MODEL: "unsloth/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M.gguf"
   HF_TOKEN: ""
 
 setup: |
