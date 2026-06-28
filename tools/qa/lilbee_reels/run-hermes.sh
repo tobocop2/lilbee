@@ -26,10 +26,18 @@ command -v rg >/dev/null || (apt-get update -qq && apt-get install -y -qq ripgre
 ( cd "$HERMES_DIR" && env -u UV_PROJECT_ENVIRONMENT uv sync >>"$OUT/hermes-install.log" 2>&1 ) || log "hermes uv sync issues (see hermes-install.log)"
 cat > /usr/local/bin/hermes <<WRAP
 #!/usr/bin/env bash
-exec env -u UV_PROJECT_ENVIRONMENT uv run --project $HERMES_DIR hermes "\$@"
+exec env -u UV_PROJECT_ENVIRONMENT -u VIRTUAL_ENV uv run --project $HERMES_DIR hermes "\$@"
 WRAP
 chmod +x /usr/local/bin/hermes
 command -v hermes >/dev/null && log "hermes shim ready: $(command -v hermes)" || { log "hermes NOT on PATH"; echo "REELS_FAILED hermes-install" > "$OUT/DONE-hermes"; exit 2; }
+
+# hermes builds its TUI deps on the FIRST TUI launch ("Installing TUI dependencies").
+# Trigger that now (cached on the volume) so the reel's `lilbee launch hermes` opens
+# instantly instead of burning the launch window on the build.
+log "pre-building hermes TUI deps"
+timeout 300 hermes </dev/null >>"$OUT/hermes-install.log" 2>&1 || true
+pkill -f "hermes_cli" 2>/dev/null; sleep 2
+log "hermes TUI deps ready"
 
 # 2. Pre-seed ~/.hermes so the launcher's non-destructive merge adds lilbee on top
 #    and hermes opens straight to the TUI (no setup wizard). Mark onboarding seen.
@@ -76,11 +84,13 @@ Sleep 2s
 Type "cd $REPO && lilbee launch hermes"
 Sleep 500ms
 Enter
-Sleep 22s
+Sleep 30s
 Type "$PROMPT"
 Sleep 1s
 Enter
-Sleep 140s
+Sleep 1s
+Enter
+Sleep 135s
 Screenshot hermes.png
 TAPE
 
