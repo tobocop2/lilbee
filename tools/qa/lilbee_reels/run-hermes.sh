@@ -21,10 +21,12 @@ log(){ echo "[hermes-reel $(date +%H:%M:%S)] $*"; }
 log "installing hermes-agent"
 command -v rg >/dev/null || (apt-get update -qq && apt-get install -y -qq ripgrep) >>"$OUT/hermes-install.log" 2>&1
 [ -d "$HERMES_DIR/.git" ] || git clone --depth 1 https://github.com/NousResearch/hermes-agent "$HERMES_DIR" >>"$OUT/hermes-install.log" 2>&1
-( cd "$HERMES_DIR" && uv sync >>"$OUT/hermes-install.log" 2>&1 ) || log "hermes uv sync issues (see hermes-install.log)"
+# CRITICAL: unset UV_PROJECT_ENVIRONMENT (qa_env points it at lilbee's venv) so
+# hermes syncs into its OWN .venv instead of clobbering lilbee's.
+( cd "$HERMES_DIR" && env -u UV_PROJECT_ENVIRONMENT uv sync >>"$OUT/hermes-install.log" 2>&1 ) || log "hermes uv sync issues (see hermes-install.log)"
 cat > /usr/local/bin/hermes <<WRAP
 #!/usr/bin/env bash
-exec uv run --project $HERMES_DIR hermes "\$@"
+exec env -u UV_PROJECT_ENVIRONMENT uv run --project $HERMES_DIR hermes "\$@"
 WRAP
 chmod +x /usr/local/bin/hermes
 command -v hermes >/dev/null && log "hermes shim ready: $(command -v hermes)" || { log "hermes NOT on PATH"; echo "REELS_FAILED hermes-install" > "$OUT/DONE-hermes"; exit 2; }
