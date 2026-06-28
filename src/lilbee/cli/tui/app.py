@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from textual.app import App, ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
 from textual.screen import Screen
@@ -370,40 +371,49 @@ class LilbeeApp(App[None]):
     def switch_view(self, view_name: str) -> None:
         """Switch to a named view, installing each screen at most once.
 
-        Guards against concurrent switches via ``self._switching`` so
-        rapid keypresses don't corrupt the screen stack.
-        ``active_view`` is updated after the switch completes.
+        Guards against concurrent switches via ``self._switching`` so rapid
+        keypresses can't corrupt the screen stack. ``active_view`` is updated
+        after the switch completes.
         """
         if self._switching:
             return
+        if view_name != "Chat" and get_views().get(view_name) is None:
+            return
         self._switching = True
 
+        awaitable: AwaitComplete | None = None
         if view_name == "Chat":
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
-                self.switch_screen(_CHAT_SCREEN_NAME)
+                awaitable = self.switch_screen(_CHAT_SCREEN_NAME)
             # Already on Chat, just update state below.
         else:
-            factory = get_views().get(view_name)
-            if factory is None:
-                self._switching = False
-                return
             screen_name = _view_screen_name(view_name)
             if screen_name not in self._installed_screen_names:
-                self.install_screen(factory(), name=screen_name)
+                self.install_screen(get_views()[view_name](), name=screen_name)
                 self._installed_screen_names.add(screen_name)
-            self.switch_screen(screen_name)
+            awaitable = self.switch_screen(screen_name)
 
-        def _finish() -> None:
-            self.active_view = view_name
+        self.active_view = view_name
+        # ViewTabs.on_mount captured active_view before this runs, so the
+        # highlight would lag by one step without this push.
+        with contextlib.suppress(NoMatches):
+            self.screen.query_one(ViewTabs).active_view = view_name
+
+        async def _release() -> None:
+            # switch_screen updates the stack synchronously but finishes mounting
+            # in a deferred AwaitComplete. Releasing the guard on the next tick
+            # (the old call_later) let a rapid second nav re-enter switch_screen
+            # mid-transition and pop an empty result-callback stack (a Textual
+            # IndexError). Awaiting the transition first keeps the guard up for
+            # the whole switch; call_next is flushed by the same event loop, so a
+            # single completed switch still releases promptly.
+            if awaitable is not None:
+                await awaitable
             self._switching = False
-            # ViewTabs.on_mount captured active_view before this callback
-            # runs, so the highlight would lag by one step without this push.
-            with contextlib.suppress(NoMatches):
-                self.screen.query_one(ViewTabs).active_view = view_name
 
-        self.call_later(_finish)
+        self.call_next(_release)
 
     def action_push_help(self) -> None:
         if self.screen.query("HelpPanel"):
