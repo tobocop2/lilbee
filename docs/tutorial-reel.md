@@ -85,17 +85,17 @@ The agent finds `cv-manual.pdf` in the project, delegates the index to
 
 ## Run a model across your GPUs
 
-Four RTX A5000s. lilbee indexes its own source, then a 72B chat model is pulled,
+Four RTX A5000s. lilbee indexes its own source, then a 235B chat model is pulled,
 activated, and placed automatically: tensor-split across three cards with the
 embedder on the fourth. The question "how does lilbee split a model across GPUs?"
 comes back cited to lilbee's own `placement.py` and `architecture.md`, while the
 monitor on the right shows each card filling to ~17 GB.
 
-![index lilbee's own source, then ask how it works while a 72B model runs split across three GPUs next to a live GPU monitor](demos/tui-multi-gpu-self-index.gif)
+![index lilbee's own source, then ask how it works while a 235B model runs split across three GPUs next to a live GPU monitor](demos/tui-multi-gpu-self-index.gif)
 
 ### Multi-GPU: pin placement by hand
 
-Placement is automatic, but you can override it. Pinning the 72B onto a single
+Placement is automatic, but you can override it. Pinning the 235B onto a single
 card is refused before anything loads ("needs 48.4 GiB but device 1 has 21.2 GiB
 usable"); splitting it across three is accepted, applied, and the cards fill on
 the monitor to match the spec.

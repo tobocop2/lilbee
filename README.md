@@ -170,9 +170,9 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ### Run a model bigger than one card
 
-When a model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, so chat still has room while indexing runs. The demo below indexes lilbee's own source on a four-GPU box, then asks how that placement works: the answer comes back cited to lilbee's own code while the monitor on the right shows a 72B model running split across three cards.
+When a model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, so chat still has room while indexing runs. The demo below indexes lilbee's own source on a four-GPU box, then asks how that placement works: the answer comes back cited to lilbee's own code while the monitor on the right shows a 235B model running split across three cards.
 
-![index lilbee's own source, then ask how it works while a 72B model runs split across three GPUs next to a live GPU monitor](docs/demos/tui-multi-gpu-self-index.gif)
+![index lilbee's own source, then ask how it works while a 235B model runs split across three GPUs next to a live GPU monitor](docs/demos/tui-multi-gpu-self-index.gif)
 
 Placement is automatic, but you can pin it. Set which cards each role runs on and lilbee checks the layout before anything loads: one that fits is applied and shows up on the monitor, one that would run out of memory is refused with the exact shortfall.
 
