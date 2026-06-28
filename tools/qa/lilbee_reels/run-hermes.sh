@@ -68,7 +68,7 @@ log "warm ready"
 
 # 5. Record the hermes reel: launch hermes (registers lilbee in ~/.hermes), ask a
 #    lilbee-codebase question + a small code change.
-PROMPT="Using my indexed lilbee source, briefly explain how lilbee's fleet decides which GPU a model loads on (cite the files). Then add a small unit test under tests/cli/ that verifies prune_lilbee removes the lilbee MCP entry while keeping sibling servers, and run ONLY that one test file with 'uv run pytest <thatfile> -q' to confirm it passes green. Do NOT run the full suite or 'make check'. Read the real code, keep it minimal, and do not ask me questions."
+PROMPT="Be concise and efficient; minimal explanation. Read src/lilbee/cli/agent_configs/merge.py, then write tests/cli/test_prune_siblings.py with one test that verifies prune_lilbee removes the lilbee MCP entry while keeping sibling servers, and run exactly 'uv run pytest tests/cli/test_prune_siblings.py -q'. Stop as soon as it passes green. Do NOT run the full suite or make check, and do NOT explore beyond what you need."
 cat > "$OUT/hermes.tape" <<TAPE
 Output hermes.gif
 Output hermes.mp4
@@ -91,7 +91,7 @@ Sleep 1s
 Enter
 Sleep 1s
 Enter
-Sleep 185s
+Sleep 270s
 Screenshot hermes.png
 TAPE
 

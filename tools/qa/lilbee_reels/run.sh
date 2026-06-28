@@ -65,7 +65,7 @@ log "warm ready"
 
 # 5. The reel tape: launch opencode (reuses the warm serve), ask one prompt that
 #    forces a lilbee_search over the lilbee source AND a real code change.
-PROMPT="Using my indexed lilbee source, briefly explain how lilbee registers itself into opencode's config (cite the files). Then add a 'lilbee launch --list' subcommand that prints the supported agent names, reading the real launcher module to match its style. Add a focused test for it under tests/cli/ and run ONLY that one test file with 'uv run pytest <thatfile> -q' to confirm it passes green. Do NOT run the full suite or 'make check'. Keep it minimal and do not ask me questions."
+PROMPT="Be concise and efficient; minimal explanation. Add a 'lilbee launch --list' subcommand that prints the supported agent names, reading src/lilbee/cli/launchers/__init__.py to match its style. Then write tests/cli/test_launch_list.py with one test and run exactly 'uv run pytest tests/cli/test_launch_list.py -q'. Stop as soon as it passes green. Do NOT run the full suite or make check, and do NOT explore beyond what you need."
 WS="$REPO"
 cat > "$OUT/opencode.tape" <<TAPE
 Output opencode.gif
@@ -87,7 +87,7 @@ Sleep 16s
 Type "$PROMPT"
 Sleep 1s
 Enter
-Sleep 175s
+Sleep 270s
 Screenshot opencode.png
 TAPE
 
