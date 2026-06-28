@@ -14,6 +14,10 @@ PORT=41750
 mkdir -p "$OUT"
 export LILBEE_DATA="$DATA"
 export LILBEE_CHAT_MODEL="$REEL_MODEL"
+# opencode's system prompt + MCP tool defs are ~28K tokens; the default served
+# window (24576 on a big-RAM host) overflows. Qwen3-Coder-Next is 256K-capable and
+# the 80GB card has KV headroom, so serve a generous 64K window.
+export LILBEE_CHAT_N_CTX_TARGET=65536
 export COLORTERM=truecolor TERM=xterm-256color
 log(){ echo "[reels $(date +%H:%M:%S)] $*"; }
 
@@ -50,7 +54,7 @@ print('setup marker ->', m)
 log "warming serve on $PORT"
 pkill -f 'lilbee serve' 2>/dev/null; pkill -f 'llama-server' 2>/dev/null; pkill -f 'llama-swap' 2>/dev/null; sleep 2
 tmux kill-session -t warmserve 2>/dev/null
-tmux new-session -d -s warmserve "bash -c 'source /workspace/qa_env.sh; export LILBEE_DATA=$DATA LILBEE_CHAT_MODEL=\"$REEL_MODEL\"; cd $REPO; lilbee serve --port $PORT 2>&1 | tee $OUT/serve.log; sleep 7200'"
+tmux new-session -d -s warmserve "bash -c 'source /workspace/qa_env.sh; export LILBEE_DATA=$DATA LILBEE_CHAT_MODEL=\"$REEL_MODEL\" LILBEE_CHAT_N_CTX_TARGET=65536; cd $REPO; lilbee serve --port $PORT 2>&1 | tee $OUT/serve.log; sleep 7200'"
 for _ in $(seq 1 240); do
   curl -s "http://127.0.0.1:$PORT/api/health" 2>/dev/null | grep -q '"chat_ready":true' && break
   sleep 10
@@ -82,7 +86,7 @@ Sleep 16s
 Type "$PROMPT"
 Sleep 1s
 Enter
-Sleep 220s
+Sleep 130s
 Screenshot opencode.png
 TAPE
 
