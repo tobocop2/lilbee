@@ -9,8 +9,11 @@ effective replica count.
 from __future__ import annotations
 
 import functools
+import logging
 
 from lilbee.providers.roles import WorkerRole
+
+log = logging.getLogger(__name__)
 
 # Roles whose ``*_replicas`` knob scales data-parallel instances; others run one.
 # Single source of truth for the elastic (embed/vision) roles, reused by the
@@ -41,10 +44,18 @@ def gpu_device_count() -> int:
     """Effective GPU count lilbee will use; fixed for the process lifetime (cached).
 
     Resolved the same way planning does (binary ``--list-devices`` view), and
-    floored at one so auto means "one replica" on a GPU-less host.
+    floored at one so auto means "one replica" on a GPU-less host. Returns one
+    when the engine binary is absent so callers that size concurrency (e.g.
+    ingest) degrade gracefully instead of raising.
     """
+    from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet.binary import resolve_llama_server
     from lilbee.providers.fleet.planning import resolve_devices
 
-    devices = resolve_devices(resolve_llama_server())
+    try:
+        binary = resolve_llama_server()
+    except ProviderError:
+        log.debug("llama-server not found; treating host as GPU-less for replica sizing")
+        return _MIN_REPLICAS
+    devices = resolve_devices(binary)
     return max(_MIN_REPLICAS, len(devices))
