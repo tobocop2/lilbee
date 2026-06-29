@@ -145,6 +145,8 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-pdf"      aria-controls="tutorial-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">launch: opencode</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">launch: hermes</button>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-whatis" aria-labelledby="tutorial-tab-whatis">
@@ -257,6 +259,20 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">Same shape against the full Godot class reference (810 XMLs, pre-indexed). Cited codegen for a procedural level generator.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchoc" aria-labelledby="tutorial-tab-launchoc" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption"><code>lilbee launch opencode</code> opens opencode on a local model with lilbee wired in. It adds a <code>lilbee launch status</code> subcommand to lilbee's own source, runs it, and writes a test that passes.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchhm" aria-labelledby="tutorial-tab-launchhm" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption"><code>lilbee launch hermes</code> does the same for hermes: launched on a local model, it adds a <code>lilbee launch list</code> subcommand and lands a passing test.</p>
         </div>
 
       </div>

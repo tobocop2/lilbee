@@ -126,11 +126,17 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 If you've already got an MCP-aware coding agent running, it can do the setup: browse the catalog, pull picks, assign them to the embedding / reranker / vision roles, and tune retrieval. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs are obvious to them. See the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) for the workflow and example prompts.
 
-### Opencode integration (coming)
+### Launch your coding agent on local models
 
-Local-model [opencode](https://opencode.ai) support is coming in [#267](https://github.com/tobocop2/lilbee/pull/267), with tool-calling working across many GGUF families.
+`lilbee launch opencode` and `lilbee launch hermes` wire lilbee's local models into your agent in one command. lilbee registers itself as a provider and an MCP server in the agent's own config, leaves your existing setup intact, warms a model, and opens the agent pointed at it. No API keys, no provider wiring, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/opencode-models.md](docs/opencode-models.md) has the verified list and how the QA harness measures it.
 
-The demo shows a small local model (Qwen) given a specific instruction: when its first search comes back thin, widen lilbee's search settings and search again. The second pass returns the full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
+These reels show each agent, launched on a local model, doing real work on lilbee's own source. opencode adds a `lilbee launch status` subcommand, runs it, and writes a test that passes; hermes does the same with `lilbee launch list`.
+
+![opencode, launched on a local lilbee model, adds a launch-status subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.gif)
+
+![hermes, launched on a local lilbee model, adds a launch-list subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
+
+It tunes itself, too. Give a small local model a thin first result and tell it to widen lilbee's search, and the second pass returns full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
 
 ![agent fine-tunes lilbee mid-conversation: outline → widened retrieval → source with file:line citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-code-self-tune.gif)
 
@@ -332,7 +338,7 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 Drop the [`lilbee-mcp` skill](docs/agent-skills/lilbee-mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and any MCP-aware coding agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
 
-**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** Local-model opencode integration is on the way across many GGUF families: see [Opencode integration (coming)](#opencode-integration-coming) above.
+**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** To run the agent itself on a local model instead, see [Launch your coding agent on local models](#launch-your-coding-agent-on-local-models) above.
 
 Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your _local_ files.
 
