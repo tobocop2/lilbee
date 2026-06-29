@@ -31,45 +31,49 @@ PlacementScreen {
         content-align: left middle;
     }
 
-    /* GPU slots are flat filled chips: the background carries the state, so there
-       are no box-drawing borders to render as broken dashes in a recording. */
+    /* GPU slots are toggle chips: a flat themed border carries the state so
+       there is no default-Button bevel and no reverse-video focus flash. */
     .dev-toggle {
         min-width: 5;
         width: 5;
         height: 3;
         margin: 0 1 0 0;
-        border: none;
-        background: $panel;
+        border: round $panel;
+        background: $surface;
         color: $text-muted;
         text-style: none;
-        content-align: center middle;
     }
 
     .dev-toggle:hover {
         background: $boost;
         color: $foreground;
+        border: round $secondary;
     }
 
     .dev-toggle:focus {
-        background: $boost;
+        background: $surface;
         color: $foreground;
         text-style: bold;
+        border: round $primary;
     }
 
     .dev-toggle.on {
         background: $secondary;
         color: $background;
         text-style: bold;
+        border: round $secondary;
     }
 
     .dev-toggle.on:hover {
         background: $secondary-darken-1;
+        border: round $secondary-darken-1;
     }
 
     .dev-toggle.on:focus {
         background: $secondary;
         color: $background;
         text-style: bold;
+        border: round $primary;
     }
 
     .rep-btn {
@@ -77,19 +81,21 @@ PlacementScreen {
         width: 5;
         height: 3;
         margin: 0 1 0 0;
-        border: none;
-        background: $panel;
+        border: round $panel;
+        background: $surface;
         color: $foreground;
-        content-align: center middle;
     }
 
     .rep-btn:hover {
         background: $boost;
+        border: round $secondary;
     }
 
     .rep-btn:focus {
-        background: $boost;
+        background: $surface;
+        color: $foreground;
         text-style: bold;
+        border: round $primary;
     }
 
     .rep-count {
