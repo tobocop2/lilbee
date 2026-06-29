@@ -46,3 +46,14 @@ def test_unexpected_type_raises():
     """A non-string, non-PlacementSpec value must fail validation."""
     with pytest.raises(ValidationError):
         Config(placement=42)
+
+
+def test_allow_http_placement_defaults_off():
+    assert Config(placement=None).allow_http_placement is False
+
+
+def test_allow_http_placement_env_override(monkeypatch):
+    """A pod's `lilbee serve` can enable HTTP placement via the env var."""
+    monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+    monkeypatch.setenv("LILBEE_ALLOW_HTTP_PLACEMENT", "1")
+    assert Config().allow_http_placement is True

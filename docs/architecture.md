@@ -252,10 +252,13 @@ hardware-change failures explicit.
 The surfaces go through the one `app/placement.py` use-case:
 CLI (`lilbee placement show/preview/set/clear`), MCP
 (`get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
-and the TUI Placement screen. Over HTTP only the reads are served
-(`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`):
-applying or clearing placement rebuilds the shared fleet, so `PUT`/`DELETE
-/api/placement` are refused on the server. The `preview` operation is a dry-run: it shows
+and the TUI Placement screen. Over HTTP the reads are always served
+(`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`).
+Applying or clearing placement rebuilds the shared fleet, so `PUT`/`DELETE
+/api/placement` are refused by default and gated on `allow_http_placement`
+(`LILBEE_ALLOW_HTTP_PLACEMENT`), which an operator enables for a single-client
+or owned deployment (the plugin's managed server, or a personally-owned pod) to
+get the same apply/clear capability as the CLI and TUI. The `preview` operation is a dry-run: it shows
 what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
