@@ -1,0 +1,6 @@
+GpuFleetPanel {
+    height: auto;
+    padding: 1 0;
+    border: solid $surface-lighten-2;
+    margin-bottom: 1;
+}

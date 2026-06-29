@@ -24,6 +24,7 @@ from textual.widgets import Button, DataTable, Footer, Label, Static
 from lilbee.app.placement import get_placement, preview_placement, set_placement
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.roles import WorkerRole
 
@@ -37,6 +38,7 @@ _GPU_TABLE_ID = "#placement-gpus"
 _EDITOR_ID = "#placement-editor"
 _GENERATED_ID = "#placement-generated"
 _TITLE_ID = "#placement-title"
+_FLEET_PANEL_ID = "#gpu-fleet-panel"
 
 _GIB = 1024**3
 # Only these roles run multiple replicas; the others always serve one instance.
@@ -109,6 +111,7 @@ class PlacementScreen(Screen[None]):
         with Vertical(id="placement-layout"):
             yield Static("", id="placement-title")
             yield table
+            yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
             yield Static("", id="placement-generated")
             yield Static(_HINT, id="placement-hint")
@@ -147,6 +150,7 @@ class PlacementScreen(Screen[None]):
         self._refresh_table()
         self._refresh_title(dirty=False)
         self._refresh_generated()
+        self._update_fleet_panel(view)
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
@@ -205,6 +209,16 @@ class PlacementScreen(Screen[None]):
             out.update(f"[red]{exc}[/red]")
             return
         out.update(f"equivalent spec:  {spec.to_json() if spec else '(auto)'}")
+
+    def _update_fleet_panel(self, view: PlacementView) -> None:
+        """Push the current device list into the fleet panel after a placement load."""
+        try:
+            panel = self.query_one(_FLEET_PANEL_ID, GpuFleetPanel)
+        except NoMatches:
+            return
+        labels = {g.index: g.label for g in view.gpus}
+        names = {g.index: g.name for g in view.gpus}
+        panel.set_devices(view.gpus, labels=labels, names=names)
 
     # -- editor state ----------------------------------------------------
 
