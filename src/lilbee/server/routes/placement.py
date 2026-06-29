@@ -15,6 +15,7 @@ import json
 
 from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
+from litestar.response import Stream
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
@@ -98,3 +99,9 @@ async def gpus_route() -> list[GpuInfoResponse]:
         return await handlers.gpus()
     except ProviderError as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@get("/api/gpus/stream")
+async def gpu_stats_stream_route() -> Stream:
+    """Live per-GPU utilization + free memory as SSE for the placement view."""
+    return Stream(handlers.gpu_stats_stream(), media_type="text/event-stream")

@@ -36,6 +36,7 @@ class SseEvent(StrEnum):
     WARMING = "warming"
     WARM = "warm"
     MEMORY_EXTRACTED = "memory_extracted"
+    GPU_STATS = "gpu_stats"
 
 
 class SseErrorCode(StrEnum):

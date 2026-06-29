@@ -91,6 +91,19 @@ class TestWarmStreamRoute:
         assert '"phase": "ready"' in resp.text
 
 
+class TestGpuStatsStreamRoute:
+    def test_streams_gpu_stats(self, client):
+        async def _fake_stats():
+            gpu = {"index": 0, "utilization_pct": 71, "free_bytes": 1, "total_bytes": 2}
+            yield f"event: gpu_stats\ndata: {json.dumps({'gpus': [gpu]})}\n\n"
+
+        with mock.patch("lilbee.server.handlers.gpu_stats_stream", return_value=_fake_stats()):
+            resp = client.get("/api/gpus/stream")
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert '"utilization_pct": 71' in resp.text
+
+
 class TestSearchRoute:
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
     def test_empty_results(self, mock_search, client):

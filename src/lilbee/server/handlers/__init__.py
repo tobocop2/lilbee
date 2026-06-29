@@ -124,6 +124,44 @@ async def warm_stream() -> AsyncGenerator[str, None]:
     yield sse_done({})
 
 
+_GPU_STATS_INTERVAL_S = 1.0
+
+
+async def gpu_stats_stream(
+    interval_s: float = _GPU_STATS_INTERVAL_S,
+    max_ticks: int | None = None,
+) -> AsyncGenerator[str, None]:
+    """Stream live per-GPU utilization + free memory as SSE for the placement view.
+
+    Structural devices are probed once (a subprocess); each tick only runs the
+    light ``nvidia-smi`` query, so the loop is cheap. The client (placement view)
+    keeps the stream open while visible; ``max_ticks`` bounds it for tests.
+    """
+    from lilbee.app.placement import get_placement
+    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
+    from lilbee.server.models import GpuStatEvent
+
+    devices = get_placement().gpus
+    tick = 0
+    while max_ticks is None or tick < max_ticks:
+        stats = probe_gpu_stats(devices)
+        payload = {
+            "gpus": [
+                GpuStatEvent(
+                    index=s.index,
+                    utilization_pct=s.utilization_pct,
+                    free_bytes=s.free_bytes,
+                    total_bytes=s.total_bytes,
+                ).model_dump()
+                for s in stats.values()
+            ]
+        }
+        yield sse_event(SseEvent.GPU_STATS, payload)
+        tick += 1
+        if max_ticks is None or tick < max_ticks:
+            await asyncio.sleep(interval_s)
+
+
 async def status() -> StatusResponse:
     """Return config, sources, and chunk counts."""
     raw = gather_status()
@@ -210,6 +248,7 @@ __all__ = [
     "get_config",
     "get_config_defaults",
     "get_source_content",
+    "gpu_stats_stream",
     "gpus",
     "health",
     "import_stream",

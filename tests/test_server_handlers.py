@@ -4375,3 +4375,29 @@ class TestPlacementHandlers:
             result = await handlers.gpus()
         assert len(result) == 1
         assert result[0].name == "A100"
+
+    async def test_gpu_stats_stream_emits_live_snapshots(self):
+        from lilbee.app.placement import GpuInfo, PlacementView
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+
+        gpu = GpuInfo(
+            index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
+        )
+        view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
+        stat = {0: GpuStat(0, 64, 150, 200)}
+        with (
+            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat) as probe,
+        ):
+            chunks = [c async for c in handlers.gpu_stats_stream(interval_s=0, max_ticks=2)]
+        events = [
+            json.loads(line[len("data:") :].strip())
+            for chunk in chunks
+            for line in chunk.splitlines()
+            if line.startswith("data:")
+        ]
+        assert len(events) == 2
+        assert events[0] == {
+            "gpus": [{"index": 0, "utilization_pct": 64, "free_bytes": 150, "total_bytes": 200}]
+        }
+        assert probe.call_count == 2

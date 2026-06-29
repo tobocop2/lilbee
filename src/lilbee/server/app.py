@@ -56,6 +56,7 @@ from lilbee.server.routes.models import (
     models_show_route,
 )
 from lilbee.server.routes.placement import (
+    gpu_stats_stream_route,
     gpus_route,
     placement_clear_route,
     placement_preview_route,
@@ -168,6 +169,7 @@ def create_app() -> Litestar:
             placement_set_route,
             placement_clear_route,
             gpus_route,
+            gpu_stats_stream_route,
             crawl_route,
             setup_crawler_route,
             setup_crawler_status_route,

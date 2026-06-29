@@ -575,6 +575,19 @@ class GpuInfoResponse(BaseModel):
     free_bytes: int
 
 
+class GpuStatEvent(BaseModel):
+    """A live per-GPU activity snapshot streamed by GET /api/gpus/stream.
+
+    ``utilization_pct`` is the compute load (0-100), or ``None`` for backends
+    that don't report it. ``free_bytes`` moves as models load and ingest runs.
+    """
+
+    index: int
+    utilization_pct: int | None
+    free_bytes: int
+    total_bytes: int
+
+
 class RolePlacementResponse(BaseModel):
     """Where one role's model is placed in the resolved plan."""
 
