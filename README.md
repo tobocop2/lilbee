@@ -43,7 +43,7 @@
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
 </p>
 
-A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line.
+A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line. It is local RAG, done for you: the retrieval and the model both run on your own machine.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
@@ -426,6 +426,20 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 - [Nuitka] compiles the whole thing into the standalone single-file binary, bundling its own Python runtime so there is nothing to install and nothing to compile.
+
+## FAQ
+
+**What is lilbee, in one line?** A local AI search engine: it runs the models and searches your files, code, and the web, with answers that cite the source.
+
+**Is it really one program?** Yes. The model runtime (llama.cpp) and the index (LanceDB) run inside lilbee. No separate model server, no vector database, no container.
+
+**Is lilbee a model manager?** Yes, a complete one. It browses Hugging Face, downloads models, assigns roles, runs them on Metal, Vulkan, or CUDA, and places large models across multiple GPUs, so you do not need a separate model runner. Already use Ollama or LM Studio? Point lilbee at them instead.
+
+**Does my data leave my machine?** No. Your files stay on disk and search runs locally. A cloud model is used only when you pick one.
+
+**Will a model fit my GPU?** lilbee reads the GGUF file and your devices and estimates fit before you download, and splits large models across multiple GPUs. More at [lilbee.sh/gpu](https://lilbee.sh/gpu/).
+
+**Can my coding agent use it?** Yes, over MCP. The agent reads your real code and docs before answering, cited to the file and line. More at [lilbee.sh/mcp](https://lilbee.sh/mcp/).
 
 ## Support
 

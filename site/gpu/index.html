@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G8F65BKGRJ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-G8F65BKGRJ');
+</script>
+
+<title>Will this model fit your GPU? See before you download | lilbee</title>
+<meta name="description" content="lilbee checks whether a GGUF model fits your GPU's VRAM before you download it, and splits large models across multiple GPUs with the right tensor split. VRAM estimates up front, no failed loads, no guesswork.">
+<link rel="canonical" href="https://lilbee.sh/gpu/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lilbee">
+<meta property="og:title" content="Will this model fit your GPU? See before you download | lilbee">
+<meta property="og:description" content="lilbee estimates whether a GGUF model fits your VRAM before download, and splits large models across multiple GPUs. No failed loads, no guesswork.">
+<meta property="og:url" content="https://lilbee.sh/gpu/">
+<meta property="og:image" content="https://lilbee.sh/social-card.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="lilbee showing whether a model fits available GPU VRAM before download">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Will this model fit your GPU? See before you download | lilbee">
+<meta name="twitter:description" content="lilbee estimates whether a GGUF model fits your VRAM before download, and splits large models across multiple GPUs. No failed loads, no guesswork.">
+<meta name="twitter:image" content="https://lilbee.sh/social-card.png">
+<meta name="twitter:image:alt" content="lilbee showing whether a model fits available GPU VRAM before download">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "lilbee", "item": "https://lilbee.sh/" },
+    { "@type": "ListItem", "position": 2, "name": "Will it fit your GPU", "item": "https://lilbee.sh/gpu/" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "How much VRAM do I need to run a model?", "acceptedAnswer": { "@type": "Answer", "text": "It depends on the parameter count and the quantization. As a rough guide at a 4-bit quant: a 7B model needs around 5 GB, a 13B around 9 GB, a 34B around 22 GB, and a 70B around 42 GB, plus a little more for the context window. lilbee reads the actual file to estimate your case rather than guessing." } },
+    { "@type": "Question", "name": "How does lilbee know if a model fits?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee reads the GGUF file's headers with a gguf parser and probes your devices for free and total VRAM, then estimates whether the model plus its context will fit. If it will not, lilbee tells you before you download." } },
+    { "@type": "Question", "name": "Can it use multiple GPUs?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. lilbee places a large model across multiple GPUs with a tensor split sized to each device's VRAM, so a model that does not fit on one card can still run." } },
+    { "@type": "Question", "name": "What about Apple Silicon and Metal?", "acceptedAnswer": { "@type": "Answer", "text": "On Apple Silicon the GPU shares system memory, so the limit is your unified memory rather than a separate VRAM pool. lilbee runs on Metal and sizes the model to what is available." } },
+    { "@type": "Question", "name": "What if a model is too big?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee flags it before download. You can pick a smaller quant, offload part of the model to system RAM, or spread it across more GPUs." } }
+  ]
+}
+</script>
+
+<link rel="stylesheet" href="../style.css?v=20260515a">
+<script src="../main.js?v=20260515a" defer></script>
+</head>
+<body>
+<div class="layout">
+  <main class="main">
+
+    <div class="topstrip">
+      <div><a class="badge" href="/">lilbee</a> <span>will it fit</span></div>
+      <div>
+        <span class="pill">gguf</span>
+        <span class="pill">vram-aware</span>
+        <span class="pill">multi-gpu</span>
+      </div>
+    </div>
+
+    <p class="crumb"><a href="/">lilbee</a> / will it fit your GPU</p>
+
+    <section class="hero">
+<pre class="wordmark" aria-hidden="true">888 d8b 888 888
+888 Y8P 888 888
+888     888 888
+888 888 888 88888b.  .d88b.  .d88b.
+888 888 888 888 "88bd8P  Y8bd8P  Y8b
+888 888 888 888  88888888888888888888
+888 888 888 888 d88PY8b.    Y8b.
+888 888 888 88888P"  "Y8888  "Y8888</pre>
+      <h1 class="tagline"><strong>Will this model fit your GPU?</strong> See before you download. lilbee reads the model file and your hardware, then tells you whether it fits, and splits big models across GPUs.</h1>
+      <p class="sub">No more downloading a 40 GB model only to watch it fail to load. lilbee estimates VRAM up front from the real GGUF file and the devices it finds on your machine.</p>
+    </section>
+
+    <section>
+      <h2 class="label">the problem with guesswork</h2>
+      <p class="lede">Picking a local model is usually trial and error: download something, try to load it, watch it run out of memory, pick a smaller quant, try again. lilbee does the arithmetic before the download. It reads the GGUF headers, checks the free and total VRAM on each device, and tells you whether the model and its context window will fit.</p>
+    </section>
+
+    <section>
+      <h2 class="label">a rough VRAM guide</h2>
+      <p class="lede">A starting point for a common 4-bit quant. Your exact numbers depend on the quant, the context length, and the runtime, which is why lilbee estimates from the actual file rather than a table.</p>
+      <div class="caps">
+        <div class="cap"><h3>7B</h3><p>about 5 GB at a 4-bit quant. Comfortable on an 8 GB card.</p></div>
+        <div class="cap"><h3>13B</h3><p>about 9 GB at a 4-bit quant. Fits a 12 GB card with room for context.</p></div>
+        <div class="cap"><h3>34B</h3><p>about 22 GB at a 4-bit quant. Wants a 24 GB card, or two smaller ones.</p></div>
+        <div class="cap"><h3>70B</h3><p>about 42 GB at a 4-bit quant. Needs multiple GPUs, where the tensor split matters.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">multiple GPUs, sized to each card</h2>
+      <p class="lede">When a model is too big for one card, lilbee spreads it across the GPUs you have, with a tensor split sized to each device's free VRAM rather than an even cut that overflows the smallest card. It runs on Metal, Vulkan, and CUDA, and can offload part of a model to system RAM when you want to stretch a tight setup. This is part of lilbee's <a href="/model-manager/">model manager</a>.</p>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>How much VRAM do I need to run a model?</summary><p>It depends on the parameter count and the quantization. As a rough guide at a 4-bit quant: 7B is around 5 GB, 13B around 9 GB, 34B around 22 GB, and 70B around 42 GB, plus a little for the context window. lilbee reads the actual file to estimate your case.</p></details>
+        <details><summary>How does lilbee know if a model fits?</summary><p>It reads the GGUF file's headers with a gguf parser and probes your devices for free and total VRAM, then estimates whether the model plus its context will fit. If it will not, it tells you before you download.</p></details>
+        <details><summary>Can it use multiple GPUs?</summary><p>Yes. lilbee places a large model across multiple GPUs with a tensor split sized to each device's VRAM, so a model that does not fit on one card can still run.</p></details>
+        <details><summary>What about Apple Silicon and Metal?</summary><p>On Apple Silicon the GPU shares system memory, so the limit is your unified memory rather than a separate VRAM pool. lilbee runs on Metal and sizes the model to what is available.</p></details>
+        <details><summary>What if a model is too big?</summary><p>lilbee flags it before download. You can pick a smaller quant, offload part of the model to system RAM, or spread it across more GPUs.</p></details>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">go deeper</h2>
+      <div class="links">
+        <a href="/"><span class="num">[1]</span><span>lilbee</span><span class="dots">·······································</span><span class="desc">home</span></a>
+        <a href="/model-manager/"><span class="num">[2]</span><span>Model manager</span><span class="dots">·······································</span><span class="desc">run models</span></a>
+        <a href="/local-rag/"><span class="num">[3]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs</span></a>
+        <a href="https://github.com/tobocop2/lilbee"><span class="num">[4]</span><span>GitHub</span><span class="dots">·······································</span><span class="desc">source</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[5]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">install</span></a>
+      </div>
+    </section>
+
+    <footer>
+      <div>
+<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|t|o|b|i|a|s|@|l|i|l|b|e|e|.|s|h|
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+</pre>
+      </div>
+      <div class="meta"><a href="https://github.com/tobocop2/lilbee">lilbee</a> &nbsp;.&nbsp; MIT License</div>
+    </footer>
+  </main>
+
+  <aside class="bee-art" aria-hidden="true"><pre>     %           %
+         %           %
+            %           %
+               %          %
+                 %          %
+                   %          %                   :::
+                    %          %                ::::::
+                 %%%%%%  %%%%%%%%%            ::::::::
+              %%%%%ZZZZ%%%%%%   %%%ZZZZ     ::::::::::         ::::::
+             %%%ZZZZZ%%%%%%%%%%%%%%ZZZZZZ  :::::::::::    :::::::::::::::::
+             ZZZ%ZZZ%%%%%%%%%%%%%%%ZZZZZZZ::::::::::***:::::::::::::::::::::
+          ZZZ%ZZZZZZ%%%%%%%%%%%%%%ZZZZZZZZZ::::::***:::::::::::::::::::::::
+        ZZZ%ZZZZZZZZZZ%%%%%%%%%%ZZZZZZ%ZZZZ:::***:::::::::::::::::::::::
+       ZZ%ZZZZZZZZZZZZZZZZZZZZZZZ%%%%% %ZZZ:**::::::::::::::::::::::
+      ZZ%ZZZZZZZZZZZZZZZZZZZ%%%%% | | %ZZZ *:::::::::::::::::::
+      Z%ZZZZZZZZZZZZZZZ%%%%%%%%%%%%%%%ZZZ::::::::::::::::::::::::::
+       ZZZZZZZZZZZ%%%%%ZZZZZZZZZZZZZZZZZ%%%%:::ZZZZ:::::::::::::::::
+         ZZZZ%%%%%ZZZZZZZZZZZZZZZZZZ%%%%%ZZZ%%ZZZ%ZZ%%*:::::::::::
+            ZZZZZZZZZZZZZZZZZZ%%%%%%%%%ZZZZZZZZZZ%ZZ%:::*:::::::
+            *:::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZZZZZZ%%%*::::*::::
+          *:::::::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZ%%      *:::Z
+         **:ZZZZ:::%%%%%%%%%%%%%%%%%%%%%%%%%%%ZZ      ZZZZZ
+        *:ZZZZZZZ       %%%%%%%%%%%%%%%%%%%%%ZZZZ    ZZZZZZZ
+       *::::ZZZZZZ         %%%%%%%%%%%%%%%ZZZZZZZ      ZZZ
+        *::ZZZZZZ           Z%%%%%%%%%%%ZZZZZZZ%%
+          ZZZZ              ZZZZZZZZZZZZZZZZ%%%%%
+                           %%%ZZZZZZZZZZZ%%%%%%%%
+                          Z%%%%%%%%%%%%%%%%%%%%%
+                          ZZ%%%%%%%%%%%%%%%%%%%
+                          %ZZZZZZZZZZZZZZZZZZZ
+                          %%ZZZZZZZZZZZZZZZZZ
+                           %%%%%%%%%%%%%%%%
+                            %%%%%%%%%%%%%
+                             %%%%%%%%%
+                              ZZZZ
+                              ZZZ
+                             ZZ
+                            Z</pre></aside>
+</div>
+</body>
+</html>
