@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import typer
+import yaml
 
-from lilbee.cli.agent_configs import litellm, opencode
+from lilbee.cli.agent_configs import hermes, litellm, opencode
 from lilbee.cli.app import apply_overrides, data_dir_option, global_option
 from lilbee.cli.launchers.server import (
     LOOPBACK,
@@ -36,8 +37,8 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
         raise typer.Exit(1)
     token, port = session
     extra = dict(kwargs)
-    if builder is opencode.opencode_config:
-        # Match `launch opencode`: pin the served model as default and pass the
+    if builder in (opencode.opencode_config, hermes.hermes_config):
+        # Match the launchers: pin the served model as default and pass the
         # context window, so the pasted config opens on a lilbee model and trims
         # history to the right limit.
         extra.setdefault("default_ref", str(cfg.chat_model))
@@ -54,6 +55,8 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
         # Use typer.echo (no Rich word-wrap) so YAML stays parseable when
         # piped to a file or wrapped in narrow test terminals.
         typer.echo(block, nl=False)
+    elif builder is hermes.hermes_config:
+        typer.echo(yaml.safe_dump(block, sort_keys=False), nl=False)
     else:
         typer.echo(json.dumps(block, indent=2))
 
@@ -66,6 +69,16 @@ def _opencode_cmd(
     """Print an opencode.json block (OpenAI-compatible provider + MCP server)."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _emit_block(opencode.opencode_config)
+
+
+@agent_config_app.command("hermes")
+def _hermes_cmd(
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Print a hermes config.yaml block (OpenAI-compatible provider + MCP server)."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    _emit_block(hermes.hermes_config)
 
 
 @agent_config_app.command("litellm")

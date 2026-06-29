@@ -7,20 +7,26 @@ import os
 import shutil
 import sys
 import tempfile
-from importlib import resources
 from pathlib import Path
 
 import typer
 
+from lilbee.cli.agent_configs import config_file
+from lilbee.cli.agent_configs.merge import deep_merge, prune_lilbee
 from lilbee.cli.agent_configs.opencode import opencode_config
-from lilbee.cli.launchers.launcher import run_launcher
+from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, served_chat_ctx
+from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
 _OPENCODE_INSTALL_HINT = "opencode binary not found on PATH. Install it from https://opencode.ai/."
-_SKILL_PACKAGE = "lilbee.skills.lilbee_mcp"
-_OPENCODE_CONFIG_ENV_VAR = "OPENCODE_CONFIG_CONTENT"
+_TOKEN_REF = "{env:" + LILBEE_TOKEN_ENV_VAR + "}"
 _SETUP_MARKER_NAME = "opencode-setup.json"
+_MCP_CONTAINER_KEY = "mcp"
+
+
+def _opencode_config_path() -> Path:
+    return Path.home() / ".config" / "opencode" / "opencode.json"
 
 
 def _opencode_skill_dest() -> Path:
@@ -55,11 +61,12 @@ def _record_setup() -> None:
 def _print_setup_plan() -> None:
     """Tell the user exactly which files the first-run setup writes."""
     typer.secho("First-time opencode setup will write:", fg=typer.colors.CYAN)
+    typer.echo(f"  - lilbee provider + MCP entry -> {_opencode_config_path()}")
     typer.echo(f"  - lilbee MCP skill -> {_opencode_skill_dest()}")
     typer.echo(
-        "The write is skipped if already present; everything else (provider, "
-        "MCP, model pin) is passed to opencode per session and persists nowhere. "
-        "To undo, delete the skill dir."
+        "Only the `lilbee` keys and the active model are written; your other "
+        "providers and settings are preserved. The token is referenced by env, "
+        "never written as a literal. To undo, remove the `lilbee` entries and the skill dir."
     )
 
 
@@ -88,31 +95,6 @@ def _confirm_setup(assume_yes: bool) -> bool:
     return True
 
 
-def _install_lilbee_skill() -> Path | None:
-    """Copy the bundled lilbee MCP skill into opencode's global skills dir.
-
-    Skip when the destination already exists so user customizations are
-    preserved. Returns the destination path on a fresh copy, else ``None``.
-    """
-    dest = _opencode_skill_dest()
-    if dest.exists():
-        return None
-    source = resources.files(_SKILL_PACKAGE)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # Build in a temp dir and atomically rename, so a failed/partial copy never
-    # leaves a half-written skill dir that exists() would then skip forever.
-    staging = Path(tempfile.mkdtemp(dir=dest.parent, prefix=".lilbee-mcp-"))
-    try:
-        for entry in source.iterdir():
-            if entry.is_file() and not entry.name.startswith("__"):
-                (staging / entry.name).write_bytes(entry.read_bytes())
-        os.replace(staging, dest)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    return dest
-
-
 class OpencodeLauncher:
     """``Launcher`` implementation for opencode (https://opencode.ai/)."""
 
@@ -131,22 +113,33 @@ class OpencodeLauncher:
     ) -> tuple[list[str], dict[str, str]]:
         if not _confirm_setup(self._assume_yes):
             raise typer.Exit(0)
-        # The lilbee-mcp guidance skill only helps when the MCP tool is wired in;
-        # skip it when MCP is disabled (a previously-installed skill is left alone).
-        if self._include_mcp:
-            _install_lilbee_skill()
-        # The block carries the session's ephemeral port and token; never persist
-        # it into user config.
+        # The token is referenced via {env:...}; opencode expands it at load, so the
+        # written config never holds the literal. The launcher sets it in the env.
         block = opencode_config(
             base_url=f"http://{LOOPBACK}:{port}",
-            api_key=token,
+            api_key=_TOKEN_REF,
             model_refs=model_refs,
             chat_ctx=served_chat_ctx(port),
             default_ref=str(cfg.chat_model),
             include_mcp=self._include_mcp,
         )
-        env = {**os.environ, _OPENCODE_CONFIG_ENV_VAR: json.dumps(block)}
-        return ([], env)
+        # Load (and validate) before any side effect, so a corrupt config aborts
+        # without writing or installing anything.
+        config = config_file.load_config_dict(
+            _opencode_config_path(),
+            parse=json.loads,
+            parse_error=json.JSONDecodeError,
+            label="opencode config (opencode.json)",
+        )
+        deep_merge(config, block)
+        if not self._include_mcp:
+            prune_lilbee(config, _MCP_CONTAINER_KEY)
+        config_file.atomic_write_text(_opencode_config_path(), json.dumps(config, indent=2))
+        # The lilbee-mcp guidance skill only helps when the MCP tool is wired in;
+        # skip it when MCP is disabled (a previously-installed skill is left alone).
+        if self._include_mcp:
+            install_bundled_skill(_opencode_skill_dest())
+        return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})
 
 
 def opencode_cmd(
