@@ -46,7 +46,8 @@ def mock_svc():
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
+def isolated_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
     snapshot = cfg.model_copy()
     cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
