@@ -89,6 +89,13 @@ if [[ "$BACKEND" == cu* ]] && ! ldconfig -p 2>/dev/null | grep -q 'libcudart\.so
   # on a pod there is no such boundary, so source it ourselves (nvcc on PATH) and
   # refresh the linker cache so the engine resolves libcudart at runtime.
   source /tmp/toolkit-env.sh
+  # The toolkit drops the runtime libs under /usr/local/cuda*/targets/.../lib but
+  # does not add that dir to the linker search path, so `ldconfig` alone never
+  # indexes libcudart.so.12 and a cached-engine boot dies with "cannot open
+  # libcudart.so.12". Register the dir in ld.so.conf so the engine resolves it
+  # system-wide (no per-process LD_LIBRARY_PATH needed).
+  CUDA_LIB_DIR=$(ls -d /usr/local/cuda*/targets/x86_64-linux/lib 2>/dev/null | head -1)
+  [ -n "$CUDA_LIB_DIR" ] && echo "$CUDA_LIB_DIR" > /etc/ld.so.conf.d/cuda-lilbee.conf
   ldconfig
 fi
 if [ ! -x "$ENGINE_CACHE/llama-server" ]; then

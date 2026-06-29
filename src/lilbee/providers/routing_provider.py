@@ -287,11 +287,6 @@ class RoutingProvider(LLMProvider):
         if self._local is not None:
             self._local.reload_role(role, wait=wait)
 
-    def release_ingest_pool(self) -> None:
-        """Forward to the native engine; the SDK side has no elastic ingest pool."""
-        if self._local is not None:
-            self._local.release_ingest_pool()
-
     def role_ready(self, role: WorkerRole) -> bool:
         """Native readiness without building; True when no local engine exists yet."""
         if self._local is None:

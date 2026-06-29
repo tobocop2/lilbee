@@ -747,7 +747,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.SYSTEM,
         help_text=(
-            "Inject lilbee's MCP search tool into agent launchers (e.g. `launch opencode`). "
+            "Register lilbee's MCP search tool into agent launchers (opencode, hermes). "
             "Disable to bring your own MCP servers; lilbee stays the model provider"
         ),
     ),

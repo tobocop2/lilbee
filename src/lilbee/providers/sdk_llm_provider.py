@@ -408,6 +408,3 @@ class SdkLLMProvider(LLMProvider):
 
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """No-op: cloud backends have no local model cache to evict."""
-
-    def release_ingest_pool(self) -> None:
-        """No-op: cloud backends have no elastic ingest pool to release."""

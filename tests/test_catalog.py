@@ -1014,7 +1014,7 @@ class TestSplitShardDownload:
         import huggingface_hub.constants as hc
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)  # lilbee's default
+        monkeypatch.setattr(hc, "HF_HUB_DISABLE_XET", True)  # a user who forced the HTTP path
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
 
@@ -1036,6 +1036,27 @@ class TestSplitShardDownload:
         assert calls["n"] == 2  # original attempt + xet retry
         assert disable_during_retry == [False]  # xet was on for the retry
         assert hc.HF_HUB_DISABLE_XET is True  # flag restored afterwards
+
+    def test_import_disables_xet_by_default(self) -> None:
+        """Importing lilbee disables xet by default so the download bar stays
+        smooth; the catalog re-enables it per-download for large files."""
+        import os
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k != "HF_HUB_DISABLE_XET"}
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, lilbee; print(os.environ.get('HF_HUB_DISABLE_XET'))",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        )
+        assert out.stdout.strip() == "1"
 
     def test_xet_flip_holds_lock_during_download(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1158,6 +1179,45 @@ class TestDownloadModel:
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
         result = download_model(entry)
         assert result.exists()
+
+    def test_large_model_uses_xet_small_uses_http(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Models over the size threshold fetch via xet (fast); smaller ones stay
+        on the HTTP path for its smooth progress bar."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "model.gguf")
+
+        xet_files: list[str] = []
+        http_files: list[str] = []
+
+        def fake_xet(config: Any) -> Path:
+            xet_files.append(config.filename)
+            return Path(_fake_download(repo_id=config.repo_id, cache_dir=config.cache_dir))
+
+        def fake_http(**kwargs: Any) -> str:
+            http_files.append(kwargs["filename"])
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr(catalog.download, "_download_with_xet", fake_xet)
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_http)
+
+        def _entry(size_gb: float) -> CatalogModel:
+            return CatalogModel(
+                hf_repo="org/Test-GGUF",
+                gguf_filename="model.gguf",
+                size_gb=size_gb,
+                min_ram_gb=1.0,
+                description="",
+                featured=False,
+                downloads=0,
+                task=ModelTask.CHAT,
+            )
+
+        download_model(_entry(20.0))  # large -> xet
+        download_model(_entry(1.0))  # small -> http
+        assert xet_files == ["model.gguf"]
+        assert http_files == ["model.gguf"]
 
     def test_calls_progress_callback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)

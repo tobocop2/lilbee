@@ -5,13 +5,12 @@ from __future__ import annotations
 import os
 import threading
 
-# Disable huggingface_hub's xet transfer layer before any HF submodule loads.
-# huggingface_hub.constants reads HF_HUB_DISABLE_XET at import time, so this
-# must run before the first `import huggingface_hub` anywhere in the process.
-# Workaround for HF issue #4058: xet-core reports progress in 3-4 coarse jumps
-# instead of continuously, making download bars appear stuck on large files.
-# Forcing the HTTP path restores smooth per-chunk tqdm updates. Users can still
-# opt back into xet by setting HF_HUB_DISABLE_XET=0 in their environment.
+# Disable huggingface_hub's xet transfer by default so the download bar stays
+# smooth: xet reports progress in a few coarse jumps (the bar looks stuck),
+# while the plain HTTP path with small chunks updates several times a second.
+# The catalog re-enables xet per-download for large files (catalog/download.py),
+# where xet's speed is worth the coarser bar. Set HF_HUB_DISABLE_XET=0 to force
+# xet for every download.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 # Suppress HF-default tqdm bars (metadata probes, snapshot summaries) that

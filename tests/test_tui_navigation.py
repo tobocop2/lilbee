@@ -102,6 +102,31 @@ async def test_bracket_keys_cycle_all_screens():
             )
 
 
+async def test_view_switch_guard_held_until_transition_completes():
+    """The switch guard stays up until Textual's deferred transition completes,
+    so a rapid second switch is dropped instead of re-entering switch_screen
+    mid-transition and crashing on an empty result-callback stack.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+
+        app.switch_view("Catalog")
+        # Guard is set synchronously; a re-entrant switch is dropped.
+        assert app._switching is True
+        app.switch_view("Settings")
+        assert app.active_view == "Catalog"
+
+        await pilot.pause()
+        # Guard releases only after the transition finishes; now the next
+        # switch is accepted.
+        assert app._switching is False
+        assert isinstance(app.screen, CatalogScreen)
+        app.switch_view("Settings")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
+
+
 async def test_bracket_keys_typed_literally_when_chat_input_focused():
     """Pressing [ or ] with the chat input focused must insert text, not switch screens."""
     app = LilbeeApp()

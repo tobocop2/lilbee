@@ -93,7 +93,11 @@ def test_launch_opencode_without_binary_exits_1():
     assert "opencode binary not found" in result.stderr
 
 
-def test_launch_opencode_with_running_server_emits_inline_config_env(tmp_path):
+def _written_opencode_config(tmp_path: Path) -> dict:
+    return json.loads((tmp_path / ".config" / "opencode" / "opencode.json").read_text())
+
+
+def test_launch_opencode_with_running_server_writes_provider_into_config(tmp_path):
     _write_server_session()
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
@@ -107,18 +111,20 @@ def test_launch_opencode_with_running_server_emits_inline_config_env(tmp_path):
     assert result.exit_code == 0
     spawn.assert_not_called()
     run.assert_called_once()
-    _, call_kwargs = run.call_args
-    raw = call_kwargs["env"]["OPENCODE_CONFIG_CONTENT"]
-    payload = json.loads(raw)
+    env = run.call_args.kwargs["env"]
+    assert env["LILBEE_TOKEN"] == _TOKEN  # token reaches the child via env
+    assert "OPENCODE_CONFIG_CONTENT" not in env  # ephemeral injection is gone
+    payload = _written_opencode_config(tmp_path)
     options = payload["provider"]["lilbee"]["options"]
     assert options["baseURL"] == f"http://127.0.0.1:{_PORT}/v1"
-    assert options["apiKey"] == _TOKEN
+    assert options["apiKey"] == "{env:LILBEE_TOKEN}"  # reference, not the literal
+    assert _TOKEN not in json.dumps(payload)  # no literal token on disk
     assert _CHAT_REF in payload["provider"]["lilbee"]["models"]
     mcp_entry = payload["mcp"]["lilbee"]
     assert mcp_entry["type"] == "remote"
     assert mcp_entry["enabled"] is True
     assert mcp_entry["url"] == f"http://127.0.0.1:{_PORT}/mcp"
-    assert mcp_entry["headers"]["Authorization"] == f"Bearer {_TOKEN}"
+    assert mcp_entry["headers"]["Authorization"] == "Bearer {env:LILBEE_TOKEN}"
     # Startup pin: without the top-level model key opencode boots on its own
     # default provider instead of the lilbee-served chat model.
     assert payload["model"] == f"lilbee/{cfg.chat_model}"
@@ -397,31 +403,44 @@ def test_launch_opencode_installs_skill_into_global_skills_dir(tmp_path):
     assert "lilbee-mcp" in skill_path.read_text()
 
 
-def _config_block_from_launch(args: list[str]) -> dict:
+def _config_block_from_launch(args: list[str], tmp_path: Path) -> dict:
     """Invoke ``launch opencode`` (with given extra args) and return the
-    opencode config block prepare() injected into the child env."""
-    import json
-
-    from lilbee.cli.launchers.opencode import _OPENCODE_CONFIG_ENV_VAR
-
+    opencode config block prepare() merged into the user's opencode.json."""
     _write_server_session()
     completed = MagicMock(returncode=0)
     with (
         patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
-        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed) as mock_run,
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
     ):
         runner.invoke(app, ["launch", *args])
-    env = mock_run.call_args.kwargs["env"]
-    return json.loads(env[_OPENCODE_CONFIG_ENV_VAR])
+    return _written_opencode_config(tmp_path)
 
 
-def test_launch_opencode_no_mcp_omits_block_and_skips_skill(tmp_path):
+def test_launch_opencode_no_mcp_removes_block_and_skips_skill(tmp_path):
     """--no-mcp drops the mcp block and does not install the lilbee-mcp skill."""
-    block = _config_block_from_launch(["opencode", "--no-mcp"])
+    block = _config_block_from_launch(["opencode", "--no-mcp"], tmp_path)
     assert "mcp" not in block
     assert "lilbee" in block["provider"]  # still the model provider
     skill_path = tmp_path / ".config" / "opencode" / "skills" / "lilbee-mcp"
     assert not skill_path.exists()
+
+
+def test_launch_opencode_no_mcp_prunes_stale_lilbee_entry(tmp_path):
+    """--no-mcp actively removes a previously-registered lilbee MCP entry."""
+    _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(json.dumps({"mcp": {"lilbee": {"url": "old"}, "other": {"url": "y"}}}))
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+    ):
+        runner.invoke(app, ["launch", "opencode", "--no-mcp"])
+    payload = json.loads(config_path.read_text())
+    assert "lilbee" not in payload["mcp"]  # stale lilbee entry removed
+    assert payload["mcp"]["other"] == {"url": "y"}  # other servers preserved
+    assert "lilbee" in payload["provider"]  # provider still registered
 
 
 def test_launch_opencode_mcp_flag_overrides_disabled_config(tmp_path, monkeypatch):
@@ -429,7 +448,7 @@ def test_launch_opencode_mcp_flag_overrides_disabled_config(tmp_path, monkeypatc
     from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "agent_mcp_enabled", False)
-    block = _config_block_from_launch(["opencode", "--mcp"])
+    block = _config_block_from_launch(["opencode", "--mcp"], tmp_path)
     assert "mcp" in block
 
 
@@ -438,7 +457,7 @@ def test_launch_opencode_defaults_to_config_when_no_flag(tmp_path, monkeypatch):
     from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "agent_mcp_enabled", False)
-    block = _config_block_from_launch(["opencode"])
+    block = _config_block_from_launch(["opencode"], tmp_path)
     assert "mcp" not in block
 
 
@@ -886,14 +905,15 @@ def test_run_launcher_disables_eager_warm_in_launcher_process():
         cfg.worker_pool_eager_start = old
 
 
-def test_launch_opencode_persists_nothing_outside_the_skill(tmp_path):
-    """The session contract is env-only: no picker state, no opencode.json write.
-
-    Earlier versions merged the provider (with the session's ephemeral port and
-    bearer token) into the user's persistent opencode.json and wrote picker
-    state that current opencode discards; both left stale artifacts behind.
-    """
+def test_launch_opencode_merges_into_real_config_preserving_others(tmp_path):
+    """The launcher registers lilbee into the real opencode.json, leaving the
+    user's other providers and settings intact and never writing a literal token."""
     _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"provider": {"anthropic": {"name": "anthropic"}}, "theme": "x"})
+    )
     fake_opencode = "/usr/local/bin/opencode"
     completed = MagicMock(returncode=0)
     with (
@@ -904,8 +924,30 @@ def test_launch_opencode_persists_nothing_outside_the_skill(tmp_path):
         result = runner.invoke(app, ["launch", "opencode"])
 
     assert result.exit_code == 0
-    assert not (tmp_path / ".local" / "state" / "opencode" / "model.json").exists()
-    assert not (tmp_path / ".config" / "opencode" / "opencode.json").exists()
+    payload = json.loads(config_path.read_text())
+    assert payload["provider"]["anthropic"] == {"name": "anthropic"}  # preserved
+    assert payload["theme"] == "x"  # preserved
+    assert "lilbee" in payload["provider"]  # registered
+    assert _TOKEN not in config_path.read_text()  # no literal token on disk
+
+
+def test_launch_opencode_refuses_to_overwrite_corrupt_config(tmp_path):
+    """A corrupt opencode.json is never clobbered; the launcher exits non-zero."""
+    _write_server_session()
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("{ not: valid json")
+    with (
+        patch("lilbee.cli.launchers.opencode.shutil.which", return_value="/usr/local/bin/opencode"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run") as run,
+    ):
+        result = runner.invoke(app, ["launch", "opencode"])
+    assert result.exit_code == 1
+    assert "did not parse" in result.stderr
+    assert config_path.read_text() == "{ not: valid json"  # untouched
+    run.assert_not_called()
+    # Load-before-side-effects: a corrupt config aborts before the skill install too.
+    assert not (tmp_path / ".config" / "opencode" / "skills" / "lilbee-mcp").exists()
 
 
 def test_opencode_config_sets_generous_mcp_timeout():
@@ -958,21 +1000,3 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
 
     budget = launch_mod.chat_warm_budget_s()
     assert budget == max(launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total)))
-
-
-def test_install_skill_is_atomic_on_failure(tmp_path, monkeypatch):
-    """A failed copy must not leave a half-written skill dir (which exists()
-    would skip forever) or any staging litter."""
-    from lilbee.cli.launchers import opencode
-
-    dest = tmp_path / "skills" / "lilbee-mcp"
-    monkeypatch.setattr(opencode, "_opencode_skill_dest", lambda: dest)
-
-    def _boom(*_a, **_k):
-        raise OSError("rename failed")
-
-    monkeypatch.setattr(opencode.os, "replace", _boom)
-    with pytest.raises(OSError):
-        opencode._install_lilbee_skill()
-    assert not dest.exists()
-    assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))

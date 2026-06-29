@@ -52,6 +52,21 @@ def test_gpu_device_count_floors_at_one_when_no_devices(monkeypatch) -> None:
     assert gpu_device_count() == 1
 
 
+def test_gpu_device_count_falls_back_when_engine_missing(monkeypatch) -> None:
+    """No engine binary resolves auto to one replica instead of raising, so the
+    ingest concurrency sizing degrades gracefully on an engine-less host."""
+    from lilbee.providers.base import ProviderError
+
+    gpu_device_count.cache_clear()
+
+    def _raise() -> object:
+        raise ProviderError("llama-server binary not found")
+
+    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_llama_server", _raise)
+    assert gpu_device_count() == 1
+    gpu_device_count.cache_clear()
+
+
 def test_gpu_device_count_is_cached(monkeypatch) -> None:
     gpu_device_count.cache_clear()
     calls = {"n": 0}

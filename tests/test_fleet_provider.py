@@ -746,6 +746,122 @@ def test_adopt_swap_records_elastic_members(monkeypatch) -> None:
     assert p._elastic_members == ["embed-1", "vision-1"]
 
 
+def test_pdf_ocr_ocrs_each_page_over_vision_server(monkeypatch) -> None:
+    from lilbee.runtime.progress import EventType
+    from lilbee.vision import PageText
+
+    client = _fake_client(0)
+    client.chat.side_effect = ["page one", "page two"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    monkeypatch.setattr(cfg, "vision_model", "")  # empty model arg -> configured
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)  # sequential: side_effect by call order
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
+    monkeypatch.setattr(
+        "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
+    )
+    events: list[tuple] = []
+    result = p.pdf_ocr(
+        Path("doc.pdf"),
+        backend="vision",  # type: ignore[arg-type]
+        on_progress=lambda etype, evt: events.append((etype, evt.page, evt.total_pages)),
+    )
+    assert result == [PageText(1, "page one"), PageText(2, "page two")]
+    assert events == [(EventType.EXTRACT, 1, 2), (EventType.EXTRACT, 2, 2)]
+
+
+def test_pdf_ocr_runs_pages_concurrently_and_preserves_order(monkeypatch) -> None:
+    # OCR fans pages across the vision server's batching slots; results must still
+    # come back in page order, and more than one page must be in flight at once.
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    # Auto replicas (vision_replicas left at its 0 default) resolves to one per
+    # GPU; pin the probe to a single GPU so the gate admits 1 x 4 = 4 in flight.
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
+    n = 8
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: n)
+    monkeypatch.setattr(
+        "lilbee.vision.rasterize_pdf", lambda _p: iter([(i, f"png{i}".encode()) for i in range(n)])
+    )
+    lock = threading.Lock()
+    inflight = {"now": 0, "max": 0}
+
+    def _vision(_client, _messages, _timeout):
+        with lock:
+            inflight["now"] += 1
+            inflight["max"] = max(inflight["max"], inflight["now"])
+        _time.sleep(0.02)
+        with lock:
+            inflight["now"] -= 1
+        return "ocr"
+
+    monkeypatch.setattr(prov_mod, "_vision_call", _vision)
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
+    result = p.pdf_ocr(Path("doc.pdf"), backend="vision")  # type: ignore[arg-type]
+    assert [pt.page for pt in result] == list(range(1, n + 1))  # reassembled in order
+    assert inflight["max"] >= 2  # pages ran concurrently, not one at a time
+
+
+def test_pdf_drain_budget_totals_pages_plus_load_grace(monkeypatch) -> None:
+    """Budget is one document-wide pool: pages*per_page + load grace, else uncapped."""
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 300.0)
+    assert prov_mod._pdf_drain_budget(2, 120.0) == 540.0
+    assert prov_mod._pdf_drain_budget(5, None) is None
+    assert prov_mod._pdf_drain_budget(5, 0.0) is None
+
+
+def test_pdf_ocr_spends_one_document_budget_across_pages(monkeypatch) -> None:
+    """Each page gets the remaining doc budget, not a fixed per-page cap."""
+    from lilbee.vision import PageText
+
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 300.0)
+    # Pin the device-count probe so _checkout() does not run a real subprocess
+    # and spend ~4s that would bleed into the budget timing assertion.
+    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
+    monkeypatch.setattr(
+        "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
+    )
+    seen: list[float | None] = []
+
+    def _capture(_client, _messages, timeout):
+        seen.append(timeout)
+        return "ocr"
+
+    monkeypatch.setattr(prov_mod, "_vision_call", _capture)
+    result = p.pdf_ocr(Path("doc.pdf"), backend="vision", per_page_timeout_s=120.0)  # type: ignore[arg-type]
+    assert result == [PageText(1, "ocr"), PageText(2, "ocr")]
+    # Budget is 2*120 + 300 = 540; pages run concurrently, so each draws nearly
+    # the full remaining budget (far above any 120 cap), in either capture order.
+    assert seen[0] == pytest.approx(540.0, abs=1.0)
+    assert seen[1] == pytest.approx(540.0, abs=1.0)
+    assert all(t is not None and t > 120.0 for t in seen)
+
+
+def test_pdf_ocr_without_per_page_timeout_runs_uncapped(monkeypatch) -> None:
+    """No per-page cap means an uncapped (None) budget on every page."""
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(0)]})
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 1)
+    monkeypatch.setattr("lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0")]))
+    seen: list[float | None] = []
+    monkeypatch.setattr(prov_mod, "_vision_call", lambda *a: seen.append(a[2]) or "ocr")
+    p.pdf_ocr(Path("doc.pdf"), backend="vision", per_page_timeout_s=None)  # type: ignore[arg-type]
+    assert seen == [None]
+
+
+def test_pdf_ocr_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError, match="No vision model server is running"):
+        p.pdf_ocr(Path("doc.pdf"), backend="vision")  # type: ignore[arg-type]
+
+
 # --- llama-swap lifecycle ----------------------------------------------------
 
 
