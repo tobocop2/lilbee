@@ -67,7 +67,9 @@ def chunk_text(
     if not text or not text.strip():
         return []
 
-    from xberg import ChunkingConfig, ExtractionConfig, extract_bytes_sync
+    from xberg import ChunkingConfig, ExtractionConfig
+
+    from lilbee.data.xberg_extract import extract_document
 
     if heading_context:
         max_chars, max_overlap = _char_budget()
@@ -81,7 +83,7 @@ def chunk_text(
         chunking = build_chunking_config(use_semantic=use_semantic)
 
     config = ExtractionConfig(chunking=chunking)
-    result = extract_bytes_sync(text.encode("utf-8"), mime_type, config=config)
-    if result.chunks:
-        return [c.content for c in result.chunks]
+    doc = extract_document(text.encode("utf-8"), mime_type, config=config)
+    if doc.chunks:
+        return [c.content for c in doc.chunks]
     return []

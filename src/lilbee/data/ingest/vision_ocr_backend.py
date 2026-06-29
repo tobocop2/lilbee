@@ -71,16 +71,16 @@ def ocr_request(
         ocr_requests.unregister(token)
 
 
-def backend_options_for(token: str) -> str:
-    """Serialize a request token into the OcrConfig.backend_options string."""
-    return json.dumps({_REQUEST_TOKEN_KEY: token})
+def backend_options_for(token: str) -> dict[str, str]:
+    """Carry a request token in OcrConfig.backend_options for process_image to read."""
+    return {_REQUEST_TOKEN_KEY: token}
 
 
 class _OcrConfigView:
     """Typed reader over the xberg OcrConfig object passed to process_image.
 
     xberg hands the callback a native OcrConfig (alef typed trait callbacks), so
-    its fields are read directly as attributes.
+    its fields are read directly as attributes; ``backend_options`` is a dict.
     """
 
     def __init__(self, config: OcrConfig) -> None:
@@ -92,13 +92,7 @@ class _OcrConfigView:
 
     @property
     def request_token(self) -> str | None:
-        raw = self._config.backend_options
-        if raw is None:
-            return None
-        try:
-            options = json.loads(raw)
-        except (ValueError, TypeError):
-            return None
+        options = self._config.backend_options
         token = options.get(_REQUEST_TOKEN_KEY) if isinstance(options, dict) else None
         return token if isinstance(token, str) else None
 
@@ -144,9 +138,12 @@ class VisionOcrBackend:
     def backend_type(self) -> str:
         return "custom"
 
-    def process_image(self, image_bytes: bytes, config: OcrConfig) -> dict[str, Any]:
-        # xberg passes the OcrConfig as a native object (alef typed trait
-        # callbacks); read the request token and prompt override off it.
+    def process_image(self, image_bytes: bytes, config: OcrConfig) -> ExtractedDocument:
+        # xberg passes the OcrConfig as a native object and expects a native
+        # ExtractedDocument back (alef typed trait callbacks); read the request
+        # token and prompt override off the config, return the OCR text as markdown.
+        from xberg import ExtractedDocument
+
         view = _OcrConfigView(config)
         model = self._model_ref_fn()
         prompt = view.vlm_prompt or resolve_ocr_prompt(model)
@@ -154,13 +151,4 @@ class VisionOcrBackend:
         text = self._ocr_fn(image_bytes, model, prompt, timeout=ctx.timeout if ctx else 0.0)
         if ctx is not None and ctx.on_page is not None:
             ctx.on_page()
-        # xberg deserializes this dict into its OCR result struct; all of these
-        # keys are required (xberg-1mc).
-        return {
-            "content": text,
-            "mime_type": MARKDOWN_MIME,
-            "metadata": {},
-            "tables": [],
-            "chunks": [],
-            "images": [],
-        }
+        return ExtractedDocument(content=text, mime_type=MARKDOWN_MIME)

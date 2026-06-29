@@ -32,11 +32,7 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from xberg import ExtractionConfig, OcrConfig
-
-    # extract_* return the pyo3 result (attribute access), not the public
-    # ExtractionResult TypedDict (xberg-7ih).
-    from xberg._xberg import ExtractionResult
+    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig
 
 log = logging.getLogger(__name__)
 
@@ -188,25 +184,25 @@ async def chunk_and_embed_pages(
 
 
 def _capture_result_page_texts(
-    result: ExtractionResult,
+    doc: ExtractedDocument,
     source_name: str,
     content_type: str,
     page_texts_out: list[PageTextRecord] | None,
 ) -> None:
     """Append an extraction's page texts to the export accumulator.
 
-    Paginated documents yield one row per ``result.pages`` entry; others have no
-    page split, so the full ``result.content`` is recorded as page 0.
+    Paginated documents yield one row per ``doc.pages`` entry; others have no
+    page split, so the full ``doc.content`` is recorded as page 0.
     """
     if page_texts_out is None:
         return
-    if result.pages:
+    if doc.pages:
         page_texts_out.extend(
             _page_text_record(source_name, page.page_number, page.content, content_type)
-            for page in result.pages
+            for page in doc.pages
         )
-    elif result.content.strip():
-        page_texts_out.append(_page_text_record(source_name, 0, result.content, content_type))
+    elif doc.content.strip():
+        page_texts_out.append(_page_text_record(source_name, 0, doc.content, content_type))
 
 
 def _warn_empty_ocr(source_name: str, media: str) -> None:
@@ -237,7 +233,7 @@ async def ingest_document(
     pipeline call compatibility.
     """
     del quiet
-    from xberg import extract_file
+    from lilbee.data.xberg_extract import aextract_document
 
     page_seen = 0
 
@@ -251,26 +247,26 @@ async def ingest_document(
 
     with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout()) as token:
         config = extraction_config(content_type_to_mode(content_type), ocr_token=token)
-        # Async keeps the OCR page loop off this event loop's thread.
-        result = await extract_file(str(path), config=config)
+        # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
+        doc = await aextract_document(path.read_bytes(), filename=path.name, config=config)
 
-    if not result.chunks:
+    if not doc.chunks:
         if content_type in (PDF_CONTENT_TYPE, IMAGE_CONTENT_TYPE):
             _warn_empty_ocr(source_name, "scanned documents")
         return []
 
-    _capture_result_page_texts(result, source_name, content_type, page_texts_out)
+    _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
     # One EXTRACT event per file so subscribers (chat /add, /sync, CLI Rich
     # progress) show "extracted N pages" before the embed phase; result.pages is
     # the canonical page list, falling back to the chunk count for non-paginated docs.
-    page_count = len(result.pages or []) or len(result.chunks or [])
+    page_count = len(doc.pages or []) or len(doc.chunks or [])
     on_progress(
         EventType.EXTRACT,
         ExtractEvent(file=source_name, page=page_count, total_pages=page_count),
     )
 
-    texts = [chunk.content for chunk in result.chunks]
+    texts = [chunk.content for chunk in doc.chunks]
     vectors = await asyncio.to_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
@@ -287,7 +283,7 @@ async def ingest_document(
             chunk_index=chunk.metadata.chunk_index,
             vector=vec,
         )
-        for chunk, text, vec in zip(result.chunks, texts, vectors, strict=True)
+        for chunk, text, vec in zip(doc.chunks, texts, vectors, strict=True)
     ]
 
 
