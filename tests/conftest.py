@@ -24,7 +24,6 @@ from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.core.config import cfg
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
-from lilbee.mcp_server import set_http_mounted as _mcp_preload  # noqa: F401
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -141,12 +140,21 @@ def _reset_services_after_test():
     would otherwise leak into the next test's ``get_services()`` call,
     producing confusing cross-test failures. Shutting the provider down
     drops any running fleet; mocks pass through the same path harmlessly.
+
+    ``lilbee.mcp_server`` is imported eagerly in the setup phase (before the
+    test body runs) so that the MCP library's ``FallbackProcess`` class body
+    -- which contains a ``subprocess.Popen[bytes]`` type annotation evaluated
+    at class-definition time -- is parsed while the real ``subprocess.Popen``
+    is still in place.  Tests that monkeypatch ``subprocess.Popen`` to a
+    lambda would otherwise cause a ``TypeError`` when teardown first imports
+    ``mcp_server`` and triggers that class body.
     """
+    from lilbee.mcp_server import set_http_mounted
+
     yield
     from contextlib import suppress
 
     from lilbee.app.services import peek_services, set_services
-    from lilbee.mcp_server import set_http_mounted
 
     svc = peek_services()
     if svc is not None:

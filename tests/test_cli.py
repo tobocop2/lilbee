@@ -1740,7 +1740,12 @@ class TestReset:
             result = runner.invoke(app, ["--json", "reset", "--yes"])
 
         assert result.exit_code == 0
-        data = json.loads(result.output.strip())
+        # Use result.stdout (not result.output) so the WARNING log that reset
+        # emits for each locked file does not pollute the JSON when a Rich log
+        # handler is active on the root logger (installed by FastMCP at import
+        # time of lilbee.mcp_server).  The JSON command output goes to stdout;
+        # the warning goes to stderr.
+        data = json.loads(result.stdout.strip())
         assert data["deleted_docs"] == 0
         assert len(data["skipped"]) == 1
         assert "locked.exe" in data["skipped"][0]
@@ -1757,7 +1762,7 @@ class TestReset:
             result = runner.invoke(app, ["--json", "reset", "--yes"])
 
         assert result.exit_code == 0
-        data = json.loads(result.output.strip())
+        data = json.loads(result.stdout.strip())
         assert data["deleted_docs"] == 0
         assert len(data["skipped"]) == 2
 
