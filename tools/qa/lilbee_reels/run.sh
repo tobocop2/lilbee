@@ -32,14 +32,41 @@ log "indexing lilbee source"
 # 3. Pre-seed opencode's global config: edit:allow (no human to approve the write
 #    in an automated reel) + no autoupdate. The launcher's non-destructive merge
 #    preserves these and adds the lilbee provider on top.
-mkdir -p "$HOME/.config/opencode"
+mkdir -p "$HOME/.config/opencode/themes"
+# opencode 1.17.1's built-in "rose-pine" renders a near-black panel; ship an
+# explicit rose-pine theme (purple #191724 base) so opencode matches the existing
+# rose-pine agent demos. Verified to render bg ~#191724 (vs the built-in #0a0a0a).
+cat > "$HOME/.config/opencode/themes/lilbee-rose-pine.json" <<'THEME'
+{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "base": "#191724", "surface": "#1f1d2e", "overlay": "#26233a",
+    "muted": "#6e6a86", "subtle": "#908caa", "text": "#e0def4",
+    "love": "#eb6f92", "gold": "#f6c177", "rose": "#ebbcba",
+    "pine": "#31748f", "foam": "#9ccfd8", "iris": "#c4a7e7", "highlightMed": "#403d52"
+  },
+  "theme": {
+    "primary": "iris", "secondary": "foam", "accent": "rose",
+    "error": "love", "warning": "gold", "success": "pine", "info": "foam",
+    "text": "text", "textMuted": "muted",
+    "background": "base", "backgroundPanel": "surface", "backgroundElement": "overlay",
+    "border": "highlightMed", "borderActive": "iris", "borderSubtle": "overlay",
+    "syntaxComment": "muted", "syntaxKeyword": "pine", "syntaxFunction": "rose",
+    "syntaxVariable": "text", "syntaxString": "gold", "syntaxNumber": "gold",
+    "syntaxType": "foam", "syntaxOperator": "subtle", "syntaxPunctuation": "subtle"
+  }
+}
+THEME
 cat > "$HOME/.config/opencode/opencode.json" <<'OC'
 { "$schema": "https://opencode.ai/config.json",
-  "theme": "rose-pine",
+  "theme": "lilbee-rose-pine",
   "permission": { "edit": "allow" },
   "tools": { "webfetch": false },
   "autoupdate": false }
 OC
+# opencode persists the active theme in a state db that overrides the config file;
+# clear it so the custom theme applies cleanly on this run.
+rm -f "$HOME/.local/share/opencode/opencode.db"* 2>/dev/null || true
 # Pre-accept the launcher's first-run consent at the EXACT cfg.data_dir (a shell
 # guess at the path misses it, and the prompt then eats the typed reel prompt).
 ( cd "$REPO" && LILBEE_DATA="$DATA" uv run python -c "
