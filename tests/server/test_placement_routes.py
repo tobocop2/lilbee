@@ -146,6 +146,100 @@ def test_put_refused_regardless_of_body():
         assert r.status_code == 409
 
 
+def _enable_http_placement(monkeypatch):
+    """Flip the allow_http_placement gate the routes read."""
+    from lilbee.server.routes import placement as placement_routes
+
+    monkeypatch.setattr(placement_routes.cfg, "allow_http_placement", True)
+
+
+def test_put_applies_when_enabled(monkeypatch):
+    """With the flag on, PUT applies the spec and returns the new placement."""
+    _enable_http_placement(monkeypatch)
+    captured = {}
+
+    async def _set(spec_json):
+        captured["json"] = spec_json
+        return _view(True)
+
+    monkeypatch.setattr(handlers, "placement_set", _set)
+    with create_test_client([placement_set_route]) as client:
+        r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
+        assert r.status_code == 200
+        assert r.json()["manual"] is True
+        assert '"chat"' in captured["json"]
+
+
+def test_put_missing_spec_returns_422_when_enabled(monkeypatch):
+    """With the flag on, PUT without a spec is a 422 (clear via DELETE for auto)."""
+    _enable_http_placement(monkeypatch)
+    with create_test_client([placement_set_route]) as client:
+        r = client.put("/api/placement", json={})
+        assert r.status_code == 422
+        assert "spec is required" in r.text
+
+
+def test_put_unfit_spec_returns_422_when_enabled(monkeypatch):
+    """An infeasible spec surfaces PlacementError as a 422 even with the flag on."""
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    _enable_http_placement(monkeypatch)
+
+    async def boom(spec_json):
+        raise PlacementError("chat needs 70 GiB but device 0 has 40 GiB free")
+
+    monkeypatch.setattr(handlers, "placement_set", boom)
+    with create_test_client([placement_set_route]) as client:
+        r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
+        assert r.status_code == 422
+        assert "40 GiB free" in r.text
+
+
+def test_put_provider_error_returns_503_when_enabled(monkeypatch):
+    """A provider failure while applying surfaces as a 503."""
+    from lilbee.providers.base import ProviderError
+
+    _enable_http_placement(monkeypatch)
+
+    async def boom(spec_json):
+        raise ProviderError("llama-server binary not found")
+
+    monkeypatch.setattr(handlers, "placement_set", boom)
+    with create_test_client([placement_set_route]) as client:
+        r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
+        assert r.status_code == 503
+        assert "llama-server" in r.text
+
+
+def test_delete_clears_when_enabled(monkeypatch):
+    """With the flag on, DELETE clears placement and returns the auto plan."""
+    _enable_http_placement(monkeypatch)
+
+    async def _clear():
+        return _view(False)
+
+    monkeypatch.setattr(handlers, "placement_clear", _clear)
+    with create_test_client([placement_clear_route]) as client:
+        r = client.delete("/api/placement")
+        assert r.status_code == 200
+        assert r.json()["manual"] is False
+
+
+def test_delete_provider_error_returns_503_when_enabled(monkeypatch):
+    """A provider failure while clearing surfaces as a 503."""
+    from lilbee.providers.base import ProviderError
+
+    _enable_http_placement(monkeypatch)
+
+    async def boom():
+        raise ProviderError("no engine")
+
+    monkeypatch.setattr(handlers, "placement_clear", boom)
+    with create_test_client([placement_clear_route]) as client:
+        r = client.delete("/api/placement")
+        assert r.status_code == 503
+
+
 def test_get_gpus(monkeypatch):
     from lilbee.server.models import GpuInfoResponse
 

@@ -1,10 +1,12 @@
-"""Placement routes: inspect and preview GPU placement.
+"""Placement routes: inspect, preview, and (when enabled) apply GPU placement.
 
 Every route requires auth: even the reads run resolve_placement_plan, which
-spawns subprocess device probes, so none are marked @read_only. Mutation
-(set/clear) is intentionally not served here: applying a placement rebuilds the
-shared fleet, which is unsafe on the always-concurrent HTTP daemon, so PUT/DELETE
-are refused and placement is changed from the CLI or TUI.
+spawns subprocess device probes, so none are marked @read_only. Applying or
+clearing placement rebuilds the shared fleet, which is unsafe across concurrent
+HTTP clients, so PUT/DELETE are refused by default. They are gated on the
+``allow_http_placement`` flag (LILBEE_ALLOW_HTTP_PLACEMENT), which an operator
+turns on for a single-client / owned deployment to get the same apply/clear
+capability the CLI and TUI have.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 from litestar import delete, get, post, put
 from litestar.exceptions import HTTPException
 
+from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
@@ -25,8 +28,11 @@ _HTTP_UNAVAILABLE = 503
 _INPUT_ERRORS = (PlacementError, ValueError, OSError)
 _REFUSED_DETAIL = (
     "Changing placement on the HTTP server is unavailable: it rebuilds the shared "
-    "fleet for every connected client. Change it from the CLI or TUI."
+    "fleet for every connected client. Enable allow_http_placement "
+    "(LILBEE_ALLOW_HTTP_PLACEMENT) on a single-client deployment, or change it "
+    "from the CLI or TUI."
 )
+_MISSING_SPEC_DETAIL = "spec is required to apply placement; send {} to DELETE for auto."
 
 
 def _spec_json(body: PlacementSpecBody) -> str | None:
@@ -59,15 +65,30 @@ async def placement_preview_route(data: PlacementSpecBody) -> PlacementResponse:
 
 
 @put("/api/placement")
-async def placement_set_route() -> PlacementResponse:
-    """Refused on the HTTP daemon: applying placement rebuilds the shared fleet."""
-    raise _refused()
+async def placement_set_route(data: PlacementSpecBody) -> PlacementResponse:
+    """Apply a manual spec. Refused unless allow_http_placement is enabled."""
+    if not cfg.allow_http_placement:
+        raise _refused()
+    spec_json = _spec_json(data)
+    if spec_json is None:
+        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=_MISSING_SPEC_DETAIL)
+    try:
+        return await handlers.placement_set(spec_json)
+    except ProviderError as exc:
+        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
+    except _INPUT_ERRORS as exc:
+        raise HTTPException(status_code=_HTTP_UNPROCESSABLE, detail=str(exc)) from exc
 
 
-@delete("/api/placement")
-async def placement_clear_route() -> None:
-    """Refused on the HTTP daemon: clearing placement rebuilds the shared fleet."""
-    raise _refused()
+@delete("/api/placement", status_code=200)
+async def placement_clear_route() -> PlacementResponse:
+    """Clear placement (back to auto). Refused unless allow_http_placement is enabled."""
+    if not cfg.allow_http_placement:
+        raise _refused()
+    try:
+        return await handlers.placement_clear()
+    except ProviderError as exc:
+        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @get("/api/gpus")
