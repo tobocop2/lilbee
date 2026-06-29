@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
-    from xberg import ExtractedDocument, ExtractionConfig, ExtractionResult
+    from xberg import ExtractedDocument, ExtractInput, ExtractionConfig, ExtractionResult
 
 
-def _input(data: bytes, mime_type: str | None, filename: str | None):
+def _input(data: bytes, mime_type: str | None, filename: str | None) -> ExtractInput:
     from xberg import ExtractInput, ExtractInputKind
 
     return ExtractInput(

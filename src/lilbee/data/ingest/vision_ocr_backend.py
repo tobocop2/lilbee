@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
 from contextlib import contextmanager
@@ -16,7 +15,7 @@ from lilbee.vision import resolve_ocr_prompt
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from xberg import OcrConfig
+    from xberg import ExtractedDocument, OcrConfig
 
 # Token key inside OcrConfig.backend_options JSON. xberg does not propagate
 # contextvars into process_image (xberg-4w9), so per-request state travels as

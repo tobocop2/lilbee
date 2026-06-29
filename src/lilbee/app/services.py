@@ -216,8 +216,10 @@ def sync_vision_ocr_backend(provider: LLMProvider) -> None:
         # Re-register so the backend always binds to the current provider.
         if registered:
             unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+        # xberg's OcrBackend Protocol lists file/document methods an image-only
+        # backend never needs; registration is duck-typed and validated at runtime.
         register_ocr_backend(
-            VisionOcrBackend(ocr_fn=provider.vision_ocr, model_ref_fn=lambda: cfg.vision_model)
+            VisionOcrBackend(ocr_fn=provider.vision_ocr, model_ref_fn=lambda: cfg.vision_model)  # type: ignore[arg-type]
         )
     elif registered:
         unregister_ocr_backend(OcrBackendName.LILBEE_VISION)

@@ -591,5 +591,5 @@ class TestChunkTextEmptyResult:
 
         mock_result = MagicMock()
         mock_result.chunks = []
-        with patch("xberg.extract_bytes_sync", return_value=mock_result):
+        with patch("lilbee.data.xberg_extract.extract_document", return_value=mock_result):
             assert chunk_text("some text") == []

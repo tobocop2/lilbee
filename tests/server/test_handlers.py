@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 from pathlib import Path
 from unittest import mock
-from unittest.mock import Mock
 
 import pytest
 from litestar.testing import AsyncTestClient
@@ -91,7 +90,11 @@ def _make_xberg_result(text: str = "Some extracted text. " * 20, num_chunks: int
     return result
 
 
-@mock.patch("xberg.extract_file_sync", new_callable=Mock, return_value=_make_xberg_result())
+@mock.patch(
+    "lilbee.data.xberg_extract.aextract_document",
+    new_callable=mock.AsyncMock,
+    return_value=_make_xberg_result(),
+)
 class TestAddEndpoint:
     async def test_add_single_file(self, mock_extract_file, isolated_env, tmp_path):
         """POST /api/add with a valid file streams SSE events and adds it."""
@@ -271,8 +274,8 @@ class TestAddValidation:
 
         paths = [f"/fake/file_{i}.txt" for i in range(MAX_ADD_FILES)]
         with mock.patch(
-            "xberg.extract_file_sync",
-            new_callable=Mock,
+            "lilbee.data.xberg_extract.aextract_document",
+            new_callable=mock.AsyncMock,
             return_value=_make_xberg_result(),
         ):
             async with AsyncTestClient(create_app()) as client:
@@ -537,8 +540,8 @@ class TestAddIngestMutex:
         assert lock is not None
         try:
             with mock.patch(
-                "xberg.extract_file_sync",
-                new_callable=Mock,
+                "lilbee.data.xberg_extract.aextract_document",
+                new_callable=mock.AsyncMock,
                 return_value=_make_xberg_result(),
             ):
                 events = await self._collect(add_files_stream([str(held), str(free)]))
@@ -567,8 +570,8 @@ class TestAddIngestMutex:
         async def _run(path: Path):
             text = ""
             with mock.patch(
-                "xberg.extract_file_sync",
-                new_callable=Mock,
+                "lilbee.data.xberg_extract.aextract_document",
+                new_callable=mock.AsyncMock,
                 return_value=_make_xberg_result(),
             ):
                 async for frame in add_files_stream([str(path)]):
@@ -652,8 +655,8 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "xberg.extract_file_sync",
-            new_callable=Mock,
+            "lilbee.data.xberg_extract.aextract_document",
+            new_callable=mock.AsyncMock,
             return_value=_make_xberg_result(),
         ):
             await sync(quiet=True)
@@ -676,8 +679,8 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "xberg.extract_file_sync",
-            new_callable=Mock,
+            "lilbee.data.xberg_extract.aextract_document",
+            new_callable=mock.AsyncMock,
             return_value=_make_xberg_result(),
         ):
             await sync(quiet=True)

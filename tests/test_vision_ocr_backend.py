@@ -71,17 +71,15 @@ class TestProtocol:
 
 
 class TestProcessImage:
-    def test_returns_full_required_schema(self):
+    def test_returns_extracted_document(self):
+        """xberg expects a native ExtractedDocument back, with the OCR text as markdown."""
+        from xberg import ExtractedDocument
+
         be, _ = _backend()
         out = be.process_image(b"PNG", _cfg())
-        assert out == {
-            "content": "# extracted",
-            "mime_type": MARKDOWN_MIME,
-            "metadata": {},
-            "tables": [],
-            "chunks": [],
-            "images": [],
-        }
+        assert isinstance(out, ExtractedDocument)
+        assert out.content == "# extracted"
+        assert out.mime_type == MARKDOWN_MIME
 
     def test_passes_model_and_resolved_prompt(self):
         be, calls = _backend(model="vendor/glm-ocr")

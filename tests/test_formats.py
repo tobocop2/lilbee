@@ -79,7 +79,7 @@ def _make_xberg_result(text="Extracted content. " * 10, num_chunks=1):
 
 
 @mock.patch(
-    "xberg.extract_file",
+    "lilbee.data.xberg_extract.aextract_document",
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
@@ -93,7 +93,7 @@ class TestSyncDocx:
 
 
 @mock.patch(
-    "xberg.extract_file",
+    "lilbee.data.xberg_extract.aextract_document",
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
@@ -107,7 +107,7 @@ class TestSyncXlsx:
 
 
 @mock.patch(
-    "xberg.extract_file",
+    "lilbee.data.xberg_extract.aextract_document",
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
@@ -126,7 +126,7 @@ class TestSyncPptx:
 
 
 @mock.patch(
-    "xberg.extract_file",
+    "lilbee.data.xberg_extract.aextract_document",
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
@@ -145,7 +145,7 @@ class TestSyncEpub:
 
 
 @mock.patch(
-    "xberg.extract_file",
+    "lilbee.data.xberg_extract.aextract_document",
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
@@ -224,7 +224,7 @@ class TestSyncCode:
 
 
 @mock.patch(
-    "xberg.extract_file",
+    "lilbee.data.xberg_extract.aextract_document",
     new_callable=mock.AsyncMock,
     return_value=_make_xberg_result(),
 )
