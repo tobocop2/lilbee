@@ -114,7 +114,7 @@ lilbee does all of it, in one install: it finds and runs the models for you, pro
 
 ## How lilbee compares
 
-lilbee is built for consumer hardware and for people who don't want to babysit infrastructure. One install gives you a model manager, a search engine over your files, a web crawler, and an MCP server for coding agents (with native [opencode](https://opencode.ai) and hermes support), all in a single executable. The goal is to make local AI something anyone can use to get the most out of the hardware they already own, not a setup reserved for people who enjoy wiring tools together.
+lilbee is built for consumer hardware and for people who don't want to babysit infrastructure. One install gives you a model manager, a search engine over your files, a web crawler, and an MCP server for coding agents (with native [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) support), all in a single executable. The goal is to make local AI something anyone can use to get the most out of the hardware they already own, not a setup reserved for people who enjoy wiring tools together.
 
 It isn't another model server you point an app at. It's a local search engine with the model runner built in, so it sits between two worlds: the desktop runners that get a model chatting on your machine, and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across every GPU in the machine, from one small file.
 
@@ -156,7 +156,7 @@ If you've already got an MCP-aware coding agent running, it can do the setup for
 
 ### Coding agents: opencode and hermes
 
-lilbee launches straight into [opencode](https://opencode.ai) and hermes with your local fleet wired in, so a coding agent runs entirely on your machine. It calls lilbee's tools to search your library, swap models, and tune retrieval, and answers from your own files with file:line citations. Tool-calling works across many GGUF families; [docs/opencode-models.md](docs/opencode-models.md) lists the verified models and how the QA harness measures them.
+lilbee launches straight into [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) with your local fleet wired in, so a coding agent runs entirely on your machine. It calls lilbee's tools to search your library, swap models, and tune retrieval, and answers from your own files with file:line citations. Tool-calling works across many GGUF families; [docs/opencode-models.md](docs/opencode-models.md) lists the verified models and how the QA harness measures them.
 
 ![opencode running a local model against lilbee's tools](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-reels/opencode.gif)
 
