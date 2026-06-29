@@ -180,3 +180,17 @@ def test_launch_hermes_env_upsert_preserves_other_lines(tmp_path):
     assert "OTHER=1" in env_text
     assert f"LILBEE_TOKEN={_TOKEN}" in env_text
     assert "LILBEE_TOKEN=stale" not in env_text
+
+
+def test_upsert_env_token_chmods_env_on_posix(tmp_path, monkeypatch):
+    """The token .env is chmod 0600 on posix. Force os.name so the chmod line is
+    covered on Windows runners too, where os.name is 'nt' and the branch is skipped."""
+    from lilbee.cli.launchers import hermes
+
+    monkeypatch.setattr(hermes.os, "name", "posix")
+    chmodded: list[int] = []
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: chmodded.append(mode))
+    env = tmp_path / ".env"
+    hermes._upsert_env_token(env, "tok-xyz")
+    assert 0o600 in chmodded
+    assert "LILBEE_TOKEN=tok-xyz" in env.read_text()
