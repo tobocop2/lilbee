@@ -308,8 +308,5 @@ class PlacementScreen(Screen[None]):
             call_from_thread(self, setattr, self, "applying", False)
 
     def action_go_back(self) -> None:
-        """Pop back to the previous screen."""
-        if len(self.app.screen_stack) > 1:
-            self.app.pop_screen()
-        else:
-            self.app.switch_view("Chat")
+        """Return to Chat via the guarded switch_view, the inverse of how Placement is entered."""
+        self.app.switch_view("Chat")

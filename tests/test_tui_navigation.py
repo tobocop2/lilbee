@@ -230,6 +230,50 @@ async def test_settings_escape_returns_to_chat():
         assert isinstance(app.screen, ChatScreen)
 
 
+async def test_placement_escape_returns_to_chat():
+    """Escape on Placement returns to Chat, not the bare default screen.
+
+    Placement is entered via switch_view (a switch_screen replace), so its back
+    action must use the inverse switch_view. A raw pop_screen would reveal
+    Textual's bare default screen instead of Chat.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.switch_view("Placement")
+        await pilot.pause()
+        assert isinstance(app.screen, PlacementScreen)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+
+
+async def test_rapid_placement_back_does_not_corrupt_screen_stack():
+    """Rapid back-to-back placement transitions must not crash or corrupt the
+    stack. A raw pop_screen on go_back let a second transition race in and pop
+    Textual's result-callback stack while empty (IndexError, bb-ce4)."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        for _ in range(5):
+            app.switch_view("Placement")
+            await pilot.pause()
+            placement = app.screen
+            if not isinstance(placement, PlacementScreen):
+                continue
+            # Two back actions fired before the first transition settles: the
+            # guard must drop the second instead of underflowing the stack.
+            placement.action_go_back()
+            placement.action_go_back()
+            await pilot.pause()
+        # No IndexError raised; we are back on Chat. Asserting on Textual's
+        # private _result_callbacks is intentional: this regression is about that
+        # internal stack underflowing, and one entry confirms it never did.
+        assert isinstance(app.screen, ChatScreen)
+        assert len(app.screen._result_callbacks) == 1
+
+
 async def test_slash_catalog_routes_through_switch_view_under_lilbee_app():
     """/models from Chat under LilbeeApp must use switch_view, not push_screen."""
     app = LilbeeApp()
