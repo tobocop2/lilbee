@@ -24,6 +24,7 @@ from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.core.config import cfg
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
+from lilbee.mcp_server import set_http_mounted as _mcp_preload  # noqa: F401
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

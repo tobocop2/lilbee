@@ -44,11 +44,15 @@ def _fake_engine(tmp_path: Path, *, make_files: bool) -> SimpleNamespace:
 def test_resolves_bundled_tool_when_present(
     tool: EngineTool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Ensure the configured llama_server_path override does not mask the bundled binary.
+    cfg.llama_server_path = ""
     monkeypatch.setitem(sys.modules, "lilbee_engine", _fake_engine(tmp_path, make_files=True))
     assert resolve_engine_tool(tool) == tmp_path / tool.value
 
 
 def test_thin_wrappers_resolve_their_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ensure the configured llama_server_path override does not mask the bundled binary.
+    cfg.llama_server_path = ""
     monkeypatch.setitem(sys.modules, "lilbee_engine", _fake_engine(tmp_path, make_files=True))
     assert resolve_llama_server() == tmp_path / "llama-server"
     assert resolve_llama_swap() == tmp_path / "llama-swap"

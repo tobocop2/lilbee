@@ -423,7 +423,11 @@ class FleetProvider:
             # so the cards are actually free for this fleet (and the context sizer
             # reads true free VRAM).
             swap.reap_stale()
-            launches = planning.plan_all_launches()
+            try:
+                launches = planning.plan_all_launches()
+            except ProviderError:
+                log.debug("Engine binary unavailable; no swap started")
+                return None
             if not launches:
                 return None  # no installed/configured model -> serve nothing, spawn nothing
             swap.start(launches)
