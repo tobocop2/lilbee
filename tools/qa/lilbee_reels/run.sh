@@ -103,7 +103,7 @@ Output opencode.mp4
 Set Shell bash
 Set Width 1400
 Set Height 900
-Set FontSize 14
+Set FontSize 18
 Set Padding 20
 Set Theme "rose-pine"
 Set Margin 30

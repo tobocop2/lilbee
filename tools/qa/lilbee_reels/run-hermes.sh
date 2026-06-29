@@ -42,12 +42,48 @@ log "hermes TUI deps ready"
 # 2. Pre-seed ~/.hermes so the launcher's non-destructive merge adds lilbee on top
 #    and hermes opens straight to the TUI (no setup wizard). Mark onboarding seen.
 mkdir -p "$HOME/.hermes"
-# skin: mono inherits the terminal palette (rose-pine via VHS) instead of
-# painting slate's hardcoded blue, so the TUI reads rose-pine end to end.
+# Custom rose-pine skin: the bordered response box + colored tool names give the
+# same visual structure opencode has (mono is monochrome, so the structure blends
+# into a flat, hard-to-follow stream). Foreground is rose-pine; the bg stays the
+# rose-pine VHS terminal, so the whole TUI reads rose-pine and legible.
+mkdir -p "$HOME/.hermes/skins"
+cat > "$HOME/.hermes/skins/lilbee-rose-pine.yaml" <<'SKIN'
+name: lilbee-rose-pine
+description: lilbee rose-pine
+colors:
+  banner_border: "#c4a7e7"
+  banner_title: "#f6c177"
+  banner_accent: "#ebbcba"
+  banner_dim: "#6e6a86"
+  banner_text: "#e0def4"
+  ui_accent: "#c4a7e7"
+  ui_label: "#9ccfd8"
+  ui_ok: "#9ccfd8"
+  ui_error: "#eb6f92"
+  ui_warn: "#f6c177"
+  prompt: "#e0def4"
+  input_rule: "#c4a7e7"
+  response_border: "#c4a7e7"
+  status_bar_bg: "#1f1d2e"
+  status_bar_text: "#e0def4"
+  status_bar_strong: "#c4a7e7"
+  status_bar_dim: "#6e6a86"
+  status_bar_good: "#9ccfd8"
+  status_bar_warn: "#f6c177"
+  status_bar_bad: "#eb6f92"
+  status_bar_critical: "#eb6f92"
+  session_label: "#9ccfd8"
+  session_border: "#403d52"
+branding:
+  agent_name: "Hermes Agent"
+  response_label: " ⚕ Hermes "
+  prompt_symbol: "❯"
+tool_prefix: "┊"
+SKIN
 cat > "$HOME/.hermes/config.yaml" <<'HCFG'
 display:
   interface: tui
-  skin: mono
+  skin: lilbee-rose-pine
 onboarding:
   seen:
     welcome: true
@@ -78,7 +114,7 @@ Output hermes.mp4
 Set Shell bash
 Set Width 1400
 Set Height 900
-Set FontSize 14
+Set FontSize 18
 Set Padding 20
 Set Theme "rose-pine"
 Set Margin 30
