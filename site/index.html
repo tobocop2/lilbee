@@ -58,6 +58,32 @@
 }
 </script>
 
+<!-- WebSite JSON-LD: names the site for search engines. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": "lilbee",
+  "url": "https://lilbee.sh/",
+  "description": "A local AI search engine that runs the models and searches your files, code, and the web, with answers that cite the source."
+}
+</script>
+
+<!-- FAQPage JSON-LD: the questions people ask before they install. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "What is lilbee?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee is a local AI search engine. It runs the models, indexes your files, code, and crawled web pages, and answers your questions in plain English with a citation to the exact source. It is one program, with no separate model server or vector database to set up." } },
+    { "@type": "Question", "name": "Is it really one program?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee. You install one thing and reach it as a terminal app, a command-line tool, an MCP server, a web API, or a Python library." } },
+    { "@type": "Question", "name": "Is lilbee a model manager? Do I need Ollama or LM Studio?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, or CUDA, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead." } },
+    { "@type": "Question", "name": "Does my data leave my machine?", "acceptedAnswer": { "@type": "Answer", "text": "No. Your files stay on disk and search runs locally. lilbee uses a cloud model only when you pick one." } },
+    { "@type": "Question", "name": "What can I search?", "acceptedAnswer": { "@type": "Answer", "text": "Files and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types." } }
+  ]
+}
+</script>
+
 <link rel="stylesheet" href="style.css?v=20260515a">
 <script src="main.js?v=20260515a" defer></script>
 </head>
@@ -519,6 +545,27 @@
     <section>
       <h2 class="label">a note on answers</h2>
       <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults, but exposes <strong>50+ settings</strong> you can tune: search, the answers, how your files get read.</p>
+    </section>
+
+    <section>
+      <h2 class="label">use it for</h2>
+      <div class="links">
+        <a href="local-rag/"><span class="num">[1]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs, cited</span></a>
+        <a href="code-search/"><span class="num">[2]</span><span>Code search</span><span class="dots">·······································</span><span class="desc">ask your codebase</span></a>
+        <a href="mcp/"><span class="num">[3]</span><span>MCP server</span><span class="dots">·······································</span><span class="desc">for your agent</span></a>
+        <a href="gpu/"><span class="num">[4]</span><span>Will it fit your GPU</span><span class="dots">·······································</span><span class="desc">vram, multi-gpu</span></a>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>What is lilbee?</summary><p>lilbee is a local AI search engine. It runs the models, indexes your files, code, and crawled web pages, and answers your questions in plain English with a citation to the exact source. It is one program, with no separate model server or vector database to set up.</p></details>
+        <details><summary>Is it really one program?</summary><p>Yes. The model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee. You install one thing and reach it as a terminal app, a command-line tool, an MCP server, a web API, or a Python library.</p></details>
+        <details><summary>Is lilbee a model manager? Do I need Ollama or LM Studio?</summary><p>lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, or CUDA, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead.</p></details>
+        <details><summary>Does my data leave my machine?</summary><p>No. Your files stay on disk and search runs locally. lilbee uses a cloud model only when you pick one.</p></details>
+        <details><summary>What can I search?</summary><p>Files and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types.</p></details>
+      </div>
     </section>
 
     <section>

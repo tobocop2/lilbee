@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G8F65BKGRJ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-G8F65BKGRJ');
+</script>
+
+<title>An MCP server that gives your agent local search | lilbee</title>
+<meta name="description" content="lilbee is a Model Context Protocol (MCP) server for local search. Point your coding agent at it and it reads your real code and docs before answering, with file and line citations. Self-hosted retrieval, nothing leaves your machine.">
+<link rel="canonical" href="https://lilbee.sh/mcp/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lilbee">
+<meta property="og:title" content="An MCP server that gives your agent local search | lilbee">
+<meta property="og:description" content="A Model Context Protocol server for local search: your coding agent reads your real code and docs before answering, and cites the file and line. Self-hosted, nothing leaves your machine.">
+<meta property="og:url" content="https://lilbee.sh/mcp/">
+<meta property="og:image" content="https://lilbee.sh/social-card.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="a coding agent querying lilbee's MCP server and getting a cited answer from local code">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="An MCP server that gives your agent local search | lilbee">
+<meta name="twitter:description" content="A Model Context Protocol server for local search: your coding agent reads your real code and docs before answering, and cites the file and line. Self-hosted.">
+<meta name="twitter:image" content="https://lilbee.sh/social-card.png">
+<meta name="twitter:image:alt" content="a coding agent querying lilbee's MCP server and getting a cited answer from local code">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "lilbee", "item": "https://lilbee.sh/" },
+    { "@type": "ListItem", "position": 2, "name": "MCP server", "item": "https://lilbee.sh/mcp/" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "What is the lilbee MCP server?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee runs as a Model Context Protocol server, so any MCP-aware coding agent can search your local files and code through it. The agent reads the real source before it answers and cites the file and line." } },
+    { "@type": "Question", "name": "Which agents work with it?", "acceptedAnswer": { "@type": "Answer", "text": "Any MCP-aware coding agent. lilbee exposes standard MCP tools, so you add it the same way you add any other MCP server in your agent's configuration." } },
+    { "@type": "Question", "name": "What tools does it expose?", "acceptedAnswer": { "@type": "Answer", "text": "Search, add files, sync the index, crawl a web page, manage per-project libraries, build a wiki over a library, and export or import a dataset." } },
+    { "@type": "Question", "name": "Does my code leave my machine?", "acceptedAnswer": { "@type": "Answer", "text": "No. Indexing and retrieval run locally. lilbee uses a cloud model only if you pick one; the search itself stays on your machine." } },
+    { "@type": "Question", "name": "Can lilbee run the models too?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. lilbee has its own model manager and runs models on your GPU, or it works with your existing Ollama or LM Studio setup." } }
+  ]
+}
+</script>
+
+<link rel="stylesheet" href="../style.css?v=20260515a">
+<script src="../main.js?v=20260515a" defer></script>
+</head>
+<body>
+<div class="layout">
+  <main class="main">
+
+    <div class="topstrip">
+      <div><a class="badge" href="/">lilbee</a> <span>MCP server</span></div>
+      <div>
+        <span class="pill">model context protocol</span>
+        <span class="pill">cited</span>
+        <span class="pill">self-hosted</span>
+      </div>
+    </div>
+
+    <p class="crumb"><a href="/">lilbee</a> / MCP server</p>
+
+    <section class="hero">
+<pre class="wordmark" aria-hidden="true">888 d8b 888 888
+888 Y8P 888 888
+888     888 888
+888 888 888 88888b.  .d88b.  .d88b.
+888 888 888 888 "88bd8P  Y8bd8P  Y8b
+888 888 888 888  88888888888888888888
+888 888 888 888 d88PY8b.    Y8b.
+888 888 888 88888P"  "Y8888  "Y8888</pre>
+      <h1 class="tagline">An <strong>MCP server</strong> that gives your coding agent local search. Point your agent at lilbee and it reads your real code and docs before it answers, with file and line citations.</h1>
+      <p class="sub">lilbee speaks the Model Context Protocol, so any MCP-aware agent can search the files and code on your own machine. Retrieval stays local; nothing is shipped to a cloud service to answer.</p>
+    </section>
+
+    <section>
+      <h2 class="label">why retrieval before the answer</h2>
+      <p class="lede">An agent that guesses from memory is confident and wrong. With lilbee in the loop, the agent retrieves the relevant passages from your indexed code and docs first, answers from what it actually found, and cites the file and line so you can check it. When there is no good match, it says so instead of inventing one.</p>
+    </section>
+
+    <section>
+      <h2 class="label">what the server gives the agent</h2>
+      <div class="caps">
+        <div class="cap">
+          <h3>search</h3>
+          <p>Ranked retrieval over a project library, the same pipeline the terminal app uses, returned in a shape an agent can act on.</p>
+        </div>
+        <div class="cap">
+          <h3>add &amp; sync</h3>
+          <p>The agent can pull a file or folder into a library and keep the index current, so what it searches matches what is on disk.</p>
+        </div>
+        <div class="cap">
+          <h3>crawl</h3>
+          <p>Fetch a web page or a docs site into the library as markdown, then search it offline alongside your local files.</p>
+        </div>
+        <div class="cap">
+          <h3>wiki &amp; datasets</h3>
+          <p>Build a wiki over a library, and export or import a library as a dataset to move it between machines.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">it runs the models too</h2>
+      <p class="lede">lilbee is not only the retrieval layer. It downloads and runs the models itself on Metal, Vulkan, or CUDA, so one program covers both the search and the model behind it. Already running Ollama or LM Studio? Point lilbee at your setup and keep it.</p>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>What is the lilbee MCP server?</summary><p>lilbee runs as a Model Context Protocol server, so any MCP-aware coding agent can search your local files and code through it. The agent reads the real source before it answers and cites the file and line.</p></details>
+        <details><summary>Which agents work with it?</summary><p>Any MCP-aware coding agent. lilbee exposes standard MCP tools, so you add it the same way you add any other MCP server in your agent's configuration.</p></details>
+        <details><summary>What tools does it expose?</summary><p>Search, add files, sync the index, crawl a web page, manage per-project libraries, build a wiki over a library, and export or import a dataset.</p></details>
+        <details><summary>Does my code leave my machine?</summary><p>No. Indexing and retrieval run locally. lilbee uses a cloud model only if you pick one; the search itself stays on your machine.</p></details>
+        <details><summary>Can lilbee run the models too?</summary><p>Yes. It has its own model manager and runs models on your GPU, or it works with your existing Ollama or LM Studio setup.</p></details>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">go deeper</h2>
+      <div class="links">
+        <a href="/"><span class="num">[1]</span><span>lilbee</span><span class="dots">·······································</span><span class="desc">home</span></a>
+        <a href="/code-search/"><span class="num">[2]</span><span>Code search</span><span class="dots">·······································</span><span class="desc">file:line</span></a>
+        <a href="/local-rag/"><span class="num">[3]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs</span></a>
+        <a href="https://github.com/tobocop2/lilbee#agent-integration"><span class="num">[4]</span><span>Agent setup</span><span class="dots">·······································</span><span class="desc">mcp / cli</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[5]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">install</span></a>
+      </div>
+    </section>
+
+    <footer>
+      <div>
+<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|t|o|b|i|a|s|@|l|i|l|b|e|e|.|s|h|
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+</pre>
+      </div>
+      <div class="meta"><a href="https://github.com/tobocop2/lilbee">lilbee</a> &nbsp;.&nbsp; Elastic License 2.0</div>
+    </footer>
+  </main>
+
+  <aside class="bee-art" aria-hidden="true"><pre>     %           %
+         %           %
+            %           %
+               %          %
+                 %          %
+                   %          %                   :::
+                    %          %                ::::::
+                 %%%%%%  %%%%%%%%%            ::::::::
+              %%%%%ZZZZ%%%%%%   %%%ZZZZ     ::::::::::         ::::::
+             %%%ZZZZZ%%%%%%%%%%%%%%ZZZZZZ  :::::::::::    :::::::::::::::::
+             ZZZ%ZZZ%%%%%%%%%%%%%%%ZZZZZZZ::::::::::***:::::::::::::::::::::
+          ZZZ%ZZZZZZ%%%%%%%%%%%%%%ZZZZZZZZZ::::::***:::::::::::::::::::::::
+        ZZZ%ZZZZZZZZZZ%%%%%%%%%%ZZZZZZ%ZZZZ:::***:::::::::::::::::::::::
+       ZZ%ZZZZZZZZZZZZZZZZZZZZZZZ%%%%% %ZZZ:**::::::::::::::::::::::
+      ZZ%ZZZZZZZZZZZZZZZZZZZ%%%%% | | %ZZZ *:::::::::::::::::::
+      Z%ZZZZZZZZZZZZZZZ%%%%%%%%%%%%%%%ZZZ::::::::::::::::::::::::::
+       ZZZZZZZZZZZ%%%%%ZZZZZZZZZZZZZZZZZ%%%%:::ZZZZ:::::::::::::::::
+         ZZZZ%%%%%ZZZZZZZZZZZZZZZZZZ%%%%%ZZZ%%ZZZ%ZZ%%*:::::::::::
+            ZZZZZZZZZZZZZZZZZZ%%%%%%%%%ZZZZZZZZZZ%ZZ%:::*:::::::
+            *:::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZZZZZZ%%%*::::*::::
+          *:::::::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZ%%      *:::Z
+         **:ZZZZ:::%%%%%%%%%%%%%%%%%%%%%%%%%%%ZZ      ZZZZZ
+        *:ZZZZZZZ       %%%%%%%%%%%%%%%%%%%%%ZZZZ    ZZZZZZZ
+       *::::ZZZZZZ         %%%%%%%%%%%%%%%ZZZZZZZ      ZZZ
+        *::ZZZZZZ           Z%%%%%%%%%%%ZZZZZZZ%%
+          ZZZZ              ZZZZZZZZZZZZZZZZ%%%%%
+                           %%%ZZZZZZZZZZZ%%%%%%%%
+                          Z%%%%%%%%%%%%%%%%%%%%%
+                          ZZ%%%%%%%%%%%%%%%%%%%
+                          %ZZZZZZZZZZZZZZZZZZZ
+                          %%ZZZZZZZZZZZZZZZZZ
+                           %%%%%%%%%%%%%%%%
+                            %%%%%%%%%%%%%
+                             %%%%%%%%%
+                              ZZZZ
+                              ZZZ
+                             ZZ
+                            Z</pre></aside>
+</div>
+</body>
+</html>

@@ -7,13 +7,13 @@ license = "Elastic-2.0"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
-    "rag", "local-llm", "local-ai",
-    "mcp", "mcp-server",
+    "rag", "local-rag", "local-llm", "local-ai",
+    "mcp", "mcp-server", "model-context-protocol",
     "semantic-search", "vector-search", "retrieval",
     "embeddings", "knowledge-base", "knowledge-management",
     "huggingface", "ocr", "web-crawler",
-    "model-manager", "llama-cpp", "gguf", "ollama", "lm-studio",
-    "second-brain", "personal-ai", "self-hosted", "privacy", "cli", "tui",
+    "model-manager", "llama-cpp", "gguf", "multi-gpu", "ollama", "lm-studio",
+    "obsidian", "second-brain", "personal-ai", "self-hosted", "privacy", "cli", "tui",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

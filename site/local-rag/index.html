@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G8F65BKGRJ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-G8F65BKGRJ');
+</script>
+
+<title>Local RAG: cited answers from your own documents | lilbee</title>
+<meta name="description" content="lilbee is a local RAG engine: it indexes your files, code, PDFs, and crawled pages, then answers in plain English with a citation to the exact source. Runs on your machine, no cloud, no separate vector database.">
+<link rel="canonical" href="https://lilbee.sh/local-rag/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lilbee">
+<meta property="og:title" content="Local RAG: cited answers from your own documents | lilbee">
+<meta property="og:description" content="A local RAG engine in one program: index your files, code, PDFs, and crawled pages, then ask in plain English and get answers that cite the source. No cloud, no separate vector database.">
+<meta property="og:url" content="https://lilbee.sh/local-rag/">
+<meta property="og:image" content="https://lilbee.sh/social-card.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="lilbee answering a question from your own documents with a cited source, shown in the terminal UI">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Local RAG: cited answers from your own documents | lilbee">
+<meta name="twitter:description" content="A local RAG engine in one program: index your files, code, PDFs, and crawled pages, then ask and get answers that cite the source. No cloud, no separate vector database.">
+<meta name="twitter:image" content="https://lilbee.sh/social-card.png">
+<meta name="twitter:image:alt" content="lilbee answering from your own documents with a cited source, shown in the terminal UI">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "lilbee", "item": "https://lilbee.sh/" },
+    { "@type": "ListItem", "position": 2, "name": "Local RAG", "item": "https://lilbee.sh/local-rag/" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "What is local RAG?", "acceptedAnswer": { "@type": "Answer", "text": "Local RAG (retrieval-augmented generation) means the model reads your own documents before it answers, and all of it runs on your own machine. lilbee indexes your files, finds the passages that answer your question, and writes a reply that cites them, with no data sent to a cloud service." } },
+    { "@type": "Question", "name": "Does lilbee need a separate vector database?", "acceptedAnswer": { "@type": "Answer", "text": "No. The vector index (LanceDB) runs inside lilbee, so there is no database server to stand up or keep alive. It is one program." } },
+    { "@type": "Question", "name": "Can it run fully offline?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. lilbee downloads and runs local models, so once your models are in place it answers with no internet connection. A cloud model is used only if you pick one." } },
+    { "@type": "Question", "name": "What can it index?", "acceptedAnswer": { "@type": "Answer", "text": "Text and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types in all." } },
+    { "@type": "Question", "name": "Do I have to use lilbee's own models?", "acceptedAnswer": { "@type": "Answer", "text": "No. lilbee has its own model manager, but it also works with your existing Ollama or LM Studio setup, or a cloud model when you want one." } }
+  ]
+}
+</script>
+
+<link rel="stylesheet" href="../style.css?v=20260515a">
+<script src="../main.js?v=20260515a" defer></script>
+</head>
+<body>
+<div class="layout">
+  <main class="main">
+
+    <div class="topstrip">
+      <div><a class="badge" href="/">lilbee</a> <span>local RAG</span></div>
+      <div>
+        <span class="pill">local-first</span>
+        <span class="pill">cited answers</span>
+        <span class="pill">no vector DB</span>
+      </div>
+    </div>
+
+    <p class="crumb"><a href="/">lilbee</a> / local RAG</p>
+
+    <section class="hero">
+<pre class="wordmark" aria-hidden="true">888 d8b 888 888
+888 Y8P 888 888
+888     888 888
+888 888 888 88888b.  .d88b.  .d88b.
+888 888 888 888 "88bd8P  Y8bd8P  Y8b
+888 888 888 888  88888888888888888888
+888 888 888 888 d88PY8b.    Y8b.
+888 888 888 88888P"  "Y8888  "Y8888</pre>
+      <h1 class="tagline"><strong>Local RAG</strong>: cited answers from your own documents, fully offline. lilbee indexes your files, code, and PDFs, then answers in plain English with a link to the exact source.</h1>
+      <p class="sub">Retrieval-augmented generation that runs on your own machine. It is one program: the model runtime and the search index live inside it, so there is no model server and no vector database to stand up.</p>
+    </section>
+
+    <section>
+      <h2 class="label">what local RAG means here</h2>
+      <p class="lede">Point lilbee at a folder and it builds a real retrieval pipeline over it: your documents are chunked, embedded, and ranked by how well they answer the question you asked. The best passage comes back first, and the answer cites the file and line it came from, so you can check it. When lilbee does not find a good match, it says so instead of guessing.</p>
+    </section>
+
+    <section>
+      <h2 class="label">one program, not a stack</h2>
+      <p class="lede">The usual local-RAG setup is a model server, a vector database, glue code to connect them, and an app on top. lilbee folds all of that into a single program. The model runtime is llama.cpp and the index is LanceDB, both running inside lilbee. You install one thing, point it at your files, and ask.</p>
+      <div class="caps">
+        <div class="cap">
+          <h3>chunked so it makes sense</h3>
+          <p>Prose and code are chunked differently, so each piece keeps its meaning instead of being cut mid-thought. A retrieval pipeline is only as good as the chunks underneath it.</p>
+        </div>
+        <div class="cap">
+          <h3>every answer is sourced</h3>
+          <p>Replies carry citations back to the file and line, and a scoped library per project keeps one domain from bleeding into another.</p>
+        </div>
+        <div class="cap">
+          <h3>more than text</h3>
+          <p>PDFs, office files, ebooks, and scanned images go through extraction and OCR, and whole websites can be crawled to markdown and searched offline.</p>
+        </div>
+        <div class="cap">
+          <h3>tune it when you want</h3>
+          <p>Sane defaults out of the install, with 50+ settings for search depth, reranking, and how your files are read once you want to push quality further.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">bring your own models</h2>
+      <p class="lede">lilbee has its own model manager that browses Hugging Face, downloads a model, and runs it on Metal, Vulkan, or CUDA. If you already run Ollama or LM Studio, point lilbee at your setup instead. A cloud model is there when you want one, and never used unless you pick it.</p>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>What is local RAG?</summary><p>Local RAG means the model reads your own documents before it answers, and all of it runs on your own machine. lilbee finds the passages that answer your question and writes a reply that cites them, with nothing sent to a cloud service.</p></details>
+        <details><summary>Does lilbee need a separate vector database?</summary><p>No. The vector index (LanceDB) runs inside lilbee, so there is no database server to stand up or keep alive.</p></details>
+        <details><summary>Can it run fully offline?</summary><p>Yes. lilbee downloads and runs local models, so once your models are in place it answers with no internet connection. A cloud model is used only if you pick one.</p></details>
+        <details><summary>What can it index?</summary><p>Text and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types.</p></details>
+        <details><summary>Do I have to use lilbee's own models?</summary><p>No. It works with its own model manager, or your existing Ollama or LM Studio setup, or a cloud model when you want one.</p></details>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">go deeper</h2>
+      <div class="links">
+        <a href="/"><span class="num">[1]</span><span>lilbee</span><span class="dots">·······································</span><span class="desc">home</span></a>
+        <a href="/code-search/"><span class="num">[2]</span><span>Code search</span><span class="dots">·······································</span><span class="desc">file:line</span></a>
+        <a href="/mcp/"><span class="num">[3]</span><span>MCP server</span><span class="dots">·······································</span><span class="desc">for agents</span></a>
+        <a href="https://github.com/tobocop2/lilbee"><span class="num">[4]</span><span>GitHub</span><span class="dots">·······································</span><span class="desc">source</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[5]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">install</span></a>
+      </div>
+    </section>
+
+    <footer>
+      <div>
+<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|t|o|b|i|a|s|@|l|i|l|b|e|e|.|s|h|
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+</pre>
+      </div>
+      <div class="meta"><a href="https://github.com/tobocop2/lilbee">lilbee</a> &nbsp;.&nbsp; Elastic License 2.0</div>
+    </footer>
+  </main>
+
+  <aside class="bee-art" aria-hidden="true"><pre>     %           %
+         %           %
+            %           %
+               %          %
+                 %          %
+                   %          %                   :::
+                    %          %                ::::::
+                 %%%%%%  %%%%%%%%%            ::::::::
+              %%%%%ZZZZ%%%%%%   %%%ZZZZ     ::::::::::         ::::::
+             %%%ZZZZZ%%%%%%%%%%%%%%ZZZZZZ  :::::::::::    :::::::::::::::::
+             ZZZ%ZZZ%%%%%%%%%%%%%%%ZZZZZZZ::::::::::***:::::::::::::::::::::
+          ZZZ%ZZZZZZ%%%%%%%%%%%%%%ZZZZZZZZZ::::::***:::::::::::::::::::::::
+        ZZZ%ZZZZZZZZZZ%%%%%%%%%%ZZZZZZ%ZZZZ:::***:::::::::::::::::::::::
+       ZZ%ZZZZZZZZZZZZZZZZZZZZZZZ%%%%% %ZZZ:**::::::::::::::::::::::
+      ZZ%ZZZZZZZZZZZZZZZZZZZ%%%%% | | %ZZZ *:::::::::::::::::::
+      Z%ZZZZZZZZZZZZZZZ%%%%%%%%%%%%%%%ZZZ::::::::::::::::::::::::::
+       ZZZZZZZZZZZ%%%%%ZZZZZZZZZZZZZZZZZ%%%%:::ZZZZ:::::::::::::::::
+         ZZZZ%%%%%ZZZZZZZZZZZZZZZZZZ%%%%%ZZZ%%ZZZ%ZZ%%*:::::::::::
+            ZZZZZZZZZZZZZZZZZZ%%%%%%%%%ZZZZZZZZZZ%ZZ%:::*:::::::
+            *:::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZZZZZZ%%%*::::*::::
+          *:::::::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZ%%      *:::Z
+         **:ZZZZ:::%%%%%%%%%%%%%%%%%%%%%%%%%%%ZZ      ZZZZZ
+        *:ZZZZZZZ       %%%%%%%%%%%%%%%%%%%%%ZZZZ    ZZZZZZZ
+       *::::ZZZZZZ         %%%%%%%%%%%%%%%ZZZZZZZ      ZZZ
+        *::ZZZZZZ           Z%%%%%%%%%%%ZZZZZZZ%%
+          ZZZZ              ZZZZZZZZZZZZZZZZ%%%%%
+                           %%%ZZZZZZZZZZZ%%%%%%%%
+                          Z%%%%%%%%%%%%%%%%%%%%%
+                          ZZ%%%%%%%%%%%%%%%%%%%
+                          %ZZZZZZZZZZZZZZZZZZZ
+                          %%ZZZZZZZZZZZZZZZZZ
+                           %%%%%%%%%%%%%%%%
+                            %%%%%%%%%%%%%
+                             %%%%%%%%%
+                              ZZZZ
+                              ZZZ
+                             ZZ
+                            Z</pre></aside>
+</div>
+</body>
+</html>
