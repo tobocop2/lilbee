@@ -123,17 +123,17 @@ It isn't another model server you point an app at. It's a local search engine wi
 
 | | lilbee | [LM Studio](https://lmstudio.ai/) | [Ollama](https://ollama.com/) | [vLLM](https://github.com/vllm-project/vllm) |
 |---|---|---|---|---|
-| **Primary focus** | search engine over your files | desktop app to run and chat with models | simple local model runner | high-throughput GPU serving |
+| **Primary focus** | search engine over your files | desktop app to run and chat with models | local model runner with a growing ecosystem | high-throughput GPU serving |
 | Runs local models | ✓ | ✓ | ✓ | ✓ |
-| Search your own files, with citations | ✓ full RAG pipeline | attach a few docs per chat | drag files into a chat | — |
+| Search your own files, with citations | ✓ full RAG pipeline | per-session doc attachment (RAG, no citations) | — | — |
 | Chat, embedding, vision, rerank as one managed fleet | ✓ | — | — | — |
-| Multi-GPU model placement | ✓ VRAM-aware tensor-split | basic split | ✓ auto layer-split | ✓ tensor + pipeline parallel |
+| Multi-GPU model placement | ✓ VRAM-aware tensor-split | ✓ GPU selection + tensor parallelism (CUDA) | ✓ auto layer-split | ✓ tensor + pipeline parallel |
 | Scales the whole stack, not just one model | ✓ per-GPU replicas + load-balancing router | — | — | one model per server |
 | Built for many-user throughput at scale | single-user focus | — | limited | ✓ this is its job |
 | Web crawler built in | ✓ | — | — | — |
 | Long-term memory (opt-in) | ✓ | — | — | — |
-| Single-file footprint, GPU build (excludes models) | ✓ ~675 MB, whole stack | Electron app + per-backend runtimes | ~1.3 GB, runner only | multi-GB Python + CUDA stack |
-| Interfaces | TUI, CLI, MCP, REST, Python, Obsidian GUI | desktop GUI, API | CLI, GUI, API | API server |
+| Single-file footprint, GPU build (excludes models) | ✓ ~675 MB, whole stack | desktop app + llama.cpp/MLX runtimes | ~1.3 GB, runner only | multi-GB Python + CUDA stack |
+| Interfaces | TUI, CLI, MCP, REST, Python, Obsidian GUI | desktop GUI, lms CLI, Python + TS SDKs, REST API, MCP client | desktop GUI, CLI, REST API, Python/JS libs | API server |
 | Use your existing Ollama / LM Studio / cloud as a backend | ✓ | — | — | — |
 
 </details>
