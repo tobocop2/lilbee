@@ -78,17 +78,16 @@ async def test_ctrl_g_does_not_stack_second_fleet_modal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fleet_modal_shows_gpu_table(monkeypatch):
-    """FleetModal mounts FleetBody which renders the GPU DataTable."""
-    from textual.widgets import DataTable
-
+async def test_fleet_modal_shows_fleet_panel(monkeypatch):
+    """FleetModal mounts FleetBody which renders the live GPU table (one row per GPU)."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.cli.tui.widgets import gpu_fleet_panel as gfp
-    from lilbee.cli.tui.widgets.fleet_body import _GPU_TABLE_ID
     from lilbee.cli.tui.widgets.fleet_modal import FleetModal
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel, GpuStat
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
-    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: {})
+    stats = {i: GpuStat(i, 50, 10 * 1024**3, 47 * 1024**3) for i in range(2)}
+    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: stats)
 
     app = LilbeeTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
@@ -96,8 +95,11 @@ async def test_fleet_modal_shows_gpu_table(monkeypatch):
         await pilot.press("ctrl+g")
         await pilot.pause()
         assert isinstance(app.screen, FleetModal)
-        table = app.screen.query_one(_GPU_TABLE_ID, DataTable)
-        assert table.row_count == 2
+        panel = app.screen.query_one(GpuFleetPanel)
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert str(panel.render()).count("CUDA") == 2
 
 
 @pytest.mark.asyncio

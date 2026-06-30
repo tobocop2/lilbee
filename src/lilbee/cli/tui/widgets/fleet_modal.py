@@ -15,7 +15,7 @@ class FleetModal(ModalScreen[None]):
     """GPU fleet panel as a modal overlay, dismissed with Escape."""
 
     CSS_PATH = "fleet_modal.tcss"
-    AUTO_FOCUS = "#placement-gpus"
+    AUTO_FOCUS = ".dev-toggle"
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False),

@@ -47,18 +47,11 @@ _TICK_INTERVAL_S = 1.0
 
 _GIB = 1024**3
 
-# Column labels
-_LABEL_UTIL = "util"
-_LABEL_VRAM = "vram"
-
 # Displayed when no GPU info is available
 _EMPTY_TEXT = "(no GPUs detected)"
 
 # Shown as the util reading when utilization_pct is None
 _UTIL_DASH = " -- "
-
-# Blank separator line between GPU card blocks
-_ROW_GAP = ""
 
 # Rich color used when a theme token is absent (renders in terminal default)
 _COLOR_FALLBACK = "default"
@@ -99,72 +92,59 @@ def _badge_role_markup(badge: str, secondary: str, muted: str) -> str:
     return f"[{secondary}]{badge}[/]"
 
 
-def _render_stats(
-    stats: dict[int, GpuStat],
-    labels: dict[int, str],
-    roles: dict[int, str],
+def _render_row(
+    s: GpuStat,
+    label: str,
+    badge: str,
     theme: dict[str, str],
 ) -> str:
-    """Build the Rich markup string for all GPUs from a stat snapshot."""
+    """Render one GPU as a single table row: bullet, label, util bar, vram bar, badge."""
     muted = _theme_color(theme, "text-muted")
-
-    if not stats:
-        return f"[{muted}]  {_EMPTY_TEXT}[/]"
-
     secondary = _theme_color(theme, "secondary")
     foreground = _theme_color(theme, "foreground")
     panel_color = _theme_color(theme, "panel")
     primary = _theme_color(theme, "primary")
     error = _theme_color(theme, "error")
 
-    lines: list[str] = []
-    sorted_indices = sorted(stats)
-    for card_n, idx in enumerate(sorted_indices):
-        s = stats[idx]
-        label = labels.get(idx, f"GPU{idx}")
-        role = roles.get(idx, "")
-        used_bytes = s.total_bytes - s.free_bytes
-        vram_frac = used_bytes / s.total_bytes if s.total_bytes else 0.0
-        used_gib = used_bytes / _GIB
-        total_gib = s.total_bytes / _GIB
-        vram_color = error if vram_frac >= _VRAM_HIGH else primary
+    used_bytes = s.total_bytes - s.free_bytes
+    vram_frac = used_bytes / s.total_bytes if s.total_bytes else 0.0
+    used_gib = used_bytes / _GIB
+    total_gib = s.total_bytes / _GIB
+    vram_color = error if vram_frac >= _VRAM_HIGH else primary
 
-        # Heat bullet color
-        if s.utilization_pct is not None:
-            dot_color = _heat_color(s.utilization_pct, theme)
-        else:
-            dot_color = muted
+    if s.utilization_pct is not None:
+        heat = _heat_color(s.utilization_pct, theme)
+        dot_color = heat
+        util_bar = _bar(s.utilization_pct / 100, _BAR_WIDTH, heat, panel_color)
+        util_pct = f"[{heat}]{s.utilization_pct:>3}%[/]"
+    else:
+        dot_color = muted
+        util_bar = f"[{panel_color}]{_BAR_TRACK * _BAR_WIDTH}[/]"
+        util_pct = f"[{muted}]{_UTIL_DASH}[/]"
 
-        # Badge line: [heat]●[/] [bold]CUDAi[/]  [secondary]role[/][muted] - model[/]
-        if role:
-            role_markup = _badge_role_markup(role, secondary, muted)
-            badge = f"  [{dot_color}]{_BULLET}[/] [bold {foreground}]{label}[/]  {role_markup}"
-        else:
-            badge = f"  [{dot_color}]{_BULLET}[/] [bold {foreground}]{label}[/]"
-        lines.append(badge)
+    vram_bar = _bar(vram_frac, _BAR_WIDTH, vram_color, panel_color)
+    vram_txt = f"[{muted}]{used_gib:>5.1f}/{total_gib:>2.0f}G[/]"
+    badge_txt = f"  {_badge_role_markup(badge, secondary, muted)}" if badge else ""
+    return (
+        f"  [{dot_color}]{_BULLET}[/] [bold {foreground}]{label:<6}[/]"
+        f" {util_bar} {util_pct}  {vram_bar} {vram_txt}{badge_txt}"
+    )
 
-        # Utilization bar
-        if s.utilization_pct is not None:
-            heat = _heat_color(s.utilization_pct, theme)
-            util_bar = _bar(s.utilization_pct / 100, _BAR_WIDTH, heat, panel_color)
-            util_pct = f"[{heat}]{s.utilization_pct:>3}%[/]"
-        else:
-            util_bar = f"[{panel_color}]{_BAR_TRACK * _BAR_WIDTH}[/]"
-            util_pct = f"[{muted}]{_UTIL_DASH}[/]"
-        lines.append(f"     [{muted}]{_LABEL_UTIL}[/]  {util_bar} {util_pct}")
 
-        # VRAM bar
-        vram_bar = _bar(vram_frac, _BAR_WIDTH, vram_color, panel_color)
-        lines.append(
-            f"     [{muted}]{_LABEL_VRAM}[/]  {vram_bar}"
-            f" [{muted}]{used_gib:>4.1f}/{total_gib:>2.0f}G[/]"
-        )
-
-        # Blank separator between cards (not after the last one)
-        if card_n < len(sorted_indices) - 1:
-            lines.append(_ROW_GAP)
-
-    return "\n".join(lines)
+def _render_stats(
+    stats: dict[int, GpuStat],
+    labels: dict[int, str],
+    roles: dict[int, str],
+    theme: dict[str, str],
+) -> str:
+    """Build the unified GPU table (one row per GPU) from a stat snapshot."""
+    if not stats:
+        muted = _theme_color(theme, "text-muted")
+        return f"[{muted}]  {_EMPTY_TEXT}[/]"
+    return "\n".join(
+        _render_row(stats[idx], labels.get(idx, f"GPU{idx}"), roles.get(idx, ""), theme)
+        for idx in sorted(stats)
+    )
 
 
 class GpuFleetPanel(Static):

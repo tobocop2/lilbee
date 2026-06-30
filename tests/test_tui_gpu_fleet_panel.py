@@ -306,10 +306,10 @@ async def test_fleet_screen_passes_devices_to_panel(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_panel_renders_role_badge_and_separated_cards(
+async def test_panel_renders_role_badge_one_row_per_gpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each card shows its role badge and is separated from the next by a blank line."""
+    """Each GPU renders as a single table row carrying its role badge."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as pm
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 
@@ -330,8 +330,10 @@ async def test_panel_renders_role_badge_and_separated_cards(
         r = str(p.render())
         assert "chat - Qwen3-235B" in r  # badge present
         assert r.count("CUDA") == 2  # both cards
-        # a blank separator line exists between the two card blocks
-        assert "\n\n" in r
+        # one row per GPU: exactly two non-blank lines, no blank separators
+        lines = [ln for ln in r.split("\n") if ln.strip()]
+        assert len(lines) == 2
+        assert "\n\n" not in r
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Button, DataTable, Label, Static
+from textual.widgets import Button, Label, Static
 
 from lilbee.app.placement import get_placement, preview_placement, set_placement
 from lilbee.cli.tui.thread_safe import call_from_thread
@@ -53,13 +53,11 @@ def _clean_model_name(ref: str) -> str:
 
 _CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 
-_GPU_TABLE_ID = "#placement-gpus"
 _EDITOR_ID = "#placement-editor"
 _GENERATED_ID = "#placement-generated"
 _TITLE_ID = "#placement-title"
 _FLEET_PANEL_ID = "#gpu-fleet-panel"
 
-_GIB = 1024**3
 # Only these roles run multiple replicas; the others always serve one instance.
 _REPLICA_ROLES = (WorkerRole.EMBED, WorkerRole.VISION)
 _HINT = (
@@ -77,13 +75,8 @@ class _RoleEdit:
     replicas: int
 
 
-def _fmt_gib(n: int) -> str:
-    """Format bytes as a GiB string."""
-    return f"{n / _GIB:.1f} GiB"
-
-
 class FleetBody(Widget):
-    """GPU table, live fleet panel, and interactive placement editor."""
+    """Live fleet GPU table and interactive placement editor."""
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
@@ -93,7 +86,6 @@ class FleetBody(Widget):
         super().__init__(id="fleet-body")
         self._edits: dict[WorkerRole, _RoleEdit] = {}
         self._device_indices: tuple[int, ...] = ()
-        self._gpu_meta: list[tuple[int, str, str, int, int]] = []
         self._view_manual = False
 
     def watch_applying(self, applying: bool) -> None:
@@ -102,20 +94,14 @@ class FleetBody(Widget):
             self.query_one(_EDITOR_ID, Vertical).disabled = applying
 
     def compose(self) -> ComposeResult:
-        table: DataTable[str] = DataTable(id="placement-gpus")
-        table.cursor_type = "row"
-
         with Vertical(id="placement-layout"):
             yield Static("", id="placement-title")
-            yield table
             yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
             yield Static("", id="placement-generated")
             yield Static(_HINT, id="placement-hint")
 
     def on_mount(self) -> None:
-        table = self.query_one(_GPU_TABLE_ID, DataTable)
-        table.add_columns("GPU", "Name", "Free", "Total", "Roles")
         self._load_placement()
 
     def _load_placement(self) -> None:
@@ -131,17 +117,13 @@ class FleetBody(Widget):
     # -- rendering -------------------------------------------------------
 
     def _render_view(self, view: PlacementView) -> None:
-        """Reset the widget (title, table, editor) from a resolved placement view."""
+        """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
-        self._gpu_meta = [
-            (g.index, g.label, g.name, g.free_bytes, g.total_bytes) for g in view.gpus
-        ]
         self._edits = {
             r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles
         }
         self._build_editor()
-        self._refresh_table()
         self._refresh_title(dirty=False)
         self._refresh_generated()
         self._update_fleet_panel(view)
@@ -168,24 +150,6 @@ class FleetBody(Widget):
             rows.append(Horizontal(*children, classes="role-row"))
         if rows:
             container.mount(*rows)
-
-    def _refresh_table(self) -> None:
-        """Repaint the GPU table's Roles column from the current editor state."""
-        placed: dict[int, list[str]] = {}
-        for edit in self._edits.values():
-            for idx in edit.devices:
-                placed.setdefault(idx, []).append(edit.role.value)
-        table = self.query_one(_GPU_TABLE_ID, DataTable)
-        table.clear()
-        for idx, label, name, free, total in self._gpu_meta:
-            table.add_row(
-                label,
-                name,
-                _fmt_gib(free),
-                _fmt_gib(total),
-                ", ".join(placed.get(idx, [])) or "-",
-                key=str(idx),
-            )
 
     def _refresh_title(self, *, dirty: bool) -> None:
         if dirty:
@@ -256,7 +220,6 @@ class FleetBody(Widget):
             self.query_one(f"#repn-{role.value}", Label).update(f"x{edit.replicas}")
         else:
             return
-        self._refresh_table()
         self._refresh_title(dirty=True)
         self._refresh_generated()
 

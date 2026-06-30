@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-from textual.widgets import Button, DataTable, Static
+from textual.widgets import Button, Static
 
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -72,26 +72,31 @@ async def test_fleet_view_shows_live_rows_with_role_badges(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_screen_lists_gpus_with_roles(monkeypatch):
-    """GPU table renders one row per GPU and shows which role sits on each card."""
+    """The live GPU table renders one row per GPU and shows each card's role."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets import gpu_fleet_panel as gfp
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel, GpuStat
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    stats = {i: GpuStat(i, None, 10 * GIB, 47 * GIB) for i in range(4)}
+    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: stats)
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        from lilbee.cli.tui.widgets.fleet_body import _GPU_TABLE_ID
-
-        table = app.screen.query_one(_GPU_TABLE_ID, DataTable)
-        assert table.row_count == 4
-        # row 0 (CUDA0) Roles cell == "embed", row 1 (CUDA1) == "chat"
-        assert table.get_row_at(0)[4] == "embed"
-        assert table.get_row_at(1)[4] == "chat"
+        panel = app.screen.query_one(GpuFleetPanel)
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = str(panel.render())
+        assert rendered.count("CUDA") == 4  # one row per GPU
+        assert "embed" in rendered  # CUDA0's role
+        assert "chat" in rendered  # CUDA1's role
 
 
 @pytest.mark.asyncio
-async def test_toggle_device_updates_spec_and_table(monkeypatch):
-    """Clicking a GPU toggle for a role updates the spec and the table live."""
+async def test_toggle_device_updates_spec(monkeypatch):
+    """Clicking a GPU toggle for a role updates the generated spec live."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
@@ -102,10 +107,6 @@ async def test_toggle_device_updates_spec_and_table(monkeypatch):
         await pilot.click("#dev-embed-2")  # add CUDA2 to embed
         await pilot.pause()
         assert '"embed": {"devices": [0, 2]}' in _generated(app)
-        from lilbee.cli.tui.widgets.fleet_body import _GPU_TABLE_ID
-
-        table = app.screen.query_one(_GPU_TABLE_ID, DataTable)
-        assert table.get_row_at(2)[4] == "embed"
 
 
 @pytest.mark.asyncio

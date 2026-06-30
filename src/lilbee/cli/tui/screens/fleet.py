@@ -20,7 +20,7 @@ class FleetScreen(Screen[None]):
     app: LilbeeApp  # type: ignore[assignment]
 
     CSS_PATH = "fleet.tcss"
-    AUTO_FOCUS = "#placement-gpus"
+    AUTO_FOCUS = ".dev-toggle"
     HELP = "Configure GPU placement. ctrl+r preview, ctrl+s apply, ctrl+x auto, q back."
 
     BINDINGS: ClassVar[list[BindingType]] = [

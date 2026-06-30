@@ -10,13 +10,6 @@ FleetBody {
         margin-bottom: 1;
     }
 
-    #placement-gpus {
-        height: auto;
-        max-height: 12;
-        border: solid $surface-lighten-2;
-        margin-bottom: 1;
-    }
-
     #placement-editor {
         height: auto;
     }
