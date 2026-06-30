@@ -12,6 +12,7 @@ import yaml
 from lilbee.cli.agent_configs import config_file
 from lilbee.cli.agent_configs.hermes import hermes_config
 from lilbee.cli.agent_configs.merge import deep_merge, prune_lilbee
+from lilbee.cli.launchers.hermes_mcp import ensure_hermes_http_mcp
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, served_chat_ctx
 from lilbee.cli.launchers.skill_install import install_bundled_skill
@@ -23,6 +24,9 @@ _HERMES_INSTALL_HINT = (
 _TOKEN_REF = "${" + LILBEE_TOKEN_ENV_VAR + "}"
 _MCP_CONTAINER_KEY = "mcp_servers"
 _CONFIG_LABEL = "hermes config (config.yaml)"
+# hermes config keys gating its own auto-installs (security.allow_lazy_installs).
+_SECURITY_KEY = "security"
+_ALLOW_LAZY_INSTALLS_KEY = "allow_lazy_installs"
 
 
 def _hermes_home() -> Path:
@@ -90,6 +94,15 @@ class HermesLauncher:
         _upsert_env_token(_hermes_env_path(), token)
         if self._include_mcp:
             install_bundled_skill(_hermes_skill_dest())
+            # hermes ships HTTP MCP behind the optional `mcp` extra; without it
+            # lilbee's MCP search shows "0 connected". Set it up before launch,
+            # honoring hermes's own auto-install security gate.
+            binary = self.find_binary()
+            if binary is not None:
+                allow_lazy = bool(
+                    (config.get(_SECURITY_KEY) or {}).get(_ALLOW_LAZY_INSTALLS_KEY, True)
+                )
+                ensure_hermes_http_mcp(binary, allow_lazy_installs=allow_lazy, echo=typer.echo)
         return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})
 
 

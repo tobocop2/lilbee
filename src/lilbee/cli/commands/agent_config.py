@@ -12,6 +12,7 @@ import yaml
 
 from lilbee.cli.agent_configs import hermes, litellm, opencode
 from lilbee.cli.app import apply_overrides, data_dir_option, global_option
+from lilbee.cli.launchers.hermes_mcp import MCP_EXTRA_HINT
 from lilbee.cli.launchers.server import (
     LOOPBACK,
     installed_chat_model_refs,
@@ -24,6 +25,7 @@ from lilbee.providers.model_ref import with_configured_remote_chat
 agent_config_app = typer.Typer(help="Print a paste-ready config block for an AI client.")
 
 _SERVE_HINT = "Start `lilbee serve --port 8080` first, then re-run this command."
+_MCP_CONTAINER_KEY = "mcp_servers"  # hermes config key holding the MCP server entries
 
 
 _JsonBuilder = Callable[..., dict[str, Any]]
@@ -57,6 +59,11 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
         typer.echo(block, nl=False)
     elif builder is hermes.hermes_config:
         typer.echo(yaml.safe_dump(block, sort_keys=False), nl=False)
+        if _MCP_CONTAINER_KEY in block:
+            # Parity with `lilbee launch hermes`: the MCP block only works once
+            # hermes has its `mcp` extra. The paste path can't install it, so
+            # surface the same hint (to stderr, keeping the YAML pipe-clean).
+            typer.secho(MCP_EXTRA_HINT, err=True, fg=typer.colors.YELLOW)
     else:
         typer.echo(json.dumps(block, indent=2))
 
