@@ -21,7 +21,14 @@ def stderr_suppressed() -> Iterator[None]:
     bypasses Python's logging. Holds a process lock so concurrent fd-2 swaps
     can't clobber each other's saved descriptor. Wrap the whole native call, not
     each inner iteration, so the lock doesn't serialize a hot loop.
+
+    On Windows, MSVC-built native extensions use GetStdHandle rather than the
+    CRT fd 2, so the fd-dup technique has no effect there. The context manager
+    is a no-op on Windows to avoid false suppression expectations.
     """
+    if sys.platform == "win32":  # pragma: no cover - Windows-only passthrough
+        yield
+        return
     with _STDERR_LOCK:
         devnull = os.open(os.devnull, os.O_WRONLY)
         old_stderr = os.dup(2)
@@ -43,7 +50,7 @@ def default_data_dir() -> Path:
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     elif sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")).expanduser()
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return base / "lilbee"

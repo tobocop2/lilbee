@@ -220,7 +220,11 @@ def _run_crawl_with_signal_cancel(
     """
     import signal
 
-    previous_handler = signal.getsignal(signal.SIGINT)
+    # signal.signal raises ValueError when called off the main thread (e.g.
+    # under pytest-xdist workers). Skip the SIGINT hook in that case; the
+    # cancel_event can still be driven externally.
+    _on_main_thread = threading.current_thread() is threading.main_thread()
+    previous_handler = signal.getsignal(signal.SIGINT) if _on_main_thread else None
 
     def _on_sigint(_signum: int, _frame: object) -> None:
         # Set the cancel event that crawl_recursive polls between pages, so
@@ -228,7 +232,8 @@ def _run_crawl_with_signal_cancel(
         # default KeyboardInterrupt-raising dance.
         cancel_event.set()
 
-    signal.signal(signal.SIGINT, _on_sigint)
+    if _on_main_thread:
+        signal.signal(signal.SIGINT, _on_sigint)
     # Manage the event loop explicitly. In the CLI this runs once per process,
     # but under pytest-xdist the same worker thread runs many tests; leaving a
     # closed loop set as the "current" loop for the thread poisons every later
@@ -251,7 +256,8 @@ def _run_crawl_with_signal_cancel(
     finally:
         loop.close()
         asyncio.set_event_loop(None)
-        signal.signal(signal.SIGINT, previous_handler)
+        if _on_main_thread:
+            signal.signal(signal.SIGINT, previous_handler)
 
 
 def _cancellable_progress(
@@ -299,12 +305,17 @@ def _run_sync_with_signal_cancel(
 
     cancel_event = threading.Event()
     callback = _cancellable_progress(cancel_event, on_progress or noop_callback)
-    previous_handler = signal.getsignal(signal.SIGINT)
+    # signal.signal raises ValueError when called off the main thread (e.g.
+    # under pytest-xdist workers). Skip the SIGINT hook in that case; the
+    # cancel_event can still be driven externally.
+    _on_main_thread = threading.current_thread() is threading.main_thread()
+    previous_handler = signal.getsignal(signal.SIGINT) if _on_main_thread else None
 
     def _on_sigint(_signum: int, _frame: object) -> None:
         cancel_event.set()
 
-    signal.signal(signal.SIGINT, _on_sigint)
+    if _on_main_thread:
+        signal.signal(signal.SIGINT, _on_sigint)
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
@@ -320,7 +331,8 @@ def _run_sync_with_signal_cancel(
     finally:
         loop.close()
         asyncio.set_event_loop(None)
-        signal.signal(signal.SIGINT, previous_handler)
+        if _on_main_thread:
+            signal.signal(signal.SIGINT, previous_handler)
 
 
 def sync_cmd(
