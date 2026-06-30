@@ -25,12 +25,26 @@ _SETUP_MARKER_NAME = "opencode-setup.json"
 _MCP_CONTAINER_KEY = "mcp"
 
 
+def _opencode_config_dir() -> Path:
+    """Return the opencode config directory for the current platform.
+
+    On Windows, opencode (Go) reads %APPDATA%\\opencode; on POSIX it reads
+    ~/.config/opencode.  Using the wrong directory on Windows means every
+    ``lilbee launch opencode`` write is silently discarded.
+    """
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "opencode"
+    return Path.home() / ".config" / "opencode"
+
+
 def _opencode_config_path() -> Path:
-    return Path.home() / ".config" / "opencode" / "opencode.json"
+    return _opencode_config_dir() / "opencode.json"
 
 
 def _opencode_skill_dest() -> Path:
-    return Path.home() / ".config" / "opencode" / "skills" / "lilbee-mcp"
+    return _opencode_config_dir() / "skills" / "lilbee-mcp"
 
 
 def _setup_marker_path() -> Path:

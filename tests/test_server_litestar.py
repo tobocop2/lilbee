@@ -1559,6 +1559,21 @@ class TestSessionManagerPersistence:
         unreadable.mkdir()
         assert SessionManager._read_persisted_token(unreadable) is None
 
+    def test_load_or_generate_on_win32_skips_chmod(self, fresh_manager, monkeypatch) -> None:
+        """On Windows the chmod branch is skipped; file must still be created and readable."""
+        monkeypatch.setattr("lilbee.server.auth.sys.platform", "win32")
+        token = fresh_manager.load_or_generate()
+        assert isinstance(token, str)
+        assert len(token) >= 32
+        from lilbee.server.auth import server_json_path
+
+        assert server_json_path().exists()
+        # File must be readable and round-trippable via UTF-8.
+        import json as _json
+
+        data = _json.loads(server_json_path().read_text(encoding="utf-8"))
+        assert data["token"] == token
+
     @mock.patch("lilbee.server.app.get_services")
     async def test_lifespan_reuses_token_across_consecutive_runs(self, mock_get_svc):
         """Two _lifespan invocations against the same data_dir reuse the token.

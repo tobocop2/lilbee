@@ -36,3 +36,23 @@ def test_atomic_on_failure(tmp_path, monkeypatch):
         install_bundled_skill(dest)
     assert not dest.exists()
     assert not list((tmp_path / "skills").glob(".lilbee-mcp-*"))
+
+
+def test_race_collision_dest_created_concurrently(tmp_path, monkeypatch):
+    """If os.replace raises OSError and dest now exists, treat it as already installed.
+
+    On Windows this can happen when two processes race to install the same skill
+    (finding #7: PermissionError from a concurrent writer).
+    """
+    dest = tmp_path / "skills" / "lilbee-mcp"
+
+    def _boom_then_dest_exists(*_a, **_k):
+        # Simulate the concurrent writer: dest appears while we were staging.
+        dest.mkdir(parents=True, exist_ok=True)
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(skill_install.os, "replace", _boom_then_dest_exists)
+    result = install_bundled_skill(dest)
+    # Concurrent install: returns None (already exists), no exception.
+    assert result is None
+    assert dest.exists()

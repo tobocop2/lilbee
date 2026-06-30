@@ -166,3 +166,20 @@ class TestStderrSuppressed:
         with pytest.raises(ValueError, match="boom"), stderr_suppressed():
             raise ValueError("boom")
         os.fstat(2)  # restored despite the exception
+
+    def test_win32_passthrough_is_noop(self, monkeypatch):
+        """On win32 the context manager is a passthrough; fd 2 is left alone."""
+        import sys as _sys
+
+        monkeypatch.setattr(_sys, "platform", "win32")
+        original_stat = os.fstat(2)
+        executed = []
+        with stderr_suppressed():
+            executed.append(True)
+            current_stat = os.fstat(2)
+        assert executed == [True]
+        # fd 2 was not redirected.
+        assert (current_stat.st_dev, current_stat.st_ino) == (
+            original_stat.st_dev,
+            original_stat.st_ino,
+        )

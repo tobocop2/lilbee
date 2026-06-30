@@ -71,6 +71,65 @@ def test_oversized_log_is_truncated_before_reopen(
     _capture_popen["stdout"].close()
 
 
+def test_win32_cmd_wrapper_falls_back_to_sys_executable(
+    monkeypatch, tmp_path: Path, _capture_popen
+) -> None:
+    """When shutil.which returns a .cmd path on win32, spawn_server falls back to
+    sys.executable -m lilbee (finding #5: PermissionError on .cmd with shell=False)."""
+    monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+    monkeypatch.setattr(cfg, "data_dir", tmp_path)
+    monkeypatch.setattr(server_mod.shutil, "which", lambda _name: r"C:\Python\Scripts\lilbee.cmd")
+    monkeypatch.setattr(server_mod.sys, "platform", "win32")
+    server_mod.spawn_server(8080)
+    cmd = _capture_popen["cmd"]
+    assert cmd[0] == server_mod.sys.executable
+    assert cmd[1:3] == ["-m", "lilbee"]
+    _capture_popen["stdout"].close()
+
+
+def test_non_cmd_bin_on_win32_is_used_directly(
+    monkeypatch, tmp_path: Path, _capture_popen
+) -> None:
+    """An .exe on win32 (not .cmd) is passed directly without the fallback."""
+    monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+    monkeypatch.setattr(cfg, "data_dir", tmp_path)
+    monkeypatch.setattr(
+        server_mod.shutil, "which", lambda _name: r"C:\Python\Scripts\lilbee.exe"
+    )
+    monkeypatch.setattr(server_mod.sys, "platform", "win32")
+    server_mod.spawn_server(8080)
+    cmd = _capture_popen["cmd"]
+    assert cmd[0] == r"C:\Python\Scripts\lilbee.exe"
+    _capture_popen["stdout"].close()
+
+
+def test_log_unlink_permission_error_falls_through_to_append(
+    monkeypatch, tmp_path: Path, _capture_popen
+) -> None:
+    """When unlink raises PermissionError (Windows held-open file), spawn_server
+    falls through to append mode rather than crashing (finding #6)."""
+    monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
+    monkeypatch.setattr(cfg, "data_dir", tmp_path)
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / "launcher-serve.log"
+    log_path.write_bytes(b"x" * (5 * 1024 * 1024 + 1))  # over cap so unlink is attempted
+
+    original_unlink = Path.unlink
+
+    def _fail_unlink(self, *, missing_ok: bool = False) -> None:
+        if self == log_path:
+            raise PermissionError("file in use")
+        original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _fail_unlink)
+    # spawn_server must not raise; it falls through to append mode.
+    server_mod.spawn_server(8080)
+    # The file still exists (not truncated because unlink was denied).
+    assert log_path.exists()
+    _capture_popen["stdout"].close()
+
+
 class TestHealthProbes:
     """chat_ready / served_chat_ctx / wait_for_chat_warm read /api/health."""
 

@@ -24,7 +24,15 @@ def install_bundled_skill(dest: Path) -> Path | None:
         for entry in source.iterdir():
             if entry.is_file() and not entry.name.startswith("__"):
                 (staging / entry.name).write_bytes(entry.read_bytes())
-        os.replace(staging, dest)
+        try:
+            os.replace(staging, dest)
+        except OSError:
+            # On Windows, os.replace into an existing dest can race with another
+            # installer. If dest now exists, the skill is already installed.
+            shutil.rmtree(staging, ignore_errors=True)
+            if dest.exists():
+                return None
+            raise
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise

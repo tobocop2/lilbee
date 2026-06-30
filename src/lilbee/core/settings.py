@@ -44,7 +44,7 @@ def save(data_root: Path, settings: dict[str, str]) -> None:
     path = _config_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f'{k} = "{_escape_toml_string(v)}"\n' for k, v in sorted(settings.items())]
-    path.write_text("".join(lines))
+    path.write_text("".join(lines), encoding="utf-8", newline="\n")
     if sys.platform != "win32":
         path.chmod(0o600)  # pragma: no cover - POSIX-only; Windows has no 0600 mode bits
 

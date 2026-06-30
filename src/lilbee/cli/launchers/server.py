@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -184,9 +185,15 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
     Set ``LILBEE_LAUNCHER_SERVE_QUIET=1`` to restore the previous DEVNULL behavior.
     """
     lilbee_bin = shutil.which("lilbee")
+    # On Windows, pip/uv may install a ``lilbee.cmd`` wrapper instead of a bare
+    # executable. Popen(shell=False) raises PermissionError on .cmd files, so
+    # fall through to the sys.executable -m lilbee form in that case.
+    _bin_is_cmd = sys.platform == "win32" and (
+        lilbee_bin is not None and lilbee_bin.lower().endswith(".cmd")
+    )
     cmd = (
         [lilbee_bin, "serve", "--port", str(port)]
-        if lilbee_bin is not None
+        if lilbee_bin is not None and not _bin_is_cmd
         else [sys.executable, "-m", "lilbee", "serve", "--port", str(port)]
     )
 
@@ -200,8 +207,11 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
         log_path = log_dir / "launcher-serve.log"
         # Truncate when the file passes 5 MB so a long-lived session doesn't
         # accumulate the chat-completion firehose into the data dir indefinitely.
+        # On Windows the file may still be held open by a previous session, so
+        # fall through to append mode when unlink is denied.
         if log_path.exists() and log_path.stat().st_size > 5 * 1024 * 1024:
-            log_path.unlink()
+            with contextlib.suppress(OSError):
+                log_path.unlink()
         log_file = log_path.open("ab")
         stdout = log_file
         stderr = subprocess.STDOUT
