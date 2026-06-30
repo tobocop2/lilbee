@@ -1,4 +1,4 @@
-PlacementScreen {
+FleetBody {
 
     #placement-layout {
         height: 1fr;

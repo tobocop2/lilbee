@@ -1,8 +1,7 @@
-"""GPU placement screen: inspect and configure multi-GPU model placement.
+"""FleetBody: the GPU table, live panel, and interactive placement editor.
 
-The editor is interactive: each role has a GPU toggle per device and a replica
-stepper, so placement is configured by clicking, not by hand-writing JSON. The
-equivalent spec is shown read-only for use with the CLI/HTTP/MCP surfaces.
+Reusable widget that can be mounted both as the top-level Fleet view and as
+a modal overlay.
 """
 
 from __future__ import annotations
@@ -10,33 +9,35 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
 from textual.app import ComposeResult
-from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.reactive import reactive
-from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Label, Static
+from textual.widget import Widget
+from textual.widgets import Button, DataTable, Label, Static
 
 from lilbee.app.placement import get_placement, preview_placement, set_placement
-from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
 
-
 log = logging.getLogger(__name__)
+
+_CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 
 _GPU_TABLE_ID = "#placement-gpus"
 _EDITOR_ID = "#placement-editor"
 _GENERATED_ID = "#placement-generated"
 _TITLE_ID = "#placement-title"
+_FLEET_PANEL_ID = "#gpu-fleet-panel"
 
 _GIB = 1024**3
 # Only these roles run multiple replicas; the others always serve one instance.
@@ -61,30 +62,15 @@ def _fmt_gib(n: int) -> str:
     return f"{n / _GIB:.1f} GiB"
 
 
-class PlacementScreen(Screen[None]):
-    """GPU placement viewer and interactive editor."""
+class FleetBody(Widget):
+    """GPU table, live fleet panel, and interactive placement editor."""
 
-    # Lilbee always hosts screens on a LilbeeApp, so narrowing the type lets
-    # the screen call switch_view without per-call type: ignore comments.
-    app: LilbeeApp  # type: ignore[assignment]
-
-    CSS_PATH = "placement.tcss"
-    AUTO_FOCUS = _GPU_TABLE_ID
-    HELP = "Configure GPU placement. ctrl+r preview, ctrl+s apply, ctrl+x auto, q back."
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("q", "go_back", "Back", show=True),
-        Binding("escape", "go_back", "Back", show=False),
-        # priority so they fire even when a button/editor child has focus.
-        Binding("ctrl+r", "preview", "Preview", show=True, priority=True),
-        Binding("ctrl+s", "apply", "Apply", show=True, priority=True),
-        Binding("ctrl+x", "clear", "Auto", show=True, priority=True),
-    ]
+    DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     applying: reactive[bool] = reactive(False)
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(id="fleet-body")
         self._edits: dict[WorkerRole, _RoleEdit] = {}
         self._device_indices: tuple[int, ...] = ()
         self._gpu_meta: list[tuple[int, str, str, int, int]] = []
@@ -96,25 +82,16 @@ class PlacementScreen(Screen[None]):
             self.query_one(_EDITOR_ID, Vertical).disabled = applying
 
     def compose(self) -> ComposeResult:
-        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
-        from lilbee.cli.tui.widgets.status_bar import ViewTabs
-        from lilbee.cli.tui.widgets.task_bar import TaskBar
-        from lilbee.cli.tui.widgets.top_bars import TopBars
-
         table: DataTable[str] = DataTable(id="placement-gpus")
         table.cursor_type = "row"
 
-        with TopBars():
-            yield ViewTabs()
         with Vertical(id="placement-layout"):
             yield Static("", id="placement-title")
             yield table
+            yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
             yield Static("", id="placement-generated")
             yield Static(_HINT, id="placement-hint")
-        with BottomBars():
-            yield TaskBar()
-            yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one(_GPU_TABLE_ID, DataTable)
@@ -122,7 +99,7 @@ class PlacementScreen(Screen[None]):
         self._load_placement()
 
     def _load_placement(self) -> None:
-        """Fetch placement and populate the screen synchronously."""
+        """Fetch placement and populate the widget synchronously."""
         try:
             view = get_placement()
         except Exception as exc:
@@ -134,7 +111,7 @@ class PlacementScreen(Screen[None]):
     # -- rendering -------------------------------------------------------
 
     def _render_view(self, view: PlacementView) -> None:
-        """Reset the screen (title, table, editor) from a resolved placement view."""
+        """Reset the widget (title, table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
         self._gpu_meta = [
@@ -147,6 +124,7 @@ class PlacementScreen(Screen[None]):
         self._refresh_table()
         self._refresh_title(dirty=False)
         self._refresh_generated()
+        self._update_fleet_panel(view)
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
@@ -205,6 +183,21 @@ class PlacementScreen(Screen[None]):
             out.update(f"[red]{exc}[/red]")
             return
         out.update(f"equivalent spec:  {spec.to_json() if spec else '(auto)'}")
+
+    def _update_fleet_panel(self, view: PlacementView) -> None:
+        """Push the current device list and roles into the fleet panel."""
+        try:
+            panel = self.query_one(_FLEET_PANEL_ID, GpuFleetPanel)
+        except NoMatches:
+            return
+        labels = {g.index: g.label for g in view.gpus}
+        roles: dict[int, str] = {}
+        for r in view.roles:
+            short_model = r.model.split("/")[-1] if r.model else ""
+            badge = f"{r.role.value} - {short_model}" if short_model else r.role.value
+            for idx in r.devices:
+                roles[idx] = badge
+        panel.set_devices(view.gpus, labels=labels, roles=roles)
 
     # -- editor state ----------------------------------------------------
 
@@ -306,10 +299,3 @@ class PlacementScreen(Screen[None]):
             call_from_thread(self, self.notify, str(exc), severity="error")
         finally:
             call_from_thread(self, setattr, self, "applying", False)
-
-    def action_go_back(self) -> None:
-        """Pop back to the previous screen."""
-        if len(self.app.screen_stack) > 1:
-            self.app.pop_screen()
-        else:
-            self.app.switch_view("Chat")
