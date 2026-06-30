@@ -735,6 +735,7 @@ def _launch_for(
         ctx=ctx,
         replica=plan.replica,
         rerank_mode=rerank_mode,
+        device_vram=dict(zip(plan.devices, plan.per_device_vram, strict=False)),
     )
 
 

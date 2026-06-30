@@ -363,6 +363,10 @@ class FleetProvider:
         # the concurrency gate and clients; defaults until the swap is up.
         self._chat_slots = 1
         self._chat_ctx: int | None = None
+        # VRAM (bytes) the resident fleet occupies per device index, summed from the
+        # adopted launches. A reload credits this back to the device probe so the
+        # chat split is re-planned against cold cards (see _reload_pass).
+        self._device_footprint: dict[int, int] = {}
         # Single-flight guard: the HTTP/MCP servers route concurrently, so two
         # first-requests must not each start a swap (double GPU allocation) or
         # tear one down mid-route. Reentrant: invalidate_load_cache nests calls.
@@ -464,6 +468,11 @@ class FleetProvider:
         chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
         self._chat_slots = chat.slots if chat is not None else 1
         self._chat_ctx = chat.ctx if chat is not None else None
+        footprint: dict[int, int] = {}
+        for launch in launches:
+            for device, vram in launch.device_vram.items():
+                footprint[device] = footprint.get(device, 0) + vram
+        self._device_footprint = footprint
         self._retire_clients(old_clients)
 
     def _retire_clients(self, old_clients: list[LlamaServerClient]) -> None:

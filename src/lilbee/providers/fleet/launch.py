@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lilbee.providers.roles import RerankMode, WorkerRole
 
@@ -29,6 +29,10 @@ class InstanceLaunch:
     ctx: int = 0  # per-slot context the server runs with; what a client should fit to
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
+    # Estimated VRAM (bytes) this instance occupies per device index; empty off-GPU.
+    # The provider sums these across the resident fleet to credit its own residency
+    # back to the device probe on a reload (so the chat split is sized cold).
+    device_vram: dict[int, int] = field(default_factory=dict)
 
     @property
     def model_id(self) -> str:

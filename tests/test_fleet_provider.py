@@ -27,7 +27,13 @@ def _fake_client(in_flight: int = 0) -> MagicMock:
 
 
 def _fake_launch(
-    role: WorkerRole, *, slots: int = 1, ctx: int = 0, weights_bytes: int = 0, replica: int = 0
+    role: WorkerRole,
+    *,
+    slots: int = 1,
+    ctx: int = 0,
+    weights_bytes: int = 0,
+    replica: int = 0,
+    device_vram: dict[int, int] | None = None,
 ) -> MagicMock:
     launch = MagicMock()
     launch.role = role
@@ -35,6 +41,7 @@ def _fake_launch(
     launch.ctx = ctx
     launch.weights_bytes = weights_bytes
     launch.replica = replica
+    launch.device_vram = device_vram or {}
     return launch
 
 
@@ -865,6 +872,17 @@ def test_ensure_swap_reaps_stale_swaps_before_planning(monkeypatch) -> None:
     )
     FleetProvider()._ensure_swap()
     assert order == ["reap", "plan"]
+
+
+def test_adopt_sums_device_footprint_across_launches(monkeypatch) -> None:
+    # The provider sums each launch's per-device VRAM into its resident footprint,
+    # so a later reload can credit that residency back to the device probe.
+    chat = _fake_launch(WorkerRole.CHAT, device_vram={1: 20 * _GB, 2: 20 * _GB})
+    embed = _fake_launch(WorkerRole.EMBED, device_vram={0: 9 * _GB})
+    _install_engine(monkeypatch, launches=[chat, embed])
+    p = FleetProvider()
+    p._ensure_swap()
+    assert p._device_footprint == {0: 9 * _GB, 1: 20 * _GB, 2: 20 * _GB}
 
 
 def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
