@@ -8,6 +8,7 @@ import lilbee.server.handlers as handlers
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.providers.roles import WorkerRole
 from lilbee.server.routes.placement import (
+    gpu_stats_stream_route,
     gpus_route,
     placement_clear_route,
     placement_preview_route,
@@ -260,3 +261,36 @@ def test_get_gpus(monkeypatch):
         r = client.get("/api/gpus")
         assert r.status_code == 200
         assert r.json()[0]["label"] == "CUDA0"
+
+
+def test_gpu_stats_stream_provider_error_returns_503(monkeypatch):
+    """ProviderError from get_placement() before the stream starts maps to 503."""
+    import lilbee.app.placement as placement_mod
+    from lilbee.providers.base import ProviderError
+
+    def _boom():
+        raise ProviderError("llama-server binary not found")
+
+    monkeypatch.setattr(placement_mod, "get_placement", _boom)
+    with create_test_client([gpu_stats_stream_route]) as client:
+        r = client.get("/api/gpus/stream")
+        assert r.status_code == 503
+        assert "llama-server" in r.text
+
+
+def test_gpu_stats_stream_streams_events(monkeypatch):
+    """Happy-path: stream route returns SSE events from the generator."""
+    import lilbee.app.placement as placement_mod
+    from lilbee.app.placement import PlacementView
+
+    view = PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
+
+    async def _fake_stream(devices):
+        yield 'event: gpu_stats\ndata: {"gpus": []}\n\n'
+
+    monkeypatch.setattr(placement_mod, "get_placement", lambda: view)
+    monkeypatch.setattr(handlers, "gpu_stats_stream", _fake_stream)
+    with create_test_client([gpu_stats_stream_route]) as client:
+        r = client.get("/api/gpus/stream")
+        assert r.status_code == 200
+        assert "text/event-stream" in r.headers["content-type"]

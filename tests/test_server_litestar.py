@@ -93,11 +93,17 @@ class TestWarmStreamRoute:
 
 class TestGpuStatsStreamRoute:
     def test_streams_gpu_stats(self, client):
-        async def _fake_stats():
+        from lilbee.app.placement import PlacementView
+
+        async def _fake_stats(devices):
             gpu = {"index": 0, "utilization_pct": 71, "free_bytes": 1, "total_bytes": 2}
             yield f"event: gpu_stats\ndata: {json.dumps({'gpus': [gpu]})}\n\n"
 
-        with mock.patch("lilbee.server.handlers.gpu_stats_stream", return_value=_fake_stats()):
+        view = PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
+        with (
+            mock.patch("lilbee.app.placement.get_placement", return_value=view),
+            mock.patch("lilbee.server.handlers.gpu_stats_stream", side_effect=_fake_stats),
+        ):
             resp = client.get("/api/gpus/stream")
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]

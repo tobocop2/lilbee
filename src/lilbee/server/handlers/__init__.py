@@ -11,13 +11,15 @@ API consumed by ``server/routes/*.py``.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
 from lilbee.app.services import get_services
 from lilbee.app.status import gather_status
 from lilbee.app.version import get_version
+from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.runtime.progress import SseEvent
@@ -128,38 +130,34 @@ _GPU_STATS_INTERVAL_S = 1.0
 
 
 async def gpu_stats_stream(
+    devices: Sequence[object],
     interval_s: float = _GPU_STATS_INTERVAL_S,
     max_ticks: int | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream live per-GPU utilization + free memory as SSE for the placement view.
 
-    Structural devices are probed once (a subprocess); each tick only runs the
-    light ``nvidia-smi`` query, so the loop is cheap. The client (placement view)
-    keeps the stream open while visible; ``max_ticks`` bounds it for tests.
+    Devices are resolved by the caller before the stream starts so a ProviderError
+    surfaces as a 503 at route time, not mid-stream. Each tick only runs the light
+    ``nvidia-smi`` query. The client keeps the stream open while visible;
+    ``max_ticks`` bounds it for tests. A heartbeat is emitted every
+    ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
     """
-    from lilbee.app.placement import get_placement
     from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
-    from lilbee.server.models import GpuStatEvent
 
-    devices = get_placement().gpus
+    last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
-        stats = probe_gpu_stats(devices)
-        payload = {
-            "gpus": [
-                GpuStatEvent(
-                    index=s.index,
-                    utilization_pct=s.utilization_pct,
-                    free_bytes=s.free_bytes,
-                    total_bytes=s.total_bytes,
-                ).model_dump()
-                for s in stats.values()
-            ]
-        }
+        stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
+        payload = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
         yield sse_event(SseEvent.GPU_STATS, payload)
         tick += 1
         if max_ticks is None or tick < max_ticks:
             await asyncio.sleep(interval_s)
+            now = time.monotonic()
+            heartbeat_interval = cfg.sse_heartbeat_interval
+            if heartbeat_interval > 0 and now - last_heartbeat >= heartbeat_interval:
+                last_heartbeat = now
+                yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
 
 
 async def status() -> StatusResponse:

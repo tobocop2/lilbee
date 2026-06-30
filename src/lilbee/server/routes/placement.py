@@ -104,4 +104,10 @@ async def gpus_route() -> list[GpuInfoResponse]:
 @get("/api/gpus/stream")
 async def gpu_stats_stream_route() -> Stream:
     """Live per-GPU utilization + free memory as SSE for the placement view."""
-    return Stream(handlers.gpu_stats_stream(), media_type="text/event-stream")
+    from lilbee.app.placement import get_placement
+
+    try:
+        devices = get_placement().gpus
+    except ProviderError as exc:
+        raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
+    return Stream(handlers.gpu_stats_stream(devices), media_type="text/event-stream")

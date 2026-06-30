@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from lilbee.providers.fleet.devices import _MIB
+
 _CUDA_BACKEND = "CUDA"
-_MIB = 1024 * 1024
 _SMI_TIMEOUT_S = 5.0
 _SMI_QUERY = "index,utilization.gpu,memory.used,memory.total"
 _SMI_FIELDS = 4
@@ -24,7 +26,6 @@ _SMI_FIELDS = 4
 # tick so concurrent placement views coalesce to one probe per window instead of
 # one each. nvidia-smi indexes by PCI bus order, matching the CUDA enumeration.
 _SMI_CACHE_TTL_S = 0.9
-_NVIDIA_SMI = shutil.which("nvidia-smi") or "nvidia-smi"
 
 
 class _DeviceLike(Protocol):
@@ -54,20 +55,23 @@ class _SmiCache:
     """Shares one nvidia-smi probe across streams that ask within the TTL."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._at = 0.0
         self._value: dict[int, GpuStat] = {}
         self._primed = False
 
     def stats(self) -> dict[int, GpuStat]:
-        now = time.monotonic()
-        if not self._primed or now - self._at >= _SMI_CACHE_TTL_S:
-            self._value = _nvidia_smi_stats()
-            self._at = now
-            self._primed = True
-        return self._value
+        with self._lock:
+            now = time.monotonic()
+            if not self._primed or now - self._at >= _SMI_CACHE_TTL_S:
+                self._value = _nvidia_smi_stats()
+                self._at = now
+                self._primed = True
+            return self._value
 
     def reset(self) -> None:
-        self._primed = False
+        with self._lock:
+            self._primed = False
 
 
 _smi_cache = _SmiCache()
@@ -107,9 +111,10 @@ def _nvidia_smi_stats() -> dict[int, GpuStat]:
 
 def _nvidia_smi_output() -> str:
     """nvidia-smi query stdout, or "" when it can't run."""
+    binary = shutil.which("nvidia-smi") or "nvidia-smi"
     try:
         proc = subprocess.run(  # noqa: S603 - fixed query against the resolved nvidia-smi
-            [_NVIDIA_SMI, f"--query-gpu={_SMI_QUERY}", "--format=csv,noheader,nounits"],
+            [binary, f"--query-gpu={_SMI_QUERY}", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=_SMI_TIMEOUT_S,

@@ -4377,19 +4377,17 @@ class TestPlacementHandlers:
         assert result[0].name == "A100"
 
     async def test_gpu_stats_stream_emits_live_snapshots(self):
-        from lilbee.app.placement import GpuInfo, PlacementView
+        from lilbee.app.placement import GpuInfo
         from lilbee.providers.fleet.gpu_stats import GpuStat
 
         gpu = GpuInfo(
             index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
         )
-        view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
         stat = {0: GpuStat(0, 64, 150, 200)}
-        with (
-            patch("lilbee.app.placement.get_placement", return_value=view),
-            patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat) as probe,
-        ):
-            chunks = [c async for c in handlers.gpu_stats_stream(interval_s=0, max_ticks=2)]
+        with patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat) as probe:
+            chunks = [
+                c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=2)
+            ]
         events = [
             json.loads(line[len("data:") :].strip())
             for chunk in chunks
@@ -4401,3 +4399,45 @@ class TestPlacementHandlers:
             "gpus": [{"index": 0, "utilization_pct": 64, "free_bytes": 150, "total_bytes": 200}]
         }
         assert probe.call_count == 2
+
+    async def test_gpu_stats_stream_emits_heartbeat_when_interval_elapsed(self):
+        """A heartbeat event is emitted when the configured interval elapses."""
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+        from lilbee.runtime.progress import SseEvent
+
+        gpu = GpuInfo(
+            index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
+        )
+        stat = {0: GpuStat(0, 10, 150, 200)}
+
+        fake_now = [0.0]
+
+        def _fake_monotonic() -> float:
+            return fake_now[0]
+
+        with (
+            patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
+            patch("lilbee.server.handlers.time") as mock_time,
+        ):
+            mock_time.monotonic.side_effect = _fake_monotonic
+            mock_time.time.return_value = 0.0
+            cfg.sse_heartbeat_interval = 1.0
+
+            async def _patched_sleep(s: float) -> None:
+                fake_now[0] += 2.0  # advance past heartbeat_interval
+
+            with patch("asyncio.sleep", side_effect=_patched_sleep):
+                chunks = [
+                    c
+                    async for c in handlers.gpu_stats_stream(
+                        (gpu,), interval_s=0.001, max_ticks=2
+                    )
+                ]
+
+        event_lines = [
+            line for chunk in chunks for line in chunk.splitlines() if line.startswith("event:")
+        ]
+        event_names = [line.split(":", 1)[1].strip() for line in event_lines]
+        assert SseEvent.GPU_STATS in event_names
+        assert SseEvent.HEARTBEAT in event_names
