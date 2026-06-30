@@ -192,10 +192,18 @@ flowchart TD
   of the budget and 503-ing every search.
 - **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
   A model that fits one GPU is a single pinned instance; small models co-locate; a
-  model too big for one GPU is tensor-split across the **fewest cards whose per-device
-  footprint each fits**, charged against each card's total VRAM capacity (so a warm
-  fleet's own resident models aren't double-counted, and unequal GPUs don't OOM the
-  smaller one). A tensor-split chat serves **one full-context sequence**
+  model too big for one GPU is tensor-split across enough cards that each card's
+  per-device footprint fits, charged against each card's total VRAM capacity (so a
+  warm fleet's own resident models aren't double-counted, and unequal GPUs don't OOM
+  the smaller one). For the chat model the planner does not stop at the fewest fitting
+  cards: it sizes each candidate shard's served context the way the launch will
+  (`ctx.fit_split_ctx`, against **live free VRAM**) and **widens onto idle cards** when
+  a tighter shard would starve KV below the context target, falling back to the
+  largest-context shard when no shard reaches it. This keeps placement and launch in
+  agreement, so a giant chat that just fits the fewest cards no longer collapses to the
+  512-token floor while spare cards sit idle; a chat already comfortable on few cards
+  stays there (no needless inter-GPU traffic), and the context target follows
+  `cfg.num_ctx` / `cfg.chat_n_ctx_target`. A tensor-split chat serves **one full-context sequence**
   (`--parallel 1`): a giant filling several cards has no room to divide its context
   across batching slots, so the planner reserves and launches it at the single-sequence
   footprint rather than `ceiling x` the single-GPU slot count (multi-slot batching is

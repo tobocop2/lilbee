@@ -30,6 +30,7 @@ from lilbee.providers.fleet.placement import (
     ModelPlacementInput,
     PeakEstimator,
     Placement,
+    SplitCtxFitter,
     placement_from_spec,
     plan_placement,
 )
@@ -41,7 +42,7 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
@@ -56,6 +57,9 @@ _SPLIT_CHAT_SLOTS = 1
 # cards' real headroom by resolve_chat_ctx (single) / fit_split_ctx (split).
 _MIN_USABLE_CHAT_CTX = 8192
 _AUX_SLOTS = 1
+# A tensor-split needs at least this many GPUs; below it the chat context objective
+# (a gguf read) is pointless because the model can only single-card or stay unplaced.
+_MIN_SPLIT_GPUS = 2
 _EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 # Roles whose loaders offload every layer regardless of cfg.n_gpu_layers; only
 # chat honors cfg.n_gpu_layers.
@@ -528,6 +532,42 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
     return estimate_peak
 
 
+def _chat_split_ctx_objective(
+    model_refs: dict[WorkerRole, str],
+) -> tuple[SplitCtxFitter | None, int]:
+    """The chat split's context fitter and target, or ``(None, 0)`` with no chat model.
+
+    The fitter sizes a candidate shard's served context exactly as the launch does
+    (:func:`fit_split_ctx`), so the planner widens chat onto idle cards only when a
+    tighter shard would starve KV below the target. See docs/architecture.md.
+    """
+    if WorkerRole.CHAT not in model_refs:
+        return None, 0
+    from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    path = resolve_model_path(model_refs[WorkerRole.CHAT])
+    meta = read_gguf_metadata(path)
+    target = _placement_estimate_ctx(WorkerRole.CHAT, path, meta)
+
+    def fit(ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
+        # circular: fleet.ctx -> engine_params -> app.services
+        from lilbee.providers.fleet.ctx import fit_split_ctx
+
+        return fit_split_ctx(
+            path,
+            meta=meta,
+            slots=_SPLIT_CHAT_SLOTS,
+            ratio=ratio,
+            per_device_free_bytes=per_device_free_bytes,
+            gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+            flash_attn=_role_flash(WorkerRole.CHAT),
+            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+        )
+
+    return fit, target
+
+
 def _search_reservation(inputs: dict[WorkerRole, ModelPlacementInput]) -> int:
     """Total footprint of the placed search roles (all replicas), held back ahead
     of chat."""
@@ -803,11 +843,21 @@ def _resolve_placement(
             capacity,
             estimate_peak=estimate_peak,
         )
+    # The chat split's card count is decided against live free VRAM (what the launch
+    # sizes its context against) so placement and launch agree; charging still uses
+    # total capacity above, preserving the bb-a8f no-double-count invariant. A split
+    # needs >=2 GPUs, so skip the chat model's gguf read entirely below that.
+    chat_ctx_fit, chat_ctx_target = (
+        _chat_split_ctx_objective(model_refs) if len(capacity) >= _MIN_SPLIT_GPUS else (None, 0)
+    )
     return plan_placement(
         inputs,
         [(idx, total) for idx, total in capacity.items()],
         estimate_peak=estimate_peak,
         unified_budget=unified_budget,
+        chat_ctx_fit=chat_ctx_fit,
+        chat_ctx_target=chat_ctx_target,
+        free_headroom={d.index: d.free_bytes for d in devices},
     )
 
 

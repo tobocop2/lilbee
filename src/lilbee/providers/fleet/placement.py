@@ -9,7 +9,7 @@ that fits nowhere gets no server (its calls error). See docs/architecture.md.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
@@ -24,6 +24,11 @@ _SEARCH_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
 # vector aligned to that ratio. A split is accepted only when every card's entry
 # fits its own headroom, and each card is charged its own entry, not the sum.
 PeakEstimator = Callable[[WorkerRole, tuple[int, ...]], tuple[int, ...]]
+
+# (per-device tensor-split ratio, chosen cards' live free VRAM bytes) -> the per-slot
+# context the launch would serve on that chat shard. Lets the planner widen a chat
+# split onto idle cards when a tighter shard would starve KV below the target.
+SplitCtxFitter = Callable[[tuple[int, ...], Sequence[int]], int]
 
 
 @dataclass(frozen=True)
@@ -73,13 +78,20 @@ def plan_placement(
     *,
     estimate_peak: PeakEstimator,
     unified_budget: int | None = None,
+    chat_ctx_fit: SplitCtxFitter | None = None,
+    chat_ctx_target: int = 0,
+    free_headroom: dict[int, int] | None = None,
 ) -> Placement:
     """Bin-pack *models* onto *devices* (``[(index, vram_bytes), ...]``).
 
     First-fit-decreasing by footprint with a 90% headroom per GPU. A model that
     fits one GPU takes a single instance; one too big for any single GPU is
-    tensor-split across the fewest GPUs whose per-device share (from
-    *estimate_peak*) each fits; a model that fits nowhere is an unplaceable role.
+    tensor-split; a model that fits nowhere is an unplaceable role.
+
+    A chat split widens past the fewest fitting cards when ``chat_ctx_fit`` shows a
+    tighter shard would starve its served context below ``chat_ctx_target``; the
+    fitter is sized against ``free_headroom`` (live free VRAM per device index). See
+    docs/architecture.md (Placement). Other splits keep the fewest-cards behavior.
 
     No GPU devices is the CPU/unified-memory case (a GPU-less host, or an Apple
     Silicon box where the probe found nothing): roles run as single un-pinned
@@ -115,7 +127,14 @@ def plan_placement(
     replicated = [m for m in models if m.replicas > 1]
     persistent_singles = singles + [_persistent_single(m) for m in replicated]
     for model in sorted(persistent_singles, key=_shared_pool_order):
-        plan = _place_single(model, remaining, estimate_peak)
+        plan = _place_single(
+            model,
+            remaining,
+            estimate_peak,
+            chat_ctx_fit=chat_ctx_fit,
+            chat_ctx_target=chat_ctx_target,
+            free_headroom=free_headroom,
+        )
         if plan is None:
             unplaceable.append(model.role)
         else:
@@ -138,37 +157,78 @@ def _place_single(
     model: ModelPlacementInput,
     remaining: dict[int, float],
     estimate_peak: PeakEstimator,
+    *,
+    chat_ctx_fit: SplitCtxFitter | None = None,
+    chat_ctx_target: int = 0,
+    free_headroom: dict[int, int] | None = None,
 ) -> InstancePlan | None:
     """Place one instance: a single GPU when it fits, else a tensor-split, else None."""
     single = _best_single_device(model.est_vram_bytes, remaining)
     if single is not None:
         remaining[single] -= model.est_vram_bytes
         return InstancePlan(role=model.role, devices=(single,))
-    return _place_split(model, remaining, estimate_peak)
+    return _place_split(
+        model,
+        remaining,
+        estimate_peak,
+        chat_ctx_fit=chat_ctx_fit,
+        chat_ctx_target=chat_ctx_target,
+        free_headroom=free_headroom,
+    )
 
 
 def _place_split(
     model: ModelPlacementInput,
     remaining: dict[int, float],
     estimate_peak: PeakEstimator,
+    *,
+    chat_ctx_fit: SplitCtxFitter | None = None,
+    chat_ctx_target: int = 0,
+    free_headroom: dict[int, int] | None = None,
 ) -> InstancePlan | None:
-    """Tensor-split across the fewest most-free GPUs whose per-device share each fits.
+    """Tensor-split across the most-free GPUs whose per-device share each fits.
 
     Charges each chosen card its own entry from *estimate_peak*'s vector, so the
-    busiest card (which OOMs first) is what gates the split, not the summed pool.
+    busiest card (which OOMs first) gates the split, not the summed pool. A chat
+    split widens past the fewest fitting cards via *chat_ctx_fit* (see
+    :func:`plan_placement`); every other split takes the fewest that fit.
     """
     by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
+    best: tuple[int, list[int], tuple[int, ...], tuple[int, ...]] | None = None
     for count in range(2, len(by_free) + 1):
         chosen = by_free[:count]
         ratio = tuple(max(1, int(remaining[idx] / 1024**3)) for idx in chosen)
         per_device = estimate_peak(model.role, ratio)
-        if len(per_device) == count and all(
+        if len(per_device) != count or not all(
             peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
         ):
-            for idx, peak in zip(chosen, per_device, strict=True):
-                remaining[idx] -= peak
-            return InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio)
+            continue
+        # Only chat is widened past the fewest fitting cards; everything else (and
+        # the no-fitter generic path) takes the first shard that fits.
+        if model.role is not WorkerRole.CHAT or chat_ctx_fit is None or free_headroom is None:
+            return _charge_split(model, chosen, ratio, per_device, remaining)
+        served = chat_ctx_fit(ratio, [free_headroom[idx] for idx in chosen])
+        if served >= chat_ctx_target:
+            return _charge_split(model, chosen, ratio, per_device, remaining)
+        if best is None or served > best[0]:
+            best = (served, chosen, ratio, per_device)
+    if best is not None:
+        _served, chosen, ratio, per_device = best
+        return _charge_split(model, chosen, ratio, per_device, remaining)
     return None
+
+
+def _charge_split(
+    model: ModelPlacementInput,
+    chosen: list[int],
+    ratio: tuple[int, ...],
+    per_device: tuple[int, ...],
+    remaining: dict[int, float],
+) -> InstancePlan:
+    """Debit each chosen card its own per-device share and return the split plan."""
+    for idx, peak in zip(chosen, per_device, strict=True):
+        remaining[idx] -= peak
+    return InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio)
 
 
 def _place_replicas(
