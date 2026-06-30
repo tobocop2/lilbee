@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -30,6 +31,25 @@ if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
 
 log = logging.getLogger(__name__)
+
+_GGUF_SHARD_RE = re.compile(r"-\d{5}-of-\d{5}$")
+_GGUF_QUANT_RE = re.compile(r"-(?:Q\d[\w.]*|IQ\d[\w.]*|F16|BF16|FP16|F32)$", re.IGNORECASE)
+_GGUF_REPO_SUFFIXES = ("-GGUF", "-gguf")
+
+
+def _clean_model_name(ref: str) -> str:
+    """Short, human-friendly model name from a GGUF reference.
+
+    "Qwen/Qwen3-235B-A22B-GGUF/Q4_K_M/...-00001-of-00005.gguf" -> "Qwen3-235B-A22B".
+    """
+    parts = ref.split("/")
+    for component in parts[1:]:  # skip the org; the repo name is the friendly one
+        if component.endswith(_GGUF_REPO_SUFFIXES):
+            return component.rsplit("-", 1)[0]
+    stem = parts[-1].removesuffix(".gguf")
+    stem = _GGUF_SHARD_RE.sub("", stem)
+    return _GGUF_QUANT_RE.sub("", stem)
+
 
 _CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 
@@ -193,7 +213,7 @@ class FleetBody(Widget):
         labels = {g.index: g.label for g in view.gpus}
         roles: dict[int, str] = {}
         for r in view.roles:
-            short_model = r.model.split("/")[-1] if r.model else ""
+            short_model = _clean_model_name(r.model) if r.model else ""
             badge = f"{r.role.value} - {short_model}" if short_model else r.role.value
             for idx in r.devices:
                 roles[idx] = badge

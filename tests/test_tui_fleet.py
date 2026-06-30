@@ -584,3 +584,23 @@ async def test_refresh_generated_shows_error_on_empty_devices(monkeypatch):
         await pilot.pause()
         gen_text = str(body.query_one(_GENERATED_ID, Static).render())
         assert "needs at least one GPU" in gen_text or "GPU" in gen_text
+
+
+@pytest.mark.parametrize(
+    ("ref", "expected"),
+    [
+        (
+            "Qwen/Qwen3-235B-A22B-GGUF/Q4_K_M/Qwen3-235B-A22B-Q4_K_M-00001-of-00005.gguf",
+            "Qwen3-235B-A22B",
+        ),
+        ("Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf", "Qwen3-Embedding-8B"),
+        ("Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf", "Qwen3-4B"),
+        ("bartowski/Llama-3.3-70B.gguf", "Llama-3.3-70B"),
+        ("plain-name-Q6_K.gguf", "plain-name"),
+        ("solo-model-Q4_K_M-00001-of-00003.gguf", "solo-model"),
+    ],
+)
+def test_clean_model_name(ref: str, expected: str) -> None:
+    from lilbee.cli.tui.widgets.fleet_body import _clean_model_name
+
+    assert _clean_model_name(ref) == expected
