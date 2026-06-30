@@ -33,7 +33,7 @@ _DEVICE_RE = re.compile(
 )
 # Pin priority when a build reports more than one GPU backend: a real GPU
 # backend always wins over Vulkan, which wins over CPU.
-_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "SYCL": 2, "Vulkan": 1}
+_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, "Vulkan": 1}
 
 
 @dataclass(frozen=True)

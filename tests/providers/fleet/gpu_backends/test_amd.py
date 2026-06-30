@@ -19,9 +19,7 @@ _AMD_SMI_JSON_FLAT = (
 # Nested shape (newer amd-smi versions): util as {"value": N, "unit": "%"},
 # temp as {"edge": N} under a "temperature" key.
 _AMD_SMI_JSON_NESTED = (
-    '[{"gpu": 0,'
-    ' "gfx_activity": {"value": 72, "unit": "%"},'
-    ' "temperature": {"edge": 61}}]'
+    '[{"gpu": 0, "gfx_activity": {"value": 72, "unit": "%"}, "temperature": {"edge": 61}}]'
 )
 
 _ROCM_SMI_JSON = (
@@ -36,7 +34,7 @@ _ROCM_SMI_JSON_VRAM = (
     '"Temperature (Sensor edge) (C)": "55",'
     '"VRAM Total Memory (B)": "17179869184",'
     '"VRAM Total Used Memory (B)": "2147483648"'
-    '}}'
+    "}}"
 )
 
 
@@ -157,14 +155,15 @@ def test_parse_rocm_smi_non_dict_top_level() -> None:
 
 def test_sample_uses_amd_smi_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        amd_mod, "run_smi",
+        amd_mod,
+        "run_smi",
         lambda tool, *_a, **_k: _AMD_SMI_JSON_FLAT if tool == amd_mod._TOOL_AMD_SMI else "",
     )
     result = AmdBackend().sample(frozenset({0}))
     assert result[0].utilization_pct == 72
 
 
-def test_sample_falls_back_to_rocm_smi_when_amd_smi_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_falls_back_to_rocm_smi_when_amd_smi_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     def _run_smi(tool: str, *_a: object, **_k: object) -> str:
         return "" if tool == amd_mod._TOOL_AMD_SMI else _ROCM_SMI_JSON
 

@@ -9,7 +9,6 @@ import pytest
 from lilbee.providers.fleet.gpu_backends import base as base_mod
 from lilbee.providers.fleet.gpu_backends.base import extract_int, parse_device_index, run_smi
 
-
 # ---------------------------------------------------------------------------
 # extract_int
 # ---------------------------------------------------------------------------

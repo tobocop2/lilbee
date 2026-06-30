@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from lilbee.providers.fleet import gpu_stats as stats_mod
 from lilbee.providers.fleet.devices import MIB, FleetDevice
 from lilbee.providers.fleet.gpu_backends.base import UtilSample
@@ -165,12 +163,14 @@ def test_gpustat_temperature_c_set() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Metal stub via orchestrator (real backend, no mock)
+# Metal device via orchestrator (structural VRAM fallback)
 # ---------------------------------------------------------------------------
 
 
 def test_metal_device_returns_structural_fallback() -> None:
-    result = probe_gpu_stats(_METAL)
+    """With no ioreg util, the Metal device keeps structural VRAM and util None."""
+    with patch("lilbee.providers.fleet.gpu_backends.apple._ioreg_output", return_value=""):
+        result = probe_gpu_stats(_METAL)
     assert result[0].utilization_pct is None
     assert result[0].temperature_c is None
     assert result[0].free_bytes == 21844 * MIB

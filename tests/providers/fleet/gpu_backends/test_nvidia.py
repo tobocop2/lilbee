@@ -59,7 +59,8 @@ def test_parse_smi_output_empty() -> None:
 
 def test_sample_returns_indexed_subset(monkeypatch: pytest.MonkeyPatch) -> None:
     # run_smi is imported by name into nvidia_mod; patch there, not in base.
-    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "0, 37, 100, 46068\n1, 12, 100, 46068\n")
+    csv = "0, 37, 100, 46068\n1, 12, 100, 46068\n"
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: csv)
     backend = NvidiaBackend()
     result = backend.sample(frozenset({0}))
     assert 0 in result
@@ -158,6 +159,7 @@ def test_concurrent_threads_probe_once(monkeypatch: pytest.MonkeyPatch) -> None:
     t1.start()
 
     import time as _time
+
     _time.sleep(0.05)
     proceed.set()
 
@@ -181,7 +183,9 @@ def test_which_resolved_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         base_mod.subprocess,
         "run",
-        lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0, stdout="0, 10, 100, 46068\n", stderr=""),
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="0, 10, 100, 46068\n", stderr=""
+        ),
     )
     nvidia_mod._smi_output()
     assert "nvidia-smi" in resolved
