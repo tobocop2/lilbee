@@ -70,10 +70,10 @@ def _make_wiki() -> Screen:
     return WikiScreen()
 
 
-def _make_placement() -> Screen:
-    from lilbee.cli.tui.screens.placement import PlacementScreen
+def _make_fleet() -> Screen:
+    from lilbee.cli.tui.screens.fleet import FleetScreen
 
-    return PlacementScreen()
+    return FleetScreen()
 
 
 # Screen factory per managed view name (Chat is special-cased in switch_view and
@@ -85,7 +85,7 @@ _VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
     "Settings": _make_settings,
     "Tasks": _make_tasks,
     "Wiki": _make_wiki,
-    "Placement": _make_placement,
+    "Fleet": _make_fleet,
 }
 
 
@@ -141,6 +141,7 @@ class LilbeeApp(App[None]):
         ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
         Binding("S", "run_sync", "Sync", show=False, priority=True),
+        Binding("ctrl+g", "open_fleet", "Fleet", show=True, priority=True),
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
@@ -468,6 +469,14 @@ class LilbeeApp(App[None]):
     def action_open_tasks(self) -> None:
         """Jump to the Task Center screen (t key)."""
         self.switch_view("Tasks")
+
+    def action_open_fleet(self) -> None:
+        """Open the Fleet overlay (ctrl+g). No-op when a FleetBody is already on screen."""
+        from lilbee.cli.tui.widgets.fleet_modal import FleetModal
+
+        if isinstance(self.screen, FleetModal) or bool(self.screen.query("FleetBody")):
+            return
+        self.push_screen(FleetModal())
 
     def action_global_slash_to_chat(self) -> None:
         """Route a slash typed on a non-slash-bound screen back to Chat's prompt.
