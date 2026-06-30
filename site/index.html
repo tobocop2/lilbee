@@ -58,6 +58,32 @@
 }
 </script>
 
+<!-- WebSite JSON-LD: names the site for search engines. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": "lilbee",
+  "url": "https://lilbee.sh/",
+  "description": "A local AI search engine that runs the models and searches your files, code, and the web, with answers that cite the source."
+}
+</script>
+
+<!-- FAQPage JSON-LD: the questions people ask before they install. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "What is lilbee?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee is a local AI search engine. It runs the models, indexes your files, code, and crawled web pages, and answers your questions in plain English with a citation to the exact source. It is one program, with no separate model server or vector database to set up." } },
+    { "@type": "Question", "name": "Is it really one program?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee. You install one thing and reach it as a terminal app, a command-line tool, an MCP server, a web API, or a Python library." } },
+    { "@type": "Question", "name": "Is lilbee a model manager? Do I need Ollama or LM Studio?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, or CUDA, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead." } },
+    { "@type": "Question", "name": "Does my data leave my machine?", "acceptedAnswer": { "@type": "Answer", "text": "No. Your files stay on disk and search runs locally. lilbee uses a cloud model only when you pick one." } },
+    { "@type": "Question", "name": "What can I search?", "acceptedAnswer": { "@type": "Answer", "text": "Files and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types." } }
+  ]
+}
+</script>
+
 <link rel="stylesheet" href="style.css?v=20260515a">
 <script src="main.js?v=20260515a" defer></script>
 </head>
@@ -121,6 +147,8 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-pdf"      aria-controls="tutorial-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">launch: opencode</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">launch: hermes</button>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-whatis" aria-labelledby="tutorial-tab-whatis">
@@ -247,6 +275,20 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">Same shape against the full Godot class reference (810 XMLs, pre-indexed). Cited codegen for a procedural level generator.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchoc" aria-labelledby="tutorial-tab-launchoc" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption"><code>lilbee launch opencode</code> opens opencode on a local model with lilbee wired in. It adds a <code>lilbee launch status</code> subcommand to lilbee's own source, runs it, and writes a test that passes.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchhm" aria-labelledby="tutorial-tab-launchhm" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption"><code>lilbee launch hermes</code> does the same for hermes: launched on a local model, it adds a <code>lilbee launch list</code> subcommand and lands a passing test.</p>
         </div>
 
       </div>
@@ -727,6 +769,28 @@
     <section>
       <h2 class="label">a note on answers</h2>
       <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults, but exposes <strong>50+ settings</strong> you can tune: search, the answers, how your files get read.</p>
+    </section>
+
+    <section>
+      <h2 class="label">use it for</h2>
+      <div class="links">
+        <a href="model-manager/"><span class="num">[1]</span><span>Model manager</span><span class="dots">·······································</span><span class="desc">run &amp; manage models</span></a>
+        <a href="local-rag/"><span class="num">[2]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs, cited</span></a>
+        <a href="code-search/"><span class="num">[3]</span><span>Code search</span><span class="dots">·······································</span><span class="desc">ask your codebase</span></a>
+        <a href="mcp/"><span class="num">[4]</span><span>MCP server</span><span class="dots">·······································</span><span class="desc">for your agent</span></a>
+        <a href="gpu/"><span class="num">[5]</span><span>Will it fit your GPU</span><span class="dots">·······································</span><span class="desc">vram, multi-gpu</span></a>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>What is lilbee?</summary><p>lilbee is a local AI search engine. It runs the models, indexes your files, code, and crawled web pages, and answers your questions in plain English with a citation to the exact source. It is one program, with no separate model server or vector database to set up.</p></details>
+        <details><summary>Is it really one program?</summary><p>Yes. The model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee. You install one thing and reach it as a terminal app, a command-line tool, an MCP server, a web API, or a Python library.</p></details>
+        <details><summary>Is lilbee a model manager? Do I need Ollama or LM Studio?</summary><p>lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, or CUDA, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead.</p></details>
+        <details><summary>Does my data leave my machine?</summary><p>No. Your files stay on disk and search runs locally. lilbee uses a cloud model only when you pick one.</p></details>
+        <details><summary>What can I search?</summary><p>Files and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types.</p></details>
+      </div>
     </section>
 
     <section>

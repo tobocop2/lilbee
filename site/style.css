@@ -907,3 +907,29 @@ footer .meta { text-align: right; font-size: 12px; }
   .installtabs .tab { padding: 0.45rem 0.6rem; font-size: 12px; }
   .extra { flex-direction: column; gap: 0.2rem; }
 }
+
+/* satellite landing pages: breadcrumb + FAQ disclosure --------------- */
+.crumb { font-size: 12px; color: var(--ink-3); margin: 0 0 1.6rem; letter-spacing: 0.02em; }
+.crumb a { color: var(--ink-2); text-decoration: none; }
+.crumb a:hover { color: var(--accent); }
+
+.faq { display: flex; flex-direction: column; gap: 0.5rem; }
+.faq details {
+  border: 1px solid var(--rule-2);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  padding: 0.1rem 0.9rem;
+}
+.faq summary {
+  cursor: pointer;
+  padding: 0.7rem 0;
+  color: var(--ink);
+  font-weight: 600;
+  list-style: none;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::before { content: '+'; color: var(--accent); margin-right: 0.6rem; }
+.faq details[open] summary::before { content: '−'; }
+.faq details[open] summary { border-bottom: 1px solid var(--rule); }
+.faq p { color: var(--ink-2); margin: 0.6rem 0 0.9rem; }
+.faq a { color: var(--accent); }
