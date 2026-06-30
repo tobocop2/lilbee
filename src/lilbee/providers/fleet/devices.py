@@ -17,7 +17,6 @@ from pathlib import Path
 
 _LIST_DEVICES_TIMEOUT_S = 60.0
 MIB = 1024 * 1024
-_MIB = MIB  # kept for backward compatibility; prefer MIB
 # Per-backend visible-devices env vars (the probe inherits them; the children
 # re-emit them, composed through any parent restriction).
 _CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
@@ -86,8 +85,8 @@ def _parse_devices(text: str) -> list[FleetDevice]:
         if match is None:
             continue
         backend, index, name, total_mib, free_mib = match.groups()
-        total = int(total_mib) * _MIB
-        free = int(free_mib) * _MIB if free_mib else total
+        total = int(total_mib) * MIB
+        free = int(free_mib) * MIB if free_mib else total
         devices.append(FleetDevice(backend, int(index), name.strip(), total, free))
     return devices
 
