@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _LIST_DEVICES_TIMEOUT_S = 60.0
-_MIB = 1024 * 1024
+MIB = 1024 * 1024
+_MIB = MIB  # kept for backward compatibility; prefer MIB
 # Per-backend visible-devices env vars (the probe inherits them; the children
 # re-emit them, composed through any parent restriction).
 _CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"

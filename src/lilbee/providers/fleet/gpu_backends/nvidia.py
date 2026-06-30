@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import threading
 import time
-from collections.abc import Sequence
 
-from lilbee.providers.fleet.devices import _MIB
-from lilbee.providers.fleet.gpu_backends.base import UtilSample
+from lilbee.providers.fleet.devices import MIB
+from lilbee.providers.fleet.gpu_backends.base import UtilSample, run_smi
 
 _TOOL = "nvidia-smi"
 _QUERY = "index,utilization.gpu,memory.used,memory.total"
@@ -54,18 +51,7 @@ class NvidiaBackend:
 
 def _smi_output() -> str:
     """nvidia-smi CSV stdout, or "" when it can't run."""
-    binary = shutil.which(_TOOL) or _TOOL
-    try:
-        proc = subprocess.run(  # noqa: S603 - fixed query against the resolved nvidia-smi
-            [binary, f"--query-gpu={_QUERY}", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout if proc.returncode == 0 else ""
+    return run_smi(_TOOL, [f"--query-gpu={_QUERY}", "--format=csv,noheader,nounits"], _TIMEOUT_S)
 
 
 def _parse_smi_output(out: str) -> dict[int, UtilSample]:
@@ -79,25 +65,12 @@ def _parse_smi_output(out: str) -> dict[int, UtilSample]:
             index, util, used_mib, total_mib = (int(p) for p in parts)
         except ValueError:
             continue
-        total = total_mib * _MIB
+        total = total_mib * MIB
         samples[index] = UtilSample(
             index=index,
             utilization_pct=util,
             temperature_c=None,  # four-column query omits temperature
-            free_bytes=max(total - used_mib * _MIB, 0),
+            free_bytes=max(total - used_mib * MIB, 0),
             total_bytes=total,
         )
     return samples
-
-
-# Expose internals for targeted test patching.
-def _get_smi_output() -> str:
-    return _smi_output()
-
-
-def _parse(out: str, indices: Sequence[int] | None = None) -> dict[int, UtilSample]:
-    """Parse helper; optionally filter to indices."""
-    result = _parse_smi_output(out)
-    if indices is not None:
-        result = {i: s for i, s in result.items() if i in indices}
-    return result

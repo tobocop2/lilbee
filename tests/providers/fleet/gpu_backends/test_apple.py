@@ -33,6 +33,11 @@ def test_registry_maps_mtl_to_apple_backend() -> None:
     assert isinstance(gpu_backends.resolve_backend("MTL"), AppleBackend)
 
 
+def test_registry_maps_metal_alias_to_apple_backend() -> None:
+    """Build-dependent 'Metal' string is also registered defensively."""
+    assert isinstance(gpu_backends.resolve_backend("Metal"), AppleBackend)
+
+
 def test_registry_returns_none_for_unknown() -> None:
     assert gpu_backends.resolve_backend("Vulkan") is None
     assert gpu_backends.resolve_backend("BLAS") is None

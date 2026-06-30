@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
 from lilbee.providers.fleet import gpu_backends
-from lilbee.providers.fleet.devices import _MIB
+from lilbee.providers.fleet.devices import MIB
 from lilbee.providers.fleet.gpu_backends import intel as intel_mod
 from lilbee.providers.fleet.gpu_backends.intel import IntelBackend, _parse_xpu_smi
 
@@ -24,13 +22,6 @@ _XPU_JSON = """\
 """
 
 
-def _fake_run(stdout: str, returncode: int = 0):
-    def _run(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
-
-    return _run
-
-
 # ---------------------------------------------------------------------------
 # _parse_xpu_smi
 # ---------------------------------------------------------------------------
@@ -40,8 +31,8 @@ def test_parse_xpu_smi_happy_path() -> None:
     result = _parse_xpu_smi(_XPU_JSON, _INDICES)
     assert result[0].utilization_pct == 88
     assert result[0].temperature_c == 73
-    assert result[0].total_bytes == 16384 * _MIB
-    assert result[0].free_bytes == (16384 - 1024) * _MIB
+    assert result[0].total_bytes == 16384 * MIB
+    assert result[0].free_bytes == (16384 - 1024) * MIB
 
 
 def test_parse_xpu_smi_device_list_wrapper() -> None:
@@ -72,35 +63,24 @@ def test_parse_xpu_smi_no_vram_gives_zero() -> None:
 
 # ---------------------------------------------------------------------------
 # IntelBackend.sample
+# run_smi is imported by name into intel_mod; patch there, not in base.
 # ---------------------------------------------------------------------------
 
 
 def test_sample_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intel_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(intel_mod.subprocess, "run", _fake_run(_XPU_JSON))
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: _XPU_JSON)
     result = IntelBackend().sample(_INDICES)
     assert result[0].utilization_pct == 88
     assert result[0].temperature_c == 73
 
 
 def test_sample_tool_absent_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intel_mod.shutil, "which", lambda _: None)
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: "")
     assert IntelBackend().sample(_INDICES) == {}
 
 
 def test_sample_nonzero_exit_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intel_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(intel_mod.subprocess, "run", _fake_run(_XPU_JSON, returncode=1))
-    assert IntelBackend().sample(_INDICES) == {}
-
-
-def test_sample_oserror_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intel_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-
-    def _err(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        raise OSError("xpu-smi not executable")
-
-    monkeypatch.setattr(intel_mod.subprocess, "run", _err)
+    monkeypatch.setattr(intel_mod, "run_smi", lambda *_a, **_k: "")
     assert IntelBackend().sample(_INDICES) == {}
 
 

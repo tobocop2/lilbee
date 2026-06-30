@@ -12,17 +12,17 @@ from unittest.mock import patch
 import pytest
 
 from lilbee.providers.fleet import gpu_stats as stats_mod
-from lilbee.providers.fleet.devices import _MIB, FleetDevice
+from lilbee.providers.fleet.devices import MIB, FleetDevice
 from lilbee.providers.fleet.gpu_backends.base import UtilSample
 from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats
 
 _CUDA = (
-    FleetDevice("CUDA", 0, "NVIDIA A40", 48 * 1024 * _MIB, 47 * 1024 * _MIB),
-    FleetDevice("CUDA", 1, "NVIDIA A40", 48 * 1024 * _MIB, 47 * 1024 * _MIB),
+    FleetDevice("CUDA", 0, "NVIDIA A40", 48 * 1024 * MIB, 47 * 1024 * MIB),
+    FleetDevice("CUDA", 1, "NVIDIA A40", 48 * 1024 * MIB, 47 * 1024 * MIB),
 )
-_ROCM = (FleetDevice("ROCm", 0, "AMD RX 7900", 16 * 1024 * _MIB, 14 * 1024 * _MIB),)
-_SYCL = (FleetDevice("SYCL", 0, "Intel Arc A770", 16 * 1024 * _MIB, 15 * 1024 * _MIB),)
-_METAL = (FleetDevice("MTL", 0, "Apple M1 Pro", 21845 * _MIB, 21844 * _MIB),)
+_ROCM = (FleetDevice("ROCm", 0, "AMD RX 7900", 16 * 1024 * MIB, 14 * 1024 * MIB),)
+_SYCL = (FleetDevice("SYCL", 0, "Intel Arc A770", 16 * 1024 * MIB, 15 * 1024 * MIB),)
+_METAL = (FleetDevice("MTL", 0, "Apple M1 Pro", 21845 * MIB, 21844 * MIB),)
 
 
 def _sample(
@@ -56,9 +56,9 @@ def test_empty_device_list_returns_empty() -> None:
 
 
 def test_unknown_backend_uses_structural_fallback() -> None:
-    vulkan = (FleetDevice("Vulkan", 0, "GPU", 24 * 1024 * _MIB, 22 * 1024 * _MIB),)
+    vulkan = (FleetDevice("Vulkan", 0, "GPU", 24 * 1024 * MIB, 22 * 1024 * MIB),)
     result = probe_gpu_stats(vulkan)
-    assert result[0] == GpuStat(0, None, 22 * 1024 * _MIB, 24 * 1024 * _MIB)
+    assert result[0] == GpuStat(0, None, 22 * 1024 * MIB, 24 * 1024 * MIB)
 
 
 def test_backend_returning_empty_uses_structural_fallback() -> None:
@@ -66,7 +66,7 @@ def test_backend_returning_empty_uses_structural_fallback() -> None:
         mock_resolve.return_value.sample.return_value = {}
         result = probe_gpu_stats(_CUDA[:1])
     assert result[0].utilization_pct is None
-    assert result[0].free_bytes == 47 * 1024 * _MIB
+    assert result[0].free_bytes == 47 * 1024 * MIB
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +84,8 @@ def test_live_util_and_temp_merged() -> None:
 
 
 def test_live_vram_preferred_when_backend_provides_it() -> None:
-    live_free = 10 * _MIB
-    live_total = 100 * _MIB
+    live_free = 10 * MIB
+    live_total = 100 * MIB
     live = {0: _sample(0, free=live_free, total=live_total)}
     with patch("lilbee.providers.fleet.gpu_stats.resolve_backend") as mock_resolve:
         mock_resolve.return_value.sample.return_value = live
@@ -101,15 +101,15 @@ def test_structural_vram_kept_when_backend_returns_zero_zero() -> None:
         mock_resolve.return_value.sample.return_value = live
         result = probe_gpu_stats(_ROCM)
     assert result[0].utilization_pct == 40
-    assert result[0].free_bytes == 14 * 1024 * _MIB
-    assert result[0].total_bytes == 16 * 1024 * _MIB
+    assert result[0].free_bytes == 14 * 1024 * MIB
+    assert result[0].total_bytes == 16 * 1024 * MIB
 
 
 def test_result_sorted_by_index() -> None:
     devices = (
-        FleetDevice("CUDA", 2, "GPU", 8 * _MIB, 7 * _MIB),
-        FleetDevice("CUDA", 0, "GPU", 8 * _MIB, 7 * _MIB),
-        FleetDevice("CUDA", 1, "GPU", 8 * _MIB, 7 * _MIB),
+        FleetDevice("CUDA", 2, "GPU", 8 * MIB, 7 * MIB),
+        FleetDevice("CUDA", 0, "GPU", 8 * MIB, 7 * MIB),
+        FleetDevice("CUDA", 1, "GPU", 8 * MIB, 7 * MIB),
     )
     live = {0: _sample(0), 1: _sample(1), 2: _sample(2)}
     with patch("lilbee.providers.fleet.gpu_stats.resolve_backend") as mock_resolve:
@@ -173,8 +173,8 @@ def test_metal_device_returns_structural_fallback() -> None:
     result = probe_gpu_stats(_METAL)
     assert result[0].utilization_pct is None
     assert result[0].temperature_c is None
-    assert result[0].free_bytes == 21844 * _MIB
-    assert result[0].total_bytes == 21845 * _MIB
+    assert result[0].free_bytes == 21844 * MIB
+    assert result[0].total_bytes == 21845 * MIB
 
 
 # ---------------------------------------------------------------------------

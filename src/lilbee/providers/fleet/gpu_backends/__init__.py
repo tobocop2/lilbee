@@ -19,12 +19,16 @@ from lilbee.providers.fleet.gpu_backends.nvidia import NvidiaBackend
 
 # Maps the backend string that llama-server --list-devices emits to the backend
 # instance. One entry per backend string (HIP and ROCm share an instance).
+_apple = AppleBackend()
+
 _REGISTRY: dict[str, UtilBackend] = {
     "CUDA": NvidiaBackend(),
     "ROCm": AmdBackend(),
     "HIP": AmdBackend(),
     "SYCL": IntelBackend(),
-    _APPLE_KEY: AppleBackend(),
+    # Apple Metal: register both strings seen in the wild (build-dependent).
+    _APPLE_KEY: _apple,
+    "Metal": _apple,
 }
 
 

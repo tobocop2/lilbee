@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 
-from lilbee.providers.fleet.devices import _MIB
-from lilbee.providers.fleet.gpu_backends.base import UtilSample, extract_int
+from lilbee.providers.fleet.devices import MIB
+from lilbee.providers.fleet.gpu_backends.base import UtilSample, extract_int, run_smi
 
 _TOOL = "xpu-smi"
 _ARGS = ("stats", "--json")
@@ -23,20 +21,7 @@ class IntelBackend:
 
 def _xpu_smi_output() -> str:
     """xpu-smi JSON stdout, or "" when it can't run."""
-    binary = shutil.which(_TOOL)
-    if binary is None:
-        return ""
-    try:
-        proc = subprocess.run(  # noqa: S603 - fixed args against the resolved xpu-smi
-            [binary, *_ARGS],
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout if proc.returncode == 0 else ""
+    return run_smi(_TOOL, list(_ARGS), _TIMEOUT_S)
 
 
 def _parse_xpu_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
@@ -63,8 +48,8 @@ def _parse_xpu_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
         temp = extract_int(item, ("gpu_temperature", "temperature"))
         used_mib = extract_int(item, ("gpu_memory_used_in_mb", "mem_used"))
         total_mib = extract_int(item, ("gpu_memory_size_in_mb", "mem_total"))
-        free = max((total_mib or 0) - (used_mib or 0), 0) * _MIB if total_mib else 0
-        total = (total_mib or 0) * _MIB
+        free = max((total_mib or 0) - (used_mib or 0), 0) * MIB if total_mib else 0
+        total = (total_mib or 0) * MIB
         samples[index] = UtilSample(
             index=index,
             utilization_pct=util,

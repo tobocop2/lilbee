@@ -8,7 +8,8 @@ import threading
 import pytest
 
 from lilbee.providers.fleet import gpu_backends
-from lilbee.providers.fleet.devices import _MIB
+from lilbee.providers.fleet.devices import MIB
+from lilbee.providers.fleet.gpu_backends import base as base_mod
 from lilbee.providers.fleet.gpu_backends import nvidia as nvidia_mod
 from lilbee.providers.fleet.gpu_backends.nvidia import NvidiaBackend, SmiCache, _parse_smi_output
 
@@ -34,8 +35,8 @@ def test_parse_smi_output_happy_path() -> None:
     out = "0, 37, 3536, 46068\n1, 12, 3352, 46068\n"
     result = _parse_smi_output(out)
     assert result[0].utilization_pct == 37
-    assert result[0].free_bytes == (46068 - 3536) * _MIB
-    assert result[0].total_bytes == 46068 * _MIB
+    assert result[0].free_bytes == (46068 - 3536) * MIB
+    assert result[0].total_bytes == 46068 * MIB
     assert result[0].temperature_c is None
     assert result[1].utilization_pct == 12
 
@@ -57,7 +58,8 @@ def test_parse_smi_output_empty() -> None:
 
 
 def test_sample_returns_indexed_subset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(nvidia_mod.subprocess, "run", _fake_run("0, 37, 100, 46068\n1, 12, 100, 46068\n"))
+    # run_smi is imported by name into nvidia_mod; patch there, not in base.
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "0, 37, 100, 46068\n1, 12, 100, 46068\n")
     backend = NvidiaBackend()
     result = backend.sample(frozenset({0}))
     assert 0 in result
@@ -65,13 +67,13 @@ def test_sample_returns_indexed_subset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_sample_falls_back_to_empty_on_smi_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(nvidia_mod.subprocess, "run", lambda *_a, **_k: (_ for _ in ()).throw(OSError("no smi")))
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "")
     backend = NvidiaBackend()
     assert backend.sample(frozenset({0})) == {}
 
 
 def test_sample_empty_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(nvidia_mod.subprocess, "run", _fake_run("0, 50, 100, 200\n", returncode=9))
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "")
     backend = NvidiaBackend()
     assert backend.sample(frozenset({0})) == {}
 
@@ -84,11 +86,11 @@ def test_sample_empty_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cache_coalesces_concurrent_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
-    def _count(*_a: object, **_k: object) -> subprocess.CompletedProcess:
+    def _count(*_a: object, **_k: object) -> str:
         calls["n"] += 1
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout="0, 30, 100, 46068\n", stderr="")
+        return "0, 30, 100, 46068\n"
 
-    monkeypatch.setattr(nvidia_mod.subprocess, "run", _count)
+    monkeypatch.setattr(nvidia_mod, "run_smi", _count)
     backend = NvidiaBackend()
     backend.sample(frozenset({0}))
     backend.sample(frozenset({0}))
@@ -102,11 +104,11 @@ def test_cache_ttl_triggers_new_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
     fake_now = [0.0]
 
-    def _count(*_a: object, **_k: object) -> subprocess.CompletedProcess:
+    def _count(*_a: object, **_k: object) -> str:
         calls["n"] += 1
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout="0, 10, 100, 46068\n", stderr="")
+        return "0, 10, 100, 46068\n"
 
-    monkeypatch.setattr(nvidia_mod.subprocess, "run", _count)
+    monkeypatch.setattr(nvidia_mod, "run_smi", _count)
     monkeypatch.setattr(nvidia_mod.time, "monotonic", lambda: fake_now[0])
 
     cache = SmiCache()
@@ -136,7 +138,7 @@ def test_concurrent_threads_probe_once(monkeypatch: pytest.MonkeyPatch) -> None:
         return original(out)
 
     monkeypatch.setattr(nvidia_mod, "_parse_smi_output", _gated)
-    monkeypatch.setattr(nvidia_mod.subprocess, "run", _fake_run("0, 20, 100, 46068\n"))
+    monkeypatch.setattr(nvidia_mod, "run_smi", lambda *_a, **_k: "0, 20, 100, 46068\n")
 
     cache = SmiCache()
     results: list[dict] = [{}, {}]
@@ -168,16 +170,20 @@ def test_concurrent_threads_probe_once(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_which_resolved_at_call_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """run_smi resolves the binary via shutil.which on each call (tested in base)."""
     resolved: list[str] = []
 
     def _fake_which(name: str) -> str | None:
         resolved.append(name)
         return "/custom/nvidia-smi"
 
-    monkeypatch.setattr(nvidia_mod.shutil, "which", _fake_which)
-    monkeypatch.setattr(nvidia_mod.subprocess, "run", _fake_run("0, 10, 100, 46068\n"))
-
-    nvidia_mod._get_smi_output()
+    monkeypatch.setattr(base_mod.shutil, "which", _fake_which)
+    monkeypatch.setattr(
+        base_mod.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0, stdout="0, 10, 100, 46068\n", stderr=""),
+    )
+    nvidia_mod._smi_output()
     assert "nvidia-smi" in resolved
 
 

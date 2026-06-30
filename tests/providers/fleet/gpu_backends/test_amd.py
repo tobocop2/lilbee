@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
 from lilbee.providers.fleet import gpu_backends
@@ -12,24 +10,43 @@ from lilbee.providers.fleet.gpu_backends.amd import AmdBackend, _parse_amd_smi, 
 
 _INDICES = frozenset({0, 1})
 
-_AMD_SMI_JSON = '[{"gpu": 0, "gfx_activity": 72, "temperature_c": 61}, {"gpu": 1, "gfx_activity": 45, "temperature_c": 58}]'
-_ROCM_SMI_JSON = '{"card0": {"GPU use (%)": "35", "Temperature (Sensor edge) (C)": "52"}, "card1": {"GPU use (%)": "80", "Temperature (Sensor edge) (C)": "67"}}'
+# Flat shape (older amd-smi versions).
+_AMD_SMI_JSON_FLAT = (
+    '[{"gpu": 0, "gfx_activity": 72, "temperature_c": 61},'
+    ' {"gpu": 1, "gfx_activity": 45, "temperature_c": 58}]'
+)
 
+# Nested shape (newer amd-smi versions): util as {"value": N, "unit": "%"},
+# temp as {"edge": N} under a "temperature" key.
+_AMD_SMI_JSON_NESTED = (
+    '[{"gpu": 0,'
+    ' "gfx_activity": {"value": 72, "unit": "%"},'
+    ' "temperature": {"edge": 61}}]'
+)
 
-def _fake_run(stdout: str, returncode: int = 0):
-    def _run(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+_ROCM_SMI_JSON = (
+    '{"card0": {"GPU use (%)": "35", "Temperature (Sensor edge) (C)": "52"},'
+    ' "card1": {"GPU use (%)": "80", "Temperature (Sensor edge) (C)": "67"}}'
+)
 
-    return _run
+# rocm-smi with VRAM keys present (byte values).
+_ROCM_SMI_JSON_VRAM = (
+    '{"card0": {'
+    '"GPU use (%)": "40",'
+    '"Temperature (Sensor edge) (C)": "55",'
+    '"VRAM Total Memory (B)": "17179869184",'
+    '"VRAM Total Used Memory (B)": "2147483648"'
+    '}}'
+)
 
 
 # ---------------------------------------------------------------------------
-# _parse_amd_smi
+# _parse_amd_smi -- flat shape
 # ---------------------------------------------------------------------------
 
 
-def test_parse_amd_smi_happy_path() -> None:
-    result = _parse_amd_smi(_AMD_SMI_JSON, _INDICES)
+def test_parse_amd_smi_flat_happy_path() -> None:
+    result = _parse_amd_smi(_AMD_SMI_JSON_FLAT, _INDICES)
     assert result[0].utilization_pct == 72
     assert result[0].temperature_c == 61
     assert result[1].utilization_pct == 45
@@ -37,8 +54,8 @@ def test_parse_amd_smi_happy_path() -> None:
 
 
 def test_parse_amd_smi_skips_indices_not_requested() -> None:
-    json = '[{"gpu": 0, "gfx_activity": 10}, {"gpu": 5, "gfx_activity": 99}]'
-    result = _parse_amd_smi(json, frozenset({0}))
+    raw = '[{"gpu": 0, "gfx_activity": 10}, {"gpu": 5, "gfx_activity": 99}]'
+    result = _parse_amd_smi(raw, frozenset({0}))
     assert 5 not in result
     assert result[0].utilization_pct == 10
 
@@ -59,9 +76,29 @@ def test_parse_amd_smi_gpu_dict_wrapper() -> None:
 
 def test_parse_amd_smi_vram_sentinel() -> None:
     """amd-smi metric mode omits VRAM; free_bytes/total_bytes stay 0."""
-    result = _parse_amd_smi(_AMD_SMI_JSON, frozenset({0}))
+    result = _parse_amd_smi(_AMD_SMI_JSON_FLAT, frozenset({0}))
     assert result[0].free_bytes == 0
     assert result[0].total_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# _parse_amd_smi -- nested shape (newer amd-smi versions)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_amd_smi_nested_value_shape() -> None:
+    """Nested {"value": N} util and {"edge": N} temp are extracted correctly."""
+    result = _parse_amd_smi(_AMD_SMI_JSON_NESTED, frozenset({0}))
+    assert result[0].utilization_pct == 72
+    assert result[0].temperature_c == 61
+
+
+def test_parse_amd_smi_nested_does_not_break_flat() -> None:
+    """Flat and nested shapes can both be parsed (regression guard)."""
+    flat = _parse_amd_smi(_AMD_SMI_JSON_FLAT, frozenset({0}))
+    nested = _parse_amd_smi(_AMD_SMI_JSON_NESTED, frozenset({0}))
+    assert flat[0].utilization_pct == nested[0].utilization_pct
+    assert flat[0].temperature_c == nested[0].temperature_c
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +111,30 @@ def test_parse_rocm_smi_happy_path() -> None:
     assert result[0].utilization_pct == 35
     assert result[0].temperature_c == 52
     assert result[1].utilization_pct == 80
+
+
+def test_parse_rocm_smi_decimal_string_util() -> None:
+    """rocm-smi may emit util as "35.0"; extract_int must handle it."""
+    raw = '{"card0": {"GPU use (%)": "35.0", "Temperature (Sensor edge) (C)": "52.5"}}'
+    result = _parse_rocm_smi(raw, frozenset({0}))
+    assert result[0].utilization_pct == 35
+    assert result[0].temperature_c == 52
+
+
+def test_parse_rocm_smi_vram_keys_parsed() -> None:
+    """When VRAM Total Memory/Used keys are present, live VRAM is reported."""
+    result = _parse_rocm_smi(_ROCM_SMI_JSON_VRAM, frozenset({0}))
+    total_b = 17_179_869_184
+    used_b = 2_147_483_648
+    assert result[0].total_bytes == total_b
+    assert result[0].free_bytes == total_b - used_b
+
+
+def test_parse_rocm_smi_vram_absent_leaves_sentinel() -> None:
+    """Without VRAM keys the sentinel 0/0 triggers structural-VRAM fallback."""
+    result = _parse_rocm_smi(_ROCM_SMI_JSON, frozenset({0}))
+    assert result[0].free_bytes == 0
+    assert result[0].total_bytes == 0
 
 
 def test_parse_rocm_smi_empty_string() -> None:
@@ -90,52 +151,30 @@ def test_parse_rocm_smi_non_dict_top_level() -> None:
 
 # ---------------------------------------------------------------------------
 # AmdBackend.sample dispatch
+# run_smi is imported by name into amd_mod; patch there, not in base.
 # ---------------------------------------------------------------------------
 
 
 def test_sample_uses_amd_smi_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(amd_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(amd_mod.subprocess, "run", _fake_run(_AMD_SMI_JSON))
+    monkeypatch.setattr(
+        amd_mod, "run_smi",
+        lambda tool, *_a, **_k: _AMD_SMI_JSON_FLAT if tool == amd_mod._TOOL_AMD_SMI else "",
+    )
     result = AmdBackend().sample(frozenset({0}))
     assert result[0].utilization_pct == 72
 
 
-def test_sample_falls_back_to_rocm_smi_when_amd_smi_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _which(name: str) -> str | None:
-        return None if name == amd_mod._TOOL_AMD_SMI else f"/usr/bin/{name}"
+def test_sample_falls_back_to_rocm_smi_when_amd_smi_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _run_smi(tool: str, *_a: object, **_k: object) -> str:
+        return "" if tool == amd_mod._TOOL_AMD_SMI else _ROCM_SMI_JSON
 
-    monkeypatch.setattr(amd_mod.shutil, "which", _which)
-    monkeypatch.setattr(amd_mod.subprocess, "run", _fake_run(_ROCM_SMI_JSON))
+    monkeypatch.setattr(amd_mod, "run_smi", _run_smi)
     result = AmdBackend().sample(frozenset({0}))
     assert result[0].utilization_pct == 35
 
 
-def test_sample_falls_back_to_rocm_smi_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(amd_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-
-    def _run(*args: object, **_k: object) -> subprocess.CompletedProcess:
-        cmd = list(args[0])  # type: ignore[arg-type]
-        if amd_mod._TOOL_AMD_SMI in cmd[0]:
-            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout=_ROCM_SMI_JSON, stderr="")
-
-    monkeypatch.setattr(amd_mod.subprocess, "run", _run)
-    result = AmdBackend().sample(frozenset({0}))
-    assert result[0].utilization_pct == 35
-
-
-def test_sample_returns_empty_when_both_tools_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(amd_mod.shutil, "which", lambda _: None)
-    assert AmdBackend().sample(frozenset({0})) == {}
-
-
-def test_sample_oserror_falls_back_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(amd_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-
-    def _oserr(*_a: object, **_k: object) -> subprocess.CompletedProcess:
-        raise OSError("tool not executable")
-
-    monkeypatch.setattr(amd_mod.subprocess, "run", _oserr)
+def test_sample_returns_empty_when_both_tools_return_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(amd_mod, "run_smi", lambda *_a, **_k: "")
     assert AmdBackend().sample(frozenset({0})) == {}
 
 
