@@ -112,7 +112,7 @@ def test_auto_planner_charged_against_total_capacity(monkeypatch):
     devices = [FleetDevice("CUDA", 0, "A", 80 * GIB, 5 * GIB)]
     captured = {}
 
-    def fake_plan(inputs, devs, *, estimate_peak, unified_budget):
+    def fake_plan(inputs, devs, *, estimate_peak, unified_budget, **_kw):
         captured["devs"] = devs
         return Placement(instances=(), unplaceable_roles=())
 
@@ -127,7 +127,7 @@ def test_no_spec_uses_auto_planner(monkeypatch):
     monkeypatch.setattr(
         planning,
         "plan_placement",
-        lambda inputs, devs, *, estimate_peak, unified_budget: (
+        lambda inputs, devs, *, estimate_peak, unified_budget, **_kw: (
             called.setdefault("auto", True) or Placement(instances=(), unplaceable_roles=())
         ),
     )

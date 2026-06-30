@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from lilbee.providers.fleet.placement import (
     InstancePlan,
     ModelPlacementInput,
@@ -12,6 +14,29 @@ from lilbee.providers.fleet.placement import (
 from lilbee.providers.roles import WorkerRole
 
 _GB = 1024**3
+_FOUR_24GB_CARDS = [(0, 24 * _GB), (1, 24 * _GB), (2, 24 * _GB), (3, 24 * _GB)]
+_FOUR_24GB_FREE = {0: 24 * _GB, 1: 24 * _GB, 2: 24 * _GB, 3: 24 * _GB}
+
+
+def _fits_any_count(model: ModelPlacementInput) -> PeakEstimator:
+    """Estimator whose even per-device share fits a 24 GB card at every split count."""
+
+    def estimate_peak(role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
+        return tuple(model.est_vram_bytes // len(ratio) for _ in ratio)
+
+    return estimate_peak
+
+
+def _ctx_by_count(served_by_count: dict[int, int]):
+    """Fake chat-context fitter returning a fixed served ctx per shard card count."""
+    calls: list[Sequence[int]] = []
+
+    def fit(ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
+        calls.append(list(per_device_free_bytes))
+        return served_by_count[len(ratio)]
+
+    fit.calls = calls  # type: ignore[attr-defined]
+    return fit
 
 
 def _never(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
@@ -247,6 +272,91 @@ class TestPerDeviceSplit:
             estimate_peak=peak,
         )
         assert plan.unplaceable_roles == (WorkerRole.CHAT,)
+
+
+class TestContextAwareChatSplit:
+    """A chat tensor-split widens onto idle cards when a tighter shard would starve
+    KV below the context target, instead of always bin-packing onto the fewest GPUs."""
+
+    def test_widens_onto_idle_cards_when_fewest_starves_context(self) -> None:
+        # 60 GB chat: a 2-card split overflows, 3 cards fits but only serves 4096,
+        # 4 cards serves 16384. Target 8192 -> the planner widens to all four cards
+        # rather than stopping at the first (3-card) shard that merely fits.
+        chat = ModelPlacementInput(WorkerRole.CHAT, 60 * _GB)
+        plan = plan_placement(
+            [chat],
+            _FOUR_24GB_CARDS,
+            estimate_peak=_fits_any_count(chat),
+            chat_ctx_fit=_ctx_by_count({3: 4096, 4: 16384}),
+            chat_ctx_target=8192,
+            free_headroom=_FOUR_24GB_FREE,
+        )
+        assert plan.instances[0].devices == (0, 1, 2, 3)
+        assert plan.unplaceable_roles == ()
+
+    def test_stays_at_fewest_when_context_is_already_usable(self) -> None:
+        # A 2-card split already serves 16384 >= target, so it does NOT over-spread
+        # onto the idle cards (preserving inference speed and residual VRAM).
+        chat = ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)
+        plan = plan_placement(
+            [chat],
+            _FOUR_24GB_CARDS,
+            estimate_peak=_fits_any_count(chat),
+            chat_ctx_fit=_ctx_by_count({2: 16384, 3: 24576, 4: 32768}),
+            chat_ctx_target=8192,
+            free_headroom=_FOUR_24GB_FREE,
+        )
+        assert plan.instances[0].devices == (0, 1)
+
+    def test_maximizes_context_when_target_unreachable(self) -> None:
+        # No shard reaches the 8192 target; the planner falls back to the shard that
+        # serves the MOST context (all cards) rather than the fewest.
+        chat = ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)
+        plan = plan_placement(
+            [chat],
+            _FOUR_24GB_CARDS,
+            estimate_peak=_fits_any_count(chat),
+            chat_ctx_fit=_ctx_by_count({2: 512, 3: 1024, 4: 2048}),
+            chat_ctx_target=8192,
+            free_headroom=_FOUR_24GB_FREE,
+        )
+        assert plan.instances[0].devices == (0, 1, 2, 3)
+
+    def test_fitter_receives_chosen_cards_live_free_headroom(self) -> None:
+        # The fitter is sized against the per-device LIVE free VRAM, not total
+        # capacity, so a fleet whose cards are partly occupied widens correctly.
+        chat = ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)
+        fit = _ctx_by_count({2: 16384})
+        plan_placement(
+            [chat],
+            [(0, 24 * _GB), (1, 24 * _GB)],
+            estimate_peak=_fits_any_count(chat),
+            chat_ctx_fit=fit,
+            chat_ctx_target=8192,
+            free_headroom={0: 9 * _GB, 1: 7 * _GB},
+        )
+        assert fit.calls[0] == [9 * _GB, 7 * _GB]  # type: ignore[attr-defined]
+
+    def test_non_chat_split_ignores_the_chat_fitter(self) -> None:
+        # The context-aware widening is chat-only: a vision split still takes the
+        # fewest fitting cards even when a chat fitter is passed.
+        vision = ModelPlacementInput(WorkerRole.VISION, 30 * _GB)
+        plan = plan_placement(
+            [vision],
+            _FOUR_24GB_CARDS,
+            estimate_peak=_fits_any_count(vision),
+            chat_ctx_fit=_ctx_by_count({2: 1, 3: 1, 4: 1}),
+            chat_ctx_target=8192,
+            free_headroom=_FOUR_24GB_FREE,
+        )
+        assert plan.instances[0].devices == (0, 1)  # fewest, unaffected by the fitter
+
+    def test_default_no_fitter_keeps_first_fit_behavior(self) -> None:
+        # Without a fitter (the planner's generic callers / tests), a chat split
+        # still takes the fewest fitting cards exactly as before.
+        chat = ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)
+        plan = plan_placement([chat], _FOUR_24GB_CARDS, estimate_peak=_fits_any_count(chat))
+        assert plan.instances[0].devices == (0, 1)
 
 
 class TestReplicas:
