@@ -885,6 +885,24 @@ def test_adopt_sums_device_footprint_across_launches(monkeypatch) -> None:
     assert p._device_footprint == {0: 9 * _GB, 1: 20 * _GB, 2: 20 * _GB}
 
 
+def test_reload_pass_credits_resident_footprint(monkeypatch) -> None:
+    # A reload passes the fleet's resident per-device footprint to planning so the
+    # chat split is sized against cold cards, not the still-loaded fleet.
+    captured: list = []
+
+    def _plan(credit=None):
+        captured.append(credit)
+        return [_fake_launch(WorkerRole.CHAT)]
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _plan)
+    p = FleetProvider()
+    p._swap = _FakeSwap()
+    p._device_footprint = {0: 9 * _GB, 1: 29 * _GB}
+    p._reload_pass()
+    assert captured == [{0: 9 * _GB, 1: 29 * _GB}]
+
+
 def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
     order: list[str] = []
     swap = _OrderedReapSwap(order)

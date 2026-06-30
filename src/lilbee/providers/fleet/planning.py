@@ -7,7 +7,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -929,11 +929,17 @@ def plan_launches(
     ]
 
 
-def plan_all_launches() -> list[InstanceLaunch]:
+def plan_all_launches(credit: dict[int, int] | None = None) -> list[InstanceLaunch]:
     """Apply GPU env, probe devices, and plan launches for every configured role.
 
     Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any
     ``cfg.gpu_devices`` pin before the probe and plan (both inherit the env).
+
+    ``credit`` maps device index to bytes the caller's own fleet currently holds
+    there. A reload passes its resident footprint so each device's probed
+    free VRAM is read as if that fleet were already gone (it is about to be), and
+    the chat split is sized against cold cards instead of widening onto a card the
+    fleet already occupies. External occupation stays in the probe and is honored.
     """
     from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
@@ -943,6 +949,24 @@ def plan_all_launches() -> list[InstanceLaunch]:
     # Put the CUDA-runtime wheels on the process path so the device probe sees the
     # same runtime the servers will, before resolve_devices enumerates GPUs.
     apply_cuda_runtime_env()
-    devices = resolve_devices(binary)
+    devices = _credit_free(resolve_devices(binary), credit)
     by_index = {d.index: d for d in devices}
     return plan_launches(None, binary, by_index, devices)
+
+
+def _credit_free(
+    devices: list[FleetDevice], credit: dict[int, int] | None
+) -> list[FleetDevice]:
+    """Add each device's own-fleet residency back to its probed free VRAM.
+
+    ``credit`` is the caller's per-device resident footprint (bytes). Capped at
+    ``total_bytes`` so the credited free never exceeds the card; external (non-fleet)
+    occupation stays subtracted because it is not in ``credit``. ``None``/empty is a
+    no-op (the first build sees cold cards already).
+    """
+    if not credit:
+        return devices
+    return [
+        replace(d, free_bytes=min(d.total_bytes, d.free_bytes + credit.get(d.index, 0)))
+        for d in devices
+    ]

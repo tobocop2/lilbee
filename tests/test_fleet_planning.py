@@ -1386,3 +1386,22 @@ def test_server_spec_other_role_uses_role_default() -> None:
 
     spec = planning_mod._server_spec(WorkerRole.CHAT, None, None)
     assert spec is ROLE_SPECS[WorkerRole.CHAT]
+
+
+def test_credit_free_restores_own_residency_but_honors_external() -> None:
+    # A reload credits the fleet's own per-device residency back to free VRAM so
+    # the chat split is sized against cold cards. The credit is capped at the
+    # card's total, and external (non-fleet) occupation -- which is NOT in the
+    # credit -- stays subtracted.
+    devices = [
+        FleetDevice("CUDA", 0, "L40S", 44 * _GB, 40 * _GB),  # 9GB credit over-caps
+        FleetDevice("CUDA", 1, "L40S", 44 * _GB, 15 * _GB),  # 29GB ours -> back to cold
+        FleetDevice("CUDA", 2, "L40S", 44 * _GB, 10 * _GB),  # 5GB ours + 29GB external
+    ]
+    credited = planning_mod._credit_free(devices, {0: 9 * _GB, 1: 29 * _GB, 2: 5 * _GB})
+    free = {d.index: d.free_bytes for d in credited}
+    assert free[0] == 44 * _GB  # 40 + 9 capped at total
+    assert free[1] == 44 * _GB  # back to cold
+    assert free[2] == 15 * _GB  # 10 + 5; the 29GB external stays subtracted
+    assert planning_mod._credit_free(devices, None) is devices
+    assert planning_mod._credit_free(devices, {}) is devices

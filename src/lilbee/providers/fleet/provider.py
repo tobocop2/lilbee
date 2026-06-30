@@ -1138,7 +1138,14 @@ class FleetProvider:
                 return
             # Reap dead owners' swaps before re-planning, same as the first build.
             swap.reap_stale()
-            launches = planning.plan_all_launches()
+            # Credit our own resident fleet back to the device probe: a reload
+            # restarts every member, so plan the chat split against cold cards
+            # instead of the still-loaded fleet (which would widen chat onto a
+            # card the embedder holds -> OOM). External occupation stays honored.
+            credit = self._device_footprint
+            launches = (
+                planning.plan_all_launches(credit) if credit else planning.plan_all_launches()
+            )
             swap.reload(launches)
             with self._lock:
                 self._adopt_swap(swap, launches)
