@@ -168,6 +168,16 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 ![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 
+### Run a model bigger than one card
+
+When a model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, so chat still has room while indexing runs. The demo below indexes lilbee's own source on a four-GPU box, then asks how that placement works: the answer comes back cited to lilbee's own code while the monitor on the right shows a 235B model running split across three cards.
+
+![index lilbee's own source, then ask how it works while a 235B model runs split across three GPUs next to a live GPU monitor](docs/demos/tui-multi-gpu-self-index.gif)
+
+Placement is automatic, but you can pin it. Set which cards each role runs on and lilbee checks the layout before anything loads: one that fits is applied and shows up on the monitor, one that would run out of memory is refused with the exact shortfall.
+
+![pin the chat model to specific GPUs: a layout that does not fit is rejected with the exact shortfall, a working split is applied and shown on the GPU monitor](docs/demos/tui-manual-placement.gif)
+
 ### Already running Ollama or LM Studio? Keep them.
 
 > **Watch it:** [Ollama as the model manager](https://lilbee.sh/tutorial/#ollama) and [LM Studio as the model manager](https://lilbee.sh/tutorial/#lm-studio). Point lilbee at a running manager, index a PDF on camera, and get a cited answer back.
