@@ -71,9 +71,11 @@ class SessionManager:
             return existing
         self.token = secrets.token_urlsafe(_TOKEN_BYTES)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"token": self.token}))
+        path.write_text(json.dumps({"token": self.token}), encoding="utf-8")
         if sys.platform != "win32":
-            path.chmod(0o600)  # pragma: no cover - POSIX-only; Windows has no 0600 mode bits
+            # pragma: no cover - POSIX-only; Windows relies on the
+            # inherited %LOCALAPPDATA% DACL for owner-only access control.
+            path.chmod(0o600)
         self._initialized = True
         return self.token
 
@@ -90,7 +92,7 @@ class SessionManager:
     def _read_persisted_token(path: Path) -> str | None:
         """Return a previously-persisted token if shape-valid, else None."""
         try:
-            raw = path.read_text()
+            raw = path.read_text(encoding="utf-8")
         except (FileNotFoundError, OSError):
             return None
         try:
