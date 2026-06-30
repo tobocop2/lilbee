@@ -58,6 +58,11 @@ class InstancePlan:
     devices: tuple[int, ...]
     tensor_split: tuple[int, ...] = ()
     replica: int = 0
+    # Estimated VRAM this instance occupies on each of ``devices`` (same order),
+    # in bytes. Empty for the CPU/unified path. The fleet sums these across its
+    # resident instances so a reload can credit its own residency back to the
+    # device probe and not re-plan the chat split onto a card it already holds.
+    per_device_vram: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,7 +171,11 @@ def _place_single(
     single = _best_single_device(model.est_vram_bytes, remaining)
     if single is not None:
         remaining[single] -= model.est_vram_bytes
-        return InstancePlan(role=model.role, devices=(single,))
+        return InstancePlan(
+            role=model.role,
+            devices=(single,),
+            per_device_vram=(int(model.est_vram_bytes),),
+        )
     return _place_split(
         model,
         remaining,
@@ -228,7 +237,12 @@ def _charge_split(
     """Debit each chosen card its own per-device share and return the split plan."""
     for idx, peak in zip(chosen, per_device, strict=True):
         remaining[idx] -= peak
-    return InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio)
+    return InstancePlan(
+        role=model.role,
+        devices=tuple(chosen),
+        tensor_split=ratio,
+        per_device_vram=tuple(int(peak) for peak in per_device),
+    )
 
 
 def _place_replicas(
@@ -254,7 +268,14 @@ def _place_replicas(
         used.add(pick)
         if len(used) == len(remaining):
             used = set()
-        plans.append(InstancePlan(role=model.role, devices=(pick,), replica=replica))
+        plans.append(
+            InstancePlan(
+                role=model.role,
+                devices=(pick,),
+                replica=replica,
+                per_device_vram=(int(model.est_vram_bytes),),
+            )
+        )
     return plans
 
 

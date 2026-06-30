@@ -65,7 +65,7 @@ class TestPlanPlacement:
             estimate_peak=_never,
         )
         assert plan == Placement(
-            instances=(InstancePlan(WorkerRole.CHAT, (0,)),),
+            instances=(InstancePlan(WorkerRole.CHAT, (0,), per_device_vram=(10 * _GB,)),),
             unplaceable_roles=(),
         )
 
@@ -103,7 +103,11 @@ class TestPlanPlacement:
             estimate_peak=_even(model),
         )
         # Equal cards -> equal proportion (int(24*0.9 GiB) = 21 each).
-        assert plan.instances == (InstancePlan(WorkerRole.CHAT, (0, 1), (21, 21)),)
+        assert plan.instances == (
+            InstancePlan(
+                WorkerRole.CHAT, (0, 1), (21, 21), per_device_vram=(15 * _GB, 15 * _GB)
+            ),
+        )
         assert plan.unplaceable_roles == ()
 
     def test_tensor_split_is_proportional_on_unequal_gpus(self) -> None:
@@ -351,6 +355,28 @@ class TestContextAwareChatSplit:
             free_headroom=_FOUR_24GB_FREE,
         )
         assert plan.instances[0].devices == (0, 1)  # fewest, unaffected by the fitter
+
+    def test_records_per_device_footprint(self) -> None:
+        # A single-card model records its whole footprint; a tensor-split records
+        # the estimator's per-device share. The fleet sums these to credit its own
+        # residency back to the device probe on a reload.
+        single = ModelPlacementInput(WorkerRole.EMBED, 8 * _GB)
+        plan = plan_placement([single], [(0, 24 * _GB)], estimate_peak=_never)
+        assert plan.instances[0].devices == (0,)
+        assert plan.instances[0].per_device_vram == (8 * _GB,)
+
+        chat = ModelPlacementInput(WorkerRole.CHAT, 60 * _GB)
+        split = plan_placement(
+            [chat],
+            _FOUR_24GB_CARDS,
+            estimate_peak=_fits_any_count(chat),
+            chat_ctx_fit=_CtxByCount({3: 4096, 4: 16384}),
+            chat_ctx_target=8192,
+            free_headroom=_FOUR_24GB_FREE,
+        )
+        inst = split.instances[0]
+        assert inst.devices == (0, 1, 2, 3)
+        assert inst.per_device_vram == tuple(60 * _GB // 4 for _ in range(4))
 
     def test_default_no_fitter_keeps_first_fit_behavior(self) -> None:
         # Without a fitter (the planner's generic callers / tests), a chat split
