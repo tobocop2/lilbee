@@ -110,3 +110,51 @@ def test_ensure_guides_when_interpreter_unknown(tmp_path):
     msgs: list[str] = []
     assert _ensure(binary, msgs) is False
     assert any("hermes-agent[mcp]" in m for m in msgs)
+
+
+def test_has_http_mcp_false_on_oserror():
+    with patch.object(hermes_mcp.subprocess, "run", side_effect=OSError("no such file")):
+        assert hermes_mcp.has_http_mcp("/py") is False
+
+
+def test_extra_requirements_falls_back_on_oserror():
+    with patch.object(hermes_mcp.subprocess, "run", side_effect=OSError("no such file")):
+        assert hermes_mcp._mcp_extra_requirements("/py") == ["mcp"]
+
+
+def test_ensure_guides_on_install_oserror(tmp_path):
+    binary = _script(tmp_path, "#!/opt/venv/bin/python")
+    msgs: list[str] = []
+    with (
+        patch.object(hermes_mcp, "has_http_mcp", return_value=False),
+        patch.object(hermes_mcp, "_mcp_extra_requirements", return_value=["mcp"]),
+        patch.object(hermes_mcp.subprocess, "run", side_effect=OSError("no such file")),
+    ):
+        assert _ensure(binary, msgs) is False
+    assert any("hermes-agent[mcp]" in m for m in msgs)
+
+
+def test_interpreter_none_for_no_shebang_non_windows(tmp_path):
+    """A binary with no python shebang returns None on non-Windows platforms."""
+    binary = _script(tmp_path, "#!/bin/sh")
+    # Explicitly confirm non-Windows behavior: no shebang -> None
+    with patch.object(hermes_mcp.sys, "platform", "linux"):
+        assert hermes_mcp.hermes_interpreter(str(binary)) is None
+
+
+def test_interpreter_resolved_for_windows_cmd(tmp_path, monkeypatch):
+    """On Windows, a .cmd wrapper with an embedded python path resolves the interpreter."""
+    cmd = tmp_path / "hermes.cmd"
+    cmd.write_text('@"C:\\venv\\Scripts\\python.exe" "%~dp0hermes-script.py" %*\n')
+    monkeypatch.setattr(hermes_mcp.sys, "platform", "win32")
+    result = hermes_mcp.hermes_interpreter(str(cmd))
+    assert result == "C:\\venv\\Scripts\\python.exe"
+
+
+def test_interpreter_falls_back_to_sys_executable_for_windows_exe(tmp_path, monkeypatch):
+    """On Windows, a .exe wrapper with no parseable python path falls back to sys.executable."""
+    exe = tmp_path / "hermes.exe"
+    exe.write_bytes(b"\x4d\x5a")  # MZ header; no shebang, no @"python" line
+    monkeypatch.setattr(hermes_mcp.sys, "platform", "win32")
+    result = hermes_mcp.hermes_interpreter(str(exe))
+    assert result == hermes_mcp.sys.executable

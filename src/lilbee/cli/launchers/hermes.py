@@ -64,9 +64,11 @@ class HermesLauncher:
 
     def __init__(self, *, include_mcp: bool = True) -> None:
         self._include_mcp = include_mcp
+        self._binary: str | None = None
 
     def find_binary(self) -> str | None:
-        return shutil.which("hermes")
+        self._binary = shutil.which("hermes")
+        return self._binary
 
     def prepare(
         self, *, token: str, port: int, model_refs: list[str]
@@ -97,12 +99,14 @@ class HermesLauncher:
             # hermes ships HTTP MCP behind the optional `mcp` extra; without it
             # lilbee's MCP search shows "0 connected". Set it up before launch,
             # honoring hermes's own auto-install security gate.
-            binary = self.find_binary()
-            if binary is not None:
+            # _binary is non-None: run_launcher called find_binary() and gated on it.
+            if self._binary is not None:
                 allow_lazy = bool(
                     (config.get(_SECURITY_KEY) or {}).get(_ALLOW_LAZY_INSTALLS_KEY, True)
                 )
-                ensure_hermes_http_mcp(binary, allow_lazy_installs=allow_lazy, echo=typer.echo)
+                ensure_hermes_http_mcp(
+                    self._binary, allow_lazy_installs=allow_lazy, echo=typer.echo
+                )
         return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})
 
 
