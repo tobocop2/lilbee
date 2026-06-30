@@ -197,6 +197,19 @@ def test_chat_server_spec_enables_jinja() -> None:
     assert "--jinja" in ROLE_SPECS[WorkerRole.CHAT].extra_args
 
 
+def test_chat_server_spec_keeps_reasoning_inline() -> None:
+    from lilbee.providers.fleet.adapters import ROLE_SPECS
+    from lilbee.providers.roles import WorkerRole
+
+    # Recent llama-server defaults to EXTRACTING reasoning into a separate
+    # reasoning_content field, which strips <think>...</think> out of content
+    # and leaves lilbee's <think>-based parser nothing to surface. Forcing
+    # --reasoning-format none keeps the tags inline so reasoning streams through.
+    extra_args = ROLE_SPECS[WorkerRole.CHAT].extra_args
+    idx = extra_args.index("--reasoning-format")
+    assert extra_args[idx + 1] == "none"
+
+
 @pytest.mark.parametrize(
     ("reranker_type", "arch", "expected"),
     [
