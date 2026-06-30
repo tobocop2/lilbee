@@ -27,16 +27,17 @@ def _fits_any_count(model: ModelPlacementInput) -> PeakEstimator:
     return estimate_peak
 
 
-def _ctx_by_count(served_by_count: dict[int, int]):
-    """Fake chat-context fitter returning a fixed served ctx per shard card count."""
-    calls: list[Sequence[int]] = []
+class _CtxByCount:
+    """Fake chat-context fitter returning a fixed served ctx per shard card count,
+    recording the per-device free headroom it was asked about."""
 
-    def fit(ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
-        calls.append(list(per_device_free_bytes))
-        return served_by_count[len(ratio)]
+    def __init__(self, served_by_count: dict[int, int]) -> None:
+        self._served_by_count = served_by_count
+        self.calls: list[list[int]] = []
 
-    fit.calls = calls  # type: ignore[attr-defined]
-    return fit
+    def __call__(self, ratio: tuple[int, ...], per_device_free_bytes: Sequence[int]) -> int:
+        self.calls.append(list(per_device_free_bytes))
+        return self._served_by_count[len(ratio)]
 
 
 def _never(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
@@ -287,7 +288,7 @@ class TestContextAwareChatSplit:
             [chat],
             _FOUR_24GB_CARDS,
             estimate_peak=_fits_any_count(chat),
-            chat_ctx_fit=_ctx_by_count({3: 4096, 4: 16384}),
+            chat_ctx_fit=_CtxByCount({3: 4096, 4: 16384}),
             chat_ctx_target=8192,
             free_headroom=_FOUR_24GB_FREE,
         )
@@ -302,7 +303,7 @@ class TestContextAwareChatSplit:
             [chat],
             _FOUR_24GB_CARDS,
             estimate_peak=_fits_any_count(chat),
-            chat_ctx_fit=_ctx_by_count({2: 16384, 3: 24576, 4: 32768}),
+            chat_ctx_fit=_CtxByCount({2: 16384, 3: 24576, 4: 32768}),
             chat_ctx_target=8192,
             free_headroom=_FOUR_24GB_FREE,
         )
@@ -316,7 +317,7 @@ class TestContextAwareChatSplit:
             [chat],
             _FOUR_24GB_CARDS,
             estimate_peak=_fits_any_count(chat),
-            chat_ctx_fit=_ctx_by_count({2: 512, 3: 1024, 4: 2048}),
+            chat_ctx_fit=_CtxByCount({2: 512, 3: 1024, 4: 2048}),
             chat_ctx_target=8192,
             free_headroom=_FOUR_24GB_FREE,
         )
@@ -326,7 +327,7 @@ class TestContextAwareChatSplit:
         # The fitter is sized against the per-device LIVE free VRAM, not total
         # capacity, so a fleet whose cards are partly occupied widens correctly.
         chat = ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)
-        fit = _ctx_by_count({2: 16384})
+        fit = _CtxByCount({2: 16384})
         plan_placement(
             [chat],
             [(0, 24 * _GB), (1, 24 * _GB)],
@@ -335,7 +336,7 @@ class TestContextAwareChatSplit:
             chat_ctx_target=8192,
             free_headroom={0: 9 * _GB, 1: 7 * _GB},
         )
-        assert fit.calls[0] == [9 * _GB, 7 * _GB]  # type: ignore[attr-defined]
+        assert fit.calls[0] == [9 * _GB, 7 * _GB]
 
     def test_non_chat_split_ignores_the_chat_fitter(self) -> None:
         # The context-aware widening is chat-only: a vision split still takes the
@@ -345,7 +346,7 @@ class TestContextAwareChatSplit:
             [vision],
             _FOUR_24GB_CARDS,
             estimate_peak=_fits_any_count(vision),
-            chat_ctx_fit=_ctx_by_count({2: 1, 3: 1, 4: 1}),
+            chat_ctx_fit=_CtxByCount({2: 1, 3: 1, 4: 1}),
             chat_ctx_target=8192,
             free_headroom=_FOUR_24GB_FREE,
         )
