@@ -1128,20 +1128,22 @@ def _recover_bare_json_stream(
     call it is flushed and all later text passes straight through.
     """
     buffer = ""  # leading text held back as a potential bare call until resolved
-    saw_native = False
+    # Leading text already streamed as plain (or a native call seen): never buffer again.
+    committed = False
     try:
         for item in items:
             if isinstance(item, ToolCallDelta):
                 yield from _flush_plain(buffer)
-                buffer, saw_native = "", True
+                buffer, committed = "", True
                 yield item
             elif isinstance(item, TokenUsage | StreamFinish):
                 yield from _recover_buffer(buffer)
                 buffer = ""
                 yield item
-            elif saw_native or _passthrough_text(buffer, item):
+            elif committed or _passthrough_text(buffer, item):
                 yield from _flush_plain(buffer)
                 buffer = ""
+                committed = True
                 yield item
             else:
                 buffer += item

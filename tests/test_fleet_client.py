@@ -1251,6 +1251,28 @@ def test_chat_stream_items_streams_normal_text_incrementally() -> None:
     assert items == ["He", "llo", " there"]
 
 
+def test_chat_stream_items_midstream_brace_does_not_rebuffer() -> None:
+    """A '{' or '[' token that appears AFTER plain text already streamed must keep
+    streaming token-by-token. Bare-call recovery only applies to the leading text;
+    once committed to plain text the wrapper must never buffer again, or an answer
+    containing a JSON/code example freezes mid-stream and dumps at the end."""
+    body = (
+        _content_sse("Here is ")
+        + _content_sse("a config: ")
+        + _content_sse("{\n")
+        + _content_sse('  "k": 1\n}')
+        + _content_sse(" -- done")
+        + "data: [DONE]\n\n"
+    )
+    items = list(
+        _client(_stream_handler(body)).chat_stream_items(
+            [{"role": "user", "content": "show config"}], tools=_tools()
+        )
+    )
+    # Every token is its own frame; nothing coalesces after the brace token.
+    assert items == ["Here is ", "a config: ", "{\n", '  "k": 1\n}', " -- done"]
+
+
 def test_chat_stream_items_leading_whitespace_then_text_keeps_order() -> None:
     """A whitespace-only first token is buffered (its first non-ws char is unknown),
     then flushed in order once plain text resolves it -- not reordered to the end."""
