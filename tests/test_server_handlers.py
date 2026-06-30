@@ -4396,7 +4396,7 @@ class TestPlacementHandlers:
         ]
         assert len(events) == 2
         assert events[0] == {
-            "gpus": [{"index": 0, "utilization_pct": 64, "free_bytes": 150, "total_bytes": 200}]
+            "gpus": [{"index": 0, "utilization_pct": 64, "free_bytes": 150, "total_bytes": 200, "temperature_c": None}]
         }
         assert probe.call_count == 2
 
