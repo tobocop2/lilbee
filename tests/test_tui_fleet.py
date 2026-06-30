@@ -365,7 +365,7 @@ async def test_apply_ignored_while_applying(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_go_back_binding(monkeypatch):
-    """q pops the screen."""
+    """q routes back to Chat via the guarded switch_view."""
     from lilbee.cli.tui.screens.fleet import FleetScreen
     from lilbee.cli.tui.widgets import fleet_body as fbm
 
@@ -375,25 +375,9 @@ async def test_go_back_binding(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         assert isinstance(app.screen, FleetScreen)
-        await pilot.press("q")
-        await pilot.pause()
-
-
-@pytest.mark.asyncio
-async def test_go_back_single_screen(monkeypatch):
-    """action_go_back with a single-item screen_stack calls switch_view('Chat')."""
-    from lilbee.cli.tui.widgets import fleet_body as fbm
-
-    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
-
-    app = FleetTestApp()
-    async with app.run_test(size=(140, 44)) as pilot:
-        await pilot.pause()
-        screen = app.screen
         called: list[str] = []
-        monkeypatch.setattr(type(app), "screen_stack", property(lambda self: [screen]))
         monkeypatch.setattr(app, "switch_view", lambda v: called.append(v))
-        screen.action_go_back()
+        await pilot.press("q")
         await pilot.pause()
 
     assert called == ["Chat"]

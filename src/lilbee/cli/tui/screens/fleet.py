@@ -60,8 +60,5 @@ class FleetScreen(Screen[None]):
         self.query_one(FleetBody).action_clear()
 
     def action_go_back(self) -> None:
-        """Pop back to the previous screen."""
-        if len(self.app.screen_stack) > 1:
-            self.app.pop_screen()
-        else:
-            self.app.switch_view("Chat")
+        """Return to Chat via the guarded switch_view, the inverse of how the Fleet view is entered."""
+        self.app.switch_view("Chat")
