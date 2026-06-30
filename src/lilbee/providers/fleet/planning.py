@@ -954,9 +954,7 @@ def plan_all_launches(credit: dict[int, int] | None = None) -> list[InstanceLaun
     return plan_launches(None, binary, by_index, devices)
 
 
-def _credit_free(
-    devices: list[FleetDevice], credit: dict[int, int] | None
-) -> list[FleetDevice]:
+def _credit_free(devices: list[FleetDevice], credit: dict[int, int] | None) -> list[FleetDevice]:
     """Add each device's own-fleet residency back to its probed free VRAM.
 
     ``credit`` is the caller's per-device resident footprint (bytes). Capped at

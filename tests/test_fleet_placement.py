@@ -104,9 +104,7 @@ class TestPlanPlacement:
         )
         # Equal cards -> equal proportion (int(24*0.9 GiB) = 21 each).
         assert plan.instances == (
-            InstancePlan(
-                WorkerRole.CHAT, (0, 1), (21, 21), per_device_vram=(15 * _GB, 15 * _GB)
-            ),
+            InstancePlan(WorkerRole.CHAT, (0, 1), (21, 21), per_device_vram=(15 * _GB, 15 * _GB)),
         )
         assert plan.unplaceable_roles == ()
 
