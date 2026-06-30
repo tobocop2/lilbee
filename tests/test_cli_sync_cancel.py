@@ -107,6 +107,7 @@ def test_run_sync_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
     Under pytest-xdist workers (non-main threads) signal.signal raises ValueError.
     The function must complete cleanly without raising.
     """
+
     async def _fake_sync(**kwargs):
         return "ok"
 

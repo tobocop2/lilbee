@@ -188,3 +188,33 @@ def test_registry_maps_rocm_to_amd_backend() -> None:
 
 def test_registry_maps_hip_to_amd_backend() -> None:
     assert isinstance(gpu_backends.resolve_backend("HIP"), AmdBackend)
+
+
+# ---------------------------------------------------------------------------
+# Defensive branches (malformed CLI output)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_amd_smi_skips_non_dict_items() -> None:
+    """Non-dict list entries are skipped, not crashed on."""
+    raw = '[1, "x", {"gpu": 0, "gfx_activity": 10}]'
+    result = _parse_amd_smi(raw, frozenset({0}))
+    assert list(result) == [0]
+    assert result[0].utilization_pct == 10
+
+
+def test_parse_amd_smi_skips_non_int_index() -> None:
+    """A non-integer gpu id is skipped."""
+    assert _parse_amd_smi('[{"gpu": "abc", "gfx_activity": 10}]', frozenset({0})) == {}
+
+
+def test_parse_amd_smi_util_none_when_no_flat_or_nested() -> None:
+    """Util stays None when neither flat nor nested {"value": N} util is present."""
+    result = _parse_amd_smi('[{"gpu": 0, "temperature_c": 50}]', frozenset({0}))
+    assert result[0].utilization_pct is None
+    assert result[0].temperature_c == 50
+
+
+def test_parse_rocm_smi_skips_non_dict_card_value() -> None:
+    """A card whose value is not a dict is skipped."""
+    assert _parse_rocm_smi('{"card0": "x"}', frozenset({0})) == {}

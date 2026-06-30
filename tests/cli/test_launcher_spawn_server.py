@@ -87,15 +87,11 @@ def test_win32_cmd_wrapper_falls_back_to_sys_executable(
     _capture_popen["stdout"].close()
 
 
-def test_non_cmd_bin_on_win32_is_used_directly(
-    monkeypatch, tmp_path: Path, _capture_popen
-) -> None:
+def test_non_cmd_bin_on_win32_is_used_directly(monkeypatch, tmp_path: Path, _capture_popen) -> None:
     """An .exe on win32 (not .cmd) is passed directly without the fallback."""
     monkeypatch.delenv("LILBEE_LAUNCHER_SERVE_QUIET", raising=False)
     monkeypatch.setattr(cfg, "data_dir", tmp_path)
-    monkeypatch.setattr(
-        server_mod.shutil, "which", lambda _name: r"C:\Python\Scripts\lilbee.exe"
-    )
+    monkeypatch.setattr(server_mod.shutil, "which", lambda _name: r"C:\Python\Scripts\lilbee.exe")
     monkeypatch.setattr(server_mod.sys, "platform", "win32")
     server_mod.spawn_server(8080)
     cmd = _capture_popen["cmd"]

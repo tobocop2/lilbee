@@ -222,9 +222,7 @@ async def test_clear_calls_set_placement_none(monkeypatch):
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
     calls: list[object] = []
-    monkeypatch.setattr(
-        fbm, "set_placement", lambda spec: calls.append(spec) or _make_view()
-    )
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: calls.append(spec) or _make_view())
 
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:

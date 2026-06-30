@@ -7,7 +7,7 @@ animate a per-card load bar.
 Vendor-specific probing lives in gpu_backends/; this module groups devices by
 backend, dispatches to resolve_backend(), and merges live samples into GpuStat
 entries. Adding a new vendor means one file in gpu_backends/ and one registry
-line — this file is not touched.
+line; this file is not touched.
 """
 
 from __future__ import annotations

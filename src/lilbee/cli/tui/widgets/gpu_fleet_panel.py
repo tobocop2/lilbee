@@ -88,15 +88,15 @@ def _bar(fraction: float, width: int, fill_color: str, track_color: str) -> str:
     return f"[{fill_color}]{_BAR_FILL * filled}[/][{track_color}]{_BAR_TRACK * (width - filled)}[/]"
 
 
-def _badge_role_markup(role: str, secondary: str, muted: str) -> str:
+def _badge_role_markup(badge: str, secondary: str, muted: str) -> str:
     """Return Rich markup for the role portion of a badge.
 
     Splits "role - model" so the role renders in secondary and the model in muted.
     """
-    if _BADGE_SEP in role:
-        role_part, model_part = role.split(_BADGE_SEP, 1)
+    if _BADGE_SEP in badge:
+        role_part, model_part = badge.split(_BADGE_SEP, 1)
         return f"[{secondary}]{role_part}[/][{muted}]{_BADGE_SEP}{model_part}[/]"
-    return f"[{secondary}]{role}[/]"
+    return f"[{secondary}]{badge}[/]"
 
 
 def _render_stats(

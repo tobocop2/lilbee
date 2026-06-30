@@ -91,3 +91,21 @@ def test_sample_nonzero_exit_returns_empty(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_registry_maps_sycl_to_intel_backend() -> None:
     assert isinstance(gpu_backends.resolve_backend("SYCL"), IntelBackend)
+
+
+# ---------------------------------------------------------------------------
+# Defensive branches (malformed CLI output)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_xpu_smi_skips_non_dict_items() -> None:
+    """Non-dict list entries are skipped, not crashed on."""
+    raw = '[1, "x", {"device_id": 0, "gpu_utilization": 22}]'
+    result = _parse_xpu_smi(raw, frozenset({0}))
+    assert list(result) == [0]
+    assert result[0].utilization_pct == 22
+
+
+def test_parse_xpu_smi_skips_non_int_device_id() -> None:
+    """A non-integer device_id is skipped."""
+    assert _parse_xpu_smi('[{"device_id": "abc", "gpu_utilization": 5}]', frozenset({0})) == {}

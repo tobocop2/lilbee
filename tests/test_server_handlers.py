@@ -4385,9 +4385,7 @@ class TestPlacementHandlers:
         )
         stat = {0: GpuStat(0, 64, 150, 200)}
         with patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat) as probe:
-            chunks = [
-                c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=2)
-            ]
+            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=2)]
         events = [
             json.loads(line[len("data:") :].strip())
             for chunk in chunks
@@ -4396,7 +4394,15 @@ class TestPlacementHandlers:
         ]
         assert len(events) == 2
         assert events[0] == {
-            "gpus": [{"index": 0, "utilization_pct": 64, "free_bytes": 150, "total_bytes": 200, "temperature_c": None}]
+            "gpus": [
+                {
+                    "index": 0,
+                    "utilization_pct": 64,
+                    "free_bytes": 150,
+                    "total_bytes": 200,
+                    "temperature_c": None,
+                }
+            ]
         }
         assert probe.call_count == 2
 
@@ -4430,9 +4436,7 @@ class TestPlacementHandlers:
             with patch("asyncio.sleep", side_effect=_patched_sleep):
                 chunks = [
                     c
-                    async for c in handlers.gpu_stats_stream(
-                        (gpu,), interval_s=0.001, max_ticks=2
-                    )
+                    async for c in handlers.gpu_stats_stream((gpu,), interval_s=0.001, max_ticks=2)
                 ]
 
         event_lines = [
