@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,14 +30,35 @@ _EXTRA_REQS_SNIPPET = (
 )
 
 
+# Suffixes pip uses for Windows console-script wrappers; neither carries a shebang.
+_WINDOWS_WRAPPER_SUFFIXES = (".cmd", ".exe")
+
+
 def hermes_interpreter(binary: str) -> str | None:
-    """The Python that runs hermes, read from its console-script shebang (or None)."""
+    """The Python that runs hermes, read from its console-script shebang (or None).
+
+    On Windows, ``.cmd``/``.exe`` wrappers have no ``#!python`` line.  We parse
+    the embedded Python path from the ``.cmd`` (pip writes it as a comment), and
+    fall back to ``sys.executable`` (shared-venv assumption) when that fails.
+    """
     try:
         first_line = Path(binary).read_text(encoding="utf-8", errors="replace").splitlines()[0]
     except (OSError, IndexError):
         return None
     if first_line.startswith("#!") and "python" in first_line:
         return first_line[2:].strip().split()[0] or None
+    # Windows .cmd/.exe wrappers carry no shebang; detect by suffix + platform.
+    if sys.platform == "win32" and Path(binary).suffix.lower() in _WINDOWS_WRAPPER_SUFFIXES:
+        # pip's generated .cmd embeds the interpreter on the first line as
+        # `@"<path>\python.exe" ...`; try to parse that before falling back.
+        if first_line.startswith('@"') or first_line.startswith("@'"):
+            candidate = first_line[2:].split('"')[0].split("'")[0]
+            if "python" in candidate.lower():
+                return candidate or None
+        # Shared-venv fallback: the lilbee process and hermes share an environment
+        # (e.g. both installed via `pip install` into the same venv), so the
+        # running interpreter is the right one to use for hermes's packages too.
+        return sys.executable
     return None
 
 

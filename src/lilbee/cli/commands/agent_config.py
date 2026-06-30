@@ -12,6 +12,7 @@ import yaml
 
 from lilbee.cli.agent_configs import hermes, litellm, opencode
 from lilbee.cli.app import apply_overrides, data_dir_option, global_option
+from lilbee.cli.launchers.hermes import _MCP_CONTAINER_KEY
 from lilbee.cli.launchers.hermes_mcp import MCP_EXTRA_HINT
 from lilbee.cli.launchers.server import (
     LOOPBACK,
@@ -25,7 +26,6 @@ from lilbee.providers.model_ref import with_configured_remote_chat
 agent_config_app = typer.Typer(help="Print a paste-ready config block for an AI client.")
 
 _SERVE_HINT = "Start `lilbee serve --port 8080` first, then re-run this command."
-_MCP_CONTAINER_KEY = "mcp_servers"  # hermes config key holding the MCP server entries
 
 
 _JsonBuilder = Callable[..., dict[str, Any]]
