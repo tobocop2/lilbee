@@ -1224,6 +1224,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--host",
     "--cont-batching",
     "--jinja",
+    "--reasoning-format",
     "--embeddings",
     "--pooling",
     "--threads",
