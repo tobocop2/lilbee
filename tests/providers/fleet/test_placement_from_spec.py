@@ -30,11 +30,21 @@ def test_builds_plans_from_spec():
         estimate_peak=est,
     )
     assert placement.unplaceable_roles == ()
+    # per_device_vram carries the estimate so a reload can credit the manual
+    # fleet's own residency back to the device probe, same as the auto path.
     assert (
-        InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        InstancePlan(
+            role=WorkerRole.CHAT,
+            devices=(0, 1),
+            tensor_split=(1, 1),
+            per_device_vram=(30 * GIB, 30 * GIB),
+        )
         in placement.instances
     )
-    assert InstancePlan(role=WorkerRole.EMBED, devices=(2,)) in placement.instances
+    assert (
+        InstancePlan(role=WorkerRole.EMBED, devices=(2,), per_device_vram=(4 * GIB,))
+        in placement.instances
+    )
 
 
 def test_errors_when_active_role_missing_from_spec():

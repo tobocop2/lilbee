@@ -343,7 +343,11 @@ def placement_from_spec(
             _charge_devices(role, rp.devices, per_device, remaining, device_capacity)
             instances.append(
                 InstancePlan(
-                    role=role, devices=tuple(rp.devices), tensor_split=split, replica=replica
+                    role=role,
+                    devices=tuple(rp.devices),
+                    tensor_split=split,
+                    replica=replica,
+                    per_device_vram=tuple(int(peak) for peak in per_device),
                 )
             )
     return Placement(instances=tuple(instances), unplaceable_roles=())
