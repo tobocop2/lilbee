@@ -141,7 +141,7 @@ class LilbeeApp(App[None]):
         ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
         Binding("S", "run_sync", "Sync", show=False, priority=True),
-        Binding("ctrl+g", "open_fleet", "Fleet", show=True, priority=True),
+        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True),
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
@@ -470,13 +470,19 @@ class LilbeeApp(App[None]):
         """Jump to the Task Center screen (t key)."""
         self.switch_view("Tasks")
 
-    def action_open_fleet(self) -> None:
-        """Open the Fleet overlay (ctrl+g). No-op when a FleetBody is already on screen."""
-        from lilbee.cli.tui.widgets.fleet_modal import FleetModal
+    def action_toggle_fleet(self) -> None:
+        """Toggle the Fleet drawer (ctrl+g): dock placement beside the current
+        screen, or close it if already open. No-op on the Fleet tab, which
+        already shows the full placement editor."""
+        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 
-        if isinstance(self.screen, FleetModal) or bool(self.screen.query("FleetBody")):
+        drawers = self.screen.query(FleetDrawer)
+        if drawers:
+            drawers.first().remove()
             return
-        self.push_screen(FleetModal())
+        if self.screen.query("FleetBody"):  # Fleet tab already shows placement
+            return
+        self.screen.mount(FleetDrawer())
 
     def action_global_slash_to_chat(self) -> None:
         """Route a slash typed on a non-slash-bound screen back to Chat's prompt.

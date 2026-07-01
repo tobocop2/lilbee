@@ -1,0 +1,9 @@
+FleetDrawer {
+    dock: right;
+    width: 42%;
+    min-width: 44;
+    height: 100%;
+    background: $surface;
+    border-left: thick $primary;
+    padding: 0 1;
+}
