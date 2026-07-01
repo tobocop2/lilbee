@@ -12,6 +12,12 @@ Set PlaybackSpeed 1.5
 Set Theme "rose-pine-moon"
 Set WindowBar Colorful
 
+# Force truecolor so Textual renders exact rose-pine tokens. Without this, a
+# 256-color host quantizes the base #191724 to cube index 16 = pure black and
+# the whole theme collapses. Local shells often set it already; pods do not.
+Env COLORTERM "truecolor"
+Env TERM "xterm-256color"
+
 # Whichever `lilbee` is first on the shell's PATH is what the recordings show.
 # Both the uv-tool / pip install and the Homebrew bundle work; pick the faster
 # one in your env. (The bundled standalone binary boots in ~20s; a pip / uv
