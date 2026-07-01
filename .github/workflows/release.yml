@@ -258,7 +258,29 @@ jobs:
 
       - name: Install dependencies
         # `pip` is required by build_llama_cpp.sh's `pip wheel` invocation.
+        if: matrix.os != 'macos-15-intel'
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
+
+      # Intel Mac: stock lancedb 0.33.0 ships no macosx_x86_64 wheel, so `uv sync`
+      # (locked to PyPI) can't resolve it. Pull lancedb from the +compat index --
+      # its 0.33.0+compat wheel is a PEP 440 drop-in for ==0.33.0 -- then resolve the
+      # rest fresh from PyPI (every other [release] dep has an x86_64 macOS wheel).
+      # CMAKE_ARGS + deployment target keep any throwaway llama-cpp-python sdist build
+      # at the cpu/x86_64/macOS-11 baseline; the dedicated step below builds the
+      # llama-cpp-python that actually ships. Fresh resolution can drift from uv.lock;
+      # the proper index-pinned relock lands in a follow-up.
+      - name: Install dependencies (Intel Mac)
+        if: matrix.os == 'macos-15-intel'
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euxo pipefail
+          eval "$(BACKEND=cpu TARGET_ARCH=x86_64 tools/wheel-build/cmake_args.sh)"
+          export CMAKE_ARGS
+          uv venv
+          uv pip install --extra-index-url https://lilbee.sh/compat/ lancedb==0.33.0+compat
+          uv pip install '.[release]' 'nuitka[onefile]>=4.0,<5' pip
 
       # uv's package cache reuses by version key, so build via pip wheel + local-wheel install bypasses it.
       - name: Build llama-cpp-python from source (GPU + AVX baseline)
