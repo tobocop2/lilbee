@@ -284,10 +284,17 @@ _DEFAULT_TIMEOUT_S = 300.0
 # Short, separate timeout for /health: a server can wedge under heavy prompt
 # processing, and readiness/monitor polls must not block on the request timeout.
 _HEALTH_TIMEOUT_S = 5.0
-# Retry a server-busy (HTTP 429) response this many times with exponential backoff:
-# a cold replica fleet 429s the first ingest fan-out until its slots load.
+# Retry a server-busy (HTTP 429) response with exponential backoff (capped): a
+# cold replica fleet 429s the first fan-out until its slots load. Interactive
+# callers fail fast after this short budget (~15s).
 _BUSY_RETRIES = 6
 _BUSY_BACKOFF_BASE_S = 0.5
+_BUSY_BACKOFF_MAX_S = 8.0
+# Bulk embed ingest is background work, so it waits out a full cold start rather
+# than dropping files: an 8B embedder warming while a large chat model loads on
+# neighboring cards can take well past the interactive budget. Capped backoff
+# keeps the total near ~80s (0.5+1+2+4 then 8 each), which covers a real warmup.
+_EMBED_BUSY_RETRIES = 14
 # Half-open recovery: a replica marked unhealthy becomes routable again after
 # this cool-down. Recovery is probe-by-traffic and unmetered: every concurrent
 # caller sees it routable once cooled down (a success restores it, another
@@ -730,22 +737,23 @@ class LlamaServerClient:
 
         return _llm_rerank_score(_first_token_top_logprobs(self._retry_on_busy(_call)))
 
-    def _retry_on_busy(self, call: Callable[[], _T]) -> _T:
-        """Run *call*, retrying a transient server-busy (RATE_LIMIT) with backoff.
+    def _retry_on_busy(self, call: Callable[[], _T], *, retries: int = _BUSY_RETRIES) -> _T:
+        """Run *call*, retrying a transient server-busy (RATE_LIMIT) with capped backoff.
 
-        A cold replica fleet 429s the first ingest fan-out until its slots load;
-        backing off and retrying turns those drops into successes. Non-RATE_LIMIT
-        errors (and a final still-busy response) propagate to the caller.
+        A cold replica fleet 429s the first fan-out until its slots load; backing
+        off and retrying turns those drops into successes. *retries* bounds the
+        attempts -- interactive callers fail fast, bulk ingest waits out a cold
+        start. Non-RATE_LIMIT errors (and a final still-busy response) propagate.
         """
         delay = _BUSY_BACKOFF_BASE_S
-        for _ in range(_BUSY_RETRIES - 1):
+        for _ in range(retries - 1):
             try:
                 return call()
             except ProviderError as exc:
                 if exc.kind is not ProviderErrorKind.RATE_LIMIT:
                     raise
                 time.sleep(delay)
-                delay *= 2
+                delay = min(delay * 2, _BUSY_BACKOFF_MAX_S)
         return call()
 
     def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
@@ -770,7 +778,8 @@ class LlamaServerClient:
                 )
             return list(data)
 
-        return self._retry_on_busy(_call)
+        # Bulk ingest can afford to wait out a cold-start warmup rather than drop files.
+        return self._retry_on_busy(_call, retries=_EMBED_BUSY_RETRIES)
 
     def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
