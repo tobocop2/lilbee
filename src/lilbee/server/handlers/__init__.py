@@ -37,9 +37,11 @@ from lilbee.server.handlers.documents import (
 from lilbee.server.handlers.ingest import (
     MAX_ADD_FILES,
     add_files_stream,
+    add_uploads_stream,
     import_stream,
     sync_stream,
     validate_add_paths,
+    validate_uploads,
 )
 from lilbee.server.handlers.models import (
     TASK_ENDPOINT_PATH,
@@ -234,6 +236,7 @@ __all__ = [
     "ModelsResponse",
     "SseStream",
     "add_files_stream",
+    "add_uploads_stream",
     "ask",
     "ask_stream",
     "chat",
@@ -274,5 +277,6 @@ __all__ = [
     "sync_stream",
     "update_config",
     "validate_add_paths",
+    "validate_uploads",
     "warm_stream",
 ]

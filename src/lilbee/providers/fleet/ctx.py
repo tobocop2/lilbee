@@ -32,14 +32,18 @@ def fit_split_ctx(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: KvCacheType,
+    ctx_ceiling: int,
 ) -> int:
-    """Largest quantized per-slot n_ctx whose per-device shares all fit their cards.
+    """Largest quantized per-slot n_ctx that fits every card, capped at *ctx_ceiling*.
 
     Binary-searches the gguf-parser estimate at the launch tensor-split *ratio*:
     the server serves ``--ctx-size = per_slot x slots``, so each probe estimates
     that total and accepts the per-slot value when every device's own share stays
-    under that device's usable headroom. Falls to the floor when even that
-    overflows.
+    under that device's usable headroom. *ctx_ceiling* is the working context the
+    caller planned for (``planning._placement_estimate_ctx``: a ``cfg.num_ctx`` pin,
+    else ``cfg.chat_n_ctx_target``); the search never exceeds it (nor the model's
+    trained context), so the launch cannot over-commit VRAM past what placement
+    reserved. Falls to the floor when even that overflows.
     """
     headrooms = [
         int(free * USABLE_VRAM_FRACTION) - _MAIN_GPU_SKEW_RESERVE_BYTES
@@ -47,7 +51,12 @@ def fit_split_ctx(
     ]
     if min(headrooms) <= 0:
         return _DYNAMIC_CTX_FLOOR
-    upper = chat_ctx_ceiling(meta, model_path)
+    # Bound the search by the planned working context, not just the model's trained
+    # max: filling VRAM to that max over-committed beyond the placement reserve and
+    # OOM'd large tensor-split models under load (bb-ev9: a 235B took the full
+    # 262144-token ctx and crashed). The caller passes the same target the placement
+    # estimate reserved KV for, so the launch stays within the plan.
+    upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _peak_fits(per_slot: int) -> bool:
         est = estimate_instance_footprint(

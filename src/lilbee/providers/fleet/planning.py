@@ -53,8 +53,9 @@ _SPLIT_CHAT_SLOTS = 1
 # single-carded into a KV corner too small for real use (a 17GB model on a 24GB
 # card leaves ~no KV room -> n_ctx collapses to a few hundred tokens). Sizing the
 # placement reserve against this floor forces a tensor-split when one card cannot
-# hold weights + a usable context; the served ctx is then grown to the chosen
-# cards' real headroom by resolve_chat_ctx (single) / fit_split_ctx (split).
+# hold weights + a usable context; the served ctx is then grown by resolve_chat_ctx
+# (single) / fit_split_ctx (split) toward the cards' real headroom, capped at the
+# working-context target so the launch never over-commits past the reserve.
 _MIN_USABLE_CHAT_CTX = 8192
 _AUX_SLOTS = 1
 # A tensor-split needs at least this many GPUs; below it the chat context objective
@@ -563,6 +564,7 @@ def _chat_split_ctx_objective(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            ctx_ceiling=target,
         )
 
     return fit, target
@@ -681,6 +683,7 @@ def _launch_for(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
         )
     else:
         ctx = _role_ctx(plan.role, model_path, meta)
