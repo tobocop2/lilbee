@@ -1133,6 +1133,8 @@ class TestChatSplitCtxObjective:
         assert captured["ratio"] == (21, 21)
         assert captured["per_device_free_bytes"] == [24 * _GB, 18 * _GB]
         assert captured["slots"] == planning_mod._SPLIT_CHAT_SLOTS
+        # The fit is bounded by the planned working context (bb-ev9), not the model max.
+        assert captured["ctx_ceiling"] == 8192
 
     def test_resolve_placement_wires_objective_and_keeps_total_charging(self, monkeypatch) -> None:
         # The chat fitter is sized against LIVE free VRAM, but charging stays on TOTAL

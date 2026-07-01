@@ -21,6 +21,7 @@ from lilbee.server.mcp_mount import build_mcp_mount
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
+    add_upload_route,
     documents_list_route,
     documents_remove_route,
     export_route,
@@ -145,6 +146,7 @@ def create_app() -> Litestar:
             completions_router,
             sync_route,
             add_route,
+            add_upload_route,
             models_list_route,
             models_external_route,
             models_set_chat_route,
