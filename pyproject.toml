@@ -92,9 +92,9 @@ packages = ["src/lilbee"]
 # the index instead -- this source override is workspace metadata, not published deps.
 [tool.uv.sources]
 lilbee-engine = { path = "packaging/engine-wheel" }
-# TODO: xberg 1.0.0rc1 is a pre-publication trial wheel; resolve it from the local
+# TODO: xberg 1.0.0rc2 is a pre-publication trial wheel; resolve it from the local
 # build until it lands on PyPI, then drop this source and lock from the index.
-xberg = { path = "/Users/tobias/projects/kreuzberg-wt-pywheel/dist/xberg-1.0.0rc1-cp312-cp312-macosx_11_0_arm64.whl" }
+xberg = { path = "/Users/tobias/projects/kreuzberg-wt-pywheel/dist/xberg-1.0.0rc2-cp310-abi3-macosx_11_0_arm64.whl" }
 
 [dependency-groups]
 dev = [
