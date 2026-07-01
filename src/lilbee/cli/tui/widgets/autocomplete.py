@@ -60,6 +60,17 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     if sources is None:
         return []
     if cmd == "/add":
+        # A fully-typed existing path (no trailing separator) should submit on
+        # Enter rather than keep offering completions, so collapse the dropdown.
+        # Without this a complete directory path lists its contents forever and
+        # Enter accepts a child instead of submitting. A trailing separator still
+        # descends to list the directory's contents.
+        if (
+            partial
+            and not partial.endswith(_PATH_SEPARATORS)
+            and Path(partial).expanduser().exists()
+        ):
+            return []
         # _path_options already prefix-filters against the basename and returns
         # bare segment names (not the typed prefix), so the generic startswith
         # filter below would wrongly wipe them.
