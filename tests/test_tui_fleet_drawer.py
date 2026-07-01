@@ -118,6 +118,41 @@ async def test_drawer_reflows_screen_to_the_left(_patched):
         assert drawer.region.x > probe.region.x
 
 
+class _BarsApp(LilbeeAppHost):
+    """Host whose prompt lives in a docked BottomBars, like the chat screen."""
+
+    CSS = ""
+
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+
+        with BottomBars():
+            yield Input(id="probe-input")
+
+
+@pytest.mark.asyncio
+async def test_open_drawer_insets_docked_bars(_patched):
+    """The docked bottom bar shrinks left of the drawer instead of hiding under it."""
+    from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    app = _BarsApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        bars = app.screen.query_one(BottomBars)
+        assert bars.region.right == 120  # full width before opening
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        drawer = app.screen.query_one(FleetDrawer)
+        assert app.screen.has_class("fleet-open")
+        # the bar no longer extends under the drawer
+        assert bars.region.right <= drawer.region.x
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        assert not app.screen.has_class("fleet-open")
+        assert bars.region.right == 120  # restored to full width
+
+
 @pytest.mark.asyncio
 async def test_drawer_shows_live_gpu_rows(monkeypatch):
     """The drawer hosts FleetBody, whose GPU table renders one row per card."""
