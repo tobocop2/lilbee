@@ -71,7 +71,7 @@ jobs:
     # 90-min cap covers Windows binary cold-starts cumulated across ~95 subprocess invocations.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -220,7 +220,7 @@ jobs:
           dnf -y update
           dnf -y install python3 python3-pip git gh ca-certificates gcc gcc-c++ make vulkan-loader
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install QA harness deps
         run: python3 -m pip install --break-system-packages --root-user-action=ignore -r tools/qa/requirements.txt
@@ -325,7 +325,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -405,7 +405,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
