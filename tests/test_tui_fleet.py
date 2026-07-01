@@ -54,6 +54,41 @@ def _generated(app) -> str:  # type: ignore[no-untyped-def]
     return str(app.screen.query_one(_GENERATED_ID, _Static).render())
 
 
+async def _toggle_device(pilot, selector: str, *, expect_on: bool = True) -> None:  # type: ignore[no-untyped-def]
+    """Activate a GPU toggle and wait until the press has been applied.
+
+    ``pilot.click`` resolves the target's screen coordinates up front, so under
+    parallel load it can fire before layout settles and miss the button
+    entirely. ``Button.press`` posts ``Button.Pressed`` directly (no
+    coordinates), and the handler flips the ``on`` class in the same step that
+    mutates the device set -- so wait for that class as the post-condition.
+    """
+    button = pilot.app.screen.query_one(selector, Button)
+    button.press()
+    for _ in range(100):
+        await pilot.pause()
+        if button.has_class("on") == expect_on:
+            return
+    raise AssertionError(f"{selector} did not reach on={expect_on}")  # pragma: no cover
+
+
+async def _step_until_generated(pilot, selector: str, app, predicate) -> None:  # type: ignore[no-untyped-def]
+    """Activate a control and wait until the generated spec satisfies ``predicate``.
+
+    The replica stepper has no ``on`` class to watch, so synchronise on the
+    equivalent-spec text it drives. Uses ``Button.press`` for the same
+    coordinate-free reason as ``_toggle_device``.
+    """
+    pilot.app.screen.query_one(selector, Button).press()
+    for _ in range(100):
+        await pilot.pause()
+        if predicate(_generated(app)):
+            return
+    raise AssertionError(
+        f"{selector}: generated never matched: {_generated(app)!r}"
+    )  # pragma: no cover
+
+
 @pytest.mark.asyncio
 async def test_fleet_view_shows_live_rows_with_role_badges(monkeypatch):
     """Fleet view mounts FleetBody, which pushes role badges into GpuFleetPanel."""
@@ -104,8 +139,7 @@ async def test_toggle_device_updates_spec(monkeypatch):
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        await pilot.click("#dev-embed-2")  # add CUDA2 to embed
-        await pilot.pause()
+        await _toggle_device(pilot, "#dev-embed-2")  # add CUDA2 to embed
         assert '"embed": {"devices": [0, 2]}' in _generated(app)
 
 
@@ -119,8 +153,7 @@ async def test_cannot_remove_last_device(monkeypatch):
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        await pilot.click("#dev-embed-0")  # embed's only device -> must stay
-        await pilot.pause()
+        await _toggle_device(pilot, "#dev-embed-0", expect_on=True)  # only device -> stays
         assert '"embed": {"devices": [0]}' in _generated(app)
 
 
@@ -134,13 +167,11 @@ async def test_replica_stepper(monkeypatch):
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        await pilot.click("#rep-embed-inc")  # 1 -> 2
-        await pilot.pause()
+        await _step_until_generated(pilot, "#rep-embed-inc", app, lambda g: '"replicas": 2' in g)
         assert '"replicas": 2' in _generated(app)
-        await pilot.click("#rep-embed-dec")  # 2 -> 1 (omitted)
-        await pilot.pause()
+        await _step_until_generated(pilot, "#rep-embed-dec", app, lambda g: "replicas" not in g)
         assert "replicas" not in _generated(app)
-        await pilot.click("#rep-embed-dec")  # floored at 1
+        app.screen.query_one("#rep-embed-dec", Button).press()  # floored at 1 (stays omitted)
         await pilot.pause()
         assert "replicas" not in _generated(app)
 
@@ -180,8 +211,7 @@ async def test_preview_uses_edited_spec(monkeypatch):
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        await pilot.click("#dev-chat-3")  # chat now on CUDA1 + CUDA3
-        await pilot.pause()
+        await _toggle_device(pilot, "#dev-chat-3")  # chat now on CUDA1 + CUDA3
         await pilot.press("ctrl+r")
         await pilot.pause()
         await pilot.pause()
@@ -206,8 +236,7 @@ async def test_apply_uses_edited_spec(monkeypatch):
     app = FleetTestApp()
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
-        await pilot.click("#dev-embed-3")
-        await pilot.pause()
+        await _toggle_device(pilot, "#dev-embed-3")
         await pilot.press("ctrl+s")
         await pilot.pause()
         await pilot.pause()
@@ -428,8 +457,7 @@ async def test_remove_device_when_multiple_devices(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         assert '"embed": {"devices": [0, 3]}' in _generated(app)
-        await pilot.click("#dev-embed-3")
-        await pilot.pause()
+        await _toggle_device(pilot, "#dev-embed-3", expect_on=False)
         assert '"embed": {"devices": [0]}' in _generated(app)
 
 
