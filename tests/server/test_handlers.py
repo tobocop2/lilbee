@@ -111,6 +111,66 @@ class TestAddEndpoint:
         assert "file_done" in event_types
         assert "done" in event_types
 
+    async def test_add_upload_writes_content_and_indexes(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """POST /api/add/upload writes the uploaded bytes into documents_dir and ingests them."""
+        from lilbee.server.app import create_app
+
+        content = b"Uploaded content that the server could not have read by path."
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("notes.txt", content, "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        event_types = [e[0] for e in _parse_sse_events(resp.content)]
+        assert "file_start" in event_types
+        assert "done" in event_types
+        # The client's bytes landed in the corpus even though no server path existed.
+        assert (isolated_env / "notes.txt").read_bytes() == content
+
+    async def test_add_upload_strips_path_traversal_from_filename(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """A crafted ../ filename is reduced to its basename inside documents_dir."""
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("../../escape.txt", b"safe", "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert (isolated_env / "escape.txt").read_bytes() == b"safe"
+        assert not (isolated_env.parent.parent / "escape.txt").exists()
+
+    async def test_add_upload_too_many_is_400(self, mock_extract_file, isolated_env, tmp_path):
+        """More than MAX_ADD_FILES uploads is a clean 400 from validate_uploads."""
+        from lilbee.server.app import create_app
+
+        files = [("data", (f"f{i}.txt", b"x", "text/plain")) for i in range(MAX_ADD_FILES + 1)]
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post("/api/add/upload", files=files, headers=_auth_headers())
+        assert resp.status_code == 400
+
+    def test_validate_uploads_rejects_bad_input(self, mock_extract_file, isolated_env):
+        """validate_uploads guards empty/oversized/malformed uploads and strips paths."""
+        from lilbee.server.handlers import MAX_ADD_FILES, validate_uploads
+
+        with pytest.raises(ValueError, match="no files"):
+            validate_uploads([])
+        with pytest.raises(ValueError, match="Too many"):
+            validate_uploads([(f"f{i}.txt", b"x") for i in range(MAX_ADD_FILES + 1)])
+        with pytest.raises(ValueError, match="invalid upload filename"):
+            validate_uploads([("", b"x")])
+        # A crafted path is reduced to its basename.
+        assert validate_uploads([("../../a/b.txt", b"x")]) == [("b.txt", b"x")]
+
     async def test_add_nonexistent_file_in_errors(self, mock_extract_file, isolated_env, tmp_path):
         """Nonexistent paths appear in the summary errors list."""
         from lilbee.server.app import create_app

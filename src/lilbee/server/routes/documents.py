@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from litestar import Request, Response, get, post
+from litestar.datastructures import UploadFile
+from litestar.enums import RequestEncodingType
 from litestar.exceptions import ValidationException
-from litestar.params import Parameter
+from litestar.params import Body, Parameter
 from litestar.response import Stream
 from pydantic import BaseModel, Field
 
@@ -57,6 +59,31 @@ async def add_route(data: AddRequest) -> Stream:
         handlers.add_files_stream(
             paths, force=force, enable_ocr=enable_ocr, ocr_timeout=ocr_timeout
         ),
+        media_type="text/event-stream",
+        status_code=201,
+    )
+
+
+@post("/api/add/upload")
+async def add_upload_route(
+    data: list[UploadFile] = Body(media_type=RequestEncodingType.MULTI_PART),
+) -> Stream:
+    """Ingest uploaded file content with streaming SSE progress.
+
+    Unlike /api/add, which reads server-side paths, this accepts the client's raw
+    file bytes. That lets a client whose files the server cannot read by path --
+    e.g. the plugin or CLI in external mode against a remote lilbee / GPU box --
+    ingest its own local files by uploading them straight to the server.
+    """
+    files: list[tuple[str, bytes]] = []
+    for upload in data:
+        files.append((upload.filename, await upload.read()))
+    try:
+        cleaned = handlers.validate_uploads(files)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
+    return Stream(
+        handlers.add_uploads_stream(cleaned),
         media_type="text/event-stream",
         status_code=201,
     )

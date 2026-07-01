@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from lilbee.app.ingest import copy_files
 from lilbee.app.services import get_services
@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MAX_ADD_FILES = 100
+
+# Payload carried alongside each source key through _ingest_stream: a server
+# path (str) for /api/add, or an (filename, content) pair for /api/add/upload.
+_Payload = TypeVar("_Payload")
 
 
 async def _run_sync_with_sentinel(
@@ -142,40 +146,40 @@ def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None]:
     return enable_ocr, ocr_timeout
 
 
-async def add_files_stream(
-    paths: list[str],
-    *,
-    force: bool = False,
-    enable_ocr: bool | None = None,
-    ocr_timeout: float | None = None,
+async def _ingest_stream(
+    items: list[tuple[str, _Payload]],
+    run: Callable[[list[_Payload], SseStream], Coroutine[Any, Any, AddSummary]],
+    label: str,
 ) -> AsyncGenerator[str, None]:
-    """Copy files, sync, and yield SSE progress events.
+    """Lock per source, run ``run`` over the acquired subset, and stream SSE.
 
-    Takes the already-validated/parsed values from ``validate_add_paths`` so the
-    request dict is decoded once. Contended sources emit ``already_ingesting``
-    and the stream closes without a ``done`` event, signalling the client to
-    wait rather than retry.
+    Shared by /api/add (server paths) and /api/add/upload (uploaded content).
+    Each item is ``(lock_key, payload)``: the key is the source identifier used
+    for the per-source ingest lock; the payload is what ``run`` receives for the
+    subset whose lock was acquired. Contended sources emit ``already_ingesting``
+    and the stream closes without a ``done`` event, signalling the client to wait
+    rather than retry.
     """
     registry = get_services().ingest_lock_registry
-    acquired, busy = await registry.acquire(paths)
+    acquired, busy = await registry.acquire([key for key, _payload in items])
     try:
         for name in busy:
-            log.info("Rejecting /api/add for %s: already ingesting", name)
+            log.info("Rejecting %s for %s: already ingesting", label, name)
             yield sse_event(SseEvent.ALREADY_INGESTING, {"source": name})
 
         if not acquired:
             return
 
-        # Ingest only the paths this request actually locked; contended ones
-        # already got an ``already_ingesting`` event and must not be re-ingested
-        # under the holder's lock. ``acquired`` keys are canonical source names,
-        # so select the original path strings whose name was acquired.
         acquired_names = {name for name, _lock in acquired}
-        locked_paths = [p for p in paths if registry.canonical_source_name(p) in acquired_names]
+        locked = [
+            payload
+            for key, payload in items
+            if registry.canonical_source_name(key) in acquired_names
+        ]
         sse = SseStream()
-        task = asyncio.create_task(_run_add(locked_paths, force, enable_ocr, ocr_timeout, sse))
+        task = asyncio.create_task(run(locked, sse))
         try:
-            async for event in sse.drain(task, "Add files stream"):
+            async for event in sse.drain(task, label):
                 yield event
             if not sse.cancel.is_set() and task.done() and not task.cancelled():
                 exc = task.exception()
@@ -191,6 +195,91 @@ async def add_files_stream(
                     await task
     finally:
         registry.release(acquired)
+
+
+async def add_files_stream(
+    paths: list[str],
+    *,
+    force: bool = False,
+    enable_ocr: bool | None = None,
+    ocr_timeout: float | None = None,
+) -> AsyncGenerator[str, None]:
+    """Copy server-side files, sync, and yield SSE progress events.
+
+    Takes the already-validated/parsed values from ``validate_add_paths`` so the
+    request dict is decoded once.
+    """
+    async for event in _ingest_stream(
+        [(p, p) for p in paths],
+        lambda locked, sse: _run_add(locked, force, enable_ocr, ocr_timeout, sse),
+        "Add files stream",
+    ):
+        yield event
+
+
+def validate_uploads(files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    """Validate uploaded (filename, content) pairs. Raises ValueError on bad input.
+
+    Filenames are reduced to their basename and validated to stay inside
+    ``cfg.documents_dir`` so a crafted ``../`` name can't escape the corpus.
+    """
+    if not files:
+        raise ValueError("no files uploaded")
+    if len(files) > MAX_ADD_FILES:
+        raise ValueError(f"Too many files: {len(files)} exceeds limit of {MAX_ADD_FILES}")
+    cleaned: list[tuple[str, bytes]] = []
+    for name, content in files:
+        base = Path(name).name
+        if not base:
+            raise ValueError(f"invalid upload filename: {name!r}")
+        validate_path_within(cfg.documents_dir / base, cfg.documents_dir)
+        cleaned.append((base, content))
+    return cleaned
+
+
+async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSummary:
+    """Write uploaded file bytes into ``cfg.documents_dir``, then sync.
+
+    The upload equivalent of :func:`_run_add`: instead of copying from a
+    server-readable path, the client's content is written straight into the
+    documents dir and the same ingest pipeline runs. This is what lets an
+    external-mode client (a remote lilbee / GPU box) ingest files that live only
+    on the client. Unchanged content is a no-op re-embed inside ``sync`` (it
+    hashes each source), so there is no separate force flag.
+    """
+    from lilbee.app.ingest import temporary_ocr_config
+    from lilbee.data.ingest import sync
+
+    try:
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        written: list[str] = []
+        for name, content in files:
+            (cfg.documents_dir / name).write_bytes(content)
+            written.append(name)
+        with temporary_ocr_config(None):
+            sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
+        return AddSummary(
+            copied=written,
+            skipped=[],
+            errors=[],
+            sync=SyncSummary(**sync_result.model_dump()),
+        )
+    finally:
+        sse.queue.put_nowait(None)
+
+
+async def add_uploads_stream(files: list[tuple[str, bytes]]) -> AsyncGenerator[str, None]:
+    """Ingest uploaded file content, yielding the same SSE progress as add_files_stream.
+
+    Locks per source name (the basename) so an upload never races an in-flight add
+    of the same source.
+    """
+    async for event in _ingest_stream(
+        [(name, (name, content)) for name, content in files],
+        lambda locked, sse: _run_upload(locked, sse),
+        "Add uploads stream",
+    ):
+        yield event
 
 
 async def _run_import_with_sentinel(sse: SseStream, data: bytes, fmt: str) -> ImportSummary:

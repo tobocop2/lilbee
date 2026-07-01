@@ -170,6 +170,11 @@ allowed-confusables = ["｜", "▁"]
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
+[tool.ruff.lint.flake8-bugbear]
+# litestar's Body(), like Parameter() (already in ruff's B008 default allowlist),
+# is a declarative parameter marker that is safe as an argument default.
+extend-immutable-calls = ["litestar.params.Body"]
+
 [tool.ruff.lint.per-file-ignores]
 # Test-context S-rule noise. Each of these is either a test fixture
 # (hardcoded token/password literals, fake /tmp paths, 0.0.0.0 bind
