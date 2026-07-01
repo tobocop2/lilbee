@@ -48,7 +48,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v6   # also the implicit tag-exists check
+      - uses: actions/checkout@v7   # also the implicit tag-exists check
         with:
           ref: ${{ inputs.tag }}
 
@@ -118,7 +118,7 @@ jobs:
     needs: [publish-pypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/fanout-packaging
         with:
           tag: ${{ inputs.tag }}
