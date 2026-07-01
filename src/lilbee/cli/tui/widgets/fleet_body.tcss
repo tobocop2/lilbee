@@ -43,11 +43,14 @@ FleetBody {
         border: round $secondary;
     }
 
+    /* Focused (keyboard) chip: a full iris fill + bright iris border so the
+       keyboard cursor pops immediately, clearly distinct from hover (foam) and
+       on (foam fill). */
     .dev-toggle:focus {
-        background: $surface;
-        color: $foreground;
+        background: $primary;
+        color: $background;
         text-style: bold;
-        border: round $primary;
+        border: round $primary-lighten-2;
     }
 
     .dev-toggle.on {
@@ -66,7 +69,7 @@ FleetBody {
         background: $secondary;
         color: $background;
         text-style: bold;
-        border: round $primary;
+        border: round $primary-lighten-2;
     }
 
     .rep-btn {

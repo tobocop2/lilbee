@@ -432,6 +432,8 @@ class ChatScreen(Screen[None]):
             # Let a focused Select / picker button handle Enter / i / a / o itself.
             if isinstance(self.focused, (Select, ModelPickerButton)):
                 return
+            if self._focus_in_fleet_drawer():
+                return
             self._enter_insert_mode()
             event.prevent_default()
             event.stop()
@@ -1705,7 +1707,7 @@ class ChatScreen(Screen[None]):
         """
         inp = self._chat_input
         if not self._insert_mode or not inp.has_focus:
-            self.screen.focus_next()
+            self._tab_into_fleet_or_next()
             return
         overlay = self._completion_overlay
         if not overlay.is_visible and not self._open_completions():
@@ -1714,6 +1716,33 @@ class ChatScreen(Screen[None]):
         if self._fill_common_prefix():
             return
         self._preview_next()
+
+    def _focus_in_fleet_drawer(self) -> bool:
+        """True when keyboard focus is inside the open Fleet drawer, so Enter /
+        i / a / o activate the focused toggle instead of entering insert mode."""
+        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+        focused = self.focused
+        drawers = self.screen.query(FleetDrawer)
+        return bool(focused and drawers and drawers.first() in focused.ancestors_with_self)
+
+    def _tab_into_fleet_or_next(self) -> None:
+        """Jump Tab into the open Fleet drawer's first toggle so the placement
+        editor is reachable without tabbing past every widget; once focus is
+        inside the drawer, Tab cycles within it as usual."""
+        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+        drawers = self.screen.query(FleetDrawer)
+        focused = self.screen.focused
+        if drawers:
+            drawer = drawers.first()
+            inside = focused is not None and drawer in focused.ancestors_with_self
+            if not inside:
+                toggles = drawer.query(".dev-toggle")
+                if toggles:
+                    toggles.first().focus()
+                    return
+        self.screen.focus_next()
 
     def action_complete_next(self) -> None:
         """Ctrl+N: preview the next match, opening the dropdown if it is closed (vim ``<C-n>``)."""

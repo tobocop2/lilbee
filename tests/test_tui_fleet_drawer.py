@@ -222,3 +222,84 @@ async def test_drawer_delegates_editor_actions(_patched, monkeypatch):
         drawer.action_apply()
         drawer.action_clear()
     assert calls == ["preview", "apply", "clear"]
+
+
+def _make_view3():  # type: ignore[no-untyped-def]
+    """Three GPUs with chat on two of them, so a chat toggle can be turned off."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(3)
+        ),
+        roles=(
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), None, 1),
+        ),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_normal_tab_focuses_drawer_and_enter_toggles(monkeypatch) -> None:
+    """Normal-mode Tab jumps into the open drawer's first toggle; Enter on a
+    focused chat chip toggles it off without falling into insert mode."""
+    from unittest import mock
+
+    from lilbee.app.services import set_services
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets import gpu_fleet_panel as gfp
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view3())
+    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: {})
+    svc = mock.MagicMock()
+    svc.provider.list_models.return_value = []
+    svc.searcher._embedder.embedding_available.return_value = True
+    set_services(svc)
+    try:
+        cs = "lilbee.cli.tui.screens.chat.ChatScreen"
+        with (
+            mock.patch(f"{cs}._needs_setup", return_value=False),
+            mock.patch(f"{cs}._embedding_ready", return_value=True),
+        ):
+            app = LilbeeApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+g")
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.press("tab")
+                await pilot.pause()
+                assert app.focused is not None
+                assert "dev-toggle" in app.focused.classes
+                # focus the "on" chat GPU-2 chip and toggle it off with Enter
+                app.screen.query_one("#dev-chat-2").focus()
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                body = app.screen.query_one(FleetBody)
+                assert 2 not in body._edits[WorkerRole.CHAT].devices
+                assert app.screen._insert_mode is False
+    finally:
+        set_services(None)
+
+
+@pytest.mark.asyncio
+async def test_chat_input_enter_yields_when_unfocused() -> None:
+    """The chat input's Enter yields (SkipAction) when it lacks focus, so Enter
+    reaches a focused drawer toggle instead of submitting the prompt."""
+    from textual.actions import SkipAction
+
+    from lilbee.cli.tui.widgets.chat_input import ChatInput
+
+    inp = ChatInput()
+    with pytest.raises(SkipAction):
+        inp.action_submit()
