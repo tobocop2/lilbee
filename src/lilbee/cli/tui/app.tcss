@@ -61,3 +61,12 @@ HelpPanel #widget-help MarkdownBlock:last-child {
 #setup-skip {
     margin: 1 0 0 0;
 }
+
+/* While the Fleet drawer is docked (ctrl+g), inset the full-width top and
+ * bottom bars so the drawer sits beside them instead of covering the input,
+ * model strip, and tabs. The inset must match FleetDrawer width in
+ * fleet_drawer.tcss. */
+.fleet-open TopBars,
+.fleet-open BottomBars {
+    margin-right: 50;
+}

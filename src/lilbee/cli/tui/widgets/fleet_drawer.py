@@ -8,11 +8,16 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.screen import Screen
 
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
 _CSS_FILE = Path(__file__).parent / "fleet_drawer.tcss"
 _DRAWER_CSS = _CSS_FILE.read_text(encoding="utf-8")
+
+# CSS class the drawer sets on its host screen so app.tcss insets the docked
+# top/bottom bars to the space left of the drawer.
+_HOST_OPEN_CLASS = "fleet-open"
 
 
 class FleetDrawer(Vertical):
@@ -36,6 +41,7 @@ class FleetDrawer(Vertical):
 
     def __init__(self) -> None:
         super().__init__(id="fleet-drawer")
+        self._host: Screen[object] | None = None
 
     def compose(self) -> ComposeResult:
         yield FleetBody()
@@ -43,6 +49,16 @@ class FleetDrawer(Vertical):
     # No on_mount focus grab: opening the drawer must NOT steal focus from the
     # chat prompt, so you can keep typing while it stays open. Click a toggle (or
     # tab) to focus the drawer; ctrl+g closes it from anywhere, esc when focused.
+
+    def on_mount(self) -> None:
+        """Inset the host screen's docked bars so the drawer sits beside them."""
+        self._host = self.screen
+        self._host.add_class(_HOST_OPEN_CLASS)
+
+    def on_unmount(self) -> None:
+        """Restore the bars to full width when the drawer closes by any path."""
+        if self._host is not None:
+            self._host.remove_class(_HOST_OPEN_CLASS)
 
     def action_close(self) -> None:
         """Remove the drawer, returning full width to the screen underneath."""
