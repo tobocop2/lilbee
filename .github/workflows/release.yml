@@ -297,6 +297,11 @@ jobs:
         env:
           ASSET_NAME: ${{ matrix.asset_name }}
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+          # Pin Nuitka's clang output to macOS 11.0. Unset, clang defaults the
+          # deployment target to the build host (now macOS 15 on the Intel image),
+          # which would stamp the launcher minos=15 and refuse to launch on macOS
+          # 11-14 even though every bundled dylib targets 11.0. No-op off macOS.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           # compat cell only: hold Nuitka's C output to the pre-Haswell baseline so
           # the launcher layer (not just lancedb) runs on old silicon. Empty elsewhere.
           CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
