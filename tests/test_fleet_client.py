@@ -94,7 +94,7 @@ def test_embed_retries_on_busy_then_succeeds(monkeypatch) -> None:
 
 def test_embed_gives_up_after_retries_when_persistently_busy(monkeypatch) -> None:
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _BUSY_RETRIES
+    from lilbee.providers.fleet.client import _EMBED_BUSY_RETRIES
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     calls = {"n": 0}
@@ -106,7 +106,44 @@ def test_embed_gives_up_after_retries_when_persistently_busy(monkeypatch) -> Non
     with pytest.raises(ProviderError) as excinfo:
         _client(handler).embed(["x"])
     assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
-    assert calls["n"] == _BUSY_RETRIES
+    assert calls["n"] == _EMBED_BUSY_RETRIES
+
+
+def test_embed_rides_out_cold_start_past_interactive_budget(monkeypatch) -> None:
+    # A cold embedder can 429 more times than the short interactive budget allows;
+    # bulk ingest must wait it out (via _EMBED_BUSY_RETRIES) instead of dropping the
+    # file. With the old shared budget this warmup would have raised.
+    from lilbee.providers.fleet.client import _BUSY_RETRIES, _EMBED_BUSY_RETRIES
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    warmup = _BUSY_RETRIES + 2  # more 429s than the interactive budget tolerates
+    assert warmup < _EMBED_BUSY_RETRIES
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= warmup:
+            return httpx.Response(429, json={"error": "warming"})
+        return httpx.Response(200, json={"data": [{"embedding": [0.3]}]})
+
+    assert _client(handler).embed(["x"]) == [[0.3]]
+    assert calls["n"] == warmup + 1
+
+
+def test_busy_backoff_is_capped(monkeypatch) -> None:
+    # Backoff must not balloon past the cap even across the long ingest budget.
+    from lilbee.providers.fleet.client import _BUSY_BACKOFF_MAX_S, _EMBED_BUSY_RETRIES
+
+    delays: list[float] = []
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", delays.append)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "busy"})
+
+    with pytest.raises(ProviderError):
+        _client(handler).embed(["x"])
+    assert len(delays) == _EMBED_BUSY_RETRIES - 1
+    assert max(delays) <= _BUSY_BACKOFF_MAX_S
 
 
 def test_embed_does_not_retry_non_busy_errors(monkeypatch) -> None:
