@@ -40,7 +40,9 @@ class UserMessage(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(_SPEAKER_YOU, classes="speaker-label")
-        yield Static(self._text, classes="message-content")
+        # Content() renders the question literally: a user asking about e.g. arr[0]
+        # or "[/]" must not have it parsed as console markup (which would crash).
+        yield Static(Content(self._text), classes="message-content")
 
 
 class AssistantMessage(Vertical):
@@ -99,10 +101,22 @@ class AssistantMessage(Vertical):
         old = self._content_widget
         new_widget = self._build_content_widget()
         text = "".join(self._content_parts)
-        new_widget.update(text)
+        self._set_content(new_widget, text)
         await self.mount(new_widget, after=old)
         self._content_widget = new_widget
         await old.remove()
+
+    @staticmethod
+    def _set_content(widget: Markdown | Static, text: str) -> None:
+        """Update a content widget with raw model text. A Markdown widget consumes
+        the raw markdown string, but a Static parses console markup -- so wrap the
+        text as literal Content. Otherwise a ``[..]`` in the answer (quoted code, an
+        option like ``[/path]``) raises MarkupError and crashes the whole TUI.
+        """
+        if isinstance(widget, Markdown):
+            widget.update(text)
+        else:
+            widget.update(Content(text))
 
     def append_reasoning(self, text: str) -> None:
         """Append a reasoning token; debounced at ``_MD_UPDATE_INTERVAL``."""
@@ -114,7 +128,7 @@ class AssistantMessage(Vertical):
         ready = now - self._last_reasoning_update >= _MD_UPDATE_INTERVAL
         if self._reasoning_static is not None and ready:
             self._last_reasoning_update = now
-            self._reasoning_static.update("".join(self._reasoning_parts))
+            self._reasoning_static.update(Content("".join(self._reasoning_parts)))
 
     def append_content(self, text: str) -> None:
         """Append response content token (debounced markdown updates)."""
@@ -126,7 +140,7 @@ class AssistantMessage(Vertical):
         now = time.monotonic()
         if self._content_widget is not None and now - self._last_md_update >= _MD_UPDATE_INTERVAL:
             self._last_md_update = now
-            self._content_widget.update("".join(self._content_parts))
+            self._set_content(self._content_widget, "".join(self._content_parts))
             self.refresh()
 
     def finish(self, sources: list[str] | None = None) -> None:
@@ -136,11 +150,11 @@ class AssistantMessage(Vertical):
         # (if mounted) carries the post-stream title.
         self._dismiss_thinking_header()
         if self._content_widget is not None and self._content_parts:
-            self._content_widget.update("".join(self._content_parts))
+            self._set_content(self._content_widget, "".join(self._content_parts))
             self.refresh()
         if self._reasoning_widget is not None and self._reasoning_parts:
             if self._reasoning_static is not None:
-                self._reasoning_static.update("".join(self._reasoning_parts))
+                self._reasoning_static.update(Content("".join(self._reasoning_parts)))
             token_count = len("".join(self._reasoning_parts).split())
             self._reasoning_widget.remove_class(_REASONING_STREAMING_CLASS)
             self._reasoning_widget.title = msg.CHAT_REASONING_FINISHED.format(tokens=token_count)

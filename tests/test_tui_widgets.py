@@ -63,6 +63,20 @@ class TestUserMessage:
         children = list(msg.compose())
         assert len(children) == 2  # speaker label + content
 
+    async def test_question_with_markup_chars_does_not_crash(self) -> None:
+        """A question containing console-markup chars (``arr[0]``, ``[/]``) renders
+        literally; parsing it as markup would raise MarkupError and crash the TUI."""
+        from textual.app import App
+
+        from lilbee.cli.tui.widgets.message import UserMessage
+
+        class _App(App):
+            def compose(self) -> ComposeResult:  # module-level ComposeResult
+                yield UserMessage("what does arr[0] do? [/] and [bold")
+
+        async with _App().run_test() as pilot:
+            await pilot.pause()  # renders without raising MarkupError
+
 
 class TestAssistantMessageAsync:
     async def test_compose_yields_speaker_content_citation(self) -> None:
@@ -126,8 +140,25 @@ class TestAssistantMessageAsync:
                 am.finish(sources=None)
                 # finish() flushes the buffered tail.
                 assert mock_update.call_count == 1
+                # Reasoning is wrapped as literal Content (never parsed as markup).
                 last_call_text = mock_update.call_args_list[-1].args[0]
-                assert last_call_text == "a b c "
+                assert last_call_text.plain == "a b c "
+
+    async def test_reasoning_with_markup_chars_does_not_crash(self) -> None:
+        """Reasoning that quotes code with console-markup chars (e.g. ``[/]`` or an
+        unbalanced ``[bold]``) must render literally; passing the raw string to a
+        Static would raise MarkupError and kill the whole TUI."""
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_reasoning("quoting yield from _flush(buffer) then [/] and [bold]x")
+            await pilot.pause()
+            am.finish(sources=None)
+            await pilot.pause()  # renders without raising MarkupError
+            assert am._reasoning_static is not None
+            # The markup chars are preserved verbatim in the reasoning, not parsed.
+            assert "[/]" in "".join(am._reasoning_parts)
 
     async def test_append_content_updates_markdown(self) -> None:
         app = _MsgApp()
