@@ -485,7 +485,7 @@ class TestInit:
         init(str(target))
         assert os.environ.get("LILBEE_DATA") == str(target)
 
-    def test_init_overlays_per_root_config_toml(self, tmp_path):
+    def test_init_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
         """init() must re-read the project base's config.toml, the same fix as
         the CLI's --data-dir entry point. Without this, switching the MCP
         session to a project that has its own model preferences silently

@@ -93,7 +93,13 @@ def overlay_persisted_settings(root: Path) -> None:
     An explicit ``LILBEE_<FIELD>`` env var wins over config.toml (the documented
     precedence): cfg already holds the env-loaded value, so a key whose env var is
     set is left untouched rather than overwritten by the persisted file.
+
+    ``LILBEE_SKIP_TOML_CONFIG=1`` disables this overlay entirely, matching the
+    pydantic-settings source in ``config/model.py`` so the escape hatch is honored
+    on every config-read path (import-time load, CLI callback, MCP server).
     """
+    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1":
+        return
     log = logging.getLogger(__name__)
     try:
         persisted = load(root)

@@ -356,11 +356,12 @@ class TestCrawlRenderModeConfig:
 
 
 class TestOverlayPersistedSettings:
-    def test_empty_string_value_is_skipped(self, tmp_path):
+    def test_empty_string_value_is_skipped(self, tmp_path, monkeypatch):
         """Legacy persisted empty strings (None written as "") skip overlay
         instead of corrupting the in-memory config or spamming warnings."""
         from lilbee.core.config import cfg
 
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
         original = cfg.chat_model
         try:
             (tmp_path / "config.toml").write_text('chat_model = ""\n')
@@ -375,6 +376,7 @@ class TestOverlayPersistedSettings:
 
         original = cfg.vision_replicas
         try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
             cfg.vision_replicas = 4  # value as loaded from LILBEE_VISION_REPLICAS
             monkeypatch.setenv("LILBEE_VISION_REPLICAS", "4")
             (tmp_path / "config.toml").write_text("vision_replicas = 2\n")
@@ -389,6 +391,7 @@ class TestOverlayPersistedSettings:
 
         original = cfg.vision_replicas
         try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
             monkeypatch.setenv("LILBEE_VISION_REPLICAS", "")
             cfg.vision_replicas = 1
             (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
@@ -403,11 +406,28 @@ class TestOverlayPersistedSettings:
 
         original = cfg.vision_replicas
         try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
             monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
             cfg.vision_replicas = 1
             (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
             settings.overlay_persisted_settings(tmp_path)
             assert cfg.vision_replicas == 3
+        finally:
+            cfg.vision_replicas = original
+
+    def test_skip_toml_config_makes_overlay_noop(self, tmp_path, monkeypatch):
+        """LILBEE_SKIP_TOML_CONFIG=1 disables the overlay path too, so the escape
+        hatch is honored consistently with the pydantic-settings source (the CLI
+        and MCP overlay must not re-read config.toml behind the skip flag)."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 1  # config.toml ignored while skipping
         finally:
             cfg.vision_replicas = original
 
