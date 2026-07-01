@@ -6588,3 +6588,12 @@ class TestCatalogFocusEdgeGuards:
         assert screen.load_more_called is True
         assert screen.focus_next_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
+
+
+class TestPathExists:
+    def test_returns_false_when_path_resolution_raises(self) -> None:
+        """A path that can't even be resolved reports as absent, not an error."""
+        from lilbee.cli.tui.widgets import autocomplete
+
+        with mock.patch.object(autocomplete, "Path", side_effect=OSError("boom")):
+            assert autocomplete._path_exists("~/whatever") is False
