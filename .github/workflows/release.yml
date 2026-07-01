@@ -157,7 +157,25 @@ jobs:
           - os: macos-latest
             asset_name: lilbee-macos-arm64
             backend: metal
-          # Intel Mac dropped: macos-13 hosted runners stay queued; pip wheel covers them.
+          # Intel Mac: built natively on macos-15-intel, GitHub's Intel image
+          # (Nuitka can't cross-compile arch from the arm64 runner). Soft because
+          # the Intel image can queue longer than the arm64 pool -- this asset must
+          # never block the release fan-out. Deployment target stays 11.0, so the
+          # AVX baseline covers every Mac that can run macOS 11+ (Ivy Bridge or newer).
+          - os: macos-15-intel
+            asset_name: lilbee-macos-x86_64
+            backend: cpu
+            soft: true
+          # Pre-Haswell-safe Intel Mac build: same self-contained model as the
+          # linux/windows compat cells (stock lancedb swapped for +compat, launcher
+          # held to x86-64-v2). Covers the AVX-but-no-AVX2 tail (e.g. 2013 Mac Pro)
+          # and guards against an AVX2-baselined stock lancedb SIGILL.
+          - os: macos-15-intel
+            asset_name: lilbee-compat-macos-x86_64
+            backend: cpu
+            compat: true
+            soft: true
+            march: x86-64-v2
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             backend: vulkan
