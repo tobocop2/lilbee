@@ -55,6 +55,10 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     if sources is None:
         return []
     if cmd == "/add":
+        # A fully-typed existing path (no trailing separator) should submit on
+        # Enter rather than keep offering completions, so collapse the dropdown.
+        if partial and not partial.endswith(_PATH_SEPARATORS) and _path_exists(partial):
+            return []
         # _path_options already prefix-filters against the basename and returns
         # bare segment names (not the typed prefix), so the generic startswith
         # filter below would wrongly wipe them.
@@ -108,6 +112,15 @@ def invalidate_document_cache() -> None:
 
 def _theme_options() -> list[str]:
     return list(DARK_THEMES)
+
+
+def _path_exists(partial: str) -> bool:
+    """True if *partial* resolves to an existing file or directory."""
+    try:
+        return Path(partial).expanduser().exists()
+    except Exception:
+        log.debug("Failed to check path existence for autocomplete", exc_info=True)
+        return False
 
 
 def _path_options(partial: str = "") -> list[str]:

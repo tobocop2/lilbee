@@ -2498,6 +2498,40 @@ class TestGetCompletions:
         r = get_completions("/add ./")
         assert any("beta.txt" in x for x in r)
 
+    def test_add_fully_typed_existing_path_collapses_dropdown(self, tmp_path) -> None:
+        """A complete existing path (no trailing separator) offers no
+        completions, so Enter submits it instead of reopening the dropdown."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        f = P(str(tmp_path)) / "doc.md"
+        f.touch()
+        assert get_completions(f"/add {f}") == []
+
+
+class TestPathExists:
+    def test_true_for_existing_path(self, tmp_path) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _path_exists
+
+        assert _path_exists(str(tmp_path)) is True
+
+    def test_false_for_missing_path(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import _path_exists
+
+        assert _path_exists("/nonexistent_xyzzy_path/abc") is False
+
+    def test_false_when_resolution_raises(self, monkeypatch) -> None:
+        from pathlib import Path
+
+        from lilbee.cli.tui.widgets import autocomplete
+
+        def boom(self):
+            raise OSError("boom")
+
+        monkeypatch.setattr(Path, "exists", boom)
+        assert autocomplete._path_exists("/tmp") is False
+
 
 class TestPathCompletionPrefix:
     def test_posix_path_keeps_directory(self) -> None:
