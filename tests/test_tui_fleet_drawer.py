@@ -59,6 +59,9 @@ async def test_ctrl_g_opens_drawer_and_esc_closes(_patched):
         await pilot.pause()
         await pilot.pause()
         assert app.screen.query(FleetDrawer)
+        # opening does not steal focus, so focus a toggle before esc routes here
+        app.screen.query_one(FleetDrawer).query(".dev-toggle").first().focus()
+        await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
         assert not app.screen.query(FleetDrawer)
@@ -91,9 +94,9 @@ async def test_chat_stays_interactive_while_drawer_open(_patched):
         await pilot.press("ctrl+g")
         await pilot.pause()
         assert app.screen.query(FleetDrawer)
+        # opening the drawer must NOT steal focus from the prompt
         probe = app.query_one("#probe-input", Input)
-        probe.focus()
-        await pilot.pause()
+        assert app.focused is probe
         await pilot.press("h", "i")
         await pilot.pause()
         assert probe.value == "hi"
@@ -184,28 +187,3 @@ async def test_drawer_delegates_editor_actions(_patched, monkeypatch):
         drawer.action_apply()
         drawer.action_clear()
     assert calls == ["preview", "apply", "clear"]
-
-
-def _empty_view():  # type: ignore[no-untyped-def]
-    from lilbee.app.placement import PlacementView
-
-    return PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
-
-
-@pytest.mark.asyncio
-async def test_drawer_focus_skips_when_no_toggles(monkeypatch):
-    """With no placement configured (no toggles) the drawer mounts without error."""
-    from lilbee.cli.tui.widgets import fleet_body as fbm
-    from lilbee.cli.tui.widgets import gpu_fleet_panel as gfp
-    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
-
-    monkeypatch.setattr(fbm, "get_placement", lambda: _empty_view())
-    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: {})
-
-    app = _DrawerApp()
-    async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.pause()
-        await pilot.press("ctrl+g")
-        await pilot.pause()
-        await pilot.pause()
-        assert app.screen.query(FleetDrawer)
