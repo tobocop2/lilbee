@@ -40,19 +40,9 @@ class FleetDrawer(Vertical):
     def compose(self) -> ComposeResult:
         yield FleetBody()
 
-    def on_mount(self) -> None:
-        """Focus the first GPU toggle once FleetBody has built its editor.
-
-        The editor rows mount during FleetBody's own on_mount, so defer to the
-        next refresh; that also puts focus inside the drawer so esc and the
-        preview/apply/clear keys route here rather than to the screen behind.
-        """
-        self.call_after_refresh(self._focus_editor)
-
-    def _focus_editor(self) -> None:
-        toggles = self.query(".dev-toggle")
-        if toggles:
-            toggles.first().focus()
+    # No on_mount focus grab: opening the drawer must NOT steal focus from the
+    # chat prompt, so you can keep typing while it stays open. Click a toggle (or
+    # tab) to focus the drawer; ctrl+g closes it from anywhere, esc when focused.
 
     def action_close(self) -> None:
         """Remove the drawer, returning full width to the screen underneath."""
