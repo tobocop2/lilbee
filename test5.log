@@ -1,0 +1,990 @@
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  0%]
+........................................................................ [  1%]
+........................................................................ [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........s............................................................... [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+..........................................................s............. [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+...................................................................s.... [ 76%]
+..................................X..................X.................. [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+...........................................................              [100%]
+=============================== warnings summary ===============================
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='search'). Use 'QueryParameter(name='search')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='limit'). Use 'QueryParameter(name='limit')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='offset'). Use 'QueryParameter(name='offset')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='format'). Use 'QueryParameter(name='format')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='source'). Use 'QueryParameter(name='source')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='task'). Use 'QueryParameter(name='task')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='size'). Use 'QueryParameter(name='size')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='installed'). Use 'QueryParameter(name='installed')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='featured'). Use 'QueryParameter(name='featured')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='sort'). Use 'QueryParameter(name='sort')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='q'). Use 'QueryParameter(name='q')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='top_k'). Use 'QueryParameter(name='top_k')' instead
+
+<string>:34
+<string>:34
+<string>:34
+<string>:34
+  <string>:34: DeprecationWarning: Deprecated 'query' parameter: Parameter(query='chunk_type'). Use 'QueryParameter(name='chunk_type')' instead
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/source', handler='source_content_route'] query parameter 'source' declared using deprecated inferred style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/source', handler='source_content_route'] query parameter 'raw' declared using deprecated inferred style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/search', handler='search_route'] query parameter 'top_k' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/search', handler='search_route'] query parameter 'chunk_type' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/search', handler='search_route'] query parameter 'q' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'task' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'offset' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'featured' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'search' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'sort' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'installed' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'size' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/catalog', handler='models_catalog_route'] query parameter 'limit' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/{model:str}', handler='models_delete_route'] query parameter 'source' declared using deprecated inferred style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/models/{model:str}', handler='models_delete_route'] path parameter 'model' declared using deprecated inferred style. Use 'FromPath[<type>]' or 'Annotated[<type>, PathParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/documents', handler='documents_list_route'] query parameter 'limit' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/documents', handler='documents_list_route'] query parameter 'search' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/documents', handler='documents_list_route'] query parameter 'offset' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 2 warnings
+tests/server/test_app_registers_v1.py: 4 warnings
+tests/server/test_handlers.py: 30 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 8 warnings
+tests/server/test_review_fixes.py: 4 warnings
+tests/server/test_wiki_routes.py: 106 warnings
+tests/test_server_handlers.py: 44 warnings
+tests/test_server_litestar.py: 260 warnings
+tests/test_server_memory.py: 22 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/memories/{memory_id:str}', handler='memories_update_route'] path parameter 'memory_id' declared using deprecated inferred style. Use 'FromPath[<type>]' or 'Annotated[<type>, PathParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/memories/{memory_id:str}', handler='memories_remove_route'] path parameter 'memory_id' declared using deprecated inferred style. Use 'FromPath[<type>]' or 'Annotated[<type>, PathParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/export', handler='export_route'] query parameter 'fmt' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/export', handler='export_route'] query parameter 'source' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/import', handler='import_route'] query parameter 'fmt' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/wiki/{slug:path}', handler='wiki_read_route'] path parameter 'slug' declared using deprecated inferred style. Use 'FromPath[<type>]' or 'Annotated[<type>, PathParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/wiki/drafts/diff/{slug:path}', handler='wiki_draft_diff_route'] path parameter 'slug' declared using deprecated inferred style. Use 'FromPath[<type>]' or 'Annotated[<type>, PathParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/wiki/drafts/accept/{slug:path}', handler='wiki_draft_accept_route'] path parameter 'slug' declared using deprecated inferred style. Use 'FromPath[<type>]' or 'Annotated[<type>, PathParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/wiki/drafts/{slug:path}', handler='wiki_draft_reject_route'] path parameter 'slug' declared using deprecated inferred style. Use 'FromPath[<type>]' or 'Annotated[<type>, PathParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/cli/test_serve_logging.py: 1 warning
+tests/server/test_app_registers_v1.py: 2 warnings
+tests/server/test_handlers.py: 15 warnings
+tests/server/test_rag_uses_chat_dispatch.py: 4 warnings
+tests/server/test_review_fixes.py: 2 warnings
+tests/server/test_wiki_routes.py: 53 warnings
+tests/test_server_handlers.py: 22 warnings
+tests/test_server_litestar.py: 130 warnings
+tests/test_server_memory.py: 11 warnings
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/litestar/handlers/base.py:577: LitestarDeprecationWarning: [paths='/api/wiki/citations', handler='wiki_citations_reverse_route'] query parameter 'source' declared using deprecated default 'param: <type> = Parameter(...)' style. Use 'FromQuery[<type>]' or 'Annotated[<type>, QueryParameter(...)]' instead
+    return KwargsModel.create_for_signature_model(
+
+tests/test_chat_wiki_controller_integration.py::test_cmd_add_overwrite_rejected_keeps_existing_copy
+tests/test_chat_wiki_controller_integration.py::test_start_crawl_submits_task_to_controller
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/textual/css/tokenizer.py:302: RuntimeWarning: coroutine 'sync' was never awaited
+    for name, value in zip(expect.names, match.groups()[1:]):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_chat_wiki_controller_integration.py::test_do_add_on_progress_surfaces_per_page_progress
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-97 (_worker)
+  
+  Traceback (most recent call last):
+    File "/Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/textual/message_pump.py", line 257, in app
+      return active_app.get()
+             ^^^^^^^^^^^^^^^^
+  LookupError: <ContextVar name='active_app' at 0x10dbcf970>
+  
+  During handling of the above exception, another exception occurred:
+  
+  Traceback (most recent call last):
+    File "/Users/tobias/.pyenv/versions/3.12.9/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "/Users/tobias/.pyenv/versions/3.12.9/lib/python3.12/threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "/Users/tobias/projects/lilbee/tests/test_chat_wiki_controller_integration.py", line 869, in _worker
+      screen._do_add([src], reporter)
+    File "/Users/tobias/projects/lilbee/src/lilbee/cli/tui/screens/chat.py", line 702, in _do_add
+      call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
+    File "/Users/tobias/projects/lilbee/src/lilbee/cli/tui/thread_safe.py", line 32, in call_from_thread
+      node.app.call_from_thread(fn, *args, **kwargs)
+      ^^^^^^^^
+    File "/Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/textual/message_pump.py", line 265, in app
+      node = node._parent
+             ^^^^^^^^^^^^
+    File "/Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/textual/message_pump.py", line 149, in _parent
+      return None if self.__parent is None else self.__parent()
+                     ^^^^^^^^^^^^^
+  AttributeError: 'ChatScreen' object has no attribute '_MessagePump__parent'
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/test_chat_wiki_controller_integration.py::test_do_add_progress_label_pins_to_oldest_in_flight_file
+  /Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-225 (_worker)
+  
+  Traceback (most recent call last):
+    File "/Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/textual/message_pump.py", line 257, in app
+      return active_app.get()
+             ^^^^^^^^^^^^^^^^
+  LookupError: <ContextVar name='active_app' at 0x118fcf970>
+  
+  During handling of the above exception, another exception occurred:
+  
+  Traceback (most recent call last):
+    File "/Users/tobias/.pyenv/versions/3.12.9/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "/Users/tobias/.pyenv/versions/3.12.9/lib/python3.12/threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "/Users/tobias/projects/lilbee/tests/test_chat_wiki_controller_integration.py", line 945, in _worker
+      screen._do_add([src], reporter)
+    File "/Users/tobias/projects/lilbee/src/lilbee/cli/tui/screens/chat.py", line 702, in _do_add
+      call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
+    File "/Users/tobias/projects/lilbee/src/lilbee/cli/tui/thread_safe.py", line 32, in call_from_thread
+      node.app.call_from_thread(fn, *args, **kwargs)
+      ^^^^^^^^
+    File "/Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/textual/message_pump.py", line 265, in app
+      node = node._parent
+             ^^^^^^^^^^^^
+    File "/Users/tobias/projects/lilbee/.venv/lib/python3.12/site-packages/textual/message_pump.py", line 149, in _parent
+      return None if self.__parent is None else self.__parent()
+                     ^^^^^^^^^^^^^
+  AttributeError: 'ChatScreen' object has no attribute '_MessagePump__parent'
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/test_cli.py::TestUseEmbedderCommand::test_use_embedder_json_output
+  <frozen posixpath>:82: RuntimeWarning: coroutine 'sync' was never awaited
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestChunks::test_chunks_with_source
+  /Users/tobias/.pyenv/versions/3.12.9/lib/python3.12/unittest/mock.py:2217: RuntimeWarning: coroutine 'sync' was never awaited
+    def __init__(self, name, parent):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_tab_navigation.py::test_settings_tab_chain_visits_group_tabs_widget
+  /Users/tobias/projects/lilbee/src/lilbee/cli/tui/thread_safe.py:38: RuntimeWarning: coroutine 'App.call_from_thread.<locals>.run_callback' was never awaited
+    log.debug(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform darwin, python 3.12.9-final-0 _______________
+
+Name                                                              Stmts   Miss  Cover   Missing
+-----------------------------------------------------------------------------------------------
+src/lilbee/__init__.py                                               40      0   100%
+src/lilbee/__main__.py                                               43      0   100%
+src/lilbee/_frozen.py                                                 4      0   100%
+src/lilbee/api.py                                                    96      0   100%
+src/lilbee/app/__init__.py                                            0      0   100%
+src/lilbee/app/dataset.py                                            76      0   100%
+src/lilbee/app/ingest.py                                             53      0   100%
+src/lilbee/app/memory.py                                             49      0   100%
+src/lilbee/app/models.py                                            182      0   100%
+src/lilbee/app/placement.py                                          62      0   100%
+src/lilbee/app/reset.py                                              36      0   100%
+src/lilbee/app/search.py                                             23      0   100%
+src/lilbee/app/services.py                                          100      0   100%
+src/lilbee/app/settings.py                                          247      0   100%
+src/lilbee/app/settings_map.py                                       44      0   100%
+src/lilbee/app/status.py                                             68      0   100%
+src/lilbee/app/themes.py                                              2      0   100%
+src/lilbee/app/version.py                                             4      0   100%
+src/lilbee/catalog/__init__.py                                        8      0   100%
+src/lilbee/catalog/compat.py                                         41      0   100%
+src/lilbee/catalog/download.py                                      199      0   100%
+src/lilbee/catalog/download_progress.py                              62      0   100%
+src/lilbee/catalog/families.py                                       32      0   100%
+src/lilbee/catalog/featured.py                                       15      0   100%
+src/lilbee/catalog/formatting.py                                     67      0   100%
+src/lilbee/catalog/header_probe.py                                   97      0   100%
+src/lilbee/catalog/hf_client.py                                     130      0   100%
+src/lilbee/catalog/models.py                                         63      0   100%
+src/lilbee/catalog/query.py                                         136      0   100%
+src/lilbee/catalog/refs.py                                           22      0   100%
+src/lilbee/catalog/types.py                                          39      0   100%
+src/lilbee/cli/__init__.py                                            7      0   100%
+src/lilbee/cli/agent_configs/__init__.py                              0      0   100%
+src/lilbee/cli/agent_configs/config_file.py                          29      0   100%
+src/lilbee/cli/agent_configs/hermes.py                               19      0   100%
+src/lilbee/cli/agent_configs/litellm.py                               5      0   100%
+src/lilbee/cli/agent_configs/merge.py                                14      0   100%
+src/lilbee/cli/agent_configs/opencode.py                             32      0   100%
+src/lilbee/cli/app.py                                                77      0   100%
+src/lilbee/cli/commands/__init__.py                                  34      0   100%
+src/lilbee/cli/commands/_shared.py                                    2      0   100%
+src/lilbee/cli/commands/agent_config.py                              48      0   100%
+src/lilbee/cli/commands/dataset.py                                   40      0   100%
+src/lilbee/cli/commands/ingest_sync.py                              254      0   100%
+src/lilbee/cli/commands/memory.py                                    74      0   100%
+src/lilbee/cli/commands/meta.py                                      61      0   100%
+src/lilbee/cli/commands/search_chat.py                              200      0   100%
+src/lilbee/cli/commands/serve_logging.py                             67      0   100%
+src/lilbee/cli/commands/servers.py                                   71      0   100%
+src/lilbee/cli/commands/setup.py                                    217      0   100%
+src/lilbee/cli/commands/wiki.py                                     274      0   100%
+src/lilbee/cli/helpers.py                                            98      0   100%
+src/lilbee/cli/launchers/__init__.py                                  7      0   100%
+src/lilbee/cli/launchers/hermes.py                                   61      0   100%
+src/lilbee/cli/launchers/hermes_mcp.py                               57      0   100%
+src/lilbee/cli/launchers/launcher.py                                 32      0   100%
+src/lilbee/cli/launchers/opencode.py                                 88      0   100%
+src/lilbee/cli/launchers/server.py                                  166      0   100%
+src/lilbee/cli/launchers/skill_install.py                            28      0   100%
+src/lilbee/cli/launchers/warm_render.py                              59      0   100%
+src/lilbee/cli/model.py                                             168      0   100%
+src/lilbee/cli/placement.py                                          66      0   100%
+src/lilbee/cli/sync.py                                               96      0   100%
+src/lilbee/cli/theme.py                                              12      0   100%
+src/lilbee/cli/tui/__init__.py                                       58      0   100%
+src/lilbee/cli/tui/app.py                                           276      0   100%
+src/lilbee/cli/tui/command_registry.py                               24      0   100%
+src/lilbee/cli/tui/commands.py                                       83      0   100%
+src/lilbee/cli/tui/log_routing.py                                    23      0   100%
+src/lilbee/cli/tui/messages.py                                      340      0   100%
+src/lilbee/cli/tui/pill.py                                            6      0   100%
+src/lilbee/cli/tui/screens/__init__.py                                0      0   100%
+src/lilbee/cli/tui/screens/catalog.py                              1223      0   100%
+src/lilbee/cli/tui/screens/catalog_grouping.py                       70      0   100%
+src/lilbee/cli/tui/screens/catalog_utils.py                         142      0   100%
+src/lilbee/cli/tui/screens/chat.py                                 1094      0   100%
+src/lilbee/cli/tui/screens/chat_helpers.py                          105      0   100%
+src/lilbee/cli/tui/screens/fleet.py                                  33      0   100%
+src/lilbee/cli/tui/screens/memories.py                              156      0   100%
+src/lilbee/cli/tui/screens/model_info.py                             47      0   100%
+src/lilbee/cli/tui/screens/model_picker.py                           79      0   100%
+src/lilbee/cli/tui/screens/settings.py                              414      0   100%
+src/lilbee/cli/tui/screens/settings_widgets.py                      150      0   100%
+src/lilbee/cli/tui/screens/setup.py                                 173      0   100%
+src/lilbee/cli/tui/screens/status.py                                205      0   100%
+src/lilbee/cli/tui/screens/task_center.py                           138      0   100%
+src/lilbee/cli/tui/screens/wiki.py                                  236      0   100%
+src/lilbee/cli/tui/screens/wiki_drafts.py                           194      0   100%
+src/lilbee/cli/tui/task_queue.py                                    204      0   100%
+src/lilbee/cli/tui/thread_safe.py                                    10      0   100%
+src/lilbee/cli/tui/widgets/__init__.py                                0      0   100%
+src/lilbee/cli/tui/widgets/arg_hint.py                               40      0   100%
+src/lilbee/cli/tui/widgets/autocomplete.py                          147      0   100%
+src/lilbee/cli/tui/widgets/bottom_bars.py                             7      0   100%
+src/lilbee/cli/tui/widgets/catalog_card_shared.py                    35      0   100%
+src/lilbee/cli/tui/widgets/catalog_detail.py                         82      0   100%
+src/lilbee/cli/tui/widgets/catalog_theme.py                           4      0   100%
+src/lilbee/cli/tui/widgets/chat_input.py                             41      0   100%
+src/lilbee/cli/tui/widgets/confirm_dialog.py                         35      0   100%
+src/lilbee/cli/tui/widgets/crawl_dialog.py                           97      0   100%
+src/lilbee/cli/tui/widgets/discover_rails.py                         43      0   100%
+src/lilbee/cli/tui/widgets/fleet_body.py                            202      0   100%
+src/lilbee/cli/tui/widgets/fleet_modal.py                            20      0   100%
+src/lilbee/cli/tui/widgets/gpu_fleet_panel.py                       111      0   100%
+src/lilbee/cli/tui/widgets/grid_list_toggle.py                       47      0   100%
+src/lilbee/cli/tui/widgets/grid_select.py                           136      0   100%
+src/lilbee/cli/tui/widgets/help_hint.py                              20      0   100%
+src/lilbee/cli/tui/widgets/list_text_area.py                         15      0   100%
+src/lilbee/cli/tui/widgets/message.py                               140      0   100%
+src/lilbee/cli/tui/widgets/model_bar.py                             332      0   100%
+src/lilbee/cli/tui/widgets/model_card.py                             76      0   100%
+src/lilbee/cli/tui/widgets/model_grid.py                            283      0   100%
+src/lilbee/cli/tui/widgets/model_list.py                            139      0   100%
+src/lilbee/cli/tui/widgets/model_pick.py                             70      0   100%
+src/lilbee/cli/tui/widgets/progress_cell.py                          19      0   100%
+src/lilbee/cli/tui/widgets/scope_chip.py                             78      0   100%
+src/lilbee/cli/tui/widgets/search_hf_cta_item.py                     37      0   100%
+src/lilbee/cli/tui/widgets/slash_command_catalog.py                 111      0   100%
+src/lilbee/cli/tui/widgets/status_bar.py                             91      0   100%
+src/lilbee/cli/tui/widgets/suggester.py                              59      0   100%
+src/lilbee/cli/tui/widgets/task_bar.py                              159      0   100%
+src/lilbee/cli/tui/widgets/task_bar_controller.py                   197      0   100%
+src/lilbee/cli/tui/widgets/task_row.py                               67      0   100%
+src/lilbee/cli/tui/widgets/thinking_header.py                        53      0   100%
+src/lilbee/cli/tui/widgets/top_bars.py                                7      0   100%
+src/lilbee/config_meta.py                                            31      0   100%
+src/lilbee/core/__init__.py                                           0      0   100%
+src/lilbee/core/config/__init__.py                                    5      0   100%
+src/lilbee/core/config/defaults.py                                   27      0   100%
+src/lilbee/core/config/enums.py                                      27      0   100%
+src/lilbee/core/config/keys.py                                        4      0   100%
+src/lilbee/core/config/model.py                                     452      0   100%
+src/lilbee/core/config/parsing.py                                     9      0   100%
+src/lilbee/core/config/validators.py                                 15      0   100%
+src/lilbee/core/results.py                                           37      0   100%
+src/lilbee/core/security.py                                           9      0   100%
+src/lilbee/core/settings.py                                          70      0   100%
+src/lilbee/core/system.py                                            54      0   100%
+src/lilbee/core/text.py                                              25      0   100%
+src/lilbee/crawler/__init__.py                                       11      0   100%
+src/lilbee/crawler/bootstrap.py                                     140      0   100%
+src/lilbee/crawler/crawl4ai_fetcher.py                              157      0   100%
+src/lilbee/crawler/discovery.py                                       7      0   100%
+src/lilbee/crawler/events.py                                         45      0   100%
+src/lilbee/crawler/fetcher.py                                         4      0   100%
+src/lilbee/crawler/models.py                                         34      0   100%
+src/lilbee/crawler/runner.py                                        192      0   100%
+src/lilbee/crawler/save.py                                          109      0   100%
+src/lilbee/crawler/sitemap.py                                        39      0   100%
+src/lilbee/crawler/task.py                                           91      0   100%
+src/lilbee/crawler/url_filter.py                                     56      0   100%
+src/lilbee/data/__init__.py                                           0      0   100%
+src/lilbee/data/chunk.py                                             34      0   100%
+src/lilbee/data/code_chunker.py                                      84      0   100%
+src/lilbee/data/export.py                                           108      0   100%
+src/lilbee/data/ingest/__init__.py                                    7      0   100%
+src/lilbee/data/ingest/code.py                                       15      0   100%
+src/lilbee/data/ingest/discovery.py                                  45      0   100%
+src/lilbee/data/ingest/extract.py                                   208      0   100%
+src/lilbee/data/ingest/ocr_cache.py                                  44      0   100%
+src/lilbee/data/ingest/pipeline.py                                  352      0   100%
+src/lilbee/data/ingest/skip_marker.py                                46      0   100%
+src/lilbee/data/ingest/types.py                                      72      0   100%
+src/lilbee/data/store/__init__.py                                     6      0   100%
+src/lilbee/data/store/core.py                                       585      0   100%
+src/lilbee/data/store/lance_helpers.py                               84      0   100%
+src/lilbee/data/store/ranking.py                                     39      0   100%
+src/lilbee/data/store/schema.py                                      10      0   100%
+src/lilbee/data/store/types.py                                      152      0   100%
+src/lilbee/mcp_server.py                                            531      0   100%
+src/lilbee/modelhub/__init__.py                                       0      0   100%
+src/lilbee/modelhub/model_info.py                                    63      0   100%
+src/lilbee/modelhub/model_manager/__init__.py                         5      0   100%
+src/lilbee/modelhub/model_manager/core.py                           146      0   100%
+src/lilbee/modelhub/model_manager/discovery.py                      134      0   100%
+src/lilbee/modelhub/model_manager/types.py                           17      0   100%
+src/lilbee/modelhub/model_manager/validation.py                     105      0   100%
+src/lilbee/modelhub/models.py                                       160      0   100%
+src/lilbee/modelhub/registry.py                                     351      0   100%
+src/lilbee/modelhub/role_validator.py                                57      0   100%
+src/lilbee/parent_monitor.py                                         39      0   100%
+src/lilbee/providers/__init__.py                                      0      0   100%
+src/lilbee/providers/backend_names.py                                11      0   100%
+src/lilbee/providers/base.py                                         87      0   100%
+src/lilbee/providers/engine_params.py                                72      0   100%
+src/lilbee/providers/factory.py                                      15      0   100%
+src/lilbee/providers/fleet/__init__.py                                0      0   100%
+src/lilbee/providers/fleet/adapters.py                               64      0   100%
+src/lilbee/providers/fleet/binary.py                                 42      0   100%
+src/lilbee/providers/fleet/client.py                                533      0   100%
+src/lilbee/providers/fleet/ctx.py                                    29      0   100%
+src/lilbee/providers/fleet/cuda_runtime.py                           77      0   100%
+src/lilbee/providers/fleet/devices.py                                87      0   100%
+src/lilbee/providers/fleet/gpu_backends/__init__.py                  12      0   100%
+src/lilbee/providers/fleet/gpu_backends/amd.py                       84      0   100%
+src/lilbee/providers/fleet/gpu_backends/apple.py                     21      0   100%
+src/lilbee/providers/fleet/gpu_backends/base.py                      36      0   100%
+src/lilbee/providers/fleet/gpu_backends/intel.py                     40      0   100%
+src/lilbee/providers/fleet/gpu_backends/nvidia.py                    46      0   100%
+src/lilbee/providers/fleet/gpu_env.py                                36      0   100%
+src/lilbee/providers/fleet/gpu_select.py                            212      0   100%
+src/lilbee/providers/fleet/gpu_stats.py                              35      0   100%
+src/lilbee/providers/fleet/launch.py                                 21      0   100%
+src/lilbee/providers/fleet/normalize.py                              73      0   100%
+src/lilbee/providers/fleet/placement.py                             142      0   100%
+src/lilbee/providers/fleet/placement_spec.py                         87      0   100%
+src/lilbee/providers/fleet/planning.py                              327      0   100%
+src/lilbee/providers/fleet/provider.py                              526      0   100%
+src/lilbee/providers/fleet/replicas.py                               26      0   100%
+src/lilbee/providers/fleet/swap_config.py                            45      0   100%
+src/lilbee/providers/fleet/swap_manager.py                          356      0   100%
+src/lilbee/providers/fleet/vram.py                                   83      0   100%
+src/lilbee/providers/fleet/vulkan_icd_discovery.py                  119      0   100%
+src/lilbee/providers/fleet/windowing.py                              52      0   100%
+src/lilbee/providers/gguf_meta.py                                    99      0   100%
+src/lilbee/providers/litellm_sdk.py                                 329      0   100%
+src/lilbee/providers/local_servers/__init__.py                        5      0   100%
+src/lilbee/providers/local_servers/config_urls.py                    17      0   100%
+src/lilbee/providers/local_servers/lm_studio.py                       3      0   100%
+src/lilbee/providers/local_servers/ollama.py                          3      0   100%
+src/lilbee/providers/local_servers/registry.py                       33      0   100%
+src/lilbee/providers/local_servers/spec.py                           19      0   100%
+src/lilbee/providers/model_cache.py                                  90      0   100%
+src/lilbee/providers/model_defaults.py                               11      0   100%
+src/lilbee/providers/model_ref.py                                    71      0   100%
+src/lilbee/providers/roles.py                                        17      0   100%
+src/lilbee/providers/routing_provider.py                            151      0   100%
+src/lilbee/providers/sdk_backend.py                                  82      0   100%
+src/lilbee/providers/sdk_llm_provider.py                            175      0   100%
+src/lilbee/providers/warm_progress.py                                51      0   100%
+src/lilbee/retrieval/__init__.py                                      0      0   100%
+src/lilbee/retrieval/clustering.py                                   33      0   100%
+src/lilbee/retrieval/clustering_embedding/__init__.py                 3      0   100%
+src/lilbee/retrieval/clustering_embedding/clusterer.py               50      0   100%
+src/lilbee/retrieval/clustering_embedding/helpers.py                170      0   100%
+src/lilbee/retrieval/clustering_embedding/types.py                    8      0   100%
+src/lilbee/retrieval/concepts/__init__.py                             6      0   100%
+src/lilbee/retrieval/concepts/clusterer.py                           14      0   100%
+src/lilbee/retrieval/concepts/community.py                           31      0   100%
+src/lilbee/retrieval/concepts/graph.py                              250      0   100%
+src/lilbee/retrieval/concepts/nlp.py                                 35      0   100%
+src/lilbee/retrieval/concepts/schema.py                               8      0   100%
+src/lilbee/retrieval/embedder.py                                    111      0   100%
+src/lilbee/retrieval/embedding_profiles.py                           15      0   100%
+src/lilbee/retrieval/query/__init__.py                                5      0   100%
+src/lilbee/retrieval/query/dedup.py                                 110      0   100%
+src/lilbee/retrieval/query/expansion.py                               3      0   100%
+src/lilbee/retrieval/query/formatting.py                             55      0   100%
+src/lilbee/retrieval/query/history_window.py                         22      0   100%
+src/lilbee/retrieval/query/memory.py                                 18      0   100%
+src/lilbee/retrieval/query/memory_extract.py                         56      0   100%
+src/lilbee/retrieval/query/searcher.py                              356      0   100%
+src/lilbee/retrieval/query/tokenize.py                               14      0   100%
+src/lilbee/retrieval/reasoning.py                                   136      0   100%
+src/lilbee/retrieval/reranker.py                                     54      0   100%
+src/lilbee/runtime/__init__.py                                        0      0   100%
+src/lilbee/runtime/_splash_runner.py                                105      0   100%
+src/lilbee/runtime/asyncio_loop.py                                   54      0   100%
+src/lilbee/runtime/cancellation.py                                    2      0   100%
+src/lilbee/runtime/cpu.py                                            16      0   100%
+src/lilbee/runtime/hardware.py                                       42      0   100%
+src/lilbee/runtime/ingest_lock.py                                    48      0   100%
+src/lilbee/runtime/launcher.py                                       35      0   100%
+src/lilbee/runtime/lock.py                                           35      0   100%
+src/lilbee/runtime/progress/__init__.py                               3      0   100%
+src/lilbee/runtime/progress/callbacks.py                              5      0   100%
+src/lilbee/runtime/progress/types.py                                 87      0   100%
+src/lilbee/runtime/splash.py                                         69      0   100%
+src/lilbee/runtime/temporal.py                                       38      0   100%
+src/lilbee/server/__init__.py                                         3      0   100%
+src/lilbee/server/app.py                                             46      0   100%
+src/lilbee/server/auth.py                                            93      0   100%
+src/lilbee/server/chat_completions_api/__init__.py                    0      0   100%
+src/lilbee/server/chat_completions_api/errors.py                     34      0   100%
+src/lilbee/server/chat_completions_api/models.py                    117      0   100%
+src/lilbee/server/chat_completions_api/routes.py                    133      0   100%
+src/lilbee/server/chat_completions_api/streaming.py                  27      0   100%
+src/lilbee/server/chat_completions_api/translate.py                 134      0   100%
+src/lilbee/server/chat_dispatch/__init__.py                           0      0   100%
+src/lilbee/server/chat_dispatch/canonical.py                         93      0   100%
+src/lilbee/server/chat_dispatch/capability.py                        11      0   100%
+src/lilbee/server/chat_dispatch/concurrency.py                       70      0   100%
+src/lilbee/server/chat_dispatch/dispatch.py                         187      0   100%
+src/lilbee/server/chat_dispatch/tool_args.py                         11      0   100%
+src/lilbee/server/handlers/__init__.py                               84      0   100%
+src/lilbee/server/handlers/config.py                                 32      0   100%
+src/lilbee/server/handlers/crawl.py                                  23      0   100%
+src/lilbee/server/handlers/documents.py                              56      0   100%
+src/lilbee/server/handlers/ingest.py                                115      0   100%
+src/lilbee/server/handlers/memory.py                                 23      0   100%
+src/lilbee/server/handlers/models.py                                267      0   100%
+src/lilbee/server/handlers/rag.py                                   259      0   100%
+src/lilbee/server/handlers/sse.py                                   137      0   100%
+src/lilbee/server/mcp_mount.py                                       38      0   100%
+src/lilbee/server/models.py                                         293      0   100%
+src/lilbee/server/routes/__init__.py                                  0      0   100%
+src/lilbee/server/routes/crawl.py                                    16      0   100%
+src/lilbee/server/routes/documents.py                                49      0   100%
+src/lilbee/server/routes/general.py                                  52      0   100%
+src/lilbee/server/routes/memory.py                                   18      0   100%
+src/lilbee/server/routes/models.py                                   79      0   100%
+src/lilbee/server/routes/placement.py                                69      0   100%
+src/lilbee/server/routes/search.py                                  101      0   100%
+src/lilbee/server/routes/setup.py                                    34      0   100%
+src/lilbee/server/wiki.py                                           151      0   100%
+src/lilbee/skills/__init__.py                                         0      0   100%
+src/lilbee/skills/lilbee_mcp/__init__.py                              0      0   100%
+src/lilbee/vision.py                                                 35      0   100%
+src/lilbee/wiki/__init__.py                                           9      0   100%
+src/lilbee/wiki/batch.py                                            112      0   100%
+src/lilbee/wiki/browse.py                                            95      0   100%
+src/lilbee/wiki/cache.py                                             24      0   100%
+src/lilbee/wiki/citation.py                                         106      0   100%
+src/lilbee/wiki/citations.py                                         98      0   100%
+src/lilbee/wiki/drafts.py                                           147      0   100%
+src/lilbee/wiki/entity_extractor/__init__.py                          4      0   100%
+src/lilbee/wiki/entity_extractor/base.py                             18      0   100%
+src/lilbee/wiki/entity_extractor/factory.py                          20      0   100%
+src/lilbee/wiki/entity_extractor/llm_tagged.py                        9      0   100%
+src/lilbee/wiki/entity_extractor/ner_concepts.py                     93      0   100%
+src/lilbee/wiki/entity_extractor/ner_concepts_plus_llm_types.py       9      0   100%
+src/lilbee/wiki/generation.py                                       144      0   100%
+src/lilbee/wiki/grammar.py                                           11      0   100%
+src/lilbee/wiki/index.py                                             77      0   100%
+src/lilbee/wiki/ingest.py                                            38      0   100%
+src/lilbee/wiki/links.py                                             70      0   100%
+src/lilbee/wiki/lint.py                                             152      0   100%
+src/lilbee/wiki/page.py                                             134      0   100%
+src/lilbee/wiki/persistence.py                                       71      0   100%
+src/lilbee/wiki/prune.py                                            104      0   100%
+src/lilbee/wiki/quality.py                                           80      0   100%
+src/lilbee/wiki/shared.py                                            69      0   100%
+src/lilbee/wiki/synthesis.py                                        131      0   100%
+-----------------------------------------------------------------------------------------------
+TOTAL                                                             29504      0   100%
+Required test coverage of 100.0% reached. Total coverage: 100.00%
+8262 passed, 3 skipped, 2 xpassed, 7039 warnings in 417.01s (0:06:57)
