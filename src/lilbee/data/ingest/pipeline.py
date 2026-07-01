@@ -390,9 +390,7 @@ async def sync(
     disk_files = discover_files()
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
-    skip_markers = _load_pruned_skip_markers(
-        disk_files, clear_first=force_rebuild or retry_skipped
-    )
+    skip_markers = _load_pruned_skip_markers(disk_files, clear_first=force_rebuild or retry_skipped)
 
     removed: list[str] = []
     failed: dict[str, None] = {}
