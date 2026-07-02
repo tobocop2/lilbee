@@ -35,7 +35,6 @@ from lilbee.server.handlers.documents import (
     list_documents,
 )
 from lilbee.server.handlers.ingest import (
-    MAX_ADD_FILES,
     add_files_stream,
     add_uploads_stream,
     import_stream,
@@ -230,7 +229,6 @@ async def gpus() -> list[GpuInfoResponse]:
 
 
 __all__ = [
-    "MAX_ADD_FILES",
     "TASK_ENDPOINT_PATH",
     "ModelCatalogSection",
     "ModelsResponse",
