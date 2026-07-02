@@ -102,17 +102,22 @@ class FleetBody(Widget):
             yield Static(_HINT, id="placement-hint")
 
     def on_mount(self) -> None:
-        self._load_placement()
+        self._load_worker()
 
-    def _load_placement(self) -> None:
-        """Fetch placement and populate the widget synchronously."""
+    @work(thread=True, exit_on_error=False)
+    def _load_worker(self) -> None:
+        """Fetch placement off the UI thread and populate the widget.
+
+        get_placement resolves the plan, which can spawn a device-probe
+        subprocess on a cold cache -- too slow for the event loop.
+        """
         try:
             view = get_placement()
         except Exception as exc:
             log.debug("Failed to load placement", exc_info=True)
-            self.notify(str(exc), severity="error")
+            call_from_thread(self, self.notify, str(exc), severity="error")
             return
-        self._render_view(view)
+        call_from_thread(self, self._render_view, view)
 
     # -- rendering -------------------------------------------------------
 

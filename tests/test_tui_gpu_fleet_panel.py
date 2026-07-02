@@ -19,7 +19,7 @@ GIB = 1024**3
 
 @dataclass(frozen=True)
 class _FakeDevice:
-    """Minimal _DeviceLike-compatible stub for tests."""
+    """Minimal DeviceLike-compatible stub for tests."""
 
     index: int
     backend: str
@@ -45,7 +45,7 @@ def _make_stat(
 
 
 def _make_device(index: int, backend: str = "CUDA", total_bytes: int = 24 * GIB) -> _FakeDevice:
-    """Return a _DeviceLike-compatible stub."""
+    """Return a DeviceLike-compatible stub."""
     return _FakeDevice(
         index=index, backend=backend, total_bytes=total_bytes, free_bytes=total_bytes
     )
