@@ -13,8 +13,9 @@ The nine that match the site reel, in order:
 5. [Crawl a URL](#crawl-a-url)
 6. [Model catalog](#model-catalog)
 7. [Settings](#settings)
-8. [Agent: code (lilbee talking to lilbee)](#agent-code-lilbee-talking-to-lilbee)
-9. [Agent: PDF](#agent-pdf)
+8. [GPU placement](#gpu-placement)
+9. [Agent: code (lilbee talking to lilbee)](#agent-code-lilbee-talking-to-lilbee)
+10. [Agent: PDF](#agent-pdf)
 
 Extras: [agent: live indexing](#agent-live-indexing), [agent: Godot codegen against the full class reference](#agent-godot-codegen-against-the-full-class-reference), [command surface](#command-surface).
 
@@ -67,6 +68,22 @@ Tabbed editor for every knob: Models, Ingest, Generation, Retrieval, Display,
 Crawling, API-Keys, System.
 
 ![settings](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.gif)
+
+## GPU placement
+
+With more than one GPU, lilbee spreads the models across all of them on its own:
+the chat model is tensor-split across every card so it fits, and the embedder is
+copied to each. Here it auto-places a 235B chat model across three A100s, then
+answers a grounded question while the per-card load bars move live.
+
+![automatic GPU placement](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.gif)
+
+Prefer to decide yourself? Press `ctrl+g` for the placement drawer and pin each
+role to the cards you want. Every role shows what it is: a chat model *split*
+across cards, an embedder *copied* per card, a reranker on a *single* card.
+Preview the fit, apply, then chat against that exact fleet.
+
+![manual GPU placement](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-manual.gif)
 
 ## Agent: code (lilbee talking to lilbee)
 

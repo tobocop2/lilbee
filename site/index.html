@@ -147,6 +147,8 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">launch: opencode</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">launch: hermes</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gpuauto"  aria-controls="tutorial-pane-gpuauto"  aria-selected="false" tabindex="-1">gpu: auto</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gpumanual" aria-controls="tutorial-pane-gpumanual" aria-selected="false" tabindex="-1">gpu: manual</button>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-whatis" aria-labelledby="tutorial-tab-whatis">
@@ -273,6 +275,20 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption"><code>lilbee launch hermes</code> does the same for hermes: launched on a local model, it adds a <code>lilbee launch list</code> subcommand and lands a passing test.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpuauto" aria-labelledby="tutorial-tab-gpuauto" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Automatic placement: lilbee spreads the models across every GPU on its own — one big chat model tensor-split across all the cards, the embedder copied to each — then answers a grounded question while the per-card load bars move live.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpumanual" aria-labelledby="tutorial-tab-gpumanual" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-manual.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Manual placement: press <code>ctrl+g</code> for the drawer, pin each role to the cards you want — split, copy, or a single pinned instance — preview the fit, then chat against that exact fleet.</p>
         </div>
 
       </div>
@@ -680,6 +696,14 @@
     <section>
       <h2 class="label">your hardware, put to work</h2>
       <p class="lede">Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own. No token budgets, no provider to depend on; the cloud's there when you want it.</p>
+    </section>
+
+    <section>
+      <h2 class="label">GPU placement</h2>
+      <p class="lede">More than one GPU? lilbee spreads the work across all of them on its own: a big chat model is tensor-split across the cards so it fits, the embedder is copied to each so search stays fast. Watch the load per card, and if you want to decide it yourself, open the placement drawer and pin each model where you want it.</p>
+      <div class="tutorial-clip">
+        <img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.png" alt="lilbee's GPU placement drawer: a 235B chat model split across three A100s with per-card load bars, beside a cited answer." loading="lazy">
+      </div>
     </section>
 
     <section>

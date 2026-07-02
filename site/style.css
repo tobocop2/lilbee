@@ -832,7 +832,8 @@ footer .meta { text-align: right; font-size: 12px; }
   box-shadow: 0 22px 60px -26px rgba(0, 0, 0, 0.78);
   aspect-ratio: 1400 / 900;
 }
-.tutorial-clip video {
+.tutorial-clip video,
+.tutorial-clip img {
   display: block;
   width: 100%;
   height: 100%;

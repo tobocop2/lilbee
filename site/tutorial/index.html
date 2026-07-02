@@ -69,6 +69,9 @@
           <li><a href="#unsupported">Unsupported architectures</a></li>
           <li class="toc-group"><a href="#tui-tune">Tune it</a></li>
           <li><a href="#settings">Settings</a></li>
+          <li class="toc-group"><a href="#tui-placement">Multi-GPU placement</a></li>
+          <li><a href="#placement-auto">Automatic placement</a></li>
+          <li><a href="#placement-manual">Manual placement</a></li>
         </ul>
       </nav>
       <nav class="tutorial-toc" aria-label="Agent track contents">
@@ -236,6 +239,30 @@
           <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.png">
             <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.mp4" type="video/mp4">
             <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-settings.mp4">settings (MP4)</a>
+          </video>
+        </div>
+      </section>
+
+      <h3 class="tutorial-group" id="tui-placement"><a href="#tui-placement">Multi-GPU placement</a></h3>
+
+      <section class="tutorial-section" id="placement-auto">
+        <h4><a href="#placement-auto">Automatic placement</a></h4>
+        <p>With more than one GPU, lilbee spreads the models across all of them on its own: the chat model is tensor-split across every card so it fits, and the embedder is copied to each. It then answers a grounded question while the per-card load bars move live.</p>
+        <div class="tutorial-clip">
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.mp4">automatic GPU placement (MP4)</a>
+          </video>
+        </div>
+      </section>
+
+      <section class="tutorial-section" id="placement-manual">
+        <h4><a href="#placement-manual">Manual placement</a></h4>
+        <p>Press <kbd>ctrl+g</kbd> for the placement drawer and pin each role to the cards you want. Each role shows what it is: a chat model <em>split</em> across cards, an embedder <em>copied</em> per card, a reranker on a <em>single</em> card. Preview the fit, apply, then chat against that exact fleet.</p>
+        <div class="tutorial-clip">
+          <video controls muted playsinline preload="metadata" poster="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-manual.png">
+            <source src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-manual.mp4" type="video/mp4">
+            <a href="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-manual.mp4">manual GPU placement (MP4)</a>
           </video>
         </div>
       </section>
