@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="console-application">
-  <id>io.github.tobocop2.lilbee</id>
-  <name>lilbee</name>
-  <summary>Local search engine you can talk to</summary>
+  <id>io.github.tobocop2.lilbee.compat</id>
+  <name>lilbee-compat</name>
+  <summary>Local search engine you can talk to (pre-Haswell CPU build)</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <description>
@@ -12,6 +12,10 @@
       citations down to the file and line. One install covers the TUI, CLI,
       HTTP server, and MCP server. It works with your own Ollama or LM Studio
       models too.
+    </p>
+    <p>
+      This build runs on older x86_64 CPUs (Sandy Bridge / Bulldozer class)
+      that crash on the stock build's lancedb wheel.
     </p>
   </description>
   <url type="homepage">https://lilbee.sh</url>

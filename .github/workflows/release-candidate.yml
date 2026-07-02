@@ -40,7 +40,7 @@ jobs:
       tag: ${{ steps.ver.outputs.tag }}
       ref: ${{ steps.ver.outputs.ref }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Compute version + tag from pyproject.toml
@@ -135,7 +135,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.ref }}
       - uses: ./.github/actions/attach-prerelease
@@ -171,7 +171,7 @@ jobs:
       actions: write
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/fanout-packaging
         with:
           tag: ${{ needs.resolve.outputs.tag }}

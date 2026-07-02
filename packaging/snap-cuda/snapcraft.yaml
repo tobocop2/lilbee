@@ -1,0 +1,29 @@
+# CUDA (NVIDIA GPU) variant of the snap. Rendered per release by
+# render_snapcraft.sh; CI stages lilbee-linux-x86_64-cu125 into payload/
+# (gitignored) before building. Distinct name + app so it coexists with the
+# stock lilbee snap; the command is `lilbee-cuda`.
+name: lilbee-cuda
+base: core24
+version: "0.0.0"
+summary: Local search engine you can talk to (CUDA / NVIDIA GPU build)
+description: |
+  lilbee runs and manages local AI models, indexes your files and code, crawls
+  the web pages you point it at, and answers questions with citations down to
+  the file and line. One install covers the TUI, CLI, HTTP server, and MCP
+  server. It works with your own Ollama or LM Studio models too.
+
+  This build offloads model inference to an NVIDIA GPU via CUDA. It needs a
+  working NVIDIA driver on the host; with no usable GPU it falls back to CPU.
+grade: stable
+confinement: classic
+platforms:
+  amd64:
+parts:
+  lilbee:
+    plugin: dump
+    source: payload
+    organize:
+      lilbee-linux-x86_64-cu125: bin/lilbee
+apps:
+  lilbee-cuda:
+    command: bin/lilbee

@@ -12,23 +12,12 @@
       systems = builtins.attrNames sources.systems;
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
-      # nixpkgs flags Elastic 2.0 as unfree; scope the allow to lilbee only.
-      mkPkgs =
-        system:
-        import nixpkgs {
-          inherit system;
-          config.allowUnfreePredicate =
-            pkg:
-            builtins.elem (nixpkgs.lib.getName pkg) [
-              "lilbee"
-              "lilbee-bin"
-            ];
-        };
+      mkPkgs = system: import nixpkgs { inherit system; };
 
       mkMeta = pkgs: {
         description = "Run and manage local AI models and search your files, code, and crawled web pages, with cited answers";
         homepage = "https://github.com/tobocop2/lilbee";
-        license = pkgs.lib.licenses.elastic20;
+        license = pkgs.lib.licenses.mit;
         mainProgram = "lilbee";
         platforms = systems;
         sourceProvenance = [ pkgs.lib.sourceTypes.binaryNativeCode ];
@@ -137,6 +126,60 @@
           pkgs = mkPkgs system;
         in
         mkCudaLinuxFHS pkgs system;
+
+      # Pre-Haswell CPU variant: the same Vulkan binary built against the +compat
+      # lancedb. Kept in sources-compat.json so the standard publish (which
+      # overwrites sources.json) can't wipe it; present only on x86_64-linux and
+      # only once publish-compat-packages fills sources-compat.systems.${system}.
+      compatSources = builtins.fromJSON (builtins.readFile ./sources-compat.json);
+      compatSystems = builtins.attrNames compatSources.systems;
+      hasCompat = system: builtins.elem system compatSystems;
+
+      mkCompatBin =
+        pkgs: system:
+        let
+          entry = compatSources.systems.${system};
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "lilbee-compat";
+          inherit version;
+          src = pkgs.fetchurl {
+            url = "https://github.com/tobocop2/lilbee/releases/download/v${version}/${entry.asset}";
+            inherit (entry) sha256;
+          };
+          dontUnpack = true;
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 $src $out/bin/lilbee
+            runHook postInstall
+          '';
+          meta = mkMeta pkgs;
+        };
+
+      # Same FHS surface as the default build -- the compat binary is still a
+      # Vulkan onefile, only its bundled lancedb differs.
+      mkCompatLinuxFHS =
+        pkgs: system:
+        pkgs.buildFHSEnv {
+          name = "lilbee-compat";
+          targetPkgs =
+            ps: with ps; [
+              stdenv.cc.cc.lib
+              glibc
+              zlib
+              vulkan-loader
+              libGL
+            ];
+          runScript = "${mkCompatBin pkgs system}/bin/lilbee";
+          meta = mkMeta pkgs;
+        };
+
+      mkLilbeeCompat =
+        system:
+        let
+          pkgs = mkPkgs system;
+        in
+        mkCompatLinuxFHS pkgs system;
     in
     {
       packages = forAllSystems (
@@ -146,6 +189,9 @@
         }
         // nixpkgs.lib.optionalAttrs (hasCuda system) {
           lilbee-cuda = mkLilbeeCuda system;
+        }
+        // nixpkgs.lib.optionalAttrs (hasCompat system) {
+          lilbee-compat = mkLilbeeCompat system;
         }
       );
 

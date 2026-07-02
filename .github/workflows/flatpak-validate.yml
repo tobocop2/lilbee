@@ -36,7 +36,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -94,7 +94,7 @@ jobs:
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lilbee-linux-x86_64
           path: dist/lilbee-linux-x86_64
@@ -115,7 +115,7 @@ jobs:
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y --noninteractive flathub md.obsidian.Obsidian
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: lilbee-linux-x86_64
           path: /tmp/dist
