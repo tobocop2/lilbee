@@ -296,6 +296,17 @@ class TestPackageGetattr:
         with pytest.raises(AttributeError, match="has no attribute 'definitely_not_a_thing'"):
             getattr(lilbee, "definitely_not_a_thing")  # noqa: B009
 
+    def test_submodule_attribute_self_heals(self, monkeypatch):
+        """``lilbee.<submodule>`` re-imports when the package binding is missing.
+
+        Dotted-path resolvers (monkeypatch.setattr, mock.patch) getattr their
+        way down from the package; a missing binding must re-import, not raise.
+        """
+        import lilbee
+
+        monkeypatch.delattr(lilbee, "providers")
+        assert getattr(lilbee, "providers").__name__ == "lilbee.providers"  # noqa: B009
+
 
 class TestMemory:
     """Real round-trip tests against the ``_memories`` LanceDB table."""
