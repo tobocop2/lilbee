@@ -266,6 +266,23 @@ class TestDispatchChat:
             "stop": ["</s>"],
         }
 
+    def test_seed_and_penalties_passed_to_provider(self, services_with_model) -> None:
+        dispatch_chat(
+            _req(seed=7, frequency_penalty=0.5, presence_penalty=-0.5),
+        )
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert opts == {
+            "seed": 7,
+            "frequency_penalty": 0.5,
+            "presence_penalty": -0.5,
+        }
+
+    def test_seed_and_penalties_omitted_when_absent(self, services_with_model) -> None:
+        """Unset sampler fields never reach the provider options."""
+        dispatch_chat(_req(temperature=0.2))
+        opts = services_with_model.provider.chat.call_args.kwargs["options"]
+        assert opts == {"temperature": 0.2}
+
     def test_tool_use_message_round_trips_as_assistant_tool_calls(
         self, services_with_model
     ) -> None:

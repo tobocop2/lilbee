@@ -51,6 +51,8 @@ from lilbee.server.chat_dispatch.dispatch import (
 
 log = logging.getLogger(__name__)
 
+_MULTI_CHOICE_MESSAGE = "lilbee serves one choice per request; set n to 1 or omit it."
+
 
 @get("/v1/models")
 @read_only
@@ -100,9 +102,9 @@ async def chat_completions_endpoint(
     request: Request, data: CompletionsRequest
 ) -> Response | Stream:
     """``/v1/chat/completions`` (stream + non-stream + tools)."""
-    auth_error = _auth_failure(request)
-    if auth_error is not None:
-        return auth_error
+    rejection = _reject_before_dispatch(request, data)
+    if rejection is not None:
+        return rejection
 
     try:
         req = completions_to_canonical_request(data)
@@ -138,7 +140,24 @@ async def chat_completions_endpoint(
             media_type="text/event-stream",
             background=BackgroundTask(guard.release),
         )
-    return await _run_non_stream(req, guard)
+    return await _run_non_stream(req, guard, canonical_model=resolved_model)
+
+
+def _reject_before_dispatch(request: Request, data: CompletionsRequest) -> Response | None:
+    """Auth, multi-choice, and unsupported-param checks before any dispatch work.
+
+    Returns a 4xx Response to short-circuit, or None to proceed. Unmapped OpenAI
+    params (``response_format``, ``logprobs``, and any other unknown field) are
+    accepted but logged at debug so a client learns they had no effect.
+    """
+    auth_error = _auth_failure(request)
+    if auth_error is not None:
+        return auth_error
+    if data.n is not None and data.n > 1:
+        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _MULTI_CHOICE_MESSAGE)
+    if data.model_extra:
+        log.debug("chat/completions ignoring unsupported params: %s", sorted(data.model_extra))
+    return None
 
 
 async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response:
@@ -172,12 +191,15 @@ def _internal_error_response() -> Response:
     return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
 
 
-async def _run_non_stream(req: CanonicalChatRequest, guard: ChatSlotGuard) -> Response:
+async def _run_non_stream(
+    req: CanonicalChatRequest, guard: ChatSlotGuard, *, canonical_model: str
+) -> Response:
     """Dispatch a non-streaming chat call, translating errors to the wire envelope."""
     try:
         # dispatch_chat blocks for the whole generation; run it off the event loop
-        # so a slow chat does not stall other admitted requests.
-        resp = await asyncio.to_thread(dispatch_chat, req)
+        # so a slow chat does not stall other admitted requests. The preflight
+        # already resolved the model, so hand it in to avoid re-running it.
+        resp = await asyncio.to_thread(dispatch_chat, req, canonical_model=canonical_model)
     except Exception as exc:
         classified = classify_provider_error(exc)
         if classified is None:
@@ -207,7 +229,7 @@ async def _gated_completions_stream(
     """
     try:
         try:
-            events = dispatch_chat_stream(req)
+            events = dispatch_chat_stream(req, canonical_model=model)
             chunks = canonical_stream_to_completions_chunks(
                 events, model=model, response_id=_response_id(), include_usage=include_usage
             )

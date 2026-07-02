@@ -89,6 +89,9 @@ def completions_to_canonical_request(request: CompletionsRequest) -> CanonicalCh
         top_p=request.top_p,
         top_k=request.top_k,
         max_tokens=request.max_tokens,
+        seed=request.seed,
+        frequency_penalty=request.frequency_penalty,
+        presence_penalty=request.presence_penalty,
         stop=_stop_from_request(request.stop),
         stream=request.stream,
     )
