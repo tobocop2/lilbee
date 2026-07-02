@@ -393,6 +393,16 @@ FLEET_VIEW = "Fleet"
 FLEET_CMD_PREVIEW = "Preview"
 FLEET_CMD_APPLY = "Apply"
 FLEET_CMD_AUTO = "Auto"
+FLEET_TAG_SHARED = "shared"
+FLEET_HELP_ICON = "?"
+# Single hover explanation for the whole drawer (kept friendly, no jargon).
+FLEET_HELP_TOOLTIP = (
+    "Top: how busy each GPU is right now.\n"
+    "Grid: what runs on which GPU.\n"
+    "  • chat is one model shared across the highlighted cards (they work as one).\n"
+    "  • embed/vision run as a full copy on each highlighted card.\n"
+    "Click a cell to change it, then Apply. Auto lets lilbee choose."
+)
 # The full nav-view universe in order. Single source for the view set: the
 # settings bar pre-creates a tab per entry (toggling Wiki visibility at
 # runtime), get_nav_views() gates Wiki, and app.get_views() derives its

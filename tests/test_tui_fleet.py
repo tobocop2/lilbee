@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 
 import pytest
-from textual.widgets import Button, Static
+from textual.widgets import Button
 
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -47,11 +47,20 @@ class FleetTestApp(LilbeeAppHost):
 
 
 def _generated(app) -> str:  # type: ignore[no-untyped-def]
-    from textual.widgets import Static as _Static
+    """The equivalent-spec JSON the editor state produces.
 
-    from lilbee.cli.tui.widgets.fleet_body import _GENERATED_ID
+    The on-screen spec readout was removed for a cleaner drawer; the underlying
+    ``_spec_from_editor`` it rendered is what these tests actually assert on.
+    """
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.fleet.placement_spec import PlacementError
 
-    return str(app.screen.query_one(_GENERATED_ID, _Static).render())
+    body = app.screen.query_one(FleetBody)
+    try:
+        spec = body._spec_from_editor()
+    except PlacementError as exc:
+        return str(exc)
+    return spec.to_json() if spec else "(auto)"
 
 
 async def _toggle_device(pilot, selector: str, *, expect_on: bool = True) -> None:  # type: ignore[no-untyped-def]
@@ -597,10 +606,10 @@ async def test_clear_worker_error_notifies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_generated_shows_error_on_empty_devices(monkeypatch):
-    """_refresh_generated shows a red error when _spec_from_editor raises PlacementError."""
+async def test_spec_from_editor_errors_on_empty_devices(monkeypatch):
+    """_spec_from_editor raises PlacementError when a role is left with no GPUs."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
-    from lilbee.cli.tui.widgets.fleet_body import _GENERATED_ID
+    from lilbee.providers.fleet.placement_spec import PlacementError
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
 
@@ -609,10 +618,8 @@ async def test_refresh_generated_shows_error_on_empty_devices(monkeypatch):
         await pilot.pause()
         body = app.screen.query_one("FleetBody")
         next(iter(body._edits.values())).devices.clear()
-        body._refresh_generated()
-        await pilot.pause()
-        gen_text = str(body.query_one(_GENERATED_ID, Static).render())
-        assert "needs at least one GPU" in gen_text or "GPU" in gen_text
+        with pytest.raises(PlacementError, match="at least one GPU"):
+            body._spec_from_editor()
 
 
 @pytest.mark.parametrize(

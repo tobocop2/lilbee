@@ -5,9 +5,23 @@ FleetBody {
         padding: 0 1;
     }
 
-    #placement-title {
+    #placement-titlebar {
         height: 1;
         margin-bottom: 1;
+    }
+
+    #placement-title {
+        width: 1fr;
+        height: 1;
+    }
+
+    /* One hover-help for the whole drawer; keeps the surface otherwise minimal. */
+    #placement-help {
+        width: 3;
+        height: 1;
+        content-align: right middle;
+        color: $primary;
+        text-style: bold;
     }
 
     #placement-editor {
@@ -53,19 +67,30 @@ FleetBody {
         border: round $primary-lighten-3;
     }
 
-    .dev-toggle.on {
+    /* On-state color carries the KIND: shared (one model split) = primary,
+       copy (one per card) = secondary. */
+    .dev-toggle.share.on {
+        background: $primary;
+        color: $background;
+        text-style: bold;
+        border: round $primary;
+    }
+
+    .dev-toggle.copy.on {
         background: $secondary;
         color: $background;
         text-style: bold;
         border: round $secondary;
     }
 
-    .dev-toggle.on:hover {
-        background: $secondary-darken-1;
-        border: round $secondary-darken-1;
+    .dev-toggle.share.on:focus {
+        background: $primary;
+        color: $background;
+        text-style: bold;
+        border: round $primary-lighten-3;
     }
 
-    .dev-toggle.on:focus {
+    .dev-toggle.copy.on:focus {
         background: $secondary;
         color: $background;
         text-style: bold;
@@ -128,10 +153,59 @@ FleetBody {
         border: round $primary-lighten-3;
     }
 
-    #placement-generated {
-        height: auto;
-        margin-top: 1;
+    .gpu-header-row {
+        height: 1;
+    }
+
+    .gpu-hdr-lead {
+        width: 9;
         color: $text-muted;
+        content-align: left middle;
+    }
+
+    .gpu-hdr {
+        width: 5;
+        margin: 0 1 0 0;
+        color: $text-muted;
+        content-align: center middle;
+    }
+
+    .role-tag {
+        width: auto;
+        margin-left: 1;
+        color: $text-muted;
+        content-align: left middle;
+    }
+
+    .pager-row {
+        height: 3;
+        align-vertical: middle;
+        margin-top: 1;
+    }
+
+    .pg-btn {
+        min-width: 5;
+        width: 5;
+        height: 3;
+        margin: 0 1 0 0;
+        border: round $panel;
+        background: $surface;
+        color: $foreground;
+    }
+
+    .pg-btn:hover {
+        border: round $secondary;
+    }
+
+    .pg-btn:focus {
+        text-style: bold;
+        border: round $primary-lighten-3;
+    }
+
+    .pg-info {
+        width: auto;
+        color: $text-muted;
+        content-align: left middle;
     }
 
     #placement-hint {

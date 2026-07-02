@@ -32,7 +32,7 @@ class FleetDrawer(Vertical):
     DEFAULT_CSS: ClassVar[str] = _DRAWER_CSS
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "close", "Close", show=False),
+        Binding("escape", "close", "Close", show=True),
         # priority so a focused toggle child doesn't swallow ctrl+r/s/x
         Binding("ctrl+r", "preview", "Preview", show=True, priority=True),
         Binding("ctrl+s", "apply", "Apply", show=True, priority=True),

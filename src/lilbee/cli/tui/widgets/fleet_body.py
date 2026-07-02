@@ -56,7 +56,6 @@ def _clean_model_name(ref: str) -> str:
 _CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 
 _EDITOR_ID = "#placement-editor"
-_GENERATED_ID = "#placement-generated"
 _TITLE_ID = "#placement-title"
 _FLEET_PANEL_ID = "#gpu-fleet-panel"
 
@@ -68,6 +67,10 @@ _HINT = (
 _CMD_PREVIEW = "cmd-preview"
 _CMD_APPLY = "cmd-apply"
 _CMD_AUTO = "cmd-auto"
+# GPUs shown per page in the placement grid; more than this paginate.
+_PLACEMENT_PAGE_SIZE = 8
+# Roles whose placement is a per-card copy (the rest run one model shared across cards).
+_COPY_ROLES = _REPLICA_ROLES
 
 
 @dataclass
@@ -92,6 +95,7 @@ class FleetBody(Widget):
         self._edits: dict[WorkerRole, _RoleEdit] = {}
         self._device_indices: tuple[int, ...] = ()
         self._view_manual = False
+        self._page = 0
         self._command_actions: dict[str, Callable[[], None]] = {
             _CMD_PREVIEW: self.action_preview,
             _CMD_APPLY: self.action_apply,
@@ -105,14 +109,17 @@ class FleetBody(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="placement-layout"):
-            yield Static("", id="placement-title")
+            with Horizontal(id="placement-titlebar"):
+                yield Static("", id="placement-title")
+                help_icon = Static(msg.FLEET_HELP_ICON, id="placement-help")
+                help_icon.tooltip = msg.FLEET_HELP_TOOLTIP
+                yield help_icon
             yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
             with Horizontal(id="placement-commands"):
                 yield Button(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-btn")
                 yield Button(msg.FLEET_CMD_APPLY, id=_CMD_APPLY, classes="cmd-btn")
                 yield Button(msg.FLEET_CMD_AUTO, id=_CMD_AUTO, classes="cmd-btn")
-            yield Static("", id="placement-generated")
             yield Static(_HINT, id="placement-hint")
 
     def on_mount(self) -> None:
@@ -137,33 +144,68 @@ class FleetBody(Widget):
         self._edits = {
             r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles
         }
+        self._page = 0
         self._build_editor()
         self._refresh_title(dirty=False)
-        self._refresh_generated()
         self._update_fleet_panel(view)
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
 
+    def _page_devices(self) -> tuple[int, ...]:
+        """The GPU indices visible on the current page."""
+        start = self._page * _PLACEMENT_PAGE_SIZE
+        return self._device_indices[start : start + _PLACEMENT_PAGE_SIZE]
+
+    def _page_count(self) -> int:
+        """Number of GPU pages at the current fleet size."""
+        n = len(self._device_indices)
+        return max(1, (n + _PLACEMENT_PAGE_SIZE - 1) // _PLACEMENT_PAGE_SIZE)
+
     def _build_editor(self) -> None:
-        """Mount one interactive row per role (GPU toggles + replica stepper)."""
+        """Rebuild the placement grid: GPU header, one row per role, optional pager."""
         container = self.query_one(_EDITOR_ID, Vertical)
         container.remove_children()
-        rows: list[Horizontal] = []
+        devices = self._page_devices()
+        widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
+            kind = "copy" if role in _COPY_ROLES else "share"
             children: list[Button | Label] = [Label(f"{role.value:<7}", classes="role-name")]
-            for idx in self._device_indices:
-                cls = "dev-toggle on" if idx in edit.devices else "dev-toggle"
-                children.append(Button(str(idx), id=f"dev-{role.value}-{idx}", classes=cls))
+            for idx in devices:
+                on = " on" if idx in edit.devices else ""
+                children.append(
+                    Button(str(idx), id=f"dev-{role.value}-{idx}", classes=f"dev-toggle {kind}{on}")
+                )
             if role in _REPLICA_ROLES:
                 children.append(Button("-", id=f"rep-{role.value}-dec", classes="rep-btn"))
                 children.append(
                     Label(f"x{edit.replicas}", id=f"repn-{role.value}", classes="rep-count")
                 )
                 children.append(Button("+", id=f"rep-{role.value}-inc", classes="rep-btn"))
-            rows.append(Horizontal(*children, classes="role-row"))
-        if rows:
-            container.mount(*rows)
+            elif len(edit.devices) > 1:
+                children.append(Label(msg.FLEET_TAG_SHARED, classes="role-tag"))
+            widgets.append(Horizontal(*children, classes="role-row"))
+        container.mount(*widgets)
+        if self._page_count() > 1:
+            container.mount(self._pager_row())
+
+    def _gpu_header_row(self, devices: tuple[int, ...]) -> Horizontal:
+        """A header labelling the visible GPU columns."""
+        cells: list[Label] = [Label("GPU", classes="role-name gpu-hdr-lead")]
+        cells += [Label(str(idx), classes="gpu-hdr") for idx in devices]
+        return Horizontal(*cells, classes="gpu-header-row")
+
+    def _pager_row(self) -> Horizontal:
+        """Prev/next controls and a page indicator for fleets past one page."""
+        first = self._page * _PLACEMENT_PAGE_SIZE
+        last = first + len(self._page_devices()) - 1
+        info = f"GPUs {first}-{last}  ·  page {self._page + 1}/{self._page_count()}"
+        return Horizontal(
+            Button("◄", id="pg-prev", classes="pg-btn"),
+            Label(info, classes="pg-info"),
+            Button("►", id="pg-next", classes="pg-btn"),
+            classes="pager-row",
+        )
 
     def _refresh_title(self, *, dirty: bool) -> None:
         if dirty:
@@ -171,16 +213,6 @@ class FleetBody(Widget):
         else:
             text = "Placement (manual)" if self._view_manual else "Placement (auto)"
         self.query_one(_TITLE_ID, Static).update(f"[bold]{text}[/bold]")
-
-    def _refresh_generated(self) -> None:
-        """Show the spec the current controls produce (for CLI/HTTP/MCP parity)."""
-        out = self.query_one(_GENERATED_ID, Static)
-        try:
-            spec = self._spec_from_editor()
-        except PlacementError as exc:
-            out.update(f"[red]{exc}[/red]")
-            return
-        out.update(f"equivalent spec:  {spec.to_json() if spec else '(auto)'}")
 
     def _update_fleet_panel(self, view: PlacementView) -> None:
         """Push the current device list and roles into the fleet panel."""
@@ -219,6 +251,11 @@ class FleetBody(Widget):
         if command is not None:
             command()
             return
+        if bid in ("pg-prev", "pg-next"):
+            step = -1 if bid == "pg-prev" else 1
+            self._page = min(max(0, self._page + step), self._page_count() - 1)
+            self._build_editor()
+            return
         if bid.startswith("dev-"):
             _, role_value, idx_str = bid.split("-")
             edit = self._edits[WorkerRole(role_value)]
@@ -239,7 +276,6 @@ class FleetBody(Widget):
         else:
             return
         self._refresh_title(dirty=True)
-        self._refresh_generated()
 
     # -- actions ---------------------------------------------------------
 
