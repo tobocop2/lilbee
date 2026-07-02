@@ -15,17 +15,11 @@ Output reel-auto.gif
 Hide
 Type "lilbee-tui"
 Enter
-Sleep 55s
+Sleep 80s
 Show
 Sleep 2s
-Escape
-Sleep 500ms
-Type "/add /workspace/corpus/lilbee-source"
-Sleep 1500ms
-Enter
-Sleep 2s
 Ctrl+g
-Sleep 35s
+Sleep 7s
 Escape
 Sleep 500ms
 Type "i"
@@ -33,5 +27,5 @@ Sleep 400ms
 Type "How does lilbee split a large model across multiple GPUs?"
 Sleep 1s
 Enter
-Sleep 95s
-Sleep 3s
+Sleep 85s
+Sleep 2s
