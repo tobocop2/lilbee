@@ -293,6 +293,52 @@ async def test_normal_tab_focuses_drawer_and_enter_toggles(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_command_buttons_are_clickable(_patched, monkeypatch):  # type: ignore[no-untyped-def]
+    """Clicking Preview/Apply/Auto fires the editor actions, so the drawer is
+    fully mouse-operable without the ctrl+r/s/x keys."""
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    calls: list[str] = []
+    monkeypatch.setattr(FleetBody, "action_preview", lambda self: calls.append("preview"))
+    monkeypatch.setattr(FleetBody, "action_apply", lambda self: calls.append("apply"))
+    monkeypatch.setattr(FleetBody, "action_clear", lambda self: calls.append("clear"))
+
+    app = _DrawerApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.click("#cmd-preview")
+        await pilot.click("#cmd-apply")
+        await pilot.click("#cmd-auto")
+        await pilot.pause()
+    assert calls == ["preview", "apply", "clear"]
+
+
+@pytest.mark.asyncio
+async def test_chip_click_toggles_device_off(monkeypatch):  # type: ignore[no-untyped-def]
+    """Clicking a GPU chip toggles that device for the role, no keyboard needed."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets import gpu_fleet_panel as gfp
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view3())
+    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: {})
+
+    app = _DrawerApp()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        await pilot.click("#dev-chat-2")
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        assert 2 not in body._edits[WorkerRole.CHAT].devices
+        assert "on" not in app.screen.query_one("#dev-chat-2").classes
+
+
+@pytest.mark.asyncio
 async def test_chat_input_enter_yields_when_unfocused() -> None:
     """The chat input's Enter yields (SkipAction) when it lacks focus, so Enter
     reaches a focused drawer toggle instead of submitting the prompt."""

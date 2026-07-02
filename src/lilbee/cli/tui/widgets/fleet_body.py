@@ -98,6 +98,10 @@ class FleetBody(Widget):
             yield Static("", id="placement-title")
             yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
+            with Horizontal(id="placement-commands"):
+                yield Button("Preview", id="cmd-preview", classes="cmd-btn")
+                yield Button("Apply", id="cmd-apply", classes="cmd-btn")
+                yield Button("Auto", id="cmd-auto", classes="cmd-btn")
             yield Static("", id="placement-generated")
             yield Static(_HINT, id="placement-hint")
 
@@ -199,8 +203,17 @@ class FleetBody(Widget):
         return PlacementSpec(roles=roles)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle a GPU toggle or a replica -/+ press."""
+        """Handle a GPU toggle, a replica -/+ press, or a command button."""
         bid = event.button.id or ""
+        if bid == "cmd-preview":
+            self.action_preview()
+            return
+        if bid == "cmd-apply":
+            self.action_apply()
+            return
+        if bid == "cmd-auto":
+            self.action_clear()
+            return
         if bid.startswith("dev-"):
             _, role_value, idx_str = bid.split("-")
             edit = self._edits[WorkerRole(role_value)]
