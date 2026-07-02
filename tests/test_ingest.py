@@ -2348,7 +2348,12 @@ class TestImageOcr:
         assert len(result) > 0
         assert result[0]["content_type"] == "image"
 
-    async def test_image_vision_ocr_failure_skips_file(self, isolated_env, mock_svc):
+    async def test_image_vision_ocr_failure_fails_file(self, isolated_env, mock_svc):
+        """A vision-backend error is a per-file failure, not an empty document.
+
+        Swallowing it into [] would skip-mark the file under its current hash
+        and silently drop it from search until retry_skipped.
+        """
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         cfg.enable_ocr = True
         mock_svc.provider.vision_ocr.side_effect = RuntimeError("vision down")
@@ -2357,7 +2362,8 @@ class TestImageOcr:
 
         from lilbee.data.ingest import ingest_document
 
-        assert await ingest_document(f, "scan.png", "image") == []
+        with pytest.raises(RuntimeError, match="vision down"):
+            await ingest_document(f, "scan.png", "image")
 
     async def test_image_ocr_disabled_skips_both_backends(self, isolated_env, mock_svc):
         """enable_ocr=False disables OCR entirely for images (bb-ziks.20): neither
@@ -2647,8 +2653,8 @@ class TestOcrFallbackBackendDispatch:
         assert "Skipped blank.pdf" in caplog.text
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
-    async def test_pool_exception_returns_empty(self, mock_kf, isolated_env, mock_svc):
-        """Worker error in pdf_ocr is logged and surfaces as an empty result."""
+    async def test_pool_exception_fails_file(self, mock_kf, isolated_env, mock_svc):
+        """A pdf_ocr backend error is logged and raised as a per-file failure."""
         cfg.enable_ocr = True
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         mock_kf.return_value = _make_empty_result()
@@ -2659,8 +2665,8 @@ class TestOcrFallbackBackendDispatch:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "broken.pdf", "pdf", quiet=True)
-        assert result == []
+        with pytest.raises(RuntimeError, match="pool died"):
+            await ingest_document(f, "broken.pdf", "pdf", quiet=True)
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
     async def test_tesseract_no_timeout_runs_uncapped(self, mock_kf, isolated_env, mock_svc):

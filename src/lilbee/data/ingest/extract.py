@@ -208,8 +208,14 @@ async def _vision_ocr_cached(
         # OCR failure and swallowed.
         raise
     except Exception:
+        # A vision-backend failure (dead replica, exhausted failover, transport
+        # error) is a per-file ingest FAILURE, not a "document had no text".
+        # Returning [] would classify the file as empty and skip-mark it under
+        # its current hash, silently dropping it from search until
+        # retry_skipped; raising routes it through the pipeline's failed path
+        # with the real reason.
         log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
-        return []
+        raise
     store_ocr_pages(key, pages)
     _record_page_texts(pages, source_name, content_type, page_texts_out)
     return await chunk_and_embed_pages(pages, source_name, content_type, on_progress)
