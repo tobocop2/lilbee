@@ -179,7 +179,7 @@ class TestServicesScope:
             assert get_services() is override
             assert services_mod.peek_services() is None
         # The override is reset on exit and never leaked into the global singleton.
-        assert services_mod._services_override.get() is None
+        assert services_mod._state.override.get() is None
         assert services_mod.peek_services() is None
 
 

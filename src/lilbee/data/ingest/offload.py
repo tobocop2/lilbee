@@ -12,14 +12,8 @@ import asyncio
 import contextvars
 import functools
 import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, TypeVar
-
-_T = TypeVar("_T")
-
-_lock = threading.Lock()
-_executor: ThreadPoolExecutor | None = None
+from typing import Any
 
 
 def _max_workers() -> int:
@@ -27,14 +21,10 @@ def _max_workers() -> int:
     return min(32, (os.cpu_count() or 4) + 4)
 
 
+@functools.cache
 def _ingest_executor() -> ThreadPoolExecutor:
-    global _executor
-    with _lock:
-        if _executor is None:
-            _executor = ThreadPoolExecutor(
-                max_workers=_max_workers(), thread_name_prefix="lilbee-ingest"
-            )
-        return _executor
+    """The shared ingest pool, created on first use (cache makes it a singleton)."""
+    return ThreadPoolExecutor(max_workers=_max_workers(), thread_name_prefix="lilbee-ingest")
 
 
 async def to_ingest_thread(fn: Any, /, *args: Any, **kwargs: Any) -> Any:

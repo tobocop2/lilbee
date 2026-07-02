@@ -113,29 +113,32 @@ class Services:
         self.provider.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
-_svc: Services | None = None
-"""Cached singleton, set on first ``get_services()`` call.
+class _ServicesState:
+    """The cached process-global singleton plus the per-task scoped override.
 
-Concurrency contract: lilbee runs the asyncio loop on a single worker
-thread + Textual's main thread. ``get_services()`` is idempotent (the
-``if _svc is not None: return`` early-out covers re-entry from a
-background thread). Tests that need a custom container call
-``set_services(make_mock_services(...))`` explicitly; ``peek_services()``
-is the read-only inspector for cleanup fixtures. The Services dataclass
-itself is logically immutable post-construction (its fields are
-references to long-lived service objects), so concurrent reads are safe
-without a lock.
-"""
+    ``singleton`` is set on first ``get_services()`` call. Concurrency
+    contract: lilbee runs the asyncio loop on a single worker thread +
+    Textual's main thread; ``get_services()`` is idempotent (the early-out
+    covers re-entry from a background thread), and the Services dataclass is
+    logically immutable post-construction, so concurrent reads are safe
+    without a lock. Tests that need a custom container call
+    ``set_services(make_mock_services(...))``; ``peek_services()`` is the
+    read-only inspector for cleanup fixtures.
 
-_services_override: ContextVar[Services | None] = ContextVar(
-    "lilbee_services_override", default=None
-)
-"""Per-scope container that shadows the global singleton for the entering task.
+    ``override`` shadows the singleton for the entering task: set by
+    :func:`services_scope` (the library API's per-call binding), read by
+    :func:`get_services`, and invisible to ``reset_services`` /
+    ``set_services`` / ``peek_services``, which only touch the singleton.
+    """
 
-Set by :func:`services_scope` (the library API's per-call binding) and read by
-:func:`get_services`. It is invisible to ``reset_services`` / ``set_services`` /
-``peek_services``, which only ever touch the process-global ``_svc``.
-"""
+    def __init__(self) -> None:
+        self.singleton: Services | None = None
+        self.override: ContextVar[Services | None] = ContextVar(
+            "lilbee_services_override", default=None
+        )
+
+
+_state = _ServicesState()
 
 
 def build_services(
@@ -210,12 +213,11 @@ def get_services() -> Services:
     store at the stale 768 default, so the width is pinned to the embedder before
     the store is built.
     """
-    override = _services_override.get()
+    override = _state.override.get()
     if override is not None:
         return override
-    global _svc
-    if _svc is not None:
-        return _svc
+    if _state.singleton is not None:
+        return _state.singleton
 
     from lilbee.app.settings import reconcile_embedding_dim
     from lilbee.core.config import cfg
@@ -225,7 +227,7 @@ def get_services() -> Services:
     # Pin the store width to the embedder before Store(); pass the registry so
     # resolution doesn't re-enter this half-built get_services.
     reconcile_embedding_dim(registry)
-    _svc = build_services(cfg, registry=registry)
+    _state.singleton = build_services(cfg, registry=registry)
     # Eager start is the default: pay the spawn cost per role server at TUI mount
     # so the first user action lands on a warm fleet. Roles whose model is unset
     # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -235,8 +237,8 @@ def get_services() -> Services:
         from contextlib import suppress
 
         with suppress(Exception):
-            _svc.provider.warm_up_pool()
-    return _svc
+            _state.singleton.provider.warm_up_pool()
+    return _state.singleton
 
 
 @contextmanager
@@ -247,17 +249,16 @@ def services_scope(services: Services) -> Iterator[None]:
     ``to_ingest_thread`` workers), and never affects the global singleton, so
     ``reset_services`` is unnecessary and unused around a scoped call.
     """
-    token = _services_override.set(services)
+    token = _state.override.set(services)
     try:
         yield
     finally:
-        _services_override.reset(token)
+        _state.override.reset(token)
 
 
 def set_services(services: Services | None) -> None:
     """Replace the cached Services singleton (for testing)."""
-    global _svc
-    _svc = services
+    _state.singleton = services
 
 
 def peek_services() -> Services | None:
@@ -266,7 +267,7 @@ def peek_services() -> Services | None:
     Public read-only accessor for test cleanup helpers that need to
     inspect the singleton without forcing initialization.
     """
-    return _svc
+    return _state.singleton
 
 
 def reset_services() -> None:
@@ -277,9 +278,8 @@ def reset_services() -> None:
     HTTP daemon every entry point that would call this mid-flight is refused, so
     it only ever runs single-client (CLI, TUI, stdio MCP).
     """
-    global _svc
-    old = _svc
-    _svc = None
+    old = _state.singleton
+    _state.singleton = None
     if old is not None:
         old.provider.shutdown()
         old.store.close()
@@ -292,8 +292,8 @@ def reset_store() -> None:
     but the running provider/embedder/reranker are still good. Avoids the
     multi-second reload cost of ``reset_services()``.
     """
-    global _svc
-    if _svc is None:
+    svc = _state.singleton
+    if svc is None:
         return
     from dataclasses import replace
 
@@ -305,13 +305,13 @@ def reset_store() -> None:
 
     # Build the replacement, swap the reference, then close the old store last so
     # a new caller never observes a closed handle mid-swap.
-    old_store = _svc.store
+    old_store = svc.store
     store = Store(cfg)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
-    searcher = Searcher(cfg, _svc.provider, store, _svc.embedder, _svc.reranker, concepts)
-    _svc = replace(
-        _svc,
+    searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
+    _state.singleton = replace(
+        svc,
         store=store,
         concepts=concepts,
         clusterer=clusterer,
