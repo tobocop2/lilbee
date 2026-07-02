@@ -296,6 +296,19 @@ class TestPackageGetattr:
         with pytest.raises(AttributeError, match="has no attribute 'definitely_not_a_thing'"):
             getattr(lilbee, "definitely_not_a_thing")  # noqa: B009
 
+    def test_dunder_probe_skips_the_import_fallback(self, monkeypatch):
+        """Introspection dunders raise immediately without attempting an import."""
+        import importlib
+
+        import lilbee
+
+        def _boom(name, package=None):
+            raise AssertionError("dunder probe must not import")
+
+        monkeypatch.setattr(importlib, "import_module", _boom)
+        with pytest.raises(AttributeError, match="__wrapped__"):
+            getattr(lilbee, "__wrapped__")  # noqa: B009
+
     def test_submodule_attribute_self_heals(self, monkeypatch):
         """``lilbee.<submodule>`` re-imports when the package binding is missing.
 

@@ -66,6 +66,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Batched ingest flushes contend with long store operations (a search-triggered
+# FTS optimize can hold the lock past the interactive 30s), and failing the
+# flush replans and re-embeds the whole batch. Give the batch path more
+# patience than interactive writes before it gives up.
+BATCH_LOCK_TIMEOUT = 120.0
+
 
 def _hybrid_search(
     table: lancedb.table.Table,
@@ -816,7 +822,7 @@ class Store:
         """
         if not items:
             return 0
-        with self._write_lock():
+        with self._write_lock(timeout=BATCH_LOCK_TIMEOUT):
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
@@ -876,14 +882,18 @@ class Store:
             self._delete_source_unlocked(filename)
         self._invalidate_source_cache()
 
-    def _remove_one_unlocked(self, name: str) -> None:
-        """Delete a document's chunks and its source record together.
+    def _remove_many_unlocked(self, names: list[str]) -> None:
+        """Delete the documents' chunks and source records together.
 
-        Both deletes run under the caller's single ``write_lock()`` so no
-        reader can observe chunks whose source record is already gone.
+        All deletes run under the caller's single ``write_lock()`` so no
+        reader can observe chunks whose source record is already gone; one
+        ``IN`` delete per table covers the whole set.
         """
-        self._delete_by_source_unlocked(name)
-        self._delete_source_unlocked(name)
+        self._delete_by_sources_unlocked(names)
+        quoted = ", ".join(f"'{escape_sql_string(name)}'" for name in names)
+        table = self.open_table(SOURCES_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"filename IN ({quoted})")
 
     def remove_documents(
         self,
@@ -903,18 +913,19 @@ class Store:
             documents_dir = self._config.documents_dir
 
         known = {s["filename"] for s in self.get_sources()}
-        removed: list[str] = []
-        not_found: list[str] = []
+        removed = [name for name in names if name in known]
+        not_found = [name for name in names if name not in known]
 
-        for name in names:
-            if name not in known:
-                not_found.append(name)
-                continue
+        if removed:
+            # One lock acquisition and one IN-delete per table for the whole
+            # set, mirroring the batched flush path, instead of a LanceDB
+            # version commit per document.
             with self._write_lock():
-                self._remove_one_unlocked(name)
+                self._remove_many_unlocked(removed)
             self._invalidate_source_cache()
-            removed.append(name)
-            if delete_files:
+
+        if delete_files:
+            for name in removed:
                 try:
                     path = validate_path_within(documents_dir / name, documents_dir)
                 except ValueError:

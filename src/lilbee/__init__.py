@@ -120,6 +120,10 @@ def __getattr__(name: str) -> object:
         from lilbee.api import Lilbee
 
         return Lilbee
+    if name.startswith("__") and name.endswith("__"):
+        # Introspection probes (__wrapped__, __all__ fallbacks, copy/pickle
+        # dunders) are frequent and never name a submodule; skip the import.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     # PEP 562: `lilbee.<submodule>` must behave like a plain package attribute
     # even when the submodule has not been imported yet (dotted-path resolvers
     # such as monkeypatch.setattr and mock.patch rely on getattr succeeding).
