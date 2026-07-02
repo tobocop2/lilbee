@@ -22,7 +22,7 @@ from rich.progress import (
 )
 
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
@@ -83,20 +83,20 @@ def _max_concurrent() -> int:
     ``cpu_quota()`` requests (dozens) at one server's few slots and 429-drops files, while a
     few-core box with several GPUs would starve the extra cards.
     """
-    from lilbee.core.config import cfg
     from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
     from lilbee.providers.roles import WorkerRole
 
-    if cfg.vision_model:
+    config = active_config()
+    if config.vision_model:
         replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
-        return max(1, replicas * cfg.vision_ocr_concurrency)
+        return max(1, replicas * config.vision_ocr_concurrency)
     embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
     return max(cpu_quota(), embed_slots)
 
 
 async def _rebuild_concept_clusters() -> None:
     """Re-run Leiden clustering after sync. No-op if disabled."""
-    if not cfg.concept_graph:
+    if not active_config().concept_graph:
         return
     from lilbee.retrieval.concepts import concepts_available
 
@@ -120,7 +120,7 @@ async def _build_concept_records(
     ingest result and written once per flush (see :func:`_flush_concept_records`),
     so a large sync pays one concept-table write per flush, not per file.
     """
-    if not cfg.concept_graph or not records:
+    if not active_config().concept_graph or not records:
         return None
     from lilbee.retrieval.concepts import concepts_available
 
@@ -310,13 +310,14 @@ def detect_pending() -> int:
     not show up as pending. Blocking: callers on the event loop run it via
     ``asyncio.to_thread``.
     """
-    if not cfg.documents_dir.exists():
+    config = active_config()
+    if not config.documents_dir.exists():
         return 0
     disk_files = discover_files()
     sources = get_services().store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
     removed = len(_removable_sources(sources, disk_files))
-    skip_markers = load_skip_markers(cfg.data_root)
+    skip_markers = load_skip_markers(config.data_root)
     plan = _plan_file_changes(disk_files, existing_sources, cancel=None, skip_markers=skip_markers)
     return len(plan.files_to_process) + removed
 
@@ -324,10 +325,11 @@ def detect_pending() -> int:
 def _load_pruned_skip_markers(disk_files: dict[str, Path], *, clear_first: bool) -> dict[str, str]:
     """Read the skip-marker file (optionally clearing it first) and drop entries
     for files no longer on disk, so the marker set tracks the current corpus."""
+    data_root = active_config().data_root
     if clear_first:
         # Clearing the markers makes the diff re-include the skipped files.
-        clear_skip_markers(cfg.data_root)
-    markers = load_skip_markers(cfg.data_root)
+        clear_skip_markers(data_root)
+    markers = load_skip_markers(data_root)
     if not markers:
         return markers
     return {name: fhash for name, fhash in markers.items() if name in disk_files}
@@ -348,7 +350,7 @@ def _persist_skip_markers(
         fhash = pending_hashes.get(name)
         if fhash:
             markers[name] = fhash
-    write_skip_markers(cfg.data_root, markers)
+    write_skip_markers(active_config().data_root, markers)
 
 
 def _force_rebuild_store(store: Any) -> None:
@@ -379,6 +381,7 @@ async def sync(
     When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
     markers are cleared so this sync attempts every file.
     """
+    config = active_config()
     _store = get_services().store
 
     if force_rebuild:
@@ -386,7 +389,7 @@ async def sync(
         # off the event loop so a rebuild doesn't stall other admitted requests.
         await to_ingest_thread(_force_rebuild_store, _store)
 
-    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    config.documents_dir.mkdir(parents=True, exist_ok=True)
 
     disk_files = discover_files()
     sources = _store.get_sources()
@@ -445,7 +448,7 @@ async def sync(
     # Persist the human-readable reason for each skip-marked file (informational;
     # the hash markers above drive the resume logic). Only marker_failed files,
     # so a transient flush failure doesn't leave a stale reason behind.
-    write_skip_reasons(cfg.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
+    write_skip_reasons(config.data_root, {n: reasons[n] for n in marker_failed if n in reasons})
 
     if files_to_process or removed:
         _store.ensure_fts_index()

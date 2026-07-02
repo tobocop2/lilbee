@@ -267,6 +267,25 @@ class TestIsolation:
         bee.sync()
         assert cfg.documents_dir == original_docs
 
+    def test_services_stable_and_global_singleton_untouched(self, tmp_path):
+        """Every call runs against the instance's own Services (no per-call rebuild),
+        and the process-global services singleton is never created or swapped."""
+        from lilbee import Lilbee
+        from lilbee.app.services import peek_services
+
+        before = peek_services()
+        bee = Lilbee(tmp_path / "stable")
+        _write_doc(bee.config.documents_dir, "s.md", "# Stable\nContent for a stability check.")
+        services = bee._services
+        bee.sync()
+        # A second search does not tear down and rebuild the fleet/services: the
+        # same container (and its store) backs sync, search, and status.
+        bee.search("stability")
+        bee.status()
+        assert bee._services is services
+        assert bee.store is services.store
+        assert peek_services() is before
+
     def test_multiple_instances_sequential(self, tmp_path):
         """Two Lilbee instances with different dirs work sequentially."""
         from lilbee import Lilbee
@@ -286,6 +305,20 @@ class TestIsolation:
         assert "b.md" in status_b["sources"]
         assert "b.md" not in status_a["sources"]
         assert "a.md" not in status_b["sources"]
+
+
+class TestClose:
+    def test_close_shuts_down_and_is_idempotent(self, tmp_path):
+        """close() shuts the provider and store down once; a second call is a no-op."""
+        from lilbee import Lilbee
+
+        bee = Lilbee(tmp_path / "closeme")
+        provider = bee._services.provider
+        with mock.patch.object(bee._services.store, "close") as store_close:
+            bee.close()
+            bee.close()
+        provider.shutdown.assert_called_once()
+        store_close.assert_called_once()
 
 
 class TestPackageGetattr:

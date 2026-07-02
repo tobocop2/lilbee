@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.discovery import file_hash
 from lilbee.data.ingest.ocr_cache import load_ocr_pages, ocr_cache_key, store_ocr_pages
@@ -109,13 +109,13 @@ def _effective_enable_ocr() -> bool | None:
     task's context), which is how the timeout reaches the image-OCR call.
     """
     override = _ocr_enable_override.get()
-    return cfg.enable_ocr if override is None else override
+    return active_config().enable_ocr if override is None else override
 
 
 def _effective_ocr_timeout() -> float:
     """``cfg.ocr_timeout`` unless a per-request OCR timeout override is active."""
     override = _ocr_timeout_override.get()
-    return cfg.ocr_timeout if override is None else override
+    return active_config().ocr_timeout if override is None else override
 
 
 @contextmanager
@@ -155,7 +155,7 @@ def _should_run_ocr() -> bool:
         return True
     if enable_ocr is False:
         return False
-    return bool(cfg.vision_model)
+    return bool(active_config().vision_model)
 
 
 def _record_page_texts(
@@ -191,11 +191,12 @@ async def _vision_ocr_cached(
     # The per-page timeout bounds completeness: a page that exhausts the budget
     # yields empty text. Key on it so raising the timeout re-OCRs the file rather
     # than serving the earlier, partially-empty cached result for the same content.
+    config = active_config()
     key = ocr_cache_key(
         file_hash(path),
         backend="vision",
-        model=cfg.vision_model,
-        extra=f"{cfg.vision_ocr_max_tokens}:{_effective_ocr_timeout()}",
+        model=config.vision_model,
+        extra=f"{config.vision_ocr_max_tokens}:{_effective_ocr_timeout()}",
     )
     cached = load_ocr_pages(key)
     if cached is not None:
@@ -238,7 +239,7 @@ async def _vision_ocr_fallback(
             get_services().provider.pdf_ocr,
             path,
             backend="vision",
-            model=cfg.vision_model,
+            model=active_config().vision_model,
             per_page_timeout_s=_effective_ocr_timeout(),
             quiet=quiet,
             on_progress=on_progress,
@@ -290,7 +291,7 @@ async def _vision_image_ocr(
 def _ocr_image_png(png: bytes) -> str:
     """OCR one rendered image page through the vision server."""
     return get_services().provider.vision_ocr(
-        png, cfg.vision_model, timeout=_effective_ocr_timeout()
+        png, active_config().vision_model, timeout=_effective_ocr_timeout()
     )
 
 
@@ -345,16 +346,17 @@ async def _tesseract_ocr_fallback(
     key = ocr_cache_key(file_hash(path), backend=TESSERACT_BACKEND, model=TESSERACT_BACKEND)
     page_texts = load_ocr_pages(key)
     if page_texts is None:
+        tesseract_timeout = active_config().tesseract_timeout
         coro = to_ingest_thread(_run_tesseract_sync, path)
         try:
-            if cfg.tesseract_timeout > 0:
-                result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
+            if tesseract_timeout > 0:
+                result = await asyncio.wait_for(coro, timeout=tesseract_timeout)
             else:
                 result = await coro
         except TimeoutError:
             log.warning(
                 "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
-                cfg.tesseract_timeout,
+                tesseract_timeout,
                 source_name,
             )
             return []
@@ -476,11 +478,12 @@ async def _handle_scanned_pdf_fallback(
         log.info("OCR disabled; skipping scanned-PDF OCR for %s", source_name)
         return []
     use_ocr = _should_run_ocr()
-    if use_ocr and cfg.vision_model:
+    vision_model = active_config().vision_model
+    if use_ocr and vision_model:
         log.info(
             "Scanned PDF: using vision OCR for %s (model=%s)",
             source_name,
-            cfg.vision_model,
+            vision_model,
         )
         return await _vision_ocr_fallback(
             path,
@@ -522,8 +525,9 @@ async def _handle_image(
         # than paying the full Tesseract cost the config says is turned off.
         log.info("OCR disabled; skipping image OCR for %s", source_name)
         return []
-    if _should_run_ocr() and cfg.vision_model:
-        log.info("Image: using vision OCR for %s (model=%s)", source_name, cfg.vision_model)
+    vision_model = active_config().vision_model
+    if _should_run_ocr() and vision_model:
+        log.info("Image: using vision OCR for %s (model=%s)", source_name, vision_model)
         return await _vision_image_ocr(
             path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
         )

@@ -139,6 +139,50 @@ class TestEagerStartBranch:
         provider.warm_up_pool.assert_not_called()
 
 
+class TestBuildServices:
+    """``build_services`` constructs a full container bound to an arbitrary Config."""
+
+    def test_builds_full_container_with_supplied_provider(self, tmp_path):
+        from lilbee.app.services import Services, build_services
+
+        cfg.data_root = tmp_path
+        cfg.documents_dir = tmp_path / "documents"
+        cfg.data_dir = tmp_path / "data"
+        cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+
+        provider = MagicMock()
+        services = build_services(cfg, provider=provider)
+        try:
+            assert isinstance(services, Services)
+            # The supplied provider is threaded through, not rebuilt via the factory.
+            assert services.provider is provider
+            assert services.store is not None
+            assert services.searcher is not None
+        finally:
+            services.store.close()
+
+
+class TestServicesScope:
+    """``services_scope`` shadows the singleton for the block without touching it."""
+
+    def test_scope_overrides_get_services_and_resets(self):
+        from lilbee.app import services as services_mod
+        from lilbee.app.services import get_services, services_scope
+        from tests.conftest import make_mock_services
+
+        override = make_mock_services()
+        services_mod.set_services(None)
+        with services_scope(override):
+            # get_services resolves the scoped override without building the global.
+            assert get_services() is override
+            assert services_mod.peek_services() is None
+        # The override is reset on exit and never leaked into the global singleton.
+        assert services_mod._services_override.get() is None
+        assert services_mod.peek_services() is None
+
+
 class TestResetServicesSwapBeforeClose:
     """reset_services clears the singleton before tearing the old one down."""
 

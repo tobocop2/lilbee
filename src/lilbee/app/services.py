@@ -4,6 +4,14 @@ All runtime dependencies (provider, store, embedder, reranker, concepts,
 clusterer, searcher, worker pool) are created lazily on first call to
 ``get_services()`` and cached for the process lifetime. Tests call
 ``reset_services()`` between runs.
+
+``build_services(config)`` is the construction seam: it builds a full container
+against an arbitrary Config without touching the process-global singleton. The
+library API (:class:`lilbee.Lilbee`) builds one per instance and installs it for
+the duration of each call via :func:`services_scope`, so ingest code reaching for
+``get_services()`` resolves the caller's container. The override is a ContextVar,
+so ``reset_services`` / ``set_services`` / ``peek_services`` (which operate only
+on the global singleton) never see it.
 """
 
 from __future__ import annotations
@@ -12,11 +20,16 @@ import asyncio
 import atexit
 import threading
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from lilbee.catalog.hf_client import HfClient
+    from lilbee.core.config import Config
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
@@ -114,24 +127,35 @@ references to long-lived service objects), so concurrent reads are safe
 without a lock.
 """
 
+_services_override: ContextVar[Services | None] = ContextVar(
+    "lilbee_services_override", default=None
+)
+"""Per-scope container that shadows the global singleton for the entering task.
 
-def get_services() -> Services:
-    """Return the cached Services singleton, creating on first call.
+Set by :func:`services_scope` (the library API's per-call binding) and read by
+:func:`get_services`. It is invisible to ``reset_services`` / ``set_services`` /
+``peek_services``, which only ever touch the process-global ``_svc``.
+"""
 
-    Service modules are imported inside the function to keep CLI
-    startup fast: ``services`` is on every CLI import path, and the
-    concrete service modules transitively pull in heavy libraries
-    (lancedb, kreuzberg). Deferring the loads until first
-    ``get_services()`` call makes ``lilbee --help`` and TUI splash
-    render in milliseconds instead of seconds.
+
+def build_services(
+    config: Config,
+    *,
+    provider: LLMProvider | None = None,
+    registry: ModelRegistry | None = None,
+) -> Services:
+    """Build a full Services container bound to *config*, without caching it.
+
+    ``get_services()`` calls this with the process-global cfg; the library API
+    calls it per instance. Service modules are imported inside the function to
+    keep CLI startup fast (they transitively pull in lancedb / kreuzberg). Pass
+    *provider* to reuse a caller-supplied one; otherwise it is built from
+    *config* via the provider factory. Pass *registry* to reuse one already built
+    (get_services builds it for embedding-dim reconciliation). Embedding-dim
+    reconciliation is a global-cfg concern owned by :func:`get_services`, not
+    done here.
     """
-    global _svc
-    if _svc is not None:
-        return _svc
-
-    from lilbee.app.settings import reconcile_embedding_dim
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.core.config import cfg
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
@@ -144,27 +168,23 @@ def get_services() -> Services:
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    provider = create_provider(cfg)
-    registry = ModelRegistry(cfg.models_dir)
-    # A config-file embedding_model with no embedding_dim would otherwise build the
-    # store at the stale 768 default; pin the width to the embedder before Store().
-    # Pass the registry so resolution doesn't re-enter this half-built get_services.
-    reconcile_embedding_dim(registry)
-    store = Store(cfg)
-    embedder = Embedder(cfg, provider)
-    reranker = Reranker(cfg)
-    concepts = ConceptGraph(cfg, store)
-    clusterer = Clusterer(cfg, store)
-    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
+    provider = provider or create_provider(config)
+    registry = registry or ModelRegistry(config.models_dir)
+    store = Store(config)
+    embedder = Embedder(config, provider)
+    reranker = Reranker(config)
+    concepts = ConceptGraph(config, store)
+    clusterer = Clusterer(config, store)
+    searcher = Searcher(config, provider, store, embedder, reranker, concepts)
     hf_client = HfClient()
     ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(cfg.models_dir)
+    model_manager = ModelManager(config.models_dir)
     crawler_semaphore = (
-        asyncio.Semaphore(cfg.crawl_max_concurrent) if cfg.crawl_max_concurrent > 0 else None
+        asyncio.Semaphore(config.crawl_max_concurrent) if config.crawl_max_concurrent > 0 else None
     )
     crawler_sync_state = CrawlerSyncState()
     known_models = KnownModelCache()
-    _svc = Services(
+    return Services(
         provider=provider,
         store=store,
         embedder=embedder,
@@ -180,6 +200,32 @@ def get_services() -> Services:
         crawler_sync_state=crawler_sync_state,
         known_models=known_models,
     )
+
+
+def get_services() -> Services:
+    """Return the active container: a scoped override if set, else the cached singleton.
+
+    Creates the singleton on first call (against the process-global cfg). A
+    config-file embedding_model with no embedding_dim would otherwise build the
+    store at the stale 768 default, so the width is pinned to the embedder before
+    the store is built.
+    """
+    override = _services_override.get()
+    if override is not None:
+        return override
+    global _svc
+    if _svc is not None:
+        return _svc
+
+    from lilbee.app.settings import reconcile_embedding_dim
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    # Pin the store width to the embedder before Store(); pass the registry so
+    # resolution doesn't re-enter this half-built get_services.
+    reconcile_embedding_dim(registry)
+    _svc = build_services(cfg, registry=registry)
     # Eager start is the default: pay the spawn cost per role server at TUI mount
     # so the first user action lands on a warm fleet. Roles whose model is unset
     # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -189,8 +235,23 @@ def get_services() -> Services:
         from contextlib import suppress
 
         with suppress(Exception):
-            provider.warm_up_pool()
+            _svc.provider.warm_up_pool()
     return _svc
+
+
+@contextmanager
+def services_scope(services: Services) -> Iterator[None]:
+    """Bind *services* as the container ``get_services()`` returns for this block.
+
+    Isolated to the entering task via a ContextVar (it propagates into
+    ``to_ingest_thread`` workers), and never affects the global singleton, so
+    ``reset_services`` is unnecessary and unused around a scoped call.
+    """
+    token = _services_override.set(services)
+    try:
+        yield
+    finally:
+        _services_override.reset(token)
 
 
 def set_services(services: Services | None) -> None:
