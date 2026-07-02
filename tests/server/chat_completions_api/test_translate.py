@@ -802,6 +802,27 @@ class TestCanonicalStreamToCompletionsChunks:
         )
         assert all(c.usage is None for c in chunks)
 
+    async def test_include_usage_without_provider_usage_still_emits_chunk(self) -> None:
+        """include_usage always produces the trailing usage chunk, zeros when the
+        provider streamed no usage frame -- a client blocking on it must not hang."""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockDelta(index=0, delta=TextDelta(text="hi")),
+            ContentBlockStop(index=0),
+            MessageDelta(stop_reason=StopReason.END_TURN),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x", include_usage=True
+            )
+        )
+        usage_chunk = chunks[-1]
+        assert usage_chunk.choices == []
+        assert usage_chunk.usage is not None
+        assert usage_chunk.usage.total_tokens == 0
+
     async def test_message_start_alone_emits_nothing(self) -> None:
         events: list[CanonicalStreamEvent] = [
             MessageStart(id="msg_x", model="m"),

@@ -691,12 +691,12 @@ class LlamaServerClient:
             return data
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        """Relevance scores via rank-pooling embeddings (mirrors the in-process path).
+        """Relevance scores via rank-pooling embeddings.
 
         The server runs with ``--pooling rank``; we send ``query</s></s>candidate``
         pairs to ``/v1/embeddings`` and read each item's first embedding value as the
-        score -- the same primitive and pairing as ``compute_rerank_scores``, so the
-        ``/v1/rerank`` template-dependency (and its zero-output failure modes) is moot.
+        score, so the ``/v1/rerank`` template-dependency (and its zero-output failure
+        modes) is moot.
         """
         if not candidates:
             return []

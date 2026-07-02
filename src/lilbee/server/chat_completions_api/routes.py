@@ -217,14 +217,16 @@ async def _gated_completions_stream(
             classified = classify_provider_error(exc)
             if classified is None:
                 log.exception("chat_completions stream failed")
-                yield _sse_error_frame(CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
+                yield _sse_error_frame(
+                    CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE, model=model
+                )
             else:
-                yield _sse_error_frame(classified.code, classified.message)
+                yield _sse_error_frame(classified.code, classified.message, model=model)
     finally:
         await guard.release()
 
 
-def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
+def _sse_error_frame(code: CompletionsErrorCode, message: str, *, model: str = "") -> bytes:
     """SSE frame carrying a mid-stream error in OpenAI's chunk-shaped wire format.
 
     OpenAI-SDK clients only parse ``chat.completion.chunk``-shaped frames, so the
@@ -238,7 +240,7 @@ def _sse_error_frame(code: CompletionsErrorCode, message: str) -> bytes:
         "id": _response_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
-        "model": "",
+        "model": model,
         "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
         "error": body["error"],
     }

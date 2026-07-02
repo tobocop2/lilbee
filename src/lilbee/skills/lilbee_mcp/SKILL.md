@@ -97,12 +97,26 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 
 | Tool | Use |
 |---|---|
-| `lilbee_add(paths, force, enable_ocr, ocr_timeout)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. |
+| `lilbee_add(paths, force, enable_ocr, ocr_timeout, render_mode)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. |
 | `lilbee_sync(force_rebuild, retry_skipped)` | Re-index the documents directory after edits. Minutes on large libraries. |
-| `lilbee_crawl(url, depth, max_pages)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
+| `lilbee_crawl(url, depth, max_pages, render_mode, include_subdomains)` | Start a non-blocking crawl. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
 | `lilbee_import_dataset(dataset, fmt)` | Import a per-page dataset file, re-embedding every page under the current model. Replaces existing copies of each source. Streams progress as MCP notifications. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
+
+### GPU placement (multi-GPU boxes)
+
+| Tool | Use |
+|---|---|
+| `lilbee_get_placement()` | Current effective placement: detected GPUs, per-role devices/replicas, whether manual. May run a device probe on a cold cache (a second or two). |
+| `lilbee_preview_placement(spec)` | Dry-run what a spec (or auto, when omitted) would place. No changes made. |
+| `lilbee_set_placement(spec)` | Validate, persist, and apply a manual placement. Rebuilds the model fleet, interrupting in-flight requests. |
+| `lilbee_clear_placement()` | Drop the manual placement and return to automatic placement. Also rebuilds the fleet. |
+
+On the shared HTTP daemon, `set`/`clear` are refused unless the host enables
+`allow_http_placement` (they rebuild the fleet for every connected client);
+`get`/`preview` always work. Prefer preview-then-set, and only change placement
+when the user asks.
 
 (Experimental wiki tools are documented at the end of this skill. Wiki and memory tools are only registered when their subsystems are enabled, so they may be absent from your tool list.)
 
@@ -273,5 +287,5 @@ Never assume you can read a key back.
 
 ## Other skills
 
-- **Wiki tools** (experimental per-concept and per-entity pages with citations) live in the separate [`lilbee-mcp-wiki` skill](../lilbee-mcp-wiki/SKILL.md). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
-- **Non-MCP agents** that need to shell out to lilbee's CLI instead of MCP can use the `--json` flag on any command. See the [JSON CLI fallback](../../usage.md#json-cli-fallback) in the usage guide.
+- **Wiki tools** (experimental per-concept and per-entity pages with citations) live in the separate `lilbee-mcp-wiki` skill (`docs/agent-skills/lilbee-mcp-wiki/SKILL.md` in the lilbee repository). Load that only when the user asks about wiki / synthesis pages, or when `lilbee_status` already shows a built wiki.
+- **Non-MCP agents** that need to shell out to lilbee's CLI instead of MCP can use the `--json` flag on any command. See the JSON CLI fallback section of the usage guide (`docs/usage.md` in the lilbee repository).
