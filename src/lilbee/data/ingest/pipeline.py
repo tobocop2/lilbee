@@ -26,6 +26,7 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
+from lilbee.data.ingest.offload import to_ingest_thread
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
@@ -105,7 +106,7 @@ async def _rebuild_concept_clusters() -> None:
         cg = get_services().concepts
         if not cg.get_graph():
             return
-        await asyncio.to_thread(cg.rebuild_clusters)
+        await to_ingest_thread(cg.rebuild_clusters)
     except Exception:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
@@ -128,9 +129,9 @@ async def _build_concept_records(
     try:
         cg = get_services().concepts
         texts = [r["chunk"] for r in records]
-        concept_lists = await asyncio.to_thread(cg.extract_concepts_batch, texts)
+        concept_lists = await to_ingest_thread(cg.extract_concepts_batch, texts)
         chunk_ids = [(source_name, r["chunk_index"]) for r in records]
-        return await asyncio.to_thread(cg.build_concept_records, chunk_ids, concept_lists)
+        return await to_ingest_thread(cg.build_concept_records, chunk_ids, concept_lists)
     except Exception:
         log.warning("Concept extraction failed for %s", source_name, exc_info=True)
         return None
@@ -155,7 +156,7 @@ async def _produce_records(
     records: list[ChunkRecord]
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
     if content_type == "code":
-        records = await asyncio.to_thread(ingest_code_sync, path, source_name, on_progress)
+        records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
     elif path.suffix.lower() == ".md":
         records = await ingest_markdown(path, source_name, on_progress, page_texts_out=page_texts)
     else:
@@ -383,7 +384,7 @@ async def sync(
     if force_rebuild:
         # drop_all + memory re-embedding are heavy blocking store work; run them
         # off the event loop so a rebuild doesn't stall other admitted requests.
-        await asyncio.to_thread(_force_rebuild_store, _store)
+        await to_ingest_thread(_force_rebuild_store, _store)
 
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
 
@@ -406,12 +407,12 @@ async def sync(
 
     # The planning pass stats (and where needed hashes) every file on disk;
     # off the event loop so a large corpus doesn't freeze the TUI.
-    plan = await asyncio.to_thread(
+    plan = await to_ingest_thread(
         _plan_file_changes, disk_files, existing_sources, cancel, skip_markers
     )
     files_to_process, added, updated = plan.files_to_process, plan.added, plan.updated
     if plan.stat_backfills:
-        await asyncio.to_thread(_store.update_source_stats, plan.stat_backfills)
+        await to_ingest_thread(_store.update_source_stats, plan.stat_backfills)
     # Track skip markers for files processed this run, keyed by name → hash.
     pending_hashes = {entry.name: entry.file_hash for entry in files_to_process}
 
@@ -745,10 +746,10 @@ async def _collect_results(
         # The inner finally guarantees the sibling cancel even if the flush
         # itself raises (e.g. a cancellation landing on the to_thread await).
         try:
-            await asyncio.to_thread(
+            await to_ingest_thread(
                 _flush_writes, buffer, added, updated, failed, skipped, flush_failed
             )
-            await asyncio.to_thread(_purge_emptied_sources, to_purge)
+            await to_ingest_thread(_purge_emptied_sources, to_purge)
         finally:
             still_pending = [t for t in in_flight if not t.done()]
             for task in still_pending:
@@ -772,9 +773,7 @@ async def _buffer_and_maybe_flush(
     # Zero-chunk files count one unit so the buffer stays bounded.
     buffered_chunks += max(result.chunk_count, 1)
     if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
-        await asyncio.to_thread(
-            _flush_writes, buffer, added, updated, failed, skipped, flush_failed
-        )
+        await to_ingest_thread(_flush_writes, buffer, added, updated, failed, skipped, flush_failed)
         buffered_chunks = 0
     return buffered_chunks
 

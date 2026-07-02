@@ -21,6 +21,7 @@ from lilbee.core.config import cfg
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.discovery import file_hash
 from lilbee.data.ingest.ocr_cache import load_ocr_pages, ocr_cache_key, store_ocr_pages
+from lilbee.data.ingest.offload import to_ingest_thread
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
@@ -104,8 +105,8 @@ def _effective_enable_ocr() -> bool | None:
 
     The override is a ContextVar, not a global cfg mutation, so concurrent
     ingests on the shared HTTP daemon each see their own setting. The override
-    also propagates into ``asyncio.to_thread`` workers (``to_thread`` copies the
-    calling task's context), which is how the timeout reaches the image-OCR call.
+    also propagates into ``to_ingest_thread`` workers (it copies the calling
+    task's context), which is how the timeout reaches the image-OCR call.
     """
     override = _ocr_enable_override.get()
     return cfg.enable_ocr if override is None else override
@@ -124,8 +125,8 @@ def ocr_override(
     """Scope per-request OCR settings without mutating the global cfg.
 
     A ``None`` argument leaves that setting at its cfg default. Each override is
-    isolated to the entering context (and any ``to_thread`` work it spawns), so
-    overlapping ingests never clobber one another's OCR config.
+    isolated to the entering context (and any ``to_ingest_thread`` work it
+    spawns), so overlapping ingests never clobber one another's OCR config.
     """
     tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
     try:
@@ -233,7 +234,7 @@ async def _vision_ocr_fallback(
     """Vision OCR a scanned PDF: rasterize + OCR each page through the worker pool."""
 
     async def _ocr() -> list[tuple[int, str]]:
-        pages = await asyncio.to_thread(
+        pages = await to_ingest_thread(
             get_services().provider.pdf_ocr,
             path,
             backend="vision",
@@ -269,10 +270,10 @@ async def _vision_image_ocr(
     """
 
     async def _ocr() -> list[tuple[int, str]]:
-        page_pngs = await asyncio.to_thread(_image_page_pngs, path)
+        page_pngs = await to_ingest_thread(_image_page_pngs, path)
         pages: list[tuple[int, str]] = []
         for page_num, png in enumerate(page_pngs, start=1):
-            text = await asyncio.to_thread(_ocr_image_png, png)
+            text = await to_ingest_thread(_ocr_image_png, png)
             pages.append((page_num, text))
         return pages
 
@@ -344,7 +345,7 @@ async def _tesseract_ocr_fallback(
     key = ocr_cache_key(file_hash(path), backend=TESSERACT_BACKEND, model=TESSERACT_BACKEND)
     page_texts = load_ocr_pages(key)
     if page_texts is None:
-        coro = asyncio.to_thread(_run_tesseract_sync, path)
+        coro = to_ingest_thread(_run_tesseract_sync, path)
         try:
             if cfg.tesseract_timeout > 0:
                 result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
@@ -393,11 +394,11 @@ async def chunk_and_embed_pages(
 
     # chunk_text runs kreuzberg's synchronous extractor; offload it so a long OCR
     # document does not stall sibling files sharing this event loop.
-    all_chunks = await asyncio.to_thread(_chunk_pages, page_texts)
+    all_chunks = await to_ingest_thread(_chunk_pages, page_texts)
     if not all_chunks:
         return []
     texts = [c for _, c in all_chunks]
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
@@ -560,7 +561,7 @@ async def ingest_document(
     from kreuzberg import extract_file_sync
 
     config = extraction_config(content_type_to_mode(content_type))
-    result = await asyncio.to_thread(extract_file_sync, str(path), config=config)
+    result = await to_ingest_thread(extract_file_sync, str(path), config=config)
 
     if content_type == PDF_CONTENT_TYPE and not _has_meaningful_text(result):
         return await _handle_scanned_pdf_fallback(
@@ -590,7 +591,7 @@ async def ingest_document(
     )
 
     texts = [chunk.content for chunk in result.chunks]
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
 
@@ -622,13 +623,13 @@ async def ingest_markdown(
     prepended for better retrieval context. When ``page_texts_out`` is given,
     the full text is appended as page 0 for export.
     """
-    raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+    raw_text = await to_ingest_thread(path.read_text, encoding="utf-8", errors="replace")
     if not raw_text.strip():
         return []
 
     # chunk_text runs kreuzberg's synchronous extractor; offload it so a large
     # markdown doc does not stall sibling files sharing this event loop.
-    texts = await asyncio.to_thread(
+    texts = await to_ingest_thread(
         chunk_text, raw_text, mime_type="text/markdown", heading_context=True
     )
     if not texts:
@@ -637,7 +638,7 @@ async def ingest_markdown(
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
