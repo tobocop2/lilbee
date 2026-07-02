@@ -291,6 +291,44 @@ class TestListModelsEndpoint:
         finally:
             set_services(None)
 
+    async def test_non_active_local_model_is_advertised_then_instructively_rejected(
+        self, _auth_token, monkeypatch
+    ):
+        """The switchable-models contract, pinned as deliberate.
+
+        /v1/models advertises every installed chat model (the launcher and
+        agent-config pickers list them so users can discover what they could
+        switch to); requesting a non-active local one returns a 400 whose
+        message teaches the switch flow rather than serving it silently.
+        """
+        from lilbee.core.config import cfg
+
+        active = "a/Active-GGUF/active.gguf"
+        other = "b/Other-GGUF/other.gguf"
+        monkeypatch.setattr(cfg, "chat_model", active)
+        provider = MagicMock()
+        provider.supports_tools.return_value = False
+        services = _services_with(
+            provider, [_installed_chat_model(active), _installed_chat_model(other)]
+        )
+        set_services(services)
+        try:
+            async with AsyncTestClient(_build_app()) as client:
+                listed = await client.get("/v1/models", headers=_h())
+                ids = [m["id"] for m in listed.json()["data"]]
+                assert active in ids and other in ids
+                completion = await client.post(
+                    "/v1/chat/completions",
+                    headers=_h(),
+                    json={"model": other, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert completion.status_code == 400
+            message = completion.json()["error"]["message"]
+            assert active in message  # names the configured model
+            assert "settings" in message  # and teaches the switch flow
+        finally:
+            set_services(None)
+
     async def test_created_is_zero_when_downloaded_at_unparseable(
         self, services_with_chat_model, _auth_token
     ):

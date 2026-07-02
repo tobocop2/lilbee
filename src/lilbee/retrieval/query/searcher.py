@@ -281,6 +281,12 @@ class Searcher:
         Gao et al. 2022, "Precise Zero-Shot Dense Retrieval without
         Relevance Labels" -- generates a hypothetical answer passage,
         embeds it, and uses the embedding to search for real documents.
+
+        The passage is deliberately embedded with ``embed_query`` (the query
+        instruction), not the document prefix: it stands in for the user's
+        query against the doc-prefixed index, staying in the same vector
+        space as every other query this searcher issues. Changing that is a
+        retrieval-quality experiment for the embedding bench, not a refactor.
         """
         try:
             response = self._provider.chat(
