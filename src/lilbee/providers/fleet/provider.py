@@ -16,7 +16,6 @@ import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
@@ -25,7 +24,11 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
-from lilbee.providers.fleet.client import LlamaServerClient, is_connection_failure
+from lilbee.providers.fleet.client import (
+    ChatDeadlineError,
+    LlamaServerClient,
+    is_connection_failure,
+)
 from lilbee.providers.fleet.replicas import (
     gpu_device_count,
     resolve_replica_count,
@@ -263,23 +266,19 @@ def _bounded_vision_chat(
     options: dict[str, Any],
     timeout: float,
 ) -> str:
-    """One vision chat whose caller returns by *timeout* with a result or an error.
+    """One vision chat streamed under a total *timeout*, released promptly on expiry.
 
-    The httpx timeout is per-phase (connect/read/...), not a total deadline, so
-    the worker thread can outlive the caller on a slowly trickling response; the
-    executor is shut down without waiting so nothing blocks on it.
+    ``chat_bounded`` streams the response in this thread and closes it (freeing the
+    in-flight slot) once the deadline passes, so a trickling upstream can't outlive
+    the caller. Its deadline signal is re-worded as the vision OCR timeout.
     """
-    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        future = pool.submit(client.chat, messages, options=options, stream=False, timeout=timeout)
-        return future.result(timeout=timeout)
-    except FutureTimeoutError:
+        return client.chat_bounded(messages, options=options, deadline_s=timeout)
+    except ChatDeadlineError:
         raise ProviderError(
             f"Vision OCR timed out after {timeout:.0f}s.",
             provider=_PROVIDER_NAME,
         ) from None
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _ocr_pdf_page(
