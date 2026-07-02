@@ -27,12 +27,6 @@ _HTTP_UNPROCESSABLE = 422
 _HTTP_CONFLICT = 409
 _HTTP_UNAVAILABLE = 503
 _INPUT_ERRORS = (PlacementError, ValueError, OSError)
-_REFUSED_DETAIL = (
-    "Changing placement on the HTTP server is unavailable: it rebuilds the shared "
-    "fleet for every connected client. Enable allow_http_placement "
-    "(LILBEE_ALLOW_HTTP_PLACEMENT) on a single-client deployment, or change it "
-    "from the CLI or TUI."
-)
 _MISSING_SPEC_DETAIL = "spec is required to apply placement; send {} to DELETE for auto."
 
 
@@ -42,7 +36,9 @@ def _spec_json(body: PlacementSpecBody) -> str | None:
 
 
 def _refused() -> HTTPException:
-    return HTTPException(status_code=_HTTP_CONFLICT, detail=_REFUSED_DETAIL)
+    from lilbee.app.placement import placement_refused_message
+
+    return HTTPException(status_code=_HTTP_CONFLICT, detail=placement_refused_message())
 
 
 @get("/api/placement")

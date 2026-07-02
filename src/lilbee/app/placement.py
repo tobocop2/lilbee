@@ -105,6 +105,20 @@ def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
 
 
+def placement_refused_message() -> str:
+    """Shared refusal for placement changes on the shared HTTP server.
+
+    Kept in one place so the REST routes and the HTTP-mounted MCP tools
+    cannot drift apart.
+    """
+    return (
+        "Changing placement on the HTTP server is unavailable: it rebuilds the shared "
+        "fleet for every connected client. Enable allow_http_placement "
+        "(LILBEE_ALLOW_HTTP_PLACEMENT) on a single-client deployment, or change it "
+        "from the CLI or TUI."
+    )
+
+
 def set_placement(spec: PlacementSpec | None) -> PlacementView:
     """Validate, persist to config.toml, reset the fleet, and return the new view.
 
