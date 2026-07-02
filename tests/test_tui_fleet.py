@@ -700,3 +700,51 @@ async def test_placement_grid_paginates_large_fleet(monkeypatch):
         # back to page 1
         app.screen.query_one("#pg-prev", Button).press()
         await _wait_for(pilot, "#dev-chat-0")
+
+
+def _make_view_rerank():  # type: ignore[no-untyped-def]
+    """A view with rerank enabled (a single pinned instance on one card)."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
+        ),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0, 1), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1),
+        ),
+        unplaceable=(),
+        manual=True,
+        spec_json=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rerank_is_single_select(monkeypatch):
+    """rerank is a single pinned instance: picking another card moves it, never adds."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view_rerank())
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        assert body._edits[WorkerRole.RERANK].devices == {0}
+        # single-instance roles carry the 'single' kind and a 'one card' tag
+        assert app.screen.query_one("#dev-rerank-0", Button).has_class("single")
+        assert any("one card" in str(lbl.render()) for lbl in app.screen.query(".role-tag"))
+        # picking GPU 2 MOVES rerank there; it must not become {0, 2}
+        app.screen.query_one("#dev-rerank-2", Button).press()
+        for _ in range(100):
+            await pilot.pause()
+            if body._edits[WorkerRole.RERANK].devices == {2}:
+                break
+        assert body._edits[WorkerRole.RERANK].devices == {2}
+        assert app.screen.query_one("#dev-rerank-2", Button).has_class("on")
+        assert not app.screen.query_one("#dev-rerank-0", Button).has_class("on")

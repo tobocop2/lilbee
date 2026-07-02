@@ -69,8 +69,19 @@ _CMD_APPLY = "cmd-apply"
 _CMD_AUTO = "cmd-auto"
 # GPUs shown per page in the placement grid; more than this paginate.
 _PLACEMENT_PAGE_SIZE = 8
-# Roles whose placement is a per-card copy (the rest run one model shared across cards).
-_COPY_ROLES = _REPLICA_ROLES
+# rerank is a single pinned instance on one card (a small cross-encoder that never
+# tensor-splits), so its GPU choice is single-select, unlike the multi-GPU roles.
+_SINGLE_ROLES = (WorkerRole.RERANK,)
+
+
+def _role_kind(role: WorkerRole) -> str:
+    """How a role occupies GPUs: 'mirror' (a copy per card), 'single' (one pinned
+    card), or 'split' (one model tensor-split across cards)."""
+    if role in _REPLICA_ROLES:
+        return "mirror"
+    if role in _SINGLE_ROLES:
+        return "single"
+    return "split"
 
 
 @dataclass
@@ -169,7 +180,7 @@ class FleetBody(Widget):
         devices = self._page_devices()
         widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
-            kind = "copy" if role in _COPY_ROLES else "share"
+            kind = _role_kind(role)
             children: list[Button | Label] = [Label(f"{role.value:<7}", classes="role-name")]
             for idx in devices:
                 on = " on" if idx in edit.devices else ""
@@ -182,8 +193,10 @@ class FleetBody(Widget):
                     Label(f"x{edit.replicas}", id=f"repn-{role.value}", classes="rep-count")
                 )
                 children.append(Button("+", id=f"rep-{role.value}-inc", classes="rep-btn"))
+            elif role in _SINGLE_ROLES:
+                children.append(Label(msg.FLEET_TAG_SINGLE, classes="role-tag"))
             elif len(edit.devices) > 1:
-                children.append(Label(msg.FLEET_TAG_SHARED, classes="role-tag"))
+                children.append(Label(msg.FLEET_TAG_SPLIT, classes="role-tag"))
             widgets.append(Horizontal(*children, classes="role-row"))
         container.mount(*widgets)
         if self._page_count() > 1:
@@ -258,9 +271,17 @@ class FleetBody(Widget):
             return
         if bid.startswith("dev-"):
             _, role_value, idx_str = bid.split("-")
-            edit = self._edits[WorkerRole(role_value)]
+            role = WorkerRole(role_value)
+            edit = self._edits[role]
             idx = int(idx_str)
-            if idx in edit.devices:
+            if role in _SINGLE_ROLES:
+                # Single pinned instance: the picked card becomes the only one.
+                edit.devices = {idx}
+                for other in self._page_devices():
+                    self.query_one(f"#dev-{role.value}-{other}", Button).set_class(
+                        other == idx, "on"
+                    )
+            elif idx in edit.devices:
                 if len(edit.devices) > 1:  # keep at least one GPU per role
                     edit.devices.discard(idx)
                     event.button.remove_class("on")

@@ -393,14 +393,16 @@ FLEET_VIEW = "Fleet"
 FLEET_CMD_PREVIEW = "Preview"
 FLEET_CMD_APPLY = "Apply"
 FLEET_CMD_AUTO = "Auto"
-FLEET_TAG_SHARED = "shared"
+FLEET_TAG_SPLIT = "split"
+FLEET_TAG_SINGLE = "one card"
 FLEET_HELP_ICON = "?"
 # Single hover explanation for the whole drawer (kept friendly, no jargon).
 FLEET_HELP_TOOLTIP = (
     "Top: how busy each GPU is right now.\n"
     "Grid: what runs on which GPU.\n"
-    "  • chat is one model shared across the highlighted cards (they work as one).\n"
+    "  • chat is one model split across the highlighted cards (they work as one).\n"
     "  • embed/vision run as a full copy on each highlighted card.\n"
+    "  • rerank runs on one card; pick a single GPU.\n"
     "Click a cell to change it, then Apply. Auto lets lilbee choose."
 )
 # The full nav-view universe in order. Single source for the view set: the
