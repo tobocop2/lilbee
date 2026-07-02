@@ -14,11 +14,12 @@ from dataclasses import dataclass
 
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 # Search-critical roles reserved ahead of the elastic chat model in a shared pool,
 # so a large chat can never crowd embed/rerank out (which would 503 every search).
-_SEARCH_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
+# The pooled search roles (embed/cross-encoder rerank), derived from the registry.
+_SEARCH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.pooled)
 
 # (role, per-device tensor-split ratio) -> the instance's per-device VRAM footprint
 # vector aligned to that ratio. A split is accepted only when every card's entry

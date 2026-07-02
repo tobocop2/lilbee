@@ -25,7 +25,7 @@ from lilbee.app.placement import get_placement, preview_placement, set_placement
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import REPLICATED_ROLES, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -58,8 +58,8 @@ _GENERATED_ID = "#placement-generated"
 _TITLE_ID = "#placement-title"
 _FLEET_PANEL_ID = "#gpu-fleet-panel"
 
-# Only these roles run multiple replicas; the others always serve one instance.
-_REPLICA_ROLES = (WorkerRole.EMBED, WorkerRole.VISION)
+# Only the replicated roles show a replica stepper; the others always serve one.
+_REPLICA_ROLES = REPLICATED_ROLES
 _HINT = (
     "Toggle a GPU for each role; -/+ sets replicas.  ctrl+r preview · ctrl+s apply · ctrl+x auto"
 )

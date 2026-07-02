@@ -11,14 +11,10 @@ from __future__ import annotations
 import functools
 import logging
 
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 log = logging.getLogger(__name__)
 
-# Roles whose ``*_replicas`` knob scales data-parallel instances; others run one.
-# Single source of truth for the elastic (embed/vision) roles, reused by the
-# fleet provider to mark which placed instances belong to the ingest pool.
-REPLICATED_ROLES = (WorkerRole.EMBED, WorkerRole.VISION)
 # Auto resolves to at least one replica even when no GPU is enumerated.
 _MIN_REPLICAS = 1
 
@@ -32,11 +28,10 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
     """
     from lilbee.core.config import cfg
 
-    if role not in REPLICATED_ROLES:
+    knob = ROLE_REGISTRY[role].replica_knob
+    if knob is None:
         return _MIN_REPLICAS
-    if role is WorkerRole.EMBED:
-        return cfg.embed_replicas or max(_MIN_REPLICAS, device_count)
-    return cfg.vision_replicas or max(_MIN_REPLICAS, device_count)
+    return getattr(cfg, knob) or max(_MIN_REPLICAS, device_count)
 
 
 @functools.cache
