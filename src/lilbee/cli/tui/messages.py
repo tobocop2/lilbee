@@ -390,6 +390,9 @@ COMPAT_MODAL_BODY = (
 DEFAULT_VIEW = "Chat"
 WIKI_VIEW = "Wiki"
 FLEET_VIEW = "Fleet"
+FLEET_CMD_PREVIEW = "Preview"
+FLEET_CMD_APPLY = "Apply"
+FLEET_CMD_AUTO = "Auto"
 # The full nav-view universe in order. Single source for the view set: the
 # settings bar pre-creates a tab per entry (toggling Wiki visibility at
 # runtime), get_nav_views() gates Wiki, and app.get_views() derives its

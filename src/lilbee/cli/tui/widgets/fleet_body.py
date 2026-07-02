@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -22,6 +23,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Label, Static
 
 from lilbee.app.placement import get_placement, preview_placement, set_placement
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
@@ -63,6 +65,9 @@ _REPLICA_ROLES = (WorkerRole.EMBED, WorkerRole.VISION)
 _HINT = (
     "Toggle a GPU for each role; -/+ sets replicas.  ctrl+r preview · ctrl+s apply · ctrl+x auto"
 )
+_CMD_PREVIEW = "cmd-preview"
+_CMD_APPLY = "cmd-apply"
+_CMD_AUTO = "cmd-auto"
 
 
 @dataclass
@@ -87,6 +92,11 @@ class FleetBody(Widget):
         self._edits: dict[WorkerRole, _RoleEdit] = {}
         self._device_indices: tuple[int, ...] = ()
         self._view_manual = False
+        self._command_actions: dict[str, Callable[[], None]] = {
+            _CMD_PREVIEW: self.action_preview,
+            _CMD_APPLY: self.action_apply,
+            _CMD_AUTO: self.action_clear,
+        }
 
     def watch_applying(self, applying: bool) -> None:
         """Disable the editor controls while an apply/clear is in flight."""
@@ -99,9 +109,9 @@ class FleetBody(Widget):
             yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
             with Horizontal(id="placement-commands"):
-                yield Button("Preview", id="cmd-preview", classes="cmd-btn")
-                yield Button("Apply", id="cmd-apply", classes="cmd-btn")
-                yield Button("Auto", id="cmd-auto", classes="cmd-btn")
+                yield Button(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-btn")
+                yield Button(msg.FLEET_CMD_APPLY, id=_CMD_APPLY, classes="cmd-btn")
+                yield Button(msg.FLEET_CMD_AUTO, id=_CMD_AUTO, classes="cmd-btn")
             yield Static("", id="placement-generated")
             yield Static(_HINT, id="placement-hint")
 
@@ -205,14 +215,9 @@ class FleetBody(Widget):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle a GPU toggle, a replica -/+ press, or a command button."""
         bid = event.button.id or ""
-        if bid == "cmd-preview":
-            self.action_preview()
-            return
-        if bid == "cmd-apply":
-            self.action_apply()
-            return
-        if bid == "cmd-auto":
-            self.action_clear()
+        command = self._command_actions.get(bid)
+        if command is not None:
+            command()
             return
         if bid.startswith("dev-"):
             _, role_value, idx_str = bid.split("-")

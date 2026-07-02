@@ -52,6 +52,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
     path_completion_prefix,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
@@ -1720,8 +1721,6 @@ class ChatScreen(Screen[None]):
     def _focus_in_fleet_drawer(self) -> bool:
         """True when keyboard focus is inside the open Fleet drawer, so Enter /
         i / a / o activate the focused toggle instead of entering insert mode."""
-        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
-
         focused = self.focused
         drawers = self.screen.query(FleetDrawer)
         return bool(focused and drawers and drawers.first() in focused.ancestors_with_self)
@@ -1730,18 +1729,17 @@ class ChatScreen(Screen[None]):
         """Jump Tab into the open Fleet drawer's first toggle so the placement
         editor is reachable without tabbing past every widget; once focus is
         inside the drawer, Tab cycles within it as usual."""
-        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
-
         drawers = self.screen.query(FleetDrawer)
+        if not drawers:
+            self.screen.focus_next()
+            return
+        drawer = drawers.first()
         focused = self.screen.focused
-        if drawers:
-            drawer = drawers.first()
-            inside = focused is not None and drawer in focused.ancestors_with_self
-            if not inside:
-                toggles = drawer.query(".dev-toggle")
-                if toggles:
-                    toggles.first().focus()
-                    return
+        inside = focused is not None and drawer in focused.ancestors_with_self
+        toggles = drawer.query(".dev-toggle")
+        if not inside and toggles:
+            toggles.first().focus()
+            return
         self.screen.focus_next()
 
     def action_complete_next(self) -> None:

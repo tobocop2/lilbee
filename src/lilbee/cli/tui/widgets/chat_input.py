@@ -80,9 +80,8 @@ class ChatInput(TextArea):
         return super().check_consume_key(key, character)
 
     def action_submit(self) -> None:
-        # Enter is a priority binding, so it fires even when focus is elsewhere
-        # (e.g. a focused Fleet-drawer toggle). Yield so Enter reaches the
-        # focused widget instead of submitting the prompt from under it.
+        # Enter is a priority binding; when a drawer toggle holds focus, yield so
+        # Enter reaches that widget instead of submitting the prompt.
         if not self.has_focus:
             raise SkipAction()
         self.post_message(self.Submitted(chat_input=self, value=self.text))
