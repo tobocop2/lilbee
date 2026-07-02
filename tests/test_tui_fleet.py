@@ -640,3 +640,63 @@ def test_clean_model_name(ref: str, expected: str) -> None:
     from lilbee.cli.tui.widgets.fleet_body import _clean_model_name
 
     assert _clean_model_name(ref) == expected
+
+
+def _make_big_view(n: int):  # type: ignore[no-untyped-def]
+    """A fleet larger than one page: chat split across all n, embed copied to all."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A100", 80 * GIB, 80 * GIB) for i in range(n)
+        ),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", tuple(range(n)), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", tuple(range(n)), None, n),
+        ),
+        unplaceable=(),
+        manual=True,
+        spec_json=None,
+    )
+
+
+async def _wait_for(pilot, selector: str) -> None:  # type: ignore[no-untyped-def]
+    """Pause until ``selector`` exists on the screen."""
+    from textual.css.query import NoMatches
+
+    for _ in range(100):
+        await pilot.pause()
+        try:
+            pilot.app.screen.query_one(selector, Button)
+            return
+        except NoMatches:
+            continue
+    raise AssertionError(f"{selector} never appeared")  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_placement_grid_paginates_large_fleet(monkeypatch):
+    """A fleet past one page shows a pager; pg-next/pg-prev move the visible page."""
+    from textual.css.query import NoMatches
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_big_view(10))
+
+    app = FleetTestApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        # page 1 shows GPUs 0-7; 8-9 are on page 2
+        app.screen.query_one("#dev-chat-0", Button)
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#dev-chat-9", Button)
+        # advance to page 2
+        app.screen.query_one("#pg-next", Button).press()
+        await _wait_for(pilot, "#dev-chat-9")
+        app.screen.query_one("#dev-chat-8", Button)
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#dev-chat-0", Button)
+        # back to page 1
+        app.screen.query_one("#pg-prev", Button).press()
+        await _wait_for(pilot, "#dev-chat-0")

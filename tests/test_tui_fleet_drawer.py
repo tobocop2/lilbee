@@ -288,6 +288,13 @@ async def test_normal_tab_focuses_drawer_and_enter_toggles(monkeypatch) -> None:
                 body = app.screen.query_one(FleetBody)
                 assert 2 not in body._edits[WorkerRole.CHAT].devices
                 assert app.screen._insert_mode is False
+                # Tab while already inside the drawer advances focus (no crash,
+                # no drop into insert mode).
+                app.screen.query_one("#dev-chat-1").focus()
+                await pilot.pause()
+                await pilot.press("tab")
+                await pilot.pause()
+                assert app.screen._insert_mode is False
     finally:
         set_services(None)
 
