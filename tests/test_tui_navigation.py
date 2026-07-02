@@ -16,7 +16,7 @@ from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.chat import ChatScreen
-from lilbee.cli.tui.screens.placement import PlacementScreen
+from lilbee.cli.tui.screens.fleet import FleetScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
@@ -91,7 +91,7 @@ async def test_bracket_keys_cycle_all_screens():
             StatusScreen,
             SettingsScreen,
             TaskCenter,
-            PlacementScreen,
+            FleetScreen,
             ChatScreen,
         ]
         for screen_type in expected:
@@ -163,7 +163,7 @@ async def test_bracket_keys_cycle_backward():
 
         await pilot.press("left_square_bracket")
         await pilot.pause()
-        assert isinstance(app.screen, PlacementScreen)
+        assert isinstance(app.screen, FleetScreen)
 
         await pilot.press("left_square_bracket")
         await pilot.pause()
@@ -228,6 +228,36 @@ async def test_settings_escape_returns_to_chat():
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         assert isinstance(app.screen, ChatScreen)
+
+
+async def test_rapid_fleet_back_does_not_corrupt_screen_stack():
+    """Rapid back-to-back Fleet transitions must not crash or corrupt the stack.
+
+    A raw pop_screen on go_back let a second transition race in and pop Textual's
+    result-callback stack while empty (IndexError, bb-ce4). The Fleet view inherits
+    the same guarded switch_view back-navigation.
+    """
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        for _ in range(5):
+            app.switch_view("Fleet")
+            await pilot.pause()
+            fleet = app.screen
+            if not isinstance(fleet, FleetScreen):
+                continue
+            # Two back actions fired before the first transition settles: the
+            # guard must drop the second instead of underflowing the stack.
+            fleet.action_go_back()
+            fleet.action_go_back()
+            await pilot.pause()
+        # No IndexError raised; back on Chat. Asserting on Textual's private
+        # _result_callbacks is intentional: this regression is about that internal
+        # stack underflowing, and one entry confirms it never did.
+        assert isinstance(app.screen, ChatScreen)
+        assert len(app.screen._result_callbacks) == 1
 
 
 async def test_slash_catalog_routes_through_switch_view_under_lilbee_app():

@@ -114,6 +114,8 @@
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-lmstudio" aria-controls="tutorial-pane-lmstudio" aria-selected="false" tabindex="-1">lm studio</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-settings" aria-controls="tutorial-pane-settings" aria-selected="false" tabindex="-1">settings</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-palette"  aria-controls="tutorial-pane-palette"  aria-selected="false" tabindex="-1">palette</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gpu-auto"   aria-controls="tutorial-pane-gpu-auto"   aria-selected="false" tabindex="-1">gpu: auto</button>
+          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gpu-manual" aria-controls="tutorial-pane-gpu-manual" aria-selected="false" tabindex="-1">gpu: manual</button>
           <div class="tutorialtabs-break" aria-hidden="true"></div>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-agent"    aria-controls="tutorial-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
           <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-pdf"      aria-controls="tutorial-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
@@ -231,6 +233,20 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">Same shape against the full Godot class reference (810 XMLs, pre-indexed). Cited codegen for a procedural level generator.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpu-auto" aria-labelledby="tutorial-tab-gpu-auto" hidden>
+          <div class="tutorial-clip">
+            <img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-multi-gpu-self-index.gif" alt="lilbee indexing files live, then splitting a large chat model automatically across multiple GPUs and answering a question with GPU monitor alongside" loading="lazy">
+          </div>
+          <p class="tutorial-caption">Index your files live, then ask how lilbee runs a model too big for one card. It tensor-splits the model across your GPUs and answers from your own source, with the GPU monitor alongside.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpu-manual" aria-labelledby="tutorial-tab-gpu-manual" hidden>
+          <div class="tutorial-clip">
+            <img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-manual-placement.gif" alt="lilbee placement editor refusing an invalid GPU layout with an exact shortfall, then accepting the corrected split and answering on the fleet chosen" loading="lazy">
+          </div>
+          <p class="tutorial-caption">Place each role by hand. The editor refuses a layout that can't fit and shows the exact shortfall, then applies your split and answers on the fleet you chose.</p>
         </div>
 
       </div>
@@ -446,6 +462,14 @@
     <section>
       <h2 class="label">your hardware, put to work</h2>
       <p class="lede">Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own. No token budgets, no provider to depend on; the cloud's there when you want it.</p>
+    </section>
+
+    <section>
+      <h2 class="label">run a model bigger than one card</h2>
+      <p class="lede">When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, behind a load-balancing router. It happens automatically. You can also override it by hand in the placement editor, which shows the exact fit before anything loads and refuses a layout that won't work.</p>
+      <div class="tutorial-clip">
+        <img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-multi-gpu-self-index.gif" alt="lilbee indexing files live, then splitting a large chat model automatically across multiple GPUs and answering a question with GPU monitor alongside" loading="lazy">
+      </div>
     </section>
 
     <section>

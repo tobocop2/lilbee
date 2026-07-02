@@ -204,6 +204,10 @@ def _xdg_dirs(env_var: str, default: str, subpath: str) -> Iterator[Path]:
     Empty components are dropped (the "extra slash in XDG_DATA_DIRS" loader
     quirk, Vulkan-Loader#2331) and appends *subpath* to each remaining
     entry. Falls back to *default* when the env var is unset.
+
+    The ":" separator is the XDG/Linux convention; this function is only
+    called from Linux-gated discovery paths and must not be changed to ";"
+    for cross-platform support.
     """
     raw = os.environ.get(env_var) or default
     for component in raw.split(":"):

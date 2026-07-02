@@ -99,3 +99,65 @@ def test_sigint_during_sync_sets_cancel_event(monkeypatch) -> None:
     result = ingest_sync._run_sync_with_signal_cancel()
     assert result == "cancelled-clean"
     assert seen_cancel["event"].is_set()
+
+
+def test_run_sync_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
+    """When called off the main thread, signal.signal is skipped (finding #9).
+
+    Under pytest-xdist workers (non-main threads) signal.signal raises ValueError.
+    The function must complete cleanly without raising.
+    """
+
+    async def _fake_sync(**kwargs):
+        return "ok"
+
+    monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=False))
+    monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
+
+    result: list[object] = []
+    exc: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            result.append(ingest_sync._run_sync_with_signal_cancel())
+        except BaseException as e:
+            exc.append(e)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    t.join(timeout=10)
+    assert not exc, f"unexpected exception in thread: {exc}"
+    assert result == ["ok"]
+
+
+def test_run_crawl_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
+    """_run_crawl_with_signal_cancel also skips signal.signal off the main thread."""
+    cancel_event = threading.Event()
+
+    async def _fake_crawl(url, **kwargs) -> list:
+        return []
+
+    monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=False))
+
+    result: list[object] = []
+    exc: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            r = ingest_sync._run_crawl_with_signal_cancel(
+                "http://example.com",
+                depth=0,
+                max_pages=1,
+                on_progress=lambda *_: None,
+                cancel_event=cancel_event,
+                crawl_and_save=_fake_crawl,
+            )
+            result.append(r)
+        except BaseException as e:
+            exc.append(e)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    t.join(timeout=10)
+    assert not exc, f"unexpected exception in thread: {exc}"
+    assert result == [[]]

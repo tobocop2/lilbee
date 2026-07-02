@@ -35,6 +35,9 @@ def _fit(model_path: Path, **overrides: object) -> int:
         "gpu_layers": -1,
         "flash_attn": True,
         "kv_cache_type": KvCacheType.F16,
+        # Large by default so the fit-logic tests are gated by the monkeypatched
+        # chat_ctx_ceiling; the ceiling-cap test lowers it.
+        "ctx_ceiling": 1_000_000,
     }
     kwargs.update(overrides)
     return fit_split_ctx(model_path, **kwargs)  # type: ignore[arg-type]
@@ -107,6 +110,16 @@ class TestFitSplitCtx:
         assert all(
             share <= room for share, room in zip(accepted.per_device_vram, headrooms, strict=True)
         )
+
+    def test_caps_at_ctx_ceiling_below_the_model_max(self, monkeypatch) -> None:
+        # Even when the model + cards could hold the full trained context, the split
+        # never exceeds the caller's planned working context (bb-ev9): a 235B whose
+        # trained ceiling is 262144, planned for a 24576 ctx_ceiling, is capped there
+        # so it can't over-commit VRAM and OOM under load.
+        monkeypatch.setattr(ctx_mod, "chat_ctx_ceiling", lambda _m, _p: 262144)
+        monkeypatch.setattr(ctx_mod, "estimate_instance_footprint", _peak_estimator(lambda _c: 1))
+        result = _fit(Path("/m.gguf"), ctx_ceiling=24576)
+        assert 24576 - _DYNAMIC_CTX_QUANTUM < result <= 24576
 
     def test_falls_back_to_peak_when_breakdown_is_missing(self, monkeypatch) -> None:
         # An estimate with no usable per-device breakdown gates the peak against

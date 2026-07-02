@@ -1,4 +1,4 @@
-PlacementScreen {
+FleetBody {
 
     #placement-layout {
         height: 1fr;
@@ -7,13 +7,6 @@ PlacementScreen {
 
     #placement-title {
         height: 1;
-        margin-bottom: 1;
-    }
-
-    #placement-gpus {
-        height: auto;
-        max-height: 12;
-        border: solid $surface-lighten-2;
         margin-bottom: 1;
     }
 

@@ -760,6 +760,7 @@ Only relevant when running the HTTP server.
 | `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
 | `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
+| `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement rebuilds the shared fleet, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |
 
 ### Wiki tuning (experimental)
 
@@ -1014,8 +1015,11 @@ lilbee placement clear
 
 The same operations are available in the TUI under the Placement screen and over
 MCP (`set_placement`, `clear_placement`). Applying or clearing placement rebuilds
-the shared fleet, so it is not exposed over HTTP: `PUT`/`DELETE /api/placement`
-are refused on the server (use the CLI or TUI). The spec persists across restarts.
+the shared fleet, so over HTTP `PUT`/`DELETE /api/placement` are refused by
+default. Set `allow_http_placement` (or `LILBEE_ALLOW_HTTP_PLACEMENT=1`) to enable
+them on a single-client or owned deployment, such as the Obsidian plugin's managed
+server or a personally-owned pod where you run `lilbee serve` yourself. The spec
+persists across restarts.
 
 If a pinned placement no longer fits the card it names (after a hardware
 change, for example), lilbee surfaces an error naming the card rather than

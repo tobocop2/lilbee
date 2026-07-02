@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _LIST_DEVICES_TIMEOUT_S = 60.0
-_MIB = 1024 * 1024
+MIB = 1024 * 1024
 # Per-backend visible-devices env vars (the probe inherits them; the children
 # re-emit them, composed through any parent restriction).
 _CUDA_VISIBLE_VAR = "CUDA_VISIBLE_DEVICES"
@@ -33,7 +33,7 @@ _DEVICE_RE = re.compile(
 )
 # Pin priority when a build reports more than one GPU backend: a real GPU
 # backend always wins over Vulkan, which wins over CPU.
-_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "SYCL": 2, "Vulkan": 1}
+_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, "Vulkan": 1}
 
 
 @dataclass(frozen=True)
@@ -85,8 +85,8 @@ def _parse_devices(text: str) -> list[FleetDevice]:
         if match is None:
             continue
         backend, index, name, total_mib, free_mib = match.groups()
-        total = int(total_mib) * _MIB
-        free = int(free_mib) * _MIB if free_mib else total
+        total = int(total_mib) * MIB
+        free = int(free_mib) * MIB if free_mib else total
         devices.append(FleetDevice(backend, int(index), name.strip(), total, free))
     return devices
 

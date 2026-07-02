@@ -764,6 +764,21 @@ def test_ensure_swap_spawns_nothing_when_no_models(monkeypatch) -> None:
     assert p._clients == {}
 
 
+def test_ensure_swap_returns_none_when_engine_binary_unavailable(monkeypatch) -> None:
+    """plan_all_launches raising ProviderError (no engine binary) yields no swap."""
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir: _FakeSwap())
+
+    def _no_binary() -> list:
+        raise ProviderError("Engine binary unavailable")
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
+    p = FleetProvider()
+    assert p._ensure_swap() is None
+    assert p._swap is None
+
+
 def _captured_client_kwargs(monkeypatch, launch) -> dict:
     """Build the engine around *launch* and return the client constructor kwargs."""
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _d: _FakeSwap())

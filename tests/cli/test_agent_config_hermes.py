@@ -116,6 +116,17 @@ def test_agent_config_hermes_prints_yaml_block(monkeypatch):
     assert block["providers"]["lilbee"]["api_key"] == _TOKEN
 
 
+def test_agent_config_hermes_notes_mcp_extra(monkeypatch):
+    # Entry-point parity with `lilbee launch hermes`: the paste path can't install
+    # hermes's `mcp` extra, so it must at least tell the user it's needed.
+    _write_server_session()
+    monkeypatch.setattr("lilbee.cli.commands.agent_config.served_chat_ctx", lambda _p: None)
+    result = runner.invoke(app, ["agent-config", "hermes"])
+    assert result.exit_code == 0
+    assert "hermes-agent[mcp]" in result.stderr
+    assert yaml.safe_load(result.stdout) is not None  # YAML stays clean on stdout
+
+
 def test_agent_config_hermes_requires_running_server():
     result = runner.invoke(app, ["agent-config", "hermes"])
     assert result.exit_code == 1

@@ -389,7 +389,7 @@ COMPAT_MODAL_BODY = (
 )
 DEFAULT_VIEW = "Chat"
 WIKI_VIEW = "Wiki"
-PLACEMENT_VIEW = "Placement"
+FLEET_VIEW = "Fleet"
 # The full nav-view universe in order. Single source for the view set: the
 # settings bar pre-creates a tab per entry (toggling Wiki visibility at
 # runtime), get_nav_views() gates Wiki, and app.get_views() derives its
@@ -401,7 +401,7 @@ ALL_NAV_VIEWS: tuple[str, ...] = (
     "Settings",
     "Tasks",
     WIKI_VIEW,
-    PLACEMENT_VIEW,
+    FLEET_VIEW,
 )
 
 

@@ -1000,3 +1000,47 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
 
     budget = launch_mod.chat_warm_budget_s()
     assert budget == max(launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total)))
+
+
+class TestOpencodeConfigDir:
+    """_opencode_config_dir() returns the platform-correct directory."""
+
+    def test_posix_returns_home_config_opencode(self, monkeypatch) -> None:
+        from lilbee.cli.launchers.opencode import _opencode_config_dir
+
+        monkeypatch.setattr("lilbee.cli.launchers.opencode.sys.platform", "linux")
+        result = _opencode_config_dir()
+        assert result == Path.home() / ".config" / "opencode"
+
+    def test_win32_uses_appdata_env(self, monkeypatch, tmp_path) -> None:
+        from lilbee.cli.launchers.opencode import _opencode_config_dir
+
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        monkeypatch.setattr("lilbee.cli.launchers.opencode.sys.platform", "win32")
+        result = _opencode_config_dir()
+        assert result == tmp_path / "opencode"
+
+    def test_win32_fallback_when_appdata_unset(self, monkeypatch) -> None:
+        from lilbee.cli.launchers.opencode import _opencode_config_dir
+
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setattr("lilbee.cli.launchers.opencode.sys.platform", "win32")
+        result = _opencode_config_dir()
+        assert result.name == "opencode"
+        assert "AppData" in str(result) or "opencode" in str(result)
+
+    def test_config_path_nests_under_config_dir(self, monkeypatch, tmp_path) -> None:
+        from lilbee.cli.launchers.opencode import _opencode_config_path
+
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        monkeypatch.setattr("lilbee.cli.launchers.opencode.sys.platform", "win32")
+        result = _opencode_config_path()
+        assert result == tmp_path / "opencode" / "opencode.json"
+
+    def test_skill_dest_nests_under_config_dir(self, monkeypatch, tmp_path) -> None:
+        from lilbee.cli.launchers.opencode import _opencode_skill_dest
+
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        monkeypatch.setattr("lilbee.cli.launchers.opencode.sys.platform", "win32")
+        result = _opencode_skill_dest()
+        assert result == tmp_path / "opencode" / "skills" / "lilbee-mcp"

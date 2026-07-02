@@ -456,3 +456,25 @@ class TestListSettingRegexMarker:
         assert SETTINGS_MAP["crawl_exclude_patterns"].validate_regex is True
         # Chromium flag list must not be regex-validated.
         assert SETTINGS_MAP["crawl_browser_extra_args"].validate_regex is False
+
+
+class TestUtf8RoundTrip:
+    """save() writes UTF-8 and load() reads it back correctly (finding #2)."""
+
+    def test_non_ascii_value_round_trips(self, tmp_path) -> None:
+        settings.save(tmp_path, {"model": "qwen3-中文"})
+        result = settings.load(tmp_path)
+        assert result == {"model": "qwen3-中文"}
+
+    def test_file_is_utf8_encoded(self, tmp_path) -> None:
+        settings.save(tmp_path, {"key": "éàü"})
+        raw = (tmp_path / "config.toml").read_bytes()
+        decoded = raw.decode("utf-8")
+        assert "key" in decoded
+
+    def test_win32_platform_sim_does_not_break_save(self, tmp_path, monkeypatch) -> None:
+        """Simulate Windows platform: write_text with encoding= must still work."""
+        monkeypatch.setattr("lilbee.core.settings.sys.platform", "win32")
+        settings.save(tmp_path, {"key": "value", "unicode": "é"})
+        result = settings.load(tmp_path)
+        assert result["unicode"] == "é"

@@ -1066,7 +1066,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(
             planning_mod,
             "plan_placement",
-            lambda inputs, devices, *, estimate_peak, unified_budget=None: Placement(
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
                 instances=(InstancePlan(WorkerRole.CHAT, (0,)),), unplaceable_roles=()
             ),
         )
@@ -1092,13 +1092,80 @@ class TestBuildFleetWiring:
             ),
         )
 
-        def _capture(inputs, devices, *, estimate_peak, unified_budget=None):
+        def _capture(inputs, devices, *, estimate_peak, unified_budget=None, **_kw):
             seen["devices"] = devices
             return Placement(instances=(), unplaceable_roles=(WorkerRole.CHAT,))
 
         monkeypatch.setattr(planning_mod, "plan_placement", _capture)
         planning_mod.plan_all_launches()
         assert seen["devices"] == [(0, 24 * _GB)]  # synthesized from the Vulkan fallback
+
+
+class TestChatSplitCtxObjective:
+    """The chat split's context fitter/target wiring and the bb-a8f charging basis."""
+
+    def test_no_chat_model_yields_no_objective(self) -> None:
+        fit, target = planning_mod._chat_split_ctx_objective({WorkerRole.EMBED: "e"})
+        assert fit is None
+        assert target == 0
+
+    def test_fitter_delegates_to_fit_split_ctx_with_launch_sizing(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/m.gguf")
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"arch": "x"}
+        )
+        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
+        captured: dict[str, object] = {}
+
+        def _fake_fit(model_path, **kw):
+            captured.update(kw)
+            captured["model_path"] = model_path
+            return 4096
+
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fake_fit)
+        fit, target = planning_mod._chat_split_ctx_objective({WorkerRole.CHAT: "ref"})
+        assert target == 8192
+        assert fit is not None
+        assert fit((21, 21), [24 * _GB, 18 * _GB]) == 4096
+        assert captured["model_path"] == Path("/m.gguf")
+        assert captured["ratio"] == (21, 21)
+        assert captured["per_device_free_bytes"] == [24 * _GB, 18 * _GB]
+        assert captured["slots"] == planning_mod._SPLIT_CHAT_SLOTS
+        # The fit is bounded by the planned working context (bb-ev9), not the model max.
+        assert captured["ctx_ceiling"] == 8192
+
+    def test_resolve_placement_wires_objective_and_keeps_total_charging(self, monkeypatch) -> None:
+        # The chat fitter is sized against LIVE free VRAM, but charging stays on TOTAL
+        # capacity (bb-a8f), so a warm fleet's own residents aren't double-counted.
+        devices = [
+            FleetDevice("CUDA", 0, "gpu", 24 * _GB, 20 * _GB),
+            FleetDevice("CUDA", 1, "gpu", 24 * _GB, 18 * _GB),
+        ]
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/m.gguf")
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"arch": "x"}
+        )
+        monkeypatch.setattr(planning_mod, "_placement_estimate_ctx", lambda *_a: 8192)
+        monkeypatch.setattr(planning_mod, "_peak_estimator", lambda _refs: lambda *_a: (1,))
+        captured: dict[str, object] = {}
+
+        def _capture(inputs, devs, *, estimate_peak, unified_budget=None, **kw):
+            captured.update(kw)
+            captured["devs"] = devs
+            return Placement(instances=(), unplaceable_roles=())
+
+        monkeypatch.setattr(planning_mod, "plan_placement", _capture)
+        planning_mod._resolve_placement(
+            None, [], {WorkerRole.CHAT: "ref"}, devices, unified_budget=None
+        )
+        assert captured["chat_ctx_target"] == 8192
+        assert callable(captured["chat_ctx_fit"])
+        assert captured["free_headroom"] == {0: 20 * _GB, 1: 18 * _GB}
+        assert captured["devs"] == [(0, 24 * _GB), (1, 24 * _GB)]
 
 
 class TestResolveDevicesProbeFailureWarning:
@@ -1159,6 +1226,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--host",
     "--cont-batching",
     "--jinja",
+    "--reasoning-format",
     "--embeddings",
     "--pooling",
     "--threads",

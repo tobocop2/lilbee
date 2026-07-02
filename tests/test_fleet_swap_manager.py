@@ -381,10 +381,14 @@ class TestProcessTeardown:
             def cmdline(self) -> list[str]:
                 return self._argv
 
+        # Build the cmdline -config args the way the swap is launched (str of the
+        # Path), so the match holds on Windows too, where str(Path) uses backslashes.
         swap_bin = "/x/bin/llama-swap"
-        ours = _Proc(10, [swap_bin, "-config", "/data/llama-swap.json", "-listen", "x"])
-        other = _Proc(11, [swap_bin, "-config", "/other/llama-swap.json"])
-        notswap = _Proc(12, ["/x/bin/python", "-config", "/data/llama-swap.json"])
+        our_cfg = str(Path("/data/llama-swap.json"))
+        other_cfg = str(Path("/other/llama-swap.json"))
+        ours = _Proc(10, [swap_bin, "-config", our_cfg, "-listen", "x"])
+        other = _Proc(11, [swap_bin, "-config", other_cfg])
+        notswap = _Proc(12, ["/x/bin/python", "-config", our_cfg])
         monkeypatch.setattr(sm.psutil, "process_iter", lambda: [ours, other, notswap])
         result = sm._swaps_for_config(Path("/data/llama-swap.json"))
         assert [p.pid for p in result] == [10]

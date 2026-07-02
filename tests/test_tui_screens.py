@@ -7493,7 +7493,7 @@ async def test_app_nav_prev_cycles_views():
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.active_view == "Placement"
+        assert app.active_view == "Fleet"
 
         app.action_nav_prev()
         await pilot.pause()
@@ -8292,8 +8292,13 @@ class TestWikiScreenSearch:
             assert isinstance(screen, WikiScreen)
             search = app.screen.query_one("#wiki-search", TextualInput)
             search.value = "Alpha"
-            # Wait out the search debounce so the filter pass runs.
-            await pilot.pause(0.25)
+            # Poll until the debounce timer fires and the filter runs.  A fixed
+            # pause is too short under xdist parallel load; the debounce is
+            # 0.12 s so allow up to 20 * 0.1 s = 2 s before the assertion.
+            for _ in range(20):
+                await pilot.pause(0.1)
+                if "summaries/beta-doc" not in screen._page_slugs:
+                    break
             assert "summaries/alpha-doc" in screen._page_slugs
             assert "summaries/beta-doc" not in screen._page_slugs
 

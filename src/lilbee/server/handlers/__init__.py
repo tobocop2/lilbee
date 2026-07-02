@@ -11,13 +11,15 @@ API consumed by ``server/routes/*.py``.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
 from lilbee.app.services import get_services
 from lilbee.app.status import gather_status
 from lilbee.app.version import get_version
+from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.runtime.progress import SseEvent
@@ -35,9 +37,11 @@ from lilbee.server.handlers.documents import (
 from lilbee.server.handlers.ingest import (
     MAX_ADD_FILES,
     add_files_stream,
+    add_uploads_stream,
     import_stream,
     sync_stream,
     validate_add_paths,
+    validate_uploads,
 )
 from lilbee.server.handlers.models import (
     TASK_ENDPOINT_PATH,
@@ -124,6 +128,40 @@ async def warm_stream() -> AsyncGenerator[str, None]:
     yield sse_done({})
 
 
+_GPU_STATS_INTERVAL_S = 1.0
+
+
+async def gpu_stats_stream(
+    devices: Sequence[object],
+    interval_s: float = _GPU_STATS_INTERVAL_S,
+    max_ticks: int | None = None,
+) -> AsyncGenerator[str, None]:
+    """Stream live per-GPU utilization + free memory as SSE for the placement view.
+
+    Devices are resolved by the caller before the stream starts so a ProviderError
+    surfaces as a 503 at route time, not mid-stream. Each tick only runs the light
+    ``nvidia-smi`` query. The client keeps the stream open while visible;
+    ``max_ticks`` bounds it for tests. A heartbeat is emitted every
+    ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
+    """
+    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
+
+    last_heartbeat = time.monotonic()
+    tick = 0
+    while max_ticks is None or tick < max_ticks:
+        stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
+        payload = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
+        yield sse_event(SseEvent.GPU_STATS, payload)
+        tick += 1
+        if max_ticks is None or tick < max_ticks:
+            await asyncio.sleep(interval_s)
+            now = time.monotonic()
+            heartbeat_interval = cfg.sse_heartbeat_interval
+            if heartbeat_interval > 0 and now - last_heartbeat >= heartbeat_interval:
+                last_heartbeat = now
+                yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
+
+
 async def status() -> StatusResponse:
     """Return config, sources, and chunk counts."""
     raw = gather_status()
@@ -168,6 +206,21 @@ async def placement_preview(spec_json: str | None) -> PlacementResponse:
     return _placement_response(preview_placement(spec))
 
 
+async def placement_set(spec_json: str) -> PlacementResponse:
+    """Apply a manual placement spec; persists and rebuilds the fleet."""
+    from lilbee.app.placement import set_placement
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    return _placement_response(set_placement(PlacementSpec.from_json(spec_json)))
+
+
+async def placement_clear() -> PlacementResponse:
+    """Clear manual placement; returns to the auto planner and rebuilds the fleet."""
+    from lilbee.app.placement import set_placement
+
+    return _placement_response(set_placement(None))
+
+
 async def gpus() -> list[GpuInfoResponse]:
     """Detected GPUs with free/total VRAM."""
     from lilbee.app.placement import get_placement
@@ -183,6 +236,7 @@ __all__ = [
     "ModelsResponse",
     "SseStream",
     "add_files_stream",
+    "add_uploads_stream",
     "ask",
     "ask_stream",
     "chat",
@@ -195,6 +249,7 @@ __all__ = [
     "get_config",
     "get_config_defaults",
     "get_source_content",
+    "gpu_stats_stream",
     "gpus",
     "health",
     "import_stream",
@@ -207,7 +262,9 @@ __all__ = [
     "models_pull",
     "models_show",
     "placement",
+    "placement_clear",
     "placement_preview",
+    "placement_set",
     "search",
     "set_chat_model",
     "set_embedding_model",
@@ -220,5 +277,6 @@ __all__ = [
     "sync_stream",
     "update_config",
     "validate_add_paths",
+    "validate_uploads",
     "warm_stream",
 ]
