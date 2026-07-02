@@ -38,6 +38,7 @@ from lilbee.crawler.save import (
     normalize_crawled_markdown,
 )
 from lilbee.runtime.progress import EventType
+from tests._sys_modules import inject_modules
 
 
 @pytest.fixture(autouse=True)
@@ -438,7 +439,7 @@ class TestCrawlSingle:
         mock_crawler_cls = MagicMock(return_value=mock_instance)
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             result = await crawl_single("https://example.com")
         assert result.success
         assert result.markdown == "# Test"
@@ -455,7 +456,7 @@ class TestCrawlSingle:
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
         events: list[tuple] = []
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             result = await crawl_single(
                 "https://example.com", on_progress=lambda e, d: events.append((e, d))
             )
@@ -475,7 +476,7 @@ class TestCrawlSingle:
 
         events: list[tuple] = []
         modules = {"crawl4ai": mock_mod, "crawl4ai.async_crawler_strategy": mock_strategy}
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             result = await crawl_single(
                 "https://example.com",
                 render_mode=CrawlRenderMode.HTTP,
@@ -494,7 +495,7 @@ class TestCrawlSingle:
         mock_crawler_cls = MagicMock(return_value=mock_instance)
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             result = await crawl_single("https://example.com")
         assert not result.success
         assert result.error == "Connection refused"
@@ -506,7 +507,7 @@ class TestCrawlSingle:
         mock_crawler_cls = MagicMock(return_value=mock_instance)
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             result = await crawl_single("https://example.com")
         assert not result.success
         assert "timeout" in result.error
@@ -531,7 +532,7 @@ class TestCrawlSingle:
             bootstrapped.append(True)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             result = await crawl_single("https://example.com")
         assert result.success
         assert result.markdown == "# Test"
@@ -554,7 +555,7 @@ class TestCrawlSingle:
             pass
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             result = await crawl_single("https://example.com")
         assert not result.success
         assert "still broken after bootstrap" in result.error
@@ -569,7 +570,7 @@ class TestCrawlSingle:
         mock_crawler_cls = MagicMock(return_value=mock_instance)
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             await crawl_single("https://example.com", quiet=True)
         mock_crawler_cls.assert_called_once()
         assert mock_crawler_cls.call_args.kwargs["verbose"] is False
@@ -1140,7 +1141,7 @@ class TestCrawlRecursive:
         def on_progress(event_type, data):
             progress_calls.append((event_type, data))
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             results = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=10, on_progress=on_progress
             )
@@ -1181,7 +1182,7 @@ class TestCrawlRecursive:
             if event_type == EventType.CRAWL_PAGE:
                 observations.append(("progress", data.current))
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             await crawl_recursive(
                 "https://example.com", max_depth=2, max_pages=100, on_progress=on_progress
             )
@@ -1211,7 +1212,7 @@ class TestCrawlRecursive:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             results = await crawl_recursive(
                 "https://example.com", max_depth=2, max_pages=100, cancel=cancel
             )
@@ -1226,7 +1227,7 @@ class TestCrawlRecursive:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert len(results) == 1
 
@@ -1240,7 +1241,7 @@ class TestCrawlRecursive:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=10)
         assert len(results) == 2
         assert results[0].success
@@ -1251,7 +1252,7 @@ class TestCrawlRecursive:
         mock_instance.__aenter__ = AsyncMock(side_effect=RuntimeError("network error"))
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert len(results) == 1
         assert not results[0].success
@@ -1270,7 +1271,7 @@ class TestCrawlRecursive:
         cfg.crawl_safety_max_pages = 5_000
         modules = self._setup_crawl4ai(mock_instance)
         bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com")
         kwargs = bfs.call_args.kwargs
         assert kwargs["max_depth"] == math.inf
@@ -1286,7 +1287,7 @@ class TestCrawlRecursive:
         cfg.crawl_max_pages = 10
         modules = self._setup_crawl4ai(mock_instance)
         bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
         assert bfs.call_args.kwargs["max_pages"] == 999
 
@@ -1300,7 +1301,7 @@ class TestCrawlRecursive:
         cfg.crawl_max_pages = 10
         modules = self._setup_crawl4ai(mock_instance)
         bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=None)
         assert bfs.call_args.kwargs["max_pages"] == 10
 
@@ -1314,7 +1315,7 @@ class TestCrawlRecursive:
         cfg.crawl_max_pages = 10
         modules = self._setup_crawl4ai(mock_instance)
         bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=0)
         # Unbounded reaches the BFS strategy as inf, the same convention as depth.
         assert bfs.call_args.kwargs["max_pages"] == math.inf
@@ -1329,7 +1330,7 @@ class TestCrawlRecursive:
         modules = self._setup_crawl4ai(mock_instance)
         modules["crawl4ai"].AsyncWebCrawler = mock_crawler_cls
 
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, quiet=True)
         mock_crawler_cls.assert_called_once()
         assert mock_crawler_cls.call_args.kwargs["verbose"] is False
@@ -1344,7 +1345,7 @@ class TestCrawlRecursive:
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             pytest.raises(CrawlerBrowserError, match="chromium gone"),
         ):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
@@ -2042,7 +2043,7 @@ class TestCrawlCancel:
 
         modules, bfs_cls = self._setup_crawl4ai(mock_instance)
         evt = _threading.Event()
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, cancel=evt)
 
         kwargs = bfs_cls.call_args.kwargs
@@ -2076,7 +2077,7 @@ class TestCrawlCancel:
         strategy_instance.cancel = MagicMock()
         bfs_cls.return_value = strategy_instance
 
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=10, cancel=cancel)
 
         strategy_instance.cancel.assert_called_once()
@@ -2103,7 +2104,7 @@ class TestCrawlCancel:
         modules, _ = self._setup_crawl4ai(mock_instance)
         cancel = _threading.Event()
         cancel.set()  # cancel immediately so the loop breaks after first result
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=10, cancel=cancel)
         # The generator's finally ran, proving aclose completed
         assert aclose_called == [True]
@@ -2117,7 +2118,7 @@ class TestCrawlCancel:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         modules, _ = self._setup_crawl4ai(mock_instance)
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         assert len(results) == 1
 
@@ -2135,7 +2136,7 @@ class TestCrawlCancel:
         cancel = _threading.Event()
         cancel.set()  # cancel fired before the exception happens
         caplog.set_level(_logging.DEBUG, logger="lilbee.crawler")
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             results = await crawl_recursive("https://example.com", cancel=cancel)
 
         # No synthetic failure entry on the cancel path
@@ -2226,7 +2227,7 @@ class TestCrawlCancel:
             if event_type == EventType.CRAWL_PAGE:
                 events.append(data.current)
 
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             results = await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=3, on_progress=on_progress
             )
@@ -2281,7 +2282,7 @@ class TestCrawlDispatcher:
         cfg.crawl_mean_delay = 2.0
         cfg.crawl_max_delay_range = 1.0
         cfg.crawl_concurrent_requests = 7
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
 
         kwargs = crc.call_args.kwargs
@@ -2303,7 +2304,7 @@ class TestCrawlDispatcher:
         cfg.crawl_retry_max_backoff = 30.0
         cfg.crawl_retry_max_attempts = 3
         cfg.crawl_concurrent_requests = 3
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=5, render_mode=CrawlRenderMode.HTTP
             )
@@ -2327,7 +2328,7 @@ class TestCrawlDispatcher:
 
         cfg.crawl_retry_on_rate_limit = True
         cfg.crawl_concurrent_requests = 4
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive(
                 "https://example.com", max_depth=1, max_pages=5, render_mode=CrawlRenderMode.BROWSER
             )
@@ -2345,7 +2346,7 @@ class TestCrawlDispatcher:
         monkeypatch.setattr(cfg, "crawl_browser_recycle_pages", 7)
         monkeypatch.setattr(cfg, "crawl_browser_extra_args", ["--flag-a", "--flag-b"])
         mock_mod = MagicMock()
-        with patch.dict("sys.modules", {"crawl4ai": mock_mod}):
+        with inject_modules({"crawl4ai": mock_mod}):
             crawl4ai_fetcher._build_inner_crawler(
                 verbose=False, render_mode=CrawlRenderMode.BROWSER
             )
@@ -2362,7 +2363,7 @@ class TestCrawlDispatcher:
         modules, mock_rl, mock_sd = self._setup_crawl4ai(mock_instance)
 
         cfg.crawl_retry_on_rate_limit = False
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
 
         mock_rl.assert_not_called()
@@ -2390,7 +2391,7 @@ class TestCrawlDispatcher:
         filter_chain_cls = modules["crawl4ai.deep_crawling.filters"].FilterChain
 
         cfg.crawl_exclude_patterns = ["/page/\\d+", "/tag/"]
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
 
         # URLPatternFilter gets the patterns with reverse=True, use_glob=False
@@ -2414,7 +2415,7 @@ class TestCrawlDispatcher:
         url_pattern_cls = modules["crawl4ai.deep_crawling.filters"].URLPatternFilter
 
         cfg.crawl_exclude_patterns = []
-        with patch.dict("sys.modules", modules):
+        with inject_modules(modules):
             await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
         url_pattern_cls.assert_not_called()
 
@@ -2591,7 +2592,7 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             paths = await crawl_and_save(
                 "https://example.com", depth=2, max_pages=10, cancel=cancel
             )
@@ -2634,7 +2635,7 @@ class TestStreamingFlush:
             return real_save(result, meta)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch("lilbee.crawler.save._save_single_result", side_effect=_wrapped),
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
@@ -2674,7 +2675,7 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
         # p1 is skipped (unchanged), p2 is written.
@@ -2716,7 +2717,7 @@ class TestStreamingFlush:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
         assert len(paths) == 3
@@ -2747,7 +2748,7 @@ class TestStreamingFlush:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch(
                 "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
             ) as mock_sync,
@@ -2769,7 +2770,7 @@ class TestStreamingFlush:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch(
                 "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
             ) as mock_sync,
@@ -2805,7 +2806,7 @@ class TestStreamingFlush:
         before = set(asyncio.all_tasks())
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch("lilbee.data.ingest.sync", _short_sync),
         ):
             await crawl_and_save("https://example.com", depth=0)
@@ -2869,7 +2870,7 @@ class TestStreamingFlush:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=total_pages)
@@ -2894,7 +2895,7 @@ class TestStreamingFlush:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=METADATA_FLUSH_INTERVAL)
@@ -2926,7 +2927,7 @@ class TestStreamingFlush:
             return  # second page falls through unchanged
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch("lilbee.crawler.save._save_single_result", side_effect=failing_save),
         ):
             # Must not raise even though the first page write fails.
@@ -2970,7 +2971,7 @@ class TestStreamingFlush:
             real_flush(meta)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch("lilbee.crawler.save.save_crawl_metadata", side_effect=flush_or_fail),
         ):
             # Markdown was already written durably; the final flush must not
@@ -2998,7 +2999,7 @@ class TestStreamingFlush:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch(
                 "lilbee.crawler.save.save_crawl_metadata", wraps=save_crawl_metadata
             ) as spy_flush,
@@ -3025,7 +3026,7 @@ class TestStreamingFlush:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)),
+            inject_modules(self._setup_crawl4ai(mock_instance)),
             patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
@@ -3056,7 +3057,7 @@ class TestStreamingFlush:
             if event_type == EventType.CRAWL_DONE:
                 done_events.append(data)
 
-        with patch.dict("sys.modules", self._setup_crawl4ai(mock_instance)):
+        with inject_modules(self._setup_crawl4ai(mock_instance)):
             paths = await crawl_and_save(
                 "https://example.com",
                 depth=2,

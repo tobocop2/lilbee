@@ -13,6 +13,7 @@ import lilbee.app.services as svc_mod
 from lilbee.core.config import CHUNK_CONCEPTS_TABLE, cfg
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.concepts import ConceptGraph
+from tests._sys_modules import inject_modules
 
 
 @pytest.fixture(autouse=True)
@@ -124,7 +125,7 @@ class TestConceptsAvailable:
             assert concepts_available() is True
 
     def test_returns_false_when_not_installed(self):
-        with patch.dict("sys.modules", {"spacy": None}):
+        with inject_modules({"spacy": None}):
             from lilbee.retrieval.concepts import concepts_available
 
             assert concepts_available() is False
@@ -295,7 +296,7 @@ class TestEnsureSpacyModel:
     def test_loads_existing(self):
         mock_spacy = MagicMock()
         mock_spacy.load.return_value = MagicMock()
-        with patch.dict("sys.modules", {"spacy": mock_spacy, "spacy.cli": MagicMock()}):
+        with inject_modules({"spacy": mock_spacy, "spacy.cli": MagicMock()}):
             from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
 
             result = _ensure_spacy_model()
@@ -311,7 +312,7 @@ class TestEnsureSpacyModel:
         """
         mock_spacy = MagicMock()
         mock_spacy.load.side_effect = OSError("not found")
-        with patch.dict("sys.modules", {"spacy": mock_spacy}):
+        with inject_modules({"spacy": mock_spacy}):
             from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
 
             with pytest.raises(ImportError, match="python -m spacy download en_core_web_sm"):
@@ -909,7 +910,7 @@ class TestLeidenPartition:
     def test_returns_partition_and_degrees(self):
         mock_graspologic = MagicMock()
         mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0, "c": 1})
-        with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
+        with inject_modules({"graspologic_native": mock_graspologic}):
             from lilbee.retrieval.concepts.community import _leiden_partition
 
             edge_rows = [
@@ -926,7 +927,7 @@ class TestLeidenPartition:
         """Weights below _MIN_LEIDEN_WEIGHT are clamped up."""
         mock_graspologic = MagicMock()
         mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0})
-        with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
+        with inject_modules({"graspologic_native": mock_graspologic}):
             from lilbee.retrieval.concepts.community import _MIN_LEIDEN_WEIGHT, _leiden_partition
 
             edge_rows = [{"source": "a", "target": "b", "weight": 0.0}]
@@ -940,7 +941,7 @@ class TestLeidenPartition:
         always yields the same communities."""
         mock_graspologic = MagicMock()
         mock_graspologic.leiden.return_value = (0.5, {"a": 0, "b": 0})
-        with patch.dict("sys.modules", {"graspologic_native": mock_graspologic}):
+        with inject_modules({"graspologic_native": mock_graspologic}):
             from lilbee.retrieval.concepts.community import _LEIDEN_SEED, _leiden_partition
 
             _leiden_partition([{"source": "a", "target": "b", "weight": 1.0}])
