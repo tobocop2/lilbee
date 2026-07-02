@@ -33,7 +33,6 @@ def _install_logging() -> None:
 
 
 async def drive() -> None:
-    from textual.widgets import Static
 
     from lilbee.cli.tui.app import LilbeeApp
 
@@ -53,7 +52,11 @@ async def drive() -> None:
             # 1. did the app mount a real screen with content?
             scr = app.screen
             widget_count = len(list(scr.query("*")))
-            rec("TUI-boot", widget_count > 3, f"initial screen={type(scr).__name__} widgets={widget_count}")
+            rec(
+                "TUI-boot",
+                widget_count > 3,
+                f"initial screen={type(scr).__name__} widgets={widget_count}",
+            )
 
             # 2. navigate every managed view and confirm it mounts
             from lilbee.cli.tui import messages as msg
@@ -68,9 +71,16 @@ async def drive() -> None:
                     n = len(list(scr.query("*")))
                     err_notes = [m for s, m in notes[before:] if s == "error"]
                     ok = n > 1 and not err_notes
-                    rec(f"TUI-view:{view}", ok, f"{type(scr).__name__} widgets={n}" + (f" ERR={err_notes}" if err_notes else ""))
+                    rec(
+                        f"TUI-view:{view}",
+                        ok,
+                        f"{type(scr).__name__} widgets={n}"
+                        + (f" ERR={err_notes}" if err_notes else ""),
+                    )
                 except Exception:
-                    rec(f"TUI-view:{view}", False, f"EXC: {traceback.format_exc().splitlines()[-1]}")
+                    rec(
+                        f"TUI-view:{view}", False, f"EXC: {traceback.format_exc().splitlines()[-1]}"
+                    )
 
             # 3. on the chat screen, type into the prompt (no send -> no model load)
             try:
@@ -103,7 +113,10 @@ def main() -> int:
     for r in errs[:15]:
         print(f"  ERROR {r.name}: {r.getMessage()[:200]}", flush=True)
         if r.exc_info:
-            print("    " + "".join(traceback.format_exception(*r.exc_info)).splitlines()[-1], flush=True)
+            print(
+                "    " + "".join(traceback.format_exception(*r.exc_info)).splitlines()[-1],
+                flush=True,
+            )
     seen: set[str] = set()
     for r in warns:
         key = f"{r.name}:{r.getMessage()[:80]}"
