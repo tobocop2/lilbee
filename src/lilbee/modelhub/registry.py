@@ -319,7 +319,11 @@ class ModelRegistry:
             snapshots = self._repo_cache_dir(hf_repo) / "snapshots"
             if snapshots.is_dir():
                 basename = Path(gguf_filename).name
-                candidate = next(iter(sorted(snapshots.rglob(basename))), None)
+                # Several cached revisions can hold the basename; prefer the most
+                # recently materialized one over an arbitrary lexicographic pick.
+                candidate = max(
+                    snapshots.rglob(basename), key=lambda p: p.lstat().st_mtime, default=None
+                )
         if candidate is None:
             return None
         try:

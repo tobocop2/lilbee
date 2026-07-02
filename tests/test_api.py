@@ -307,6 +307,24 @@ class TestPackageGetattr:
         monkeypatch.delattr(lilbee, "providers")
         assert getattr(lilbee, "providers").__name__ == "lilbee.providers"  # noqa: B009
 
+    def test_submodule_dependency_error_propagates(self, monkeypatch):
+        """A submodule whose own dependency is missing surfaces that ImportError.
+
+        Only a genuinely missing ``lilbee.<name>`` converts to AttributeError; a
+        ModuleNotFoundError raised from inside an existing submodule must not be
+        masked as a missing attribute.
+        """
+        import importlib
+
+        import lilbee
+
+        def _boom(name, package=None):
+            raise ModuleNotFoundError("No module named 'notinstalled'", name="notinstalled")
+
+        monkeypatch.setattr(importlib, "import_module", _boom)
+        with pytest.raises(ModuleNotFoundError, match="notinstalled"):
+            getattr(lilbee, "definitely_not_bound")  # noqa: B009
+
 
 class TestMemory:
     """Real round-trip tests against the ``_memories`` LanceDB table."""

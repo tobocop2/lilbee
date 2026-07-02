@@ -252,6 +252,29 @@ async def test_panel_graceful_on_probe_exception(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_tick_skips_while_probe_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tick during a slow probe skips instead of stacking another worker."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        await app.workers.wait_for_complete()
+        launches: list[int] = []
+        monkeypatch.setattr(panel, "_probe_worker", lambda *a: launches.append(1))
+        panel._probing = True  # a probe is still running
+        panel._request_stats()
+        assert launches == []  # skipped, no pile-up
+        panel._probing = False  # the running probe finished
+        panel._request_stats()
+        assert launches == [1]
+
+
+@pytest.mark.asyncio
 async def test_panel_timer_stops_on_unmount(monkeypatch: pytest.MonkeyPatch) -> None:
     """The internal timer is cleared when the panel is unmounted."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod

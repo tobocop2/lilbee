@@ -92,7 +92,12 @@ def _archive_page(
     else:
         log.warning("Wiki page file not found for archival: %s", source_path)
 
-    store.delete_by_source(wiki_source)
+    try:
+        store.delete_by_source(wiki_source)
+    except Exception:
+        # Best-effort maintenance: the page is already archived on disk, and a
+        # stale index row must not abort the rest of the prune pass.
+        log.warning("Failed to delete index rows for %s", wiki_source, exc_info=True)
     store.delete_citations_for_wiki(wiki_source)
 
 
