@@ -212,12 +212,12 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.ref }}
       - name: Download multi-gpu wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-multigpu-*
           path: multigpu-wheels-staging/
       - name: Download standalone server binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: multigpu-exe-*
           path: multigpu-bins/
