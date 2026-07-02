@@ -12,8 +12,12 @@ import asyncio
 import contextvars
 import functools
 import os
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import ParamSpec, TypeVar
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 def _max_workers() -> int:
@@ -27,7 +31,7 @@ def _ingest_executor() -> ThreadPoolExecutor:
     return ThreadPoolExecutor(max_workers=_max_workers(), thread_name_prefix="lilbee-ingest")
 
 
-async def to_ingest_thread(fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+async def to_ingest_thread(fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
     """``asyncio.to_thread`` on the ingest executor, contextvars preserved.
 
     Extraction relies on contextvar propagation into its workers (cancel and
