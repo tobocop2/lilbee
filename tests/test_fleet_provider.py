@@ -1037,6 +1037,31 @@ def test_invalidate_load_cache_drops_swap() -> None:
     assert p._swap is None
 
 
+def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch) -> None:
+    """A cache drop is not terminal: the next use rebuilds the swap."""
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    assert p._ensure_swap() is swap
+    p.invalidate_load_cache()
+    assert p._swap is None
+    assert p._ensure_swap() is swap  # rebuilt with current cfg, not refused
+
+
+def test_drop_loaded_models_async_leaves_provider_reusable(monkeypatch) -> None:
+    """The off-thread drop used by settings changes must not latch shutdown.
+
+    app.settings routes num_ctx/kv_cache_type changes here while retaining the
+    provider; a latched flag would refuse every later chat/embed/rerank call
+    until process restart.
+    """
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    assert p._ensure_swap() is swap
+    p.drop_loaded_models_async()
+    assert _wait_until(lambda: p._swap is None)
+    assert p._ensure_swap() is swap
+
+
 def _wait_until(predicate, timeout: float = 5.0) -> bool:
     """Poll *predicate* until true or *timeout*; generous so xdist load can't flake it."""
     deadline = time.monotonic() + timeout

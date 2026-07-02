@@ -549,14 +549,23 @@ class FleetProvider:
         """Live cold-load progress for the chat role, or None before warm begins."""
         return self._warm_tracker.snapshot()
 
-    def _shutdown_swap(self) -> None:
+    def _shutdown_swap(self, *, latch: bool = True) -> None:
+        """Stop the engine; ``latch=False`` keeps the provider reusable.
+
+        Terminal ``shutdown()`` latches ``_shut_down`` so a discarded provider's
+        in-flight warm/reload thread can't spawn an orphan swap. The cache-drop
+        paths (``invalidate_load_cache``, ``drop_loaded_models_async``) pass
+        ``latch=False``: the provider is retained and the next use must rebuild
+        with the current cfg.
+        """
         # The build lock serializes shutdown against a concurrent reload/build:
         # both mutate self._swap and the llama-swap process, so an unserialized
         # loser would overwrite the winner's state and leak a live llama-swap.
         with self._build_lock:
             with self._lock:
                 swap = self._swap
-                self._shut_down = True
+                if latch:
+                    self._shut_down = True
             self._drop_swap_refs()
             # Always tear down via the swap manager, even when this provider holds
             # no tracked swap: an in-flight build may have started one this thread
@@ -1148,7 +1157,7 @@ class FleetProvider:
     def invalidate_load_cache(self, model_path: Path | None = None) -> None:
         """A model or settings change restarts the engine: drop the swap."""
         del model_path  # the whole engine restarts on next use; no per-model scope.
-        self._shutdown_swap()
+        self._shutdown_swap(latch=False)
 
     def drop_loaded_models_async(self) -> None:
         """Drop the swap off the caller's thread; next use restarts with current cfg.
@@ -1161,7 +1170,7 @@ class FleetProvider:
             if self._swap is None:
                 return
         threading.Thread(
-            target=self._shutdown_swap,
+            target=lambda: self._shutdown_swap(latch=False),
             name="fleet-drop",
             daemon=True,
         ).start()
