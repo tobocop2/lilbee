@@ -248,7 +248,6 @@ def _vision_call(
     a ``ProviderError`` so the page-level OCR caller can fail just that page.
     Callers hold ``_VISION_GATE`` so queue time isn't billed against the timeout.
     """
-    from lilbee.core.config import cfg
 
     options = {"max_tokens": cfg.vision_ocr_max_tokens}
     if timeout and timeout > 0:
@@ -355,7 +354,6 @@ class FleetProvider:
                     # while this warm-up/reload thread was in flight; do not spawn a
                     # llama-swap no live provider would ever reap.
                     return None
-            from lilbee.core.config import cfg
 
             swap = SwapManager(cfg.data_dir)
             # A dead owner's surviving llama-swap holds VRAM; reap it before launching
@@ -511,8 +509,6 @@ class FleetProvider:
             # never adopted, and SwapManager.shutdown reaps every llama-swap this
             # process spawned (keyed on our own children), not just a tracked handle.
             if swap is None:
-                from lilbee.core.config import cfg
-
                 swap = SwapManager(cfg.data_dir)
             swap.shutdown()
 
@@ -600,7 +596,6 @@ class FleetProvider:
         the server parses native tool calls, so tool support needs no per-family
         parser here.
         """
-        from lilbee.core.config import cfg
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
@@ -631,7 +626,6 @@ class FleetProvider:
         model: str | None = None,
     ) -> ChatToolResult:
         """Route a tool-enabled chat turn to the least-busy chat server."""
-        from lilbee.core.config import cfg
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
@@ -679,7 +673,6 @@ class FleetProvider:
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
-        from lilbee.core.config import cfg
         from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
         self._require_configured_model(model, str(cfg.vision_model), WorkerRole.VISION)
