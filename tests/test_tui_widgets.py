@@ -6658,3 +6658,12 @@ class TestAppTitleSingleSource:
         from lilbee.cli.tui import messages as msg
 
         assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"
+
+
+class TestPathExists:
+    def test_returns_false_when_path_resolution_raises(self) -> None:
+        """A path that can't even be resolved reports as absent, not an error."""
+        from lilbee.cli.tui.widgets import autocomplete
+
+        with mock.patch.object(autocomplete, "Path", side_effect=OSError("boom")):
+            assert autocomplete._path_exists("~/whatever") is False
