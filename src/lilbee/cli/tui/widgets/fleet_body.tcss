@@ -5,26 +5,27 @@ FleetBody {
         padding: 0 1;
     }
 
+    /* The header is a full-width banner in the tab strip's language: one
+     * $surface band across the drawer with the bold title, the mode in color
+     * beside it (muted auto, accent manual, warning edited), and the help
+     * icon riding the band's right edge. */
     #placement-titlebar {
         height: 1;
         margin-bottom: 1;
+        background: $boost;
+        padding: 0 1;
     }
 
-    /* The title wears the same $surface pill as the active view tab, so the
-     * drawer header speaks the app's tab language; the state segment beside it
-     * carries the mode in color (muted auto, accent manual, warning edited). */
     #placement-title {
         width: auto;
         height: 1;
-        padding: 0 1;
-        background: $surface;
         text-style: bold;
     }
 
     #placement-state {
         width: 1fr;
         height: 1;
-        padding: 0 1;
+        padding: 0 2;
         color: $text-muted;
     }
 
