@@ -94,6 +94,17 @@ _LLM_RERANK_VRAM_FRACTION = 0.5
 _SYSTEM_MEMORY_FLOOR_CAP_BYTES = 4 * 1024**3
 _SYSTEM_MEMORY_FLOOR_DIVISOR = 4
 
+# The chat server loads its weights into a malloc'd host copy (--no-mmap) when
+# they fit in at most this fraction of total system RAM: a buffered sequential
+# read beats mmap's page-fault-driven upload measured on a hot cache (#474:
+# 33s vs 43s for a 112GB model on 3 GPUs), but the copy is unevictable, so a
+# host where the weights crowd RAM keeps mmap. Keyed on TOTAL memory (stable),
+# not free (fluctuates), so replans do not flap the launch argv and force
+# needless chat restarts. Replicated roles keep mmap regardless: their
+# replicas share one set of page-cache pages, and per-replica host copies
+# would multiply RAM use for no load-time win.
+_NO_MMAP_MAX_RAM_FRACTION = 0.5
+
 # llama.cpp split-GGUF shard naming ("%s-%05d-of-%05d.gguf"); the cold-load
 # timeout must scale with the SUM of the shards, not the first file alone.
 _SPLIT_GGUF_NAME = re.compile(r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$")
@@ -716,6 +727,7 @@ def _launch_for(
         cache_type=_cache_type_flag() if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
+        no_mmap=is_chat and _chat_no_mmap(weights_bytes),
     )
     return InstanceLaunch(
         role=plan.role,
@@ -802,6 +814,15 @@ _read_device_cache = _ReadDeviceCache(_DEVICE_PROBE_TTL_S)
 def clear_read_device_cache() -> None:
     """Drop the read-path device probe cache (e.g. after the fleet is reconfigured)."""
     _read_device_cache.clear()
+
+
+def _chat_no_mmap(weights_bytes: int) -> bool:
+    """Whether the chat server should malloc its weights instead of mmapping them.
+
+    See ``_NO_MMAP_MAX_RAM_FRACTION`` for the tradeoff and why the gate reads
+    total (not free) system memory.
+    """
+    return weights_bytes <= model_cache.total_system_memory() * _NO_MMAP_MAX_RAM_FRACTION
 
 
 def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:

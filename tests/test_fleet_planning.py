@@ -1226,6 +1226,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--host",
     "--cont-batching",
     "--jinja",
+    "--no-mmap",
     "--reasoning-format",
     "--embeddings",
     "--pooling",
@@ -1388,3 +1389,18 @@ def test_server_spec_other_role_uses_role_default() -> None:
 
     spec = planning_mod._server_spec(WorkerRole.CHAT, None, None)
     assert spec is ROLE_SPECS[WorkerRole.CHAT]
+
+
+class TestChatNoMmap:
+    def test_no_mmap_when_weights_fit_half_of_ram(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache.total_system_memory", lambda: 1000 * 10**9
+        )
+        assert planning_mod._chat_no_mmap(112 * 10**9) is True
+
+    def test_mmap_kept_when_weights_crowd_ram(self, monkeypatch) -> None:
+        # A malloc'd copy is unevictable; a model over half of RAM keeps mmap.
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache.total_system_memory", lambda: 32 * 10**9
+        )
+        assert planning_mod._chat_no_mmap(20 * 10**9) is False
