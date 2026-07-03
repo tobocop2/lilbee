@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 # Display name for the active backend the SDK is talking to. The
 # adapter's own identity is exposed separately via provider_name.
+from lilbee.core.config import cfg
 from lilbee.providers.backend_names import BackendName
 from lilbee.providers.local_servers import detect_local_server
 
@@ -56,7 +57,6 @@ def get_provider_api_key(provider: str) -> str | None:
     :data:`PROVIDER_API_KEY_FIELD`. Reads only the lilbee config field; use
     :func:`provider_has_key` to also honor the SDK's own env var.
     """
-    from lilbee.core.config import cfg
 
     field = PROVIDER_API_KEY_FIELD.get(provider.lower())
     if field is None:

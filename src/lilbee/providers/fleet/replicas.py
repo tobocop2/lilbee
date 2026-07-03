@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import logging
 
+from lilbee.core.config import cfg
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
 log = logging.getLogger(__name__)
@@ -26,7 +27,6 @@ def resolve_replica_count(role: WorkerRole, device_count: int) -> int:
     0 means one replica per GPU (falling to one when GPU-less). Other roles run
     one instance. Capping to residual VRAM happens in placement.
     """
-    from lilbee.core.config import cfg
 
     knob = ROLE_REGISTRY[role].replica_knob
     if knob is None:
