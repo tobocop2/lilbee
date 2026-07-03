@@ -14,13 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Button, Label, Static
+from textual.widgets import Label, Static
 
 from lilbee.app.placement import get_placement, preview_placement, set_placement
 from lilbee.cli.tui import messages as msg
@@ -84,6 +86,40 @@ def _role_kind(role: WorkerRole) -> str:
     return "split"
 
 
+class FleetPill(Static, can_focus=True):
+    """Focusable one-line pill; Enter / Space / click presses it.
+
+    The editor's toggles, steppers, pager, and command controls are all pills
+    (the ``Static, can_focus=True`` + bindings pattern from
+    ``widgets/confirm_dialog.py`` / ``model_bar.py::ChatModePill``): state and
+    focus ride the fill and text style, so a row costs one line instead of the
+    three rows of Button chrome.
+    """
+
+    class Pressed(Message):
+        """Posted on activation; carries the pill for id-based dispatch."""
+
+        def __init__(self, pill: FleetPill) -> None:
+            super().__init__()
+            self.pill = pill
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "press", "Press", show=False),
+        Binding("space", "press", "Press", show=False),
+    ]
+
+    def press(self) -> None:
+        """Activate this pill (shared by the mouse and keyboard paths)."""
+        self.post_message(self.Pressed(self))
+
+    def action_press(self) -> None:
+        self.press()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.press()
+
+
 @dataclass
 class _RoleEdit:
     """Mutable editor state for one role."""
@@ -128,9 +164,9 @@ class FleetBody(Widget):
             yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
             with Horizontal(id="placement-commands"):
-                yield Button(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-btn")
-                yield Button(msg.FLEET_CMD_APPLY, id=_CMD_APPLY, classes="cmd-btn")
-                yield Button(msg.FLEET_CMD_AUTO, id=_CMD_AUTO, classes="cmd-btn")
+                yield FleetPill(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-pill")
+                yield FleetPill(msg.FLEET_CMD_APPLY, id=_CMD_APPLY, classes="cmd-pill")
+                yield FleetPill(msg.FLEET_CMD_AUTO, id=_CMD_AUTO, classes="cmd-pill")
             yield Static(_HINT, id="placement-hint")
 
     def on_mount(self) -> None:
@@ -181,18 +217,20 @@ class FleetBody(Widget):
         widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
             kind = _role_kind(role)
-            children: list[Button | Label] = [Label(f"{role.value:<7}", classes="role-name")]
+            children: list[FleetPill | Label] = [Label(f"{role.value:<7}", classes="role-name")]
             for idx in devices:
                 on = " on" if idx in edit.devices else ""
                 children.append(
-                    Button(str(idx), id=f"dev-{role.value}-{idx}", classes=f"dev-toggle {kind}{on}")
+                    FleetPill(
+                        f" {idx} ", id=f"dev-{role.value}-{idx}", classes=f"dev-toggle {kind}{on}"
+                    )
                 )
             if role in _REPLICA_ROLES:
-                children.append(Button("-", id=f"rep-{role.value}-dec", classes="rep-btn"))
+                children.append(FleetPill(" - ", id=f"rep-{role.value}-dec", classes="rep-pill"))
                 children.append(
                     Label(f"x{edit.replicas}", id=f"repn-{role.value}", classes="rep-count")
                 )
-                children.append(Button("+", id=f"rep-{role.value}-inc", classes="rep-btn"))
+                children.append(FleetPill(" + ", id=f"rep-{role.value}-inc", classes="rep-pill"))
             elif role in _SINGLE_ROLES:
                 children.append(Label(msg.FLEET_TAG_SINGLE, classes="role-tag"))
             elif len(edit.devices) > 1:
@@ -214,9 +252,9 @@ class FleetBody(Widget):
         last = first + len(self._page_devices()) - 1
         info = f"GPUs {first}-{last}  ·  page {self._page + 1}/{self._page_count()}"
         return Horizontal(
-            Button("◄", id="pg-prev", classes="pg-btn"),
+            FleetPill(" ◄ ", id="pg-prev", classes="pg-pill"),
             Label(info, classes="pg-info"),
-            Button("►", id="pg-next", classes="pg-btn"),
+            FleetPill(" ► ", id="pg-next", classes="pg-pill"),
             classes="pager-row",
         )
 
@@ -257,9 +295,9 @@ class FleetBody(Widget):
             )
         return PlacementSpec(roles=roles)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle a GPU toggle, a replica -/+ press, or a command button."""
-        bid = event.button.id or ""
+    def on_fleet_pill_pressed(self, event: FleetPill.Pressed) -> None:
+        """Handle a GPU toggle, a replica -/+ press, or a command pill."""
+        bid = event.pill.id or ""
         command = self._command_actions.get(bid)
         if command is not None:
             command()
@@ -278,16 +316,16 @@ class FleetBody(Widget):
                 # Single pinned instance: the picked card becomes the only one.
                 edit.devices = {idx}
                 for other in self._page_devices():
-                    self.query_one(f"#dev-{role.value}-{other}", Button).set_class(
+                    self.query_one(f"#dev-{role.value}-{other}", FleetPill).set_class(
                         other == idx, "on"
                     )
             elif idx in edit.devices:
                 if len(edit.devices) > 1:  # keep at least one GPU per role
                     edit.devices.discard(idx)
-                    event.button.remove_class("on")
+                    event.pill.remove_class("on")
             else:
                 edit.devices.add(idx)
-                event.button.add_class("on")
+                event.pill.add_class("on")
         elif bid.startswith("rep-"):
             _, role_value, op = bid.split("-")
             role = WorkerRole(role_value)

@@ -29,8 +29,7 @@ FleetBody {
     }
 
     .role-row {
-        height: 3;
-        align-vertical: middle;
+        height: 1;
     }
 
     .role-name {
@@ -38,14 +37,13 @@ FleetBody {
         content-align: left middle;
     }
 
-    /* GPU slots are toggle chips: a flat themed border carries the state so
-       there is no default-Button bevel and no reverse-video focus flash. */
+    /* GPU slots are one-line toggle pills: the fill carries the state and the
+       keyboard cursor rides the text style, so a role costs one row. */
     .dev-toggle {
-        min-width: 5;
         width: 5;
-        height: 3;
+        height: 1;
         margin: 0 1 0 0;
-        border: round $panel;
+        content-align: center middle;
         background: $surface;
         color: $text-muted;
         text-style: none;
@@ -54,17 +52,12 @@ FleetBody {
     .dev-toggle:hover {
         background: $boost;
         color: $foreground;
-        border: round $secondary;
     }
 
-    /* Focused (keyboard) chip: keep the state fill (off stays dim) and mark the
-       keyboard cursor with a bright iris ring, so focus layers on top of state
-       instead of masking it. */
+    /* Focused (keyboard) pill: reverse marks the cursor on top of the state
+       fill, so focus layers on state instead of masking it. */
     .dev-toggle:focus {
-        background: $boost;
-        color: $foreground;
-        text-style: bold;
-        border: round $primary-lighten-3;
+        text-style: bold reverse;
     }
 
     /* On-state color carries the KIND: split (one model across cards) = primary,
@@ -73,64 +66,39 @@ FleetBody {
         background: $primary;
         color: $background;
         text-style: bold;
-        border: round $primary;
     }
 
     .dev-toggle.mirror.on {
         background: $secondary;
         color: $background;
         text-style: bold;
-        border: round $secondary;
     }
 
     .dev-toggle.single.on {
         background: $accent;
         color: $background;
         text-style: bold;
-        border: round $accent;
     }
 
-    .dev-toggle.split.on:focus {
-        background: $primary;
-        color: $background;
-        text-style: bold;
-        border: round $primary-lighten-3;
+    .dev-toggle.on:focus {
+        text-style: bold reverse;
     }
 
-    .dev-toggle.mirror.on:focus {
-        background: $secondary;
-        color: $background;
-        text-style: bold;
-        border: round $primary-lighten-3;
-    }
-
-    .dev-toggle.single.on:focus {
-        background: $accent;
-        color: $background;
-        text-style: bold;
-        border: round $primary-lighten-3;
-    }
-
-    .rep-btn {
-        min-width: 5;
+    .rep-pill {
         width: 5;
-        height: 3;
+        height: 1;
         margin: 0 1 0 0;
-        border: round $panel;
+        content-align: center middle;
         background: $surface;
         color: $foreground;
     }
 
-    .rep-btn:hover {
+    .rep-pill:hover {
         background: $boost;
-        border: round $secondary;
     }
 
-    .rep-btn:focus {
-        background: $surface;
-        color: $foreground;
-        text-style: bold;
-        border: round $primary;
+    .rep-pill:focus {
+        text-style: bold reverse;
     }
 
     .rep-count {
@@ -138,33 +106,31 @@ FleetBody {
         content-align: center middle;
     }
 
-    /* Command row: Preview / Apply / Auto as clickable buttons so the drawer is
+    /* Command row: Preview / Apply / Auto as clickable pills so the drawer is
        fully mouse-operable, mirroring the ctrl+r/s/x keys. */
     #placement-commands {
-        height: 3;
+        height: 1;
         margin-top: 1;
     }
 
-    .cmd-btn {
+    .cmd-pill {
         width: auto;
         min-width: 9;
-        height: 3;
+        height: 1;
         margin: 0 1 0 0;
-        border: round $panel;
+        padding: 0 1;
+        content-align: center middle;
         background: $surface;
         color: $foreground;
         text-style: none;
     }
 
-    .cmd-btn:hover {
+    .cmd-pill:hover {
         background: $boost;
-        border: round $secondary;
     }
 
-    .cmd-btn:focus {
-        background: $boost;
-        text-style: bold;
-        border: round $primary-lighten-3;
+    .cmd-pill:focus {
+        text-style: bold reverse;
     }
 
     .gpu-header-row {
@@ -192,28 +158,25 @@ FleetBody {
     }
 
     .pager-row {
-        height: 3;
-        align-vertical: middle;
+        height: 1;
         margin-top: 1;
     }
 
-    .pg-btn {
-        min-width: 5;
+    .pg-pill {
         width: 5;
-        height: 3;
+        height: 1;
         margin: 0 1 0 0;
-        border: round $panel;
+        content-align: center middle;
         background: $surface;
         color: $foreground;
     }
 
-    .pg-btn:hover {
-        border: round $secondary;
+    .pg-pill:hover {
+        background: $boost;
     }
 
-    .pg-btn:focus {
-        text-style: bold;
-        border: round $primary-lighten-3;
+    .pg-pill:focus {
+        text-style: bold reverse;
     }
 
     .pg-info {

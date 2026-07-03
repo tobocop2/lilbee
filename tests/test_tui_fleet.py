@@ -1,6 +1,6 @@
 """Tests for the Fleet view: FleetScreen hosting FleetBody.
 
-These drive the real widgets (GPU toggle Buttons, replica steppers, key
+These drive the real widgets (GPU toggle pills, replica steppers, key
 bindings) rather than poking private state, so the input path is actually
 exercised.
 """
@@ -10,8 +10,8 @@ from __future__ import annotations
 import threading
 
 import pytest
-from textual.widgets import Button
 
+from lilbee.cli.tui.widgets.fleet_body import FleetPill
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 GIB = 1024**3
@@ -67,16 +67,16 @@ async def _toggle_device(pilot, selector: str, *, expect_on: bool = True) -> Non
     """Activate a GPU toggle and wait until the press has been applied.
 
     ``pilot.click`` resolves the target's screen coordinates up front, so under
-    parallel load it can fire before layout settles and miss the button
-    entirely. ``Button.press`` posts ``Button.Pressed`` directly (no
+    parallel load it can fire before layout settles and miss the pill
+    entirely. ``FleetPill.press`` posts ``FleetPill.Pressed`` directly (no
     coordinates), and the handler flips the ``on`` class in the same step that
     mutates the device set -- so wait for that class as the post-condition.
     """
-    button = pilot.app.screen.query_one(selector, Button)
-    button.press()
+    pill = pilot.app.screen.query_one(selector, FleetPill)
+    pill.press()
     for _ in range(100):
         await pilot.pause()
-        if button.has_class("on") == expect_on:
+        if pill.has_class("on") == expect_on:
             return
     raise AssertionError(f"{selector} did not reach on={expect_on}")  # pragma: no cover
 
@@ -85,10 +85,10 @@ async def _step_until_generated(pilot, selector: str, app, predicate) -> None:  
     """Activate a control and wait until the generated spec satisfies ``predicate``.
 
     The replica stepper has no ``on`` class to watch, so synchronise on the
-    equivalent-spec text it drives. Uses ``Button.press`` for the same
+    equivalent-spec text it drives. Uses ``FleetPill.press`` for the same
     coordinate-free reason as ``_toggle_device``.
     """
-    pilot.app.screen.query_one(selector, Button).press()
+    pilot.app.screen.query_one(selector, FleetPill).press()
     for _ in range(100):
         await pilot.pause()
         if predicate(_generated(app)):
@@ -180,7 +180,7 @@ async def test_replica_stepper(monkeypatch):
         assert '"replicas": 2' in _generated(app)
         await _step_until_generated(pilot, "#rep-embed-dec", app, lambda g: "replicas" not in g)
         assert "replicas" not in _generated(app)
-        app.screen.query_one("#rep-embed-dec", Button).press()  # floored at 1 (stays omitted)
+        app.screen.query_one("#rep-embed-dec", FleetPill).press()  # floored at 1 (stays omitted)
         await pilot.pause()
         assert "replicas" not in _generated(app)
 
@@ -198,7 +198,7 @@ async def test_no_replica_stepper_for_chat(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         with pytest.raises(NoMatches):
-            app.screen.query_one("#rep-chat-inc", Button)
+            app.screen.query_one("#rep-chat-inc", FleetPill)
 
 
 @pytest.mark.asyncio
@@ -472,10 +472,8 @@ async def test_remove_device_when_multiple_devices(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unrecognized_button_id_is_noop(monkeypatch):
-    """A button press with an unrecognized ID is silently ignored."""
+    """A pill press with an unrecognized ID is silently ignored."""
     from unittest.mock import MagicMock
-
-    from textual.widgets import Button as TxtButton
 
     from lilbee.cli.tui.widgets import fleet_body as fbm
 
@@ -485,11 +483,11 @@ async def test_unrecognized_button_id_is_noop(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         before = _generated(app)
-        btn = MagicMock(spec=TxtButton)
-        btn.id = "some-other-button"
-        event = TxtButton.Pressed(btn)
+        pill = MagicMock(spec=FleetPill)
+        pill.id = "some-other-pill"
+        event = FleetPill.Pressed(pill)
         body = app.screen.query_one("FleetBody")
-        body.on_button_pressed(event)
+        body.on_fleet_pill_pressed(event)
         await pilot.pause()
         assert _generated(app) == before
 
@@ -668,7 +666,7 @@ async def _wait_for(pilot, selector: str) -> None:  # type: ignore[no-untyped-de
     for _ in range(100):
         await pilot.pause()
         try:
-            pilot.app.screen.query_one(selector, Button)
+            pilot.app.screen.query_one(selector, FleetPill)
             return
         except NoMatches:
             continue
@@ -688,17 +686,17 @@ async def test_placement_grid_paginates_large_fleet(monkeypatch):
     async with app.run_test(size=(160, 44)) as pilot:
         await pilot.pause()
         # page 1 shows GPUs 0-7; 8-9 are on page 2
-        app.screen.query_one("#dev-chat-0", Button)
+        app.screen.query_one("#dev-chat-0", FleetPill)
         with pytest.raises(NoMatches):
-            app.screen.query_one("#dev-chat-9", Button)
+            app.screen.query_one("#dev-chat-9", FleetPill)
         # advance to page 2
-        app.screen.query_one("#pg-next", Button).press()
+        app.screen.query_one("#pg-next", FleetPill).press()
         await _wait_for(pilot, "#dev-chat-9")
-        app.screen.query_one("#dev-chat-8", Button)
+        app.screen.query_one("#dev-chat-8", FleetPill)
         with pytest.raises(NoMatches):
-            app.screen.query_one("#dev-chat-0", Button)
+            app.screen.query_one("#dev-chat-0", FleetPill)
         # back to page 1
-        app.screen.query_one("#pg-prev", Button).press()
+        app.screen.query_one("#pg-prev", FleetPill).press()
         await _wait_for(pilot, "#dev-chat-0")
 
 
@@ -737,14 +735,14 @@ async def test_rerank_is_single_select(monkeypatch):
         body = app.screen.query_one(FleetBody)
         assert body._edits[WorkerRole.RERANK].devices == {0}
         # single-instance roles carry the 'single' kind and a 'one card' tag
-        assert app.screen.query_one("#dev-rerank-0", Button).has_class("single")
+        assert app.screen.query_one("#dev-rerank-0", FleetPill).has_class("single")
         assert any("one card" in str(lbl.render()) for lbl in app.screen.query(".role-tag"))
         # picking GPU 2 MOVES rerank there; it must not become {0, 2}
-        app.screen.query_one("#dev-rerank-2", Button).press()
+        app.screen.query_one("#dev-rerank-2", FleetPill).press()
         for _ in range(100):
             await pilot.pause()
             if body._edits[WorkerRole.RERANK].devices == {2}:
                 break
         assert body._edits[WorkerRole.RERANK].devices == {2}
-        assert app.screen.query_one("#dev-rerank-2", Button).has_class("on")
-        assert not app.screen.query_one("#dev-rerank-0", Button).has_class("on")
+        assert app.screen.query_one("#dev-rerank-2", FleetPill).has_class("on")
+        assert not app.screen.query_one("#dev-rerank-0", FleetPill).has_class("on")
