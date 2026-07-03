@@ -240,11 +240,11 @@ flowchart TD
 
 ```mermaid
 flowchart TB
-    CFG[config + placement spec] --> PLAN[planner\nestimate + bin-pack + ctx fit]
-    SNAP[clean-box snapshot\ndevices / VRAM / RAM] --> PLAN
+    CFG[config + placement spec] --> PLAN[planner: estimate + bin-pack + ctx fit]
+    SNAP[clean-box snapshot: devices / VRAM / RAM] --> PLAN
     PLAN --> DIFF{per-role launch diff}
-    DIFF -->|unchanged| KEEP[role keeps serving\nmodel stays resident]
-    DIFF -->|changed| RESTART[stop role's llama-swap\nstart with new argv]
+    DIFF -->|unchanged| KEEP[role keeps serving, model stays resident]
+    DIFF -->|changed| RESTART[stop role's llama-swap, start with new argv]
     subgraph fleet [one llama-swap per role]
         CHAT[chat group]
         EMBED[embed group xN]
