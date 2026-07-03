@@ -5,9 +5,23 @@ FleetBody {
         padding: 0 1;
     }
 
-    #placement-title {
+    #placement-titlebar {
         height: 1;
         margin-bottom: 1;
+    }
+
+    #placement-title {
+        width: 1fr;
+        height: 1;
+    }
+
+    /* One hover-help for the whole drawer; keeps the surface otherwise minimal. */
+    #placement-help {
+        width: 3;
+        height: 1;
+        content-align: right middle;
+        color: $primary;
+        text-style: bold;
     }
 
     #placement-editor {
@@ -15,8 +29,7 @@ FleetBody {
     }
 
     .role-row {
-        height: 3;
-        align-vertical: middle;
+        height: 1;
     }
 
     .role-name {
@@ -24,14 +37,13 @@ FleetBody {
         content-align: left middle;
     }
 
-    /* GPU slots are toggle chips: a flat themed border carries the state so
-       there is no default-Button bevel and no reverse-video focus flash. */
+    /* GPU slots are one-line toggle pills: the fill carries the state and the
+       keyboard cursor rides the text style, so a role costs one row. */
     .dev-toggle {
-        min-width: 5;
         width: 5;
-        height: 3;
+        height: 1;
         margin: 0 1 0 0;
-        border: round $panel;
+        content-align: center middle;
         background: $surface;
         color: $text-muted;
         text-style: none;
@@ -40,55 +52,60 @@ FleetBody {
     .dev-toggle:hover {
         background: $boost;
         color: $foreground;
-        border: round $secondary;
     }
 
+    /* Focused (keyboard) pill: the soft iris fill ConfirmDialog uses -- no
+       reverse video, which reads as a white block against rose-pine. */
     .dev-toggle:focus {
-        background: $surface;
-        color: $foreground;
+        background: $primary 40%;
+        color: $text;
         text-style: bold;
-        border: round $primary;
     }
 
-    .dev-toggle.on {
-        background: $secondary;
-        color: $background;
+    /* On-state color carries the KIND: split (one model across cards) = primary,
+       mirror (a copy per card) = secondary, single (one pinned card) = accent.
+       Tinted fills (not solid blocks) so the pills sit inside the theme the way
+       the status-bar badges do. */
+    .dev-toggle.split.on {
+        background: $primary 50%;
+        color: $text;
         text-style: bold;
-        border: round $secondary;
     }
 
-    .dev-toggle.on:hover {
-        background: $secondary-darken-1;
-        border: round $secondary-darken-1;
+    .dev-toggle.mirror.on {
+        background: $secondary 50%;
+        color: $text;
+        text-style: bold;
     }
 
+    .dev-toggle.single.on {
+        background: $accent 50%;
+        color: $text;
+        text-style: bold;
+    }
+
+    /* Focus on an already-on pill keeps the kind fill; the underline is the
+       cursor mark, so state and focus stay separately readable. */
     .dev-toggle.on:focus {
-        background: $secondary;
-        color: $background;
-        text-style: bold;
-        border: round $primary;
+        text-style: bold underline;
     }
 
-    .rep-btn {
-        min-width: 5;
+    .rep-pill {
         width: 5;
-        height: 3;
+        height: 1;
         margin: 0 1 0 0;
-        border: round $panel;
+        content-align: center middle;
         background: $surface;
         color: $foreground;
     }
 
-    .rep-btn:hover {
+    .rep-pill:hover {
         background: $boost;
-        border: round $secondary;
     }
 
-    .rep-btn:focus {
-        background: $surface;
-        color: $foreground;
+    .rep-pill:focus {
+        background: $boost;
         text-style: bold;
-        border: round $primary;
     }
 
     .rep-count {
@@ -96,10 +113,85 @@ FleetBody {
         content-align: center middle;
     }
 
-    #placement-generated {
-        height: auto;
+    /* Command row: Preview / Apply / Auto as clickable pills so the drawer is
+       fully mouse-operable, mirroring the ctrl+r/s/x keys. */
+    #placement-commands {
+        height: 1;
         margin-top: 1;
+    }
+
+    .cmd-pill {
+        width: auto;
+        min-width: 9;
+        height: 1;
+        margin: 0 1 0 0;
+        padding: 0 1;
+        content-align: center middle;
+        background: $surface;
+        color: $foreground;
+        text-style: none;
+    }
+
+    .cmd-pill:hover {
+        background: $boost;
+    }
+
+    .cmd-pill:focus {
+        background: $boost;
+        text-style: bold;
+    }
+
+    .gpu-header-row {
+        height: 1;
+    }
+
+    .gpu-hdr-lead {
+        width: 9;
         color: $text-muted;
+        content-align: left middle;
+    }
+
+    .gpu-hdr {
+        width: 5;
+        margin: 0 1 0 0;
+        color: $text-muted;
+        content-align: center middle;
+    }
+
+    .role-tag {
+        width: auto;
+        margin-left: 1;
+        color: $text-muted;
+        content-align: left middle;
+    }
+
+    .pager-row {
+        height: 1;
+        margin-top: 1;
+    }
+
+    .pg-pill {
+        width: 5;
+        height: 1;
+        margin: 0 1 0 0;
+        content-align: center middle;
+        background: $surface;
+        color: $foreground;
+    }
+
+    .pg-pill:hover {
+        background: $boost;
+    }
+
+    .pg-pill:focus {
+        background: $boost;
+        text-style: bold;
+    }
+
+    .pg-info {
+        width: auto;
+        color: $text-muted;
+        content-align: left middle;
     }
 
     #placement-hint {

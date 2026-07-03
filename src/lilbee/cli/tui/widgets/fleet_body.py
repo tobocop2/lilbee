@@ -9,19 +9,23 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Button, Label, Static
+from textual.widgets import Label, Static
 
 from lilbee.app.placement import get_placement, preview_placement, set_placement
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
@@ -54,7 +58,6 @@ def _clean_model_name(ref: str) -> str:
 _CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 
 _EDITOR_ID = "#placement-editor"
-_GENERATED_ID = "#placement-generated"
 _TITLE_ID = "#placement-title"
 _FLEET_PANEL_ID = "#gpu-fleet-panel"
 
@@ -63,6 +66,61 @@ _REPLICA_ROLES = (WorkerRole.EMBED, WorkerRole.VISION)
 _HINT = (
     "Toggle a GPU for each role; -/+ sets replicas.  ctrl+r preview · ctrl+s apply · ctrl+x auto"
 )
+_CMD_PREVIEW = "cmd-preview"
+_CMD_APPLY = "cmd-apply"
+_CMD_AUTO = "cmd-auto"
+# GPUs shown per page in the placement grid; more than this paginate.
+_PLACEMENT_PAGE_SIZE = 8
+# rerank is a single pinned instance on one card (a small cross-encoder that never
+# tensor-splits), so its GPU choice is single-select, unlike the multi-GPU roles.
+_SINGLE_ROLES = (WorkerRole.RERANK,)
+# Editor row order: the multi-GPU roles first, rerank last -- the single-card odd
+# one out sits at the bottom instead of between the replicated roles.
+_EDITOR_ROLE_ORDER = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION, WorkerRole.RERANK)
+
+
+def _role_kind(role: WorkerRole) -> str:
+    """How a role occupies GPUs: 'mirror' (a copy per card), 'single' (one pinned
+    card), or 'split' (one model tensor-split across cards)."""
+    if role in _REPLICA_ROLES:
+        return "mirror"
+    if role in _SINGLE_ROLES:
+        return "single"
+    return "split"
+
+
+class FleetPill(Static, can_focus=True):
+    """Focusable one-line pill; Enter / Space / click presses it.
+
+    The editor's toggles, steppers, pager, and command controls are all pills
+    (the ``Static, can_focus=True`` + bindings pattern from
+    ``widgets/confirm_dialog.py`` / ``model_bar.py::ChatModePill``): state and
+    focus ride the fill and text style, so a row costs one line instead of the
+    three rows of Button chrome.
+    """
+
+    class Pressed(Message):
+        """Posted on activation; carries the pill for id-based dispatch."""
+
+        def __init__(self, pill: FleetPill) -> None:
+            super().__init__()
+            self.pill = pill
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "press", "Press", show=False),
+        Binding("space", "press", "Press", show=False),
+    ]
+
+    def press(self) -> None:
+        """Activate this pill (shared by the mouse and keyboard paths)."""
+        self.post_message(self.Pressed(self))
+
+    def action_press(self) -> None:
+        self.press()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.press()
 
 
 @dataclass
@@ -87,6 +145,12 @@ class FleetBody(Widget):
         self._edits: dict[WorkerRole, _RoleEdit] = {}
         self._device_indices: tuple[int, ...] = ()
         self._view_manual = False
+        self._page = 0
+        self._command_actions: dict[str, Callable[[], None]] = {
+            _CMD_PREVIEW: self.action_preview,
+            _CMD_APPLY: self.action_apply,
+            _CMD_AUTO: self.action_clear,
+        }
 
     def watch_applying(self, applying: bool) -> None:
         """Disable the editor controls while an apply/clear is in flight."""
@@ -95,10 +159,17 @@ class FleetBody(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="placement-layout"):
-            yield Static("", id="placement-title")
+            with Horizontal(id="placement-titlebar"):
+                yield Static("", id="placement-title")
+                help_icon = Static(msg.FLEET_HELP_ICON, id="placement-help")
+                help_icon.tooltip = msg.FLEET_HELP_TOOLTIP
+                yield help_icon
             yield GpuFleetPanel()
             yield Vertical(id="placement-editor")
-            yield Static("", id="placement-generated")
+            with Horizontal(id="placement-commands"):
+                yield FleetPill(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-pill")
+                yield FleetPill(msg.FLEET_CMD_APPLY, id=_CMD_APPLY, classes="cmd-pill")
+                yield FleetPill(msg.FLEET_CMD_AUTO, id=_CMD_AUTO, classes="cmd-pill")
             yield Static(_HINT, id="placement-hint")
 
     def on_mount(self) -> None:
@@ -120,36 +191,76 @@ class FleetBody(Widget):
         """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
-        self._edits = {
-            r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles
-        }
+        edits = {r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles}
+        # Rows render in _EDITOR_ROLE_ORDER; any role beyond it keeps plan order.
+        self._edits = {role: edits.pop(role) for role in _EDITOR_ROLE_ORDER if role in edits}
+        self._edits.update(edits)
+        self._page = 0
         self._build_editor()
         self._refresh_title(dirty=False)
-        self._refresh_generated()
         self._update_fleet_panel(view)
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
 
+    def _page_devices(self) -> tuple[int, ...]:
+        """The GPU indices visible on the current page."""
+        start = self._page * _PLACEMENT_PAGE_SIZE
+        return self._device_indices[start : start + _PLACEMENT_PAGE_SIZE]
+
+    def _page_count(self) -> int:
+        """Number of GPU pages at the current fleet size."""
+        n = len(self._device_indices)
+        return max(1, (n + _PLACEMENT_PAGE_SIZE - 1) // _PLACEMENT_PAGE_SIZE)
+
     def _build_editor(self) -> None:
-        """Mount one interactive row per role (GPU toggles + replica stepper)."""
+        """Rebuild the placement grid: GPU header, one row per role, optional pager."""
         container = self.query_one(_EDITOR_ID, Vertical)
         container.remove_children()
-        rows: list[Horizontal] = []
+        devices = self._page_devices()
+        widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
-            children: list[Button | Label] = [Label(f"{role.value:<7}", classes="role-name")]
-            for idx in self._device_indices:
-                cls = "dev-toggle on" if idx in edit.devices else "dev-toggle"
-                children.append(Button(str(idx), id=f"dev-{role.value}-{idx}", classes=cls))
+            kind = _role_kind(role)
+            children: list[FleetPill | Label] = [Label(f"{role.value:<7}", classes="role-name")]
+            for idx in devices:
+                on = " on" if idx in edit.devices else ""
+                children.append(
+                    FleetPill(
+                        f" {idx} ", id=f"dev-{role.value}-{idx}", classes=f"dev-toggle {kind}{on}"
+                    )
+                )
             if role in _REPLICA_ROLES:
-                children.append(Button("-", id=f"rep-{role.value}-dec", classes="rep-btn"))
+                children.append(FleetPill(" - ", id=f"rep-{role.value}-dec", classes="rep-pill"))
                 children.append(
                     Label(f"x{edit.replicas}", id=f"repn-{role.value}", classes="rep-count")
                 )
-                children.append(Button("+", id=f"rep-{role.value}-inc", classes="rep-btn"))
-            rows.append(Horizontal(*children, classes="role-row"))
-        if rows:
-            container.mount(*rows)
+                children.append(FleetPill(" + ", id=f"rep-{role.value}-inc", classes="rep-pill"))
+            elif role in _SINGLE_ROLES:
+                children.append(Label(msg.FLEET_TAG_SINGLE, classes="role-tag"))
+            elif len(edit.devices) > 1:
+                children.append(Label(msg.FLEET_TAG_SPLIT, classes="role-tag"))
+            widgets.append(Horizontal(*children, classes="role-row"))
+        container.mount(*widgets)
+        if self._page_count() > 1:
+            container.mount(self._pager_row())
+
+    def _gpu_header_row(self, devices: tuple[int, ...]) -> Horizontal:
+        """A header labelling the visible GPU columns."""
+        cells: list[Label] = [Label("GPU", classes="role-name gpu-hdr-lead")]
+        cells += [Label(str(idx), classes="gpu-hdr") for idx in devices]
+        return Horizontal(*cells, classes="gpu-header-row")
+
+    def _pager_row(self) -> Horizontal:
+        """Prev/next controls and a page indicator for fleets past one page."""
+        first = self._page * _PLACEMENT_PAGE_SIZE
+        last = first + len(self._page_devices()) - 1
+        info = f"GPUs {first}-{last}  ·  page {self._page + 1}/{self._page_count()}"
+        return Horizontal(
+            FleetPill(" ◄ ", id="pg-prev", classes="pg-pill"),
+            Label(info, classes="pg-info"),
+            FleetPill(" ► ", id="pg-next", classes="pg-pill"),
+            classes="pager-row",
+        )
 
     def _refresh_title(self, *, dirty: bool) -> None:
         if dirty:
@@ -157,16 +268,6 @@ class FleetBody(Widget):
         else:
             text = "Placement (manual)" if self._view_manual else "Placement (auto)"
         self.query_one(_TITLE_ID, Static).update(f"[bold]{text}[/bold]")
-
-    def _refresh_generated(self) -> None:
-        """Show the spec the current controls produce (for CLI/HTTP/MCP parity)."""
-        out = self.query_one(_GENERATED_ID, Static)
-        try:
-            spec = self._spec_from_editor()
-        except PlacementError as exc:
-            out.update(f"[red]{exc}[/red]")
-            return
-        out.update(f"equivalent spec:  {spec.to_json() if spec else '(auto)'}")
 
     def _update_fleet_panel(self, view: PlacementView) -> None:
         """Push the current device list and roles into the fleet panel."""
@@ -198,20 +299,37 @@ class FleetBody(Widget):
             )
         return PlacementSpec(roles=roles)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle a GPU toggle or a replica -/+ press."""
-        bid = event.button.id or ""
+    def on_fleet_pill_pressed(self, event: FleetPill.Pressed) -> None:
+        """Handle a GPU toggle, a replica -/+ press, or a command pill."""
+        bid = event.pill.id or ""
+        command = self._command_actions.get(bid)
+        if command is not None:
+            command()
+            return
+        if bid in ("pg-prev", "pg-next"):
+            step = -1 if bid == "pg-prev" else 1
+            self._page = min(max(0, self._page + step), self._page_count() - 1)
+            self._build_editor()
+            return
         if bid.startswith("dev-"):
             _, role_value, idx_str = bid.split("-")
-            edit = self._edits[WorkerRole(role_value)]
+            role = WorkerRole(role_value)
+            edit = self._edits[role]
             idx = int(idx_str)
-            if idx in edit.devices:
+            if role in _SINGLE_ROLES:
+                # Single pinned instance: the picked card becomes the only one.
+                edit.devices = {idx}
+                for other in self._page_devices():
+                    self.query_one(f"#dev-{role.value}-{other}", FleetPill).set_class(
+                        other == idx, "on"
+                    )
+            elif idx in edit.devices:
                 if len(edit.devices) > 1:  # keep at least one GPU per role
                     edit.devices.discard(idx)
-                    event.button.remove_class("on")
+                    event.pill.remove_class("on")
             else:
                 edit.devices.add(idx)
-                event.button.add_class("on")
+                event.pill.add_class("on")
         elif bid.startswith("rep-"):
             _, role_value, op = bid.split("-")
             role = WorkerRole(role_value)
@@ -221,7 +339,6 @@ class FleetBody(Widget):
         else:
             return
         self._refresh_title(dirty=True)
-        self._refresh_generated()
 
     # -- actions ---------------------------------------------------------
 

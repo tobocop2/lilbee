@@ -26,13 +26,11 @@ log = logging.getLogger(__name__)
 
 _CSS_FILE = Path(__file__).parent / "gpu_fleet_panel.tcss"
 
-# Bar render constants. The empty track uses the same light-shade block as the
-# Task Center download bars (progress_cell.py) so the GPU bars read as
-# full-bodied siblings rather than a thin rule.
-_BAR_FILL = "█"  # full block █
-_BAR_TRACK = "░"  # light shade block ░ (matches the download progress bars)
-_BAR_WIDTH = 16  # number of cells in each bar
-_BULLET = "●"  # ● colored dot before card label
+# Bar render constants.
+_BAR_FILL = "█"  # full block
+_BAR_TRACK = "░"  # light-shade block (empty track)
+_BAR_WIDTH = 16  # cells per bar
+_BULLET = "●"  # colored dot before card label
 
 # Utilization thresholds (%)
 _UTIL_WARM = 40
