@@ -34,7 +34,7 @@ from lilbee.providers.fleet.replicas import (
     resolve_replica_count,
 )
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
-from lilbee.providers.fleet.swap_manager import SwapManager
+from lilbee.providers.fleet.swap_manager import SwapManager, reap_stale, sweep_owned
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import WorkerRole, configured_model_message
 from lilbee.providers.warm_progress import WarmProgress, WarmProgressTracker
@@ -86,6 +86,16 @@ def _request_timeout_s(weights_bytes: int) -> float:
         _REQUEST_TIMEOUT_FLOOR_S,
         cold_load_timeout_s(weights_bytes) + _REQUEST_TIMEOUT_GENERATION_MARGIN_S,
     )
+
+
+def _launches_by_role(
+    launches: list[InstanceLaunch],
+) -> dict[WorkerRole, tuple[InstanceLaunch, ...]]:
+    """Group a plan's launches by role, replica order preserved within each role."""
+    grouped: dict[WorkerRole, list[InstanceLaunch]] = {}
+    for launch in launches:
+        grouped.setdefault(launch.role, []).append(launch)
+    return {role: tuple(role_launches) for role, role_launches in grouped.items()}
 
 
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
@@ -341,12 +351,19 @@ class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
     def __init__(self) -> None:
-        self._swap: SwapManager | None = None
+        # One llama-swap per placed role, so restarting one role's servers (a
+        # placement or per-role model change) never unloads another role's.
+        self._swaps: dict[WorkerRole, SwapManager] = {}
+        # The launches each running group was started with, kept so a reload can
+        # diff the fresh plan against what is running and restart only the roles
+        # whose launches actually changed. Launch argv is port-free (ports are
+        # injected at config render), so the comparison is stable across starts.
+        self._launches: dict[WorkerRole, tuple[InstanceLaunch, ...]] = {}
         # Latched once shutdown runs. A discarded provider (reset_services swaps
         # in a new one) can still have an in-flight warm-up or reload daemon
         # thread; without this latch that thread could start a llama-swap after
         # shutdown already ran, leaving a process no live provider owns.
-        # _ensure_swap checks it under the build lock so a post-shutdown build is
+        # _ensure_fleet checks it under the build lock so a post-shutdown build is
         # refused (the swap_manager reaper is the backstop if one slips through).
         self._shut_down = False
         # A pool of OpenAI clients per placed role (one per data-parallel replica),
@@ -393,77 +410,108 @@ class FleetProvider:
         # run its pending pass) has finished.
         self._reload_done = threading.Condition(self._lock)
 
-    def _ensure_swap(self) -> SwapManager | None:
-        """Start the llama-swap process exactly once across concurrent callers.
+    def _ensure_fleet(self) -> bool:
+        """Start one llama-swap per placed role exactly once across concurrent callers.
 
-        Returns ``None`` when no role is configured and installed (nothing to
-        serve), leaving no process spawned. The startup runs under ``_build_lock``
-        (not the routing lock), so the off-thread warm-up and an on-demand call
-        can't start two swaps -- which would double-allocate GPU and parse the same
-        GGUF twice. A second caller blocks on the build lock and reuses the swap the
-        first one started.
+        Returns whether any role group is running afterwards; ``False`` when no
+        role is configured and installed (nothing to serve), leaving no process
+        spawned. The startup runs under ``_build_lock`` (not the routing lock),
+        so the off-thread warm-up and an on-demand call can't start two fleets --
+        which would double-allocate GPU and parse the same GGUF twice. A second
+        caller blocks on the build lock and reuses the groups the first one
+        started. A group failing to start tears down the groups already started
+        in this build, so a partial fleet never leaks past the failure.
         """
         with self._lock:
-            if self._swap is not None:
-                return self._swap
+            if self._swaps:
+                return True
         with self._build_lock:
             with self._lock:
-                if self._swap is not None:
-                    return self._swap
+                if self._swaps:
+                    return True
                 if self._shut_down:
                     # Provider was shut down (and likely discarded by reset_services)
                     # while this warm-up/reload thread was in flight; do not spawn a
                     # llama-swap no live provider would ever reap.
-                    return None
+                    return False
             from lilbee.core.config import cfg
 
-            swap = SwapManager(cfg.data_dir)
             # A dead owner's surviving llama-swap holds VRAM; reap it before launching
             # so the cards are actually free for this fleet (and the context sizer
             # reads true free VRAM).
-            swap.reap_stale()
+            reap_stale(cfg.data_dir)
             try:
                 launches = planning.plan_all_launches()
             except ProviderError:
                 log.debug("Engine binary unavailable; no swap started")
-                return None
+                return False
             if not launches:
-                return None  # no installed/configured model -> serve nothing, spawn nothing
-            swap.start(launches)
+                return False  # no installed/configured model -> serve nothing, spawn nothing
+            by_role = _launches_by_role(launches)
+            started: dict[WorkerRole, SwapManager] = {}
+            try:
+                for role, role_launches in by_role.items():
+                    swap = SwapManager(cfg.data_dir, role.value)
+                    swap.start(list(role_launches))
+                    started[role] = swap
+            except BaseException:
+                for swap in started.values():
+                    swap.shutdown()
+                raise
             with self._lock:
-                self._adopt_swap(swap, launches)
-            return swap
+                for role, swap in started.items():
+                    self._adopt_role(role, swap, list(by_role[role]))
+            return True
 
-    def _adopt_swap(self, swap: SwapManager, launches: list[InstanceLaunch]) -> None:
-        """Record a freshly started swap and build a client pool per placed role.
+    def _adopt_role(
+        self, role: WorkerRole, swap: SwapManager, launches: list[InstanceLaunch]
+    ) -> None:
+        """Record *role*'s freshly started swap and build its client pool.
 
         Caller holds ``self._lock``. Each launch (one per replica) becomes a client
-        keyed by its replica model id; launches carry the chat slots/ctx so the
-        capacity and served context come from the launch, not a probe.
+        keyed by its replica model id against this group's own proxy endpoint;
+        the chat launch carries the slots/ctx so the capacity and served context
+        come from the launch, not a probe.
         """
-        # Retire the previous clients (a reload re-adopts over an existing pool):
-        # closing them now would error a reader still mid-call on an old client
-        # snapshot, and never closing leaks an httpx pool per replica per role.
-        old_clients = [client for pool in self._clients.values() for client in pool]
-        self._swap = swap
+        # Retire the role's previous clients (a reload re-adopts over an existing
+        # pool): closing them now would error a reader still mid-call on an old
+        # client snapshot, and never closing leaks an httpx pool per replica.
+        old_clients = list(self._clients.get(role, []))
+        self._swaps[role] = swap
+        self._launches[role] = tuple(launches)
         endpoint = swap.endpoint()
         # token_cap truncates oversize embed/rerank inputs to the per-slot context
         # (the in-process backstop); the longer timeout covers a cold upstream load.
-        clients: dict[WorkerRole, list[LlamaServerClient]] = {}
-        for launch in launches:
-            client = LlamaServerClient(
+        self._clients[role] = [
+            LlamaServerClient(
                 endpoint,
                 launch.model_id,
                 token_cap=launch.token_cap,
                 timeout=_request_timeout_s(launch.weights_bytes),
                 rerank_mode=launch.rerank_mode,
             )
-            clients.setdefault(launch.role, []).append(client)
-        self._clients = clients
-        chat = next((launch for launch in launches if launch.role is WorkerRole.CHAT), None)
-        self._chat_slots = chat.slots if chat is not None else 1
-        self._chat_ctx = chat.ctx if chat is not None else None
+            for launch in launches
+        ]
+        if role is WorkerRole.CHAT:
+            chat = launches[0]
+            self._chat_slots = chat.slots
+            self._chat_ctx = chat.ctx
         self._retire_clients(old_clients)
+
+    def _drop_role(self, role: WorkerRole) -> SwapManager | None:
+        """Forget *role*'s swap/launches/clients; return the swap for teardown.
+
+        Caller holds ``self._lock``. The role's clients are retired (closed at a
+        later reload or shutdown, never while a reader could still hold one) and
+        the chat capacity falls back to its defaults when chat itself is dropped.
+        """
+        swap = self._swaps.pop(role, None)
+        self._launches.pop(role, None)
+        self._retire_clients(self._clients.pop(role, []))
+        if role is WorkerRole.CHAT:
+            self._chat_slots = 1
+            self._chat_ctx = None
+        return swap
 
     def _retire_clients(self, old_clients: list[LlamaServerClient]) -> None:
         """Close the previously-retired clients, then retire *old_clients*.
@@ -495,12 +543,12 @@ class FleetProvider:
         since exited (detected via ``is_live()``), a one-shot rebuild is attempted
         before raising so a transient llama-swap restart recovers transparently.
         """
-        self._ensure_swap()
+        self._ensure_fleet()
         with self._lock:
             clients = self._clients.get(role)
-            swap = self._swap
+            swap = self._swaps.get(role)
         if not clients and swap is not None and not swap.is_live():
-            self._rebuild_swap()
+            self._rebuild_role(role)
             with self._lock:
                 clients = self._clients.get(role)
         if not clients:
@@ -511,10 +559,14 @@ class FleetProvider:
             )
         return list(clients)
 
-    def _rebuild_swap(self) -> None:
-        """Drop a dead swap and build a fresh one (new port); ``_ensure_swap`` adopts clients."""
-        self._drop_swap_refs()
-        self._ensure_swap()
+    def _rebuild_role(self, role: WorkerRole) -> None:
+        """Restart just *role*'s dead group (new port) from a fresh plan.
+
+        Other roles' groups keep serving; only the dead group is torn down and
+        respawned. Runs the same diff-driven pass as a reload, forcing *role*
+        into the restart set so an unchanged plan still replaces its dead swap.
+        """
+        self._reload_pass(force=frozenset((role,)))
 
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role*'s upstream is loaded and ready, without starting the swap.
@@ -524,25 +576,25 @@ class FleetProvider:
         is up or while the role's upstream is still loading.
         """
         with self._lock:
-            swap = self._swap
+            swap = self._swaps.get(role)
         return swap is not None and swap.role_ready(role)
 
     def max_concurrent_chats(self) -> int:
         """The chat server's batching-slot capacity, so the gate admits that many.
 
-        Falls back to ``1`` before the swap is up, so chat is serialized until the
-        slot count is known (the launcher warms the engine before a client
-        connects, so the real capacity is in effect by the first chat).
+        Falls back to ``1`` before the chat group is up, so chat is serialized
+        until the slot count is known (the launcher warms the engine before a
+        client connects, so the real capacity is in effect by the first chat).
         """
         with self._lock:
-            if self._swap is None:
+            if WorkerRole.CHAT not in self._swaps:
                 return 1
             return self._chat_slots
 
     def served_chat_ctx(self) -> int | None:
         """Per-slot context the chat server runs with, or None if not up."""
         with self._lock:
-            return self._chat_ctx if self._swap is not None else None
+            return self._chat_ctx if WorkerRole.CHAT in self._swaps else None
 
     def warm_progress(self) -> WarmProgress | None:
         """Live cold-load progress for the chat role, or None before warm begins."""
@@ -558,31 +610,33 @@ class FleetProvider:
         with the current cfg.
         """
         # The build lock serializes shutdown against a concurrent reload/build:
-        # both mutate self._swap and the llama-swap process, so an unserialized
+        # both mutate self._swaps and the llama-swap processes, so an unserialized
         # loser would overwrite the winner's state and leak a live llama-swap.
         with self._build_lock:
             with self._lock:
-                swap = self._swap
+                swaps = dict(self._swaps)
                 if latch:
                     self._shut_down = True
             self._drop_swap_refs()
-            # Always tear down via the swap manager, even when this provider holds
-            # no tracked swap: an in-flight build may have started one this thread
-            # never adopted, and SwapManager.shutdown reaps every llama-swap this
-            # process spawned (keyed on our own children), not just a tracked handle.
-            if swap is None:
+            for swap in swaps.values():
+                swap.shutdown()
+            # Always sweep even when this provider holds no tracked swaps: an
+            # in-flight build may have started groups this thread never adopted,
+            # and the sweep stops every llama-swap this process spawned (keyed
+            # on the per-group config paths), not just tracked handles.
+            if not swaps:
                 from lilbee.core.config import cfg
 
-                swap = SwapManager(cfg.data_dir)
-            swap.shutdown()
+                sweep_owned(cfg.data_dir)
 
     def _drop_swap_refs(self) -> None:
-        """Clear the swap, its clients, and the chat capacity so the next call rebuilds."""
+        """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""
         with self._lock:
-            # Close the live pool and any clients still awaiting retirement.
+            # Close the live pools and any clients still awaiting retirement.
             clients = [client for pool in self._clients.values() for client in pool]
             clients.extend(self._retiring_clients)
-            self._swap = None
+            self._swaps = {}
+            self._launches = {}
             self._clients = {}
             self._retiring_clients = []
             self._chat_slots = 1
@@ -590,17 +644,16 @@ class FleetProvider:
         for client in clients:
             client.close()
 
-    def _drop_dead_swap(self) -> None:
-        """Drop the refs to a swap whose process is gone so ``_ensure_swap`` rebuilds.
+    def _drop_dead_swaps(self) -> None:
+        """Drop the refs of groups whose process is gone so the next call rebuilds them.
 
-        A no-op while the swap process is still running (e.g. the failure was in
-        planning), so a live engine is never abandoned unstopped.
+        A no-op for groups still running (e.g. the failure was in planning), so
+        a live engine is never abandoned unstopped.
         """
         with self._build_lock:
             with self._lock:
-                swap = self._swap
-            if swap is not None and not swap.running:
-                self._drop_swap_refs()
+                for role in [r for r, swap in self._swaps.items() if not swap.running]:
+                    self._drop_role(role)
 
     def _require_configured_model(
         self, model: str | None, configured: str, role: WorkerRole
@@ -931,7 +984,7 @@ class FleetProvider:
         (or once the swap is up) is a no-op.
         """
         with self._lock:
-            if self._swap is not None or self._warming:
+            if self._swaps or self._warming:
                 return
             self._warming = True
         threading.Thread(
@@ -948,7 +1001,7 @@ class FleetProvider:
         user-facing ProviderError on the next call, not a thread traceback.
         """
         try:
-            self._ensure_swap()
+            self._ensure_fleet()
             self._preload_roles()
         except Exception:
             log.warning("Engine warm-up failed; roles will load on first use.", exc_info=True)
@@ -956,17 +1009,22 @@ class FleetProvider:
             with self._lock:
                 self._warming = False
 
-    def _preload_roles(self) -> None:
+    def _preload_roles(self, roles: frozenset[WorkerRole] | None = None) -> None:
         """Issue a cheap request per replica so llama-swap loads each upstream now.
 
         llama-swap starts an upstream on its first request, so warming sends a
         minimal call to every replica of every role (firing the spawn listeners
         around each role). A per-replica failure is logged and skipped; that replica
         still loads on its first real use. The chat role routes through
-        :meth:`_warm_chat_role` so a launcher gets granular progress.
+        :meth:`_warm_chat_role` so a launcher gets granular progress. *roles*
+        narrows the warm to just those roles (a reload warms only what restarted).
         """
         with self._lock:
-            pools = {role: list(clients) for role, clients in self._clients.items()}
+            pools = {
+                role: list(clients)
+                for role, clients in self._clients.items()
+                if roles is None or role in roles
+            }
             on_spawning, on_spawned = self._on_spawning, self._on_spawned
         for role, clients in pools.items():
             if on_spawning is not None:
@@ -1056,22 +1114,42 @@ class FleetProvider:
     def reload_role(self, role: WorkerRole, *, wait: bool = False) -> None:
         """Apply a model/settings change for *role* with current cfg.
 
+        The whole fleet is re-planned, but only the roles whose launches changed
+        restart, so the other roles' loaded models stay resident (*role* names
+        the change for the thread label; the diff decides what restarts).
+        """
+        self._dispatch_reload(f"fleet-reload-{role.value}", wait=wait)
+
+    def reload_placement(self, *, wait: bool = False) -> None:
+        """Apply a placement change with current cfg, restarting only moved roles.
+
+        The fresh plan is diffed per role against the running fleet: a role whose
+        devices (and so its launch argv) did not change keeps serving through the
+        change -- moving the embedder never unloads a 100GB chat model. When no
+        fleet is up, the next use plans fresh, so this returns at once.
+        """
+        self._dispatch_reload("fleet-reload-placement", wait=wait)
+
+    def _dispatch_reload(self, thread_name: str, *, wait: bool) -> None:
+        """Run the diff-driven reload once, off-thread unless *wait*.
+
         Dispatched to a background thread because the slow restart (rewrite config +
         respawn + wait-ready) must not block the settings/model-picker callback.
-        llama-swap reloads the whole proxy, so every role is re-planned. If the swap
-        isn't up yet, the next use starts it with current cfg. Single-flight: a
-        reload while one is in flight sets the pending flag (the in-flight pass may
-        have already snapshotted its plan), and the in-flight thread runs one more
-        pass per pending flag so the change is applied, not dropped.
+        If no group is up yet, the next use starts the fleet with current cfg.
+        Single-flight: a reload while one is in flight sets the pending flag (the
+        in-flight pass may have already snapshotted its plan), and the in-flight
+        thread runs one more pass per pending flag so the change is applied, not
+        dropped.
 
         ``wait=True`` runs the reload in the caller's thread and returns only once
         the restart (and any reload already in flight that will run the pending
-        pass) has finished and the proxy is healthy again, so a caller already off
-        the event loop gets a real completion signal. The role's model still loads
-        lazily on its next request. It propagates a reload failure as an exception.
+        pass) has finished and the proxies are healthy again, so a caller already
+        off the event loop gets a real completion signal. A restarted role's model
+        still loads lazily (the reload kicks an off-thread warm). It propagates a
+        reload failure as an exception.
         """
         with self._lock:
-            if self._swap is None:
+            if not self._swaps:
                 return
             if self._reloading:
                 self._reload_pending = True
@@ -1086,7 +1164,7 @@ class FleetProvider:
             return
         threading.Thread(
             target=self._reload_blocking,
-            name=f"fleet-reload-{role.value}",
+            name=thread_name,
             daemon=True,
         ).start()
 
@@ -1115,7 +1193,7 @@ class FleetProvider:
                         "Engine reload failed; retrying with the pending change.", exc_info=True
                     )
                     continue
-                self._drop_dead_swap()
+                self._drop_dead_swaps()
                 raise
             with self._lock:
                 if not self._reload_pending:
@@ -1124,23 +1202,66 @@ class FleetProvider:
                     return
                 self._reload_pending = False
 
-    def _reload_pass(self) -> None:
-        """One re-plan/restart of llama-swap from current cfg.
+    def _reload_pass(self, force: frozenset[WorkerRole] = frozenset()) -> None:
+        """One re-plan from current cfg, restarting only the roles that changed.
 
-        Runs under the build lock so a racing shutdown/build can't interleave with
-        the restart and leak a live llama-swap holding GPU memory.
+        The fresh plan is diffed per role against the launches each running group
+        was started with; a role restarts only when its launches differ (covers
+        added and removed roles too), so an untouched role's loaded model stays
+        resident through a placement or per-role model change. *force* adds roles
+        to the restart set even when their plan is unchanged (dead-swap recovery).
+        Changed groups stop before the new ones start, so the planned VRAM is
+        actually free when the new servers spawn. Runs under the build lock so a
+        racing shutdown/build can't interleave with the restart and leak a live
+        llama-swap holding GPU memory.
         """
+        from lilbee.core.config import cfg
+
         with self._build_lock:
             with self._lock:
-                swap = self._swap
-            if swap is None:
-                return
+                if self._shut_down:
+                    # Terminal shutdown landed while this reload was queued; a
+                    # rebuild here would spawn a fleet no live provider owns.
+                    return
+                running = set(self._swaps)
+                old = dict(self._launches)
             # Reap dead owners' swaps before re-planning, same as the first build.
-            swap.reap_stale()
-            launches = planning.plan_all_launches()
-            swap.reload(launches)
-            with self._lock:
-                self._adopt_swap(swap, launches)
+            reap_stale(cfg.data_dir)
+            new = _launches_by_role(planning.plan_all_launches())
+            # A role restarts when its launches changed OR its running/planned
+            # presence disagrees (covers a group the new plan drops or adds).
+            changed = {
+                role
+                for role in running | set(new)
+                if (role in running) != (role in new) or old.get(role, ()) != new.get(role, ())
+            }
+            changed |= set(force)
+            # Stop phase: free the changed roles' VRAM before their replacements
+            # (or another role's grown plan) spawn against it.
+            for role in sorted(changed, key=lambda r: r.value):
+                with self._lock:
+                    swap = self._drop_role(role)
+                if swap is not None:
+                    swap.shutdown()
+            # Start phase: spawn the changed roles present in the new plan.
+            restarted: list[WorkerRole] = []
+            for role in sorted(changed & set(new), key=lambda r: r.value):
+                role_launches = list(new[role])
+                swap = SwapManager(cfg.data_dir, role.value)
+                swap.start(role_launches)
+                with self._lock:
+                    self._adopt_role(role, swap, role_launches)
+                restarted.append(role)
+        if restarted:
+            # Load the restarted roles' models off-thread (llama-swap spawns an
+            # upstream on its first request): the reload returns once the proxies
+            # answer, and the UI's spawn listeners track the model loads.
+            threading.Thread(
+                target=self._preload_roles,
+                kwargs={"roles": frozenset(restarted)},
+                name="fleet-reload-warm",
+                daemon=True,
+            ).start()
 
     def add_spawn_listener(
         self,
@@ -1166,7 +1287,7 @@ class FleetProvider:
         than blocking the settings callback. A no-op when no swap is up.
         """
         with self._lock:
-            if self._swap is None:
+            if not self._swaps:
                 return
         threading.Thread(
             target=lambda: self._shutdown_swap(latch=False),
