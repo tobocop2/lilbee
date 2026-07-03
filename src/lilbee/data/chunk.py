@@ -34,10 +34,7 @@ def _semantic_embedding_config() -> EmbeddingConfig:
     from lilbee.data.ingest.types import EmbeddingBackendName
 
     model = EmbeddingModelType.plugin(EmbeddingBackendName.LILBEE)
-    # xberg's public EmbeddingConfig still types `model` as the legacy
-    # str|int|LlmConfig alias, not the EmbeddingModelType class its own .plugin()
-    # returns; the constructor accepts the class instance at runtime.
-    return EmbeddingConfig(model=model)  # type: ignore[arg-type]
+    return EmbeddingConfig(model=model)
 
 
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:

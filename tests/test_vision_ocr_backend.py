@@ -39,8 +39,10 @@ class TestProtocol:
         assert be.name() == OcrBackendName.LILBEE_VISION == "lilbee-vision"
 
     def test_backend_type_is_custom(self):
+        from xberg import OcrBackendType
+
         be, _ = _backend()
-        assert be.backend_type() == "custom"
+        assert be.backend_type() == OcrBackendType.CUSTOM
 
     def test_supports_all_languages(self):
         be, _ = _backend()
@@ -68,6 +70,28 @@ class TestProtocol:
         be, _ = _backend()
         assert be.initialize() is None
         assert be.shutdown() is None
+
+    def test_capability_flags_are_image_only(self):
+        be, _ = _backend()
+        assert be.supports_table_detection() is False
+        assert be.supports_document_processing() is False
+        assert be.emits_structured_markdown() is False
+
+    def test_process_image_file_reads_bytes_and_delegates(self, tmp_path):
+        be, calls = _backend()
+        img = tmp_path / "scan.png"
+        img.write_bytes(b"PNG-on-disk")
+        out = be.process_image_file(str(img), _cfg())
+        assert out.content == "# extracted"
+        assert out.mime_type == MARKDOWN_MIME
+        assert calls[0][0] == b"PNG-on-disk"
+
+    def test_process_document_is_unsupported(self):
+        import pytest
+
+        be, _ = _backend()
+        with pytest.raises(NotImplementedError):
+            be.process_document("/tmp/doc.pdf", _cfg())
 
 
 class TestProcessImage:
