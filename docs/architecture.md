@@ -325,7 +325,13 @@ touching the running fleet.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and
-  `--cache-type-k/-v` from `kv_cache_type`; embed and rerank raise
+  `--cache-type-k/-v` from `kv_cache_type`; it also loads with `--no-mmap`
+  (a malloc'd host copy) when its weights fit in at most half of total system
+  RAM -- a buffered sequential read reaches ready ~20% faster than mmap's
+  page-fault-driven upload (measured 33s vs 43s for a 112GB model on 3 GPUs),
+  while replicated roles keep mmap so their replicas share one set of
+  page-cache pages. The gate reads total (not free) memory so replans never
+  flap the flag; embed and rerank raise
   `--batch-size`/`--ubatch-size` to the full context (the server caps embeddings at
   `n_ubatch`, default 512); vision uses the full-core thread default and always
   offloads every layer. Embed and rerank requests also send `embd_normalize=-1` to
@@ -336,7 +342,7 @@ touching the running fleet.
   setting deliberately not forwarded: it selects a single card by global index, which
   is meaningless once a server is pinned to a subset, and placement owns card choice
   in fleet mode.
-- **Lifecycle** (`fleet.py`): each role runs behind its own llama-swap process
+- **Lifecycle** (`swap_manager.py` / `provider.py`): each role runs behind its own llama-swap process
   with its own config file, so restarting one role's group (a placement or
   per-role model change) never touches another role's loaded servers. A reload
   re-plans the whole fleet and diffs the fresh plan per role against the

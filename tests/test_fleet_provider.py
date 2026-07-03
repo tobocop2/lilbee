@@ -75,6 +75,18 @@ class _FakeSwap:
         self.running = False
 
 
+@pytest.fixture(autouse=True)
+def _no_real_probe(monkeypatch):
+    """No test in this module may probe real hardware or resolve real binaries.
+
+    capture_plan_probe resolves the engine binary and spawns device probes; on a
+    host without the bundled engine (CI) it raises, and on a dev box it silently
+    probes the real GPUs. Tests that exercise the capture lifecycle override
+    this stub with their own recorder.
+    """
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+
+
 def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:
     """Patch the swap, client, and planner so _ensure_fleet builds controllable fakes."""
     swap = swap or _FakeSwap()
@@ -1984,11 +1996,17 @@ class TestReloadSingleFlight:
         assert p._reloading is False
         p.reload_role(WorkerRole.CHAT)  # guard released -> a new reload can dispatch
 
-    def test_reload_blocking_noops_when_swap_already_gone(self) -> None:
+    def test_reload_blocking_noops_when_swap_already_gone(self, monkeypatch) -> None:
+        # Nothing running and nothing planned: the pass replans (a resurrect
+        # would start whatever the fresh plan holds), finds nothing, and the
+        # guard is still released.
+        monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: None)
+        monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: [])
         p = FleetProvider()
         p._reloading = True
-        p._reload_blocking()  # no swap -> nothing to reload, guard still released
+        p._reload_blocking()
         assert p._reloading is False
+        assert p._swaps == {}
 
     def test_reload_racing_shutdown_serializes_and_leaks_nothing(self, monkeypatch) -> None:
         order: list[str] = []

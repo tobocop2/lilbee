@@ -452,11 +452,13 @@ class FleetProvider:
             # snapshot so the cards are actually free for this fleet (and the
             # context sizer reads true clean-box memory).
             reap_stale(cfg.data_dir)
-            # Snapshot the clean box; this plan and every later reload size ctx,
-            # slots, and budgets against it (a live probe under a loaded fleet
-            # would report our own residency as unavailable).
-            planning.capture_plan_probe()
             try:
+                # Snapshot the clean box; this plan and every later reload size
+                # ctx, slots, and budgets against it (a live probe under a loaded
+                # fleet would report our own residency as unavailable). Inside the
+                # try: capturing resolves the engine binary, and a binary-less
+                # host must serve nothing, not raise.
+                planning.capture_plan_probe()
                 launches = planning.plan_all_launches()
             except ProviderError:
                 log.debug("Engine binary unavailable; no swap started")
