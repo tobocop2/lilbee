@@ -74,6 +74,9 @@ _PLACEMENT_PAGE_SIZE = 8
 # rerank is a single pinned instance on one card (a small cross-encoder that never
 # tensor-splits), so its GPU choice is single-select, unlike the multi-GPU roles.
 _SINGLE_ROLES = (WorkerRole.RERANK,)
+# Editor row order: the multi-GPU roles first, rerank last -- the single-card odd
+# one out sits at the bottom instead of between the replicated roles.
+_EDITOR_ROLE_ORDER = (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.VISION, WorkerRole.RERANK)
 
 
 def _role_kind(role: WorkerRole) -> str:
@@ -188,9 +191,10 @@ class FleetBody(Widget):
         """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
-        self._edits = {
-            r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles
-        }
+        edits = {r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles}
+        # Rows render in _EDITOR_ROLE_ORDER; any role beyond it keeps plan order.
+        self._edits = {role: edits.pop(role) for role in _EDITOR_ROLE_ORDER if role in edits}
+        self._edits.update(edits)
         self._page = 0
         self._build_editor()
         self._refresh_title(dirty=False)
