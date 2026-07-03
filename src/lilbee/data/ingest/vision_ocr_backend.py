@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from lilbee.data.ingest.types import MARKDOWN_MIME, OcrBackendName
 from lilbee.vision import resolve_ocr_prompt

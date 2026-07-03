@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from lilbee.app.services import reset_services
+from lilbee.app.services import peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.providers.fleet.placement_spec import PlacementSpec
@@ -120,9 +120,16 @@ def placement_refused_message() -> str:
 
 
 def set_placement(spec: PlacementSpec | None) -> PlacementView:
-    """Validate, persist to config.toml, reset the fleet, and return the new view.
+    """Validate, persist to config.toml, apply to the live fleet, and return the new view.
 
     Raises PlacementError before any write when the spec does not fit the hardware.
+    The live fleet applies the change surgically (``reload_placement`` restarts
+    only the roles whose placement moved), so an untouched role's loaded model
+    stays resident; with no services built there is nothing running and the next
+    use plans fresh. On the live path the planner re-plans against its clean-box
+    plan snapshot (see ``planning.capture_plan_probe``): probing under a loaded
+    fleet would report our own residency as unavailable and poison the chat
+    context sizing, while charging stays against total capacity (bb-a8f).
     """
     resolved = resolve_placement_plan(spec)
     if spec is None:
@@ -132,6 +139,9 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
         spec_json = spec.to_json()
         settings.update_values(cfg.data_root, {_PLACEMENT_KEY: spec_json})
         cfg.placement = spec_json
-    reset_services()
-    clear_read_device_cache()  # the reconfigure changes free VRAM; don't serve a stale probe
+    services = peek_services()
+    if services is None:
+        clear_read_device_cache()  # nothing running; let the next boot probe fresh
+    else:
+        services.provider.reload_placement(wait=True)
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)

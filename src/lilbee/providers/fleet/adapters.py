@@ -164,6 +164,7 @@ def build_server_argv(
     cache_type: str | None = None,
     batch_size: int | None = None,
     threads: int | None = None,
+    no_mmap: bool = False,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
@@ -197,5 +198,7 @@ def build_server_argv(
     if len(devices) > 1:
         ratio = tensor_split or tuple(1 for _ in devices)
         argv += ["--tensor-split", ",".join(str(r) for r in ratio)]
+    if no_mmap:
+        argv += ["--no-mmap"]
     argv += list(spec.extra_args)
     return argv

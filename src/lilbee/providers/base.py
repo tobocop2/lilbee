@@ -418,6 +418,16 @@ class LLMProvider(Protocol):
         """
         return
 
+    def reload_placement(self, *, wait: bool = False) -> None:
+        """Re-plan GPU placement with current cfg, restarting only moved roles.
+
+        Default no-op for providers without GPU-placed servers. The fleet diffs
+        the fresh plan against the running fleet and respawns only the roles
+        whose placement changed, so an untouched role's loaded model stays
+        resident. ``wait=True`` blocks until the restarted proxies are healthy.
+        """
+        return
+
     def role_ready(self, role: WorkerRole) -> bool:
         """Whether *role* has a healthy server now, without starting one.
 

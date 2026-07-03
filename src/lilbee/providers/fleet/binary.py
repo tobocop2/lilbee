@@ -49,12 +49,11 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
     (an explicit setting beats the bundled wheel); the other tools resolve from the
     wheel, then ``PATH``.
     """
-    if tool is EngineTool.LLAMA_SERVER:
-        if cfg.llama_server_path:
-            configured = Path(cfg.llama_server_path)
-            if not configured.is_file():
-                raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
-            return configured
+    if tool is EngineTool.LLAMA_SERVER and cfg.llama_server_path:
+        configured = Path(cfg.llama_server_path)
+        if not configured.is_file():
+            raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
+        return configured
 
     bundled = _bundled_tool(tool)
     if bundled is not None:

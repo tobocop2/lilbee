@@ -35,14 +35,18 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
-_CONFIG_FILENAME = "llama-swap.json"
+# One llama-swap per role group: the group name lands in the config filename so
+# each group's processes are identified (and stopped) by their own config path,
+# and a placement change can restart one group without touching the others.
+_CONFIG_FILENAME_TEMPLATE = "llama-swap-{group}.json"
+_CONFIG_FILE_GLOB = "llama-swap-*.json"
 # llama-swap's own stdout/stderr (its HTTP access log) is captured to a file under
 # the data root's ``logs/`` (beside server.log etc.) instead of inherited from the
 # parent: a TUI or CLI parent owns the terminal, and an inherited fd would bleed
 # llama-swap's request log onto the screen and corrupt the render. Per-model
 # upstream logs are unaffected (those go to llama-swap's /logs API).
 _LOGS_SUBDIR = "logs"
-_LOG_FILENAME = "llama-swap.log"
+_LOG_FILENAME_TEMPLATE = "llama-swap-{group}.log"
 # Cross-run reaping: each owner lilbee writes its own state file (named with its
 # pid) recording its swap's pid/pgid plus the owner's pid and create time, so the
 # next start can kill a dead owner's surviving llama-swap (it holds VRAM
@@ -100,9 +104,9 @@ _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
 
-def _state_filename(owner_pid: int) -> str:
-    """The per-owner state filename for the lilbee process *owner_pid*."""
-    return f"{_STATE_FILENAME_PREFIX}{owner_pid}{_STATE_FILENAME_SUFFIX}"
+def _state_filename(owner_pid: int, group: str) -> str:
+    """The per-owner, per-group state filename for the lilbee process *owner_pid*."""
+    return f"{_STATE_FILENAME_PREFIX}{group}.{owner_pid}{_STATE_FILENAME_SUFFIX}"
 
 
 @dataclass(frozen=True)
@@ -118,13 +122,18 @@ class _SwapState:
 
 
 class SwapManager:
-    """Owns one llama-swap process fronting every configured role co-resident."""
+    """Owns one llama-swap process fronting one role group's servers.
 
-    def __init__(self, data_dir: Path) -> None:
+    The provider runs one manager per role, so restarting a group (a placement
+    or model change) never touches another group's loaded servers.
+    """
+
+    def __init__(self, data_dir: Path, group: str) -> None:
         self._data_dir = data_dir
-        self._config_path = data_dir / _CONFIG_FILENAME
-        self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME
-        self._state_path = data_dir / _state_filename(os.getpid())
+        self._group = group
+        self._config_path = data_dir / _CONFIG_FILENAME_TEMPLATE.format(group=group)
+        self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group)
+        self._state_path = data_dir / _state_filename(os.getpid(), group)
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
         self._port: int | None = None
@@ -174,43 +183,8 @@ class SwapManager:
         self._await_health()
 
     def reap_stale(self) -> None:
-        """Kill every dead owner's surviving llama-swap.
-
-        An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
-        so planning would otherwise see artificially reduced free memory; the
-        provider calls this before its GPU probe. Every state file in the data
-        dir is scanned (including the legacy shared-name file): a dead owner's
-        swap is reaped and its file removed; a live owner's swap and file are
-        left alone, so a second lilbee at the same data_dir (e.g. ``lilbee
-        sync`` beside the server) never kills the live owner's healthy swap.
-        Recorded create times guard against owner- and swap-pid reuse; the
-        cmdline match covers legacy files without a swap create time. An
-        unparseable file is skipped, never deleted: it may be a sibling's
-        in-flight write, and a truly corrupt file is its owner's to overwrite.
-        When the swap itself is dead, its servers (each in its own process
-        group) may still be alive holding VRAM; they are matched by name plus
-        recorded member port and stopped before the file is removed.
-        """
-        self._clean_stale_tmp_files()
-        for state_path in sorted(self._data_dir.glob(_STATE_FILE_GLOB)):
-            state = _load_state(state_path)
-            if state is None:
-                continue
-            if _owner_alive(state.owner_pid, state.owner_created_at):
-                continue
-            if _is_live_llama_swap(state):
-                _stop_stale_swap(state)
-            else:
-                _reap_orphan_servers(state)
-            state_path.unlink(missing_ok=True)
-
-    def _clean_stale_tmp_files(self) -> None:
-        """Remove crash-leftover state tmp files whose writer is dead."""
-        tmp_glob = f"{_STATE_TMP_PREFIX}{_STATE_FILE_GLOB}{_STATE_TMP_SUFFIX}"
-        for tmp_path in self._data_dir.glob(tmp_glob):
-            writer_pid = _state_owner_pid(tmp_path.name)
-            if writer_pid is not None and not psutil.pid_exists(writer_pid):
-                tmp_path.unlink(missing_ok=True)
+        """Kill every dead owner's surviving llama-swap; see :func:`reap_stale`."""
+        reap_stale(self._data_dir)
 
     def _write_state(self) -> None:
         """Record the swap's pid/pgid/create time, member ports, and our identity.
@@ -428,6 +402,62 @@ def _live_sibling_swap_pids(data_dir: Path) -> set[int]:
     return protected
 
 
+def reap_stale(data_dir: Path) -> None:
+    """Kill every dead owner's surviving llama-swap at *data_dir*.
+
+    An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
+    so planning would otherwise see artificially reduced free memory; the
+    provider calls this before its GPU probe. Every state file in the data
+    dir is scanned (all groups, including the legacy shared-name file): a
+    dead owner's swap is reaped and its file removed; a live owner's swap
+    and file are left alone, so a second lilbee at the same data_dir (e.g.
+    ``lilbee sync`` beside the server) never kills the live owner's healthy
+    swap. Recorded create times guard against owner- and swap-pid reuse; the
+    cmdline match covers legacy files without a swap create time. An
+    unparseable file is skipped, never deleted: it may be a sibling's
+    in-flight write, and a truly corrupt file is its owner's to overwrite.
+    When the swap itself is dead, its servers (each in its own process
+    group) may still be alive holding VRAM; they are matched by name plus
+    recorded member port and stopped before the file is removed.
+
+    Module-level (not a method) because it must run before planning decides
+    which role groups exist, when no per-group manager has been built yet.
+    """
+    _clean_stale_tmp_files(data_dir)
+    for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
+        state = _load_state(state_path)
+        if state is None:
+            continue
+        if _owner_alive(state.owner_pid, state.owner_created_at):
+            continue
+        if _is_live_llama_swap(state):
+            _stop_stale_swap(state)
+        else:
+            _reap_orphan_servers(state)
+        state_path.unlink(missing_ok=True)
+
+
+def _clean_stale_tmp_files(data_dir: Path) -> None:
+    """Remove crash-leftover state tmp files whose writer is dead."""
+    tmp_glob = f"{_STATE_TMP_PREFIX}{_STATE_FILE_GLOB}{_STATE_TMP_SUFFIX}"
+    for tmp_path in data_dir.glob(tmp_glob):
+        writer_pid = _state_owner_pid(tmp_path.name)
+        if writer_pid is not None and not psutil.pid_exists(writer_pid):
+            tmp_path.unlink(missing_ok=True)
+
+
+def sweep_owned(data_dir: Path) -> None:
+    """Stop every llama-swap this process owns at *data_dir*, across all groups.
+
+    The provider's fallback teardown path: when it holds no tracked managers, an
+    in-flight build may still have spawned swaps it never adopted. Each group's
+    config file identifies that group's processes, so every group config present
+    is swept. Cross-run leftovers are ``reap_stale``'s job, not this sweep's.
+    """
+    for config_path in sorted(data_dir.glob(_CONFIG_FILE_GLOB)):
+        _stop_own_fleet(config_path, ())
+
+
 def _stop_own_fleet(config_path: Path, member_ports: tuple[int, ...]) -> None:
     """Stop every llama-swap this lilbee owns at *config_path* and reap upstreams.
 
@@ -604,11 +634,16 @@ def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
 
 
 def _state_owner_pid(name: str) -> int | None:
-    """Owner pid embedded in a state or state-tmp filename, ``None`` when absent."""
+    """Owner pid embedded in a state or state-tmp filename, ``None`` when absent.
+
+    Handles both the group-qualified form (``llama-swap.state.chat.123.json``)
+    and the legacy pre-group form (``llama-swap.state.123.json``): the pid is
+    always the last dotted segment of the stem.
+    """
     stem = name.removeprefix(_STATE_TMP_PREFIX).removesuffix(_STATE_TMP_SUFFIX)
     stem = stem.removeprefix(_STATE_FILENAME_PREFIX).removesuffix(_STATE_FILENAME_SUFFIX)
     try:
-        return int(stem)
+        return int(stem.rsplit(".", 1)[-1])
     except ValueError:
         return None
 

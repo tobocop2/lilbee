@@ -78,7 +78,9 @@ def test_role_ctx_chat_honors_configured_num_ctx(monkeypatch) -> None:
 
 def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "num_ctx", None)
-    monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda _p, _m, *_a: 4096)
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_chat_ctx", lambda _p, _m, **_kw: 4096
+    )
     assert planning_mod._role_ctx(WorkerRole.CHAT, Path("/m/c.gguf"), None) == 4096
 
 
@@ -1226,6 +1228,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--host",
     "--cont-batching",
     "--jinja",
+    "--no-mmap",
     "--reasoning-format",
     "--embeddings",
     "--pooling",
@@ -1388,3 +1391,72 @@ def test_server_spec_other_role_uses_role_default() -> None:
 
     spec = planning_mod._server_spec(WorkerRole.CHAT, None, None)
     assert spec is ROLE_SPECS[WorkerRole.CHAT]
+
+
+class TestChatNoMmap:
+    def test_no_mmap_when_weights_fit_half_of_ram(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache.total_system_memory", lambda: 1000 * 10**9
+        )
+        assert planning_mod._chat_no_mmap(112 * 10**9) is True
+
+    def test_mmap_kept_when_weights_crowd_ram(self, monkeypatch) -> None:
+        # A malloc'd copy is unevictable; a model over half of RAM keeps mmap.
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 32 * 10**9)
+        assert planning_mod._chat_no_mmap(20 * 10**9) is False
+
+
+class TestPlanProbe:
+    """The clean-box plan snapshot: reloads size against it, never a live probe."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_probe(self):
+        planning_mod.clear_plan_probe()
+        yield
+        planning_mod.clear_plan_probe()
+
+    def _capture(self, monkeypatch, *, free_vram: int, free_ram: int) -> None:
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "resolve_devices",
+            lambda _b: [FleetDevice("CUDA", 0, "A", 24 * _GB, free_vram)],
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache.get_available_memory", lambda _f: free_vram
+        )
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: free_ram)
+        planning_mod.capture_plan_probe()
+
+    def test_readers_serve_the_snapshot_not_the_live_state(self, monkeypatch) -> None:
+        self._capture(monkeypatch, free_vram=20 * _GB, free_ram=64 * _GB)
+        # The box "fills up" (a loaded fleet): live reads collapse...
+        monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 1 * _GB)
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 1 * _GB)
+        monkeypatch.setattr(
+            planning_mod,
+            "resolve_devices",
+            lambda _b: [FleetDevice("CUDA", 0, "A", 24 * _GB, 1 * _GB)],
+        )
+        # ...but the plan paths keep the clean-box numbers.
+        assert planning_mod._plan_available_memory() == 20 * _GB
+        assert planning_mod._plan_free_system_memory() == 64 * _GB
+        assert planning_mod._plan_devices(Path("/bin/srv"))[0].free_bytes == 20 * _GB
+
+    def test_clear_returns_readers_to_live_state(self, monkeypatch) -> None:
+        self._capture(monkeypatch, free_vram=20 * _GB, free_ram=64 * _GB)
+        planning_mod.clear_plan_probe()
+        monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 3 * _GB)
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 2 * _GB)
+        assert planning_mod._plan_available_memory() == 3 * _GB
+        assert planning_mod._plan_free_system_memory() == 2 * _GB
+
+    def test_uncaptured_readers_pass_through_live_state(self, monkeypatch) -> None:
+        monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 7 * _GB)
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 5 * _GB)
+        assert planning_mod._plan_available_memory() == 7 * _GB
+        assert planning_mod._plan_free_system_memory() == 5 * _GB
