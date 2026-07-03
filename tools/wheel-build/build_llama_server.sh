@@ -24,7 +24,7 @@ _DEFAULT_LLAMA_CPP_VERSION="0.3.30"
 # Built from source (deterministic, no release-asset-name guessing); the wheel-build
 # job provides the Go toolchain. Bump deliberately.
 _LLAMA_SWAP_VERSION="v223"
-_GGUF_PARSER_REF="main"
+_GGUF_PARSER_REF="v0.9.3"
 
 backend="${BACKEND:?BACKEND is required}"
 build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}"

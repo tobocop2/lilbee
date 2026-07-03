@@ -1,7 +1,7 @@
 name: Release candidate
 
 # Tag push (v*): build every release artifact ONCE -- default wheels + sdist,
-# CUDA/Intel-Mac extra wheels, the standalone executables -- and attach the
+# multi-GPU engine builds, the standalone executables -- and attach the
 # executables to a GH pre-release. Dispatch: same build, no release attach.
 # The QA matrix runs on demand via qa-matrix.yml; it is no longer gated to
 # this workflow so a flaky TUI test on one platform can't strand the wheel
@@ -79,13 +79,6 @@ jobs:
   build-default-wheels:
     needs: [resolve]
     uses: ./.github/workflows/build-default-wheels.yml
-    with:
-      ref: ${{ needs.resolve.outputs.ref }}
-    secrets: inherit
-
-  build-extra-wheels:
-    needs: [resolve]
-    uses: ./.github/workflows/build-extra-wheels.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
     secrets: inherit
@@ -219,12 +212,12 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.ref }}
       - name: Download multi-gpu wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-multigpu-*
           path: multigpu-wheels-staging/
       - name: Download standalone server binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: multigpu-exe-*
           path: multigpu-bins/

@@ -35,6 +35,11 @@ class TestStopForwarding:
     def test_filter_options_omits_absent_stop(self) -> None:
         assert "stop" not in filter_options({"temperature": 0.5})
 
+    def test_filter_options_keeps_penalties_and_seed(self) -> None:
+        """seed and the OpenAI penalty samplers survive the LLMOptions allowlist."""
+        result = filter_options({"seed": 7, "frequency_penalty": 0.5, "presence_penalty": -0.5})
+        assert result == {"seed": 7, "frequency_penalty": 0.5, "presence_penalty": -0.5}
+
 
 class TestChunkTypeDecoder:
     def test_raw_and_wiki_decode(self) -> None:
@@ -204,7 +209,7 @@ class TestStreamingModelEcho:
 
         captured: dict[str, object] = {}
 
-        async def _fake_stream(req: object):
+        async def _fake_stream(req: object, *, canonical_model: str | None = None):
             return
             yield  # pragma: no cover -- makes this an async generator
 

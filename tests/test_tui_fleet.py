@@ -339,7 +339,8 @@ async def test_unplaceable_warns(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         body = app.screen.query_one("FleetBody")
         body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
-        body._load_placement()
+        body._load_worker()
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
     assert any("vision" in n.lower() for n in notes)
@@ -435,7 +436,8 @@ async def test_load_placement_error_notifies(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         body = app.screen.query_one("FleetBody")
         body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
-        body._load_placement()
+        body._load_worker()
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
     assert any("probe failed" in n for n in notes)

@@ -42,6 +42,8 @@ class LLMOptions(BaseModel):
     seed: int | None = None
     num_predict: int | None = None
     repeat_penalty: float | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
     num_ctx: int | None = None
     stop: list[str] | None = None
 

@@ -124,9 +124,17 @@ def _content_blocks_from_result(result: ChatResult) -> list[ContentBlock]:
     return content
 
 
-def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
-    """Run a non-streaming chat request through the provider and return canonical output."""
-    canonical_model = preflight_chat_request(req)
+def dispatch_chat(
+    req: CanonicalChatRequest, *, canonical_model: str | None = None
+) -> CanonicalResponse:
+    """Run a non-streaming chat request through the provider and return canonical output.
+
+    Pass *canonical_model* when the caller has already run
+    :func:`preflight_chat_request` (the route does, so the preflight runs once per
+    request); leave it ``None`` to resolve and validate the model here.
+    """
+    if canonical_model is None:
+        canonical_model = preflight_chat_request(req)
     result = get_services().provider.chat(**_provider_chat_kwargs(req, canonical_model))
     return CanonicalResponse(
         id=_new_message_id(),
@@ -141,13 +149,19 @@ def dispatch_chat(req: CanonicalChatRequest) -> CanonicalResponse:
 
 
 async def dispatch_chat_stream(
-    req: CanonicalChatRequest,
+    req: CanonicalChatRequest, *, canonical_model: str | None = None
 ) -> AsyncIterator[CanonicalStreamEvent]:
-    """Stream a canonical event sequence by translating provider frames on the fly."""
+    """Stream a canonical event sequence by translating provider frames on the fly.
+
+    Pass *canonical_model* when the caller has already run
+    :func:`preflight_chat_request` (the route does, so the preflight runs once per
+    request); leave it ``None`` to resolve and validate the model here.
+    """
     # The preflight can do blocking HTTP model discovery when its TTL lapses, and
     # opening the stream can issue a one-time template probe; run both in a thread
     # so the event loop stays responsive.
-    canonical_model = await asyncio.to_thread(preflight_chat_request, req)
+    if canonical_model is None:
+        canonical_model = await asyncio.to_thread(preflight_chat_request, req)
     stream = await asyncio.to_thread(
         lambda: get_services().provider.chat(
             stream=True, **_provider_chat_kwargs(req, canonical_model)
@@ -430,6 +444,12 @@ def _provider_options(req: CanonicalChatRequest) -> dict[str, Any] | None:
         out["top_k"] = req.top_k
     if req.max_tokens is not None:
         out["num_predict"] = req.max_tokens
+    if req.seed is not None:
+        out["seed"] = req.seed
+    if req.frequency_penalty is not None:
+        out["frequency_penalty"] = req.frequency_penalty
+    if req.presence_penalty is not None:
+        out["presence_penalty"] = req.presence_penalty
     if req.stop is not None:
         out["stop"] = req.stop
     return out or None

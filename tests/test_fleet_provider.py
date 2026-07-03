@@ -365,9 +365,10 @@ def test_vision_call_returns_text() -> None:
 
 def test_vision_call_enforces_timeout() -> None:
     client = _fake_client()
-    client.chat.return_value = "OCR text"
+    client.chat_bounded.return_value = "OCR text"
     assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 5.0) == "OCR text"
-    client.chat.assert_called_once()
+    client.chat_bounded.assert_called_once()
+    client.chat.assert_not_called()  # the timed path streams via chat_bounded, not chat
 
 
 def test_vision_call_caps_output_tokens(monkeypatch) -> None:
@@ -1037,6 +1038,31 @@ def test_invalidate_load_cache_drops_swap() -> None:
     assert p._swap is None
 
 
+def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch) -> None:
+    """A cache drop is not terminal: the next use rebuilds the swap."""
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    assert p._ensure_swap() is swap
+    p.invalidate_load_cache()
+    assert p._swap is None
+    assert p._ensure_swap() is swap  # rebuilt with current cfg, not refused
+
+
+def test_drop_loaded_models_async_leaves_provider_reusable(monkeypatch) -> None:
+    """The off-thread drop used by settings changes must not latch shutdown.
+
+    app.settings routes num_ctx/kv_cache_type changes here while retaining the
+    provider; a latched flag would refuse every later chat/embed/rerank call
+    until process restart.
+    """
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    p = FleetProvider()
+    assert p._ensure_swap() is swap
+    p.drop_loaded_models_async()
+    assert _wait_until(lambda: p._swap is None)
+    assert p._ensure_swap() is swap
+
+
 def _wait_until(predicate, timeout: float = 5.0) -> bool:
     """Poll *predicate* until true or *timeout*; generous so xdist load can't flake it."""
     deadline = time.monotonic() + timeout
@@ -1669,30 +1695,22 @@ class TestReplicaHealthRouting:
 
 
 class TestVisionTimeout:
-    def test_wedged_vision_call_times_out_within_budget(self) -> None:
+    def test_deadline_signal_maps_to_vision_timeout_error(self) -> None:
         from lilbee.providers.base import ProviderError
+        from lilbee.providers.fleet.client import ChatDeadlineError
 
-        release = threading.Event()
         client = _fake_client(0)
+        client.chat_bounded.side_effect = ChatDeadlineError("deadline", provider="llama-server")
+        with pytest.raises(ProviderError, match="Vision OCR timed out after 12s") as excinfo:
+            prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 12.0)
+        # A timeout is not a connection failure, so failover must not retry it.
+        assert not prov_mod.is_connection_failure(excinfo.value)
 
-        def _wedged(*_a, **_k) -> str:
-            release.wait(5.0)
-            return "late"
-
-        client.chat.side_effect = _wedged
-        started = time.monotonic()
-        try:
-            with pytest.raises(ProviderError, match="timed out"):
-                prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 0.2)
-            assert time.monotonic() - started < 2.0  # did not block on executor exit
-        finally:
-            release.set()
-
-    def test_bounded_call_passes_the_deadline_to_the_http_request(self) -> None:
+    def test_bounded_call_passes_the_deadline_to_chat_bounded(self) -> None:
         client = _fake_client(0)
-        client.chat.return_value = "text"
+        client.chat_bounded.return_value = "text"
         assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 9.0) == "text"
-        assert client.chat.call_args.kwargs["timeout"] == 9.0
+        assert client.chat_bounded.call_args.kwargs["deadline_s"] == 9.0
 
     def test_pdf_ocr_one_timed_out_page_does_not_abort_siblings(self, monkeypatch) -> None:
         from lilbee.providers.base import ProviderError

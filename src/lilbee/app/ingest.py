@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config, cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.store.types import RemoveResult
@@ -24,20 +24,22 @@ class CopyResult:
 
 def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
     """Ignore callback for shutil.copytree that filters ignored directories."""
+    ignore_dirs = active_config().ignore_dirs
     return {
         name
         for name in contents
-        if (Path(directory) / name).is_dir() and is_ignored_dir(name, cfg.ignore_dirs)
+        if (Path(directory) / name).is_dir() and is_ignored_dir(name, ignore_dirs)
     }
 
 
 def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
     """Copy paths into documents dir. Returns structured result (no console output)."""
-    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    documents_dir = active_config().documents_dir
+    documents_dir.mkdir(parents=True, exist_ok=True)
     result = CopyResult()
     for p in paths:
-        dest = cfg.documents_dir / p.name
-        validate_path_within(dest, cfg.documents_dir)
+        dest = documents_dir / p.name
+        validate_path_within(dest, documents_dir)
         if dest.exists() and not force:
             result.skipped.append(p.name)
             continue

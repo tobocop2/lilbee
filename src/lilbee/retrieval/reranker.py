@@ -19,7 +19,8 @@ from typing import NamedTuple
 
 from lilbee.core.config import Config
 from lilbee.data.store import SearchChunk
-from lilbee.retrieval.query.dedup import _fusion_norms, _normalize_scores
+from lilbee.retrieval.query.dedup import fusion_norms as compute_fusion_norms
+from lilbee.retrieval.query.dedup import normalize_scores
 
 log = logging.getLogger(__name__)
 
@@ -102,8 +103,8 @@ class Reranker:
         if scores is None:
             return results
 
-        norm_scores = _normalize_scores(scores)
-        fusion_norms = _fusion_norms(to_rerank)
+        norm_scores = normalize_scores(scores)
+        fusion_norms = compute_fusion_norms(to_rerank)
         blended = _blend_scores(to_rerank, norm_scores, fusion_norms)
         blended_sorted = sorted(blended, key=lambda x: x.score, reverse=True)
 

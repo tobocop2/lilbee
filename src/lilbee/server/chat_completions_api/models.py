@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Wire layer reuses the provider-layer enum so the two can never drift.
 from lilbee.providers.base import FinishReason as FinishReason
@@ -94,7 +94,20 @@ class StreamOptions(BaseModel):
 
 
 class CompletionsRequest(BaseModel):
-    """Top-level ``POST /v1/chat/completions`` request body."""
+    """Top-level ``POST /v1/chat/completions`` request body.
+
+    OpenAI parameters fall into three groups on this surface:
+
+    - Honoured: ``model``, ``messages``, ``tools``, ``tool_choice``,
+      ``temperature``, ``top_p``, ``top_k``, ``max_tokens``, ``stop``, ``seed``,
+      ``frequency_penalty``, ``presence_penalty``, ``stream``, ``stream_options``.
+    - Rejected with a 400: ``n`` greater than 1 (lilbee serves one choice).
+    - Accepted but ignored (``extra="allow"`` keeps them off the parsed model and
+      the route logs their keys at debug): ``n == 1``, ``response_format``,
+      ``logprobs``, ``top_logprobs``, and any other unrecognised field.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     model: str = Field(min_length=1)
     messages: list[CompletionsMessage] = Field(min_length=1)
@@ -104,6 +117,10 @@ class CompletionsRequest(BaseModel):
     top_p: float | None = Field(default=None, ge=0.0, le=1.0)
     top_k: int | None = Field(default=None, ge=1)
     max_tokens: int | None = Field(default=None, ge=1)
+    seed: int | None = None
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    n: int | None = Field(default=None, ge=1)
     stop: str | list[str] | None = None
     stream: bool = False
     stream_options: StreamOptions | None = None

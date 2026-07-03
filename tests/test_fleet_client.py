@@ -10,6 +10,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.client import (
+    ChatDeadlineError,
     LlamaServerClient,
     _first_token_top_logprobs,
     _llm_rerank_score,
@@ -390,6 +391,26 @@ def test_chat_stream_forwards_caller_timeout() -> None:
     client._http.stream = _spy_stream  # type: ignore[method-assign]
     list(client.chat([{"role": "user", "content": "hi"}], stream=True, timeout=7.5))
     assert seen["timeout"] == 7.5
+
+
+def test_chat_bounded_accumulates_streamed_content() -> None:
+    client = _client()
+    assert client.chat_bounded([{"role": "user", "content": "hi"}], deadline_s=5.0) == "Hello"
+    assert client.in_flight == 0  # slot released on the normal exit
+
+
+def test_chat_bounded_raises_and_releases_slot_on_deadline() -> None:
+    """A blown deadline surfaces ChatDeadlineError and frees the in-flight slot.
+
+    A per-phase httpx timeout leaks the socket read (and its in-flight increment)
+    past the deadline; the streamed total-deadline path must release it promptly.
+    """
+    client = _client()
+    with pytest.raises(ChatDeadlineError):
+        # deadline_s=0 is already spent by the first streamed frame, so the loop's
+        # monotonic check trips and the with-block closes the stream at once.
+        client.chat_bounded([{"role": "user", "content": "hi"}], deadline_s=0.0)
+    assert client.in_flight == 0
 
 
 def test_chat_result_reads_usage_from_response() -> None:

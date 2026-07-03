@@ -658,7 +658,7 @@
 
     <section>
       <h2 class="label">run a model bigger than one card</h2>
-      <p class="lede">When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory with gguf-parser, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, behind a load-balancing router. It happens automatically. You can also override it by hand in the placement editor, which shows the exact fit before anything loads and refuses a layout that won't work.</p>
+      <p class="lede">When a chat model won't fit on a single GPU, lilbee spreads it across the ones you have. It sizes each role's memory before anything loads, keeps headroom on every card, and tensor-splits the chat model across the fewest GPUs that fit, behind a load-balancing router. It happens automatically. You can also override it by hand in the placement editor, which shows the exact fit before anything loads and refuses a layout that won't work.</p>
       <div class="tutorial-clip">
         <img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-multi-gpu-self-index.gif" alt="lilbee indexing files live, then splitting a large chat model automatically across multiple GPUs and answering a question with GPU monitor alongside" loading="lazy">
       </div>

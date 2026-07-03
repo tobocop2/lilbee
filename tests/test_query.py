@@ -1169,6 +1169,18 @@ class TestHydeSearch:
         results = get_services().searcher._hyde_search("explain X", top_k=5)
         assert len(results) >= 1
 
+    def test_passage_is_embedded_as_a_query(self, mock_svc):
+        """Deliberate choice: the hypothetical passage stands in for the query.
+
+        It is embedded with embed_query (query instruction), not the document
+        prefix, so HyDE vectors share the space of every other query against
+        the doc-prefixed index. Flipping this is an embedding-bench experiment.
+        """
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        mock_svc.embedder.embed_query.assert_called_once_with("hypothetical passage")
+
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("fail")
         assert get_services().searcher._hyde_search("test", top_k=5) == []

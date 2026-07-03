@@ -32,10 +32,36 @@ def _traceback(cp: subprocess.CompletedProcess[str]) -> bool:
 # Every top-level command (from the `lilbee --help` Commands panel). --help must
 # register cleanly -- a failure here means a command's module fails to import.
 COMMANDS = [
-    "add", "agent-config", "ask", "chat", "chunks", "export", "import", "index",
-    "init", "launch", "login", "mcp", "memory", "model", "placement", "rebuild",
-    "remove", "reset", "search", "self-check", "self-check-extras", "serve",
-    "setup", "status", "sync", "token", "topics", "use-embedder", "version", "wiki",
+    "add",
+    "agent-config",
+    "ask",
+    "chat",
+    "chunks",
+    "export",
+    "import",
+    "index",
+    "init",
+    "launch",
+    "login",
+    "mcp",
+    "memory",
+    "model",
+    "placement",
+    "rebuild",
+    "remove",
+    "reset",
+    "search",
+    "self-check",
+    "self-check-extras",
+    "serve",
+    "setup",
+    "status",
+    "sync",
+    "token",
+    "topics",
+    "use-embedder",
+    "version",
+    "wiki",
 ]
 
 # Read-only invocations that must exit 0 (GPU listing is `placement show`, not a
@@ -51,16 +77,27 @@ READ_INVOCATIONS = [
 ]
 
 
-def main() -> int:
+def _failure_detail(cp: subprocess.CompletedProcess[str]) -> str:
+    """One-line failure summary from a completed process."""
+    out = (cp.stderr or cp.stdout).strip()
+    tail = out.splitlines()[-1][:100] if out else ""
+    return f"rc={cp.returncode} {tail}"
+
+
+def main() -> int:  # noqa: C901 -- linear QA checklist, one branch per surface probe
     print("=== CLI --help registration ===", flush=True)
     for cmd in COMMANDS:
         try:
             cp = run([cmd, "--help"], timeout=90)
             ok = cp.returncode == 0 and not _traceback(cp)
-            rec(f"help:{cmd}", ok, "" if ok else f"rc={cp.returncode} {(cp.stderr or cp.stdout).strip().splitlines()[-1][:100] if (cp.stderr or cp.stdout).strip() else ''}")
+            rec(
+                f"help:{cmd}",
+                ok,
+                "" if ok else _failure_detail(cp),
+            )
         except subprocess.TimeoutExpired:
             rec(f"help:{cmd}", False, "timed out")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             rec(f"help:{cmd}", False, f"{type(exc).__name__}: {exc}")
 
     print("\n=== read-only invocations ===", flush=True)
@@ -80,7 +117,7 @@ def main() -> int:
             rec(f"run:{cid}", ok, note)
         except subprocess.TimeoutExpired:
             rec(f"run:{cid}", False, "timed out")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             rec(f"run:{cid}", False, f"{type(exc).__name__}: {exc}")
 
     failed = [c for c, ok, _ in RESULTS if not ok]

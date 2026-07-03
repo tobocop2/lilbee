@@ -49,7 +49,7 @@ All source lives under `src/lilbee/`:
 | `data/chunk.py`, `data/code_chunker.py` | Text and tree-sitter code chunking |
 | `retrieval/query/` | RAG pipeline (embed → search → generate) |
 | `retrieval/embedder.py` | Embedding wrapper over the provider abstraction |
-| `providers/` | LLM provider abstraction (llama-cpp default, litellm bridge, factory) |
+| `providers/` | LLM provider abstraction (managed llama-server fleet default, litellm bridge, factory) |
 | `catalog/`, `modelhub/` | Model discovery (Hugging Face) and lifecycle (install, remove, run) |
 | `crawler/` | Website crawling to markdown |
 | `wiki/` | Concept/entity wiki layer |

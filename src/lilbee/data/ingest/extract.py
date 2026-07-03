@@ -17,10 +17,11 @@ if TYPE_CHECKING:
     from kreuzberg import ExtractionConfig, ExtractionResult
 
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.discovery import file_hash
 from lilbee.data.ingest.ocr_cache import load_ocr_pages, ocr_cache_key, store_ocr_pages
+from lilbee.data.ingest.offload import to_ingest_thread
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
@@ -104,17 +105,17 @@ def _effective_enable_ocr() -> bool | None:
 
     The override is a ContextVar, not a global cfg mutation, so concurrent
     ingests on the shared HTTP daemon each see their own setting. The override
-    also propagates into ``asyncio.to_thread`` workers (``to_thread`` copies the
-    calling task's context), which is how the timeout reaches the image-OCR call.
+    also propagates into ``to_ingest_thread`` workers (it copies the calling
+    task's context), which is how the timeout reaches the image-OCR call.
     """
     override = _ocr_enable_override.get()
-    return cfg.enable_ocr if override is None else override
+    return active_config().enable_ocr if override is None else override
 
 
 def _effective_ocr_timeout() -> float:
     """``cfg.ocr_timeout`` unless a per-request OCR timeout override is active."""
     override = _ocr_timeout_override.get()
-    return cfg.ocr_timeout if override is None else override
+    return active_config().ocr_timeout if override is None else override
 
 
 @contextmanager
@@ -124,8 +125,8 @@ def ocr_override(
     """Scope per-request OCR settings without mutating the global cfg.
 
     A ``None`` argument leaves that setting at its cfg default. Each override is
-    isolated to the entering context (and any ``to_thread`` work it spawns), so
-    overlapping ingests never clobber one another's OCR config.
+    isolated to the entering context (and any ``to_ingest_thread`` work it
+    spawns), so overlapping ingests never clobber one another's OCR config.
     """
     tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
     try:
@@ -154,7 +155,7 @@ def _should_run_ocr() -> bool:
         return True
     if enable_ocr is False:
         return False
-    return bool(cfg.vision_model)
+    return bool(active_config().vision_model)
 
 
 def _record_page_texts(
@@ -190,11 +191,12 @@ async def _vision_ocr_cached(
     # The per-page timeout bounds completeness: a page that exhausts the budget
     # yields empty text. Key on it so raising the timeout re-OCRs the file rather
     # than serving the earlier, partially-empty cached result for the same content.
+    config = active_config()
     key = ocr_cache_key(
         file_hash(path),
         backend="vision",
-        model=cfg.vision_model,
-        extra=f"{cfg.vision_ocr_max_tokens}:{_effective_ocr_timeout()}",
+        model=config.vision_model,
+        extra=f"{config.vision_ocr_max_tokens}:{_effective_ocr_timeout()}",
     )
     cached = load_ocr_pages(key)
     if cached is not None:
@@ -208,8 +210,14 @@ async def _vision_ocr_cached(
         # OCR failure and swallowed.
         raise
     except Exception:
+        # A vision-backend failure (dead replica, exhausted failover, transport
+        # error) is a per-file ingest FAILURE, not a "document had no text".
+        # Returning [] would classify the file as empty and skip-mark it under
+        # its current hash, silently dropping it from search until
+        # retry_skipped; raising routes it through the pipeline's failed path
+        # with the real reason.
         log.warning("OCR via vision backend failed for %s.", source_name, exc_info=True)
-        return []
+        raise
     store_ocr_pages(key, pages)
     _record_page_texts(pages, source_name, content_type, page_texts_out)
     return await chunk_and_embed_pages(pages, source_name, content_type, on_progress)
@@ -227,11 +235,11 @@ async def _vision_ocr_fallback(
     """Vision OCR a scanned PDF: rasterize + OCR each page through the worker pool."""
 
     async def _ocr() -> list[tuple[int, str]]:
-        pages = await asyncio.to_thread(
+        pages = await to_ingest_thread(
             get_services().provider.pdf_ocr,
             path,
             backend="vision",
-            model=cfg.vision_model,
+            model=active_config().vision_model,
             per_page_timeout_s=_effective_ocr_timeout(),
             quiet=quiet,
             on_progress=on_progress,
@@ -263,10 +271,10 @@ async def _vision_image_ocr(
     """
 
     async def _ocr() -> list[tuple[int, str]]:
-        page_pngs = await asyncio.to_thread(_image_page_pngs, path)
+        page_pngs = await to_ingest_thread(_image_page_pngs, path)
         pages: list[tuple[int, str]] = []
         for page_num, png in enumerate(page_pngs, start=1):
-            text = await asyncio.to_thread(_ocr_image_png, png)
+            text = await to_ingest_thread(_ocr_image_png, png)
             pages.append((page_num, text))
         return pages
 
@@ -283,7 +291,7 @@ async def _vision_image_ocr(
 def _ocr_image_png(png: bytes) -> str:
     """OCR one rendered image page through the vision server."""
     return get_services().provider.vision_ocr(
-        png, cfg.vision_model, timeout=_effective_ocr_timeout()
+        png, active_config().vision_model, timeout=_effective_ocr_timeout()
     )
 
 
@@ -338,16 +346,17 @@ async def _tesseract_ocr_fallback(
     key = ocr_cache_key(file_hash(path), backend=TESSERACT_BACKEND, model=TESSERACT_BACKEND)
     page_texts = load_ocr_pages(key)
     if page_texts is None:
-        coro = asyncio.to_thread(_run_tesseract_sync, path)
+        tesseract_timeout = active_config().tesseract_timeout
+        coro = to_ingest_thread(_run_tesseract_sync, path)
         try:
-            if cfg.tesseract_timeout > 0:
-                result = await asyncio.wait_for(coro, timeout=cfg.tesseract_timeout)
+            if tesseract_timeout > 0:
+                result = await asyncio.wait_for(coro, timeout=tesseract_timeout)
             else:
                 result = await coro
         except TimeoutError:
             log.warning(
                 "Tesseract OCR exceeded %.0fs timeout on %s; skipping.",
-                cfg.tesseract_timeout,
+                tesseract_timeout,
                 source_name,
             )
             return []
@@ -387,11 +396,11 @@ async def chunk_and_embed_pages(
 
     # chunk_text runs kreuzberg's synchronous extractor; offload it so a long OCR
     # document does not stall sibling files sharing this event loop.
-    all_chunks = await asyncio.to_thread(_chunk_pages, page_texts)
+    all_chunks = await to_ingest_thread(_chunk_pages, page_texts)
     if not all_chunks:
         return []
     texts = [c for _, c in all_chunks]
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
@@ -469,11 +478,12 @@ async def _handle_scanned_pdf_fallback(
         log.info("OCR disabled; skipping scanned-PDF OCR for %s", source_name)
         return []
     use_ocr = _should_run_ocr()
-    if use_ocr and cfg.vision_model:
+    vision_model = active_config().vision_model
+    if use_ocr and vision_model:
         log.info(
             "Scanned PDF: using vision OCR for %s (model=%s)",
             source_name,
-            cfg.vision_model,
+            vision_model,
         )
         return await _vision_ocr_fallback(
             path,
@@ -515,8 +525,9 @@ async def _handle_image(
         # than paying the full Tesseract cost the config says is turned off.
         log.info("OCR disabled; skipping image OCR for %s", source_name)
         return []
-    if _should_run_ocr() and cfg.vision_model:
-        log.info("Image: using vision OCR for %s (model=%s)", source_name, cfg.vision_model)
+    vision_model = active_config().vision_model
+    if _should_run_ocr() and vision_model:
+        log.info("Image: using vision OCR for %s (model=%s)", source_name, vision_model)
         return await _vision_image_ocr(
             path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
         )
@@ -554,7 +565,7 @@ async def ingest_document(
     from kreuzberg import extract_file_sync
 
     config = extraction_config(content_type_to_mode(content_type))
-    result = await asyncio.to_thread(extract_file_sync, str(path), config=config)
+    result = await to_ingest_thread(extract_file_sync, str(path), config=config)
 
     if content_type == PDF_CONTENT_TYPE and not _has_meaningful_text(result):
         return await _handle_scanned_pdf_fallback(
@@ -584,7 +595,7 @@ async def ingest_document(
     )
 
     texts = [chunk.content for chunk in result.chunks]
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
 
@@ -616,13 +627,13 @@ async def ingest_markdown(
     prepended for better retrieval context. When ``page_texts_out`` is given,
     the full text is appended as page 0 for export.
     """
-    raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+    raw_text = await to_ingest_thread(path.read_text, encoding="utf-8", errors="replace")
     if not raw_text.strip():
         return []
 
     # chunk_text runs kreuzberg's synchronous extractor; offload it so a large
     # markdown doc does not stall sibling files sharing this event loop.
-    texts = await asyncio.to_thread(
+    texts = await to_ingest_thread(
         chunk_text, raw_text, mime_type="text/markdown", heading_context=True
     )
     if not texts:
@@ -631,7 +642,7 @@ async def ingest_markdown(
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [

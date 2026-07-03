@@ -14,7 +14,7 @@ import json
 import logging
 from pathlib import Path
 
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ _KEY_SEP = "\0"
 
 
 def _cache_dir() -> Path:
-    return cfg.data_dir / _CACHE_DIRNAME
+    return active_config().data_dir / _CACHE_DIRNAME
 
 
 def ocr_cache_key(file_hash: str, *, backend: str, model: str, extra: str = "") -> str:

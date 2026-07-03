@@ -90,6 +90,20 @@ class TestCompletionsToCanonicalRequest:
         assert req.max_tokens == 64
         assert req.stop == ["</s>"]
 
+    def test_seed_and_penalties_are_carried_through(self) -> None:
+        req = _translate(
+            {
+                "model": "m",
+                "messages": [{"role": "user", "content": "x"}],
+                "seed": 42,
+                "frequency_penalty": 0.5,
+                "presence_penalty": -0.5,
+            }
+        )
+        assert req.seed == 42
+        assert req.frequency_penalty == 0.5
+        assert req.presence_penalty == -0.5
+
     def test_stop_can_be_a_single_string(self) -> None:
         req = _translate(
             {
@@ -396,19 +410,22 @@ class TestCompletionsToCanonicalRequest:
                 }
             )
 
-    def test_unknown_extra_top_level_fields_are_ignored(self) -> None:
-        # Pydantic's default config is ``extra="ignore"``; unknown fields
-        # round-trip without raising and are absent from the model.
+    def test_unknown_extra_top_level_fields_land_in_model_extra(self) -> None:
+        # ``extra="allow"`` keeps unrecognised fields off the parsed model's
+        # declared attributes and stashes them in ``model_extra`` so the route
+        # can log which OpenAI params it ignored. Recognised sampler fields like
+        # ``frequency_penalty`` are declared and honoured, not treated as extra.
         req = CompletionsRequest.model_validate(
             {
                 "model": "m",
                 "messages": [{"role": "user", "content": "x"}],
                 "frequency_penalty": 0.3,
+                "response_format": {"type": "json_object"},
                 "user": "tobias",
             }
         )
-        assert not hasattr(req, "frequency_penalty")
-        assert not hasattr(req, "user")
+        assert req.frequency_penalty == 0.3
+        assert set(req.model_extra) == {"response_format", "user"}
 
     def test_unknown_extra_message_fields_are_ignored(self) -> None:
         # Same tolerance applies to the nested ``CompletionsMessage``.
@@ -801,6 +818,27 @@ class TestCanonicalStreamToCompletionsChunks:
             )
         )
         assert all(c.usage is None for c in chunks)
+
+    async def test_include_usage_without_provider_usage_still_emits_chunk(self) -> None:
+        """include_usage always produces the trailing usage chunk, zeros when the
+        provider streamed no usage frame -- a client blocking on it must not hang."""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            ContentBlockDelta(index=0, delta=TextDelta(text="hi")),
+            ContentBlockStop(index=0),
+            MessageDelta(stop_reason=StopReason.END_TURN),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x", include_usage=True
+            )
+        )
+        usage_chunk = chunks[-1]
+        assert usage_chunk.choices == []
+        assert usage_chunk.usage is not None
+        assert usage_chunk.usage.total_tokens == 0
 
     async def test_message_start_alone_emits_nothing(self) -> None:
         events: list[CanonicalStreamEvent] = [

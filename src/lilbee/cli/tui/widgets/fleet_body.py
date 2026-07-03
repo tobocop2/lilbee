@@ -29,7 +29,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import REPLICATED_ROLES, WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -61,8 +61,8 @@ _EDITOR_ID = "#placement-editor"
 _TITLE_ID = "#placement-title"
 _FLEET_PANEL_ID = "#gpu-fleet-panel"
 
-# Only these roles run multiple replicas; the others always serve one instance.
-_REPLICA_ROLES = (WorkerRole.EMBED, WorkerRole.VISION)
+# Only the replicated roles show a replica stepper; the others always serve one.
+_REPLICA_ROLES = REPLICATED_ROLES
 _HINT = (
     "Toggle a GPU for each role; -/+ sets replicas.  ctrl+r preview · ctrl+s apply · ctrl+x auto"
 )
@@ -173,17 +173,22 @@ class FleetBody(Widget):
             yield Static(_HINT, id="placement-hint")
 
     def on_mount(self) -> None:
-        self._load_placement()
+        self._load_worker()
 
-    def _load_placement(self) -> None:
-        """Fetch placement and populate the widget synchronously."""
+    @work(thread=True, exit_on_error=False)
+    def _load_worker(self) -> None:
+        """Fetch placement off the UI thread and populate the widget.
+
+        get_placement resolves the plan, which can spawn a device-probe
+        subprocess on a cold cache -- too slow for the event loop.
+        """
         try:
             view = get_placement()
         except Exception as exc:
             log.debug("Failed to load placement", exc_info=True)
-            self.notify(str(exc), severity="error")
+            call_from_thread(self, self.notify, str(exc), severity="error")
             return
-        self._render_view(view)
+        call_from_thread(self, self._render_view, view)
 
     # -- rendering -------------------------------------------------------
 

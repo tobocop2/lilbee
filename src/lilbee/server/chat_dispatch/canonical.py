@@ -94,6 +94,9 @@ class CanonicalChatRequest:
     top_p: float | None = None
     top_k: int | None = None
     max_tokens: int | None = None
+    seed: int | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
     stop: list[str] | None = None
     stream: bool = False
 

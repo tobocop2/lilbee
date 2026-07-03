@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -22,8 +23,6 @@ if TYPE_CHECKING:
     from lilbee.data.ingest import SyncResult
 
 log = logging.getLogger(__name__)
-
-MAX_ADD_FILES = 100
 
 # Payload carried alongside each source key through _ingest_stream: a server
 # path (str) for /api/add, or an (filename, content) pair for /api/add/upload.
@@ -124,8 +123,9 @@ def validate_add_paths(
     paths = data.get("paths")
     if not isinstance(paths, list) or not paths:
         raise ValueError("'paths' must be a non-empty list of strings")
-    if len(paths) > MAX_ADD_FILES:
-        raise ValueError(f"Too many files: {len(paths)} exceeds limit of {MAX_ADD_FILES}")
+    # No file-count cap: the resource guard is the app's size-based
+    # request_max_body_size; a count limit only breaks the point-lilbee-at-
+    # your-codebase use case (hundreds of small files).
 
     for p_str in paths:
         validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
@@ -217,24 +217,37 @@ async def add_files_stream(
         yield event
 
 
+def _clean_upload_name(name: str) -> str:
+    """Normalize one upload filename to a safe relative path inside the corpus.
+
+    Relative paths are preserved (a source tree keeps its layout instead of
+    colliding on basenames); absolute paths, drive letters, and ``..`` segments
+    are rejected. Raises ValueError on bad input.
+    """
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        raise ValueError(f"upload filename must be relative: {name!r}")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts:
+        raise ValueError(f"invalid upload filename: {name!r}")
+    if ".." in parts:
+        raise ValueError(f"upload filename may not contain '..': {name!r}")
+    relative = "/".join(parts)
+    validate_path_within(cfg.documents_dir / relative, cfg.documents_dir)
+    return relative
+
+
 def validate_uploads(files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
     """Validate uploaded (filename, content) pairs. Raises ValueError on bad input.
 
-    Filenames are reduced to their basename and validated to stay inside
-    ``cfg.documents_dir`` so a crafted ``../`` name can't escape the corpus.
+    Filenames keep their relative path, validated to stay inside
+    ``cfg.documents_dir``, so an uploaded source tree preserves its layout
+    instead of colliding on basenames. There is no file-count cap; the
+    resource guard is the app's size-based request_max_body_size.
     """
     if not files:
         raise ValueError("no files uploaded")
-    if len(files) > MAX_ADD_FILES:
-        raise ValueError(f"Too many files: {len(files)} exceeds limit of {MAX_ADD_FILES}")
-    cleaned: list[tuple[str, bytes]] = []
-    for name, content in files:
-        base = Path(name).name
-        if not base:
-            raise ValueError(f"invalid upload filename: {name!r}")
-        validate_path_within(cfg.documents_dir / base, cfg.documents_dir)
-        cleaned.append((base, content))
-    return cleaned
+    return [(_clean_upload_name(name), content) for name, content in files]
 
 
 async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSummary:
@@ -254,7 +267,9 @@ async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSumm
         cfg.documents_dir.mkdir(parents=True, exist_ok=True)
         written: list[str] = []
         for name, content in files:
-            (cfg.documents_dir / name).write_bytes(content)
+            dest = cfg.documents_dir / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
             written.append(name)
         with temporary_ocr_config(None):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
@@ -271,8 +286,8 @@ async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSumm
 async def add_uploads_stream(files: list[tuple[str, bytes]]) -> AsyncGenerator[str, None]:
     """Ingest uploaded file content, yielding the same SSE progress as add_files_stream.
 
-    Locks per source name (the basename) so an upload never races an in-flight add
-    of the same source.
+    Locks per source name (the validated relative path) so an upload never
+    races an in-flight add of the same source.
     """
     async for event in _ingest_stream(
         [(name, (name, content)) for name, content in files],

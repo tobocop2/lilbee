@@ -303,6 +303,15 @@ _UNHEALTHY_RETRY_S = 30.0
 _T = TypeVar("_T")
 
 
+class ChatDeadlineError(ProviderError):
+    """A bounded chat exceeded its caller-supplied total wall-clock deadline.
+
+    Distinct from a transport/server error so a deadline-bounded caller (vision
+    OCR) can word its own timeout message and skip failover without matching
+    error strings. Its ``UNKNOWN`` kind keeps it out of ``is_connection_failure``.
+    """
+
+
 class LlamaServerClient:
     """Calls one llama-server's OpenAI surface. Tracks in-flight requests so the
     fleet router can pick the least-busy replica."""
@@ -440,6 +449,39 @@ class LlamaServerClient:
                 delta = _parse_sse_delta(line)
                 if delta:
                     yield delta
+
+    def chat_bounded(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        deadline_s: float,
+    ) -> str:
+        """Stream a chat completion and return its text, bounded by a total deadline.
+
+        httpx float timeouts are per-phase (connect/read/...), never a total
+        budget, so a steadily trickling upstream can pin a worker past its
+        deadline. Streaming in the caller's own thread and checking a monotonic
+        deadline per frame bounds total time: on expiry the ``with`` block closes
+        the stream (releasing the in-flight slot) and raises
+        :class:`ChatDeadlineError`.
+        """
+        payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
+        deadline = time.monotonic() + deadline_s
+        parts: list[str] = []
+        with (
+            self._track(),
+            self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
+        ):
+            _raise_for_status(resp)
+            for line in resp.iter_lines():
+                if time.monotonic() >= deadline:
+                    raise ChatDeadlineError(
+                        f"llama-server chat exceeded its {deadline_s:.0f}s deadline.",
+                        provider=_PROVIDER_NAME,
+                    )
+                parts.append(_parse_sse_delta(line))
+        return "".join(parts)
 
     def chat_tools(
         self,
@@ -691,12 +733,12 @@ class LlamaServerClient:
             return data
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
-        """Relevance scores via rank-pooling embeddings (mirrors the in-process path).
+        """Relevance scores via rank-pooling embeddings.
 
         The server runs with ``--pooling rank``; we send ``query</s></s>candidate``
         pairs to ``/v1/embeddings`` and read each item's first embedding value as the
-        score -- the same primitive and pairing as ``compute_rerank_scores``, so the
-        ``/v1/rerank`` template-dependency (and its zero-output failure modes) is moot.
+        score, so the ``/v1/rerank`` template-dependency (and its zero-output failure
+        modes) is moot.
         """
         if not candidates:
             return []

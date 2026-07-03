@@ -20,7 +20,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats
 
 if TYPE_CHECKING:
-    from lilbee.providers.fleet.gpu_stats import _DeviceLike
+    from lilbee.providers.fleet.gpu_stats import DeviceLike
 
 log = logging.getLogger(__name__)
 
@@ -158,14 +158,18 @@ class GpuFleetPanel(Static):
 
     def __init__(self) -> None:
         super().__init__(_EMPTY_TEXT, id="gpu-fleet-panel")
-        self._devices: Sequence[_DeviceLike] = []
+        self._devices: Sequence[DeviceLike] = []
         self._labels: dict[int, str] = {}
         self._roles: dict[int, str] = {}
         self._timer: Timer | None = None
+        # Single-flight: True while a probe worker is running, so a probe
+        # slower than the tick interval skips ticks instead of stacking
+        # threads (and their nvidia-smi subprocesses) without bound.
+        self._probing = False
 
     def set_devices(
         self,
-        devices: Sequence[_DeviceLike],
+        devices: Sequence[DeviceLike],
         *,
         labels: dict[int, str],
         roles: dict[int, str] | None = None,
@@ -190,7 +194,10 @@ class GpuFleetPanel(Static):
             self._timer = None
 
     def _request_stats(self) -> None:
-        """Kick off an off-thread stats probe."""
+        """Kick off an off-thread stats probe unless one is already in flight."""
+        if self._probing:
+            return
+        self._probing = True
         self._probe_worker(
             list(self._devices),
             self._labels.copy(),
@@ -208,7 +215,7 @@ class GpuFleetPanel(Static):
     @work(thread=True, exit_on_error=False)
     def _probe_worker(
         self,
-        devices: list[_DeviceLike],
+        devices: list[DeviceLike],
         labels: dict[int, str],
         roles: dict[int, str],
     ) -> None:
@@ -218,6 +225,8 @@ class GpuFleetPanel(Static):
         except Exception:
             log.debug("gpu_fleet_panel: probe failed", exc_info=True)
             return
+        finally:
+            call_from_thread(self, setattr, self, "_probing", False)
         call_from_thread(self, self._apply_stats, stats, labels, roles)
 
     def _apply_stats(

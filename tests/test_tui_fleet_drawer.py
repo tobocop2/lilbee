@@ -218,9 +218,19 @@ async def test_drawer_delegates_editor_actions(_patched, monkeypatch):
         await pilot.press("ctrl+g")
         await pilot.pause()
         drawer = app.screen.query_one(FleetDrawer)
-        drawer.action_preview()
-        drawer.action_apply()
-        drawer.action_clear()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        # The drawer's keys are focus-scoped by design (typing in chat must not
+        # trigger them). Focus a toggle inside, then drive the priority
+        # bindings themselves so a child swallowing ctrl+r/s/x fails this test.
+        from lilbee.cli.tui.widgets.fleet_body import FleetPill
+
+        drawer.query(FleetPill).first().focus()
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.press("ctrl+s")
+        await pilot.press("ctrl+x")
+        await pilot.pause()
     assert calls == ["preview", "apply", "clear"]
 
 
