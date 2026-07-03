@@ -59,6 +59,7 @@ _CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 
 _EDITOR_ID = "#placement-editor"
 _TITLE_ID = "#placement-title"
+_STATE_ID = "#placement-state"
 _FLEET_PANEL_ID = "#gpu-fleet-panel"
 
 # Only the replicated roles show a replica stepper; the others always serve one.
@@ -160,7 +161,8 @@ class FleetBody(Widget):
     def compose(self) -> ComposeResult:
         with Vertical(id="placement-layout"):
             with Horizontal(id="placement-titlebar"):
-                yield Static("", id="placement-title")
+                yield Static(msg.FLEET_TITLE, id="placement-title")
+                yield Static("", id="placement-state")
                 help_icon = Static(msg.FLEET_HELP_ICON, id="placement-help")
                 help_icon.tooltip = msg.FLEET_HELP_TOOLTIP
                 yield help_icon
@@ -268,11 +270,14 @@ class FleetBody(Widget):
         )
 
     def _refresh_title(self, *, dirty: bool) -> None:
+        """Reflect the placement mode in the state segment beside the title pill."""
+        state = self.query_one(_STATE_ID, Static)
         if dirty:
-            text = "Placement (edited; ctrl+s to apply, ctrl+x for auto)"
+            state.update(msg.FLEET_STATE_EDITED)
         else:
-            text = "Placement (manual)" if self._view_manual else "Placement (auto)"
-        self.query_one(_TITLE_ID, Static).update(f"[bold]{text}[/bold]")
+            state.update(msg.FLEET_STATE_MANUAL if self._view_manual else msg.FLEET_STATE_AUTO)
+        state.set_class(dirty, "-edited")
+        state.set_class(not dirty and self._view_manual, "-manual")
 
     def _update_fleet_panel(self, view: PlacementView) -> None:
         """Push the current device list and roles into the fleet panel."""

@@ -10,9 +10,30 @@ FleetBody {
         margin-bottom: 1;
     }
 
+    /* The title wears the same $surface pill as the active view tab, so the
+     * drawer header speaks the app's tab language; the state segment beside it
+     * carries the mode in color (muted auto, accent manual, warning edited). */
     #placement-title {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        background: $surface;
+        text-style: bold;
+    }
+
+    #placement-state {
         width: 1fr;
         height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
+    #placement-state.-manual {
+        color: $accent;
+    }
+
+    #placement-state.-edited {
+        color: $warning;
     }
 
     /* One hover-help for the whole drawer; keeps the surface otherwise minimal. */
