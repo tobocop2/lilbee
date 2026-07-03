@@ -274,3 +274,30 @@ def test_embed_spec_declared_none_falls_through_to_arch() -> None:
     # and an encoder arch keeps the plain spec.
     assert embed_spec({"architecture": "bert", "pooling_type": "0"}) is ROLE_SPECS[WorkerRole.EMBED]
     assert LLM_RERANK_SPEC.server_capable is True
+
+
+def test_build_argv_no_mmap_appends_the_flag() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        no_mmap=True,
+    )
+    assert "--no-mmap" in argv
+
+
+def test_build_argv_defaults_to_mmap() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+    )
+    assert "--no-mmap" not in argv

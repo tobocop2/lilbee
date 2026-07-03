@@ -16,6 +16,7 @@ real focusable widgets (one per GPU checkbox / advanced control) so Tab and
 arrow keys both work, consistent with the rest of the TUI.
 Run: uv run --with textual python proto.py
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -73,10 +74,50 @@ class PlacementProto(App):
         self.detail_key = ""
         self.toast = ""
         self.roles: list[Role] = [
-            Role("chat", "Chat", "Qwen2.5 72B", "the model you talk to", 56.0, FOAM, split=True, required=True),
-            Role("embed", "Embeddings", "nomic-embed", "indexes docs for search", 0.3, GOLD, split=False, required=True, replicable=True),
-            Role("rerank", "Reranker", "bge-reranker", "sharpens search results", 0.6, PINE, split=True, required=False, enabled=False),
-            Role("vision", "Vision", "Qwen2-VL OCR", "reads images & PDFs", 5.0, ROSE, split=False, required=False, replicable=True, enabled=False),
+            Role(
+                "chat",
+                "Chat",
+                "Qwen2.5 72B",
+                "the model you talk to",
+                56.0,
+                FOAM,
+                split=True,
+                required=True,
+            ),
+            Role(
+                "embed",
+                "Embeddings",
+                "nomic-embed",
+                "indexes docs for search",
+                0.3,
+                GOLD,
+                split=False,
+                required=True,
+                replicable=True,
+            ),
+            Role(
+                "rerank",
+                "Reranker",
+                "bge-reranker",
+                "sharpens search results",
+                0.6,
+                PINE,
+                split=True,
+                required=False,
+                enabled=False,
+            ),
+            Role(
+                "vision",
+                "Vision",
+                "Qwen2-VL OCR",
+                "reads images & PDFs",
+                5.0,
+                ROSE,
+                split=False,
+                required=False,
+                replicable=True,
+                enabled=False,
+            ),
         ]
         self.auto_layout()
 
@@ -178,9 +219,7 @@ class PlacementProto(App):
     # -- overview --------------------------------------------------------
     def _overview(self) -> str:
         L: list[str] = []
-        L.append(
-            f"[{MUTE}]Chat · Catalog · Status · Settings · Tasks · [/][{IRIS}]Placement[/]"
-        )
+        L.append(f"[{MUTE}]Chat · Catalog · Status · Settings · Tasks · [/][{IRIS}]Placement[/]")
         L.append("")
         status = (
             f"[{FOAM}]● Automatic[/] [{MUTE}](lilbee chose this)[/]"
@@ -216,7 +255,11 @@ class PlacementProto(App):
             L.append("  " + "    ".join(cells[i : i + 4]))
         L.append("")
         all_ok = all(self._role_ok(r)[0] for r in self.roles)
-        fit = f"[{FOAM}]Everything fits ✓[/]" if all_ok else f"[{LOVE}]Some models don't fit — open one to fix.[/]"
+        fit = (
+            f"[{FOAM}]Everything fits ✓[/]"
+            if all_ok
+            else f"[{LOVE}]Some models don't fit — open one to fix.[/]"
+        )
         L.append(fit)
         L.append("")
         L.append(
@@ -239,7 +282,9 @@ class PlacementProto(App):
             if r.size_gb > CARD_GB
             else f"[{MUTE}]{r.size_gb:.0f} GB · {r.job}[/]"
         )
-        L.append(f"[{MUTE}]‹ back[/]     [{r.color}]{r.label}[/] [{MUTE}]— {r.model}[/]   {size_note}")
+        L.append(
+            f"[{MUTE}]‹ back[/]     [{r.color}]{r.label}[/] [{MUTE}]— {r.model}[/]   {size_note}"
+        )
         L.append("")
         L.append(f"[{TEXT}]Which GPUs?[/]")
         for g in self.gpus():
@@ -252,7 +297,9 @@ class PlacementProto(App):
                 else (f"[{SUB}]{used:.0f}/{CARD_GB:.0f} GB[/]" if used > 0 else f"[{MUTE}]free[/]")
             )
             focus = cur == f"gpu:{g}"
-            line = f"   {box}  [{TEXT}]GPU {g}[/]  [{MUTE}]{GPU_NAME}[/]   {self._bar(g, 10)}  {tag}"
+            line = (
+                f"   {box}  [{TEXT}]GPU {g}[/]  [{MUTE}]{GPU_NAME}[/]   {self._bar(g, 10)}  {tag}"
+            )
             L.append(f"[{IRIS}]▸[/]{line[1:]}" if focus else f" {line}")
         L.append("")
         # how + fit
@@ -278,8 +325,10 @@ class PlacementProto(App):
             fit = f"[{GOLD}]Fits, but a card is over budget.[/]"
         else:
             spread = self._split_spread(r, d) if (r.split and len(d) > 1) else ""
-            detail = (
-                spread or (f"{each:.0f} GB on each of {len(d)} cards" if len(d) > 1 else f"{each:.0f} GB on Card {d[0]}")
+            detail = spread or (
+                f"{each:.0f} GB on each of {len(d)} cards"
+                if len(d) > 1
+                else f"{each:.0f} GB on Card {d[0]}"
             )
             fit = f"[{FOAM}]✓ Fits[/] [{MUTE}]— {detail}[/]"
         L.append(how)
@@ -323,18 +372,28 @@ class PlacementProto(App):
             choice = f"{radio(not r.split, 'Copies')}   {radio(r.split, 'Split')}"
             out.append(f"  {mark('mode')} [{TEXT}]Distribute[/]   {choice}")
             if cur == "mode":
-                out.append(f"      [{MUTE}]Copies = a full model per card (faster). Split = one model across cards (for big models).[/]")
+                out.append(
+                    f"      [{MUTE}]Copies = a full model per card (faster). Split = one model across cards (for big models).[/]"
+                )
         if r.split and len(r.devices) > 1:
-            choice = f"{radio(r.weights is None, 'Even')}   {radio(r.weights is not None, 'Custom')}"
+            choice = (
+                f"{radio(r.weights is None, 'Even')}   {radio(r.weights is not None, 'Custom')}"
+            )
             out.append(f"  {mark('weights')} [{TEXT}]Split weights[/]  {choice}")
             if r.weights is not None:
                 for g in sorted(r.devices):
                     w = r.weights.get(g, 1)
                     bar = f"[{r.color}]{'▮' * w}{'·' * (9 - w)}[/]"
                     tip = f"  [{MUTE}](+/- to adjust)[/]" if cur == f"w:{g}" else ""
-                    out.append(f"  {mark(f'w:{g}')}   [{MUTE}]GPU {g}[/]  {bar} [{MUTE}]weight {w} → {self.chunk(r, g):.0f} GB[/]{tip}")
+                    out.append(
+                        f"  {mark(f'w:{g}')}   [{MUTE}]GPU {g}[/]  {bar} [{MUTE}]weight {w} → {self.chunk(r, g):.0f} GB[/]{tip}"
+                    )
         if not r.required:
-            tip = f"  [{MUTE}](frees its VRAM; re-add it from the overview)[/]" if cur == "remove" else ""
+            tip = (
+                f"  [{MUTE}](frees its VRAM; re-add it from the overview)[/]"
+                if cur == "remove"
+                else ""
+            )
             out.append(f"  {mark('remove')} [{LOVE}]Remove this model[/]{tip}")
         return out
 

@@ -2,8 +2,8 @@
 
 Every route requires auth: even the reads run resolve_placement_plan, which
 spawns subprocess device probes, so none are marked @read_only. Applying or
-clearing placement rebuilds the shared fleet, which is unsafe across concurrent
-HTTP clients, so PUT/DELETE are refused by default. They are gated on the
+clearing placement restarts the shared fleet's moved roles, which is unsafe
+across concurrent HTTP clients, so PUT/DELETE are refused by default. They are gated on the
 ``allow_http_placement`` flag (LILBEE_ALLOW_HTTP_PLACEMENT), which an operator
 turns on for a single-client / owned deployment to get the same apply/clear
 capability the CLI and TUI have.

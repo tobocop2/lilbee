@@ -287,6 +287,11 @@ class RoutingProvider(LLMProvider):
         if self._local is not None:
             self._local.reload_role(role, wait=wait)
 
+    def reload_placement(self, *, wait: bool = False) -> None:
+        """Forward to the native engine; the SDK side has no GPU placement."""
+        if self._local is not None:
+            self._local.reload_placement(wait=wait)
+
     def role_ready(self, role: WorkerRole) -> bool:
         """Native readiness without building; True when no local engine exists yet."""
         if self._local is None:

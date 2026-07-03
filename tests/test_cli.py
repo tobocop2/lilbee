@@ -4117,7 +4117,7 @@ class TestSelfCheckHelpers:
             lambda **_k: ["/bin/llama-server"],
         )
         swap.endpoint.return_value = "http://127.0.0.1:5800"
-        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d: swap)
+        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient", lambda _endpoint, _model: client
         )
