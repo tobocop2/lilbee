@@ -946,7 +946,7 @@ def _resolve_placement(
             capacity,
             estimate_peak=estimate_peak,
         )
-    # The chat split's card count is decided against live free VRAM (what the launch
+    # The chat split's card count is decided against the snapshot's free VRAM (what the launch
     # sizes its context against) so placement and launch agree; charging still uses
     # total capacity above, preserving the bb-a8f no-double-count invariant. A split
     # needs >=2 GPUs, so skip the chat model's gguf read entirely below that.

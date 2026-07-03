@@ -26,7 +26,7 @@ _SEARCH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.poole
 # fits its own headroom, and each card is charged its own entry, not the sum.
 PeakEstimator = Callable[[WorkerRole, tuple[int, ...]], tuple[int, ...]]
 
-# (per-device tensor-split ratio, chosen cards' live free VRAM bytes) -> the per-slot
+# (per-device tensor-split ratio, chosen cards' snapshot free-VRAM bytes) -> the per-slot
 # context the launch would serve on that chat shard. Lets the planner widen a chat
 # split onto idle cards when a tighter shard would starve KV below the target.
 SplitCtxFitter = Callable[[tuple[int, ...], Sequence[int]], int]
@@ -91,7 +91,8 @@ def plan_placement(
 
     A chat split widens past the fewest fitting cards when ``chat_ctx_fit`` shows a
     tighter shard would starve its served context below ``chat_ctx_target``; the
-    fitter is sized against ``free_headroom`` (live free VRAM per device index). See
+    fitter is sized against ``free_headroom`` (the plan snapshot's free VRAM per
+    device index; see ``planning.capture_plan_probe``). See
     docs/architecture.md (Placement). Other splits keep the fewest-cards behavior.
 
     No GPU devices is the CPU/unified-memory case (a GPU-less host, or an Apple

@@ -197,7 +197,7 @@ flowchart TD
   warm fleet's own resident models aren't double-counted, and unequal GPUs don't OOM
   the smaller one). For the chat model the planner does not stop at the fewest fitting
   cards: it sizes each candidate shard's served context the way the launch will
-  (`ctx.fit_split_ctx`, against **live free VRAM**) and **widens onto idle cards** when
+  (`ctx.fit_split_ctx`, against the **clean-box plan snapshot**) and **widens onto idle cards** when
   a tighter shard would starve KV below the context target, falling back to the
   largest-context shard when no shard reaches it. This keeps placement and launch in
   agreement, so a giant chat that just fits the fewest cards no longer collapses to the
