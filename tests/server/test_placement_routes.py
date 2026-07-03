@@ -41,7 +41,7 @@ def test_get_placement(monkeypatch):
 
 
 def test_put_refused_on_daemon():
-    """PUT placement is refused on the HTTP daemon (rebuilds the shared fleet)."""
+    """PUT placement is refused on the HTTP daemon (restarts the fleet's moved roles)."""
     with create_test_client([placement_set_route]) as client:
         r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
         assert r.status_code == 409
@@ -49,7 +49,7 @@ def test_put_refused_on_daemon():
 
 
 def test_delete_refused_on_daemon():
-    """DELETE placement is refused on the HTTP daemon (rebuilds the shared fleet)."""
+    """DELETE placement is refused on the HTTP daemon (restarts the fleet's moved roles)."""
     with create_test_client([placement_clear_route]) as client:
         r = client.delete("/api/placement")
         assert r.status_code == 409

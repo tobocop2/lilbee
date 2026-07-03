@@ -59,36 +59,52 @@ def test_preview_passes_candidate_spec(monkeypatch):
 def test_preview_has_no_side_effects(monkeypatch):
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
-    reset = {"called": False}
-    monkeypatch.setattr(app_placement, "reset_services", lambda: reset.__setitem__("called", True))
+    peeked = {"called": False}
+    monkeypatch.setattr(app_placement, "peek_services", lambda: peeked.__setitem__("called", True))
     app_placement.preview_placement(None)
-    assert reset["called"] is False
+    assert peeked["called"] is False  # no reload, no services touch
 
 
-def test_set_persists_and_resets(monkeypatch):
+class _FakeProviderServices:
+    """A peeked services container whose provider records reload_placement calls."""
+
+    class _Provider:
+        def __init__(self) -> None:
+            self.reloads: list[bool] = []
+
+        def reload_placement(self, *, wait: bool = False) -> None:
+            self.reloads.append(wait)
+
+    def __init__(self) -> None:
+        self.provider = self._Provider()
+
+
+def test_set_persists_and_reloads_live_fleet(monkeypatch):
     writes = {}
+    services = _FakeProviderServices()
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: writes.update(d))
-    monkeypatch.setattr(app_placement, "reset_services", lambda: writes.setdefault("reset", True))
+    monkeypatch.setattr(app_placement, "peek_services", lambda: services)
     prior = app_placement.cfg.placement
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(1, 1))})
     try:
         app_placement.set_placement(spec)
         assert writes["placement"] == spec.to_json()
-        assert writes["reset"] is True
+        # The live fleet applied the change surgically and synchronously.
+        assert services.provider.reloads == [True]
         assert app_placement.cfg.placement == spec.to_json()
     finally:
         app_placement.cfg.placement = prior
 
 
-def test_set_clears_read_device_cache(monkeypatch):
-    """Applying a placement reconfigures the fleet, so the stale device probe is dropped."""
+def test_set_clears_read_device_cache_when_nothing_runs(monkeypatch):
+    """With no services built, the next boot should probe devices fresh."""
     cleared = {"called": False}
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
     monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: None)
-    monkeypatch.setattr(app_placement, "reset_services", lambda: None)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
     monkeypatch.setattr(
         app_placement, "clear_read_device_cache", lambda: cleared.__setitem__("called", True)
     )
@@ -100,6 +116,25 @@ def test_set_clears_read_device_cache(monkeypatch):
         app_placement.cfg.placement = prior
 
 
+def test_set_keeps_device_probe_on_the_live_path(monkeypatch):
+    """The surgical reload diffs plans against the same clean-box probe (bb-a8f):
+    re-probing under a loaded fleet would poison the chat context sizing."""
+    cleared = {"called": False}
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: None)
+    monkeypatch.setattr(app_placement, "peek_services", _FakeProviderServices)
+    monkeypatch.setattr(
+        app_placement, "clear_read_device_cache", lambda: cleared.__setitem__("called", True)
+    )
+    prior = app_placement.cfg.placement
+    try:
+        app_placement.set_placement(PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(0,))}))
+        assert cleared["called"] is False
+    finally:
+        app_placement.cfg.placement = prior
+
+
 def test_set_none_clears(monkeypatch):
     deletes = {}
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
@@ -107,7 +142,7 @@ def test_set_none_clears(monkeypatch):
     monkeypatch.setattr(
         app_placement.settings, "delete_values", lambda root, keys: deletes.setdefault("keys", keys)
     )
-    monkeypatch.setattr(app_placement, "reset_services", lambda: None)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
     prior = app_placement.cfg.placement
     try:
         app_placement.set_placement(None)

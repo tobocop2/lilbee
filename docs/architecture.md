@@ -162,6 +162,40 @@ flowchart TD
     ES --> G1
 ```
 
+#### Supervision layout
+
+Follow the numbers: the planner measures, renders a config per role, each role's
+llama-swap spawns and watches that role's servers, and the provider routes live
+requests by role. Rerank and vision follow the same shape as embed. Because every
+role has its own supervisor, config, log, and state file, a placement change
+restarts only the roles whose launches changed (see the reload diff below).
+
+```mermaid
+flowchart LR
+    subgraph app ["lilbee"]
+        planner["placement planner"]
+        gguf["gguf-parser"]
+        provider["FleetProvider"]
+        planner -->|"1: measure each GGUF"| gguf
+    end
+    subgraph swaps ["llama-swap, one per role"]
+        sc["swap: chat<br/>own config, log, state"]
+        se["swap: embed<br/>own config, log, state"]
+    end
+    subgraph servers ["llama-server processes"]
+        chat["chat<br/>split across its GPUs"]
+        e1["embed replica"]
+        e2["embed replica"]
+    end
+    planner -->|"2: render JSON config per role"| sc
+    planner -->|"2: render JSON config per role"| se
+    sc -->|"3: spawn and watch"| chat
+    se -->|"3: spawn and watch"| e1
+    se -->|"3: spawn and watch"| e2
+    provider -->|"4: requests by role"| sc
+    provider -->|"4: requests by role"| se
+```
+
 - **Detection** (`devices.probe_devices`): GPUs come from the binary's own
   `llama-server --list-devices`, so enumeration and pinning share one backend-native
   index space. A device index from one API (Vulkan) is meaningless to another (CUDA),
@@ -197,7 +231,7 @@ flowchart TD
   warm fleet's own resident models aren't double-counted, and unequal GPUs don't OOM
   the smaller one). For the chat model the planner does not stop at the fewest fitting
   cards: it sizes each candidate shard's served context the way the launch will
-  (`ctx.fit_split_ctx`, against **live free VRAM**) and **widens onto idle cards** when
+  (`ctx.fit_split_ctx`, against the **clean-box plan snapshot**) and **widens onto idle cards** when
   a tighter shard would starve KV below the context target, falling back to the
   largest-context shard when no shard reaches it. This keeps placement and launch in
   agreement, so a giant chat that just fits the fewest cards no longer collapses to the
@@ -222,6 +256,37 @@ flowchart TD
   RAM on a unified-memory host drives the OS into a swap-thrash OOM livelock that
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
+
+- **Reload and the plan snapshot** (`planning.capture_plan_probe`,
+  `provider._reload_pass`): each role runs behind its own llama-swap process, and
+  a reload re-plans the whole fleet but restarts **only the roles whose launches
+  changed**. That diff is sound because launches are a pure function of config,
+  hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
+  and free system RAM are captured once per boot (right after stale-server
+  reaping, when nothing lilbee owns is loaded) and every re-plan reads the
+  snapshot instead of probing live. A live probe under a loaded fleet would
+  report the fleet's own residency as unavailable, shrinking chat context and
+  slot counts, widening splits, and (on unified memory) evicting roles outright.
+  Full fleet teardown clears the snapshot, so the next boot probes fresh and
+  still respects VRAM other processes hold. The read/view surfaces
+  (`GET /api/placement`, `placement show`, preview) keep a live short-TTL probe
+  so displayed free bytes stay current; they never feed the launch path.
+
+```mermaid
+flowchart TB
+    CFG[config + placement spec] --> PLAN[planner: estimate + bin-pack + ctx fit]
+    SNAP[clean-box snapshot: devices / VRAM / RAM] --> PLAN
+    PLAN --> DIFF{per-role launch diff}
+    DIFF -->|unchanged| KEEP[role keeps serving, model stays resident]
+    DIFF -->|changed| RESTART[stop role's llama-swap, start with new argv]
+    subgraph fleet [one llama-swap per role]
+        CHAT[chat group]
+        EMBED[embed group xN]
+        RERANK[rerank group]
+    end
+    RESTART --> fleet
+    KEEP --> fleet
+```
 
 #### Manual placement
 
@@ -262,7 +327,7 @@ CLI (`lilbee placement show/preview/set/clear`), MCP
 (`get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
 and the TUI Placement screen. Over HTTP the reads are always served
 (`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`).
-Applying or clearing placement rebuilds the shared fleet, so `PUT`/`DELETE
+Applying or clearing placement restarts the fleet's moved roles, so `PUT`/`DELETE
 /api/placement` are refused by default and gated on `allow_http_placement`
 (`LILBEE_ALLOW_HTTP_PLACEMENT`), which an operator enables for a single-client
 or owned deployment (the plugin's managed server, or a personally-owned pod) to
@@ -294,7 +359,13 @@ touching the running fleet.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and
-  `--cache-type-k/-v` from `kv_cache_type`; embed and rerank raise
+  `--cache-type-k/-v` from `kv_cache_type`; it also loads with `--no-mmap`
+  (a malloc'd host copy) when its weights fit in at most half of total system
+  RAM -- a buffered sequential read reaches ready ~20% faster than mmap's
+  page-fault-driven upload (measured 33s vs 43s for a 112GB model on 3 GPUs),
+  while replicated roles keep mmap so their replicas share one set of
+  page-cache pages. The gate reads total (not free) memory so replans never
+  flap the flag; embed and rerank raise
   `--batch-size`/`--ubatch-size` to the full context (the server caps embeddings at
   `n_ubatch`, default 512); vision uses the full-core thread default and always
   offloads every layer. Embed and rerank requests also send `embd_normalize=-1` to
@@ -305,13 +376,19 @@ touching the running fleet.
   setting deliberately not forwarded: it selects a single card by global index, which
   is meaningless once a server is pinned to a subset, and placement owns card choice
   in fleet mode.
-- **Lifecycle** (`fleet.py`): each server runs in its own process group and claims
+- **Lifecycle** (`swap_manager.py` / `provider.py`): each role runs behind its own llama-swap process
+  with its own config file, so restarting one role's group (a placement or
+  per-role model change) never touches another role's loaded servers. A reload
+  re-plans the whole fleet and diffs the fresh plan per role against the
+  running launches, restarting only the roles whose launches changed; an
+  untouched 100GB chat model stays resident while the embedder moves. Each
+  server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. Each owner lilbee writes its own state file
-  (named with its pid, written atomically so a concurrent scan never reads a torn
-  file) recording the running llama-swap's pid, process group, and create time, the
+  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per role group
+  (named with the group and its pid, written atomically so a concurrent scan never reads a torn
+  file) recording that group's llama-swap pid, process group, and create time, the
   member servers' ports, plus the owner's pid and create time; before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is

@@ -120,13 +120,18 @@ def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
     return training_ctx
 
 
-def resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
+def resolve_chat_ctx(
+    model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
+) -> int:
     """Pick a single-GPU n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
     When ``cfg.num_ctx_max`` is ``None`` the model's training_ctx is the only
     ceiling, so a long-context model can grow past the target if the host has
     the RAM to back it. A multi-GPU tensor-split chat is sized separately by the
     fleet against its per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
+    ``available_bytes`` overrides the live memory read: the fleet planner passes
+    its clean-box snapshot so a reload sizes ctx like the boot did, not against
+    VRAM its own loaded fleet is holding.
     """
     training_ctx = train_ctx_from_meta(meta, fallback=DEFAULT_NUM_CTX, model_path=model_path)
     ceiling = cfg.num_ctx_max if cfg.num_ctx_max is not None else training_ctx
@@ -134,9 +139,11 @@ def resolve_chat_ctx(model_path: Path, meta: dict[str, str] | None) -> int:
     try:
         model_bytes = model_path.stat().st_size
         kv_per_tok = kv_bytes_per_token(meta, _kv_elem_bytes_for_cfg())
+        if available_bytes is None:
+            available_bytes = get_available_memory(cfg.gpu_memory_fraction)
         return compute_dynamic_ctx(
             model_bytes=model_bytes,
-            available_bytes=get_available_memory(cfg.gpu_memory_fraction),
+            available_bytes=available_bytes,
             training_ctx=training_ctx,
             kv_bytes_per_tok=kv_per_tok,
             ceiling=ceiling,

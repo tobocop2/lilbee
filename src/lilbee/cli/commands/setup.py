@@ -173,7 +173,7 @@ def _self_check_server(
         model=str(model_path),
         token_cap=ctx if is_embed else None,
     )
-    swap = SwapManager(work_dir)
+    swap = SwapManager(work_dir, role.value)
     try:
         swap.start([launch])
     except BaseException:

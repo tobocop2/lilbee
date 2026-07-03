@@ -1164,8 +1164,8 @@ def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
     """Set and apply a manual multi-GPU placement spec (persists to config)."""
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    # set_placement rebuilds the shared fleet: gate it on the shared HTTP
-    # transport exactly like the REST PUT/DELETE placement routes.
+    # set_placement restarts the shared fleet's moved roles: gate it on the
+    # shared HTTP transport exactly like the REST PUT/DELETE placement routes.
     if _transport.http_mounted and not cfg.allow_http_placement:
         return _error(placement_refused_message())
     # Always build a spec (even {}) so an empty/invalid one is rejected, not cleared.
