@@ -2241,3 +2241,62 @@ def test_rebuild_role_restarts_only_that_role(monkeypatch) -> None:
     assert p._swaps[WorkerRole.EMBED] is fresh  # ...and replaced from the fresh plan
     assert p._swaps[WorkerRole.CHAT] is live  # the healthy group was never touched
     assert live.shutdowns == 0
+
+
+def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> None:
+    """A later group failing to start must stop the groups already started, so a
+    half-built fleet never leaks past the failure."""
+    built: list[_FakeSwap] = []
+
+    class _SecondExplodes(_FakeSwap):
+        def start(self, launches: list) -> None:
+            if len(built) > 1:
+                raise RuntimeError("second group failed")
+            super().start(launches)
+
+    def _factory(_d: object, _g: object) -> _FakeSwap:
+        built.append(_SecondExplodes())
+        return built[-1]
+
+    monkeypatch.setattr(prov_mod, "SwapManager", _factory)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: [_fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.EMBED)],
+    )
+    p = FleetProvider()
+    with pytest.raises(RuntimeError, match="second group failed"):
+        p._ensure_fleet()
+    assert built[0].shutdowns == 1  # the group that did start was torn down
+    assert p._swaps == {}
+
+
+def test_drop_dead_swaps_drops_only_dead_groups() -> None:
+    p = FleetProvider()
+    dead, live = _FakeSwap(), _FakeSwap()
+    dead.running = False
+    p._swaps = {WorkerRole.EMBED: dead, WorkerRole.CHAT: live}
+    p._drop_dead_swaps()
+    assert set(p._swaps) == {WorkerRole.CHAT}  # the live group is untouched
+
+
+def test_reload_placement_dispatches_the_diff_reload(monkeypatch) -> None:
+    passes: list[bool] = []
+    p = FleetProvider()
+    p._swaps = {WorkerRole.CHAT: _FakeSwap()}
+    monkeypatch.setattr(p, "_reload_pass", lambda force=frozenset(): passes.append(True))
+    p.reload_placement(wait=True)
+    assert passes == [True]
+
+
+def test_reload_pass_refuses_after_terminal_shutdown(monkeypatch) -> None:
+    """A reload queued behind a terminal shutdown must not resurrect the fleet."""
+    plans: list[int] = []
+    monkeypatch.setattr(planning_mod, "plan_all_launches", lambda: plans.append(1) or [])
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: None)
+    p = FleetProvider()
+    p._shut_down = True
+    p._reload_pass(force=frozenset((WorkerRole.CHAT,)))
+    assert plans == []  # returned before planning; nothing can spawn
