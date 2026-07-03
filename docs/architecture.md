@@ -223,6 +223,37 @@ flowchart TD
   hard-freezes the machine, so refusing is the safe outcome; chat slot count
   (`--parallel`) steps down the same way before refusing.
 
+- **Reload and the plan snapshot** (`planning.capture_plan_probe`,
+  `provider._reload_pass`): each role runs behind its own llama-swap process, and
+  a reload re-plans the whole fleet but restarts **only the roles whose launches
+  changed**. That diff is sound because launches are a pure function of config,
+  hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
+  and free system RAM are captured once per boot (right after stale-server
+  reaping, when nothing lilbee owns is loaded) and every re-plan reads the
+  snapshot instead of probing live. A live probe under a loaded fleet would
+  report the fleet's own residency as unavailable, shrinking chat context and
+  slot counts, widening splits, and (on unified memory) evicting roles outright.
+  Full fleet teardown clears the snapshot, so the next boot probes fresh and
+  still respects VRAM other processes hold. The read/view surfaces
+  (`GET /api/placement`, `placement show`, preview) keep a live short-TTL probe
+  so displayed free bytes stay current; they never feed the launch path.
+
+```mermaid
+flowchart TB
+    CFG[config + placement spec] --> PLAN[planner\nestimate + bin-pack + ctx fit]
+    SNAP[clean-box snapshot\ndevices / VRAM / RAM] --> PLAN
+    PLAN --> DIFF{per-role launch diff}
+    DIFF -->|unchanged| KEEP[role keeps serving\nmodel stays resident]
+    DIFF -->|changed| RESTART[stop role's llama-swap\nstart with new argv]
+    subgraph fleet [one llama-swap per role]
+        CHAT[chat group]
+        EMBED[embed group xN]
+        RERANK[rerank group]
+    end
+    RESTART --> fleet
+    KEEP --> fleet
+```
+
 #### Manual placement
 
 By default the auto planner runs every time a fleet is built. When a `placement`
