@@ -1164,6 +1164,82 @@ def test_preload_roles_skips_failing_role(monkeypatch) -> None:
     embed.embed.assert_called_once()
 
 
+def test_preload_roles_warms_roles_concurrently(monkeypatch) -> None:
+    # The light roles must not queue behind the chat load: with the chat warm
+    # blocked mid-flight, the embed warm still completes.
+    chat_started = threading.Event()
+    release_chat = threading.Event()
+    embed_warmed = threading.Event()
+
+    chat, embed = _fake_client(), _fake_client()
+
+    def _blocked_chat(*args, **kwargs) -> MagicMock:
+        chat_started.set()
+        release_chat.wait(timeout=5.0)
+        return MagicMock()
+
+    chat.chat.side_effect = _blocked_chat
+    embed.embed.side_effect = lambda *a, **k: (embed_warmed.set(), [[0.1]])[1]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    preload = threading.Thread(target=p._preload_roles, daemon=True)
+    preload.start()
+    assert chat_started.wait(timeout=5.0)
+    assert embed_warmed.wait(timeout=5.0)  # embed warmed while chat still loading
+    release_chat.set()
+    preload.join(timeout=5.0)
+    assert not preload.is_alive()
+
+
+def _registry_with_shards(monkeypatch, shards: list[Path]) -> None:
+    registry = MagicMock()
+    registry.shard_paths.return_value = shards
+    monkeypatch.setattr(prov_mod, "ModelRegistry", MagicMock(return_value=registry))
+
+
+def test_prewarm_skips_shards_already_paged_this_boot(monkeypatch, tmp_path) -> None:
+    shard = tmp_path / "model.gguf"
+    shard.write_bytes(b"x" * 64)
+    _registry_with_shards(monkeypatch, [shard])
+    monkeypatch.setattr(prov_mod, "_PREWARMED_SHARDS", set())
+    p = _provider_with_clients({})
+    p._prewarm_chat_weights()  # first pass reads and records the shard
+
+    opens = {"n": 0}
+    real_open = Path.open
+
+    def _counting_open(self, *args, **kwargs):
+        if self == shard:
+            opens["n"] += 1
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _counting_open)
+    p._prewarm_chat_weights()  # second pass: cache is hot, no re-read
+    assert opens["n"] == 0
+
+
+def test_prewarm_rereads_when_a_shard_changed(monkeypatch, tmp_path) -> None:
+    shard = tmp_path / "model.gguf"
+    shard.write_bytes(b"x" * 64)
+    _registry_with_shards(monkeypatch, [shard])
+    monkeypatch.setattr(prov_mod, "_PREWARMED_SHARDS", set())
+    p = _provider_with_clients({})
+    p._prewarm_chat_weights()
+    shard.write_bytes(b"y" * 128)  # new size + mtime -> new prewarm identity
+
+    opens = {"n": 0}
+    real_open = Path.open
+
+    def _counting_open(self, *args, **kwargs):
+        if self == shard:
+            opens["n"] += 1
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _counting_open)
+    p._prewarm_chat_weights()
+    assert opens["n"] == 1  # changed shard is read again
+
+
 def test_warm_role_dispatches_per_role() -> None:
     chat, embed, rerank, vision = (_fake_client() for _ in range(4))
     prov_mod._warm_role(WorkerRole.CHAT, chat)

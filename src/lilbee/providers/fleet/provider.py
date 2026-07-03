@@ -68,6 +68,10 @@ _WARM_MAX_TOKENS = 1
 # Read size for paging chat shards into the page cache during warm; large enough
 # to keep sequential reads efficient without holding much resident at once.
 _PREWARM_CHUNK_BYTES = 8 * 1024 * 1024
+# Shards fully paged in this boot, keyed on (path, size, mtime_ns); a fleet
+# rebuild (e.g. a placement change) skips re-reading a hot cache. Module-level so
+# it survives reset_services() replacing the provider instance.
+_PREWARMED_SHARDS: set[tuple[str, int, int]] = set()
 # Per-role client request budget: the first request covers the lazy cold load plus
 # generation, so the weights-scaled cold-load budget plus the margin raises this floor.
 _REQUEST_TIMEOUT_FLOOR_S = 900.0
@@ -78,6 +82,12 @@ _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
 _T = TypeVar("_T")
+
+
+def _prewarm_key(shard: Path) -> tuple[str, int, int]:
+    """The prewarm identity of *shard*: same path, size, and mtime -> same pages."""
+    stat = shard.stat()
+    return (str(shard), stat.st_size, stat.st_mtime_ns)
 
 
 def _request_timeout_s(weights_bytes: int) -> float:
@@ -964,11 +974,15 @@ class FleetProvider:
         around each role). A per-replica failure is logged and skipped; that replica
         still loads on its first real use. The chat role routes through
         :meth:`_warm_chat_role` so a launcher gets granular progress.
+
+        Roles warm concurrently: chat is the long pole (a large model's load
+        dominates), so the light roles load alongside it instead of before it.
         """
         with self._lock:
             pools = {role: list(clients) for role, clients in self._clients.items()}
             on_spawning, on_spawned = self._on_spawning, self._on_spawned
-        for role, clients in pools.items():
+
+        def _warm_one(role: WorkerRole, clients: list[LlamaServerClient]) -> None:
             if on_spawning is not None:
                 on_spawning(role)
             if role is WorkerRole.CHAT:
@@ -977,6 +991,13 @@ class FleetProvider:
                 self._warm_role_clients(role, clients)
             if on_spawned is not None:
                 on_spawned(role)
+
+        if not pools:
+            return
+        with ThreadPoolExecutor(max_workers=len(pools), thread_name_prefix="fleet-preload") as pool:
+            futures = [pool.submit(_warm_one, role, clients) for role, clients in pools.items()]
+            for future in futures:
+                future.result()
 
     def _warm_role_clients(self, role: WorkerRole, clients: list[LlamaServerClient]) -> bool:
         """Warm every replica of *role*; return whether at least one loaded."""
@@ -1027,10 +1048,15 @@ class FleetProvider:
             return
         if total <= 0:
             return
+        keys = [_prewarm_key(shard) for shard in shards]
+        if all(key in _PREWARMED_SHARDS for key in keys):
+            # Already paged in this boot (e.g. a placement rebuild); the cache is hot.
+            self._warm_tracker.reading(total, total)
+            return
         done = 0
         self._warm_tracker.reading(0, total)
         chunk = bytearray(_PREWARM_CHUNK_BYTES)
-        for index, shard in enumerate(shards):
+        for index, (shard, key) in enumerate(zip(shards, keys, strict=True)):
             detail = f"shard {index + 1}/{len(shards)}" if len(shards) > 1 else None
             try:
                 with shard.open("rb", buffering=0) as handle:
@@ -1040,6 +1066,7 @@ class FleetProvider:
                             break
                         done += read
                         self._warm_tracker.reading(done, total, detail=detail)
+                _PREWARMED_SHARDS.add(key)
             except OSError:
                 # A partial/locked shard just shortens the read bar; the engine load
                 # surfaces any real fault as a user-facing error on the warm request.
