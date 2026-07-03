@@ -162,6 +162,40 @@ flowchart TD
     ES --> G1
 ```
 
+#### Supervision layout
+
+Follow the numbers: the planner measures, renders a config per role, each role's
+llama-swap spawns and watches that role's servers, and the provider routes live
+requests by role. Rerank and vision follow the same shape as embed. Because every
+role has its own supervisor, config, log, and state file, a placement change
+restarts only the roles whose launches changed (see the reload diff below).
+
+```mermaid
+flowchart LR
+    subgraph app ["lilbee"]
+        planner["placement planner"]
+        gguf["gguf-parser"]
+        provider["FleetProvider"]
+        planner -->|"1: measure each GGUF"| gguf
+    end
+    subgraph swaps ["llama-swap, one per role"]
+        sc["swap: chat<br/>own config, log, state"]
+        se["swap: embed<br/>own config, log, state"]
+    end
+    subgraph servers ["llama-server processes"]
+        chat["chat<br/>split across its GPUs"]
+        e1["embed replica"]
+        e2["embed replica"]
+    end
+    planner -->|"2: render JSON config per role"| sc
+    planner -->|"2: render JSON config per role"| se
+    sc -->|"3: spawn and watch"| chat
+    se -->|"3: spawn and watch"| e1
+    se -->|"3: spawn and watch"| e2
+    provider -->|"4: requests by role"| sc
+    provider -->|"4: requests by role"| se
+```
+
 - **Detection** (`devices.probe_devices`): GPUs come from the binary's own
   `llama-server --list-devices`, so enumeration and pinning share one backend-native
   index space. A device index from one API (Vulkan) is meaningless to another (CUDA),
