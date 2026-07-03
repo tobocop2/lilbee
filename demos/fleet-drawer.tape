@@ -10,50 +10,25 @@ Set Theme "rose-pine-moon"
 Set WindowBar Colorful
 Env COLORTERM "truecolor"
 Env TERM "xterm-256color"
-Output reel-manual.mp4
-Output reel-manual.gif
+Output lilbee-fleet-drawer.mp4
+Output lilbee-fleet-drawer.gif
+
 Hide
 Type "lilbee-tui"
 Enter
-Sleep 80s
+Sleep 16s
 Show
 Sleep 2s
-Escape
-Sleep 600ms
-Ctrl+g
-Sleep 3s
-Escape
-Sleep 600ms
-Tab
-Sleep 700ms
-Tab
-Sleep 600ms
-Tab
-Sleep 600ms
-Tab
-Sleep 600ms
-Tab
-Sleep 600ms
-Tab
-Sleep 900ms
-Enter
-Sleep 2500ms
-Tab
-Sleep 500ms
-Tab
-Sleep 500ms
-Tab
-Sleep 500ms
-Tab
+Type "/rebuild"
 Sleep 800ms
 Enter
-Sleep 70s
-Escape
-Sleep 700ms
-Type "i"
-Sleep 400ms
+Sleep 1500ms
+Enter
+Sleep 2s
+Ctrl+g
+Sleep 80s
 Type "How does lilbee split a large model across multiple GPUs?"
 Sleep 1s
 Enter
-Sleep 95s
+Sleep 140s
 Sleep 3s
