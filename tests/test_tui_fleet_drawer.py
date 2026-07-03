@@ -223,9 +223,9 @@ async def test_drawer_delegates_editor_actions(_patched, monkeypatch):
         # The drawer's keys are focus-scoped by design (typing in chat must not
         # trigger them). Focus a toggle inside, then drive the priority
         # bindings themselves so a child swallowing ctrl+r/s/x fails this test.
-        from textual.widgets import Button
+        from lilbee.cli.tui.widgets.fleet_body import FleetPill
 
-        drawer.query(Button).first().focus()
+        drawer.query(FleetPill).first().focus()
         await pilot.pause()
         await pilot.press("ctrl+r")
         await pilot.press("ctrl+s")
