@@ -16,6 +16,7 @@ import functools
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
