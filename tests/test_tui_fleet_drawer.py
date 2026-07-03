@@ -366,3 +366,37 @@ async def test_chat_input_enter_yields_when_unfocused() -> None:
     inp = ChatInput()
     with pytest.raises(SkipAction):
         inp.action_submit()
+
+
+async def test_single_gpu_collapses_editor_to_a_note(monkeypatch) -> None:
+    """One card means nothing to arrange: no grid, no commands, just the note."""
+    from textual.widgets import Label
+
+    import lilbee.cli.tui.widgets.fleet_body as fbm
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as gfp
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    GIB = 1024**3
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A40", 44 * GIB, 44 * GIB),),
+        roles=(
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0,), None, 1),
+        ),
+        manual=False,
+        unplaceable=(),
+        spec_json=None,
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: {})
+    app = _DrawerApp()
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        body = app.query_one(fbm.FleetBody)
+        assert not body.query(".dev-toggle")  # no grid chips to toggle
+        assert body.query_one("#placement-commands").display is False
+        assert body.query_one("#placement-hint").display is False
+        note = body.query_one(".single-gpu-note", Label)
+        assert "One graphics card" in str(note.render())

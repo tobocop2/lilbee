@@ -60,6 +60,8 @@ _CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 _EDITOR_ID = "#placement-editor"
 _TITLE_ID = "#placement-title"
 _STATE_ID = "#placement-state"
+_COMMANDS_ID = "#placement-commands"
+_HINT_WIDGET_ID = "#placement-hint"
 _FLEET_PANEL_ID = "#gpu-fleet-panel"
 
 # Only the replicated roles show a replica stepper; the others always serve one.
@@ -221,9 +223,20 @@ class FleetBody(Widget):
         return max(1, (n + _PLACEMENT_PAGE_SIZE - 1) // _PLACEMENT_PAGE_SIZE)
 
     def _build_editor(self) -> None:
-        """Rebuild the placement grid: GPU header, one row per role, optional pager."""
+        """Rebuild the placement grid: GPU header, one row per role, optional pager.
+
+        A single-GPU fleet has nothing to arrange -- every role can only live on
+        that card -- so the grid, command pills, and hint collapse to a one-line
+        note and the drawer stays a pure live monitor.
+        """
         container = self.query_one(_EDITOR_ID, Vertical)
         container.remove_children()
+        single = len(self._device_indices) <= 1
+        for selector in (_COMMANDS_ID, _HINT_WIDGET_ID):
+            self.query_one(selector).display = not single
+        if single:
+            container.mount(Label(msg.FLEET_SINGLE_GPU_NOTE, classes="single-gpu-note"))
+            return
         devices = self._page_devices()
         widgets: list[Horizontal] = [self._gpu_header_row(devices)]
         for role, edit in self._edits.items():
