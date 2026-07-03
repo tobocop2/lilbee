@@ -433,7 +433,7 @@ class Config(BaseSettings):
     placement: str | None = ConfigField(default=None, writable=True, public=False)
 
     # Allow PUT/DELETE /api/placement to apply or clear placement over HTTP.
-    # Off by default because applying placement rebuilds the shared fleet, which
+    # Off by default because applying placement restarts the shared fleet's moved roles, which
     # is unsafe across concurrent HTTP clients. Turn it on (LILBEE_ALLOW_HTTP_PLACEMENT=1)
     # only for a single-client / owned deployment: the plugin's managed local
     # server, or a personally-owned pod where one operator runs `lilbee serve`.

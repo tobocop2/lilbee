@@ -160,7 +160,7 @@ def test_embed_routes_to_least_busy_replica() -> None:
     busy.embed.assert_not_called()
 
 
-def test_adopt_swap_builds_a_client_per_replica(monkeypatch) -> None:
+def test_adopt_role_builds_a_client_per_replica(monkeypatch) -> None:
     launches = [_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED)]
     _install_engine(monkeypatch, launches=launches)
     p = FleetProvider()
@@ -179,7 +179,7 @@ def test_ensure_fleet_refused_after_shutdown(monkeypatch) -> None:
     assert swap.started == []  # no swap started after shutdown
 
 
-def test_adopt_swap_retires_old_clients_without_closing(monkeypatch) -> None:
+def test_adopt_role_retires_old_clients_without_closing(monkeypatch) -> None:
     # Re-adopting (a reload) must not close old clients in place (a
     # reader may still hold one); they are retired for deferred close.
     launch = _fake_launch(WorkerRole.EMBED)
@@ -239,7 +239,7 @@ def test_drop_swap_refs_closes_retiring_clients() -> None:
     assert p._retiring_clients == []
 
 
-def test_adopt_swap_threads_rerank_mode(monkeypatch) -> None:
+def test_adopt_role_threads_rerank_mode(monkeypatch) -> None:
     launch = _fake_launch(WorkerRole.RERANK)
     launch.rerank_mode = RerankMode.LLM
     captured: dict[str, object] = {}

@@ -3678,6 +3678,8 @@ class TestRoutingLifecycleForwarding:
         local.cancel_inference.assert_called_once_with()
         rp.reload_role(WorkerRole.EMBED)
         local.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=False)
+        rp.reload_placement(wait=True)
+        local.reload_placement.assert_called_once_with(wait=True)
 
     def test_cancel_and_reload_are_noop_without_local(self) -> None:
         from lilbee.providers.roles import WorkerRole
@@ -3686,6 +3688,7 @@ class TestRoutingLifecycleForwarding:
         rp = RoutingProvider()  # _local is None
         rp.cancel_inference()  # must not raise
         rp.reload_role(WorkerRole.CHAT)  # must not raise
+        rp.reload_placement()  # must not raise
 
     def test_drop_loaded_models_async_forwards_to_local(self) -> None:
         from lilbee.providers.routing_provider import RoutingProvider

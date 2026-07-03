@@ -1,11 +1,13 @@
 """FleetProvider: the local llama-server engine for every role.
 
-On first use it plans GPU placement and starts one llama-swap process that fronts
-a llama-server per configured role (chat/embed/rerank/vision) co-resident behind a
-single OpenAI endpoint; each call routes to that endpoint by role id. There is no
-in-process fallback, so a missing role surfaces a user-facing ``ProviderError``.
-Model management (list/show/capabilities) reads the registry and GGUF headers
-directly and needs no running server.
+On first use it plans GPU placement and starts one llama-swap process per
+configured role (chat/embed/rerank/vision), each fronting that role's
+llama-server(s); each call routes to its role's proxy by replica model id.
+Per-role processes let a reload restart only the roles whose launches changed,
+so a placement or model change never unloads an untouched role's model. There
+is no in-process fallback, so a missing role surfaces a user-facing
+``ProviderError``. Model management (list/show/capabilities) reads the registry
+and GGUF headers directly and needs no running server.
 """
 
 from __future__ import annotations
@@ -386,7 +388,7 @@ class FleetProvider:
         # potentially in use. See _retire_clients.
         self._retiring_clients: list[LlamaServerClient] = []
         # Chat batching slots and per-slot context from the chat launch, surfaced to
-        # the concurrency gate and clients; defaults until the swap is up.
+        # the concurrency gate and clients; defaults until the chat group is up.
         self._chat_slots = 1
         self._chat_ctx: int | None = None
         # Single-flight guard: the HTTP/MCP servers route concurrently, so two
@@ -660,10 +662,9 @@ class FleetProvider:
         A no-op for groups still running (e.g. the failure was in planning), so
         a live engine is never abandoned unstopped.
         """
-        with self._build_lock:
-            with self._lock:
-                for role in [r for r, swap in self._swaps.items() if not swap.running]:
-                    self._drop_role(role)
+        with self._build_lock, self._lock:
+            for role in [r for r, swap in self._swaps.items() if not swap.running]:
+                self._drop_role(role)
 
     def _require_configured_model(
         self, model: str | None, configured: str, role: WorkerRole
@@ -991,7 +992,7 @@ class FleetProvider:
         model) runs on a background thread and this returns at once: the eager-start
         at TUI mount must not freeze the UI. The spawn listeners fire per role as it
         loads, so the UI shows progress. A second call while warm-up is in flight
-        (or once the swap is up) is a no-op.
+        (or once the fleet is up) is a no-op.
         """
         with self._lock:
             if self._swaps or self._warming:
@@ -1004,7 +1005,7 @@ class FleetProvider:
         ).start()
 
     def _warm_up_blocking(self) -> None:
-        """Start the swap and pre-load every role on a background thread.
+        """Start the fleet and pre-load every role on a background thread.
 
         Runs on a daemon thread with no caller to catch failures, so a startup
         error is logged and swallowed: a role that can't load surfaces a

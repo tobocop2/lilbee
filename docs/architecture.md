@@ -262,7 +262,7 @@ CLI (`lilbee placement show/preview/set/clear`), MCP
 (`get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
 and the TUI Placement screen. Over HTTP the reads are always served
 (`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`).
-Applying or clearing placement rebuilds the shared fleet, so `PUT`/`DELETE
+Applying or clearing placement restarts the fleet's moved roles, so `PUT`/`DELETE
 /api/placement` are refused by default and gated on `allow_http_placement`
 (`LILBEE_ALLOW_HTTP_PLACEMENT`), which an operator enables for a single-client
 or owned deployment (the plugin's managed server, or a personally-owned pod) to
@@ -305,13 +305,19 @@ touching the running fleet.
   setting deliberately not forwarded: it selects a single card by global index, which
   is meaningless once a server is pinned to a subset, and placement owns card choice
   in fleet mode.
-- **Lifecycle** (`fleet.py`): each server runs in its own process group and claims
+- **Lifecycle** (`fleet.py`): each role runs behind its own llama-swap process
+  with its own config file, so restarting one role's group (a placement or
+  per-role model change) never touches another role's loaded servers. A reload
+  re-plans the whole fleet and diffs the fresh plan per role against the
+  running launches, restarting only the roles whose launches changed; an
+  untouched 100GB chat model stays resident while the embedder moves. Each
+  server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. Each owner lilbee writes its own state file
-  (named with its pid, written atomically so a concurrent scan never reads a torn
-  file) recording the running llama-swap's pid, process group, and create time, the
+  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per role group
+  (named with the group and its pid, written atomically so a concurrent scan never reads a torn
+  file) recording that group's llama-swap pid, process group, and create time, the
   member servers' ports, plus the owner's pid and create time; before the next build
   launches the fleet (so the cards are actually free for it and the context sizer
   reads true free VRAM), every state file is

@@ -1,6 +1,8 @@
-"""Generate a llama-swap config that keeps every fleet role co-resident.
+"""Generate one role group's llama-swap config (all its replicas co-resident).
 
-See docs/architecture.md (llama-swap) for the supervisor/proxy design.
+Each role runs behind its own llama-swap process with its own config, so a
+reload of one role never touches another's loaded servers. See
+docs/architecture.md (llama-swap) for the supervisor/proxy design.
 """
 
 from __future__ import annotations
@@ -16,8 +18,9 @@ if TYPE_CHECKING:
 
     from lilbee.providers.fleet.launch import InstanceLaunch
 
-# One group holds every role with swap disabled, so llama-swap brings them all up
-# and never evicts one to load another (the co-residency the fleet needs).
+# One group holds the role's members with swap disabled, so llama-swap brings
+# them all up and never evicts one to load another (the co-residency the fleet
+# needs across a role's replicas).
 _GROUP_NAME = "lilbee"
 # Cold-load ceiling floor; the heaviest member's weights scale it up from here.
 _HEALTH_CHECK_TIMEOUT_FLOOR_S = 600
@@ -50,10 +53,10 @@ _KEY_MEMBERS = "members"
 def build_swap_config(launches: list[InstanceLaunch], member_ports: Mapping[str, int]) -> str:
     """Render a llama-swap config (JSON, which is valid YAML) for *launches*.
 
-    Each role becomes a model whose id is the role name and whose command is the
-    role's llama-server argv plus the explicit port from *member_ports*; one
-    ``swap: false`` group holds them all co-resident behind the single OpenAI
-    endpoint. Ports are allocated fresh per start (never llama-swap's fixed
+    Each launch becomes a model whose id is its replica model id and whose
+    command is the llama-server argv plus the explicit port from *member_ports*;
+    one ``swap: false`` group holds them all co-resident behind this role's
+    proxy endpoint. Ports are allocated fresh per start (never llama-swap's fixed
     ``startPort`` range) so a previous instance's lingering server can't collide
     with the new fleet's bind.
     """

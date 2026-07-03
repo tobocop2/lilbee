@@ -1400,7 +1400,5 @@ class TestChatNoMmap:
 
     def test_mmap_kept_when_weights_crowd_ram(self, monkeypatch) -> None:
         # A malloc'd copy is unevictable; a model over half of RAM keeps mmap.
-        monkeypatch.setattr(
-            "lilbee.providers.model_cache.total_system_memory", lambda: 32 * 10**9
-        )
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 32 * 10**9)
         assert planning_mod._chat_no_mmap(20 * 10**9) is False
