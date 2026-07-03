@@ -54,34 +54,40 @@ FleetBody {
         color: $foreground;
     }
 
-    /* Focused (keyboard) pill: reverse marks the cursor on top of the state
-       fill, so focus layers on state instead of masking it. */
+    /* Focused (keyboard) pill: the soft iris fill ConfirmDialog uses -- no
+       reverse video, which reads as a white block against rose-pine. */
     .dev-toggle:focus {
-        text-style: bold reverse;
+        background: $primary 40%;
+        color: $text;
+        text-style: bold;
     }
 
     /* On-state color carries the KIND: split (one model across cards) = primary,
-       mirror (a copy per card) = secondary, single (one pinned card) = accent. */
+       mirror (a copy per card) = secondary, single (one pinned card) = accent.
+       Tinted fills (not solid blocks) so the pills sit inside the theme the way
+       the status-bar badges do. */
     .dev-toggle.split.on {
-        background: $primary;
-        color: $background;
+        background: $primary 50%;
+        color: $text;
         text-style: bold;
     }
 
     .dev-toggle.mirror.on {
-        background: $secondary;
-        color: $background;
+        background: $secondary 50%;
+        color: $text;
         text-style: bold;
     }
 
     .dev-toggle.single.on {
-        background: $accent;
-        color: $background;
+        background: $accent 50%;
+        color: $text;
         text-style: bold;
     }
 
+    /* Focus on an already-on pill keeps the kind fill; the underline is the
+       cursor mark, so state and focus stay separately readable. */
     .dev-toggle.on:focus {
-        text-style: bold reverse;
+        text-style: bold underline;
     }
 
     .rep-pill {
@@ -98,7 +104,8 @@ FleetBody {
     }
 
     .rep-pill:focus {
-        text-style: bold reverse;
+        background: $boost;
+        text-style: bold;
     }
 
     .rep-count {
@@ -130,7 +137,8 @@ FleetBody {
     }
 
     .cmd-pill:focus {
-        text-style: bold reverse;
+        background: $boost;
+        text-style: bold;
     }
 
     .gpu-header-row {
@@ -176,7 +184,8 @@ FleetBody {
     }
 
     .pg-pill:focus {
-        text-style: bold reverse;
+        background: $boost;
+        text-style: bold;
     }
 
     .pg-info {
