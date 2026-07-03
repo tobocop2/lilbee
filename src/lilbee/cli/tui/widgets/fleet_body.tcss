@@ -37,6 +37,11 @@ FleetBody {
         color: $warning;
     }
 
+    .single-gpu-note {
+        height: 1;
+        color: $text-muted;
+    }
+
     /* One hover-help for the whole drawer; keeps the surface otherwise minimal. */
     #placement-help {
         width: 3;
