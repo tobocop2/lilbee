@@ -43,7 +43,7 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -78,7 +78,7 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Resolve wheel-source run id
         id: wheels
@@ -131,6 +131,16 @@ jobs:
             # have a deterministic payload to round-trip.
             touch wheel-indexes/.empty
           fi
+
+      - name: Build compat (pre-Haswell lancedb) index
+        # Serves lilbee.sh/compat/: the +compat lancedb wheels built by the
+        # tobocop2/lancedb fork and hosted as release assets there. Independent
+        # of the lilbee wheel set above.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rm -f wheel-indexes/.empty
+          python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/lancedb
 
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7

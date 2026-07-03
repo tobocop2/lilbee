@@ -67,7 +67,7 @@ jobs:
     if: needs.gate.outputs.ci_passed != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v7
@@ -84,7 +84,7 @@ jobs:
     if: needs.gate.outputs.ci_passed != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v7
@@ -109,6 +109,9 @@ jobs:
       && (needs.gate.outputs.ci_passed == 'true' || needs.test.result == 'success' || inputs.skip_tests)
     # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
     timeout-minutes: 300
+    # Only soft cells (the pre-Haswell compat build) may fail without failing the
+    # release; every default binary stays hard-required.
+    continue-on-error: ${{ matrix.soft == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +120,19 @@ jobs:
             container: quay.io/pypa/manylinux_2_34_x86_64
             asset_name: lilbee-linux-x86_64
             backend: vulkan
+          # Pre-Haswell-safe Linux build: the same Vulkan binary with the stock
+          # lancedb swapped for the +compat wheel and the launcher held to an
+          # x86-64-v2 baseline, so it runs on Sandy Bridge / Bulldozer CPUs. Soft and
+          # self-contained -- no pyproject/uv.lock footprint, and a failure (until the
+          # wheel index is live) never blocks the release. This is the binary the CPU
+          # package channels (AUR/snap/flatpak/nix/homebrew) would carry as a -compat.
+          - os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_34_x86_64
+            asset_name: lilbee-compat-linux-x86_64
+            backend: vulkan
+            compat: true
+            soft: true
+            march: x86-64-v2
           - os: macos-latest
             asset_name: lilbee-macos-arm64
             backend: metal
@@ -124,12 +140,20 @@ jobs:
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             backend: vulkan
+          # Pre-Haswell-safe Windows build for the scoop lilbee-compat manifest.
+          # Same soft, self-contained model as the Linux compat cell; MSVC's default
+          # baseline is already conservative, so no -march override is needed here.
+          - os: windows-latest
+            asset_name: lilbee-compat-windows-x86_64.exe
+            backend: vulkan
+            compat: true
+            soft: true
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -201,6 +225,18 @@ jobs:
         # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
         run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
 
+      # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
+      # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
+      # Pinned to the latest stable lancedb for Python (0.33), served by the fork as
+      # +compat; lilbee's own stock pin can lag. Bump when the fork moves.
+      - name: Swap in the pre-Haswell lancedb
+        if: matrix.compat
+        shell: bash
+        run: |
+          uv pip install --reinstall --no-deps \
+            --extra-index-url https://lilbee.sh/compat/ \
+            lancedb==0.33.0+compat
+
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
       # baked rpath) and install lilbee_engine so Nuitka bundles the whole
       # engine into this executable.
@@ -216,6 +252,10 @@ jobs:
         env:
           ASSET_NAME: ${{ matrix.asset_name }}
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+          # compat cell only: hold Nuitka's C output to the pre-Haswell baseline so
+          # the launcher layer (not just lancedb) runs on old silicon. Empty elsewhere.
+          CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
+          CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
       - name: Smoke test
@@ -267,9 +307,22 @@ jobs:
             cat "$MP"
             exit 1
           fi
+          # Any traceback means the dispatch crashed running the module. runpy.run_module
+          # raised AttributeError ("nuitka_module_loader has no attribute 'get_code'") in
+          # the onefile binary; fd 999 is dead, so the runner must exit silently.
+          if grep -qE "Traceback|Error:|get_code" "$MP"; then
+            echo "FAIL: splash -m reinvocation raised an exception in the frozen binary"
+            cat "$MP"
+            exit 1
+          fi
           "$EXE" -c "import multiprocessing" > "$MP" 2>&1 || true
           if grep -qE "No such command|No such option" "$MP"; then
             echo "FAIL: resource-tracker -c reinvocation leaked into typer (frozen detection broken)"
+            cat "$MP"
+            exit 1
+          fi
+          if grep -qE "Traceback|Error:|get_code" "$MP"; then
+            echo "FAIL: resource-tracker -c reinvocation raised an exception in the frozen binary"
             cat "$MP"
             exit 1
           fi
