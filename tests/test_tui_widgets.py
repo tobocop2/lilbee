@@ -2468,6 +2468,24 @@ class TestGetCompletions:
         r = get_completions(f"/add {d}/")
         assert any("testfile.txt" in x for x in r)
 
+    def test_add_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:
+        """Regression (bb-7wq): a fully-typed existing directory or file (no
+        trailing separator) yields no completions, so the dropdown collapses and
+        Enter submits ``/add <path>`` instead of accepting a child entry."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "sub").mkdir()
+        (d / "sub" / "a.py").touch()
+        # complete directory path, no trailing slash -> collapse (Enter submits)
+        assert get_completions(f"/add {d}/sub") == []
+        # complete file path -> collapse too
+        assert get_completions(f"/add {d}/sub/a.py") == []
+        # a trailing separator still descends to list the directory's contents
+        assert any("a.py" in x for x in get_completions(f"/add {d}/sub/"))
+
     def test_add_tilde_completions_not_filtered_out(self, tmp_path, monkeypatch) -> None:
         """Regression: ``~/`` expands to absolute paths that do not start with
         the raw ``~/`` partial, so the arg filter must not wipe them."""
@@ -6640,3 +6658,12 @@ class TestAppTitleSingleSource:
         from lilbee.cli.tui import messages as msg
 
         assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"
+
+
+class TestPathExists:
+    def test_returns_false_when_path_resolution_raises(self) -> None:
+        """A path that can't even be resolved reports as absent, not an error."""
+        from lilbee.cli.tui.widgets import autocomplete
+
+        with mock.patch.object(autocomplete, "Path", side_effect=OSError("boom")):
+            assert autocomplete._path_exists("~/whatever") is False

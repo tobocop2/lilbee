@@ -19,7 +19,7 @@ GIB = 1024**3
 
 @dataclass(frozen=True)
 class _FakeDevice:
-    """Minimal _DeviceLike-compatible stub for tests."""
+    """Minimal DeviceLike-compatible stub for tests."""
 
     index: int
     backend: str
@@ -45,7 +45,7 @@ def _make_stat(
 
 
 def _make_device(index: int, backend: str = "CUDA", total_bytes: int = 24 * GIB) -> _FakeDevice:
-    """Return a _DeviceLike-compatible stub."""
+    """Return a DeviceLike-compatible stub."""
     return _FakeDevice(
         index=index, backend=backend, total_bytes=total_bytes, free_bytes=total_bytes
     )
@@ -249,6 +249,29 @@ async def test_panel_graceful_on_probe_exception(monkeypatch: pytest.MonkeyPatch
         await pilot.pause()
         content_after_fail = str(panel.render())
         assert "CUDA0" in content_after_fail
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_while_probe_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tick during a slow probe skips instead of stacking another worker."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        await app.workers.wait_for_complete()
+        launches: list[int] = []
+        monkeypatch.setattr(panel, "_probe_worker", lambda *a: launches.append(1))
+        panel._probing = True  # a probe is still running
+        panel._request_stats()
+        assert launches == []  # skipped, no pile-up
+        panel._probing = False  # the running probe finished
+        panel._request_stats()
+        assert launches == [1]
 
 
 @pytest.mark.asyncio

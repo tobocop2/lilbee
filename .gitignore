@@ -72,3 +72,5 @@ demos/_sandbox/
 
 # CI staging dir for the snap build payload.
 packaging/snap/payload/
+packaging/snap-compat/payload/
+packaging/snap-cuda/payload/

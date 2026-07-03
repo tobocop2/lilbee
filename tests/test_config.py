@@ -1785,3 +1785,20 @@ class TestEngineKnobValidators:
 
     def test_n_gpu_layers_auto_alias_is_none(self):
         assert Config._parse_n_gpu_layers("auto") is None
+
+
+class TestActiveConfigScope:
+    """``config_scope`` binds a Config for the block; ``active_config`` reads it."""
+
+    def test_active_config_defaults_to_global(self):
+        from lilbee.core.config import active_config, cfg
+
+        assert active_config() is cfg
+
+    def test_config_scope_binds_and_restores(self, tmp_path):
+        from lilbee.core.config import active_config, cfg, config_scope
+
+        scoped = cfg.model_copy(update={"data_root": tmp_path})
+        with config_scope(scoped):
+            assert active_config() is scoped
+        assert active_config() is cfg

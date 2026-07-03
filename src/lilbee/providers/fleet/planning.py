@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from lilbee.core.config.enums import KvCacheType
 from lilbee.providers import model_cache
@@ -37,12 +37,12 @@ from lilbee.providers.fleet.placement import (
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
-from lilbee.providers.roles import RerankMode, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
@@ -61,25 +61,17 @@ _AUX_SLOTS = 1
 # A tensor-split needs at least this many GPUs; below it the chat context objective
 # (a gguf read) is pointless because the model can only single-card or stay unplaced.
 _MIN_SPLIT_GPUS = 2
-_EMBED_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK)
+# Pooled single-slot search roles (embed/cross-encoder rerank) whose whole input
+# batches in one pass; derived from the role registry.
+_EMBED_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.pooled)
 # Roles whose loaders offload every layer regardless of cfg.n_gpu_layers; only
 # chat honors cfg.n_gpu_layers.
-_ALL_LAYER_ROLES = (WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION)
+_ALL_LAYER_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.offload_all_layers)
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
 _DEFAULT_THREADS = 4
 # Roles to which flash attention applies; embed/rerank run without it.
-_FLASH_ROLES = (WorkerRole.CHAT, WorkerRole.VISION)
-
-# Server roles -> model-ref accessor. chat/embed are always configured;
-# reranker_model/vision_model may be "" (unconfigured) -> skipped, so that role
-# has no server. Vision additionally needs an mmproj projector.
-_SERVER_ROLE_PARAMS: dict[WorkerRole, Callable[[Any], str]] = {
-    WorkerRole.CHAT: lambda c: str(c.chat_model),
-    WorkerRole.EMBED: lambda c: str(c.embedding_model),
-    WorkerRole.RERANK: lambda c: str(c.reranker_model),
-    WorkerRole.VISION: lambda c: str(c.vision_model),
-}
+_FLASH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.flash_attn)
 
 
 # Cap vision's own KV footprint at this fraction of usable VRAM when sizing its
@@ -604,7 +596,9 @@ def _server_model_inputs(
     def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
         if roles is not None and role not in roles:
             return
-        ref = _SERVER_ROLE_PARAMS[role](cfg)
+        # chat/embed are always configured; reranker_model/vision_model may be ""
+        # (unconfigured) -> skipped, so that role has no server.
+        ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
         if not ref:
             return  # unconfigured optional role -> no server
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
@@ -631,13 +625,13 @@ def _server_model_inputs(
     # Estimate every non-chat role first so the search footprint is known, then size
     # chat against the remainder. The reservation only applies on a shared-memory
     # host; discrete GPUs pin each role to its own VRAM and pack independently.
-    for role in _SERVER_ROLE_PARAMS:
+    for role in ROLE_REGISTRY:
         if role is not WorkerRole.CHAT:
             consider(role)
     reservation = _search_reservation(inputs) if unified_budget is not None else 0
     consider(WorkerRole.CHAT, chat_reservation=reservation)
 
-    ordered = [inputs[role] for role in _SERVER_ROLE_PARAMS if role in inputs]
+    ordered = [inputs[role] for role in ROLE_REGISTRY if role in inputs]
     return ordered, model_refs, reservation
 
 

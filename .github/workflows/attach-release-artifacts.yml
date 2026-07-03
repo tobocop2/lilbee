@@ -30,7 +30,7 @@ jobs:
   attach:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download binaries from the run
         uses: actions/download-artifact@v8
@@ -50,21 +50,46 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
 
-      - name: Download extra wheels from the run
+      # continue-on-error: a stranded run may not have built the optional
+      # multi-gpu artifacts; attach whatever did build.
+      - name: Download multi-gpu wheels from the run
         uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
-          pattern: wheel-extra-*
-          path: extra-wheels-staging/
+          pattern: wheel-multigpu-*
+          path: multigpu-wheels-staging/
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
 
-      # Extra-backend wheels share PEP 427 filenames; stage them through a
-      # backend build tag (1.cu125 etc.) so all variants coexist on one release.
-      - name: Stage extra wheels with backend build tag
-        run: python3 -m tools.stage_release_assets extra-wheels-staging/ extra-wheels/
+      - name: Download standalone server binaries from the run
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: multigpu-exe-*
+          path: multigpu-bins/
+          merge-multiple: true
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      # Same-platform engine wheels share PEP 427 filenames; stage them through
+      # a backend build tag (1.cu125 etc.) so all variants coexist on one
+      # release. Mirrors attach-multigpu in release-candidate.yml.
+      - name: Disambiguate same-platform wheels with a backend build tag
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, shutil
+          out = pathlib.Path("multigpu-wheels")
+          out.mkdir(exist_ok=True)
+          for d in pathlib.Path("multigpu-wheels-staging").glob("wheel-multigpu-*"):
+              backend = d.name.rsplit("-", 1)[-1]
+              for whl in d.glob("*.whl"):
+                  name, ver, rest = whl.name.split("-", 2)
+                  shutil.copy(whl, out / f"{name}-{ver}-1.{backend}-{rest}")
+          PY
 
       - name: List assets
-        run: ls -lh bins/ default-wheels/ extra-wheels/
+        run: ls -lh bins/ default-wheels/ multigpu-wheels/ multigpu-bins/ || true
 
       - name: Attach to the GH release
         uses: softprops/action-gh-release@v3
@@ -73,6 +98,7 @@ jobs:
           files: |
             bins/*
             default-wheels/*
-            extra-wheels/*
+            multigpu-wheels/*
+            multigpu-bins/*
           generate_release_notes: true
           prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}

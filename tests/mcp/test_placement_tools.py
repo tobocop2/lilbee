@@ -76,6 +76,50 @@ def test_clear_placement_tool(monkeypatch):
     assert seen["spec"] is None
 
 
+def test_set_placement_tool_refused_on_http(monkeypatch):
+    """On the shared HTTP transport, set_placement is refused like the REST route."""
+    called = {}
+    monkeypatch.setattr(
+        mcp_server, "set_placement", lambda spec: called.setdefault("spec", spec) or _view(True)
+    )
+    monkeypatch.setattr(mcp_server.cfg, "allow_http_placement", False)
+    mcp_server.set_http_mounted(True)
+    try:
+        out = mcp_server.set_placement_tool({"chat": {"devices": [0]}})
+    finally:
+        mcp_server.set_http_mounted(False)
+    assert "allow_http_placement" in out["error"]
+    assert not called  # the fleet was never rebuilt
+
+
+def test_clear_placement_tool_refused_on_http(monkeypatch):
+    """clear_placement also rebuilds the fleet, so it shares the HTTP gate."""
+    called = {}
+    monkeypatch.setattr(
+        mcp_server, "set_placement", lambda spec: called.setdefault("spec", spec) or _view()
+    )
+    monkeypatch.setattr(mcp_server.cfg, "allow_http_placement", False)
+    mcp_server.set_http_mounted(True)
+    try:
+        out = mcp_server.clear_placement_tool()
+    finally:
+        mcp_server.set_http_mounted(False)
+    assert "allow_http_placement" in out["error"]
+    assert not called
+
+
+def test_set_placement_tool_allowed_on_http_when_opted_in(monkeypatch):
+    """allow_http_placement opts a single-client deployment into HTTP placement."""
+    monkeypatch.setattr(mcp_server, "set_placement", lambda spec: _view(True))
+    monkeypatch.setattr(mcp_server.cfg, "allow_http_placement", True)
+    mcp_server.set_http_mounted(True)
+    try:
+        out = mcp_server.set_placement_tool({"chat": {"devices": [0]}})
+    finally:
+        mcp_server.set_http_mounted(False)
+    assert out["manual"] is True
+
+
 def test_preview_placement_tool_auto(monkeypatch):
     monkeypatch.setattr(mcp_server, "preview_placement", lambda spec=None: _view())
     out = mcp_server.preview_placement_tool()

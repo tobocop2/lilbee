@@ -291,6 +291,44 @@ class TestListModelsEndpoint:
         finally:
             set_services(None)
 
+    async def test_non_active_local_model_is_advertised_then_instructively_rejected(
+        self, _auth_token, monkeypatch
+    ):
+        """The switchable-models contract, pinned as deliberate.
+
+        /v1/models advertises every installed chat model (the launcher and
+        agent-config pickers list them so users can discover what they could
+        switch to); requesting a non-active local one returns a 400 whose
+        message teaches the switch flow rather than serving it silently.
+        """
+        from lilbee.core.config import cfg
+
+        active = "a/Active-GGUF/active.gguf"
+        other = "b/Other-GGUF/other.gguf"
+        monkeypatch.setattr(cfg, "chat_model", active)
+        provider = MagicMock()
+        provider.supports_tools.return_value = False
+        services = _services_with(
+            provider, [_installed_chat_model(active), _installed_chat_model(other)]
+        )
+        set_services(services)
+        try:
+            async with AsyncTestClient(_build_app()) as client:
+                listed = await client.get("/v1/models", headers=_h())
+                ids = [m["id"] for m in listed.json()["data"]]
+                assert active in ids and other in ids
+                completion = await client.post(
+                    "/v1/chat/completions",
+                    headers=_h(),
+                    json={"model": other, "messages": [{"role": "user", "content": "hi"}]},
+                )
+            assert completion.status_code == 400
+            message = completion.json()["error"]["message"]
+            assert active in message  # names the configured model
+            assert "settings" in message  # and teaches the switch flow
+        finally:
+            set_services(None)
+
     async def test_created_is_zero_when_downloaded_at_unparseable(
         self, services_with_chat_model, _auth_token
     ):
@@ -1330,7 +1368,7 @@ class TestRouteDispatchErrorBranches:
         from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
         from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
 
-        def _raise(req: object) -> None:
+        def _raise(req: object, *, canonical_model: str | None = None) -> None:
             raise ModelNotFoundError("vendor/missing")
 
         monkeypatch.setattr("lilbee.server.chat_completions_api.routes.dispatch_chat", _raise)
@@ -1338,7 +1376,7 @@ class TestRouteDispatchErrorBranches:
             model="vendor/missing",
             messages=(CanonicalMessage(role="user", content="hi"),),
         )
-        response = await _run_non_stream(req, ChatSlotGuard())
+        response = await _run_non_stream(req, ChatSlotGuard(), canonical_model="vendor/missing")
         assert response.status_code == 404
         assert response.content["error"]["code"] == "model_not_found"
 
@@ -1350,7 +1388,7 @@ class TestRouteDispatchErrorBranches:
         from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
         from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
 
-        def _raise(req: object) -> None:
+        def _raise(req: object, *, canonical_model: str | None = None) -> None:
             raise ModelDoesNotSupportToolsError("vendor/notools")
 
         monkeypatch.setattr("lilbee.server.chat_completions_api.routes.dispatch_chat", _raise)
@@ -1358,7 +1396,7 @@ class TestRouteDispatchErrorBranches:
             model="vendor/notools",
             messages=(CanonicalMessage(role="user", content="hi"),),
         )
-        response = await _run_non_stream(req, ChatSlotGuard())
+        response = await _run_non_stream(req, ChatSlotGuard(), canonical_model="vendor/notools")
         assert response.status_code == 400
         assert response.content["error"]["code"] == "model_does_not_support_tools"
 
@@ -1370,7 +1408,7 @@ class TestRouteDispatchErrorBranches:
         from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
         from lilbee.server.chat_dispatch.dispatch import ModelNotFoundError
 
-        async def _raising_stream(req: object) -> Any:
+        async def _raising_stream(req: object, *, canonical_model: str | None = None) -> Any:
             raise ModelNotFoundError("vendor/missing")
             yield  # pragma: no cover  -- unreachable, makes this an async generator
 
@@ -1397,7 +1435,7 @@ class TestRouteDispatchErrorBranches:
         from lilbee.server.chat_dispatch.canonical import CanonicalChatRequest, CanonicalMessage
         from lilbee.server.chat_dispatch.dispatch import ModelDoesNotSupportToolsError
 
-        async def _raising_stream(req: object) -> Any:
+        async def _raising_stream(req: object, *, canonical_model: str | None = None) -> Any:
             raise ModelDoesNotSupportToolsError("vendor/notools")
             yield  # pragma: no cover
 
@@ -1466,3 +1504,147 @@ class TestRouteDispatchErrorBranches:
         )
         assert await _preflight_resolved_model(req) == "vendor/resolved"
         assert seen_threads and seen_threads[0] is not loop_thread
+
+
+class TestPreflightRunsOnce:
+    """The route resolves the model once; dispatch reuses it instead of re-running."""
+
+    def _count_preflight(self, monkeypatch) -> list[Any]:
+        from lilbee.server.chat_completions_api import routes
+        from lilbee.server.chat_dispatch import dispatch as dispatch_mod
+
+        calls: list[Any] = []
+        real = dispatch_mod.preflight_chat_request
+
+        def _counting(req: Any) -> str:
+            calls.append(req)
+            return real(req)
+
+        monkeypatch.setattr(routes, "preflight_chat_request", _counting)
+        monkeypatch.setattr(dispatch_mod, "preflight_chat_request", _counting)
+        return calls
+
+    async def test_non_stream_runs_preflight_exactly_once(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        calls = self._count_preflight(monkeypatch)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={"model": INSTALLED_REF, "messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status_code == 200
+        assert len(calls) == 1
+
+    async def test_stream_runs_preflight_exactly_once(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(["hi"])
+        calls = self._count_preflight(monkeypatch)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+            assert resp.content
+        assert resp.status_code == 200
+        assert len(calls) == 1
+
+
+class TestMultiChoiceRejection:
+    async def test_n_greater_than_one_returns_400(self, services_with_chat_model, _auth_token):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "n": 2,
+                },
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_request"
+        assert "one choice" in body["error"]["message"]
+        services_with_chat_model.provider.chat.assert_not_called()
+
+    async def test_n_equal_to_one_is_accepted(self, services_with_chat_model, _auth_token):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "n": 1,
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "hello"
+
+    async def test_n_below_one_rejected_at_validation(self, services_with_chat_model, _auth_token):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "n": 0,
+                },
+            )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
+
+
+class TestIgnoredParamsLogged:
+    async def test_unsupported_params_are_logged_at_debug(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.server.chat_completions_api import routes
+
+        spy = MagicMock()
+        monkeypatch.setattr(routes.log, "debug", spy)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "response_format": {"type": "json_object"},
+                    "logprobs": True,
+                },
+            )
+        assert resp.status_code == 200
+        spy.assert_called_once_with(
+            "chat/completions ignoring unsupported params: %s",
+            ["logprobs", "response_format"],
+        )
+
+    async def test_no_log_when_only_supported_params(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        from lilbee.server.chat_completions_api import routes
+
+        spy = MagicMock()
+        monkeypatch.setattr(routes.log, "debug", spy)
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "seed": 3,
+                },
+            )
+        assert resp.status_code == 200
+        spy.assert_not_called()

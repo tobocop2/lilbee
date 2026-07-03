@@ -1,6 +1,6 @@
 """Tests for the Fleet view: FleetScreen hosting FleetBody.
 
-These drive the real widgets (GPU toggle Buttons, replica steppers, key
+These drive the real widgets (GPU toggle pills, replica steppers, key
 bindings) rather than poking private state, so the input path is actually
 exercised.
 """
@@ -10,8 +10,8 @@ from __future__ import annotations
 import threading
 
 import pytest
-from textual.widgets import Button, Static
 
+from lilbee.cli.tui.widgets.fleet_body import FleetPill
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 GIB = 1024**3
@@ -47,27 +47,36 @@ class FleetTestApp(LilbeeAppHost):
 
 
 def _generated(app) -> str:  # type: ignore[no-untyped-def]
-    from textual.widgets import Static as _Static
+    """The equivalent-spec JSON the editor state produces.
 
-    from lilbee.cli.tui.widgets.fleet_body import _GENERATED_ID
+    The on-screen spec readout was removed for a cleaner drawer; the underlying
+    ``_spec_from_editor`` it rendered is what these tests actually assert on.
+    """
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.fleet.placement_spec import PlacementError
 
-    return str(app.screen.query_one(_GENERATED_ID, _Static).render())
+    body = app.screen.query_one(FleetBody)
+    try:
+        spec = body._spec_from_editor()
+    except PlacementError as exc:
+        return str(exc)
+    return spec.to_json() if spec else "(auto)"
 
 
 async def _toggle_device(pilot, selector: str, *, expect_on: bool = True) -> None:  # type: ignore[no-untyped-def]
     """Activate a GPU toggle and wait until the press has been applied.
 
     ``pilot.click`` resolves the target's screen coordinates up front, so under
-    parallel load it can fire before layout settles and miss the button
-    entirely. ``Button.press`` posts ``Button.Pressed`` directly (no
+    parallel load it can fire before layout settles and miss the pill
+    entirely. ``FleetPill.press`` posts ``FleetPill.Pressed`` directly (no
     coordinates), and the handler flips the ``on`` class in the same step that
     mutates the device set -- so wait for that class as the post-condition.
     """
-    button = pilot.app.screen.query_one(selector, Button)
-    button.press()
+    pill = pilot.app.screen.query_one(selector, FleetPill)
+    pill.press()
     for _ in range(100):
         await pilot.pause()
-        if button.has_class("on") == expect_on:
+        if pill.has_class("on") == expect_on:
             return
     raise AssertionError(f"{selector} did not reach on={expect_on}")  # pragma: no cover
 
@@ -76,10 +85,10 @@ async def _step_until_generated(pilot, selector: str, app, predicate) -> None:  
     """Activate a control and wait until the generated spec satisfies ``predicate``.
 
     The replica stepper has no ``on`` class to watch, so synchronise on the
-    equivalent-spec text it drives. Uses ``Button.press`` for the same
+    equivalent-spec text it drives. Uses ``FleetPill.press`` for the same
     coordinate-free reason as ``_toggle_device``.
     """
-    pilot.app.screen.query_one(selector, Button).press()
+    pilot.app.screen.query_one(selector, FleetPill).press()
     for _ in range(100):
         await pilot.pause()
         if predicate(_generated(app)):
@@ -171,7 +180,7 @@ async def test_replica_stepper(monkeypatch):
         assert '"replicas": 2' in _generated(app)
         await _step_until_generated(pilot, "#rep-embed-dec", app, lambda g: "replicas" not in g)
         assert "replicas" not in _generated(app)
-        app.screen.query_one("#rep-embed-dec", Button).press()  # floored at 1 (stays omitted)
+        app.screen.query_one("#rep-embed-dec", FleetPill).press()  # floored at 1 (stays omitted)
         await pilot.pause()
         assert "replicas" not in _generated(app)
 
@@ -189,7 +198,7 @@ async def test_no_replica_stepper_for_chat(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         with pytest.raises(NoMatches):
-            app.screen.query_one("#rep-chat-inc", Button)
+            app.screen.query_one("#rep-chat-inc", FleetPill)
 
 
 @pytest.mark.asyncio
@@ -330,7 +339,8 @@ async def test_unplaceable_warns(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         body = app.screen.query_one("FleetBody")
         body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
-        body._load_placement()
+        body._load_worker()
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
     assert any("vision" in n.lower() for n in notes)
@@ -426,7 +436,8 @@ async def test_load_placement_error_notifies(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         body = app.screen.query_one("FleetBody")
         body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
-        body._load_placement()
+        body._load_worker()
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
     assert any("probe failed" in n for n in notes)
@@ -463,10 +474,8 @@ async def test_remove_device_when_multiple_devices(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unrecognized_button_id_is_noop(monkeypatch):
-    """A button press with an unrecognized ID is silently ignored."""
+    """A pill press with an unrecognized ID is silently ignored."""
     from unittest.mock import MagicMock
-
-    from textual.widgets import Button as TxtButton
 
     from lilbee.cli.tui.widgets import fleet_body as fbm
 
@@ -476,11 +485,11 @@ async def test_unrecognized_button_id_is_noop(monkeypatch):
     async with app.run_test(size=(140, 44)) as pilot:
         await pilot.pause()
         before = _generated(app)
-        btn = MagicMock(spec=TxtButton)
-        btn.id = "some-other-button"
-        event = TxtButton.Pressed(btn)
+        pill = MagicMock(spec=FleetPill)
+        pill.id = "some-other-pill"
+        event = FleetPill.Pressed(pill)
         body = app.screen.query_one("FleetBody")
-        body.on_button_pressed(event)
+        body.on_fleet_pill_pressed(event)
         await pilot.pause()
         assert _generated(app) == before
 
@@ -597,10 +606,10 @@ async def test_clear_worker_error_notifies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_generated_shows_error_on_empty_devices(monkeypatch):
-    """_refresh_generated shows a red error when _spec_from_editor raises PlacementError."""
+async def test_spec_from_editor_errors_on_empty_devices(monkeypatch):
+    """_spec_from_editor raises PlacementError when a role is left with no GPUs."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
-    from lilbee.cli.tui.widgets.fleet_body import _GENERATED_ID
+    from lilbee.providers.fleet.placement_spec import PlacementError
 
     monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
 
@@ -609,10 +618,8 @@ async def test_refresh_generated_shows_error_on_empty_devices(monkeypatch):
         await pilot.pause()
         body = app.screen.query_one("FleetBody")
         next(iter(body._edits.values())).devices.clear()
-        body._refresh_generated()
-        await pilot.pause()
-        gen_text = str(body.query_one(_GENERATED_ID, Static).render())
-        assert "needs at least one GPU" in gen_text or "GPU" in gen_text
+        with pytest.raises(PlacementError, match="at least one GPU"):
+            body._spec_from_editor()
 
 
 @pytest.mark.parametrize(
@@ -633,3 +640,111 @@ def test_clean_model_name(ref: str, expected: str) -> None:
     from lilbee.cli.tui.widgets.fleet_body import _clean_model_name
 
     assert _clean_model_name(ref) == expected
+
+
+def _make_big_view(n: int):  # type: ignore[no-untyped-def]
+    """A fleet larger than one page: chat split across all n, embed copied to all."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A100", 80 * GIB, 80 * GIB) for i in range(n)
+        ),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", tuple(range(n)), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", tuple(range(n)), None, n),
+        ),
+        unplaceable=(),
+        manual=True,
+        spec_json=None,
+    )
+
+
+async def _wait_for(pilot, selector: str) -> None:  # type: ignore[no-untyped-def]
+    """Pause until ``selector`` exists on the screen."""
+    from textual.css.query import NoMatches
+
+    for _ in range(100):
+        await pilot.pause()
+        try:
+            pilot.app.screen.query_one(selector, FleetPill)
+            return
+        except NoMatches:
+            continue
+    raise AssertionError(f"{selector} never appeared")  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_placement_grid_paginates_large_fleet(monkeypatch):
+    """A fleet past one page shows a pager; pg-next/pg-prev move the visible page."""
+    from textual.css.query import NoMatches
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_big_view(10))
+
+    app = FleetTestApp()
+    async with app.run_test(size=(160, 44)) as pilot:
+        await pilot.pause()
+        # page 1 shows GPUs 0-7; 8-9 are on page 2
+        app.screen.query_one("#dev-chat-0", FleetPill)
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#dev-chat-9", FleetPill)
+        # advance to page 2
+        app.screen.query_one("#pg-next", FleetPill).press()
+        await _wait_for(pilot, "#dev-chat-9")
+        app.screen.query_one("#dev-chat-8", FleetPill)
+        with pytest.raises(NoMatches):
+            app.screen.query_one("#dev-chat-0", FleetPill)
+        # back to page 1
+        app.screen.query_one("#pg-prev", FleetPill).press()
+        await _wait_for(pilot, "#dev-chat-0")
+
+
+def _make_view_rerank():  # type: ignore[no-untyped-def]
+    """A view with rerank enabled (a single pinned instance on one card)."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
+        ),
+        roles=(
+            RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (0, 1), None, 1),
+            RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),
+            RolePlacementView(WorkerRole.RERANK, "org/rerank.gguf", (0,), None, 1),
+        ),
+        unplaceable=(),
+        manual=True,
+        spec_json=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rerank_is_single_select(monkeypatch):
+    """rerank is a single pinned instance: picking another card moves it, never adds."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view_rerank())
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        assert body._edits[WorkerRole.RERANK].devices == {0}
+        # single-instance roles carry the 'single' kind and a 'one card' tag
+        assert app.screen.query_one("#dev-rerank-0", FleetPill).has_class("single")
+        assert any("one card" in str(lbl.render()) for lbl in app.screen.query(".role-tag"))
+        # picking GPU 2 MOVES rerank there; it must not become {0, 2}
+        app.screen.query_one("#dev-rerank-2", FleetPill).press()
+        for _ in range(100):
+            await pilot.pause()
+            if body._edits[WorkerRole.RERANK].devices == {2}:
+                break
+        assert body._edits[WorkerRole.RERANK].devices == {2}
+        assert app.screen.query_one("#dev-rerank-2", FleetPill).has_class("on")
+        assert not app.screen.query_one("#dev-rerank-0", FleetPill).has_class("on")

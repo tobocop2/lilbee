@@ -15,6 +15,7 @@ from lilbee.modelhub.model_manager import (
 )
 from lilbee.modelhub.model_manager.discovery import _has_provider_key
 from lilbee.providers.sdk_backend import detect_backend_name
+from tests._sys_modules import inject_modules
 
 
 class TestNativeIdentitiesCache:
@@ -1021,7 +1022,7 @@ class TestDiscoverApiModels:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        with mock.patch.dict("sys.modules", {"litellm": None}):
+        with inject_modules({"litellm": None}):
             result = discover_api_models()
         assert result == {}
 
@@ -1043,7 +1044,7 @@ class TestDiscoverApiModels:
         cfg.anthropic_api_key = ""
         cfg.gemini_api_key = ""
 
-        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+        with inject_modules({"litellm": mock_litellm}):
             result = discover_api_models()
 
         assert "OpenAI" in result
@@ -1071,7 +1072,7 @@ class TestDiscoverApiModels:
         cfg.anthropic_api_key = ""
         cfg.gemini_api_key = ""
 
-        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+        with inject_modules({"litellm": mock_litellm}):
             result = discover_api_models()
 
         assert result == {}
@@ -1093,7 +1094,7 @@ class TestDiscoverApiModels:
 
         cfg.gemini_api_key = ""
 
-        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+        with inject_modules({"litellm": mock_litellm}):
             # Test arbitrary upstream ids; pin  so curation
             # doesn't filter them.
             result = discover_api_models()
@@ -1114,7 +1115,7 @@ class TestDiscoverApiModels:
         cfg.openai_api_key = ""
         cfg.gemini_api_key = ""
 
-        with mock.patch.dict("sys.modules", {"litellm": mock_litellm}):
+        with inject_modules({"litellm": mock_litellm}):
             result = discover_api_models()
 
         model = result["Anthropic"][0]

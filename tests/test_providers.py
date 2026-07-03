@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
+from tests._sys_modules import inject_modules
 
 if TYPE_CHECKING:
     from lilbee.providers.routing_provider import RoutingProvider
@@ -1003,7 +1004,7 @@ class TestRequireLitellm:
         from lilbee.providers.litellm_sdk import _require_litellm
 
         with (
-            mock.patch.dict("sys.modules", {"litellm": None}),
+            inject_modules({"litellm": None}),
             pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
         ):
             _require_litellm()
@@ -3233,7 +3234,7 @@ class TestChatApiBaseRouting:
         provider = SdkLLMProvider(LitellmSdkBackend())
         fake = self._make_fake_litellm()
 
-        with mock.patch.dict("sys.modules", {"litellm": fake}):
+        with inject_modules({"litellm": fake}):
             provider.chat([{"role": "user", "content": "hi"}], model="ollama/qwen3:0.6b")
 
         call_kwargs = fake.completion.call_args[1]
@@ -3247,7 +3248,7 @@ class TestChatApiBaseRouting:
         provider = SdkLLMProvider(LitellmSdkBackend())
         fake = self._make_fake_litellm()
 
-        with mock.patch.dict("sys.modules", {"litellm": fake}):
+        with inject_modules({"litellm": fake}):
             provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
 
         call_kwargs = fake.completion.call_args[1]
@@ -3261,7 +3262,7 @@ class TestChatApiBaseRouting:
         provider = SdkLLMProvider(LitellmSdkBackend())
         fake = self._make_fake_litellm()
 
-        with mock.patch.dict("sys.modules", {"litellm": fake}):
+        with inject_modules({"litellm": fake}):
             provider.chat([{"role": "user", "content": "hi"}], model="anthropic/claude-sonnet-4-6")
 
         call_kwargs = fake.completion.call_args[1]
@@ -3275,7 +3276,7 @@ class TestChatApiBaseRouting:
         fake = self._make_fake_litellm()
 
         with (
-            mock.patch.dict("sys.modules", {"litellm": fake}),
+            inject_modules({"litellm": fake}),
             mock.patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject,
         ):
             provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
@@ -3296,7 +3297,7 @@ class TestEmbedApiBaseRouting:
         fake = mock.MagicMock()
         fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2], "index": 0}]}
 
-        with mock.patch.dict("sys.modules", {"litellm": fake}):
+        with inject_modules({"litellm": fake}):
             provider.embed(["hello"])
 
         call_kwargs = fake.embedding.call_args[1]
@@ -3311,7 +3312,7 @@ class TestEmbedApiBaseRouting:
         fake = mock.MagicMock()
         fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2], "index": 0}]}
 
-        with mock.patch.dict("sys.modules", {"litellm": fake}):
+        with inject_modules({"litellm": fake}):
             provider.embed(["hello"])
 
         call_kwargs = fake.embedding.call_args[1]

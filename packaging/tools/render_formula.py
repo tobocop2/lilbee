@@ -53,24 +53,41 @@ def _render_cuda(content: str, args: argparse.Namespace) -> str:
     )
 
 
+def _render_compat(content: str, args: argparse.Namespace) -> str:
+    content = _replace_version(content, args.version)
+    return _replace_sha_for_asset(
+        content, "lilbee-compat-linux-x86_64", args.sha_linux_compat, required=True
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("formula", type=Path)
     parser.add_argument("--version", required=True)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--cuda",
         action="store_true",
         help="Render the lilbee-cuda formula instead of the default lilbee formula.",
+    )
+    mode.add_argument(
+        "--compat",
+        action="store_true",
+        help="Render the lilbee-compat (pre-Haswell CPU) formula.",
     )
     parser.add_argument("--sha-macos-arm64")
     parser.add_argument("--sha-linux-x86_64")
     parser.add_argument("--sha-macos-x86_64", default=None)
     parser.add_argument("--sha-linux-cu125")
+    parser.add_argument("--sha-linux-compat")
     args = parser.parse_args()
 
     if args.cuda:
         if not args.sha_linux_cu125:
             parser.error("--cuda requires --sha-linux-cu125")
+    elif args.compat:
+        if not args.sha_linux_compat:
+            parser.error("--compat requires --sha-linux-compat")
     else:
         missing = [
             flag
@@ -84,7 +101,12 @@ def main() -> None:
             parser.error(f"missing required arguments: {', '.join(missing)}")
 
     content = args.formula.read_text()
-    content = _render_cuda(content, args) if args.cuda else _render_default(content, args)
+    if args.cuda:
+        content = _render_cuda(content, args)
+    elif args.compat:
+        content = _render_compat(content, args)
+    else:
+        content = _render_default(content, args)
     args.formula.write_text(content)
 
 

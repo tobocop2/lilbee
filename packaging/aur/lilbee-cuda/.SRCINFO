@@ -1,5 +1,5 @@
 pkgbase = lilbee-cuda
-	pkgdesc = Local search engine and personal encyclopedia for your notes, code, and PDFs (CUDA build)
+	pkgdesc = Run and manage local AI models and search your files, code, and crawled web pages, with cited answers (CUDA build)
 	pkgver = 0.6.66b481
 	pkgrel = 1
 	url = https://github.com/tobocop2/lilbee

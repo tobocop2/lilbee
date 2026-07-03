@@ -19,7 +19,7 @@ from typing import Protocol
 from lilbee.providers.fleet.gpu_backends import UtilSample, resolve_backend
 
 
-class _DeviceLike(Protocol):
+class DeviceLike(Protocol):
     """Structural view of a probed GPU (FleetDevice or app-layer GpuInfo)."""
 
     @property
@@ -57,7 +57,7 @@ def _safe_sample(
         return {}
 
 
-def probe_gpu_stats(devices: Sequence[_DeviceLike]) -> dict[int, GpuStat]:
+def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     """Live stats keyed by device index. Empty when no devices are given.
 
     Groups devices by vendor backend, dispatches once per group, and merges
@@ -69,7 +69,7 @@ def probe_gpu_stats(devices: Sequence[_DeviceLike]) -> dict[int, GpuStat]:
         d.index: GpuStat(d.index, None, d.free_bytes, d.total_bytes) for d in devices
     }
 
-    by_backend: dict[str, list[_DeviceLike]] = {}
+    by_backend: dict[str, list[DeviceLike]] = {}
     for d in devices:
         by_backend.setdefault(d.backend, []).append(d)
 

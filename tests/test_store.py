@@ -433,6 +433,28 @@ class TestWriteChunksBatch:
         assert store.write_chunks_batch([]) == 0
         assert store.get_sources() == []
 
+    def test_batch_uses_the_patient_lock_timeout(self, store):
+        """The flush lock waits BATCH_LOCK_TIMEOUT, not the interactive 30s.
+
+        Failing the flush replans and re-embeds the whole batch, so the batch
+        path outwaits a search-triggered FTS optimize instead of giving up.
+        """
+        from lilbee.data.store import ChunkWrite
+        from lilbee.data.store.core import BATCH_LOCK_TIMEOUT
+
+        seen: list[float] = []
+
+        @contextmanager
+        def _capture(_dir, timeout):
+            seen.append(timeout)
+            yield
+
+        with mock.patch("lilbee.data.store.core.write_lock", _capture):
+            store.write_chunks_batch(
+                [ChunkWrite("a.md", "h", _records_for("a.md", 1), needs_cleanup=False)]
+            )
+        assert seen == [BATCH_LOCK_TIMEOUT]
+
     def test_replace_source_skips_add_on_swallowed_delete(self, store, monkeypatch):
         # A swallowed delete must not leave two _sources rows for one filename:
         # the replace skips the add and the file replans next sync.
@@ -913,12 +935,12 @@ class TestRemoveDocuments:
     def test_removes_known_files(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked") as mock_del,
+            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
             assert result.not_found == []
-            mock_del.assert_called_once_with("a.md")
+            mock_del.assert_called_once_with(["a.md"])
 
     def test_not_found(self, store):
         with mock.patch.object(store, "get_sources", return_value=[]):
@@ -929,7 +951,7 @@ class TestRemoveDocuments:
     def test_deletes_physical_file(self, store, tmp_path):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked"),
+            mock.patch.object(store, "_remove_many_unlocked"),
         ):
             f = tmp_path / "a.md"
             f.write_text("content")
@@ -942,7 +964,7 @@ class TestRemoveDocuments:
             mock.patch.object(
                 store, "get_sources", return_value=[{"filename": "../../../etc/passwd"}]
             ),
-            mock.patch.object(store, "_remove_one_unlocked"),
+            mock.patch.object(store, "_remove_many_unlocked"),
         ):
             secret = tmp_path.parent / "secret.txt"
             secret.write_text("don't delete me")
@@ -955,7 +977,7 @@ class TestRemoveDocuments:
     def test_nonexistent_file_still_removes_from_store(self, store, tmp_path):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "gone.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked") as mock_del,
+            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
             result = store.remove_documents(["gone.md"], delete_files=True, documents_dir=tmp_path)
             assert result.removed == ["gone.md"]
@@ -964,7 +986,7 @@ class TestRemoveDocuments:
     def test_uses_default_documents_dir(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked"),
+            mock.patch.object(store, "_remove_many_unlocked"),
         ):
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
@@ -983,17 +1005,18 @@ class TestRemoveDocuments:
             yield
 
         with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_delete_by_source_unlocked") as mock_chunks,
-            mock.patch.object(store, "_delete_source_unlocked") as mock_source,
+            mock.patch.object(
+                store, "get_sources", return_value=[{"filename": "a.md"}, {"filename": "b.md"}]
+            ),
+            mock.patch.object(store, "_delete_by_sources_unlocked") as mock_chunks,
+            mock.patch.object(store, "open_table", return_value=None),
             mock.patch("lilbee.data.store.core.write_lock", _tracking_lock),
         ):
-            result = store.remove_documents(["a.md"])
+            result = store.remove_documents(["a.md", "b.md"])
 
-        assert result.removed == ["a.md"]
-        mock_chunks.assert_called_once_with("a.md")
-        mock_source.assert_called_once_with("a.md")
-        # Exactly one lock acquisition covers both deletes for the document.
+        assert result.removed == ["a.md", "b.md"]
+        mock_chunks.assert_called_once_with(["a.md", "b.md"])
+        # Exactly one lock acquisition covers every delete for the whole set.
         assert acquisitions == ["acquire"]
 
     def test_removes_chunks_and_source_atomically(self, store):

@@ -117,7 +117,12 @@ def persist_and_finalize(
 
     if config.wiki_prune_raw:
         for name in source_names:
-            store.delete_by_source(name)
+            try:
+                store.delete_by_source(name)
+            except Exception:
+                # Best-effort pruning of raw sources the new page supersedes; one
+                # failed delete must not abort the loop or fail the generated page.
+                log.warning("Failed to prune raw source %s", name, exc_info=True)
 
     update_wiki_index(config)
     append_wiki_log(

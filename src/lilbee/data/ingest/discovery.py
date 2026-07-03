@@ -8,7 +8,7 @@ import os
 from functools import cache
 from pathlib import Path
 
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
 from lilbee.core.security import validate_path_within
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.code_chunker import is_code_file
@@ -56,7 +56,7 @@ def file_hash(path: Path) -> str:
 
 def _relative_name(path: Path) -> str:
     """Get path relative to documents dir as a forward-slash string (portable across OS)."""
-    return path.relative_to(cfg.documents_dir).as_posix()
+    return path.relative_to(active_config().documents_dir).as_posix()
 
 
 def classify_file(path: Path) -> str | None:
@@ -75,12 +75,13 @@ def classify_file(path: Path) -> str | None:
 
 def discover_files() -> dict[str, Path]:
     """Scan documents/ recursively, return {relative_name: absolute_path}."""
-    if not cfg.documents_dir.exists():
+    config = active_config()
+    if not config.documents_dir.exists():
         return {}
-    docs_resolved = cfg.documents_dir.resolve()
+    docs_resolved = config.documents_dir.resolve()
     files: dict[str, Path] = {}
-    for root, dirs, filenames in os.walk(cfg.documents_dir, topdown=True):
-        dirs[:] = [d for d in dirs if not is_ignored_dir(d, cfg.ignore_dirs)]
+    for root, dirs, filenames in os.walk(config.documents_dir, topdown=True):
+        dirs[:] = [d for d in dirs if not is_ignored_dir(d, config.ignore_dirs)]
         for fname in filenames:
             if fname.startswith("."):
                 continue

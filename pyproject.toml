@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.66b504"
+version = "0.6.66b506"
 description = "Run and manage local AI models, then search your files, code, and the web pages you crawl, with answers that cite the source. Everything runs on your machine in one process: per-project libraries, semantic and hybrid search, vision OCR, an auto-built wiki, CLI, TUI, MCP server, REST API, and Python library. No model server, no database server. Works with your own Ollama or LM Studio models too."
 readme = "README.md"
 license = "MIT"
@@ -110,6 +110,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.3",
+    "pre-commit>=4.0",
 ]
 
 [tool.pytest.ini_options]
@@ -202,6 +203,14 @@ extend-immutable-calls = ["litestar.params.Body"]
     "PLR2004",
     "N802", "N806", "N818", "N817",
 ]
+# Surface-QA harnesses drive the CLI/TUI/HTTP surfaces like tests do; same ignores.
+"scripts/qa/**/*.py" = [
+    "S101", "S104", "S105", "S106", "S108", "S603", "S607",
+    "PLR2004",
+    "N802", "N806", "N818", "N817",
+]
+# Invokes the trusted `gh` CLI with controlled args to build the compat index.
+"tools/build_compat_index.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
 
 [tool.mypy]

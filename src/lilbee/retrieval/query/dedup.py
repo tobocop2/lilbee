@@ -27,7 +27,7 @@ def _relevance_weight(result: SearchChunk) -> float:
     return _DEFAULT_RELEVANCE_WEIGHT
 
 
-def _normalize_scores(scores: list[float]) -> list[float]:
+def normalize_scores(scores: list[float]) -> list[float]:
     """Min-max normalize scores to [0, 1]; an all-equal set maps to the midpoint."""
     min_score = min(scores)
     max_score = max(scores)
@@ -53,7 +53,7 @@ def _fusion_signal(result: SearchChunk) -> float:
     return _NEUTRAL_SCORE
 
 
-def _fusion_norms(results: list[SearchChunk]) -> list[float]:
+def fusion_norms(results: list[SearchChunk]) -> list[float]:
     """Normalize each chunk's fusion signal to [0, 1] WITHIN its scoring family.
 
     Hybrid rows carry an RRF ``relevance_score`` (tiny magnitude); the rest
@@ -68,7 +68,7 @@ def _fusion_norms(results: list[SearchChunk]) -> list[float]:
     for cohort in (rrf, non_rrf):
         if not cohort:
             continue
-        scaled = _normalize_scores([_fusion_signal(results[i]) for i in cohort])
+        scaled = normalize_scores([_fusion_signal(results[i]) for i in cohort])
         for i, value in zip(cohort, scaled, strict=True):
             norms[i] = value
     return norms
@@ -79,7 +79,7 @@ def order_by_fusion(results: list[SearchChunk]) -> list[SearchChunk]:
     family so RRF (hybrid) and cosine-distance (vector/HyDE) rows are comparable
     and one scale can't dominate the order as an artifact of its magnitude.
     """
-    norms = _fusion_norms(results)
+    norms = fusion_norms(results)
     order = sorted(range(len(results)), key=lambda i: norms[i], reverse=True)
     return [results[i] for i in order]
 

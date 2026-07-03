@@ -755,15 +755,12 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/from-env:latest"
 
     def test_apply_data_root_exports_lilbee_data_env(self, tmp_path, monkeypatch):
-        """``_apply_data_root`` exports ``LILBEE_DATA`` so workers can find log files.
+        """``_apply_data_root`` exports ``LILBEE_DATA`` for lilbee subprocesses.
 
-        Worker subprocesses (multiprocessing.spawn) re-import lilbee in a
-        fresh process with no inherited cfg state, so without this export
-        the worker's ``configure_worker_logging`` and the supervisor's
-        ``_worker_log_path`` would silently skip log-file creation when a
-        user invoked lilbee with ``--data-dir`` instead of via the env.
-        On Windows this turns an embed-worker heap-corruption crash into
-        an opaque "subprocess exited unexpectedly" with no trail.
+        Spawned lilbee processes (the launchers' ``lilbee serve``, the splash
+        runner) re-import lilbee fresh with no inherited cfg state, so without
+        this export a ``--data-dir`` override would silently fall back to the
+        default data root in the child.
         """
         from lilbee.cli import apply_overrides
 

@@ -89,6 +89,9 @@ def completions_to_canonical_request(request: CompletionsRequest) -> CanonicalCh
         top_p=request.top_p,
         top_k=request.top_k,
         max_tokens=request.max_tokens,
+        seed=request.seed,
+        frequency_penalty=request.frequency_penalty,
+        presence_penalty=request.presence_penalty,
         stop=_stop_from_request(request.stop),
         stream=request.stream,
     )
@@ -215,8 +218,12 @@ async def canonical_stream_to_completions_chunks(
                 CompletionsStreamDelta(),
                 finish_reason=_finish_reason_for(event),
             )
-            if include_usage and event.usage is not None:
-                yield _usage_chunk(model, response_id, event.usage)
+            if include_usage:
+                # OpenAI's contract sends the usage-only chunk unconditionally
+                # when include_usage is set; a client blocking on it must not
+                # hang because the provider streamed no usage frame.
+                usage = event.usage or CanonicalUsage(input_tokens=0, output_tokens=0)
+                yield _usage_chunk(model, response_id, usage)
         elif isinstance(event, MessageStart | ContentBlockStop | MessageStop):
             # OpenAI's wire format has no equivalent for these canonical events:
             # MessageStart carries metadata we already encoded in the chunk header,

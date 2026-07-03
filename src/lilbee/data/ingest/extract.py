@@ -3,7 +3,6 @@ scanned pages/images through the registered backend; chunk + embed the result.""
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
 import logging
 from collections.abc import Generator, Sequence
@@ -12,8 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config
 from lilbee.data.chunk import build_chunking_config, chunk_text
+from lilbee.data.ingest.offload import to_ingest_thread
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
@@ -64,13 +64,13 @@ def _effective_enable_ocr() -> bool | None:
     ingests on the shared HTTP daemon each see their own setting.
     """
     override = _ocr_enable_override.get()
-    return cfg.enable_ocr if override is None else override
+    return active_config().enable_ocr if override is None else override
 
 
 def _effective_ocr_timeout() -> float:
     """``cfg.ocr_timeout`` unless a per-request OCR timeout override is active."""
     override = _ocr_timeout_override.get()
-    return cfg.ocr_timeout if override is None else override
+    return active_config().ocr_timeout if override is None else override
 
 
 @contextmanager
@@ -104,14 +104,15 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
     """
     from xberg import OcrConfig
 
+    config = active_config()
     if _effective_enable_ocr() is False:
         return OcrConfig(enabled=False)
-    if cfg.vision_model:
+    if config.vision_model:
         options = backend_options_for(ocr_token) if ocr_token else None
         return OcrConfig(backend=OcrBackendName.LILBEE_VISION, backend_options=options)
     # xberg requires a non-empty language list (4.x defaulted to English;
     # 5.x errors on an empty one). cfg.ocr_language is validated non-empty.
-    return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(cfg.ocr_language))
+    return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(config.ocr_language))
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
@@ -159,11 +160,11 @@ async def chunk_and_embed_pages(
 
     # chunk_text runs xberg's synchronous extractor; offload it so a long
     # document does not stall sibling files sharing this event loop.
-    all_chunks = await asyncio.to_thread(_chunk_pages, page_texts)
+    all_chunks = await to_ingest_thread(_chunk_pages, page_texts)
     if not all_chunks:
         return []
     texts = [c for _, c in all_chunks]
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
@@ -267,7 +268,7 @@ async def ingest_document(
     )
 
     texts = [chunk.content for chunk in doc.chunks]
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [
@@ -298,13 +299,13 @@ async def ingest_markdown(
     prepended for better retrieval context. When ``page_texts_out`` is given,
     the full text is appended as page 0 for export.
     """
-    raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+    raw_text = await to_ingest_thread(path.read_text, encoding="utf-8", errors="replace")
     if not raw_text.strip():
         return []
 
     # chunk_text runs xberg's synchronous extractor; offload it so a large
     # markdown doc does not stall sibling files sharing this event loop.
-    texts = await asyncio.to_thread(
+    texts = await to_ingest_thread(
         chunk_text, raw_text, mime_type="text/markdown", heading_context=True
     )
     if not texts:
@@ -313,7 +314,7 @@ async def ingest_markdown(
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
 
-    vectors = await asyncio.to_thread(
+    vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
     return [

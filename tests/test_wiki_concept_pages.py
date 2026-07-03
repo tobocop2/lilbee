@@ -105,6 +105,36 @@ class TestPersistAndFinalize:
         store.delete_by_source.assert_any_call("a.txt")
         store.delete_by_source.assert_any_call("b.txt")
 
+    def test_prune_raw_continues_past_a_failed_delete(self, tmp_path: Path) -> None:
+        """One failed source delete is logged; the rest of the loop still prunes."""
+        from lilbee.wiki.persistence import persist_and_finalize
+        from lilbee.wiki.shared import PageTarget
+
+        cfg.wiki_prune_raw = True
+        cfg.data_root = tmp_path
+        wiki_root = tmp_path / cfg.wiki_dir
+        wiki_root.mkdir(parents=True)
+        target = PageTarget(
+            wiki_root=wiki_root,
+            subdir="concepts",
+            slug="braking",
+            wiki_source=f"{cfg.wiki_dir}/concepts/braking.md",
+            page_type="concept",
+            label="braking",
+        )
+        store = MagicMock()
+        store.delete_by_source.side_effect = [RuntimeError("commit conflict"), None]
+        page_path = persist_and_finalize(
+            "# braking\n\nbody.\n",
+            target,
+            verified=[],
+            source_names=["a.txt", "b.txt"],
+            store=store,
+            config=cfg,
+        )
+        assert page_path.exists()  # the generated page still landed
+        store.delete_by_source.assert_any_call("b.txt")
+
 
 class TestGeneratePageProgress:
     """generate_page forwards progress events to the on_progress callback."""

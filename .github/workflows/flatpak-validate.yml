@@ -36,7 +36,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -82,16 +82,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
 
-      - name: Build llama-cpp-python from source
-        shell: bash
-        env:
-          BACKEND: vulkan
-          LLAMA_BUILD_DIR: "/tmp/llama-build"
-        run: bash tools/wheel-build/build_llama_cpp.sh
-
-      - name: Install the freshly-built llama-cpp-python
-        shell: bash
-        run: uv pip install --reinstall --no-deps /tmp/llama-build/llama_cpp_python-*.whl
+      - name: Bundle llama-server
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: vulkan
 
       - name: Build executable
         shell: bash
@@ -100,7 +94,7 @@ jobs:
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lilbee-linux-x86_64
           path: dist/lilbee-linux-x86_64
@@ -121,7 +115,7 @@ jobs:
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y --noninteractive flathub md.obsidian.Obsidian
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: lilbee-linux-x86_64
           path: /tmp/dist

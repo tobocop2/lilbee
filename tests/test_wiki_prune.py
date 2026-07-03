@@ -242,6 +242,18 @@ class TestArchivePage:
         store.delete_by_source.assert_called_once()
         store.delete_citations_for_wiki.assert_called_once()
 
+    def test_delete_failure_does_not_abort_archival(self, tmp_path: Path):
+        """A failed index delete is logged; archival and citation cleanup proceed."""
+        page = write_wiki_page(tmp_path, "summaries", "doc", "# Doc\n")
+        wiki_root = tmp_path / "wiki"
+        store = MagicMock(spec=Store)
+        store.delete_by_source.side_effect = RuntimeError("commit conflict")
+
+        _archive_page("wiki/summaries/doc.md", wiki_root, store, cfg)
+
+        assert not page.exists()  # archived despite the delete failure
+        store.delete_citations_for_wiki.assert_called_once_with("wiki/summaries/doc.md")
+
 
 class TestPruneWiki:
     def test_archives_page_with_all_sources_deleted(self, tmp_path: Path):

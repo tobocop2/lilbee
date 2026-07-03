@@ -28,7 +28,13 @@ from lilbee.app.memory import (
     recall,
     remember,
 )
-from lilbee.app.placement import PlacementView, get_placement, preview_placement, set_placement
+from lilbee.app.placement import (
+    PlacementView,
+    get_placement,
+    placement_refused_message,
+    preview_placement,
+    set_placement,
+)
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services, reset_services, reset_store
 from lilbee.app.settings import (
@@ -1158,6 +1164,10 @@ def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
     """Set and apply a manual multi-GPU placement spec (persists to config)."""
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
+    # set_placement rebuilds the shared fleet: gate it on the shared HTTP
+    # transport exactly like the REST PUT/DELETE placement routes.
+    if _transport.http_mounted and not cfg.allow_http_placement:
+        return _error(placement_refused_message())
     # Always build a spec (even {}) so an empty/invalid one is rejected, not cleared.
     return _placement_result(lambda: set_placement(PlacementSpec.from_json(json.dumps(spec))))
 
@@ -1165,6 +1175,8 @@ def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
 @_tool_named("clear_placement")
 def clear_placement_tool() -> dict[str, Any]:
     """Clear the manual placement and return to automatic placement."""
+    if _transport.http_mounted and not cfg.allow_http_placement:
+        return _error(placement_refused_message())
     return _placement_result(lambda: set_placement(None))
 
 
