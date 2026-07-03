@@ -396,6 +396,38 @@ class TestProcessTeardown:
         result = sm._swaps_for_config(Path("/data/llama-swap.json"))
         assert [p.pid for p in result] == [10]
 
+    def test_swaps_for_config_skips_processes_that_vanish_mid_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A process can exit (or deny access) between enumeration and cmdline();
+        # the scan must skip it, not abort, or a busy box could never be reaped.
+        class _GoneProc:
+            pid = 20
+
+            def cmdline(self) -> list[str]:
+                raise sm.psutil.NoSuchProcess(self.pid)
+
+        class _DeniedProc:
+            pid = 21
+
+            def cmdline(self) -> list[str]:
+                raise sm.psutil.AccessDenied(self.pid)
+
+        swap_bin = "/x/bin/llama-swap"
+        our_cfg = str(Path("/data/llama-swap.json"))
+
+        class _LiveProc:
+            pid = 22
+
+            def cmdline(self) -> list[str]:
+                return [swap_bin, "-config", our_cfg]
+
+        monkeypatch.setattr(
+            sm.psutil, "process_iter", lambda: [_GoneProc(), _DeniedProc(), _LiveProc()]
+        )
+        result = sm._swaps_for_config(Path("/data/llama-swap.json"))
+        assert [p.pid for p in result] == [22]
+
     def test_live_sibling_swap_pids_protects_only_live_other_owner(self, tmp_path: Path) -> None:
         # Only a swap recorded by a LIVE OTHER owner is protected: our own record
         # is excluded (we reap our own), and a dead owner's record is not spared.
