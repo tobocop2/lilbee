@@ -239,9 +239,7 @@ def _slot_budget(vram_fraction: float, unified_budget: int | None) -> int:
     """Memory budget for slot sizing: *vram_fraction* of usable VRAM, capped by
     ``unified_budget`` (free system RAM) when there is no discrete GPU so the count
     steps down to fit free memory instead of overcommitting."""
-    from lilbee.core.config import cfg
-
-    budget = int(model_cache.get_available_memory(cfg.gpu_memory_fraction) * vram_fraction)
+    budget = int(_plan_available_memory() * vram_fraction)
     if unified_budget is not None:
         budget = min(budget, unified_budget)
     return budget
@@ -300,7 +298,7 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
         return resolve_vision_ctx(model_path)
     if cfg.num_ctx is not None:
         return cfg.num_ctx
-    return resolve_chat_ctx(model_path, meta)
+    return resolve_chat_ctx(model_path, meta, available_bytes=_plan_available_memory())
 
 
 def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
@@ -784,8 +782,8 @@ class _ReadDeviceCache:
     Inspecting placement (GET placement/gpus, preview, ``placement show``)
     resolves devices on every call, which spawns a ``llama-server --list-devices``
     subprocess; a brief TTL collapses a burst of reads onto one probe. The launch
-    path is never served from here -- it reaps stale servers first and sizes KV
-    cache against live free VRAM, so it always probes fresh.
+    path is never served from here -- it sizes against the clean-box plan
+    snapshot below (captured after stale-server reaping).
     """
 
     def __init__(self, ttl_s: float) -> None:
@@ -816,6 +814,93 @@ def clear_read_device_cache() -> None:
     _read_device_cache.clear()
 
 
+@dataclass(frozen=True)
+class _PlanProbe:
+    """Clean-box memory snapshot every plan is sized against.
+
+    Captured once, right after stale-server reaping and before the first build,
+    when nothing lilbee owns is loaded. Reloads re-plan against this same
+    snapshot instead of re-probing: a live probe under a loaded fleet reports
+    our own residency as unavailable, which would shrink chat context and slot
+    counts, widen splits, and (on a unified-memory host) evict roles outright.
+    Launches stay a pure function of config + hardware + this snapshot, so the
+    reload diff restarts only real changes. Cleared on full fleet teardown so
+    the next boot probes the clean box afresh.
+    """
+
+    devices: tuple[FleetDevice, ...]
+    available_vram: int
+    free_system: int
+
+
+class _PlanProbeStore:
+    """Holds the captured plan snapshot; a single instance below (no bare global)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._probe: _PlanProbe | None = None
+
+    def set(self, probe: _PlanProbe) -> None:
+        with self._lock:
+            self._probe = probe
+
+    def get(self) -> _PlanProbe | None:
+        with self._lock:
+            return self._probe
+
+    def clear(self) -> None:
+        with self._lock:
+            self._probe = None
+
+
+_plan_probe_store = _PlanProbeStore()
+
+
+def capture_plan_probe() -> None:
+    """Snapshot devices and memory for planning; call only on a clean box."""
+    from lilbee.core.config import cfg
+    from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
+
+    apply_fleet_gpu_env()
+    binary = resolve_llama_server()
+    apply_cuda_runtime_env()
+    _plan_probe_store.set(
+        _PlanProbe(
+            devices=tuple(resolve_devices(binary)),
+            available_vram=int(model_cache.get_available_memory(cfg.gpu_memory_fraction)),
+            free_system=model_cache.free_system_memory(),
+        )
+    )
+
+
+def clear_plan_probe() -> None:
+    """Drop the plan snapshot (full fleet teardown); the next build re-captures."""
+    _plan_probe_store.clear()
+
+
+def _plan_devices(binary: Path) -> list[FleetDevice]:
+    """Devices the plan paths size against: the snapshot, else a live probe."""
+    probe = _plan_probe_store.get()
+    return list(probe.devices) if probe is not None else resolve_devices(binary)
+
+
+def _plan_available_memory() -> int:
+    """Usable VRAM for ctx/slot sizing: the snapshot, else the live read."""
+    from lilbee.core.config import cfg
+
+    probe = _plan_probe_store.get()
+    if probe is not None:
+        return probe.available_vram
+    return int(model_cache.get_available_memory(cfg.gpu_memory_fraction))
+
+
+def _plan_free_system_memory() -> int:
+    """Free system RAM for the unified-memory budget: the snapshot, else live."""
+    probe = _plan_probe_store.get()
+    return probe.free_system if probe is not None else model_cache.free_system_memory()
+
+
 def _chat_no_mmap(weights_bytes: int) -> bool:
     """Whether the chat server should malloc its weights instead of mmapping them.
 
@@ -835,7 +920,7 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
         _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
         model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
     )
-    return max(0, model_cache.free_system_memory() - floor)
+    return max(0, _plan_free_system_memory() - floor)
 
 
 def _resolve_placement(
@@ -960,6 +1045,6 @@ def plan_all_launches() -> list[InstanceLaunch]:
     # Put the CUDA-runtime wheels on the process path so the device probe sees the
     # same runtime the servers will, before resolve_devices enumerates GPUs.
     apply_cuda_runtime_env()
-    devices = resolve_devices(binary)
+    devices = _plan_devices(binary)
     by_index = {d.index: d for d in devices}
     return plan_launches(None, binary, by_index, devices)

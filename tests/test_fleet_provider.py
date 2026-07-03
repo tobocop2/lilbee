@@ -81,6 +81,7 @@ def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = Non
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: swap)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "sweep_owned", lambda _data_dir: None)
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
     monkeypatch.setattr(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
     )
@@ -2300,3 +2301,53 @@ def test_reload_pass_refuses_after_terminal_shutdown(monkeypatch) -> None:
     p._shut_down = True
     p._reload_pass(force=frozenset((WorkerRole.CHAT,)))
     assert plans == []  # returned before planning; nothing can spawn
+
+
+class TestPlanProbeLifecycle:
+    """The provider owns the plan snapshot: captured on clean-box builds only."""
+
+    def _wire(self, monkeypatch, order: list[str]) -> None:
+        monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: _FakeSwap())
+        monkeypatch.setattr(prov_mod, "reap_stale", lambda _d: order.append("reap"))
+        monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: order.append("capture"))
+        monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_all_launches",
+            lambda: order.append("plan") or [_fake_launch(WorkerRole.CHAT)],
+        )
+
+    def test_first_build_snapshots_after_reaping(self, monkeypatch) -> None:
+        # Capture must follow the reap (a dead owner's servers still hold VRAM
+        # before it) and precede planning (the plan sizes against the snapshot).
+        order: list[str] = []
+        self._wire(monkeypatch, order)
+        FleetProvider()._ensure_fleet()
+        assert order == ["reap", "capture", "plan"]
+
+    def test_reload_with_a_loaded_fleet_reuses_the_snapshot(self, monkeypatch) -> None:
+        # THE #474 follow-up regression guard: re-planning while our own fleet
+        # holds VRAM must not re-probe (which would shrink ctx/slots and diff
+        # every launch); the boot snapshot stays the sizing basis.
+        order: list[str] = []
+        self._wire(monkeypatch, order)
+        p = FleetProvider()
+        monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+        p._swaps = {WorkerRole.CHAT: _FakeSwap()}
+        p._reload_pass()
+        assert "capture" not in order
+        assert "plan" in order
+
+    def test_resurrect_reload_recaptures_the_clean_box(self, monkeypatch) -> None:
+        order: list[str] = []
+        self._wire(monkeypatch, order)
+        p = FleetProvider()
+        monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+        p._reload_pass(force=frozenset((WorkerRole.CHAT,)))  # nothing running
+        assert order.index("capture") < order.index("plan")
+
+    def test_full_teardown_clears_the_snapshot(self, monkeypatch) -> None:
+        cleared: list[bool] = []
+        monkeypatch.setattr(planning_mod, "clear_plan_probe", lambda: cleared.append(True))
+        FleetProvider()._drop_swap_refs()
+        assert cleared == [True]

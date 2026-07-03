@@ -126,10 +126,10 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     The live fleet applies the change surgically (``reload_placement`` restarts
     only the roles whose placement moved), so an untouched role's loaded model
     stays resident; with no services built there is nothing running and the next
-    use plans fresh. The planner's device probe is deliberately NOT cleared on
-    the live path: plans are always diffed and charged against the same
-    clean-box probe (see the bb-a8f invariant in planning), and re-probing under
-    a loaded fleet would poison the chat context sizing.
+    use plans fresh. On the live path the planner re-plans against its clean-box
+    plan snapshot (see ``planning.capture_plan_probe``): probing under a loaded
+    fleet would report our own residency as unavailable and poison the chat
+    context sizing, while charging stays against total capacity (bb-a8f).
     """
     resolved = resolve_placement_plan(spec)
     if spec is None:

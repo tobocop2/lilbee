@@ -448,10 +448,14 @@ class FleetProvider:
                     return False
             from lilbee.core.config import cfg
 
-            # A dead owner's surviving llama-swap holds VRAM; reap it before launching
-            # so the cards are actually free for this fleet (and the context sizer
-            # reads true free VRAM).
+            # A dead owner's surviving llama-swap holds VRAM; reap it before the
+            # snapshot so the cards are actually free for this fleet (and the
+            # context sizer reads true clean-box memory).
             reap_stale(cfg.data_dir)
+            # Snapshot the clean box; this plan and every later reload size ctx,
+            # slots, and budgets against it (a live probe under a loaded fleet
+            # would report our own residency as unavailable).
+            planning.capture_plan_probe()
             try:
                 launches = planning.plan_all_launches()
             except ProviderError:
@@ -653,6 +657,9 @@ class FleetProvider:
             self._retiring_clients = []
             self._chat_slots = 1
             self._chat_ctx = None
+        # Full teardown: the next build starts from a clean box, so it must
+        # re-snapshot memory rather than plan against this boot's probe.
+        planning.clear_plan_probe()
         for client in clients:
             client.close()
 
@@ -1255,6 +1262,10 @@ class FleetProvider:
                 old = dict(self._launches)
             # Reap dead owners' swaps before re-planning, same as the first build.
             reap_stale(cfg.data_dir)
+            if not running:
+                # Nothing loaded (a resurrect after a failed pass): the box is
+                # clean, so refresh the plan snapshot like a first build would.
+                planning.capture_plan_probe()
             new = _launches_by_role(planning.plan_all_launches())
             # A role restarts when its launches changed OR its running/planned
             # presence disagrees (covers a group the new plan drops or adds).
