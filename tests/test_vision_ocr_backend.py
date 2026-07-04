@@ -126,6 +126,22 @@ class TestProcessImage:
         assert calls[0][3] == 12.5
         assert ticks == [1]
 
+    def test_json_string_backend_options_resolve(self):
+        # The native round-trip hands backend_options back as a JSON STRING
+        # (alef serializes the map). The token must resolve from that shape or
+        # per-page progress and the OCR timeout silently vanish on every real
+        # extraction, while dict-based unit tests stay green.
+        import json
+
+        ticks: list[int] = []
+        be, calls = _backend()
+        with ocr_request(on_page=lambda: ticks.append(1), timeout=7.5) as token:
+            be.process_image(
+                b"PNG", _cfg(backend_options=json.dumps(backend_options_for(token)))
+            )
+        assert calls[0][3] == 7.5
+        assert ticks == [1]
+
     def test_no_context_uses_zero_timeout_and_no_tick(self):
         be, calls = _backend()
         be.process_image(b"PNG", _cfg(backend_options=backend_options_for("unknown-token")))

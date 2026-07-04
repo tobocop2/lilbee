@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from contextlib import contextmanager
@@ -98,7 +99,16 @@ class _OcrConfigView:
 
     @property
     def request_token(self) -> str | None:
+        # The native round-trip hands backend_options back as a JSON STRING, not
+        # the dict lilbee put in (alef serializes the map). Accept both shapes,
+        # or the token -- and with it on_page progress and the OCR timeout --
+        # silently vanishes for every OCR call.
         options = self._config.backend_options
+        if isinstance(options, str):
+            try:
+                options = json.loads(options)
+            except json.JSONDecodeError:
+                return None
         token = options.get(_REQUEST_TOKEN_KEY) if isinstance(options, dict) else None
         return token if isinstance(token, str) else None
 
