@@ -451,6 +451,25 @@ class TestModelRegistryResolve:
         assert len(manifest.shard_blobs) == 2
         assert manifest.total_size_bytes == sum(len(f"shard-{n}".encode()) for n in (1, 2, 3))
 
+    def test_bare_repo_recovers_subdir_split_gguf_from_raw_cache(self, tmp_path: Path) -> None:
+        """Real quant repos (e.g. unsloth) place their shards under a quant subdir;
+        a bare-repo ref must recover that split set from a raw cache too, not just a
+        flat one."""
+        registry = ModelRegistry(tmp_path)
+        repo = "unsloth/MiniMax-M2-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"Q4_K_M/MiniMax-M2-Q4_K_M-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        resolved = registry.resolve(repo)
+        assert resolved == registry.resolve(f"{repo}/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf")
+        assert resolved.parent.name == "Q4_K_M"  # co-located under the quant subdir
+        for n in (2, 3):
+            assert (resolved.parent / f"MiniMax-M2-Q4_K_M-0000{n}-of-00003.gguf").exists()
+
     def test_shard_paths_returns_every_split_shard(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         repo = "ggml-org/gpt-oss-120b-GGUF"

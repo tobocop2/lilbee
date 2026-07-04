@@ -806,8 +806,17 @@ class TestChat:
         monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
         monkeypatch.setattr(cfg, "show_reasoning", False)
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        extract_calls: list[str] = []
+
+        async def _spy_extract(_question, answer):
+            extract_calls.append(answer)
+            return []
+
+        monkeypatch.setattr(_rag_h, "_store_extracted_memories", _spy_extract)
         result = await handlers.chat("q", [])
         assert result.answer == REASONING_EXHAUSTED_NOTICE
+        # The synthetic notice is not an answer: it must not seed memory.
+        assert extract_calls == []
 
 
 class TestChatStream:

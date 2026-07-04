@@ -344,9 +344,12 @@ async def chat(
     if not answer.strip() and text.strip():
         # The model emitted only reasoning (stripped to nothing) and no final
         # answer. Surface that distinctly instead of a silent empty string the
-        # caller can't tell apart from a legitimate empty response (bb-cpu).
+        # caller can't tell apart from a legitimate empty response (bb-cpu). The
+        # synthetic notice is not an answer, so -- like the search-needs-embedder
+        # refusal -- it doesn't seed memory.
         answer = REASONING_EXHAUSTED_NOTICE
-    await _store_extracted_memories(question, answer)
+    else:
+        await _store_extracted_memories(question, answer)
     return AskResponse(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
@@ -410,7 +413,14 @@ async def _stream_chat_response(
     answer_parts: list[str] = []
     try:
         async for event in _cap_aware_chat_events(req):
-            if isinstance(event, StreamToken) and not event.is_reasoning:
+            if (
+                isinstance(event, StreamToken)
+                and not event.is_reasoning
+                # The reasoning-exhausted notice is streamed to the client but is
+                # not a real answer: keep it out of answer_parts so it seeds no
+                # memory and isn't treated as a citation source (bb-cpu).
+                and event.content != REASONING_EXHAUSTED_NOTICE
+            ):
                 answer_parts.append(event.content)
             yield _sse_for_chat_event(event)
     except Exception as exc:
