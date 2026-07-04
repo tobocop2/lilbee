@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 trace_log = logging.getLogger("lilbee.ingest.trace")
 vision_log = logging.getLogger("lilbee.ingest.vision")
@@ -47,16 +48,31 @@ class ExtractionTrace:
 
 
 def configure_from_env() -> None:
-    """Turn tracing on when LILBEE_INGEST_TRACE is truthy.
+    """Enable trace/vision logging per LILBEE_INGEST_TRACE; mirror to a file when
+    LILBEE_INGEST_TRACE_FILE is set.
 
-    lilbee's root logger defaults to WARNING, which would swallow the INFO trace
-    lines. Setting the two named loggers to INFO lets their records through the
-    isEnabledFor gate; propagation then hands them to the root handler (added by
-    basicConfig at NOTSET), so they surface regardless of the root level.
-    """
-    if os.environ.get(_TRACE_ENV, "").lower() in ("1", "true", "yes"):
-        trace_log.setLevel(logging.DEBUG)
-        vision_log.setLevel(logging.INFO)
+    The file handler exists because host apps own the root handlers: the TUI
+    logs WARNING+ to its file, so INFO trace lines vanish there even with the
+    loggers enabled. A dedicated handler on these two loggers makes the trace
+    destination independent of whichever front-end is running."""
+    if os.environ.get("LILBEE_INGEST_TRACE", "").strip().lower() not in {"1", "true", "yes"}:
+        return
+    trace_log.setLevel(logging.DEBUG)
+    vision_log.setLevel(logging.INFO)
+    target = os.environ.get("LILBEE_INGEST_TRACE_FILE", "").strip()
+    if not target:
+        return
+    resolved = str(Path(target).absolute())
+    for logger in (trace_log, vision_log):
+        if any(
+            isinstance(h, logging.FileHandler) and h.baseFilename == resolved
+            for h in logger.handlers
+        ):
+            continue
+        handler = logging.FileHandler(resolved)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(handler)
 
 
 def trace_extraction(trace: ExtractionTrace) -> None:

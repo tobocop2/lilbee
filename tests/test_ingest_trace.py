@@ -71,6 +71,34 @@ def test_env_flag_enables_both_loggers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert vision_log.level == logging.INFO  # vision lines are INFO, and emit
 
 
+def test_trace_file_receives_records_when_host_handlers_filter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    # The TUI's root file handler is WARNING+; the dedicated trace file must
+    # still receive every INFO line or the extraction report starves.
+    from pathlib import Path
+
+    target = Path(str(tmp_path)) / "trace.log"
+    monkeypatch.setenv("LILBEE_INGEST_TRACE", "1")
+    monkeypatch.setenv("LILBEE_INGEST_TRACE_FILE", str(target))
+    configure_from_env()
+    try:
+        trace_extraction(_trace(ocr_pages=3, vision_configured=True))
+        for handler in [*trace_log.handlers, *vision_log.handlers]:
+            handler.flush()
+        text = target.read_text()
+        assert "extract source=" in text and "vision-ocr source=" in text
+        configure_from_env()  # idempotent: same file re-configured adds no dup handler
+        resolved = str(target.absolute())
+        dups = [h for h in trace_log.handlers if getattr(h, "baseFilename", "") == resolved]
+        assert len(dups) == 1
+    finally:
+        for logger in (trace_log, vision_log):
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
+
+
 def test_trace_surfaces_under_a_warning_root(monkeypatch: pytest.MonkeyPatch) -> None:
     # The real failure mode: root at WARNING (lilbee's default) silently drops
     # INFO trace lines. The env flag must lift the named loggers so records emit.

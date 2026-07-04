@@ -40,9 +40,17 @@ _EMBED_CTX_MARGIN = 8
 
 
 def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
-    """Embed/rerank context: chunk length plus truncation margin, capped by trained context."""
+    """Embed/rerank context: worst-case chunk tokenization, capped by trained context.
+
+    ``chunk_size`` is token-denominated but the chunker enforces a CHARACTER
+    budget (``chunk_size * CHARS_PER_TOKEN``, i.e. 4 chars/token). Dense text --
+    ledger digits, dates, OCR artifacts -- tokenizes near 2 chars/token, so a
+    max-chars chunk can reach ~2x ``chunk_size`` tokens. Size the context for
+    that worst case, or real chunks get tail-truncated at embed time and the
+    lost text is silently unsearchable (observed live: 814 tokens > cap 512 on
+    DOJ ledger pages)."""
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
-    return min(train_ctx, cfg.chunk_size + _EMBED_CTX_MARGIN)
+    return min(train_ctx, cfg.chunk_size * 2 + _EMBED_CTX_MARGIN)
 
 
 _LLM_RERANK_HEADROOM = 512
