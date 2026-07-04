@@ -33,6 +33,7 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_markers,
     write_skip_reasons,
 )
+from lilbee.data.ingest.trace import configure_from_env as configure_trace_from_env
 from lilbee.data.ingest.types import (
     ChunkRecord,
     FileChangePlan,
@@ -531,6 +532,9 @@ async def ingest_batch(
     ingesting new ones so the two operations are atomic per file.
     When *cancel* is set, pending files raise CancelledError before starting.
     """
+    # Honor LILBEE_INGEST_TRACE once per batch: it raises the trace loggers above
+    # the default WARNING so per-file extraction lines actually surface.
+    configure_trace_from_env()
     semaphore = asyncio.Semaphore(_max_concurrent())
     window = _max_concurrent() * _TASK_WINDOW_MULTIPLIER
     total_files = len(files_to_process)
