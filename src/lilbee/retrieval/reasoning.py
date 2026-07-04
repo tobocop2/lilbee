@@ -44,6 +44,16 @@ CAP_CONTINUATION_PROMPT = (
 CAP_NOTICE_TEMPLATE = "\n[reasoning capped at {chars} chars, asking for a direct answer]\n"
 """User-visible marker emitted between the truncated reasoning and the continuation answer."""
 
+REASONING_EXHAUSTED_NOTICE = (
+    "The model spent its whole response budget on reasoning and produced no final "
+    "answer. Try a shorter question, raise the generation token limit, or lower the "
+    "reasoning effort."
+)
+"""Returned in place of an empty answer when reasoning consumed the entire generation.
+
+Lets a caller tell "the model thought itself to death" apart from a genuine empty
+response, which an empty string alone cannot."""
+
 
 @dataclass
 class StreamToken:

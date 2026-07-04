@@ -425,6 +425,32 @@ class TestModelRegistryResolve:
         for n in (2, 3):
             assert (resolved.parent / f"m-mxfp4-0000{n}-of-00003.gguf").exists()
 
+    def test_bare_repo_recovers_split_gguf_from_raw_cache(self, tmp_path: Path) -> None:
+        """bb-z59: a bare org/repo ref pointing at a raw-cache split GGUF (hf
+        download, no manifest) resolves to the first shard's snapshot symlink with
+        shard accounting, not shard 1's blob as an unloadable single file."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        resolved = registry.resolve(repo)
+        # The bare-repo path lands on the same loadable snapshot symlink as the
+        # canonical first-shard ref, not a blob under blobs/.
+        assert resolved == registry.resolve(f"{repo}/m-mxfp4-00001-of-00003.gguf")
+        assert resolved.parent.name == _FAKE_REV
+        # Recovery wrote a manifest with full shard accounting, so it lists
+        # installed: shard_blobs holds the trailing shards (2 and 3); the first
+        # shard is the primary blob.
+        manifest = registry._read_manifest(repo, "m-mxfp4-00001-of-00003.gguf")
+        assert manifest is not None
+        assert len(manifest.shard_blobs) == 2
+        assert manifest.total_size_bytes == sum(len(f"shard-{n}".encode()) for n in (1, 2, 3))
+
     def test_shard_paths_returns_every_split_shard(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         repo = "ggml-org/gpt-oss-120b-GGUF"

@@ -279,6 +279,19 @@ class ModelRegistry:
                 if blob.exists():
                     return blob
         for filename in sorted(self._cached_gguf_names(hf_repo)):
+            shards = split_shard_filenames(filename)
+            if len(shards) > 1:
+                # A split set in the cache: skip its non-first shards and resolve
+                # the whole set from shard 1 so we hand back the snapshot symlink
+                # (siblings co-located, loadable) with shard accounting, not
+                # shard 1's blob as an unloadable single file.
+                if filename != shards[0]:
+                    continue
+                with contextlib.suppress(KeyError):
+                    return self._resolve_split(
+                        format_native_gguf_ref(hf_repo, filename), hf_repo, shards
+                    )
+                continue
             recovered = self._find_cached_gguf(hf_repo, filename)
             if recovered is not None:
                 self._reregister_from_cache(hf_repo, filename, recovered)
