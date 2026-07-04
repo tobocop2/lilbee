@@ -14,7 +14,7 @@ import asyncio
 import dataclasses
 import time
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from lilbee.app.services import get_services
 from lilbee.app.status import gather_status
@@ -78,6 +78,7 @@ from lilbee.server.models import HealthResponse, StatusResponse
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
+    from lilbee.providers.base import LLMProvider
     from lilbee.server.models import GpuInfoResponse, PlacementResponse
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
@@ -89,6 +90,21 @@ _WARM_POLL_INTERVAL_S = 0.25
 _WARM_STREAM_TIMEOUT_S = 1800.0
 
 
+def _chat_status(provider: LLMProvider) -> Literal["ready", "loading", "not_started", "error"]:
+    """Classify the chat engine's readiness for /api/health.
+
+    ``ready`` once the role serves; ``error`` when warm-up failed; ``loading``
+    while a warm is in flight; ``not_started`` when nothing is warming and the
+    role isn't up (no chat model planned, so the fleet won't come up on its own).
+    """
+    if provider.role_ready(WorkerRole.CHAT):
+        return "ready"
+    snapshot = provider.warm_progress()
+    if snapshot is None:
+        return "not_started"
+    return "error" if snapshot.phase is WarmPhase.ERROR else "loading"
+
+
 async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
     provider = get_services().provider
@@ -96,6 +112,7 @@ async def health() -> HealthResponse:
         status="ok",
         version=get_version(),
         chat_ready=provider.role_ready(WorkerRole.CHAT),
+        chat_status=_chat_status(provider),
         chat_ctx=provider.served_chat_ctx(),
     )
 

@@ -117,6 +117,25 @@ class TestHealth:
         mock_svc.provider.role_ready.return_value = True
         assert (await handlers.health()).chat_ready is True
 
+    async def test_chat_status_distinguishes_not_started_from_loading(self, mock_svc):
+        """bb-v3t: a polling client must tell a fleet that never started warming
+        apart from one that is loading, so a fresh box with no chat model doesn't
+        look like a silent hang."""
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        mock_svc.provider.role_ready.return_value = True
+        assert (await handlers.health()).chat_status == "ready"
+
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = None
+        assert (await handlers.health()).chat_status == "not_started"
+
+        mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.READING_WEIGHTS)
+        assert (await handlers.health()).chat_status == "loading"
+
+        mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.ERROR)
+        assert (await handlers.health()).chat_status == "error"
+
 
 def _parse_warm_events(chunks: list[str]) -> list[dict]:
     """Pull the JSON payloads off ``warm`` SSE chunks, ignoring the [DONE] tail."""
@@ -707,6 +726,89 @@ class TestChat:
         assert result.sources == []  # direct-chat fallback carries no sources
         assert len(captured) == 1
 
+    async def test_top_k_zero_skips_retrieval(self, mock_svc, monkeypatch):
+        """bb-szm: an explicit top_k:0 is a pure-LLM call -- retrieval is
+        bypassed and no sources are attached, even in search mode."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="direct")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        result = await handlers.chat("q", [], top_k=0)
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        mock_svc.searcher.direct_messages.assert_called_once()
+        assert result.sources == []
+
+    async def test_top_k_none_grounds_normally(self, mock_svc, monkeypatch):
+        """Unspecified top_k (None) still runs retrieval -- only an explicit 0 skips."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        await handlers.chat("q", [], top_k=None)
+        mock_svc.searcher.build_rag_context.assert_called_once()
+        # None resolves to the config default (0 -> searcher picks cfg.top_k).
+        assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("top_k") == 0
+
+    async def test_reasoning_only_answer_surfaces_notice(self, mock_svc, monkeypatch):
+        """bb-cpu: when reasoning consumes the whole generation and no final answer
+        follows, /chat returns a clear notice instead of a silent empty string."""
+        from lilbee.retrieval.reasoning import REASONING_EXHAUSTED_NOTICE
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="<think>a long chain of thought</think>")],
+                stop_reason=StopReason.MAX_TOKENS,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        monkeypatch.setattr(cfg, "show_reasoning", False)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        result = await handlers.chat("q", [])
+        assert result.answer == REASONING_EXHAUSTED_NOTICE
+
 
 class TestChatStream:
     async def test_no_results_yields_error(self, mock_svc):
@@ -733,6 +835,36 @@ class TestChatStream:
         async for _ in handlers.chat_stream("q", [], chunk_type="raw"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "raw"
+
+    async def test_top_k_zero_skips_retrieval(self, mock_svc, monkeypatch):
+        """bb-szm: streaming chat with an explicit top_k:0 bypasses retrieval and
+        emits an empty SOURCES event -- a pure-LLM call, not a grounded one."""
+        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        monkeypatch.setattr(
+            _rag_h, "dispatch_chat_stream", lambda req: _canonical_text_stream(["direct"])
+        )
+        events = [e async for e in handlers.chat_stream("q", [], top_k=0)]
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        mock_svc.searcher.direct_messages.assert_called_once()
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        assert json.loads(sources_event.split("data: ")[1].strip()) == []
+
+    async def test_reasoning_only_stream_emits_notice(self, mock_svc, monkeypatch):
+        """bb-cpu: a reasoning-only stream (no final answer) emits the exhaustion
+        notice as a token, even with show_reasoning off, so it isn't silent."""
+        from lilbee.retrieval.reasoning import REASONING_EXHAUSTED_NOTICE
+
+        monkeypatch.setattr(cfg, "show_reasoning", False)
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat_stream",
+            lambda req: _canonical_text_stream(["<think>", "endless reasoning", "</think>"]),
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        token_events = [e for e in events if e and e.startswith("event: token")]
+        assert any(REASONING_EXHAUSTED_NOTICE in e for e in token_events)
 
     async def test_sources_event_carries_cited_subset(self, mock_svc, monkeypatch):
         """The chat SOURCES event emits the cited subset (what the answer referenced),

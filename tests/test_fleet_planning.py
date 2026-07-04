@@ -657,6 +657,34 @@ class TestBuildFleetWiring:
         assert WorkerRole.CHAT not in refs
         assert {i.role for i in inputs} == {WorkerRole.EMBED}
 
+    def test_server_model_inputs_distinguishes_sizing_failure_from_missing(
+        self, monkeypatch, caplog
+    ) -> None:
+        # A sizing failure (estimator errored) must not be reported as "not
+        # installed" -- that misdirects debugging toward the registry when the
+        # real fault is the memory estimator.
+        import logging
+
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def _estimate(role, ref, **_k):
+            raise ProviderError(
+                "estimator returned no usable result",
+                provider="llama-server",
+                kind=ProviderErrorKind.SERVER,
+            )
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        with caplog.at_level(logging.WARNING):
+            inputs, refs, _res = planning_mod._server_model_inputs()
+        assert not refs and not inputs
+        assert "is not installed" not in caplog.text
+        assert "could not size" in caplog.text
+
     def test_server_model_inputs_includes_configured_rerank(self, monkeypatch) -> None:
         monkeypatch.setattr(
             planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
