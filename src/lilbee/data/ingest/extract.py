@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import time
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import active_config
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.ingest.trace import ExtractionTrace, trace_extraction, trace_log
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
@@ -246,10 +248,29 @@ async def ingest_document(
             ExtractEvent(file=source_name, page=page_seen, total_pages=0),
         )
 
+    trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
+    started = time.perf_counter()
     with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout()) as token:
         config = extraction_config(content_type_to_mode(content_type), ocr_token=token)
         # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
         doc = await aextract_document(path.read_bytes(), filename=path.name, config=config)
+    elapsed = time.perf_counter() - started
+
+    # One trace line per xberg extraction (filename, timing, counts, OCR pages),
+    # plus a dedicated vision line for scanned files -- the diagnostics an xberg
+    # author needs. Emitted for empty results too: a slow file that yields nothing
+    # is exactly the case worth surfacing.
+    trace_extraction(
+        ExtractionTrace(
+            source=source_name,
+            content_type=content_type,
+            elapsed_s=elapsed,
+            page_count=len(doc.pages or []) or len(doc.chunks or []),
+            chunk_count=len(doc.chunks or []),
+            ocr_pages=page_seen,
+            vision_configured=bool(active_config().vision_model),
+        )
+    )
 
     if not doc.chunks:
         if content_type in (PDF_CONTENT_TYPE, IMAGE_CONTENT_TYPE):
