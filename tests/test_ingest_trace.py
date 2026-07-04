@@ -62,10 +62,22 @@ def test_scanned_file_emits_a_dedicated_vision_line(caplog: pytest.LogCaptureFix
     assert "doj-ds05/EFTA00000123.pdf" in vision_records[0].getMessage()
 
 
-def test_env_flag_raises_both_loggers_to_debug(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_env_flag_enables_both_loggers(monkeypatch: pytest.MonkeyPatch) -> None:
     trace_log.setLevel(logging.WARNING)
     vision_log.setLevel(logging.WARNING)
     monkeypatch.setenv("LILBEE_INGEST_TRACE", "1")
     configure_from_env()
-    assert trace_log.level == logging.DEBUG
-    assert vision_log.level == logging.DEBUG
+    assert trace_log.level == logging.DEBUG  # includes the extract-start debug line
+    assert vision_log.level == logging.INFO  # vision lines are INFO, and emit
+
+
+def test_trace_surfaces_under_a_warning_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The real failure mode: root at WARNING (lilbee's default) silently drops
+    # INFO trace lines. The env flag must lift the named loggers so records emit.
+    logging.getLogger().setLevel(logging.WARNING)
+    trace_log.setLevel(logging.WARNING)
+    vision_log.setLevel(logging.WARNING)
+    monkeypatch.setenv("LILBEE_INGEST_TRACE", "1")
+    configure_from_env()
+    assert trace_log.isEnabledFor(logging.INFO)
+    assert vision_log.isEnabledFor(logging.INFO)

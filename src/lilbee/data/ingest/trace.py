@@ -47,10 +47,16 @@ class ExtractionTrace:
 
 
 def configure_from_env() -> None:
-    """Raise both trace loggers to DEBUG when LILBEE_INGEST_TRACE is set truthy."""
+    """Turn tracing on when LILBEE_INGEST_TRACE is truthy.
+
+    lilbee's root logger defaults to WARNING, which would swallow the INFO trace
+    lines. Setting the two named loggers to INFO lets their records through the
+    isEnabledFor gate; propagation then hands them to the root handler (added by
+    basicConfig at NOTSET), so they surface regardless of the root level.
+    """
     if os.environ.get(_TRACE_ENV, "").lower() in ("1", "true", "yes"):
         trace_log.setLevel(logging.DEBUG)
-        vision_log.setLevel(logging.DEBUG)
+        vision_log.setLevel(logging.INFO)
 
 
 def trace_extraction(trace: ExtractionTrace) -> None:
