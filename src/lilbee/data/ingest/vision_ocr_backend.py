@@ -16,13 +16,7 @@ from lilbee.vision import resolve_ocr_prompt
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from xberg import ExtractedDocument, OcrBackendType
-
-    # The OcrBackend Protocol and the runtime trait callbacks use the native
-    # OcrConfig (xberg._xberg.OcrConfig), which is a different type from the public
-    # xberg.OcrConfig re-exported from xberg.options; a backend typed against the
-    # public one cannot satisfy the Protocol. Filed upstream (xberg).
-    from xberg._xberg import OcrConfig
+    from xberg import ExtractedDocument, OcrBackendType, OcrConfig
 
 # Token key inside OcrConfig.backend_options JSON. xberg does not propagate
 # contextvars into process_image (xberg-4w9), so per-request state travels as
@@ -85,8 +79,8 @@ def backend_options_for(token: str) -> dict[str, str]:
 class _OcrConfigView:
     """Typed reader over the xberg OcrConfig object passed to process_image.
 
-    xberg hands the callback a native OcrConfig (alef typed trait callbacks), so
-    its fields are read directly as attributes; ``backend_options`` is a dict.
+    xberg hands the callback the public ``xberg.OcrConfig`` dataclass, so its
+    fields are read directly as attributes; ``backend_options`` is a dict.
     """
 
     def __init__(self, config: OcrConfig) -> None:
@@ -160,9 +154,9 @@ class VisionOcrBackend:
         return False
 
     def process_image(self, image_bytes: bytes, config: OcrConfig) -> ExtractedDocument:
-        # xberg passes the OcrConfig as a native object and expects a native
-        # ExtractedDocument back (alef typed trait callbacks); read the request
-        # token and prompt override off the config, return the OCR text as markdown.
+        # xberg passes the public OcrConfig dataclass and expects a native
+        # ExtractedDocument back; read the request token and prompt override off
+        # the config, return the OCR text as markdown.
         from xberg import ExtractedDocument
 
         view = _OcrConfigView(config)

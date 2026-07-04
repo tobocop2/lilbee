@@ -1709,7 +1709,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
-    { name = "xberg", path = "../../../../kreuzberg-wt-pywheel/dist/xberg-1.0.0rc5-cp310-abi3-macosx_11_0_arm64.whl" },
+    { name = "xberg", path = "../../../../kreuzberg/dist/xberg-1.0.0rc6-cp310-abi3-macosx_11_0_arm64.whl" },
 ]
 provides-extras = ["litellm", "graph", "crawler", "cuda12", "release"]
 
@@ -4450,10 +4450,10 @@ wheels = [
 
 [[package]]
 name = "xberg"
-version = "1.0.0rc5"
-source = { path = "../../../../kreuzberg-wt-pywheel/dist/xberg-1.0.0rc5-cp310-abi3-macosx_11_0_arm64.whl" }
+version = "1.0.0rc6"
+source = { path = "../../../../kreuzberg/dist/xberg-1.0.0rc6-cp310-abi3-macosx_11_0_arm64.whl" }
 wheels = [
-    { filename = "xberg-1.0.0rc5-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:9748511a3494bd0ba4d6546178d536058b6a4b417934340e2d9fe1c7f4994d24" },
+    { filename = "xberg-1.0.0rc6-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:ed3a85dc002b894b47049554cf3641c409c7d448c55fda0be25364bfcdba0fbe" },
 ]
 
 [[package]]
