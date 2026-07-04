@@ -586,7 +586,7 @@ def _server_model_inputs(
     Skips an unconfigured optional role, a vision model with no resolvable mmproj
     projector, and a role whose model is not installed on disk.
     """
-    from lilbee.providers.base import ProviderError
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     inputs: dict[WorkerRole, ModelPlacementInput] = {}
     model_refs: dict[WorkerRole, str] = {}
@@ -609,13 +609,19 @@ def _server_model_inputs(
                 chat_reservation=chat_reservation,
                 device_count=device_count,
             )
-        except (ProviderError, OSError):
-            # The configured model is not installed/resolvable. Skip this role
-            # rather than failing the whole fleet build: search-only indexing
-            # must not require an installed chat model, and a genuinely-needed
-            # role surfaces a clear per-role error on first use instead of a
-            # build-time traceback.
-            log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+        except (ProviderError, OSError) as exc:
+            # Skip this role rather than failing the whole fleet build: search-only
+            # indexing must not require an installed chat model, and a genuinely-
+            # needed role surfaces a clear per-role error on first use instead of a
+            # build-time traceback. Keep "not installed" for an actually-missing
+            # model; a sizing failure (estimator errored) must say so, not misdirect
+            # debugging toward the registry.
+            if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
+                log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+            else:
+                log.warning(
+                    "Skipping %s server: could not size model %r (%s).", role.value, ref, exc
+                )
             return
         inputs[role] = estimate
         model_refs[role] = ref
