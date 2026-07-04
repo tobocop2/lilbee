@@ -40,9 +40,19 @@ _EMBED_CTX_MARGIN = 8
 
 
 def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
-    """Embed/rerank context: chunk length plus truncation margin, capped by trained context."""
+    """Embed/rerank context: worst-case chunk tokenization, capped by trained context.
+
+    ``chunk_size`` is token-denominated but the chunker enforces a CHARACTER
+    budget (``chunk_size * CHARS_PER_TOKEN``). A BPE token is at least one
+    character, so that char budget is also the PROVABLE token ceiling for any
+    chunk the chunker can emit: size the context to it and embed-time
+    truncation becomes impossible, not merely rare. (Observed live before the
+    fix: numeric-table chunks at ~1.5 chars/token reached 1982 tokens against a
+    2x-chunk_size cap and lost their tails -- silently unsearchable text.)"""
+    from lilbee.data.chunk import CHARS_PER_TOKEN
+
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
-    return min(train_ctx, cfg.chunk_size + _EMBED_CTX_MARGIN)
+    return min(train_ctx, cfg.chunk_size * CHARS_PER_TOKEN + _EMBED_CTX_MARGIN)
 
 
 _LLM_RERANK_HEADROOM = 512
