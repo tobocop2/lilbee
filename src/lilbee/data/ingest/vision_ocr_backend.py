@@ -7,6 +7,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from lilbee.data.ingest.types import MARKDOWN_MIME, OcrBackendName
@@ -15,7 +16,13 @@ from lilbee.vision import resolve_ocr_prompt
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from xberg import ExtractedDocument, OcrConfig
+    from xberg import ExtractedDocument, OcrBackendType
+
+    # The OcrBackend Protocol and the runtime trait callbacks use the native
+    # OcrConfig (xberg._xberg.OcrConfig), which is a different type from the public
+    # xberg.OcrConfig re-exported from xberg.options; a backend typed against the
+    # public one cannot satisfy the Protocol. Filed upstream (xberg).
+    from xberg._xberg import OcrConfig
 
 # Token key inside OcrConfig.backend_options JSON. xberg does not propagate
 # contextvars into process_image (xberg-4w9), so per-request state travels as
@@ -134,8 +141,23 @@ class VisionOcrBackend:
 
     def shutdown(self) -> None: ...
 
-    def backend_type(self) -> str:
-        return "custom"
+    def backend_type(self) -> OcrBackendType:
+        from xberg import OcrBackendType
+
+        return OcrBackendType.CUSTOM
+
+    def supports_table_detection(self) -> bool:
+        return False
+
+    def supports_document_processing(self) -> bool:
+        return False
+
+    def emits_structured_markdown(self) -> bool:
+        # Keep xberg's default: the pre-migration differential was validated with
+        # layout reconstruction on. The vision model does emit markdown, so flipping
+        # this to True (skip reconstruction) is a valid optimization, but it changes
+        # real OCR output and must be validated on the live integration first.
+        return False
 
     def process_image(self, image_bytes: bytes, config: OcrConfig) -> ExtractedDocument:
         # xberg passes the OcrConfig as a native object and expects a native
@@ -151,3 +173,15 @@ class VisionOcrBackend:
         if ctx is not None and ctx.on_page is not None:
             ctx.on_page()
         return ExtractedDocument(content=text, mime_type=MARKDOWN_MIME)
+
+    def process_image_file(self, path: str, config: OcrConfig) -> ExtractedDocument:
+        # OCR an image file by reading its bytes and delegating to process_image
+        # (mirrors xberg's default OcrBackend::process_image_file).
+        return self.process_image(Path(path).read_bytes(), config)
+
+    def process_document(self, _path: str, _config: OcrConfig) -> ExtractedDocument:
+        # Image-only backend: xberg only calls this when supports_document_processing()
+        # is True, which it never is here, so document-level OCR is unreachable.
+        raise NotImplementedError(
+            "Document-level OCR is not supported by the lilbee vision backend"
+        )
