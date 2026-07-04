@@ -132,11 +132,20 @@ class TestTesseractOcrFallback:
     )
     async def test_tesseract_extracts_text(self):
         """Tesseract OCR produces non-empty text from the scanned PDF fixture."""
-        from xberg import ExtractionConfig, OcrConfig, extract_file
+        from xberg import ExtractionConfig, OcrConfig
 
-        config = ExtractionConfig(ocr=OcrConfig(backend="tesseract"), force_ocr=True)
-        result = await extract_file(str(SCANNED_PDF), config=config)
-        assert len(result.content.strip()) > 0, "Tesseract produced empty text"
+        from lilbee.data.xberg_extract import aextract_document
+
+        config = ExtractionConfig(
+            ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True
+        )
+        doc = await aextract_document(
+            SCANNED_PDF.read_bytes(),
+            mime_type="application/pdf",
+            filename=SCANNED_PDF.name,
+            config=config,
+        )
+        assert len(doc.content.strip()) > 0, "Tesseract produced empty text"
 
     @pytest.mark.skipif(
         not shutil.which("tesseract"),
@@ -144,11 +153,20 @@ class TestTesseractOcrFallback:
     )
     async def test_tesseract_extracts_known_phrases(self):
         """Tesseract OCR captures key phrases from the scanned document."""
-        from xberg import ExtractionConfig, OcrConfig, extract_file
+        from xberg import ExtractionConfig, OcrConfig
 
-        config = ExtractionConfig(ocr=OcrConfig(backend="tesseract"), force_ocr=True)
-        result = await extract_file(str(SCANNED_PDF), config=config)
-        text_lower = result.content.lower()
+        from lilbee.data.xberg_extract import aextract_document
+
+        config = ExtractionConfig(
+            ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True
+        )
+        doc = await aextract_document(
+            SCANNED_PDF.read_bytes(),
+            mime_type="application/pdf",
+            filename=SCANNED_PDF.name,
+            config=config,
+        )
+        text_lower = doc.content.lower()
         # At least some of the rendered text should be recognized
         recognized = any(
             phrase in text_lower
@@ -174,17 +192,23 @@ class TestVisionOcrFallback:
     """Vision OCR through the registered lilbee-vision xberg backend."""
 
     async def _vision_extract(self) -> str:
-        from xberg import ExtractionConfig, OcrConfig, extract_file
+        from xberg import ExtractionConfig, OcrConfig
 
         from lilbee.app.services import get_services, sync_vision_ocr_backend
         from lilbee.data.ingest.types import OcrBackendName
+        from lilbee.data.xberg_extract import aextract_document
 
         sync_vision_ocr_backend(get_services().provider)
         config = ExtractionConfig(
             ocr=OcrConfig(backend=OcrBackendName.LILBEE_VISION), force_ocr=True
         )
-        result = await extract_file(str(SCANNED_PDF), config=config)
-        return result.content
+        doc = await aextract_document(
+            SCANNED_PDF.read_bytes(),
+            mime_type="application/pdf",
+            filename=SCANNED_PDF.name,
+            config=config,
+        )
+        return doc.content
 
     @pytest.mark.skipif(
         not _vision_model_available(),
