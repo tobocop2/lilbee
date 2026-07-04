@@ -47,7 +47,7 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
     character, so that char budget is also the PROVABLE token ceiling for any
     chunk the chunker can emit: size the context to it and embed-time
     truncation becomes impossible, not merely rare. (Observed live before the
-    fix: court/ledger chunks at ~1.5 chars/token reached 1982 tokens against a
+    fix: numeric-table chunks at ~1.5 chars/token reached 1982 tokens against a
     2x-chunk_size cap and lost their tails -- silently unsearchable text.)"""
     from lilbee.data.chunk import CHARS_PER_TOKEN
 

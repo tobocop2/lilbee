@@ -17,7 +17,7 @@ from lilbee.data.ingest.trace import (
 
 def _trace(**kw: object) -> ExtractionTrace:
     base = {
-        "source": "doj-ds05/EFTA00000123.pdf",
+        "source": "batch-a/scan_00000123.pdf",
         "content_type": "application/pdf",
         "elapsed_s": 1.234,
         "page_count": 10,
@@ -31,7 +31,7 @@ def _trace(**kw: object) -> ExtractionTrace:
 
 def test_line_carries_filename_timing_and_counts() -> None:
     line = _trace().as_line()
-    assert "source='doj-ds05/EFTA00000123.pdf'" in line
+    assert "source='batch-a/scan_00000123.pdf'" in line
     assert "elapsed_ms=1234" in line
     assert "pages=10" in line
     assert "chunks=42" in line
@@ -59,7 +59,7 @@ def test_scanned_file_emits_a_dedicated_vision_line(caplog: pytest.LogCaptureFix
     vision_records = [r for r in caplog.records if r.name == "lilbee.ingest.vision"]
     assert len(vision_records) == 1
     assert "ocr_pages=7" in vision_records[0].getMessage()
-    assert "doj-ds05/EFTA00000123.pdf" in vision_records[0].getMessage()
+    assert "batch-a/scan_00000123.pdf" in vision_records[0].getMessage()
 
 
 def test_env_flag_enables_both_loggers(monkeypatch: pytest.MonkeyPatch) -> None:

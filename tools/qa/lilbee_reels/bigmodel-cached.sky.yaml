@@ -1,0 +1,26 @@
+# Cached bigmodel pod: a persistent network volume at /workspace holds the 235B
+# model + the built engine, so a re-up skips the HF download and the bootstrap.
+#
+# ONE-TIME (creates the volume; region must have A100-80GB availability):
+#   sky volumes apply tools/qa/lilbee_reels/bigmodel-volume.sky.yaml
+# LAUNCH (first up downloads the model to the volume; later ups reuse it):
+#   sky launch -c lilbee-bigmodel tools/qa/lilbee_reels/bigmodel-cached.sky.yaml --retry-until-up -y
+# TEAR DOWN (volume persists, model stays cached):
+#   sky down lilbee-bigmodel -y
+name: lilbee-bigmodel
+resources:
+  cloud: runpod
+  # No disk_size: the volume backs /workspace. Pin the accelerator to the
+  # volume's region availability.
+  accelerators: A100-80GB:3
+volumes:
+  /workspace: lilbee-bigmodel-cache
+envs:
+  BRANCH: feat/local-model-api
+  BACKEND: cu124
+setup: |
+  # Idempotent: pod_bootstrap.sh skips work already present on the volume.
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${BRANCH}/tools/qa/opencode/pod_bootstrap.sh" -o /tmp/pod_bootstrap.sh
+  BRANCH="${BRANCH}" BACKEND="${BACKEND}" WORKSPACE=/workspace bash /tmp/pod_bootstrap.sh
+run: |
+  echo "pod ready; /workspace on persistent volume lilbee-bigmodel-cache"

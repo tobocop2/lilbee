@@ -1,0 +1,7 @@
+# Persistent volume that caches the 235B model + built engine for the bigmodel
+# reel. ~150Gi holds Qwen3-235B Q3_K_M (~112GB) + the embedder + engine.
+# Region MUST offer A100-80GB (else the cached pod can't launch there).
+name: lilbee-bigmodel-cache
+type: runpod-network-volume
+infra: runpod/US/US-KS-2
+size: 160Gi
