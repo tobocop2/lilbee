@@ -85,16 +85,17 @@ def test_role_ctx_chat_uses_dynamic_picker_when_unset(monkeypatch) -> None:
 
 
 def test_role_ctx_embed_covers_chunk_size_plus_margin(monkeypatch) -> None:
-    # A 32K-trained embedder is sized to the chunk length plus the truncation margin
-    # (so a full chunk_size input is not truncated), not its full context, so its
+    # A 32K-trained embedder (and a plain non-LLM reranker) is sized to the chunker's
+    # character budget plus the truncation margin (chunk_size * CHARS_PER_TOKEN + margin
+    # -- the provable token ceiling for a full chunk), not its full context, so its
     # placement estimate doesn't balloon (200GB+) and starve the role alongside a giant.
     monkeypatch.setattr(
         "lilbee.providers.engine_params.train_ctx_from_meta",
         lambda _meta, *, fallback, model_path: 32768,
     )
     monkeypatch.setattr(cfg, "chunk_size", 512)
-    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}) == 520
-    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}) == 520
+    assert planning_mod._role_ctx(WorkerRole.EMBED, Path("/m/e.gguf"), {}) == 2056
+    assert planning_mod._role_ctx(WorkerRole.RERANK, Path("/m/r.gguf"), {}) == 2056
 
 
 def test_embed_ctx_token_cap_fits_full_chunk(monkeypatch) -> None:
