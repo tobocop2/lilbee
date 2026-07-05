@@ -111,10 +111,31 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
         return OcrConfig(enabled=False)
     if config.vision_model:
         options = backend_options_for(ocr_token) if ocr_token else None
-        return OcrConfig(backend=OcrBackendName.LILBEE_VISION, backend_options=options)
+        return OcrConfig(
+            backend=OcrBackendName.LILBEE_VISION,
+            backend_options=options,
+            quality_thresholds=_forced_ocr_thresholds(),
+        )
     # xberg requires a non-empty language list (4.x defaulted to English;
     # 5.x errors on an empty one). cfg.ocr_language is validated non-empty.
     return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(config.ocr_language))
+
+
+def _forced_ocr_thresholds() -> "OcrQualityThresholds | None":
+    """OCR-forcing thresholds when LILBEE_OCR_FORCE=1, else None (xberg defaults).
+
+    Some scans carry a garbage text layer (whitespace-only or invisible text
+    objects), so the has-text-layer gate skips OCR and extraction yields zero
+    chunks. An impossible non-whitespace floor makes every page fail the
+    quality gate and fall through to OCR -- a targeted-reingest lever, not a
+    default: normal runs must keep native-first extraction."""
+    import os
+
+    if os.environ.get("LILBEE_OCR_FORCE", "").strip().lower() not in {"1", "true", "yes"}:
+        return None
+    from xberg import OcrQualityThresholds
+
+    return OcrQualityThresholds(min_total_non_whitespace=10**9)
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
