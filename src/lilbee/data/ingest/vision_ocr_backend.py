@@ -17,13 +17,11 @@ from lilbee.vision import resolve_ocr_prompt
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from xberg import ExtractedDocument, OcrBackendType
-
-    # The OcrBackend Protocol and the runtime trait callbacks use the native
-    # OcrConfig (xberg._xberg.OcrConfig), which is a different type from the public
-    # xberg.OcrConfig re-exported from xberg.options; a backend typed against the
-    # public one cannot satisfy the Protocol. Filed upstream (xberg).
-    from xberg._xberg import OcrConfig
+    # rc9's OcrBackend Protocol types the callback config as the public
+    # xberg.OcrConfig (kreuzberg-u4r); a backend typed against the native
+    # xberg._xberg.OcrConfig no longer satisfies it. The runtime object still
+    # arrives with backend_options as a JSON string (handled in _OcrConfigView).
+    from xberg import ExtractedDocument, OcrBackendType, OcrConfig
 
 # Token key inside OcrConfig.backend_options JSON. xberg does not propagate
 # contextvars into process_image (xberg-4w9), so per-request state travels as
@@ -86,8 +84,10 @@ def backend_options_for(token: str) -> dict[str, str]:
 class _OcrConfigView:
     """Typed reader over the xberg OcrConfig object passed to process_image.
 
-    xberg hands the callback a native OcrConfig (alef typed trait callbacks), so
-    its fields are read directly as attributes; ``backend_options`` is a dict.
+    Typed against the public ``xberg.OcrConfig`` (rc9's OcrBackend Protocol), whose
+    fields are read directly as attributes. The native round-trip hands
+    ``backend_options`` back as a JSON string rather than the dict lilbee put in, so
+    ``request_token`` accepts both shapes.
     """
 
     def __init__(self, config: OcrConfig) -> None:

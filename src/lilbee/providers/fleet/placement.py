@@ -333,8 +333,8 @@ def placement_from_spec(
 def _derived_split(devices: tuple[int, ...], remaining: dict[int, float]) -> tuple[int, ...]:
     """Planner-style split for a spec entry without an explicit ``tensor_split``.
 
-    Each card's shard tracks its remaining usable VRAM (whole GiB, min 1) — the
-    same proportions the auto planner computes — so a card already carrying
+    Each card's shard tracks its remaining usable VRAM (whole GiB, min 1), the
+    same proportions the auto planner computes, so a card already carrying
     other roles takes a smaller share. An even split would charge every card the
     same shard and falsely reject layouts the planner itself serves (bb-lt7).
     """

@@ -470,6 +470,27 @@ class TestModelRegistryResolve:
         for n in (2, 3):
             assert (resolved.parent / f"MiniMax-M2-Q4_K_M-0000{n}-of-00003.gguf").exists()
 
+    def test_bare_repo_split_that_cannot_resolve_skips_shards_and_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare repo whose only cached GGUFs are an unresolvable split set (a shard
+        missing) suppresses shard 1's failure, skips the trailing shards, and ends in
+        'not installed' rather than handing back a partial resolve."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        for n in (1, 2, 3):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        # Every shard reports missing, so _resolve_split raises on shard 1 (suppressed);
+        # shards 2 and 3 are skipped as non-first, and the loop exhausts unresolved.
+        monkeypatch.setattr(registry, "_split_shards_present", lambda *_a, **_k: False)
+        with pytest.raises(KeyError, match="not installed"):
+            registry.resolve(repo)
+
     def test_shard_paths_returns_every_split_shard(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path)
         repo = "ggml-org/gpt-oss-120b-GGUF"

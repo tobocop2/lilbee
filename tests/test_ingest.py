@@ -828,6 +828,27 @@ class TestSyncCancellation:
         mock_svc.store.write_chunks_batch.assert_not_called()
 
 
+class TestForcedOcrThresholds:
+    """cfg-independent LILBEE_OCR_FORCE lever for scans with a garbage text layer."""
+
+    def test_none_when_env_unset(self, monkeypatch):
+        from lilbee.data.ingest.extract import _forced_ocr_thresholds
+
+        monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
+        assert _forced_ocr_thresholds() is None
+
+    @pytest.mark.parametrize("value", ["1", "true", "YES"])
+    def test_impossible_floor_when_env_set(self, monkeypatch, value):
+        from lilbee.data.ingest.extract import _forced_ocr_thresholds
+
+        monkeypatch.setenv("LILBEE_OCR_FORCE", value)
+        thresholds = _forced_ocr_thresholds()
+        assert thresholds is not None
+        # An unreachable non-whitespace floor fails every page's text-layer gate,
+        # forcing OCR on scans whose garbage text layer would otherwise skip it.
+        assert thresholds.min_total_non_whitespace == 10**9
+
+
 class TestIngestHelpers:
     """Cover edge cases in ingest_document and ingest_code_sync."""
 

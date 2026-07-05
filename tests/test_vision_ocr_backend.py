@@ -136,9 +136,7 @@ class TestProcessImage:
         ticks: list[int] = []
         be, calls = _backend()
         with ocr_request(on_page=lambda: ticks.append(1), timeout=7.5) as token:
-            be.process_image(
-                b"PNG", _cfg(backend_options=json.dumps(backend_options_for(token)))
-            )
+            be.process_image(b"PNG", _cfg(backend_options=json.dumps(backend_options_for(token))))
         assert calls[0][3] == 7.5
         assert ticks == [1]
 

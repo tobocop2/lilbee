@@ -34,7 +34,7 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig
+    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, OcrQualityThresholds
 
 log = logging.getLogger(__name__)
 
