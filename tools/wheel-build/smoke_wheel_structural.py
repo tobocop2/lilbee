@@ -10,13 +10,43 @@ Usage: python tools/wheel-build/smoke_wheel_structural.py [--expect-arch ARCH]
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
 import zipfile
 
+# Script-mode sys.path[0] is this directory; tools.vendor lives at the repo root.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
+from tools.vendor.cuda_runtime import runtime_lib_patterns
+
 _MIN_LIBLLAMA_BYTES = 50_000
+
+
+def _assert_cuda_runtime_bundled(wheel_name: str, libs: list[str]) -> None:
+    """CUDA wheels must carry the CUDA runtime libraries in llama_cpp/lib."""
+    names = [pathlib.Path(n).name for n in libs]
+    missing = [
+        pattern
+        for pattern in runtime_lib_patterns(wheel_name)
+        if not fnmatch.filter(names, pattern)
+    ]
+    if missing:
+        raise AssertionError(f"CUDA wheel is missing runtime libraries: {missing}")
+
+
+def _assert_lib_arch(zf: zipfile.ZipFile, lib: str, expect_arch: str) -> None:
+    """Extract *lib* and assert `file` reports the expected architecture."""
+    with tempfile.TemporaryDirectory() as td:
+        zf.extract(lib, td)
+        extracted = pathlib.Path(td) / lib
+        out = subprocess.check_output(["file", str(extracted)], text=True)  # noqa: S603, S607
+        print(out.strip())
+        if expect_arch not in out:
+            raise AssertionError(f"{lib} arch mismatch: expected {expect_arch}, got: {out}")
 
 
 def main() -> int:
@@ -44,21 +74,16 @@ def main() -> int:
         if not llama_libs:
             raise AssertionError(f"wheel ships no libllama.* in llama_cpp/lib/: {libs}")
 
+        if os.environ.get("BACKEND", "").startswith("cu"):
+            _assert_cuda_runtime_bundled(whl.name, libs)
+
         for lib in llama_libs:
             size = zf.getinfo(lib).file_size
             if size < _MIN_LIBLLAMA_BYTES:
                 raise AssertionError(f"{lib} is suspiciously small ({size} bytes)")
 
         if expect_arch:
-            with tempfile.TemporaryDirectory() as td:
-                zf.extract(llama_libs[0], td)
-                extracted = pathlib.Path(td) / llama_libs[0]
-                out = subprocess.check_output(["file", str(extracted)], text=True)
-                print(out.strip())
-                if expect_arch not in out:
-                    raise AssertionError(
-                        f"{llama_libs[0]} arch mismatch: expected {expect_arch}, got: {out}"
-                    )
+            _assert_lib_arch(zf, llama_libs[0], expect_arch)
 
     summary = f"structural smoke OK: {len(llama_libs)} libllama variant(s)"
     if expect_arch:
