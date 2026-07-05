@@ -685,6 +685,21 @@ class Store:
         rows: list[PageTextRecord] = query.limit(None).to_list()
         return rows
 
+    def page_texts_arrow(self, source: str | None = None) -> pa.Table:
+        """Return per-page text rows as an Arrow table in a single scan.
+
+        The columnar sibling of :meth:`get_page_texts`: the export path keeps the
+        whole set in Arrow (no per-row Python objects) from read through file
+        write. Empty with the canonical schema when the table or *source* is empty.
+        """
+        table = self.open_table(PAGE_TEXTS_TABLE)
+        if table is None:
+            return _page_texts_schema().empty_table()
+        query = table.search().select(["source", "page", "text", "content_type"])
+        if source is not None:
+            query = query.where(f"source = '{escape_sql_string(source)}'")
+        return query.limit(None).to_arrow()
+
     def page_text_sources(self) -> set[str]:
         """Return the distinct sources present in the page-text table."""
         table = self.open_table(PAGE_TEXTS_TABLE)
