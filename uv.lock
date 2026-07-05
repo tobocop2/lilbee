@@ -1673,6 +1673,7 @@ release = [
 dev = [
     { name = "httpx" },
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1699,10 +1700,10 @@ requires-dist = [
     { name = "kreuzberg", specifier = ">=4.9.1,<5" },
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0,<1.92" },
     { name = "litestar", specifier = ">=2.0" },
     { name = "llama-cpp-python" },
-    { name = "mcp", specifier = ">=1.26.0" },
+    { name = "mcp", specifier = ">=1.26.0,<2" },
     { name = "numpy" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "psutil", specifier = ">=5.9" },
@@ -1721,6 +1722,7 @@ provides-extras = ["litellm", "graph", "crawler", "release"]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", specifier = ">=1.19.1" },
+    { name = "packaging", specifier = ">=24" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
