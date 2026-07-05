@@ -4453,7 +4453,7 @@ name = "xberg"
 version = "1.0.0rc7"
 source = { path = "../../../../kreuzberg/dist/xberg-1.0.0rc7-cp310-abi3-macosx_11_0_arm64.whl" }
 wheels = [
-    { filename = "xberg-1.0.0rc7-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:aa94891bfb7e039817aa078a5a535304d65dacc2c1e6fbe1a7f5c346967fcedf" },
+    { filename = "xberg-1.0.0rc7-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:7daed6ea563de914a4aa6d9098213521f3020a937d8e0903f5a46e5bbb87ee05" },
 ]
 
 [[package]]

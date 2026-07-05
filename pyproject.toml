@@ -94,10 +94,11 @@ packages = ["src/lilbee"]
 lilbee-engine = { path = "packaging/engine-wheel" }
 # TODO: pre-publication trial wheel; resolve it from the local build until it
 # lands on PyPI, then drop this source and lock from the index. Built from xberg
-# 1.0.0rc7 (kreuzberg main 6fa598759f "chore: regenreated"), whose committed
-# bindings were regenerated with alef 0.32.1 -- carries the OcrBackend host-method
-# forwarding fix (kreuzberg-3u2), the public options.OcrConfig Protocol
-# (kreuzberg-u4r), and builtins-qualified stubs.
+# 1.0.0rc7 built from kreuzberg main, whose committed bindings were
+# regenerated with alef -- carries the OcrBackend host-method forwarding fix
+# (kreuzberg-3u2), the public options.OcrConfig Protocol (kreuzberg-u4r),
+# builtins-qualified stubs, and the pluggable tokenizer-backend registry
+# (kreuzberg-1h6). The tokenizer API is purely additive; lilbee does not use it.
 xberg = { path = "/Users/tobias/projects/kreuzberg/dist/xberg-1.0.0rc7-cp310-abi3-macosx_11_0_arm64.whl" }
 
 [dependency-groups]
