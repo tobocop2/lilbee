@@ -317,7 +317,7 @@ def placement_from_spec(
     instances: list[InstancePlan] = []
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)
-        ratio = rp.tensor_split or tuple(1 for _ in rp.devices)
+        ratio = rp.tensor_split or _derived_split(rp.devices, remaining)
         per_device = estimate_peak(role, ratio)
         split = ratio if len(rp.devices) > 1 else ()
         for replica in range(rp.replicas):
@@ -328,6 +328,17 @@ def placement_from_spec(
                 )
             )
     return Placement(instances=tuple(instances), unplaceable_roles=())
+
+
+def _derived_split(devices: tuple[int, ...], remaining: dict[int, float]) -> tuple[int, ...]:
+    """Planner-style split for a spec entry without an explicit ``tensor_split``.
+
+    Each card's shard tracks its remaining usable VRAM (whole GiB, min 1) — the
+    same proportions the auto planner computes — so a card already carrying
+    other roles takes a smaller share. An even split would charge every card the
+    same shard and falsely reject layouts the planner itself serves (bb-lt7).
+    """
+    return tuple(max(1, int(remaining[idx] / 1024**3)) for idx in devices)
 
 
 def _required_entry(
