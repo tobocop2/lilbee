@@ -52,7 +52,9 @@ class ChatRequest(BaseModel):
 
     question: str
     history: list[ChatMessage] = []
-    top_k: int = Field(default=0, le=100)
+    # None (unspecified) grounds with the configured top_k; an explicit 0 is a
+    # pure-LLM call that skips retrieval entirely.
+    top_k: int | None = Field(default=None, le=100)
     options: dict[str, Any] | None = None
     chunk_type: ChunkType | None = None
 
@@ -175,6 +177,14 @@ class HealthResponse(BaseModel):
     A launcher polls this to wait out the cold model load before handing off to
     a client, so the client never lands on an apparently-dead stream.
     """
+    chat_status: Literal["ready", "loading", "not_started", "error"] = "not_started"
+    """Finer-grained chat readiness than the ``chat_ready`` bool.
+
+    Lets a polling client tell a fleet that is still loading (wait) apart from one
+    that never started warming (``not_started`` -- no chat model resolved / planned,
+    so it will not come up on its own) or failed (``error``). Without this a bare
+    ``chat_ready:false`` reads the same for "loading" and "hung", which looked like a
+    silent hang on a fresh box with no chat model installed."""
     chat_ctx: int | None = None
     """Per-slot context the chat engine serves, so a launcher can tell the client
     its window and the client trims history to fit. None until the engine is up."""

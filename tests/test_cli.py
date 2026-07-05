@@ -664,7 +664,7 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.7
         cfg.temperature = None
 
-    def test_data_dir_overlays_per_root_config_toml(self, tmp_path):
+    def test_data_dir_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
         """A per-vault config.toml in the data-dir must be re-read when --data-dir lands.
 
         Regression: cfg's scalar fields (chat_model, embedding_model, ...) were
@@ -688,7 +688,9 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
-    def test_data_dir_without_config_toml_leaves_cfg_unchanged(self, tmp_path):
+    def test_data_dir_without_config_toml_leaves_cfg_unchanged(
+        self, tmp_path, overlay_reads_config_toml
+    ):
         """An empty / missing config.toml must not stomp on existing cfg values."""
         from lilbee.cli import apply_overrides
 
@@ -701,7 +703,9 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/kept-from-import:latest"
         assert cfg.embedding_model == "ollama/kept-embed:latest"
 
-    def test_data_dir_overlay_covers_writable_scalar_fields(self, tmp_path):
+    def test_data_dir_overlay_covers_writable_scalar_fields(
+        self, tmp_path, overlay_reads_config_toml
+    ):
         """Writable scalar fields (e.g. temperature, top_k) overlay too, not just models."""
         from lilbee.cli import apply_overrides
 
@@ -715,7 +719,9 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.2
         assert cfg.top_k == 20
 
-    def test_use_global_overlays_global_config_toml(self, tmp_path, monkeypatch):
+    def test_use_global_overlays_global_config_toml(
+        self, tmp_path, monkeypatch, overlay_reads_config_toml
+    ):
         """--global must also re-read the global root's config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -731,7 +737,9 @@ class TestApplyOverrides:
         assert cfg.data_root == fake_global
         assert cfg.chat_model == "ollama/from-global:latest"
 
-    def test_lilbee_data_env_overlays_config_toml(self, tmp_path, monkeypatch):
+    def test_lilbee_data_env_overlays_config_toml(
+        self, tmp_path, monkeypatch, overlay_reads_config_toml
+    ):
         """The LILBEE_DATA env-var path must also overlay its config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -772,7 +780,7 @@ class TestApplyOverrides:
         apply_overrides(use_global=True)
         assert os.environ.get("LILBEE_DATA") == str(fake_global)
 
-    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path):
+    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path, overlay_reads_config_toml):
         """Stale or unrecognised keys in config.toml don't blow up startup."""
         from lilbee.cli import apply_overrides
 
@@ -786,7 +794,9 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/from-vault:latest"
         assert not hasattr(cfg, "totally_unknown_key")
 
-    def test_data_dir_overlay_logs_and_skips_invalid_value(self, tmp_path, caplog):
+    def test_data_dir_overlay_logs_and_skips_invalid_value(
+        self, tmp_path, caplog, overlay_reads_config_toml
+    ):
         """A malformed persisted value is logged and skipped, not raised."""
         from lilbee.cli import apply_overrides
 
@@ -800,7 +810,9 @@ class TestApplyOverrides:
         assert cfg.top_k == 7
         assert any("top_k" in rec.message for rec in caplog.records)
 
-    def test_data_dir_overlay_handles_unreadable_config_toml(self, tmp_path, monkeypatch, caplog):
+    def test_data_dir_overlay_handles_unreadable_config_toml(
+        self, tmp_path, monkeypatch, caplog, overlay_reads_config_toml
+    ):
         """A read failure on config.toml is logged and treated as 'no overlay'."""
         from lilbee.cli import apply_overrides
         from lilbee.core import settings as settings_mod

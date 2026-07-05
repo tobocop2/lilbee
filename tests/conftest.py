@@ -19,6 +19,14 @@ import pytest
 # conftest runs, the sentinel half of the gate is satisfied here.
 os.environ.setdefault("LILBEE_SKIP_MODEL_TASK_VALIDATION", "1")
 
+# Build the cfg singleton hermetically: the first ``import lilbee.core.config``
+# below constructs ``cfg`` from env + defaults, so skip the developer's real
+# platform config.toml here (before that import) rather than only in an autouse
+# fixture that runs after cfg is already loaded. Without this, values like
+# ``vision_model`` / ``memory_enabled`` leak from the dev's machine into tests
+# that assert defaults. Matches CI, which has no config.toml. (bb-e7d)
+os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
+
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.core.config import cfg
@@ -193,6 +201,18 @@ def _ignore_user_global_config(monkeypatch):
     not to add the toml source: env + defaults only.
     """
     monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+
+
+@pytest.fixture
+def overlay_reads_config_toml(monkeypatch):
+    """Opt a test back into the config.toml overlay path.
+
+    The suite runs with ``LILBEE_SKIP_TOML_CONFIG=1`` for hermeticity, and
+    ``overlay_persisted_settings`` honors that flag. Tests that specifically
+    exercise the overlay-applies behavior (writing a config.toml to a controlled
+    root and asserting it lands on cfg) must clear the flag so overlay runs.
+    """
+    monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
 
 
 @pytest.fixture(autouse=True)

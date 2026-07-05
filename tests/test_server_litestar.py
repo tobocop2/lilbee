@@ -286,7 +286,7 @@ class TestChatRoute:
         resp = client.post("/api/chat", json={"question": "q", "history": history})
         assert resp.status_code == 201
         mock_chat.assert_awaited_once_with(
-            question="q", history=history, top_k=0, options=None, chunk_type=None
+            question="q", history=history, top_k=None, options=None, chunk_type=None
         )
 
     @mock.patch(
@@ -297,7 +297,7 @@ class TestChatRoute:
     def test_default_empty_history(self, mock_chat, client):
         client.post("/api/chat", json={"question": "q"})
         mock_chat.assert_awaited_once_with(
-            question="q", history=[], top_k=0, options=None, chunk_type=None
+            question="q", history=[], top_k=None, options=None, chunk_type=None
         )
 
     @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)

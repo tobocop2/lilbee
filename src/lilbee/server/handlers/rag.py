@@ -23,6 +23,7 @@ from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
+    REASONING_EXHAUSTED_NOTICE,
     CapNotice,
     StreamToken,
     TagParser,
@@ -64,6 +65,7 @@ from lilbee.server.models import (
 if TYPE_CHECKING:
     from lilbee.core.results import SearchChunk
     from lilbee.retrieval.query import ChatMessage
+    from lilbee.retrieval.query.searcher import Searcher
 
 log = logging.getLogger(__name__)
 
@@ -324,7 +326,7 @@ def ask_stream(
 async def chat(
     question: str,
     history: list[ChatMessage],
-    top_k: int = 0,
+    top_k: int | None = None,
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
 ) -> AskResponse:
@@ -339,7 +341,15 @@ async def chat(
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
     answer = text if cfg.show_reasoning else strip_reasoning(text)
-    await _store_extracted_memories(question, answer)
+    if not answer.strip() and text.strip():
+        # The model emitted only reasoning (stripped to nothing) and no final
+        # answer. Surface that distinctly instead of a silent empty string the
+        # caller can't tell apart from a legitimate empty response (bb-cpu). The
+        # synthetic notice is not an answer, so -- like the search-needs-embedder
+        # refusal -- it doesn't seed memory.
+        answer = REASONING_EXHAUSTED_NOTICE
+    else:
+        await _store_extracted_memories(question, answer)
     return AskResponse(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
@@ -350,7 +360,7 @@ async def chat(
 def chat_stream(
     question: str,
     history: list[ChatMessage],
-    top_k: int = 0,
+    top_k: int | None = None,
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -363,7 +373,7 @@ def chat_stream(
 async def _stream_chat_response(
     question: str,
     history: list[ChatMessage],
-    top_k: int,
+    top_k: int | None,
     options: dict[str, Any] | None,
     chunk_type: ChunkType | None,
 ) -> AsyncGenerator[str, None]:
@@ -379,14 +389,15 @@ async def _stream_chat_response(
         yield sse_event(SseEvent.SOURCES, [])
         yield sse_done({})
         return
-    if searcher.skip_retrieval():
-        # Chat-only mode (or no embedder): answer directly with no RAG context.
+    if _retrieval_off(searcher, top_k):
+        # Chat-only mode, no embedder, or an explicit top_k:0 pure-LLM call:
+        # answer directly with no RAG context.
         sources: list[SearchChunk] = []
         messages = searcher.direct_messages(question, history)
     else:
         try:
             rag = searcher.build_rag_context(
-                question, top_k=top_k, history=history, chunk_type=chunk_type
+                question, top_k=top_k or 0, history=history, chunk_type=chunk_type
             )
         except EmbeddingModelMismatchError as exc:
             # detail carries the index's embedder so the client can offer to adopt it.
@@ -402,7 +413,14 @@ async def _stream_chat_response(
     answer_parts: list[str] = []
     try:
         async for event in _cap_aware_chat_events(req):
-            if isinstance(event, StreamToken) and not event.is_reasoning:
+            if (
+                isinstance(event, StreamToken)
+                and not event.is_reasoning
+                # The reasoning-exhausted notice is streamed to the client but is
+                # not a real answer: keep it out of answer_parts so it seeds no
+                # memory and isn't treated as a citation source (bb-cpu).
+                and event.content != REASONING_EXHAUSTED_NOTICE
+            ):
                 answer_parts.append(event.content)
             yield _sse_for_chat_event(event)
     except Exception as exc:
@@ -431,23 +449,32 @@ async def _cap_aware_chat_events(
     Mirrors :func:`stream_chat_with_cap` but consumes the canonical async
     stream. ``CapNotice`` is yielded once between the truncated reasoning
     and the continuation answer; ``StreamToken`` carries the
-    reasoning-vs-response split for downstream SSE shaping.
+    reasoning-vs-response split for downstream SSE shaping. When reasoning
+    runs but no final answer follows, a closing ``StreamToken`` carrying
+    ``REASONING_EXHAUSTED_NOTICE`` is yielded so the run isn't silent (bb-cpu).
     """
     cap_chars = effective_reasoning_cap()
     show = cfg.show_reasoning
+    answered = False
 
     first_parser = TagParser(show=show)
     async for tok in _drive_stream(dispatch_chat_stream(req), first_parser, cap_chars):
+        answered = answered or (not tok.is_reasoning and bool(tok.content))
         yield tok
-    if not (cap_chars > 0 and first_parser.reasoning_chars > cap_chars):
-        return
 
-    yield CapNotice(cap_chars=cap_chars)
-    nudged = _nudged_request(req)
-    cont_parser = TagParser(show=show)
-    async for tok in _drive_stream(dispatch_chat_stream(nudged), cont_parser, cap_chars=0):
-        # Continuation tokens are always treated as final-answer text.
-        yield StreamToken(content=tok.content, is_reasoning=False)
+    if cap_chars > 0 and first_parser.reasoning_chars > cap_chars:
+        yield CapNotice(cap_chars=cap_chars)
+        nudged = _nudged_request(req)
+        cont_parser = TagParser(show=show)
+        async for tok in _drive_stream(dispatch_chat_stream(nudged), cont_parser, cap_chars=0):
+            answered = answered or bool(tok.content)
+            # Continuation tokens are always treated as final-answer text.
+            yield StreamToken(content=tok.content, is_reasoning=False)
+
+    if first_parser.reasoning_chars > 0 and not answered:
+        # The model spent its budget reasoning and produced no final answer;
+        # a distinct notice tells a reasoning-only run apart from a completed one.
+        yield StreamToken(content=REASONING_EXHAUSTED_NOTICE, is_reasoning=False)
 
 
 async def _drive_stream(
@@ -513,10 +540,20 @@ def _text_from_event(event: Any) -> str:
     return ""
 
 
+def _retrieval_off(searcher: Searcher, top_k: int | None) -> bool:
+    """Whether this /api/chat turn bypasses RAG.
+
+    An explicit ``top_k == 0`` is a pure-LLM call: answer without retrieval. An
+    unspecified ``top_k`` (``None``) uses the configured default and grounds
+    normally. Chat-only mode or a missing embedder also bypass.
+    """
+    return top_k == 0 or searcher.skip_retrieval()
+
+
 def _build_chat_messages(
     question: str,
     history: list[ChatMessage],
-    top_k: int,
+    top_k: int | None,
     chunk_type: ChunkType | None,
 ) -> tuple[list[SearchChunk], list[ChatMessage]]:
     """Run retrieval and return (sources, message_list).
@@ -526,9 +563,11 @@ def _build_chat_messages(
     ``Searcher.build_rag_context``.
     """
     searcher = get_services().searcher
-    if searcher.skip_retrieval():
+    if _retrieval_off(searcher, top_k):
         return [], searcher.direct_messages(question, history)
-    rag = searcher.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
+    rag = searcher.build_rag_context(
+        question, top_k=top_k or 0, history=history, chunk_type=chunk_type
+    )
     if rag is None:
         return [], searcher.direct_messages(question, history)
     return rag
