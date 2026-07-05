@@ -136,7 +136,25 @@ jobs:
           - os: macos-latest
             asset_name: lilbee-macos-arm64
             backend: metal
-          # Intel Mac dropped: macos-13 hosted runners stay queued; pip wheel covers them.
+          # Intel Mac: built natively on macos-15-intel, GitHub's Intel image
+          # (Nuitka can't cross-compile arch from the arm64 runner). Soft because
+          # the Intel image can queue longer than the arm64 pool -- this asset must
+          # never block the release fan-out. Deployment target stays 11.0, so the
+          # AVX baseline covers every Mac that can run macOS 11+ (Ivy Bridge or newer).
+          - os: macos-15-intel
+            asset_name: lilbee-macos-x86_64
+            backend: cpu
+            soft: true
+          # Pre-Haswell-safe Intel Mac build: same self-contained model as the
+          # linux/windows compat cells (stock lancedb swapped for +compat, launcher
+          # held to x86-64-v2). Covers the AVX-but-no-AVX2 tail (e.g. 2013 Mac Pro)
+          # and guards against an AVX2-baselined stock lancedb SIGILL.
+          - os: macos-15-intel
+            asset_name: lilbee-compat-macos-x86_64
+            backend: cpu
+            compat: true
+            soft: true
+            march: x86-64-v2
           - os: windows-latest
             asset_name: lilbee-windows-x86_64.exe
             backend: vulkan
@@ -218,7 +236,32 @@ jobs:
           save: ${{ github.ref_type != 'tag' }}
 
       - name: Install dependencies
+        if: matrix.os != 'macos-15-intel'
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
+
+      # Intel Mac: `uv sync` can't run here for two reasons -- stock lancedb 0.33.0
+      # ships no macosx_x86_64 wheel, and xberg is pinned to a local arm64 dev wheel
+      # via [tool.uv.sources]. Resolve both from the +compat index (PEP 440 drop-ins),
+      # then install the rest of [release] fresh from PyPI (every other dep has an
+      # x86_64 macOS wheel). CMAKE_ARGS + deployment target hold any throwaway
+      # llama-cpp-python sdist build at the cpu/x86_64/macOS-11 baseline; the dedicated
+      # step below builds the llama-cpp-python that actually ships.
+      # NOTE: gated on xberg landing an x86_64 macOS wheel on the +compat index; until
+      # then this cell is expected to fail at install (it is soft, so it never blocks
+      # the release fan-out).
+      - name: Install dependencies (Intel Mac)
+        if: matrix.os == 'macos-15-intel'
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euxo pipefail
+          eval "$(BACKEND=cpu TARGET_ARCH=x86_64 tools/wheel-build/cmake_args.sh)"
+          export CMAKE_ARGS
+          uv venv
+          uv pip install --extra-index-url https://lilbee.sh/compat/ \
+            lancedb==0.33.0+compat xberg==1.0.0rc5
+          uv pip install '.[release]' 'nuitka[onefile]>=4.0,<5' pip
 
       - name: Verify extras installed in build venv
         shell: bash
@@ -252,6 +295,11 @@ jobs:
         env:
           ASSET_NAME: ${{ matrix.asset_name }}
           PRODUCT_VERSION: ${{ env.LILBEE_NUITKA_VERSION }}
+          # Pin Nuitka's clang output to macOS 11.0. Unset, clang defaults the
+          # deployment target to the build host (macOS 15 on the Intel image), which
+          # would stamp the launcher minos=15 and refuse to launch on macOS 11-14 even
+          # though every bundled dylib targets 11.0. No-op off macOS.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           # compat cell only: hold Nuitka's C output to the pre-Haswell baseline so
           # the launcher layer (not just lancedb) runs on old silicon. Empty elsewhere.
           CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
