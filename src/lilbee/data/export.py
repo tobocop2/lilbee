@@ -14,6 +14,8 @@ from lilbee.data.store import ChunkWrite, PageTextRecord, SourceType
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
     from lilbee.data.store import Store
 
 
@@ -58,24 +60,49 @@ def resolve_format(value: str, path: Path) -> DatasetFormat:
         ) from None
 
 
-def build_page_dataset(store: Store, source: str | None = None) -> list[PageTextRecord]:
-    """Collect per-page text rows for every source (or just *source*).
+def build_page_dataset(store: Store, source: str | None = None) -> pa.Table:
+    """Collect per-page text rows as an Arrow table for every source (or *source*).
 
-    Sources captured at ingest are returned verbatim from the page-text table.
-    Sources without captured text (older indexes, code) are reconstructed from
-    the chunks table; that reconstruction concatenates chunk text per page, so
-    chunk overlap may repeat a little text across page boundaries.
+    Sources captured at ingest are read verbatim from the page-text table in a
+    single columnar scan. Sources without captured text (older indexes, code) are
+    reconstructed from the chunks table; that reconstruction concatenates chunk
+    text per page, so chunk overlap may repeat a little text across page
+    boundaries. The whole set stays in Arrow so the writers avoid per-row Python
+    objects, and the per-source query loop that hung a large export is gone
+    (bb-bqg).
     """
-    names = [source] if source is not None else sorted(s["filename"] for s in store.get_sources())
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
     captured = store.page_text_sources()
-    rows: list[PageTextRecord] = []
-    for name in names:
-        if name in captured:
-            rows.extend(store.get_page_texts(name))
-        else:
-            rows.extend(_reconstruct_from_chunks(store, name))
-    rows.sort(key=lambda r: (r["source"], r["page"]))
-    return rows
+    if source is not None:
+        table = store.page_texts_arrow(source)
+        if source not in captured:
+            table = _reconstructed_arrow(store, [source], table.schema)
+    else:
+        # One scan for every captured page instead of a filtered query per source:
+        # the per-source loop was O(sources) and its fixed per-query overhead, not
+        # data size, hung the export on a large store. Restrict to tracked sources
+        # so an orphaned page-text row (source record gone) stays out, matching the
+        # old get_sources()-scoped universe.
+        names = {s["filename"] for s in store.get_sources()}
+        table = store.page_texts_arrow()
+        if names:
+            table = table.filter(
+                pc.is_in(table.column("source"), value_set=pa.array(sorted(names), pa.string()))
+            )
+        extra = _reconstructed_arrow(store, sorted(names - captured), table.schema)
+        if extra.num_rows:
+            table = pa.concat_tables([table, extra])
+    return table.sort_by([("source", "ascending"), ("page", "ascending")])
+
+
+def _reconstructed_arrow(store: Store, sources: list[str], schema: pa.Schema) -> pa.Table:
+    """Chunk-reconstructed pages for *sources* as an Arrow table in *schema*."""
+    import pyarrow as pa
+
+    records = [dict(r) for name in sources for r in _reconstruct_from_chunks(store, name)]
+    return pa.Table.from_pylist(records, schema=schema)
 
 
 def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
@@ -96,33 +123,33 @@ def _reconstruct_from_chunks(store: Store, source: str) -> list[PageTextRecord]:
     return rows
 
 
-def _serialize_parquet(rows: list[PageTextRecord]) -> bytes:
+def _serialize_parquet(table: pa.Table) -> bytes:
     import io
 
-    import pyarrow as pa
     import pyarrow.parquet as pq
 
-    table = pa.Table.from_pylist([dict(r) for r in rows])
     buffer = io.BytesIO()
     pq.write_table(table, buffer)
     return buffer.getvalue()
 
 
-def _serialize_jsonl(rows: list[PageTextRecord]) -> bytes:
-    return "".join(json.dumps(dict(row)) + "\n" for row in rows).encode("utf-8")
+def _serialize_jsonl(table: pa.Table) -> bytes:
+    # One JSON object per row, keyed by the table's columns, so jsonl stays in
+    # step with the schema (and with parquet) rather than a hardcoded field list.
+    return "".join(json.dumps(row) + "\n" for row in table.to_pylist()).encode("utf-8")
 
 
 _SERIALIZERS = {DatasetFormat.PARQUET: _serialize_parquet, DatasetFormat.JSONL: _serialize_jsonl}
 
 
-def serialize_dataset(rows: list[PageTextRecord], fmt: DatasetFormat) -> bytes:
-    """Encode *rows* to dataset bytes in the given format."""
-    return _SERIALIZERS[fmt](rows)
+def serialize_dataset(table: pa.Table, fmt: DatasetFormat) -> bytes:
+    """Encode the dataset *table* to bytes in the given format."""
+    return _SERIALIZERS[fmt](table)
 
 
-def write_dataset(rows: list[PageTextRecord], path: Path, fmt: DatasetFormat) -> None:
-    """Write *rows* to *path* in the given format."""
-    path.write_bytes(serialize_dataset(rows, fmt))
+def write_dataset(table: pa.Table, path: Path, fmt: DatasetFormat) -> None:
+    """Write the dataset *table* to *path* in the given format."""
+    path.write_bytes(serialize_dataset(table, fmt))
 
 
 def _coerce_row(raw: dict) -> PageTextRecord:
