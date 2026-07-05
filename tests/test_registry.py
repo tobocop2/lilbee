@@ -451,6 +451,23 @@ class TestModelRegistryResolve:
         assert len(manifest.shard_blobs) == 2
         assert manifest.total_size_bytes == sum(len(f"shard-{n}".encode()) for n in (1, 2, 3))
 
+    def test_bare_repo_split_gguf_missing_a_shard_reads_not_installed(self, tmp_path: Path) -> None:
+        """bb-z59: bare-repo recovery of a split set that's missing a shard skips
+        both the torn first shard and its trailing siblings and reports the model
+        as not installed, rather than handing back an unloadable partial set."""
+        registry = ModelRegistry(tmp_path)
+        repo = "ggml-org/gpt-oss-120b-GGUF"
+        # Shards 1 and 2 of a 3-shard set are cached; shard 3 never downloaded.
+        for n in (1, 2):
+            _seed_hf_cache(
+                tmp_path,
+                repo=repo,
+                filename=f"m-mxfp4-0000{n}-of-00003.gguf",
+                content=f"shard-{n}".encode(),
+            )
+        with pytest.raises(KeyError, match="not installed"):
+            registry.resolve(repo)
+
     def test_bare_repo_recovers_subdir_split_gguf_from_raw_cache(self, tmp_path: Path) -> None:
         """Real quant repos (e.g. unsloth) place their shards under a quant subdir;
         a bare-repo ref must recover that split set from a raw cache too, not just a
