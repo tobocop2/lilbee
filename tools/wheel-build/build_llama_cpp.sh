@@ -59,4 +59,32 @@ fi
   --no-binary=llama-cpp-python \
   -w "${build_dir}"
 
+# CUDA: ship the CUDA runtime beside the built libraries. ggml-cuda links
+# cudart/cublas eagerly, and end users have the NVIDIA driver, not the
+# toolkit, so the wheel must carry those libraries itself.
+runner_os="${RUNNER_OS:-$(uname -s)}"
+case "${backend}_${runner_os}" in
+  cu*_Windows|cu*_MINGW*|cu*_MSYS*)
+    cuda_lib_dir="${CUDA_PATH:?CUDA_PATH is required for Windows CUDA builds}/bin"
+    ;;
+  cu*_Linux)
+    cuda_lib_dir="${CUDA_HOME:?CUDA_HOME is required for Linux CUDA builds}/lib64"
+    ;;
+  *)
+    cuda_lib_dir=""
+    ;;
+esac
+if [ -n "${cuda_lib_dir}" ]; then
+  if [ -x ".venv/Scripts/python.exe" ]; then
+    python_cmd=".venv/Scripts/python.exe"
+  elif [ -x ".venv/bin/python" ]; then
+    python_cmd=".venv/bin/python"
+  else
+    python_cmd="python"
+  fi
+  "$python_cmd" -m tools.vendor.cuda_runtime \
+    "${build_dir}"/llama_cpp_python-*.whl \
+    --cuda-lib "${cuda_lib_dir}"
+fi
+
 ls -lh "${build_dir}"/llama_cpp_python-*.whl

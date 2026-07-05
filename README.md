@@ -223,7 +223,7 @@ Standalone mode runs entirely on your machine. No cloud required. **Minimum:** A
 | Resource              | Minimum                        | Recommended                                                                                                                                               |
 | --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **RAM**               | 8 GB                           | 16 to 32 GB to keep several local models warm at once (chat + embed + rerank + vision); actual footprint scales with the sizes and quantizations you pick |
-| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · NVIDIA + CUDA toolkit (opt-in CUDA wheels, see [Install](#install))                           |
+| **GPU / Accelerator** | none required (CPU-only works) | Apple Silicon (Metal) · NVIDIA / AMD / Intel Arc (Vulkan) · NVIDIA driver (opt-in CUDA wheels, runtime bundled, see [Install](#install))                           |
 | **Disk**              | 2 GB                           | 10+ GB for multiple models                                                                                                                                |
 
 </details>
