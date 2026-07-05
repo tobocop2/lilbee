@@ -422,6 +422,28 @@ class TestRoutingProvider:
         result = rp.embed(["test"])
         assert result == [[0.3, 0.4]]
 
+    def test_routes_count_tokens_to_local_engine_for_local_ref(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.count_tokens.return_value = 11
+        rp._local = mock_llama
+
+        cfg.embedding_model = (
+            "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+        )
+        assert rp.count_tokens("some text") == 11
+        mock_llama.count_tokens.assert_called_once_with("some text")
+
+    def test_routes_count_tokens_to_sdk_for_remote_ref(self) -> None:
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.count_tokens.side_effect = NotImplementedError
+        rp._sdk_provider = mock_sdk
+
+        cfg.embedding_model = "ollama/nomic-embed-text:latest"
+        with pytest.raises(NotImplementedError):
+            rp.count_tokens("some text")
+
     def test_local_ref_never_falls_through_to_litellm(self) -> None:
         """Local HF refs stay on the local engine even when litellm is installed.
 
@@ -3072,6 +3094,17 @@ class TestLiteLLMListModelsRouting:
 
         headers = mock_get.call_args[1].get("headers", {})
         assert headers.get("Authorization") == "Bearer sk-secret"
+
+
+def test_sdk_provider_count_tokens_not_implemented() -> None:
+    """Cloud SDK backends have no local tokenizer, so count_tokens raises and chunk
+    sizing degrades to the character estimate."""
+    from lilbee.providers.litellm_sdk import LitellmSdkBackend
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+    provider = SdkLLMProvider(LitellmSdkBackend())
+    with pytest.raises(NotImplementedError):
+        provider.count_tokens("hello")
 
 
 class TestSdkLLMProviderVisionOcr:

@@ -900,6 +900,10 @@ class LlamaServerClient:
         _raise_for_status(resp)
         return str(resp.json()["content"])
 
+    def count_tokens(self, text: str) -> int:
+        """Exact token count from this server's tokenizer (embed/rerank servers)."""
+        return len(self._tokenize(text))
+
     def close(self) -> None:
         """Close the underlying client if this instance created it."""
         if self._owns_http:

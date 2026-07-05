@@ -158,12 +158,13 @@ def build_services(
     reconciliation is a global-cfg concern owned by :func:`get_services`, not
     done here.
 
-    Side effect: registers *provider* as xberg's process-global OCR and embedding
-    backend (:func:`sync_vision_ocr_backend` / :func:`sync_embedding_backend`) so
-    scanned-page OCR and semantic-chunk boundary detection route through it. xberg's
-    registry is a single global slot, so the most recently built container wins;
-    this is why registration lives here (every container, singleton or per-instance
-    library, binds its own provider) rather than only in :func:`get_services`.
+    Side effect: registers *provider* as xberg's process-global OCR, embedding, and
+    tokenizer backend (:func:`sync_vision_ocr_backend` / :func:`sync_embedding_backend`
+    / :func:`sync_tokenizer_backend`) so scanned-page OCR, semantic-chunk boundary
+    detection, and token-budgeted chunk sizing route through it. xberg's registry is a
+    single global slot, so the most recently built container wins; this is why
+    registration lives here (every container, singleton or per-instance library, binds
+    its own provider) rather than only in :func:`get_services`.
     """
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
@@ -179,12 +180,14 @@ def build_services(
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
     provider = provider or create_provider(config)
-    # Register this provider as xberg's OCR + embedding backend so scanned-page OCR
-    # and semantic-chunk boundary detection route through it. Bound here rather than
-    # in get_services so the library API's per-instance containers register too; both
-    # backends read the live cfg and re-bind whenever the provider is rebuilt.
+    # Register this provider as xberg's OCR + embedding + tokenizer backend so
+    # scanned-page OCR, semantic-chunk boundary detection, and token-budgeted chunk
+    # sizing route through it. Bound here rather than in get_services so the library
+    # API's per-instance containers register too; each backend reads the live cfg and
+    # re-binds whenever the provider is rebuilt.
     sync_vision_ocr_backend(provider)
     sync_embedding_backend(provider)
+    sync_tokenizer_backend(provider)
     registry = registry or ModelRegistry(config.models_dir)
     store = Store(config)
     embedder = Embedder(config, provider)
@@ -321,6 +324,37 @@ def sync_embedding_backend(provider: LLMProvider) -> None:
     register_embedding_backend(
         LilbeeEmbeddingBackend(embed_fn=provider.embed, dim_fn=lambda: cfg.embedding_dim)
     )
+
+
+def sync_tokenizer_backend(provider: LLMProvider) -> None:
+    """Register lilbee's embedder tokenizer as xberg's chunk-sizing backend.
+
+    Driven by ``cfg.token_sizing``: registered while it is on, removed when off.
+    Gated rather than always-on because xberg validates a tokenizer backend at
+    registration by probing ``count_tokens``, so registering only when the feature
+    is on keeps that probe (and its embedder round-trip) off the default path. The
+    backend captures ``provider.count_tokens``, so it must re-bind whenever the
+    provider is rebuilt (``reset_services``) -- otherwise xberg's registry keeps
+    counting with the shut-down provider.
+    """
+    from xberg import (
+        list_tokenizer_backends,
+        register_tokenizer_backend,
+        unregister_tokenizer_backend,
+    )
+
+    from lilbee.core.config import cfg
+    from lilbee.data.ingest.types import TokenizerBackendName
+    from lilbee.data.tokenizer_backend import LilbeeTokenizerBackend
+
+    registered = TokenizerBackendName.LILBEE in list_tokenizer_backends()
+    if cfg.token_sizing:
+        # Re-register so the backend always binds to the current provider.
+        if registered:
+            unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
+        register_tokenizer_backend(LilbeeTokenizerBackend(count_fn=provider.count_tokens))
+    elif registered:
+        unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
 
 
 def set_services(services: Services | None) -> None:

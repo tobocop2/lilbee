@@ -319,6 +319,15 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
     if changed_keys & LOAD_AFFECTING_KEYS:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
+    if "token_sizing" in changed_keys:
+        # Register/unregister lilbee's xberg tokenizer backend when token_sizing is
+        # toggled (via any settings path), so chunk sizing picks up the change
+        # without waiting for a services rebuild.
+        from lilbee.app.services import peek_services, sync_tokenizer_backend
+
+        services = peek_services()
+        if services is not None:
+            sync_tokenizer_backend(services.provider)
     if changed_keys & PROVIDER_API_KEYS:
         # heavy: sdk_llm_provider pulls litellm fanout (~145 ms)
         from lilbee.providers.sdk_llm_provider import inject_provider_keys

@@ -82,6 +82,10 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(cfg.embedding_model)
         return self._pick_backend(ref).embed(texts)
 
+    def count_tokens(self, text: str) -> int:
+        ref = parse_model_ref(cfg.embedding_model)
+        return self._pick_backend(ref).count_tokens(text)
+
     @overload
     def chat(
         self,

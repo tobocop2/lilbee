@@ -123,6 +123,11 @@ class SdkLLMProvider(LLMProvider):
             ) from exc
         return result.vectors
 
+    def count_tokens(self, text: str) -> int:
+        """Cloud SDK backends expose no local tokenizer, so chunk sizing falls back
+        to a character estimate (see LilbeeTokenizerBackend)."""
+        raise NotImplementedError("SDK backends have no local tokenizer for chunk sizing")
+
     @overload
     def chat(
         self,

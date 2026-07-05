@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from lilbee.core.config import active_config
 
 if TYPE_CHECKING:
-    from xberg import ChunkingConfig, EmbeddingConfig
+    from xberg import ChunkingConfig, ChunkSizing, EmbeddingConfig
 
 CHARS_PER_TOKEN = 4
 
@@ -21,6 +21,30 @@ def _char_budget() -> tuple[int, int]:
     max_chars = config.chunk_size * CHARS_PER_TOKEN
     max_overlap = min(config.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
     return max_chars, max_overlap
+
+
+def _size_params() -> tuple[int, int, ChunkSizing | None]:
+    """Return (max, overlap, sizing) for the plain and heading chunkers.
+
+    With ``cfg.token_sizing`` on, the budget is a raw token count and ``sizing``
+    routes to lilbee's registered tokenizer backend, so ``chunk_size`` is a real
+    token ceiling. Otherwise the character heuristic with no sizing (xberg's default
+    character sizer). The semantic chunker does not use this -- it sizes by
+    characters and ignores ChunkSizing."""
+    config = active_config()
+    if config.token_sizing:
+        from xberg import ChunkSizing
+
+        from lilbee.data.ingest.types import TokenizerBackendName
+
+        overlap = min(config.chunk_overlap, config.chunk_size // 2)
+        return (
+            config.chunk_size,
+            overlap,
+            ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE),
+        )
+    max_chars, max_overlap = _char_budget()
+    return max_chars, max_overlap, None
 
 
 def _semantic_embedding_config() -> EmbeddingConfig:
@@ -41,10 +65,11 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
     """Build an xberg ChunkingConfig from the current cfg."""
     from xberg import ChunkingConfig
 
-    max_chars, max_overlap = _char_budget()
-
     config = active_config()
     if use_semantic and config.semantic_chunking:
+        # The semantic chunker sizes by characters and ignores ChunkSizing, so it
+        # stays on the character budget regardless of cfg.token_sizing.
+        max_chars, max_overlap = _char_budget()
         return ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
             embedding=_semantic_embedding_config(),
@@ -52,7 +77,8 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
             max_characters=max_chars,
             overlap=max_overlap,
         )
-    return ChunkingConfig(max_characters=max_chars, overlap=max_overlap)
+    max_size, max_overlap, sizing = _size_params()
+    return ChunkingConfig(max_characters=max_size, overlap=max_overlap, sizing=sizing)
 
 
 def chunk_text(
@@ -71,10 +97,11 @@ def chunk_text(
     from lilbee.data.xberg_extract import extract_document
 
     if heading_context:
-        max_chars, max_overlap = _char_budget()
+        max_size, max_overlap, sizing = _size_params()
         chunking = ChunkingConfig(
-            max_characters=max_chars,
+            max_characters=max_size,
             overlap=max_overlap,
+            sizing=sizing,
             chunker_type=_MARKDOWN_CHUNKER,
             prepend_heading_context=True,
         )

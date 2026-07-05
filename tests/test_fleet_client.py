@@ -54,6 +54,17 @@ def _client(handler=_handler) -> LlamaServerClient:
     return client
 
 
+def test_count_tokens_returns_server_token_count() -> None:
+    """count_tokens posts to the server's /tokenize and reports the token count."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/upstream/test-model/tokenize":
+            return httpx.Response(200, json={"tokens": [1, 2, 3, 4, 5]})
+        return httpx.Response(404)
+
+    assert _client(handler).count_tokens("hello world") == 5
+
+
 def test_rerank_scores_pairs_via_rank_pooling() -> None:
     seen: dict[str, list] = {}
 

@@ -130,6 +130,82 @@ class TestSyncEmbeddingBackend:
         assert backend.shutdown() is None
 
 
+class TestSyncTokenizerBackend:
+    def _patch_xberg(self, monkeypatch, *, listed):
+        reg = MagicMock()
+        unreg = MagicMock()
+        monkeypatch.setattr("xberg.list_tokenizer_backends", lambda: listed)
+        monkeypatch.setattr("xberg.register_tokenizer_backend", reg)
+        monkeypatch.setattr("xberg.unregister_tokenizer_backend", unreg)
+        return reg, unreg
+
+    def test_registers_when_enabled_and_absent(self, monkeypatch):
+        from lilbee.app.services import sync_tokenizer_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
+        sync_tokenizer_backend(MagicMock())
+        reg.assert_called_once()
+        unreg.assert_not_called()
+
+    def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
+        """A rebuilt provider must replace the stale binding: unregister then re-register,
+        else xberg keeps counting through the shut-down provider after reset_services."""
+        from lilbee.app.services import sync_tokenizer_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
+        sync_tokenizer_backend(MagicMock())
+        unreg.assert_called_once_with("lilbee")
+        reg.assert_called_once()
+
+    def test_unregisters_when_disabled(self, monkeypatch):
+        from lilbee.app.services import sync_tokenizer_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
+        sync_tokenizer_backend(MagicMock())
+        unreg.assert_called_once_with("lilbee")
+        reg.assert_not_called()
+
+    def test_noop_when_disabled_and_absent(self, monkeypatch):
+        from lilbee.app.services import sync_tokenizer_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        reg, unreg = self._patch_xberg(monkeypatch, listed=[])
+        sync_tokenizer_backend(MagicMock())
+        reg.assert_not_called()
+        unreg.assert_not_called()
+
+    def test_registered_backend_routes_to_provider_count_tokens(self, monkeypatch):
+        from lilbee.app.services import sync_tokenizer_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
+        provider = MagicMock()
+        provider.count_tokens.return_value = 42
+        sync_tokenizer_backend(provider)
+        backend = reg.call_args.args[0]
+        assert backend.name() == "lilbee"
+        assert backend.count_tokens("hello") == 42
+        provider.count_tokens.assert_called_once_with("hello")
+
+    def test_settings_change_syncs_tokenizer_backend(self, monkeypatch):
+        """Toggling token_sizing via any settings path re-syncs the backend."""
+        from lilbee.app.services import set_services
+        from lilbee.app.settings import _invalidate_caches
+        from tests.conftest import make_mock_services
+
+        set_services(make_mock_services())
+        try:
+            monkeypatch.setattr(cfg, "token_sizing", True)
+            reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
+            _invalidate_caches({"token_sizing"})
+            reg.assert_called_once()
+        finally:
+            set_services(None)
+
+
 class TestServicesDataclass:
     def test_fields_are_immutable(self):
         from lilbee.app.services import CrawlerSyncState, Services

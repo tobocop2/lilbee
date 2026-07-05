@@ -163,6 +163,22 @@ def test_embed_routes_to_server_when_present() -> None:
     assert p.embed(["a"]) == [[0.1]]
 
 
+def test_count_tokens_routes_to_embed_server() -> None:
+    client = _fake_client()
+    client.count_tokens.return_value = 9
+    p = _provider_with_clients({WorkerRole.EMBED: [client]})
+    assert p.count_tokens("hello") == 9
+    client.count_tokens.assert_called_once_with("hello")
+
+
+def test_count_tokens_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError):
+        p.count_tokens("hello")
+
+
 def test_embed_routes_to_least_busy_replica() -> None:
     # Data-parallel replicas: a request goes to the idlest replica in the pool.
     busy, idle = _fake_client(5), _fake_client(1)

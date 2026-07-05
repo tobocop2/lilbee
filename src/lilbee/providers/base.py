@@ -232,6 +232,15 @@ class LLMProvider(Protocol):
         """Embed a batch of texts, return list of vectors."""
         ...
 
+    def count_tokens(self, text: str) -> int:
+        """Exact token count of *text* under the embedding model's tokenizer.
+
+        Raise ``NotImplementedError`` when the backend has no local tokenizer (cloud
+        SDK backends); token-budgeted chunk sizing then falls back to a character
+        estimate.
+        """
+        ...
+
     @overload
     def chat(
         self,

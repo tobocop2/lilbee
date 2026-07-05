@@ -744,6 +744,17 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.embed(texts))
 
+    def count_tokens(self, text: str) -> int:
+        """Exact token count of *text* under the embedding model's tokenizer.
+
+        Routes to the embed server's ``/tokenize`` so chunk sizing counts the same
+        tokens the embedder will consume. Raises ``ProviderError`` when no embed
+        server is configured; callers on the chunk-sizing path degrade to an
+        estimate rather than propagate it.
+        """
+        clients = self._require_clients(WorkerRole.EMBED)
+        return _call_with_failover(clients, lambda client: client.count_tokens(text))
+
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:

@@ -152,6 +152,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
     ),
+    "token_sizing": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Size chunks by real embedder tokens, not chars (changes invalidate the index)",
+    ),
     "embedding_model": SettingDef(
         str,
         nullable=False,

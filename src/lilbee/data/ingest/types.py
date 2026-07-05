@@ -62,6 +62,15 @@ class EmbeddingBackendName(StrEnum):
     LILBEE = "lilbee"
 
 
+class TokenizerBackendName(StrEnum):
+    """Tokenizer backends registered with xberg. lilbee registers its embedder's
+    tokenizer so ChunkSizing counts chunk budgets in the same tokens the embedder
+    consumes, instead of a chars-per-token heuristic. Separate registry from the
+    embedding backend, so sharing the ``lilbee`` name is fine."""
+
+    LILBEE = "lilbee"
+
+
 class ExtractMode(StrEnum):
     """Extraction topology: paginated (PDFs/images) vs markdown output (text formats)."""
 

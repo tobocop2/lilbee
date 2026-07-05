@@ -139,6 +139,12 @@ class Config(BaseSettings):
     ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
+    # Size chunk budgets (chunk_size/chunk_overlap) in real tokens from the
+    # embedder's own tokenizer via xberg's registered tokenizer backend, instead of
+    # the chars-per-token heuristic. Off by default: turning it on re-partitions
+    # chunks, so a library must be reindexed. Applies to the plain and heading
+    # chunkers; the semantic chunker sizes by characters and ignores it.
+    token_sizing: bool = ConfigField(default=False, writable=True, reindex=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
