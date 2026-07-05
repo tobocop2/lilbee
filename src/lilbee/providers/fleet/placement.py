@@ -199,7 +199,7 @@ def _place_split(
     best: tuple[int, list[int], tuple[int, ...], tuple[int, ...]] | None = None
     for count in range(2, len(by_free) + 1):
         chosen = by_free[:count]
-        ratio = tuple(max(1, int(remaining[idx] / 1024**3)) for idx in chosen)
+        ratio = _vram_proportional_split(chosen, remaining)
         per_device = estimate_peak(model.role, ratio)
         if len(per_device) != count or not all(
             peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
@@ -317,7 +317,7 @@ def placement_from_spec(
     instances: list[InstancePlan] = []
     for role in active_roles:
         rp = _required_entry(spec, role, device_capacity)
-        ratio = rp.tensor_split or tuple(1 for _ in rp.devices)
+        ratio = rp.tensor_split or _vram_proportional_split(rp.devices, remaining)
         per_device = estimate_peak(role, ratio)
         split = ratio if len(rp.devices) > 1 else ()
         for replica in range(rp.replicas):
@@ -328,6 +328,22 @@ def placement_from_spec(
                 )
             )
     return Placement(instances=tuple(instances), unplaceable_roles=())
+
+
+def _vram_proportional_split(
+    devices: Sequence[int], remaining: dict[int, float]
+) -> tuple[int, ...]:
+    """Tensor-split ratio proportional to each card's remaining usable VRAM.
+
+    Each card's shard tracks its remaining VRAM (whole GiB, min 1), so a card
+    already carrying other roles takes a smaller share. This is the single source
+    of the proportion for both placement paths: the auto planner (:func:`_place_split`)
+    and a manual spec entry with no explicit ``tensor_split`` (:func:`placement_from_spec`).
+    Keeping it in one place is what guarantees a manually-applied layout is charged
+    the same way the planner charges the identical layout, instead of an even split
+    that would falsely reject a fit the planner itself serves.
+    """
+    return tuple(max(1, int(remaining[idx] / 1024**3)) for idx in devices)
 
 
 def _required_entry(

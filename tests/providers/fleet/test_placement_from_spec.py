@@ -78,3 +78,51 @@ def test_errors_when_two_roles_overbook_one_card():
         placement_from_spec(
             spec, (WorkerRole.CHAT, WorkerRole.EMBED), {0: 80 * GIB}, estimate_peak=est
         )
+
+
+def _proportional_peak(totals_gib):
+    # Like the real estimator: a role's total bytes split proportionally to ratio.
+    def estimate(role, ratio):
+        total = totals_gib[role] * GIB
+        s = sum(ratio)
+        return tuple(int(total * r / s) for r in ratio)
+
+    return estimate
+
+
+def test_derives_planner_style_split_when_spec_has_none():
+    # bb-lt7: three 48 GiB cards with the embedder resident on card 0. An even
+    # chat split (~36.7 GiB per card) overflows card 0 (43.2 usable minus 8.5
+    # embed = 34.7), so the even-split validator rejects the exact layout the
+    # auto planner serves. A remaining-proportional split shrinks card 0's
+    # shard and the same layout fits.
+    spec = PlacementSpec(
+        {
+            WorkerRole.EMBED: RolePlacement(devices=(0,)),
+            WorkerRole.CHAT: RolePlacement(devices=(0, 1, 2)),
+        }
+    )
+    est = _proportional_peak({WorkerRole.CHAT: 110, WorkerRole.EMBED: 8.5})
+    placement = placement_from_spec(
+        spec,
+        (WorkerRole.EMBED, WorkerRole.CHAT),  # planning registers non-chat roles first
+        {0: 48 * GIB, 1: 48 * GIB, 2: 48 * GIB},
+        estimate_peak=est,
+    )
+    assert placement.unplaceable_roles == ()
+    chat = next(i for i in placement.instances if i.role is WorkerRole.CHAT)
+    assert len(chat.tensor_split) == 3
+    assert chat.tensor_split[0] < chat.tensor_split[1]  # co-resident card takes the smaller shard
+
+
+def test_explicit_tensor_split_still_wins():
+    # A spec that names its own split is honored verbatim, even when uneven.
+    spec = PlacementSpec(
+        {WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(3, 1))}
+    )
+    est = _proportional_peak({WorkerRole.CHAT: 40})
+    placement = placement_from_spec(
+        spec, (WorkerRole.CHAT,), {0: 80 * GIB, 1: 80 * GIB}, estimate_peak=est
+    )
+    chat = next(i for i in placement.instances if i.role is WorkerRole.CHAT)
+    assert chat.tensor_split == (3, 1)
