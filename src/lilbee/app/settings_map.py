@@ -126,7 +126,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Hard cap on tokens generated per OCR page (bounds runaway repetition loops)",
+        help_text=(
+            "Hard cap on tokens generated per OCR page (bounds runaway repetition"
+            " loops); raising it lengthens page generation, so give ocr_timeout headroom"
+        ),
     ),
     "vision_ocr_concurrency": SettingDef(
         int,
