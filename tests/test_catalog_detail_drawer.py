@@ -140,8 +140,8 @@ async def test_render_fit_pill_handles_wont_run_branch() -> None:
 
     chip = FitChip(level=FitLevel.WONT_RUN, headroom_gb=-2.0)
     rendered = _render_fit_pill(chip)
-    assert "won't" in rendered.plain
-    assert "-2.0 GB" in rendered.plain
+    # Grammatical, with a positive shortfall (not the bare "won't -2.0 GB").
+    assert "won't run, short by 2.0 GB" in rendered.plain
 
 
 async def test_render_sizes_block_marks_each_fit_level() -> None:

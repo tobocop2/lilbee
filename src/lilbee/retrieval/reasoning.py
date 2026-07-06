@@ -8,8 +8,10 @@ Reasoning models (Qwen3, DeepSeek-R1) wrap their thinking process in
   caller-supplied cap.
 - ``stream_chat_with_cap``: the high-level orchestrator. Wraps a
   provider call with the filter; when the cap fires, re-issues the
-  chat with a "stop thinking, answer directly" nudge. All chat surfaces
-  (HTTP/SSE, CLI, TUI) consume this so cap behavior is uniform.
+  chat with a "stop thinking, answer directly" nudge. The ask/search
+  streaming path and CLI/TUI consume it directly; the canonical
+  chat-dispatch path mirrors the same filter + cap-nudge behavior over
+  its own async driver.
 - ``effective_reasoning_cap``: resolves the cap from the global config
   with per-model ``ModelDefaults`` overrides.
 """
@@ -42,6 +44,16 @@ CAP_CONTINUATION_PROMPT = (
 CAP_NOTICE_TEMPLATE = "\n[reasoning capped at {chars} chars, asking for a direct answer]\n"
 """User-visible marker emitted between the truncated reasoning and the continuation answer."""
 
+REASONING_EXHAUSTED_NOTICE = (
+    "The model spent its whole response budget on reasoning and produced no final "
+    "answer. Try a shorter question, raise the generation token limit, or lower the "
+    "reasoning effort."
+)
+"""Returned in place of an empty answer when reasoning consumed the entire generation.
+
+Lets a caller tell "the model thought itself to death" apart from a genuine empty
+response, which an empty string alone cannot."""
+
 
 @dataclass
 class StreamToken:
@@ -59,7 +71,7 @@ class CapNotice:
 
 
 @dataclass
-class _TagParser:
+class TagParser:
     """Stateful parser that tracks whether we're inside a thinking block."""
 
     show: bool
@@ -140,7 +152,7 @@ def filter_reasoning(
     the running reasoning-chars count each time it grows by at least 256
     characters. A non-positive *cap_chars* disables the cap.
     """
-    parser = _TagParser(show=show)
+    parser = TagParser(show=show)
     last_progress_tick = 0
     try:
         for token in tokens:
@@ -206,7 +218,7 @@ def stream_chat_with_cap(
 
     first_stream = provider.chat(messages, stream=True, options=options or None, model=model)
     yield from filter_reasoning(
-        first_stream,
+        _text_only(first_stream),
         show=show_reasoning,
         cap_chars=cap_chars,
         on_cap=_on_cap,
@@ -217,11 +229,29 @@ def stream_chat_with_cap(
     nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
     second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
     try:
-        for chunk in second_stream:
+        for chunk in _text_only(second_stream):
             if chunk:
                 yield StreamToken(content=chunk, is_reasoning=False)
     finally:
         _close_iterator(second_stream)
+
+
+def _text_only(stream: Iterator[Any]) -> Iterator[str]:
+    """Filter a chat stream down to its text deltas.
+
+    Tool-call deltas (when ``tools`` is passed) and the trailing token-usage
+    frame both ride the same iterator; the RAG / reasoning paths only consume
+    text, so any non-str frame is dropped here rather than crashing the chat.
+    """
+    try:
+        for item in stream:
+            if isinstance(item, str):
+                yield item
+    finally:
+        # Forward close to the source: when a consumer (filter_reasoning on
+        # cap-fire) closes this generator, a plain for-loop would not propagate
+        # GeneratorExit to *stream*, leaking its HTTP connection / in_flight slot.
+        _close_iterator(stream)
 
 
 def cap_events_as_stream_tokens(
@@ -243,7 +273,7 @@ def cap_events_as_stream_tokens(
             yield event
 
 
-def _close_iterator(tokens: Iterator[str]) -> None:
+def _close_iterator(tokens: Iterator[Any]) -> None:
     """Close *tokens* if it satisfies the ClosableIterator protocol."""
     if isinstance(tokens, ClosableIterator):
         with contextlib.suppress(Exception):

@@ -47,9 +47,14 @@ def parse_title(text: str) -> str:
 
 
 def _title_from_frontmatter(fm: dict[str, object], text: str) -> str:
-    """Return ``fm['title']`` when present, else the first H1 heading, else ``""``."""
-    if "title" in fm:
-        return str(fm["title"])
+    """Return ``fm['title']`` when set, else the first H1 heading, else ``""``.
+
+    Uses ``get(...) is not None`` (not key-presence) so an explicit empty
+    ``title:`` falls back to the H1, matching ``browse._resolve_page_title``
+    instead of rendering the literal ``"None"``.
+    """
+    if (fm_title := fm.get("title")) is not None:
+        return str(fm_title)
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("# "):

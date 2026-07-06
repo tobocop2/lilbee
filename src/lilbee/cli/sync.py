@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -119,9 +120,15 @@ class SyncStatus:
     def __init__(self) -> None:
         self.text: str = ""
         self.pending: int = 0
+        self._pending_lock = threading.Lock()
 
     def clear(self) -> None:
         self.text = ""
+
+    def adjust_pending(self, delta: int) -> None:
+        """Atomically change the queued-sync counter (mutated from two threads)."""
+        with self._pending_lock:
+            self.pending += delta
 
 
 def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
@@ -172,11 +179,11 @@ def run_sync_background(
 
     def _run() -> object:
         if chat_mode:
-            status.pending -= 1
+            status.adjust_pending(-1)
         return asyncio.run(sync(quiet=True, on_progress=callback))
 
     if chat_mode:
-        status.pending += 1
+        status.adjust_pending(1)
 
     future = _get_executor().submit(_run)
     future.add_done_callback(lambda f: _on_sync_done(con, f, chat_mode=chat_mode))

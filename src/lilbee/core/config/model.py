@@ -24,7 +24,15 @@ from .defaults import (
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
 )
-from .enums import ChatMode, ClustererBackend, CrawlRenderMode, KvCacheType, WikiEntityMode
+from .enums import (
+    ChatMode,
+    ClustererBackend,
+    CrawlRenderMode,
+    KvCacheType,
+    LlmProvider,
+    RerankerType,
+    WikiEntityMode,
+)
 from .parsing import parse_bool
 from .validators import ConfigField
 
@@ -67,6 +75,10 @@ class Config(BaseSettings):
     # ~-substitution / left-truncation for project paths. Toggled by F4.
     show_lilbee_path: bool = ConfigField(default=False, writable=True)
 
+    # Whether an agent launcher (opencode, hermes) registers lilbee's MCP search
+    # tool into the agent's config. Per-launch --mcp/--no-mcp overrides it.
+    agent_mcp_enabled: bool = ConfigField(default=True, writable=True)
+
     chat_model: str = Field(default="Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf", min_length=1)
     embedding_model: str = Field(
         default="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
@@ -78,6 +90,8 @@ class Config(BaseSettings):
     embedding_dim: int = Field(default=768, ge=1)
     chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
     chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    # Gate for the pre-ask sync; --no-sync overrides per invocation.
+    auto_sync: bool = ConfigField(default=True, writable=True)
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
@@ -108,6 +122,14 @@ class Config(BaseSettings):
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
     # per-page expectation that drives the total budget.
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
+    # Hard cap on tokens generated per OCR page. A real page is well under this;
+    # the cap bounds the occasional runaway repetition loop (a page that loops to
+    # tens of thousands of chars) which otherwise dominates a scan's OCR time.
+    vision_ocr_max_tokens: int = ConfigField(default=4096, ge=256, writable=True)
+    # Pages OCR'd concurrently, and the vision server's continuous-batching slots.
+    # A single-page decode underutilizes a modern GPU (~half SM); batching several
+    # pages raises throughput. Each slot adds KV cache, so lower it on small GPUs.
+    vision_ocr_concurrency: int = ConfigField(default=4, ge=1, writable=True)
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
@@ -131,7 +153,10 @@ class Config(BaseSettings):
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
-    llm_provider: str = ConfigField(default="auto", writable=True)
+    llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
+    # Path to a llama-server binary. Empty = use the bundled lilbee-engine
+    # wheel binary, else a llama-server on PATH.
+    llama_server_path: str = ConfigField(default="", writable=True)
     # Per-server local model-manager URLs. Blank means "use the server's spec
     # default" (resolved in providers.local_servers.config_urls); the default
     # URL literal lives only in the spec, which core must not import.
@@ -202,10 +227,16 @@ class Config(BaseSettings):
         "just write the passage.\n\nQuestion: {question}"
     )
 
-    # Reranker model ref. Empty disables reranking. Native GGUFs use
-    # llama-cpp rank pooling; hosted refs (cohere/voyage/jina/together/hf-tei)
-    # need the backend extra.
+    # Reranker model ref. Empty disables reranking. Native GGUFs run on
+    # llama-server (rank pooling or LLM logprob scoring); hosted refs
+    # (cohere/voyage/jina/together/hf-tei) need the backend extra.
     reranker_model: str = ConfigField(default="", public=True)
+
+    # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
+    reranker_type: RerankerType = ConfigField(default=RerankerType.AUTO, writable=True, public=True)
+    # Relevance prompt for LLM rerankers; empty uses the built-in generic template.
+    # A format string with {query} and {document} placeholders.
+    reranker_prompt: str = ConfigField(default="", writable=True, public=True)
 
     # Long-term chat memory. Off by default (opt-in): when disabled the whole
     # subsystem is dormant and the write surfaces respond with an enable hint.
@@ -310,26 +341,25 @@ class Config(BaseSettings):
     # Fraction of GPU/unified memory reserved for loaded models.
     gpu_memory_fraction: float = ConfigField(default=0.75, ge=0.1, le=1.0, writable=True)
 
+    # Data-parallel replicas of the embed / vision role across GPUs: N independent
+    # servers, round-robined, so large-scale ingest fans the embedding / OCR work
+    # across the whole box. 0 means "auto": one replica per detected GPU, capped by
+    # the VRAM left after the persistent query fleet (chat, one embed, rerank, one
+    # vision) is reserved. A positive value pins the count. The extra replicas are
+    # ingest-only and reclaimed when ingest ends; the persistent query embedder /
+    # vision (replica 0) always exists if its model fits.
+    embed_replicas: int = ConfigField(default=0, ge=0, writable=True)
+    vision_replicas: int = ConfigField(default=0, ge=0, writable=True)
+
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
 
-    # Per-call deadline for one pool round-trip (send + recv). Embed batches
-    # larger than this on slow machines surface as TimeoutError; raise for
-    # heavy ingest jobs.
-    worker_pool_call_timeout_s: float = ConfigField(default=300.0, gt=0.0, writable=True)
-
-    # Spawn every configured role at startup instead of on first use. Trades
-    # a slower TUI mount (~1-3s per worker, cold-started in parallel) for a
-    # responsive first interaction. Roles whose model is unset are skipped,
-    # so a setup with only chat + embed never spawns rerank or vision.
-    # Set to false for headless / scripted use where the first call doesn't
-    # need to be fast.
+    # Spawn every configured role server at startup instead of on first use.
+    # Trades a slower TUI mount (the role servers cold-start in parallel) for a
+    # responsive first interaction. Roles whose model is unset are skipped, so a
+    # setup with only chat + embed never spawns rerank or vision. Set to false
+    # for headless / scripted use where the first call doesn't need to be fast.
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
-
-    # Idle worker reap. A worker that has been quiet for this many seconds
-    # is shut down to free RAM/VRAM; the next request respawns it.
-    # ``0`` disables reaping (workers stay up until TUI exit).
-    worker_pool_max_idle_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
@@ -348,8 +378,8 @@ class Config(BaseSettings):
     # to back it. Set explicitly to cap below the model's training_ctx.
     num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
 
-    # Flash attention. None (default) = on with TypeError fallback for
-    # older llama-cpp-python builds, True = force on, False = off.
+    # Flash attention. None (default) = on, True = force on, False = off
+    # for backends or models where it misbehaves.
     # Resolves the 'padding V cache to 1024' warning on models with
     # uneven per-layer V dims (e.g. Gemma3) and saves ~25% KV memory.
     flash_attention: bool | None = ConfigField(default=None, writable=True)
@@ -369,7 +399,7 @@ class Config(BaseSettings):
     # enumerates every adapter the system exposes and may pick the
     # integrated one first, producing stalls or OOMs that look like
     # llama.cpp bugs. Setting ``gpu_devices`` constrains visibility
-    # before llama_cpp loads, pinning inference to the chosen device(s).
+    # before the servers spawn, pinning inference to the chosen device(s).
     #
     # Accepts a comma-separated list of device indexes ("0", "1",
     # "0,1") and applies it to every backend simultaneously:
@@ -381,7 +411,7 @@ class Config(BaseSettings):
     # Must be set before the first llama.cpp call; in practice that
     # means via ``LILBEE_GPU_DEVICES`` or ``config.toml`` (TUI edits
     # only take effect after a restart). ``None`` (default) hands off
-    # to the autodetect in ``providers/llama_cpp/gpu_select.py``,
+    # to the autodetect in ``providers/fleet/gpu_select.py``,
     # which parses ``vulkaninfo --summary`` and pins the discrete
     # adapter when one is present. The autodetect is silent on failure
     # (no vulkaninfo, single device, parse error), leaving the
@@ -393,6 +423,21 @@ class Config(BaseSettings):
     # a single visible device, llama.cpp ignores this. ``None``
     # (default) lets llama.cpp pick (index 0).
     main_gpu: int | None = ConfigField(default=None, writable=True)
+
+    # Manual GPU placement override stored as a JSON scalar (the config.toml store
+    # is flat, and core must not depend on the provider PlacementSpec type). When
+    # set, it fully replaces the automatic placement planner: each active role pins
+    # to the listed device indices, with an optional tensor_split and replica count.
+    # Edited via the placement CLI/MCP/HTTP/TUI surfaces rather than the generic
+    # settings list, so public=False. None hands off to the VRAM-aware auto planner.
+    placement: str | None = ConfigField(default=None, writable=True, public=False)
+
+    # Allow PUT/DELETE /api/placement to apply or clear placement over HTTP.
+    # Off by default because applying placement restarts the shared fleet's moved roles, which
+    # is unsafe across concurrent HTTP clients. Turn it on (LILBEE_ALLOW_HTTP_PLACEMENT=1)
+    # only for a single-client / owned deployment: the plugin's managed local
+    # server, or a personally-owned pod where one operator runs `lilbee serve`.
+    allow_http_placement: bool = Field(default=False)
 
     # True = Markdown widget for chat; False = plain Static (faster).
     markdown_rendering: bool = True
@@ -666,6 +711,7 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
+                log.warning("Invalid flash_attention=%r, using auto", v)
                 return None
         return bool(v)
 
@@ -725,6 +771,25 @@ class Config(BaseSettings):
             return ",".join(parts)
         return str(v)
 
+    @field_validator("placement", mode="before")
+    @classmethod
+    def _parse_placement(cls, v: Any) -> str | None:
+        """Blank/None -> None; validate a JSON string or PlacementSpec; store JSON."""
+        from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+
+        if v is None:
+            return None
+        if isinstance(v, PlacementSpec):
+            json_str = v.to_json()
+            PlacementSpec.from_json(json_str)  # re-validate a directly-built spec
+            return json_str
+        if isinstance(v, str):
+            if v.strip() == "":
+                return None
+            PlacementSpec.from_json(v)
+            return v
+        raise PlacementError("placement must be a JSON string or PlacementSpec")
+
     @field_validator("semantic_chunking", mode="before")
     @classmethod
     def _parse_semantic_chunking(cls, v: Any) -> bool:
@@ -764,6 +829,20 @@ class Config(BaseSettings):
     def _split_cors_origins(cls, v: Any) -> Any:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
+    @field_validator("crawl_browser_extra_args", mode="before")
+    @classmethod
+    def _split_crawl_browser_extra_args(cls, v: Any) -> Any:
+        """Accept a newline-separated string, matching how the field is persisted.
+
+        ``app.settings`` joins list values with newlines before writing them to
+        ``config.toml`` as a scalar string. Without this inverse, reload cannot
+        coerce that string to ``list[str]`` and the whole config.toml is dropped.
+        TOML lists and JSON arrays pass through unchanged.
+        """
+        if isinstance(v, str):
+            return [a.strip() for a in v.splitlines() if a.strip()]
         return v
 
     @field_validator("crawl_exclude_patterns", mode="before")
@@ -971,8 +1050,10 @@ class _TomlSource:
         # Empty strings represent "no persisted value" for nullable scalar
         # fields (legacy from set_setting writing "" for None). Pydantic
         # can't coerce "" to int|None, so dropping them here lets the field
-        # default apply rather than crashing the whole Config load.
-        return {k: str(v) for k, v in data.items() if str(v) != ""}
+        # default apply rather than crashing the whole Config load. TOML's
+        # native types (lists, ints, bools) pass through untouched: stringifying
+        # turned a list field's ["a", "b"] into the literal "['a', 'b']".
+        return {k: v for k, v in data.items() if v != ""}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:

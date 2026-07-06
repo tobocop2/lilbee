@@ -104,6 +104,62 @@ class TestWriteLock:
 
     def test_lock_file_created(self):
         """Lock file is created at the expected path."""
-        expected = _lock_path()
+        expected = _lock_path(None)
         with write_lock(timeout=2):
             assert expected.exists()
+
+    def test_lock_path_uses_passed_dir(self, tmp_path):
+        """A passed lancedb_dir keys the lock file; None falls back to cfg."""
+        other = tmp_path / "other_db"
+        assert _lock_path(other) == other / ".lock"
+        assert _lock_path(None) == cfg.lancedb_dir / ".lock"
+
+    def test_write_lock_targets_passed_dir(self, tmp_path):
+        """write_lock(dir) creates the lock file under that dir, not cfg's.
+
+        A per-instance store writes to its own lancedb_dir; the file lock must
+        live there or cross-process writers never coordinate.
+        """
+        other = tmp_path / "other_db"
+        other.mkdir()
+        with write_lock(other, timeout=2):
+            assert (other / ".lock").exists()
+        assert not (cfg.lancedb_dir / ".lock").exists()
+
+    def test_timeout_budget_is_split_across_stages(self, monkeypatch, tmp_path):
+        """The file-lock wait is deducted from the mutex wait (single budget).
+
+        Previously each stage got the full timeout, so a 30s request could stall
+        ~60s. The mutex must receive only the budget the file lock left.
+        """
+        from filelock import FileLock
+
+        import lilbee.runtime.lock as lockmod
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(lockmod.time, "monotonic", lambda: clock["t"])
+
+        class FakeMutex:
+            def __init__(self) -> None:
+                self.captured: float | None = None
+
+            def acquire(self, timeout: float = -1) -> bool:
+                self.captured = timeout
+                return True
+
+            def release(self) -> None: ...
+
+        fake = FakeMutex()
+        monkeypatch.setattr(lockmod, "_write_mutex", fake)
+
+        real_flock_acquire = FileLock.acquire
+
+        def slow_flock_acquire(self, timeout=None, **kw):
+            clock["t"] += 22.0  # the file lock consumed 22s of the budget
+            return real_flock_acquire(self, timeout=timeout, **kw)
+
+        monkeypatch.setattr(FileLock, "acquire", slow_flock_acquire)
+
+        with write_lock(tmp_path, timeout=30.0):
+            pass
+        assert fake.captured == pytest.approx(8.0, abs=0.5)  # 30 - 22 remaining

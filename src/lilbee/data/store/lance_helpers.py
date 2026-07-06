@@ -12,6 +12,8 @@ from lilbee.runtime.lock import write_lock
 from .types import LOCAL_OWNER, ChunkType
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import lancedb
     import lancedb.table
     import pyarrow as pa
@@ -55,28 +57,57 @@ def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lanc
         return db.open_table(name)
 
 
-def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure. Caller must hold write lock."""
+def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> bool:
+    """Delete rows matching predicate. Caller must hold write lock.
+
+    Returns True when the delete succeeded, False when it raised (logged). The
+    return lets delete-then-add callers avoid corrupting state on a swallowed
+    failure (e.g. inserting a row whose stale predecessor was never removed).
+    """
     try:
         table.delete(predicate)
+        return True
     except Exception:
         log.warning("Failed to delete rows matching: %s", predicate, exc_info=True)
+        return False
 
 
-def safe_delete(table: lancedb.table.Table, predicate: str) -> None:
-    """Delete rows matching predicate, logging on failure."""
-    with write_lock():
-        _safe_delete_unlocked(table, predicate)
+def safe_delete(
+    table: lancedb.table.Table, predicate: str, lancedb_dir: Path | None = None
+) -> bool:
+    """Delete rows matching predicate, logging on failure. Returns success.
+
+    Pass the store's ``lancedb_dir`` so the write lock coordinates on that
+    instance's data dir; ``None`` falls back to the global config dir.
+    """
+    with write_lock(lancedb_dir):
+        return _safe_delete_unlocked(table, predicate)
 
 
 def escape_sql_string(value: str) -> str:
-    """Escape single quotes for SQL predicates."""
-    return value.replace("\\", "\\\\").replace("'", "''")
+    """Escape a value for a single-quoted SQL string literal in a LanceDB predicate.
+
+    LanceDB's Datafusion engine follows standard SQL: the only escape inside a
+    ``'...'`` literal is doubling the single quote. Backslash is an ordinary
+    character, so escaping it (``\\`` -> ``\\\\``) corrupts the literal and makes a
+    value containing a backslash (e.g. a Windows path) never match.
+    """
+    return value.replace("'", "''")
 
 
 def local_owner_predicate() -> str:
-    """SQL predicate selecting the local human's memories."""
+    """SQL predicate selecting the local human's own memories."""
     return f"owner = '{LOCAL_OWNER}'"
+
+
+def human_recall_predicate() -> str:
+    """SQL predicate for the human: own memories plus any an agent has shared.
+
+    The mirror of :func:`agent_recall_predicate`: ``shared=True`` on an agent
+    memory means "expose to the human's TUI/CLI", so the human's view must
+    include those rather than only ``owner = 'local'``.
+    """
+    return f"owner = '{LOCAL_OWNER}' OR (shared = true AND owner != '{LOCAL_OWNER}')"
 
 
 def agent_recall_predicate(owner: str) -> str:
@@ -123,12 +154,22 @@ def _has_vector_index(table: lancedb.table.Table) -> bool:
     return False
 
 
+def _escape_like_wildcards(value: str) -> str:
+    """Escape LIKE metacharacters so a search term matches literally.
+
+    ``%`` and ``_`` are wildcards inside a LIKE pattern; without escaping, a
+    search for ``a_b`` would also match ``axb``. Backslash is escaped first
+    because it is the ESCAPE character the predicate declares.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _sources_search_filter(search: str | None) -> str | None:
     """Case-insensitive filename WHERE clause, or ``None`` for empty *search*."""
     if not search:
         return None
-    escaped = escape_sql_string(search.lower())
-    return f"LOWER(filename) LIKE '%{escaped}%'"
+    escaped = escape_sql_string(_escape_like_wildcards(search.lower()))
+    return f"LOWER(filename) LIKE '%{escaped}%' ESCAPE '\\'"
 
 
 def refs_compatible(

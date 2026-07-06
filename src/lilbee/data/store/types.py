@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import TypedDict
+from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -15,15 +15,22 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 READ_CONSISTENCY_INTERVAL = timedelta(seconds=5)
 
 
-class ChunkType(StrEnum):
-    """Values for the ``chunk_type`` column.
+@dataclass
+class ConceptRecords:
+    """Rows for the three concept tables, built from one or more files' chunks."""
 
-    Everything ingests as ``RAW`` except wiki pages written by the wiki
-    producer; callers filter with ``Store.search(chunk_type=...)``.
-    """
+    nodes: list[dict]
+    edges: list[dict]
+    chunk_concepts: list[dict]
 
-    RAW = "raw"
-    WIKI = "wiki"
+    @classmethod
+    def merged(cls, batches: list[ConceptRecords]) -> ConceptRecords:
+        """Concatenate several record sets into one batched write unit."""
+        return cls(
+            nodes=[row for batch in batches for row in batch.nodes],
+            edges=[row for batch in batches for row in batch.edges],
+            chunk_concepts=[row for batch in batches for row in batch.chunk_concepts],
+        )
 
 
 class SourceType(StrEnum):
@@ -36,6 +43,36 @@ class SourceType(StrEnum):
 
     DOCUMENT = "document"
     IMPORTED = "imported"
+
+
+class ChunkWrite(NamedTuple):
+    """One document's chunks plus its source-table update, for a batched write.
+
+    ``Store.write_chunks_batch`` folds many of these into a single locked
+    transaction so bulk ingest doesn't pay a write-lock acquisition per document.
+    ``page_texts`` rows land in the same transaction, after the cleanup delete
+    and before the source row. ``source_type`` lets the detached import path
+    reuse the same atomic write while still tagging its rows ``IMPORTED``.
+    """
+
+    source: str
+    file_hash: str
+    records: list[dict]
+    needs_cleanup: bool
+    stat: SourceStat | None = None
+    page_texts: list[dict] | None = None
+    source_type: SourceType = SourceType.DOCUMENT
+
+
+class ChunkType(StrEnum):
+    """Values for the ``chunk_type`` column.
+
+    Everything ingests as ``RAW`` except wiki pages written by the wiki
+    producer; callers filter with ``Store.search(chunk_type=...)``.
+    """
+
+    RAW = "raw"
+    WIKI = "wiki"
 
 
 # ``schema_version`` is an integer for forward-compat. Bump only if we ever need to
@@ -102,18 +139,74 @@ class SearchChunk(BaseModel):
     chunk_index: int
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
-    relevance_score: float | None = Field(None, alias="_relevance_score")
+    # Hybrid rows carry an RRF ``_relevance_score`` (small fusion-scale magnitude,
+    # higher = better) that filtering and ranking compare across results.
+    relevance_score: float | None = Field(None, validation_alias="_relevance_score")
+    # FTS/BM25-only rows carry a raw, unbounded ``_score``. It lives in its own
+    # field so it never contaminates the fusion-scale ``relevance_score``; only the
+    # confidence-based expansion-skip reads it (sigmoid-squashed to [0, 1]).
+    bm25_score: float | None = Field(None, validation_alias="_score")
     rerank_score: float | None = None
 
 
 class SourceRecord(TypedDict):
-    """A tracked source document record."""
+    """A tracked source document record.
+
+    The stat columns are absent on rows read from stores created before they
+    existed; ``source_stat`` is the accessor that folds absence and the
+    ``SOURCE_STAT_UNKNOWN`` sentinel into ``None``.
+    """
 
     filename: str
     file_hash: str
     ingested_at: str
     chunk_count: int
     source_type: str
+    size_bytes: NotRequired[int]
+    mtime_ns: NotRequired[int]
+    stat_captured_ns: NotRequired[int]
+
+
+# Sentinel for the stat columns on rows written before they existed (or for
+# detached imports with no backing file). Planning treats it as "unknown: re-hash".
+SOURCE_STAT_UNKNOWN = -1
+
+
+class SourceStat(NamedTuple):
+    """File size and mtime captured when a source was hashed, plus the capture time.
+
+    ``captured_ns`` is the wall-clock time the stat was taken; the sync planner
+    hashes a file whose mtime is not strictly older than it (racily clean).
+    """
+
+    size_bytes: int
+    mtime_ns: int
+    captured_ns: int = SOURCE_STAT_UNKNOWN
+
+
+def source_stat(record: SourceRecord) -> SourceStat | None:
+    """Stored stat for a source row, or None when unknown.
+
+    The stat columns are nullable ``int64``, so a row can carry an explicit
+    ``None`` (an import, or a write before the columns existed) as well as a
+    missing key or the ``SOURCE_STAT_UNKNOWN`` sentinel. All three mean "no
+    usable stat": return None so the caller re-hashes instead of crashing on
+    ``int(None)``.
+    """
+    size = record.get("size_bytes")
+    mtime = record.get("mtime_ns")
+    captured = record.get("stat_captured_ns")
+    if size is None or mtime is None or size == SOURCE_STAT_UNKNOWN or mtime == SOURCE_STAT_UNKNOWN:
+        return None
+    captured_ns = SOURCE_STAT_UNKNOWN if captured is None else int(captured)
+    return SourceStat(int(size), int(mtime), captured_ns)
+
+
+class SourceStatBackfill(NamedTuple):
+    """An already-tracked source row paired with its freshly verified stat."""
+
+    record: SourceRecord
+    stat: SourceStat
 
 
 class PageTextRecord(TypedDict):

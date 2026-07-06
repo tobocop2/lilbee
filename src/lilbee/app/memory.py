@@ -21,6 +21,7 @@ from lilbee.data.store import (
     MemorySource,
     agent_recall_predicate,
     escape_sql_string,
+    human_recall_predicate,
     local_owner_predicate,
 )
 
@@ -85,11 +86,16 @@ def remember(
 
 
 def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) -> list[MemoryRow]:
-    """Recall *owner*'s facts (plus human-shared facts for agents)."""
+    """Recall facts for *owner*.
+
+    For the human this includes memories an agent shared (so shared agent
+    knowledge informs answers); for an agent it includes the human's shared
+    facts. The management list (:func:`list_memories`) stays narrower.
+    """
     services = get_services()
-    predicate = local_owner_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
+    predicate = human_recall_predicate() if owner == LOCAL_OWNER else agent_recall_predicate(owner)
     return services.store.search_memories(
-        services.embedder.embed(query),
+        services.embedder.embed_query(query),
         owner_predicate=predicate,
         top_k=cfg.memory_top_k if top_k is None else top_k,
         max_distance=cfg.memory_max_distance,
@@ -97,21 +103,30 @@ def recall(query: str, owner: str = LOCAL_OWNER, *, top_k: int | None = None) ->
 
 
 def list_memories(owner: str = LOCAL_OWNER) -> list[MemoryRow]:
-    """List all of *owner*'s memories (any kind), newest first."""
+    """List the memories *owner* owns and can manage (any kind), newest first.
+
+    Strictly owner-scoped (unlike :func:`recall`): the management surface shows
+    only rows the caller can delete or re-flag, so it never lists agent-shared
+    memories the human cannot act on.
+    """
     predicate = (
         local_owner_predicate() if owner == LOCAL_OWNER else f"owner = '{escape_sql_string(owner)}'"
     )
     return get_services().store.get_memories(owner_predicate=predicate)
 
 
-def forget(memory_id: str) -> None:
-    """Delete a memory by id."""
-    get_services().store.delete_memory(memory_id)
+def forget(memory_id: str, *, owner: str = LOCAL_OWNER) -> bool:
+    """Delete *owner*'s memory by id; returns True when it existed and was owned.
+
+    Defaults to the local human's namespace (TUI/CLI/REST/Python API); MCP passes
+    the calling agent's owner so an agent can only delete its own memories.
+    """
+    return get_services().store.delete_memory(memory_id, owner=owner)
 
 
-def set_memory_shared(memory_id: str, *, shared: bool) -> bool:
-    """Set a memory's shared-with-agents flag; returns True when the id exists."""
-    return get_services().store.update_memory(memory_id, shared=shared)
+def set_memory_shared(memory_id: str, *, shared: bool, owner: str = LOCAL_OWNER) -> bool:
+    """Set *owner*'s memory shared-with-agents flag; returns True when found and owned."""
+    return get_services().store.update_memory(memory_id, shared=shared, owner=owner)
 
 
 def auto_extract_enabled() -> bool:
@@ -141,7 +156,11 @@ def auto_extract(question: str, answer: str) -> list[SavedMemory]:
     if not auto_extract_enabled():
         return []
     services = get_services()
-    extracted = extract_memories(question, answer, services.provider.chat)
+
+    def _chat_text(messages: list[dict[str, str]], **_kwargs: object) -> str:
+        return services.provider.chat(messages, stream=False).text
+
+    extracted = extract_memories(question, answer, _chat_text)
     stored: list[SavedMemory] = []
     for memory in extracted:
         memory_id = remember(memory.text, kind=memory.kind, source=MemorySource.EXTRACTED)

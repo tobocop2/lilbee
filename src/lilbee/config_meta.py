@@ -8,10 +8,7 @@ from typing import Union, get_args, get_origin
 from pydantic.fields import FieldInfo
 
 from lilbee.core.config import Config
-
-MODEL_ROLE_FIELDS: frozenset[str] = frozenset(
-    {"chat_model", "embedding_model", "vision_model", "reranker_model"}
-)
+from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
 
 def _get_extra(info: FieldInfo, key: str, default: bool = False) -> bool:

@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -308,10 +309,17 @@ async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]]) -> None:
     task.add_done_callback(tasks.discard)
 
 
+@dataclass
+class _FlushCounter:
+    """Tracks metadata writes pending since the last sidecar flush."""
+
+    pending: int = 0
+
+
 def _make_flush_page(
     meta: dict[str, CrawlMeta],
     written_paths: list[Path],
-    counter: dict[str, int],
+    counter: _FlushCounter,
 ) -> Callable[[CrawlResult], Any]:
     """Build a per-result flush closure that batches metadata writes via ``to_thread``."""
 
@@ -320,10 +328,10 @@ def _make_flush_page(
         if outcome is None:
             return None
         save._update_single_metadata(meta, result.url, outcome, datetime.now(UTC).isoformat())
-        counter["pending"] += 1
-        if counter["pending"] >= METADATA_FLUSH_INTERVAL:
+        counter.pending += 1
+        if counter.pending >= METADATA_FLUSH_INTERVAL:
             save.save_crawl_metadata(meta)
-            counter["pending"] = 0
+            counter.pending = 0
         return outcome.path
 
     async def flush_page(result: CrawlResult) -> Path | None:
@@ -422,8 +430,11 @@ async def crawl_and_save(
 
     ``depth``: ``None`` = whole-site unbounded recursion (default). ``0`` =
     single URL, no recursion. ``N > 0`` = max link-follow depth. ``max_pages``:
-    ``None`` = no limit, positive int = cap. ``cfg.crawl_max_{depth,pages}`` act
-    as ceilings applied only when ``depth``/``max_pages`` are ``None``.
+    ``None`` (unspecified) defers to ``cfg.crawl_max_pages``, else the protective
+    ``cfg.crawl_safety_max_pages`` cap. ``0`` (``CRAWL_PAGES_UNLIMITED``) is the
+    only truly unbounded value; a positive int is honored as-is.
+    ``cfg.crawl_max_depth`` acts as a ceiling applied only when ``depth`` is
+    ``None``.
 
     ``render_mode``: ``None`` resolves to ``cfg.crawl_render_mode`` (the single
     write-boundary for the default). ``http`` fetches without a browser;
@@ -447,7 +458,7 @@ async def crawl_and_save(
 
         meta = save.load_crawl_metadata()
         written_paths: list[Path] = []
-        counter = {"pending": 0}
+        counter = _FlushCounter()
         flush_page = _make_flush_page(meta, written_paths, counter)
 
         pages_seen = await _run_crawl(
@@ -462,7 +473,7 @@ async def crawl_and_save(
             render_mode=mode,
         )
 
-        if counter["pending"] > 0:
+        if counter.pending > 0:
             try:
                 save.save_crawl_metadata(meta)
             except OSError:

@@ -10,6 +10,7 @@ import shlex
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -29,7 +30,7 @@ from textual.widgets import Footer, Select, Static
 # since it's used in multiple methods.
 from textual.worker import get_current_worker as _get_worker
 
-from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.services import get_services, reset_store
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
@@ -51,6 +52,8 @@ from lilbee.cli.tui.widgets.autocomplete import (
     path_completion_prefix,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.fleet_body import FleetBody
+from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar, ModelPickerButton
@@ -63,6 +66,7 @@ from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
 from lilbee.providers.model_ref import parse_model_ref
+from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.retrieval.query.history_window import windowed_history
@@ -82,8 +86,8 @@ _HISTORY_TOKEN_BUDGET_FRACTION = 0.5
 The other half of the working context is for the system prompt, the current
 turn's RAG context (~8 chunks), the user question, and reasoning headroom.
 The windower drops oldest user/assistant pairs once history exceeds this
-fraction so the assembled prompt never approaches ``n_ctx`` and llama-cpp
-never errors with "Requested tokens exceed context window."
+fraction so the assembled prompt never approaches ``n_ctx`` and the chat
+server never rejects the request for exceeding the context window.
 """
 
 # Auto-follow tolerance, in lines: the user counts as "at the bottom" within
@@ -99,11 +103,46 @@ _STREAM_FLUSH_INTERVAL = 0.05
 # Auto-scroll throttle. ~6 fps so heavy token streams don't peg the renderer.
 _STREAM_SCROLL_INTERVAL = 0.15
 
+
+@dataclass
+class _StreamTimings:
+    """Last-fired monotonic timestamps for the stream flush and auto-scroll."""
+
+    last_flush: float
+    last_scroll: float = 0.0
+
+
 # ``/crawl`` command flags.
 _CRAWL_FLAG_DEPTH = "--depth"
 _CRAWL_FLAG_MAX_PAGES = "--max-pages"
 _CRAWL_FLAG_INCLUDE_SUBDOMAINS = "--include-subdomains"
 _CRAWL_FLAG_RENDER = "--render"
+
+# Name for the thread worker that resets and warms the new chat model off the
+# event loop.
+_MODEL_SWAP_WORKER = "model_swap_reset"
+
+
+def _parse_add_paths(args: str) -> list[Path]:
+    """Resolve ``/add`` arguments to filesystem paths.
+
+    A single unquoted path may contain spaces and apostrophes (e.g. macOS
+    "Star Wars Collector's Edition.pdf"), which shell parsing would split into
+    fragments or reject with "No closing quotation". So when the whole argument
+    points at an existing file or directory, take it as one path; otherwise fall
+    back to shell-style splitting for multiple, optionally quoted, paths.
+    """
+    whole = Path(args.strip().strip('"').strip("'")).expanduser()
+    if whole.exists():
+        return [whole]
+    try:
+        # posix=False on Windows keeps backslash path separators literal.
+        tokens = shlex.split(args, posix=os.name != "nt")
+    except ValueError:
+        return [whole]  # unbalanced quote in a literal path; treat as one path
+    if os.name == "nt":
+        tokens = [t.strip('"').strip("'") for t in tokens]
+    return [Path(token).expanduser() for token in tokens]
 
 
 class ChatWelcome(Static):
@@ -135,6 +174,13 @@ class ChatScreen(Screen[None]):
     AUTO_FOCUS = "#chat-input"
 
     streaming: reactive[bool] = reactive(False)
+    # True while a chat-model swap's fleet reload runs in the background. Gates the
+    # submit handler and disables the input so the user can't fire a prompt into a
+    # half-loaded fleet; cleared when the swap worker finishes (or fails).
+    swapping_model: reactive[bool] = reactive(False)
+    # True while a placement apply/clear reloads the fleet (from the Fleet drawer);
+    # holds chat submissions so they don't race the reload into a 429.
+    reloading_placement: reactive[bool] = reactive(False)
 
     HELP = (
         "# Chat\n\n"
@@ -317,7 +363,7 @@ class ChatScreen(Screen[None]):
             return True
         from lilbee.modelhub.model_manager import ValidationResult, validate_persisted_model
         from lilbee.providers.base import ProviderError
-        from lilbee.providers.llama_cpp.provider import resolve_model_path
+        from lilbee.providers.engine_params import resolve_model_path
 
         for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
             if parse_model_ref(model).is_remote:
@@ -391,6 +437,8 @@ class ChatScreen(Screen[None]):
             # Let a focused Select / picker button handle Enter / i / a / o itself.
             if isinstance(self.focused, (Select, ModelPickerButton)):
                 return
+            if self._focus_in_fleet_drawer():
+                return
             self._enter_insert_mode()
             event.prevent_default()
             event.stop()
@@ -447,12 +495,7 @@ class ChatScreen(Screen[None]):
             # submitting whatever empty / stale text the input still holds.
             self._enter_insert_mode()
             return
-        if self.streaming:
-            # Only one chat message may be in flight at a time. Surface a
-            # toast so the user knows the prompt was rejected (rather
-            # than silently dropped) and ask them to cancel first if
-            # they want to redirect the model.
-            self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
+        if self._reject_submit_when_busy():
             return
         # Enter when the completion dropdown is showing a different
         # selection than the input itself: accept the highlight first
@@ -483,6 +526,26 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
+    def _reject_submit_when_busy(self) -> bool:
+        """Toast and reject a submit while a swap is loading or a stream is in flight.
+
+        Returns True when the prompt was rejected so the caller stops. The swap
+        check comes first: a prompt sent mid-swap would race a half-torn-down
+        fleet, so the user is asked to wait rather than cancel.
+        """
+        if self.swapping_model:
+            self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
+            return True
+        if self.reloading_placement:
+            self.notify(msg.FLEET_RELOADING, severity="warning", timeout=3)
+            return True
+        if self.streaming:
+            # Only one chat message may be in flight at a time; surface a toast
+            # so the prompt is visibly rejected, not silently dropped.
+            self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
+            return True
+        return False
 
     def _pending_required_model_download(self) -> str | None:
         """Return the in-flight download's name if it's for the configured chat or embedding model.
@@ -560,19 +623,7 @@ class ChatScreen(Screen[None]):
         if is_url(args):
             self._cmd_crawl(args)
             return
-        # Platform-aware shell parsing: POSIX rules treat backslashes as
-        # escapes, so a Windows path like C:\Users\foo gets mangled to
-        # C:Usersfoo. shlex(posix=False) keeps backslashes literal but
-        # leaves surrounding quotes attached to tokens, so trim those
-        # before constructing Path objects.
-        try:
-            tokens = shlex.split(args, posix=os.name != "nt")
-        except ValueError as exc:
-            self.notify(str(exc), severity="error")
-            return
-        if os.name == "nt":
-            tokens = [t.strip('"').strip("'") for t in tokens]
-        paths = [Path(token).expanduser() for token in tokens]
+        paths = _parse_add_paths(args)
         missing = [p for p in paths if not p.exists()]
         if missing:
             self.notify(
@@ -868,10 +919,9 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
 
     def _cmd_catalog(self, _args: str) -> None:
+        # switch_view already installs and navigates to the managed Catalog view;
+        # a push_screen on top would stack a second, orphaned CatalogScreen.
         self.app.switch_view("Catalog")
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        self.app.push_screen(CatalogScreen())
 
     def _cmd_delete(self, args: str) -> None:
         """Run /delete in a worker so the chat screen stays interactive."""
@@ -884,7 +934,7 @@ class ChatScreen(Screen[None]):
             sources = get_services().store.get_sources()
         except Exception:
             log.debug("Failed to list documents for /delete", exc_info=True)
-            call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
+            call_from_thread(self, self.notify, msg.CMD_DELETE_READ_FAILED, severity="error")
             return
 
         known = {s.get("filename", s.get("source", "?")) for s in sources}
@@ -906,9 +956,12 @@ class ChatScreen(Screen[None]):
             )
             return
 
-        get_services().store.remove_documents([name])
+        from lilbee.app.ingest import remove_documents_durably
         from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
+        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
+        # non-destructive delete; the file stays on disk).
+        remove_documents_durably([name])
         invalidate_document_cache()
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
@@ -1010,7 +1063,7 @@ class ChatScreen(Screen[None]):
     def _cmd_model(self, args: str) -> None:
         if args:
             apply_active_model(self.app, "chat_model", args)
-            self.app.title = f"lilbee -- {cfg.chat_model}"
+            self.app.title = msg.app_title(cfg.chat_model)
             self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
             self.apply_model_change()
             self.refresh_model_bar()
@@ -1065,6 +1118,11 @@ class ChatScreen(Screen[None]):
         )
 
     def _cmd_reset(self, args: str) -> None:
+        self.request_reset()
+
+    def request_reset(self) -> None:
+        """Public entry for the confirm-then-wipe flow (shared by /reset and the
+        command palette), so callers don't reach into a private slash handler."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 
         def _on_confirm(confirmed: bool | None) -> None:
@@ -1323,7 +1381,7 @@ class ChatScreen(Screen[None]):
         worker = _get_worker()
         reason_buf: list[str] = []
         content_buf: list[str] = []
-        timings = [time.monotonic(), 0.0]  # [last_flush, last_scroll]
+        timings = _StreamTimings(last_flush=time.monotonic())
 
         def flush() -> None:
             if reason_buf:
@@ -1358,15 +1416,15 @@ class ChatScreen(Screen[None]):
             response_parts.append(token.content)
             content_buf.append(token.content)
 
-    def _maybe_flush_and_scroll(self, flush: Callable[[], None], timings: list[float]) -> None:
+    def _maybe_flush_and_scroll(self, flush: Callable[[], None], timings: _StreamTimings) -> None:
         """Run *flush* and the auto-scroll on their respective intervals."""
         now = time.monotonic()
-        if now - timings[0] >= _STREAM_FLUSH_INTERVAL:
+        if now - timings.last_flush >= _STREAM_FLUSH_INTERVAL:
             flush()
-            timings[0] = now
-        if now - timings[1] >= _STREAM_SCROLL_INTERVAL:
+            timings.last_flush = now
+        if now - timings.last_scroll >= _STREAM_SCROLL_INTERVAL:
             call_from_thread(self, self._scroll_to_bottom)
-            timings[1] = now
+            timings.last_scroll = now
 
     def _finalize_stream(
         self, widget: AssistantMessage, sources: list[str], response_parts: list[str]
@@ -1481,19 +1539,81 @@ class ChatScreen(Screen[None]):
         self.streaming = False
 
     def apply_model_change(self) -> None:
-        """Cancel active stream (if any) and reset services for the new model."""
+        """Swap to the new chat model without freezing the UI.
+
+        Reloading the fleet for the new model is a multi-second restart, so it
+        runs in a thread worker instead of on the event loop. The in-flight stream
+        is cancelled first, the input is blocked behind a "switching" state with an
+        indicator toast, and the worker reloads only the chat role. The provider
+        retires any still-busy client across the restart and serializes overlapping
+        reloads, so the worker can start at once without waiting for other workers.
+        The input re-enables once the fleet has restarted with the new model (which
+        loads on the next request).
+        """
+        if self.swapping_model:
+            # A swap is already loading; a second one (rapid /model, or the model
+            # bar re-clicked while the input is disabled) would spawn a duplicate
+            # worker and a duplicate completion toast. The in-flight reload already
+            # coalesces onto the latest cfg, so ignore the re-entry.
+            self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
+            return
         if self.streaming:
             self.action_cancel_stream()
-            self.call_later(self._deferred_service_reset)
-        else:
-            reset_services()
+        self.swapping_model = True
+        self.app.notify(msg.MODEL_SWAP_APPLYING)
+        self._reload_chat_model_worker()
 
-    def _deferred_service_reset(self) -> None:
-        """Reset services once workers have drained."""
-        if self.workers:
-            self.call_later(self._deferred_service_reset)
+    def _apply_input_busy_state(self) -> None:
+        """Disable the chat input while a swap or placement reload is loading.
+
+        Restores focus when the fleet is idle again so the user can type without
+        re-clicking the input that was disabled out from under them. Guarded
+        because the unblock can fire (via ``call_from_thread`` or a bubbled
+        message) after the user navigated away and the input is no longer mounted.
+        """
+        busy = self.swapping_model or self.reloading_placement
+        with contextlib.suppress(NoMatches):
+            self._chat_input.disabled = busy
+            if not busy and self._insert_mode:
+                self._chat_input.focus()
+
+    def watch_swapping_model(self, swapping: bool) -> None:
+        self._apply_input_busy_state()
+
+    def watch_reloading_placement(self, reloading: bool) -> None:
+        self._apply_input_busy_state()
+
+    def on_fleet_body_placement_reloading(self, event: FleetBody.PlacementReloading) -> None:
+        """Hold chat submissions while the Fleet drawer reloads the fleet."""
+        self.reloading_placement = event.active
+
+    @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
+    def _reload_chat_model_worker(self) -> None:
+        """Reload only the chat role off the event loop, then unblock the input.
+
+        ``reload_role(wait=True)`` re-plans and restarts the fleet for the new chat
+        model while keeping the store and searcher (a chat-model change doesn't
+        touch retrieval), and returns once the fleet proxy is back up; the model
+        itself loads on the next request (the same lazy load every role swap uses).
+        The provider serializes overlapping reloads, so a rapid second swap
+        coalesces onto the latest cfg.
+        """
+        try:
+            get_services().reload_role(WorkerRole.CHAT, wait=True)
+        except Exception as exc:  # any reload failure becomes a toast, never a crash
+            call_from_thread(self, self._on_model_swap_failed, str(exc))
             return
-        reset_services()
+        call_from_thread(self, self._on_model_swapped)
+
+    def _on_model_swapped(self) -> None:
+        """Main-thread completion: unblock the input and confirm the new model."""
+        self.swapping_model = False
+        self.app.notify(msg.MODEL_SWAP_DONE.format(name=cfg.chat_model))
+
+    def _on_model_swap_failed(self, error: str) -> None:
+        """Main-thread failure: unblock the input and surface the error."""
+        self.swapping_model = False
+        self.app.notify(msg.MODEL_SWAP_FAILED.format(error=error), severity="error")
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""
@@ -1605,7 +1725,7 @@ class ChatScreen(Screen[None]):
         """
         inp = self._chat_input
         if not self._insert_mode or not inp.has_focus:
-            self.screen.focus_next()
+            self._tab_into_fleet_or_next()
             return
         overlay = self._completion_overlay
         if not overlay.is_visible and not self._open_completions():
@@ -1614,6 +1734,30 @@ class ChatScreen(Screen[None]):
         if self._fill_common_prefix():
             return
         self._preview_next()
+
+    def _focus_in_fleet_drawer(self) -> bool:
+        """True when keyboard focus is inside the open Fleet drawer, so Enter /
+        i / a / o activate the focused toggle instead of entering insert mode."""
+        focused = self.focused
+        drawers = self.screen.query(FleetDrawer)
+        return bool(focused and drawers and drawers.first() in focused.ancestors_with_self)
+
+    def _tab_into_fleet_or_next(self) -> None:
+        """Jump Tab into the open Fleet drawer's first toggle so the placement
+        editor is reachable without tabbing past every widget; once focus is
+        inside the drawer, Tab cycles within it as usual."""
+        drawers = self.screen.query(FleetDrawer)
+        if not drawers:
+            self.screen.focus_next()
+            return
+        drawer = drawers.first()
+        focused = self.screen.focused
+        inside = focused is not None and drawer in focused.ancestors_with_self
+        toggles = drawer.query(".dev-toggle")
+        if not inside and toggles:
+            toggles.first().focus()
+            return
+        self.screen.focus_next()
 
     def action_complete_next(self) -> None:
         """Ctrl+N: preview the next match, opening the dropdown if it is closed (vim ``<C-n>``)."""

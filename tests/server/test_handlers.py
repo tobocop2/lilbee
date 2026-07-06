@@ -12,7 +12,6 @@ from litestar.testing import AsyncTestClient
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.server import auth as _auth_mod
-from lilbee.server.handlers import MAX_ADD_FILES
 from tests.server.conftest import parse_sse_events as _parse_sse_events
 
 
@@ -46,6 +45,17 @@ def mock_svc():
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
     embedder.validate_model.return_value = None
     services = make_mock_services(embedder=embedder)
+    # /api/chat now goes through chat_dispatch, which validates the requested
+    # model against the KnownModelCache. Pre-load both the registry and the
+    # cache so resolve() finds cfg.chat_model.
+    chat_manifest = mock.MagicMock()
+    chat_manifest.ref = cfg.chat_model
+    chat_manifest.task = "chat"
+    services.registry.list_installed = mock.MagicMock(return_value=[chat_manifest])
+    services.known_models.refs = mock.MagicMock(return_value={cfg.chat_model})
+    services.known_models.resolve = mock.MagicMock(
+        side_effect=lambda model: model if model == cfg.chat_model else None
+    )
     set_services(services)
     yield services
     set_services(None)
@@ -99,6 +109,94 @@ class TestAddEndpoint:
         assert "file_start" in event_types
         assert "file_done" in event_types
         assert "done" in event_types
+
+    async def test_add_upload_writes_content_and_indexes(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """POST /api/add/upload writes the uploaded bytes into documents_dir and ingests them."""
+        from lilbee.server.app import create_app
+
+        content = b"Uploaded content that the server could not have read by path."
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("notes.txt", content, "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        event_types = [e[0] for e in _parse_sse_events(resp.content)]
+        assert "file_start" in event_types
+        assert "done" in event_types
+        # The client's bytes landed in the corpus even though no server path existed.
+        assert (isolated_env / "notes.txt").read_bytes() == content
+
+    async def test_add_upload_rejects_path_traversal_filename(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """A crafted ../ filename is rejected outright; nothing is written."""
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("../../escape.txt", b"safe", "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 400
+        assert not (isolated_env / "escape.txt").exists()
+        assert not (isolated_env.parent.parent / "escape.txt").exists()
+
+    async def test_add_upload_preserves_relative_paths(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """An uploaded tree keeps its layout: same-basename files don't collide."""
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[
+                    ("data", ("pkg_a/__init__.py", b"a", "text/plain")),
+                    ("data", ("pkg_b/__init__.py", b"b", "text/plain")),
+                ],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert (isolated_env / "pkg_a" / "__init__.py").read_bytes() == b"a"
+        assert (isolated_env / "pkg_b" / "__init__.py").read_bytes() == b"b"
+
+    async def test_add_upload_many_small_files_accepted(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """Hundreds of small uploads are fine: the guard is body size, not count."""
+        from lilbee.server.app import create_app
+
+        files = [("data", (f"f{i}.txt", b"x", "text/plain")) for i in range(285)]
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post("/api/add/upload", files=files, headers=_auth_headers())
+        assert resp.status_code == 201
+
+    def test_validate_uploads_rejects_bad_input(self, mock_extract_file, isolated_env):
+        """validate_uploads guards empty/malformed names and keeps relative paths."""
+        from lilbee.server.handlers.ingest import validate_uploads
+
+        with pytest.raises(ValueError, match="no files"):
+            validate_uploads([])
+        with pytest.raises(ValueError, match="invalid upload filename"):
+            validate_uploads([("", b"x")])
+        with pytest.raises(ValueError, match="must be relative"):
+            validate_uploads([("/etc/passwd", b"x")])
+        with pytest.raises(ValueError, match="must be relative"):
+            validate_uploads([("C:\\dir\\file.txt", b"x")])
+        with pytest.raises(ValueError, match="may not contain"):
+            validate_uploads([("../../a/b.txt", b"x")])
+        # Relative paths survive so an uploaded tree keeps its layout.
+        assert validate_uploads([("src/pkg/__init__.py", b"x")]) == [("src/pkg/__init__.py", b"x")]
+        # Backslash separators and ./ prefixes normalize to POSIX relative form.
+        assert validate_uploads([("./src\\a.py", b"x")]) == [("src/a.py", b"x")]
 
     async def test_add_nonexistent_file_in_errors(self, mock_extract_file, isolated_env, tmp_path):
         """Nonexistent paths appear in the summary errors list."""
@@ -244,20 +342,11 @@ class TestAddValidation:
             resp = await client.post("/api/add", json={"force": True}, headers=_auth_headers())
         assert resp.status_code == 400
 
-    async def test_too_many_files_returns_400(self, isolated_env):
-        """POST /api/add with >100 paths returns 400."""
+    async def test_hundreds_of_paths_accepted(self, isolated_env, tmp_path):
+        """POST /api/add has no file-count cap (paths can be nonexistent)."""
         from lilbee.server.app import create_app
 
-        paths = [f"/fake/file_{i}.txt" for i in range(MAX_ADD_FILES + 1)]
-        async with AsyncTestClient(create_app()) as client:
-            resp = await client.post("/api/add", json={"paths": paths}, headers=_auth_headers())
-        assert resp.status_code == 400
-
-    async def test_exactly_max_files_accepted(self, isolated_env, tmp_path):
-        """POST /api/add with exactly 100 paths is accepted (paths can be nonexistent)."""
-        from lilbee.server.app import create_app
-
-        paths = [f"/fake/file_{i}.txt" for i in range(MAX_ADD_FILES)]
+        paths = [f"/fake/file_{i}.txt" for i in range(285)]
         with mock.patch(
             "kreuzberg.extract_file_sync",
             new_callable=Mock,
@@ -265,7 +354,7 @@ class TestAddValidation:
         ):
             async with AsyncTestClient(create_app()) as client:
                 resp = await client.post("/api/add", json={"paths": paths}, headers=_auth_headers())
-        # Should be 200 (all files nonexistent, but request is valid)
+        # Request is valid even though every path is nonexistent.
         assert resp.status_code == 201
 
 
@@ -339,33 +428,45 @@ class TestOptionsPassthrough:
 
     async def test_ask_passes_options(self, isolated_env):
         from lilbee.server.app import create_app
+        from lilbee.server.handlers.sse import _resolve_generation_options
 
-        async with AsyncTestClient(create_app()) as client:
-            resp = await client.post(
-                "/api/ask",
-                json={"question": "test", "options": {"temperature": 0.3}},
-                headers=_auth_headers(),
-            )
+        with mock.patch(
+            "lilbee.server.handlers.rag._resolve_generation_options",
+            wraps=_resolve_generation_options,
+        ) as spy:
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/ask",
+                    json={"question": "test", "options": {"temperature": 0.3}},
+                    headers=_auth_headers(),
+                )
         assert resp.status_code == 201
-        body = resp.json()
-        assert "answer" in body
+        assert "answer" in resp.json()
+        # The body's options must actually reach the generation-options resolver,
+        # not just produce a successful response.
+        spy.assert_any_call({"temperature": 0.3})
 
     async def test_chat_passes_options(self, isolated_env):
         from lilbee.server.app import create_app
+        from lilbee.server.handlers.sse import _resolve_generation_options
 
-        async with AsyncTestClient(create_app()) as client:
-            resp = await client.post(
-                "/api/chat",
-                json={
-                    "question": "test",
-                    "history": [],
-                    "options": {"seed": 42},
-                },
-                headers=_auth_headers(),
-            )
+        with mock.patch(
+            "lilbee.server.handlers.rag._resolve_generation_options",
+            wraps=_resolve_generation_options,
+        ) as spy:
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.post(
+                    "/api/chat",
+                    json={
+                        "question": "test",
+                        "history": [],
+                        "options": {"seed": 42},
+                    },
+                    headers=_auth_headers(),
+                )
         assert resp.status_code == 201
-        body = resp.json()
-        assert "answer" in body
+        assert "answer" in resp.json()
+        spy.assert_any_call({"seed": 42})
 
     async def test_ask_without_options(self, isolated_env):
         """Request without options field still works."""
@@ -437,6 +538,37 @@ class TestAddIngestMutex:
         assert IngestLockRegistry.canonical_source_name("/some/path/doc.txt") == "doc.txt"
         assert IngestLockRegistry.canonical_source_name("doc.txt") == "doc.txt"
 
+    async def test_release_evicts_entry_so_registry_does_not_grow(self, isolated_env):
+        """A long-lived daemon must not keep one lock per filename forever."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        for i in range(50):
+            acquired, busy = await registry.acquire([f"doc{i}.txt"])
+            assert not busy
+            registry.release(acquired)
+        # Every name was released, so no entry should linger.
+        assert registry._locks == {}
+
+    async def test_release_keeps_entry_for_still_held_name(self, isolated_env):
+        """Releasing one batch must not evict a name another batch still holds."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        registry = IngestLockRegistry()
+        held, _ = await registry.acquire(["doc.txt"])
+        held_lock = held[0][1]
+        # A second acquire for the same name is rejected (busy), nothing to evict.
+        also, busy = await registry.acquire(["doc.txt"])
+        assert also == [] and busy == ["doc.txt"]
+        # Releasing a DIFFERENT batch (other.txt) must not evict doc.txt, and must
+        # not disturb doc.txt's lock identity.
+        other, _ = await registry.acquire(["other.txt"])
+        registry.release(other)
+        assert "other.txt" not in registry._locks  # the released name is evicted
+        assert registry._locks.get("doc.txt") is held_lock  # held entry untouched
+        registry.release(held)
+        assert registry._locks == {}
+
     async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
         """Duplicate paths in one request collapse to a single acquired lock."""
         from lilbee.app.services import get_services
@@ -460,7 +592,7 @@ class TestAddIngestMutex:
         lock = await get_services().ingest_lock_registry.try_acquire("holdme.txt")
         assert lock is not None
         try:
-            events = await self._collect(add_files_stream({"paths": [str(src)]}))
+            events = await self._collect(add_files_stream([str(src)]))
         finally:
             lock.release()
 
@@ -486,7 +618,7 @@ class TestAddIngestMutex:
                 new_callable=Mock,
                 return_value=_make_kreuzberg_result(),
             ):
-                events = await self._collect(add_files_stream({"paths": [str(held), str(free)]}))
+                events = await self._collect(add_files_stream([str(held), str(free)]))
         finally:
             lock.release()
 
@@ -494,6 +626,11 @@ class TestAddIngestMutex:
         already = [d for t, d in events if t == "already_ingesting"]
         assert {"source": "held.txt"} in already
         assert "done" in event_types
+        # The contended path must not be ingested under the holder's lock: only
+        # the free path is copied (regression guard for the lock-bypass bug).
+        summary = [d for t, d in events if t == "done" and "copied" in d][-1]
+        assert "free.txt" in summary["copied"]
+        assert "held.txt" not in summary["copied"]
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
         """Disjoint sources do not contend: both requests complete with done."""
@@ -511,7 +648,7 @@ class TestAddIngestMutex:
                 new_callable=Mock,
                 return_value=_make_kreuzberg_result(),
             ):
-                async for frame in add_files_stream({"paths": [str(path)]}):
+                async for frame in add_files_stream([str(path)]):
                     text += frame
             return _parse_sse_events(text.encode())
 
@@ -533,7 +670,7 @@ class TestAddIngestMutex:
             raise RuntimeError("ingest exploded")
 
         with mock.patch("lilbee.data.ingest.sync", new=_boom):
-            events = await self._collect(add_files_stream({"paths": [str(src)]}))
+            events = await self._collect(add_files_stream([str(src)]))
 
         assert any(t == "error" for t, _ in events)
 
@@ -552,7 +689,7 @@ class TestAddIngestMutex:
         async def _hang(*_args, **_kwargs):
             await asyncio.sleep(30)
 
-        gen = add_files_stream({"paths": [str(src)]})
+        gen = add_files_stream([str(src)])
         with mock.patch("lilbee.data.ingest.sync", new=_hang):
             outer = asyncio.create_task(gen.__anext__())
             await asyncio.sleep(0.05)
@@ -569,9 +706,19 @@ class TestAddIngestMutex:
 class TestAddIngestHardening:
     """Option-A hardening: ``sync()`` always passes ``needs_cleanup=True``."""
 
+    @staticmethod
+    def _cleanup_sources(store) -> list[str]:
+        """Sources whose batched write carried a cleanup delete."""
+        sources: list[str] = []
+        for call in store.write_chunks_batch.call_args_list:
+            for item in call.args[0]:
+                if item.needs_cleanup:
+                    sources.append(item.source)
+        return sources
+
     async def test_new_file_triggers_cleanup(self, isolated_env, tmp_path, mock_svc):
-        """New files still call delete_by_source before adding: closes the
-        orphaned-chunks race when a prior ingest died before upsert_source."""
+        """New files still carry a cleanup delete in their batched write: closes
+        the orphaned-chunks race when a prior ingest died before upsert_source."""
         from lilbee.data.ingest import sync
 
         src = isolated_env / "fresh.txt"
@@ -588,12 +735,12 @@ class TestAddIngestHardening:
         ):
             await sync(quiet=True)
 
-        # Option-A hardening: delete_by_source is called even for 'new' files.
-        store.delete_by_source.assert_any_call("fresh.txt")
+        # Option-A hardening: cleanup is requested even for 'new' files.
+        assert "fresh.txt" in self._cleanup_sources(store)
 
     async def test_retry_after_orphaned_chunks_cleans_up(self, isolated_env, tmp_path, mock_svc):
         """If a prior run left chunks without an ``upsert_source`` record,
-        the retry path removes them before re-adding.
+        the retry path removes them in the same transaction as the re-add.
         """
         from lilbee.data.ingest import sync
 
@@ -602,7 +749,7 @@ class TestAddIngestHardening:
 
         store = mock_svc.store
         # No source row, yet chunks exist on disk (the crashed-previous-run
-        # scenario). ``delete_by_source`` is idempotent so it's safe to call.
+        # scenario). The batched write's cleanup delete is idempotent.
         store.get_sources.return_value = []
 
         with mock.patch(
@@ -612,7 +759,6 @@ class TestAddIngestHardening:
         ):
             await sync(quiet=True)
 
-        # The stale chunks are removed before the new add.
-        call_args = [c.args for c in store.delete_by_source.call_args_list]
-        assert ("orphan.txt",) in call_args
-        store.add_chunks.assert_called()
+        # The stale chunks are removed in the same batched write that re-adds them.
+        assert "orphan.txt" in self._cleanup_sources(store)
+        store.write_chunks_batch.assert_called()

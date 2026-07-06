@@ -55,19 +55,29 @@ def test_chip_is_immutable() -> None:
     raise AssertionError("FitChip should be frozen")
 
 
-def test_available_memory_for_fit_returns_bytes_from_probe(monkeypatch) -> None:
+def test_available_memory_for_fit_sums_whole_fleet(monkeypatch) -> None:
+    """The fit chip must ask for the whole-fleet total (total=True) so a model
+    that tensor-splits across cards isn't wrongly marked 'won't run'."""
     import lilbee.providers.model_cache as mc
     from lilbee.core.config import cfg
 
     cfg.gpu_memory_fraction = 0.5
-    monkeypatch.setattr(mc, "get_available_memory", lambda fraction: int(16 * _GB * fraction))
-    assert available_memory_for_fit() == 8 * _GB
+    captured: dict[str, object] = {}
+
+    def fake(fraction: float, *, total: bool = False) -> int:
+        captured["total"] = total
+        # one 16 GB card vs four 16 GB cards summed
+        return int((64 if total else 16) * _GB * fraction)
+
+    monkeypatch.setattr(mc, "get_available_memory", fake)
+    assert available_memory_for_fit() == 32 * _GB
+    assert captured["total"] is True
 
 
 def test_available_memory_for_fit_returns_none_when_probe_raises(monkeypatch) -> None:
     import lilbee.providers.model_cache as mc
 
-    def boom(_fraction: float) -> int:
+    def boom(_fraction: float, *, total: bool = False) -> int:
         raise RuntimeError("psutil missing")
 
     monkeypatch.setattr(mc, "get_available_memory", boom)

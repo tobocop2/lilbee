@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import typer
 from rich.table import Table
@@ -27,15 +27,20 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
+    announce_cold_start,
+    announce_ready,
     auto_sync,
     json_output,
 )
 from lilbee.core.config import cfg
 from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
+from lilbee.providers.roles import WorkerRole
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
 _TOPIC_PREVIEW_LIMIT = 5
+# Upper bound on retrieved results, matching the REST search route's le=100 cap.
+_MAX_TOP_K = 100
 
 _EMBED_MISMATCH_ADOPT_HINT = (
     "Run `lilbee use-embedder {model}` to search this index with its embedder."
@@ -74,6 +79,27 @@ _scope_option = typer.Option(
 )
 
 
+def _reject_if_empty(value: str, label: str) -> None:
+    """Exit with a uniform error if *value* is empty/whitespace (matches REST)."""
+    if value and value.strip():
+        return
+    msg = f"{label} must not be empty"
+    if cfg.json_mode:
+        json_output({"error": msg})
+        raise SystemExit(1)
+    console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {msg}")
+    raise SystemExit(1)
+
+
+def _display_score(result: dict[str, Any]) -> float:
+    """Relevance score, else distance, else 0.0. Explicit None checks keep a
+    legitimate 0.0 from falling through a truthy ``or`` chain."""
+    score = result.get("relevance_score")
+    if score is None:
+        score = result.get("distance")
+    return 0.0 if score is None else score
+
+
 def search(
     query: str = typer.Argument(..., help="Search query"),
     top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
@@ -84,19 +110,16 @@ def search(
     """Search the knowledge base for relevant chunks."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    if not query or not query.strip():
-        if cfg.json_mode:
-            json_output({"error": "query must not be empty"})
-            raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] query must not be empty")
-        raise SystemExit(1)
+    _reject_if_empty(query, "query")
 
+    err = announce_cold_start(WorkerRole.EMBED, str(cfg.embedding_model))
     try:
         results = get_services().searcher.search(
             query,
-            top_k=top_k or cfg.top_k,
+            top_k=min(top_k or cfg.top_k, _MAX_TOP_K),
             chunk_type=scope_to_chunk_type(scope),
         )
+        announce_ready(err, WorkerRole.EMBED)
     except EmbeddingModelMismatchError as exc:
         _exit_embedding_mismatch(exc)
     except Exception as exc:
@@ -105,6 +128,9 @@ def search(
             raise SystemExit(1) from None
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
+    # Apply the same relevance cutoff the REST and MCP search paths use, so the
+    # CLI doesn't surface lower-relevance chunks the API would suppress.
+    results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
@@ -127,8 +153,7 @@ def search(
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        score = r.get("relevance_score") or r.get("distance") or 0
-        table.add_row(r["source"], preview, f"{score:.4f}")
+        table.add_row(r["source"], preview, f"{_display_score(r):.4f}")
     console.print(table)
 
 
@@ -144,8 +169,11 @@ def ask(
     repeat_penalty: float | None = repeat_penalty_option,
     num_ctx: int | None = num_ctx_option,
     seed: int | None = seed_option,
+    no_sync: bool = typer.Option(
+        False, "--no-sync", help="Skip the pre-answer auto-sync (useful on large static corpora)."
+    ),
 ) -> None:
-    """Ask a one-shot question (auto-syncs first)."""
+    """Ask a one-shot question."""
     apply_overrides(
         data_dir=data_dir,
         model=model,
@@ -157,6 +185,7 @@ def ask(
         num_ctx=num_ctx,
         seed=seed,
     )
+    _reject_if_empty(question, "question")
 
     try:
         from lilbee.app.settings import apply_settings_update
@@ -166,12 +195,13 @@ def ask(
         if pulled is not None:
             apply_settings_update({"chat_model": pulled})
         get_services().embedder.validate_model()
-        if cfg.json_mode:
-            from rich.console import Console as _QuietConsole
+        if cfg.auto_sync and not no_sync:
+            if cfg.json_mode:
+                from rich.console import Console as _QuietConsole
 
-            auto_sync(_QuietConsole(quiet=True))
-        else:
-            auto_sync(console)
+                auto_sync(_QuietConsole(quiet=True))
+            else:
+                auto_sync(console)
 
         chunk_type = scope_to_chunk_type(scope)
 
@@ -183,11 +213,18 @@ def ask(
                     "question": question,
                     "answer": result.answer,
                     "sources": [clean_result(s) for s in result.sources],
+                    "cited_sources": [clean_result(s) for s in result.cited_sources],
                 }
             )
             return
 
-        for token in get_services().searcher.ask_stream(question, chunk_type=chunk_type):
+        err = announce_cold_start(WorkerRole.CHAT, str(cfg.chat_model))
+        stream = get_services().searcher.ask_stream(question, chunk_type=chunk_type)
+        first = True
+        for token in stream:
+            if first:
+                announce_ready(err, WorkerRole.CHAT)
+                first = False
             console.print(token.content, end="")
         console.print()
     except EmbeddingModelMismatchError as exc:

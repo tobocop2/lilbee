@@ -1,10 +1,13 @@
 """Tests for the RAG query pipeline (mocked: no live server needed)."""
 
+from unittest import mock
+
 import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import ChunkType, SearchChunk
+from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.retrieval.query import (
     Searcher,
     build_context,
@@ -15,8 +18,18 @@ from lilbee.retrieval.query import (
     strip_llm_citations,
 )
 from lilbee.retrieval.query.dedup import _relevance_weight
-from lilbee.retrieval.query.formatting import _extract_cited_indices, _format_citation
+from lilbee.retrieval.query.formatting import (
+    _extract_cited_indices,
+    _format_citation,
+    cited_subset,
+)
+from lilbee.retrieval.query.searcher import _GROUNDED_REFUSAL, SEARCH_NEEDS_EMBEDDER
 from tests.conftest import make_citation
+
+
+def _text_result(text: str) -> ChatResult:
+    """Build a text-only ``ChatResult`` for non-streaming chat mocks."""
+    return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +94,7 @@ def _make_result(
     chunk_index=0,
     distance=0.5,
     relevance_score=None,
+    bm25_score=None,
     rerank_score=None,
     vector=None,
 ) -> SearchChunk:
@@ -96,6 +110,7 @@ def _make_result(
         chunk_index=chunk_index,
         distance=distance,
         relevance_score=relevance_score,
+        bm25_score=bm25_score,
         rerank_score=rerank_score,
         vector=vector or [0.1],
     )
@@ -316,7 +331,7 @@ class TestSearchContext:
         mock_svc.store.search.return_value = [_make_result()]
         results = get_services().searcher.search("question")
         assert len(results) == 1
-        mock_svc.embedder.embed.assert_called_once_with("question")
+        mock_svc.embedder.embed_query.assert_called_once_with("question")
 
     def test_passes_query_text(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -341,7 +356,7 @@ class TestSearchContext:
         expanded = _make_result(source="b.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[original], [expanded]]
         mock_svc.embedder.embed.return_value = [0.1] * 768
-        mock_svc.provider.chat.return_value = "kubernetes deployment internals"
+        mock_svc.provider.chat.return_value = _text_result("kubernetes deployment internals")
         results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 2
         sources = {r.source for r in results}
@@ -352,7 +367,7 @@ class TestSearchContext:
         same = _make_result(source="a.md", chunk_index=0)
         mock_svc.store.search.side_effect = [[same], [same]]
         mock_svc.embedder.embed.return_value = [0.1] * 768
-        mock_svc.provider.chat.return_value = "kubernetes deployment internals"
+        mock_svc.provider.chat.return_value = _text_result("kubernetes deployment internals")
         results = get_services().searcher.search("kubernetes deployment internals")
         assert len(results) == 1
 
@@ -361,7 +376,7 @@ class TestExpandQuery:
     _QUESTION_VEC = [0.1] * 768  # matches mock_svc.embedder default
 
     def test_returns_variants(self, mock_svc):
-        mock_svc.provider.chat.return_value = (
+        mock_svc.provider.chat.return_value = _text_result(
             "explain how X works in detail\nexplain the purpose of X"
         )
         variants = get_services().searcher._expand_query("explain X in detail", self._QUESTION_VEC)
@@ -371,7 +386,7 @@ class TestExpandQuery:
             assert len(vec) == 768
 
     def test_caps_at_three(self, mock_svc):
-        mock_svc.provider.chat.return_value = "A\nB\nC\nD\nE"
+        mock_svc.provider.chat.return_value = _text_result("A\nB\nC\nD\nE")
         variants = get_services().searcher._expand_query(
             "explain how kubernetes pods schedule", self._QUESTION_VEC
         )
@@ -418,7 +433,7 @@ class TestExpandQuery:
         try:
             assert get_services().searcher._expand_query("q", self._QUESTION_VEC) == []
             mock_svc.provider.chat.assert_not_called()
-            mock_svc.embedder.embed.assert_not_called()
+            mock_svc.embedder.embed_query_batch.assert_not_called()
         finally:
             cfg.query_expansion_count = old
 
@@ -434,19 +449,19 @@ class TestExpandQuery:
     def test_skips_llm_for_short_query(self, mock_svc):
         # 1-token query is below the default threshold of 2, so LLM expansion
         # should not fire. Concept-graph is off in this test, so the result is [].
-        mock_svc.provider.chat.return_value = "should not be reached"
+        mock_svc.provider.chat.return_value = _text_result("should not be reached")
         assert get_services().searcher._expand_query("k8s", self._QUESTION_VEC) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_skips_llm_at_threshold_boundary(self, mock_svc):
         # 2-token query == threshold; ≤ short_threshold means skip.
-        mock_svc.provider.chat.return_value = "should not be reached"
+        mock_svc.provider.chat.return_value = _text_result("should not be reached")
         assert get_services().searcher._expand_query("k8s pods", self._QUESTION_VEC) == []
         mock_svc.provider.chat.assert_not_called()
 
     def test_runs_llm_above_threshold(self, mock_svc):
         # 3-token query > threshold; LLM expansion runs.
-        mock_svc.provider.chat.return_value = "v one\nv two"
+        mock_svc.provider.chat.return_value = _text_result("v one\nv two")
         variants = get_services().searcher._expand_query(
             "kubernetes scheduling internals", self._QUESTION_VEC
         )
@@ -456,7 +471,7 @@ class TestExpandQuery:
     def test_short_threshold_zero_disables_skip(self, mock_svc):
         old = cfg.expansion_short_query_tokens
         cfg.expansion_short_query_tokens = 0
-        mock_svc.provider.chat.return_value = "v one\nv two"
+        mock_svc.provider.chat.return_value = _text_result("v one\nv two")
         try:
             variants = get_services().searcher._expand_query("k8s", self._QUESTION_VEC)
             assert len(variants) == 2
@@ -478,14 +493,16 @@ class TestExpandQuery:
             cfg.concept_graph = old_concept
 
     def test_batches_llm_variants_in_one_call(self, mock_svc):
-        """LLM variants should embed via a single embed_batch call, not N embed calls."""
-        mock_svc.provider.chat.return_value = "variant one\nvariant two\nvariant three"
+        """LLM variants should embed via a single embed_query_batch call, not N embed calls."""
+        mock_svc.provider.chat.return_value = _text_result(
+            "variant one\nvariant two\nvariant three"
+        )
         get_services().searcher._expand_query("kubernetes scheduling internals", self._QUESTION_VEC)
-        assert mock_svc.embedder.embed_batch.call_count >= 1
-        batch_call_args = mock_svc.embedder.embed_batch.call_args_list[0].args[0]
+        assert mock_svc.embedder.embed_query_batch.call_count >= 1
+        batch_call_args = mock_svc.embedder.embed_query_batch.call_args_list[0].args[0]
         assert len(batch_call_args) == 3
         # Single-shot embed must not be used for the variant loop.
-        mock_svc.embedder.embed.assert_not_called()
+        mock_svc.embedder.embed_query.assert_not_called()
 
     def test_batches_concept_expansion_separately(self, mock_svc):
         """Concept-graph variants embed through embed_batch too (separate call
@@ -495,7 +512,7 @@ class TestExpandQuery:
         cfg.concept_graph = True
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["kubernetes", "scheduling"]
-        mock_svc.provider.chat.return_value = "restate one\nrestate two"
+        mock_svc.provider.chat.return_value = _text_result("restate one\nrestate two")
         try:
             get_services().searcher._expand_query(
                 "kubernetes scheduling internals", self._QUESTION_VEC
@@ -503,36 +520,121 @@ class TestExpandQuery:
         finally:
             cfg.concept_graph = old_concept
         # Two sources (LLM + concepts) => exactly 2 batch calls.
-        assert mock_svc.embedder.embed_batch.call_count == 2
-        concept_batch = mock_svc.embedder.embed_batch.call_args_list[1].args[0]
+        assert mock_svc.embedder.embed_query_batch.call_count == 2
+        concept_batch = mock_svc.embedder.embed_query_batch.call_args_list[1].args[0]
         assert concept_batch == ["kubernetes", "scheduling"]
+
+
+class TestFormattingHelpers:
+    def test_cited_subset_maps_markers_in_order(self):
+        sources = [_make_result(source="a.pdf"), _make_result(source="b.pdf")]
+        assert [s.source for s in cited_subset("see [2], then [2] again", sources)] == ["b.pdf"]
+
+    def test_cited_subset_empty_when_no_markers(self):
+        assert cited_subset("no markers here", [_make_result()]) == []
+
+    def test_cited_subset_ignores_out_of_range_markers(self):
+        assert cited_subset("[5] does not exist", [_make_result()]) == []
+
+
+class TestCitedSources:
+    """bb-ky3: ask_raw exposes the answer's cited subset so JSON consumers get
+    the same citation truth the string method computes."""
+
+    def test_ask_raw_cited_sources_is_the_cited_subset(self, mock_svc):
+        mock_svc.store.search.return_value = [
+            _make_result(source="a.pdf", chunk="alpha", distance=0.1),
+            _make_result(source="b.pdf", chunk="beta", distance=0.2),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("As shown in [2].")
+        result = get_services().searcher.ask_raw("q")
+        assert len(result.sources) == 2
+        assert [s.source for s in result.cited_sources] == ["b.pdf"]
+
+    def test_ask_raw_cited_sources_empty_when_uncited(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(chunk="alpha")]
+        mock_svc.provider.chat.return_value = _text_result("No markers in this answer.")
+        result = get_services().searcher.ask_raw("q")
+        assert result.sources
+        assert result.cited_sources == []
+
+    def test_ask_lists_only_the_cited_source(self, mock_svc):
+        mock_svc.store.search.return_value = [
+            _make_result(source="a.pdf", chunk="alpha", distance=0.1),
+            _make_result(source="b.pdf", chunk="beta", distance=0.2),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("From [1] we learn the answer.")
+        answer = get_services().searcher.ask("q")
+        assert "a.pdf" in answer
+        assert "b.pdf" not in answer
+
+
+class TestContextBudget:
+    """bb-6kt: RAG sources are trimmed to fit num_ctx instead of overflow-erroring."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_ctx(self):
+        old = (cfg.num_ctx, cfg.chat_n_ctx_target)
+        yield
+        cfg.num_ctx, cfg.chat_n_ctx_target = old
+
+    def test_trims_lowest_ranked_sources_to_fit(self, mock_svc):
+        cfg.num_ctx = 1400
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
+        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        assert 0 < len(kept) < len(results)
+        assert kept == results[: len(kept)]  # keeps the top-ranked prefix
+
+    def test_keeps_all_when_budget_ample(self, mock_svc):
+        cfg.num_ctx = 100_000
+        results = [_make_result(source=f"{i}.pdf", chunk="short") for i in range(5)]
+        assert get_services().searcher._fit_context_budget(results, "sys", "q", None) == results
+
+    def test_keeps_top_source_even_if_alone_over_budget(self, mock_svc):
+        cfg.num_ctx = 1
+        results = [_make_result(source="big.pdf", chunk="x" * 9000), _make_result(source="b.pdf")]
+        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        assert len(kept) == 1
+
+    def test_history_counts_against_the_budget(self, mock_svc):
+        cfg.num_ctx = 1400
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
+        history = [{"role": "user", "content": "h" * 600}]
+        no_hist = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        with_hist = get_services().searcher._fit_context_budget(results, "sys", "q", history)
+        assert len(with_hist) < len(no_hist)
+
+    def test_logs_when_trimming(self, mock_svc, caplog):
+        cfg.num_ctx = 1400
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
+        with caplog.at_level("INFO"):
+            get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        assert "to fit the model context window" in caplog.text
 
 
 class TestAskRaw:
     def test_returns_structured_result(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(chunk="oil is 5 quarts")]
-        mock_svc.provider.chat.return_value = "5 quarts."
+        mock_svc.provider.chat.return_value = _text_result("5 quarts.")
         result = get_services().searcher.ask_raw("oil capacity?")
         assert result.answer == "5 quarts."
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
 
-    def test_no_results_falls_through_to_general_chat(self, mock_svc):
-        """Zero RAG hits route through the general system prompt (no canned
-        message, no citation grammar). Sources stay empty so callers can tell
-        the response was not grounded."""
+    def test_no_results_returns_grounded_refusal(self, mock_svc):
+        """Zero RAG hits in RAG mode return a grounded refusal instead of
+        free-wheeling on the model's parametric knowledge (bb-0i0). The model is
+        never called, and sources stay empty."""
         mock_svc.store.search.return_value = []
-        mock_svc.provider.chat.return_value = "general answer"
         result = get_services().searcher.ask_raw("anything")
-        assert result.answer == "general answer"
+        assert result.answer == _GROUNDED_REFUSAL
         assert result.sources == []
-        sent = mock_svc.provider.chat.call_args[0][0]
-        assert sent[0]["role"] == "system"
-        assert sent[0]["content"] == cfg.general_system_prompt
+        assert result.cited_sources == []
+        mock_svc.provider.chat.assert_not_called()
 
     def test_ask_raw_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         history = [{"role": "user", "content": "prev"}]
         get_services().searcher.ask_raw("new q", history=history)
         messages = mock_svc.provider.chat.call_args[0][0]
@@ -540,14 +642,18 @@ class TestAskRaw:
 
     def test_ask_raw_strips_think_tags(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "<think>reasoning</think>The answer is 42."
+        mock_svc.provider.chat.return_value = _text_result(
+            "<think>reasoning</think>The answer is 42."
+        )
         result = get_services().searcher.ask_raw("question")
         assert "<think>" not in result.answer
         assert result.answer == "The answer is 42."
 
     def test_ask_raw_preserves_think_tags_when_show_reasoning(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "<think>reasoning</think>The answer is 42."
+        mock_svc.provider.chat.return_value = _text_result(
+            "<think>reasoning</think>The answer is 42."
+        )
         old = cfg.show_reasoning
         cfg.show_reasoning = True
         try:
@@ -560,24 +666,23 @@ class TestAskRaw:
 class TestAsk:
     def test_returns_answer_with_citations(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(chunk="oil is 5 quarts")]
-        mock_svc.provider.chat.return_value = "The oil capacity is 5 quarts."
+        mock_svc.provider.chat.return_value = _text_result("The oil capacity is 5 quarts.")
         answer = get_services().searcher.ask("oil capacity?")
         assert "5 quarts" in answer
         assert "Sources:" in answer
         assert "test.pdf" in answer
 
-    def test_no_results_falls_through_to_general_chat(self, mock_svc):
-        """ask() also falls through to general chat when retrieval is empty."""
+    def test_no_results_returns_grounded_refusal(self, mock_svc):
+        """ask() surfaces the grounded refusal verbatim, with no Sources block (bb-0i0)."""
         mock_svc.store.search.return_value = []
-        mock_svc.provider.chat.return_value = "general answer"
         answer = get_services().searcher.ask("anything")
-        assert "general answer" in answer
-        # No citations are appended for an ungrounded answer.
+        assert answer == _GROUNDED_REFUSAL
         assert "Sources:" not in answer
+        mock_svc.provider.chat.assert_not_called()
 
     def test_ask_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         history = [
             {"role": "user", "content": "prev q"},
             {"role": "assistant", "content": "prev a"},
@@ -597,15 +702,15 @@ class TestAskStream:
         assert "Hello world" in combined
         assert "Sources:" in combined
 
-    def test_empty_results_falls_through_to_general_chat(self, mock_svc):
-        """Zero RAG hits stream a general-prompt response, no canned message."""
+    def test_empty_results_streams_grounded_refusal(self, mock_svc):
+        """Zero RAG hits stream a single grounded-refusal token, no Sources block,
+        and never call the model (bb-0i0)."""
         mock_svc.store.search.return_value = []
-        mock_svc.provider.chat.return_value = iter(["general", " answer"])
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
         combined = "".join(st.content for st in stream_tokens)
-        assert "general answer" in combined
-        # No Sources block when there are no grounding chunks.
+        assert combined == _GROUNDED_REFUSAL
         assert "Sources:" not in combined
+        mock_svc.provider.chat.assert_not_called()
 
     def test_ask_stream_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -646,14 +751,14 @@ class TestAskStream:
 class TestGenerationOptions:
     def test_ask_raw_passes_options(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         opts = {"temperature": 0.3, "seed": 42}
         get_services().searcher.ask_raw("q", options=opts)
         assert mock_svc.provider.chat.call_args[1]["options"] == opts
 
     def test_ask_raw_defaults_to_cfg_options(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         cfg.temperature = 0.7
         cfg.seed = None
         cfg.top_p = None
@@ -677,7 +782,7 @@ class TestGenerationOptions:
 
     def test_ask_passes_options_through(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         opts = {"num_ctx": 4096}
         get_services().searcher.ask("q", options=opts)
         assert mock_svc.provider.chat.call_args[1]["options"] == opts
@@ -685,7 +790,7 @@ class TestGenerationOptions:
     def test_ask_raw_empty_options_passes_none(self, mock_svc):
         """When cfg has no generation options set, passes None to provider."""
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         cfg.temperature = None
         cfg.top_p = None
         cfg.top_k_sampling = None
@@ -943,29 +1048,37 @@ class TestSelectContext:
 
 
 class TestShouldSkipExpansion:
+    """bm25_probe rows carry a raw, unbounded BM25 score in ``bm25_score`` (LanceDB
+    FTS _score); the probe values here use those realistic magnitudes, not
+    pre-normalized [0, 1] numbers, since _should_skip_expansion sigmoid-squashes
+    them before comparing to the [0, 1] thresholds (default 0.8 / gap 0.15)."""
+
     def test_skips_when_confident(self, mock_svc):
+        # sigmoid(5.0)=0.993 >= 0.8; gap to sigmoid(1.0)=0.731 is 0.262 >= 0.15.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.9),
-            _make_result(relevance_score=0.5),
+            _make_result(bm25_score=5.0),
+            _make_result(bm25_score=1.0),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is True
 
     def test_does_not_skip_when_low_score(self, mock_svc):
+        # sigmoid(0.5)=0.622 < 0.8: a weak top BM25 hit still expands.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.5),
-            _make_result(relevance_score=0.4),
+            _make_result(bm25_score=0.5),
+            _make_result(bm25_score=0.4),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is False
 
     def test_does_not_skip_when_close_gap(self, mock_svc):
+        # sigmoid(5.0)=0.993 and sigmoid(4.0)=0.982: gap 0.011 < 0.15.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.85),
-            _make_result(relevance_score=0.82),
+            _make_result(bm25_score=5.0),
+            _make_result(bm25_score=4.0),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is False
 
     def test_skips_with_single_confident_result(self, mock_svc):
-        mock_svc.store.bm25_probe.return_value = [_make_result(relevance_score=0.9)]
+        mock_svc.store.bm25_probe.return_value = [_make_result(bm25_score=5.0)]
         assert get_services().searcher._should_skip_expansion("test") is True
 
     def test_does_not_skip_when_empty(self, mock_svc):
@@ -979,6 +1092,49 @@ class TestShouldSkipExpansion:
             assert get_services().searcher._should_skip_expansion("test") is False
         finally:
             cfg.expansion_skip_threshold = old
+
+    def test_forwards_scope_to_probe(self, mock_svc):
+        """A scoped search must probe the same pool it searches, not the mixed pool."""
+        mock_svc.store.bm25_probe.return_value = []
+        get_services().searcher._should_skip_expansion("q", ChunkType.WIKI)
+        assert mock_svc.store.bm25_probe.call_args.kwargs["chunk_type"] == ChunkType.WIKI
+
+    def test_does_not_skip_when_score_missing(self, mock_svc):
+        """A probe row with no FTS score reads as zero confidence, never skipping."""
+        mock_svc.store.bm25_probe.return_value = [_make_result(bm25_score=None)]
+        assert get_services().searcher._should_skip_expansion("test") is False
+
+
+class TestSearchAppliesConceptBoostOnExpansionSkip:
+    def test_concept_boost_runs_even_when_expansion_skipped(self, mock_svc, monkeypatch):
+        """Skipping query expansion must not also skip the concept-graph re-rank."""
+        searcher = get_services().searcher
+        mock_svc.store.search.return_value = [_make_result()]
+        monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
+        called: list[bool] = []
+
+        def _boost(results, question):
+            called.append(True)
+            return results
+
+        monkeypatch.setattr(searcher, "_apply_concept_boost", _boost)
+        searcher.search("test query")
+        assert called == [True]
+        # Expansion was skipped: no variant searches ran.
+        mock_svc.store.search.assert_called_once()
+
+
+class TestBm25Confidence:
+    def test_squashes_and_floors(self):
+        from lilbee.retrieval.query.searcher import _bm25_confidence
+
+        # Absent or non-positive scores floor to zero confidence.
+        assert _bm25_confidence(None) == 0.0
+        assert _bm25_confidence(0.0) == 0.0
+        assert _bm25_confidence(-2.0) == 0.0
+        # Positive raw BM25 scores squash monotonically into (0.5, 1).
+        assert 0.5 < _bm25_confidence(1.0) < 1.0
+        assert _bm25_confidence(5.0) > _bm25_confidence(1.0)
 
 
 class TestParseStructuredQuery:
@@ -1008,10 +1164,22 @@ class TestParseStructuredQuery:
 
 class TestHydeSearch:
     def test_returns_results(self, mock_svc):
-        mock_svc.provider.chat.return_value = "hypothetical document about X"
+        mock_svc.provider.chat.return_value = _text_result("hypothetical document about X")
         mock_svc.store.search.return_value = [_make_result()]
         results = get_services().searcher._hyde_search("explain X", top_k=5)
         assert len(results) >= 1
+
+    def test_passage_is_embedded_as_a_query(self, mock_svc):
+        """Deliberate choice: the hypothetical passage stands in for the query.
+
+        It is embedded with embed_query (query instruction), not the document
+        prefix, so HyDE vectors share the space of every other query against
+        the doc-prefixed index. Flipping this is an embedding-bench experiment.
+        """
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        mock_svc.embedder.embed_query.assert_called_once_with("hypothetical passage")
 
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("fail")
@@ -1022,7 +1190,7 @@ class TestHydeSearch:
         assert get_services().searcher._hyde_search("test", top_k=5) == []
 
     def test_returns_empty_on_blank(self, mock_svc):
-        mock_svc.provider.chat.return_value = "   "
+        mock_svc.provider.chat.return_value = _text_result("   ")
         assert get_services().searcher._hyde_search("test", top_k=5) == []
 
 
@@ -1054,6 +1222,39 @@ class TestTemporalFilter:
         results = [_make_result()]
         searcher = get_services().searcher
         assert searcher._apply_temporal_filter(results, "how does auth work") == results
+
+    def test_bare_search_applies_temporal_filter(self, mock_svc, monkeypatch):
+        """The bare search() path runs the temporal filter, matching chat/ask."""
+        searcher = get_services().searcher
+        mock_svc.store.search.return_value = [_make_result()]
+        monkeypatch.setattr(searcher, "_should_skip_expansion", lambda *a, **k: True)
+        seen: list[str] = []
+
+        def _temporal(results, question):
+            seen.append(question)
+            return results
+
+        monkeypatch.setattr(searcher, "_apply_temporal_filter", _temporal)
+        searcher.search("recent changes")
+        assert seen == ["recent changes"]
+
+    def test_structured_query_still_applies_temporal_filter(self, mock_svc, monkeypatch):
+        """A ``mode:`` prefix skips expansion/boost but the date filter still runs."""
+        cfg.wiki = True
+        try:
+            searcher = get_services().searcher
+            mock_svc.store.search.return_value = [_make_result()]
+            seen: list[str] = []
+
+            def _temporal(results, question):
+                seen.append(question)
+                return results
+
+            monkeypatch.setattr(searcher, "_apply_temporal_filter", _temporal)
+            searcher.search("wiki: recent changes")
+            assert seen == ["recent changes"]  # prefix stripped, filter applied
+        finally:
+            cfg.wiki = False
 
     def test_disabled_via_config(self, mock_svc):
         old = cfg.temporal_filtering
@@ -1092,7 +1293,7 @@ class TestSearchStructured:
         mock_svc.store.bm25_probe.return_value = [_make_result()]
         results = get_services().searcher._search_structured("term", "test query", 5)
         assert len(results) == 1
-        mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5)
+        mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5, chunk_type=None)
 
     def test_vec_mode(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1100,13 +1301,30 @@ class TestSearchStructured:
         assert len(results) == 1
 
     def test_hyde_mode(self, mock_svc):
-        mock_svc.provider.chat.return_value = "hypothetical doc"
+        mock_svc.provider.chat.return_value = _text_result("hypothetical doc")
         mock_svc.store.search.return_value = [_make_result()]
         results = get_services().searcher._search_structured("hyde", "vague question", 5)
         assert len(results) == 1
 
     def test_unknown_mode_returns_empty(self, mock_svc):
         assert get_services().searcher._search_structured("unknown", "test", 5) == []
+
+    def test_term_mode_forwards_chunk_type(self, mock_svc):
+        """A ``term:`` query under an explicit scope must keep the scope filter."""
+        mock_svc.store.bm25_probe.return_value = [_make_result()]
+        get_services().searcher._search_structured("term", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.bm25_probe.call_args[1]["chunk_type"] == ChunkType.WIKI
+
+    def test_vec_mode_forwards_chunk_type(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("vec", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
+
+    def test_hyde_mode_forwards_chunk_type(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("doc")
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher._search_structured("hyde", "q", 5, chunk_type=ChunkType.WIKI)
+        assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
 
 
 class TestSearchContextIntegration:
@@ -1118,9 +1336,11 @@ class TestSearchContextIntegration:
 
     def test_skips_expansion_when_confident(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
+        # Raw BM25 magnitudes (sigmoid(5.0)=0.993, sigmoid(1.0)=0.731): confident
+        # top with a wide gap, so expansion is skipped.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(relevance_score=0.9),
-            _make_result(relevance_score=0.5),
+            _make_result(bm25_score=5.0),
+            _make_result(bm25_score=1.0),
         ]
         results = get_services().searcher.search("exact match query")
         # Provider.chat should NOT be called for expansion
@@ -1129,7 +1349,7 @@ class TestSearchContextIntegration:
 
     def test_hyde_merges_results(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(source="normal.md")]
-        mock_svc.provider.chat.return_value = "hypothetical doc"
+        mock_svc.provider.chat.return_value = _text_result("hypothetical doc")
         old = cfg.hyde
         cfg.hyde = True
         try:
@@ -1139,6 +1359,27 @@ class TestSearchContextIntegration:
         finally:
             cfg.hyde = old
 
+    def test_scoped_search_threads_scope_through_hyde_merge(self, mock_svc):
+        """A scoped non-structured search must scope its HyDE merge too, else
+        out-of-scope chunks leak into a scoped result set."""
+        mock_svc.store.search.return_value = []
+        mock_svc.store.bm25_probe.return_value = []  # don't skip expansion
+        captured: dict[str, object] = {}
+
+        def fake_hyde(question, top_k, chunk_type=None):
+            captured["chunk_type"] = chunk_type
+            return []
+
+        old_hyde, old_cg, old_qe = cfg.hyde, cfg.concept_graph, cfg.query_expansion_count
+        cfg.hyde, cfg.concept_graph, cfg.query_expansion_count = True, False, 0
+        try:
+            searcher = get_services().searcher
+            with mock.patch.object(searcher, "_hyde_search", side_effect=fake_hyde):
+                searcher.search("question", chunk_type=ChunkType.RAW)
+            assert captured["chunk_type"] == ChunkType.RAW
+        finally:
+            cfg.hyde, cfg.concept_graph, cfg.query_expansion_count = old_hyde, old_cg, old_qe
+
     def test_hyde_adds_unique_results_with_distance_adjustment(self, mock_svc):
         """HyDE results not seen in normal search are added with adjusted distance."""
         normal_result = _make_result(source="normal.md", chunk_index=0)
@@ -1147,7 +1388,7 @@ class TestSearchContextIntegration:
             [normal_result],
             [hyde_only_result],
         ]
-        mock_svc.provider.chat.return_value = "hypothetical document"
+        mock_svc.provider.chat.return_value = _text_result("hypothetical document")
         # Disable query expansion so the HyDE path owns the second
         # store.search call.
         cfg.query_expansion_count = 0
@@ -1169,7 +1410,7 @@ class TestSearchContextIntegration:
 class TestAskRawWithReranker:
     def test_reranker_called_when_configured(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         mock_svc.reranker.rerank.return_value = [_make_result()]
         old = cfg.reranker_model
         cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
@@ -1220,6 +1461,41 @@ class TestConceptBoosting:
         finally:
             cfg.concept_graph = old
             cfg.query_expansion_count = 3
+
+    def test_boost_resorts_by_boosted_score(self, mock_svc):
+        """Boost mutates scores in place; the list must be re-sorted so callers that
+        consume search() order directly (CLI search, MCP lilbee_search) see the
+        boost change the ranking, not just the scores."""
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        weak = _make_result(source="weak.md", distance=0.4)
+        strong = _make_result(source="strong.md", distance=0.1)
+        mock_svc.concepts.boost_results.return_value = [weak, strong]
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            out = get_services().searcher._apply_concept_boost([weak, strong], "python question")
+            assert [r.source for r in out] == ["strong.md", "weak.md"]
+        finally:
+            cfg.concept_graph = old
+
+    def test_boost_resort_keeps_strong_hybrid_above_hyde(self, mock_svc):
+        """The boosted list mixes RRF (hybrid) and distance (HyDE) rows; per-family
+        normalization keeps a strong hybrid hit on top instead of letting a HyDE
+        recall's larger 1-distance dominate the tiny RRF score."""
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.extract_concepts.return_value = ["python"]
+        strong = _make_result(source="strong.md", distance=None, relevance_score=0.05)
+        weak = _make_result(source="weak.md", distance=None, relevance_score=0.02)
+        hyde = _make_result(source="hyde.md", distance=0.3, relevance_score=None)
+        mock_svc.concepts.boost_results.return_value = [strong, weak, hyde]
+        old = cfg.concept_graph
+        cfg.concept_graph = True
+        try:
+            out = get_services().searcher._apply_concept_boost([strong, weak, hyde], "python q")
+            assert out[0].source == "strong.md"
+        finally:
+            cfg.concept_graph = old
 
     def test_boost_skipped_when_disabled(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(distance=0.5)]
@@ -1292,7 +1568,7 @@ class TestConceptQueryExpansion:
     def test_expansion_includes_concept_terms(self, mock_svc):
         mock_svc.concepts.get_graph.return_value = True
         mock_svc.concepts.expand_query.return_value = ["python web frameworks"]
-        mock_svc.provider.chat.return_value = "variant query about python"
+        mock_svc.provider.chat.return_value = _text_result("variant query about python")
         old = cfg.concept_graph
         cfg.concept_graph = True
         try:
@@ -1446,14 +1722,14 @@ class TestChunkTypeScope:
 
     def test_ask_raw_forwards_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(source="doc.md", chunk_type="raw")]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         get_services().searcher.ask_raw("question", chunk_type="raw")
         kwargs = mock_svc.store.search.call_args.kwargs
         assert kwargs.get("chunk_type") == "raw"
 
     def test_ask_forwards_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(source="doc.md", chunk_type="raw")]
-        mock_svc.provider.chat.return_value = "answer"
+        mock_svc.provider.chat.return_value = _text_result("answer")
         get_services().searcher.ask("question", chunk_type="raw")
         kwargs = mock_svc.store.search.call_args.kwargs
         assert kwargs.get("chunk_type") == "raw"
@@ -1507,11 +1783,24 @@ class TestStructuredQueryScopeInteraction:
         kwargs = mock_svc.store.search.call_args.kwargs
         assert kwargs.get("chunk_type") == "raw"
 
-    def test_wiki_prefix_alone_still_filters_to_wiki(self, mock_svc):
+    def test_wiki_prefix_alone_filters_to_wiki_when_enabled(self, mock_svc):
+        cfg.wiki = True
+        try:
+            mock_svc.store.search.return_value = []
+            get_services().searcher.search("wiki: energy")
+            kwargs = mock_svc.store.search.call_args.kwargs
+            assert kwargs.get("chunk_type") == "wiki"
+        finally:
+            cfg.wiki = False
+
+    def test_wiki_prefix_falls_back_to_full_pool_when_wiki_disabled(self, mock_svc):
+        """The ``wiki:`` prefix goes through the same wiki-disabled guard as the
+        explicit chunk_type arg, so it can't search an empty wiki pool."""
+        cfg.wiki = False
         mock_svc.store.search.return_value = []
         get_services().searcher.search("wiki: energy")
         kwargs = mock_svc.store.search.call_args.kwargs
-        assert kwargs.get("chunk_type") == "wiki"
+        assert kwargs.get("chunk_type") is None
 
 
 class TestStructuredQueryWikiRaw:
@@ -1526,10 +1815,14 @@ class TestStructuredQueryWikiRaw:
         assert query == "python typing"
 
     def test_wiki_mode_passes_chunk_type(self, mock_svc):
-        mock_svc.store.search.return_value = [_make_result()]
-        get_services().searcher._search_structured("wiki", "test", 5)
-        mock_svc.store.search.assert_called_once()
-        assert mock_svc.store.search.call_args[1]["chunk_type"] == "wiki"
+        cfg.wiki = True
+        try:
+            mock_svc.store.search.return_value = [_make_result()]
+            get_services().searcher._search_structured("wiki", "test", 5)
+            mock_svc.store.search.assert_called_once()
+            assert mock_svc.store.search.call_args[1]["chunk_type"] == "wiki"
+        finally:
+            cfg.wiki = False
 
     def test_raw_mode_passes_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
@@ -1560,12 +1853,10 @@ class TestDirectMessagesNoEmbed:
 
 
 class TestAskRawNoEmbed:
-    def test_direct_llm_when_no_embedding(self, mock_svc):
-        """ask_raw without embedding calls the LLM directly via the general
-        system prompt. No canned chat-only banner is injected by the searcher;
-        the TUI surfaces that mode banner separately."""
+    def test_search_mode_no_embedder_refuses(self, mock_svc):
+        """Search mode (the default) with no embedder refuses cleanly instead of
+        silently answering ungrounded -- the answer can't be grounded."""
         mock_svc.embedder.embedding_available.return_value = False
-        mock_svc.provider.chat.return_value = "direct answer"
 
         searcher = Searcher(
             cfg,
@@ -1576,27 +1867,36 @@ class TestAskRawNoEmbed:
             mock_svc.concepts,
         )
         result = searcher.ask_raw("hello")
-        assert result.answer == "direct answer"
+        assert result.answer == SEARCH_NEEDS_EMBEDDER
         assert result.sources == []
-        sent = mock_svc.provider.chat.call_args[0][0]
-        assert sent[0]["content"] == cfg.general_system_prompt
+        mock_svc.provider.chat.assert_not_called()
 
-    def test_no_embed_strips_think_tags(self, mock_svc):
-        """ask_raw no-embed path strips <think> tags."""
-        mock_svc.embedder.embedding_available.return_value = False
-        mock_svc.provider.chat.return_value = "<think>inner thought</think>direct answer"
-
-        searcher = Searcher(
-            cfg,
-            mock_svc.provider,
-            mock_svc.store,
-            mock_svc.embedder,
-            mock_svc.reranker,
-            mock_svc.concepts,
-        )
-        result = searcher.ask_raw("hello")
-        assert "<think>" not in result.answer
-        assert "direct answer" in result.answer
+    def test_chat_mode_no_embedder_answers_ungrounded(self, mock_svc):
+        """Chat mode continues without an embedder: a direct, ungrounded answer
+        under the general system prompt, with <think> tags stripped."""
+        old = cfg.chat_mode
+        cfg.chat_mode = "chat"
+        try:
+            mock_svc.embedder.embedding_available.return_value = False
+            mock_svc.provider.chat.return_value = _text_result(
+                "<think>inner thought</think>direct answer"
+            )
+            searcher = Searcher(
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
+            )
+            result = searcher.ask_raw("hello")
+            assert "<think>" not in result.answer
+            assert "direct answer" in result.answer
+            assert result.sources == []
+            sent = mock_svc.provider.chat.call_args[0][0]
+            assert sent[0]["content"] == cfg.general_system_prompt
+        finally:
+            cfg.chat_mode = old
 
 
 class TestAskRawChatMode:
@@ -1607,7 +1907,7 @@ class TestAskRawChatMode:
         cfg.chat_mode = "chat"
         try:
             mock_svc.embedder.embedding_available.return_value = True
-            mock_svc.provider.chat.return_value = "no-search answer"
+            mock_svc.provider.chat.return_value = _text_result("no-search answer")
             result = get_services().searcher.ask_raw("any question")
             assert result.answer == "no-search answer"
             assert result.sources == []
@@ -1622,45 +1922,47 @@ class TestAskRawChatMode:
         cfg.chat_mode = "search"
         try:
             mock_svc.store.search.return_value = [_make_result(chunk="grounded")]
-            mock_svc.provider.chat.return_value = "grounded answer"
+            mock_svc.provider.chat.return_value = _text_result("grounded answer")
             result = get_services().searcher.ask_raw("question")
             assert result.answer == "grounded answer"
             assert len(result.sources) == 1
         finally:
             cfg.chat_mode = old
 
-    def test_search_mode_empty_results_falls_through(self, mock_svc):
+    def test_search_mode_empty_results_returns_grounded_refusal(self, mock_svc):
+        """Search mode is a RAG path, so zero hits refuse rather than free-wheel (bb-0i0)."""
         old = cfg.chat_mode
         cfg.chat_mode = "search"
         try:
             mock_svc.store.search.return_value = []
-            mock_svc.provider.chat.return_value = "general answer"
             result = get_services().searcher.ask_raw("question")
-            assert result.answer == "general answer"
+            assert result.answer == _GROUNDED_REFUSAL
             assert result.sources == []
+            mock_svc.provider.chat.assert_not_called()
         finally:
             cfg.chat_mode = old
 
-    def test_search_mode_without_embedding_falls_through(self, mock_svc):
+    def test_search_mode_without_embedding_refuses(self, mock_svc):
+        """Search mode with no embedder can't ground, so it refuses cleanly rather
+        than free-wheeling on the model's parametric knowledge."""
         old = cfg.chat_mode
         cfg.chat_mode = "search"
         try:
             mock_svc.embedder.embedding_available.return_value = False
-            mock_svc.provider.chat.return_value = "direct answer"
             result = get_services().searcher.ask_raw("question")
-            assert result.answer == "direct answer"
+            assert result.answer == SEARCH_NEEDS_EMBEDDER
             assert result.sources == []
             mock_svc.store.search.assert_not_called()
+            mock_svc.provider.chat.assert_not_called()
         finally:
             cfg.chat_mode = old
 
 
 class TestAskStreamNoEmbed:
-    def test_streams_directly_when_no_embedding(self, mock_svc):
-        """ask_stream without embedding streams from the LLM directly under
-        the general system prompt; the searcher does not inject a banner."""
+    def test_search_mode_no_embedder_refuses(self, mock_svc):
+        """ask_stream in search mode with no embedder yields a clean refusal token
+        instead of hard-failing or streaming an ungrounded answer."""
         mock_svc.embedder.embedding_available.return_value = False
-        mock_svc.provider.chat.return_value = iter(["chunk1", "chunk2"])
 
         searcher = Searcher(
             cfg,
@@ -1672,29 +1974,36 @@ class TestAskStreamNoEmbed:
         )
         tokens = list(searcher.ask_stream("hello"))
         combined = "".join(st.content for st in tokens)
-        assert combined == "chunk1chunk2"
+        assert combined == SEARCH_NEEDS_EMBEDDER
+        mock_svc.provider.chat.assert_not_called()
 
-    def test_stream_handles_connection_error(self, mock_svc):
-        """ask_stream without embedding handles ConnectionError gracefully."""
-        mock_svc.embedder.embedding_available.return_value = False
+    def test_chat_mode_stream_handles_connection_error(self, mock_svc):
+        """Chat mode streams ungrounded without an embedder; a mid-stream
+        ConnectionError is reported gracefully rather than propagating."""
+        old = cfg.chat_mode
+        cfg.chat_mode = "chat"
+        try:
+            mock_svc.embedder.embedding_available.return_value = False
 
-        def failing():
-            yield "partial"
-            raise ConnectionError("lost")
+            def failing():
+                yield "partial"
+                raise ConnectionError("lost")
 
-        mock_svc.provider.chat.return_value = failing()
+            mock_svc.provider.chat.return_value = failing()
 
-        searcher = Searcher(
-            cfg,
-            mock_svc.provider,
-            mock_svc.store,
-            mock_svc.embedder,
-            mock_svc.reranker,
-            mock_svc.concepts,
-        )
-        tokens = list(searcher.ask_stream("hello"))
-        combined = "".join(st.content for st in tokens)
-        assert "Connection lost" in combined
+            searcher = Searcher(
+                cfg,
+                mock_svc.provider,
+                mock_svc.store,
+                mock_svc.embedder,
+                mock_svc.reranker,
+                mock_svc.concepts,
+            )
+            tokens = list(searcher.ask_stream("hello"))
+            combined = "".join(st.content for st in tokens)
+            assert "Connection lost" in combined
+        finally:
+            cfg.chat_mode = old
 
 
 class TestFilterResults:
@@ -1804,7 +2113,7 @@ class TestAskCitesOnlyUsedSources:
         r1 = _make_result(source="used.pdf", chunk="oil info", chunk_index=0)
         r2 = _make_result(source="unused.pdf", chunk="unrelated", chunk_index=1)
         mock_svc.store.search.return_value = [r1, r2]
-        mock_svc.provider.chat.return_value = "Oil is 5 quarts [1]."
+        mock_svc.provider.chat.return_value = _text_result("Oil is 5 quarts [1].")
         answer = get_services().searcher.ask("oil capacity?")
         assert "used.pdf" in answer
         assert "unused.pdf" not in answer
@@ -1812,13 +2121,15 @@ class TestAskCitesOnlyUsedSources:
     def test_ask_falls_back_to_all_sources_when_no_refs(self, mock_svc):
         r1 = _make_result(source="a.pdf", chunk="oil info", chunk_index=0)
         mock_svc.store.search.return_value = [r1]
-        mock_svc.provider.chat.return_value = "Oil is 5 quarts."
+        mock_svc.provider.chat.return_value = _text_result("Oil is 5 quarts.")
         answer = get_services().searcher.ask("oil capacity?")
         assert "a.pdf" in answer
 
     def test_ask_strips_llm_citation_block(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(chunk="oil info")]
-        mock_svc.provider.chat.return_value = "5 quarts [1].\n\nKey sources:\n- [1] test.pdf"
+        mock_svc.provider.chat.return_value = _text_result(
+            "5 quarts [1].\n\nKey sources:\n- [1] test.pdf"
+        )
         answer = get_services().searcher.ask("oil capacity?")
         assert "Key sources" not in answer
         assert answer.count("Sources:") == 1

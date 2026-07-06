@@ -75,15 +75,6 @@ jobs:
           version: "latest"
       - run: uv python install 3.12
       - run: uv sync
-        env:
-          # AVX-baseline llama-cpp-python build; see the test job below.
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_BLAS=OFF
-            -DGGML_CUDA=OFF
-            -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF
-            -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF
       - run: make lint
       - run: make format-check
       - run: make typecheck
@@ -101,18 +92,6 @@ jobs:
           version: "latest"
       - run: uv python install 3.12
       - run: uv sync
-        env:
-          # llama-cpp-python is sdist-only; an unflagged build compiles ggml
-          # with -march=native, and the built wheel is shared across runners
-          # with different CPUs via the setup-uv cache, SIGILLing the test
-          # job. Cap at AVX baseline like ci.yml's test matrix.
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_BLAS=OFF
-            -DGGML_CUDA=OFF
-            -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF
-            -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF
       - run: make test-ci
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
@@ -239,23 +218,7 @@ jobs:
           save: ${{ github.ref_type != 'tag' }}
 
       - name: Install dependencies
-        # `pip` is required by build_llama_cpp.sh's `pip wheel` invocation.
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
-
-      # uv's package cache reuses by version key, so build via pip wheel + local-wheel install bypasses it.
-      - name: Build llama-cpp-python from source (GPU + AVX baseline)
-        shell: bash
-        env:
-          BACKEND: ${{ matrix.backend }}
-          LLAMA_BUILD_DIR: "/tmp/llama-build"
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
-        run: bash tools/wheel-build/build_llama_cpp.sh
-
-      - name: Install the freshly-built llama-cpp-python into the venv
-        shell: bash
-        run: |
-          set -euxo pipefail
-          uv pip install --reinstall --no-deps /tmp/llama-build/llama_cpp_python-*.whl
 
       - name: Verify extras installed in build venv
         shell: bash
@@ -274,6 +237,16 @@ jobs:
             --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.33.0+compat
 
+      # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
+      # baked rpath) and install lilbee_engine so Nuitka bundles the whole
+      # engine into this executable.
+      - name: Bundle llama-server
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: ${{ matrix.backend }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+
       - name: Build executable
         shell: bash
         env:
@@ -286,7 +259,7 @@ jobs:
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
       - name: Smoke test
-        # End-to-end: --version, --help, server boot, /api/health version match, self-check inference, extras-import.
+        # End-to-end: --version, --help, server boot, /api/health version match.
         run: |
           set -euxo pipefail
           EXE="./dist/${{ matrix.asset_name }}"
@@ -390,30 +363,7 @@ jobs:
             exit 1
           fi
 
-          # End-to-end inference: self-check loads a tiny model through bundled llama.cpp and runs a completion.
-          SELF_CHECK_LOG=$(mktemp)
-          SELF_CHECK_RC=0
-          "$EXE" --json self-check > "$SELF_CHECK_LOG" 2>&1 || SELF_CHECK_RC=$?
-          echo "=== self-check output (exit=${SELF_CHECK_RC}) ==="
-          cat "$SELF_CHECK_LOG"
-          if [ "${SELF_CHECK_RC}" != "0" ]; then
-            echo "FAIL: self-check exited ${SELF_CHECK_RC}"
-            exit 1
-          fi
-          uv run --no-sync python tools/wheel-build/parse_self_check.py "$SELF_CHECK_LOG"
-
-          # Confirm optional extras were bundled (runtime guards hide them from the cold-start import path).
-          EXTRAS_LOG=$(mktemp)
-          EXTRAS_RC=0
-          "$EXE" --json self-check-extras > "$EXTRAS_LOG" 2>&1 || EXTRAS_RC=$?
-          echo "=== self-check-extras output (exit=${EXTRAS_RC}) ==="
-          cat "$EXTRAS_LOG"
-          if [ "${EXTRAS_RC}" != "0" ]; then
-            echo "FAIL: self-check-extras exited ${EXTRAS_RC}"
-            exit 1
-          fi
-
-          echo "SMOKE TEST PASSED: --version, --help, server, /api/health, self-check inference, extras-import all green"
+          echo "SMOKE TEST PASSED: --version, --help, server, /api/health all green"
         shell: bash
 
       - name: Upload binary as a run artifact

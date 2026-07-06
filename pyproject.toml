@@ -48,7 +48,7 @@ dependencies = [
     "litestar>=2.0",
     "uvicorn>=0.30",
     "httpx",
-    "llama-cpp-python",
+    "lilbee-engine",
     "diskcache>=5.6.1",
     "jinja2>=2.11.3",
     "typing-extensions>=4.5.0",
@@ -67,6 +67,14 @@ dependencies = [
 litellm = ["litellm>=1.84.0,<1.92"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.9.0"]
+# The CUDA 12 runtime the bundled llama-server links, from NVIDIA's official PyPI
+# wheels. Markers keep it a no-op off Linux x86_64 (no wheel exists elsewhere);
+# fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH.
+cuda12 = [
+    "nvidia-cuda-runtime-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
+    "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
+    "nvidia-cuda-nvrtc-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
+]
 release = ["lilbee[crawler,litellm,graph]"]
 
 [project.urls]
@@ -83,6 +91,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lilbee"]
+
+# Dev resolves the bundled engine from the in-repo wheel package; CI fills its
+# bin/ with the self-contained llama-server + llama-swap + gguf-parser before
+# building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
+# the index instead -- this source override is workspace metadata, not published deps.
+[tool.uv.sources]
+lilbee-engine = { path = "packaging/engine-wheel" }
 
 [dependency-groups]
 dev = [
@@ -113,6 +128,8 @@ markers = [
     "real_model_classify: opt out of the global _classify_installed_models mock",
     "real_litellm_probe: opt out of the global litellm_available True override",
     "xdist_group: pin grouped tests to a single xdist worker for serial execution",
+    "no_health_default: opt out of the launch tests' default-healthy fixture",
+    "no_warm_default: opt out of the launch tests' default chat-warm fixture",
 ]
 
 [tool.coverage.run]
@@ -153,9 +170,18 @@ select = [
     "PLR0915", # too many statements
     "PLR2004", # magic value used in comparison
 ]
+# DeepSeek V3.1's tool-call markers are intentionally fullwidth (｜ U+FF5C,
+# ▁ U+2581). These are the exact characters the model emits; substituting
+# the ASCII look-alikes would break extraction.
+allowed-confusables = ["｜", "▁"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
+
+[tool.ruff.lint.flake8-bugbear]
+# litestar's Body(), like Parameter() (already in ruff's B008 default allowlist),
+# is a declarative parameter marker that is safe as an argument default.
+extend-immutable-calls = ["litestar.params.Body"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test-context S-rule noise. Each of these is either a test fixture
@@ -177,6 +203,12 @@ max-complexity = 10
 ]
 # QA matrix runner is a test framework just like tests/; same ignores apply.
 "tools/qa/**/*.py" = [
+    "S101", "S104", "S105", "S106", "S108", "S603", "S607",
+    "PLR2004",
+    "N802", "N806", "N818", "N817",
+]
+# Surface-QA harnesses drive the CLI/TUI/HTTP surfaces like tests do; same ignores.
+"scripts/qa/**/*.py" = [
     "S101", "S104", "S105", "S106", "S108", "S603", "S607",
     "PLR2004",
     "N802", "N806", "N818", "N817",

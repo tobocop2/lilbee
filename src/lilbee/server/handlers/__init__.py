@@ -10,8 +10,19 @@ API consumed by ``server/routes/*.py``.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import time
+from collections.abc import AsyncGenerator, Sequence
+from typing import TYPE_CHECKING, Literal
+
+from lilbee.app.services import get_services
 from lilbee.app.status import gather_status
 from lilbee.app.version import get_version
+from lilbee.core.config import cfg
+from lilbee.providers.roles import WorkerRole
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
@@ -24,16 +35,18 @@ from lilbee.server.handlers.documents import (
     list_documents,
 )
 from lilbee.server.handlers.ingest import (
-    MAX_ADD_FILES,
     add_files_stream,
+    add_uploads_stream,
     import_stream,
     sync_stream,
     validate_add_paths,
+    validate_uploads,
 )
 from lilbee.server.handlers.models import (
     TASK_ENDPOINT_PATH,
     ModelCatalogSection,
     ModelsResponse,
+    enforce_pull_arch_compat,
     format_task_mismatch,
     list_external_models,
     list_models,
@@ -61,12 +74,111 @@ from lilbee.server.handlers.sse import (
     sse_error,
     sse_event,
 )
-from lilbee.server.models import HealthResponse, StatusResponse
+from lilbee.server.models import (
+    GpuInfoResponse,
+    HealthResponse,
+    PlacementResponse,
+    StatusResponse,
+)
+
+if TYPE_CHECKING:
+    from lilbee.providers.base import LLMProvider
+
+# How often the warm stream re-snapshots provider state; sub-second so the read
+# bar advances smoothly without busy-spinning.
+_WARM_POLL_INTERVAL_S = 0.25
+# Upper bound on the warm stream; the launcher hands off when this elapses, so a
+# model still loading past it just warms on the client's first call. Generous to
+# cover a cold tensor-split giant off a slow filesystem.
+_WARM_STREAM_TIMEOUT_S = 1800.0
+
+
+def _chat_status(provider: LLMProvider) -> Literal["ready", "loading", "not_started", "error"]:
+    """Classify the chat engine's readiness for /api/health.
+
+    ``ready`` once the role serves; ``error`` when warm-up failed; ``loading``
+    while a warm is in flight; ``not_started`` when nothing is warming and the
+    role isn't up (no chat model planned, so the fleet won't come up on its own).
+    """
+    if provider.role_ready(WorkerRole.CHAT):
+        return "ready"
+    snapshot = provider.warm_progress()
+    if snapshot is None:
+        return "not_started"
+    return "error" if snapshot.phase is WarmPhase.ERROR else "loading"
 
 
 async def health() -> HealthResponse:
-    """Return service health and version."""
-    return HealthResponse(status="ok", version=get_version())
+    """Return service health, version, and whether the chat engine is warm."""
+    provider = get_services().provider
+    return HealthResponse(
+        status="ok",
+        version=get_version(),
+        chat_ready=provider.role_ready(WorkerRole.CHAT),
+        chat_status=_chat_status(provider),
+        chat_ctx=provider.served_chat_ctx(),
+    )
+
+
+async def warm_stream() -> AsyncGenerator[str, None]:
+    """Stream chat-model cold-load progress as SSE until the engine is ready.
+
+    A launcher subscribes to render granular warm feedback. Each
+    :data:`SseEvent.WARM` event carries a :class:`WarmProgress` snapshot; a
+    terminal :data:`SseEvent.DONE` closes the stream once the chat role is ready
+    or has failed, or when the budget elapses (the caller proceeds either way, so
+    a still-loading model just warms on its first call). When nothing is loading
+    because the engine is already warm, a single ready snapshot is emitted.
+    """
+    provider = get_services().provider
+    deadline = time.monotonic() + _WARM_STREAM_TIMEOUT_S
+    while time.monotonic() < deadline:
+        snapshot = provider.warm_progress()
+        if snapshot is None:
+            if provider.role_ready(WorkerRole.CHAT):
+                yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.READY).model_dump())
+                break
+            yield sse_event(SseEvent.WARM, WarmProgress(phase=WarmPhase.STARTING).model_dump())
+        else:
+            yield sse_event(SseEvent.WARM, snapshot.model_dump())
+            if snapshot.phase in (WarmPhase.READY, WarmPhase.ERROR):
+                break
+        await asyncio.sleep(_WARM_POLL_INTERVAL_S)
+    yield sse_done({})
+
+
+_GPU_STATS_INTERVAL_S = 1.0
+
+
+async def gpu_stats_stream(
+    devices: Sequence[object],
+    interval_s: float = _GPU_STATS_INTERVAL_S,
+    max_ticks: int | None = None,
+) -> AsyncGenerator[str, None]:
+    """Stream live per-GPU utilization + free memory as SSE for the placement view.
+
+    Devices are resolved by the caller before the stream starts so a ProviderError
+    surfaces as a 503 at route time, not mid-stream. Each tick only runs the light
+    ``nvidia-smi`` query. The client keeps the stream open while visible;
+    ``max_ticks`` bounds it for tests. A heartbeat is emitted every
+    ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
+    """
+    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
+
+    last_heartbeat = time.monotonic()
+    tick = 0
+    while max_ticks is None or tick < max_ticks:
+        stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
+        payload = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
+        yield sse_event(SseEvent.GPU_STATS, payload)
+        tick += 1
+        if max_ticks is None or tick < max_ticks:
+            await asyncio.sleep(interval_s)
+            now = time.monotonic()
+            heartbeat_interval = cfg.sse_heartbeat_interval
+            if heartbeat_interval > 0 and now - last_heartbeat >= heartbeat_interval:
+                last_heartbeat = now
+                yield sse_event(SseEvent.HEARTBEAT, {"ts": time.time()})
 
 
 async def status() -> StatusResponse:
@@ -75,13 +187,51 @@ async def status() -> StatusResponse:
     return StatusResponse(**raw.model_dump(exclude_none=True))
 
 
+async def placement() -> PlacementResponse:
+    """Current effective placement."""
+    from lilbee.app.placement import get_placement
+
+    return PlacementResponse.from_view(get_placement())
+
+
+async def placement_preview(spec_json: str | None) -> PlacementResponse:
+    """Preview a candidate spec (or auto when spec_json is None). No persistence."""
+    from lilbee.app.placement import preview_placement
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    spec = PlacementSpec.from_json(spec_json) if spec_json else None
+    return PlacementResponse.from_view(preview_placement(spec))
+
+
+async def placement_set(spec_json: str) -> PlacementResponse:
+    """Apply a manual placement spec; persists and rebuilds the fleet."""
+    from lilbee.app.placement import set_placement
+    from lilbee.providers.fleet.placement_spec import PlacementSpec
+
+    return PlacementResponse.from_view(set_placement(PlacementSpec.from_json(spec_json)))
+
+
+async def placement_clear() -> PlacementResponse:
+    """Clear manual placement; returns to the auto planner and rebuilds the fleet."""
+    from lilbee.app.placement import set_placement
+
+    return PlacementResponse.from_view(set_placement(None))
+
+
+async def gpus() -> list[GpuInfoResponse]:
+    """Detected GPUs with free/total VRAM."""
+    from lilbee.app.placement import get_placement
+
+    return PlacementResponse.from_view(get_placement()).gpus
+
+
 __all__ = [
-    "MAX_ADD_FILES",
     "TASK_ENDPOINT_PATH",
     "ModelCatalogSection",
     "ModelsResponse",
     "SseStream",
     "add_files_stream",
+    "add_uploads_stream",
     "ask",
     "ask_stream",
     "chat",
@@ -89,10 +239,13 @@ __all__ = [
     "classify_load_error",
     "crawl_stream",
     "delete_documents",
+    "enforce_pull_arch_compat",
     "format_task_mismatch",
     "get_config",
     "get_config_defaults",
     "get_source_content",
+    "gpu_stats_stream",
+    "gpus",
     "health",
     "import_stream",
     "list_documents",
@@ -103,6 +256,10 @@ __all__ = [
     "models_installed",
     "models_pull",
     "models_show",
+    "placement",
+    "placement_clear",
+    "placement_preview",
+    "placement_set",
     "search",
     "set_chat_model",
     "set_embedding_model",
@@ -115,4 +272,6 @@ __all__ = [
     "sync_stream",
     "update_config",
     "validate_add_paths",
+    "validate_uploads",
+    "warm_stream",
 ]

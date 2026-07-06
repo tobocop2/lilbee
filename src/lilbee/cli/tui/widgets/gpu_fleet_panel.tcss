@@ -1,0 +1,5 @@
+GpuFleetPanel {
+    height: auto;
+    border: round $border;
+    padding: 0 1;
+}
