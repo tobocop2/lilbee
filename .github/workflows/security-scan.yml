@@ -60,13 +60,18 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --locked --all-extras
+      # Audit the locked third-party set; lilbee-engine is first-party vendored
+      # binaries resolved from a local path, which a PyPI dry-run cannot install.
+      - name: Export locked requirements for audit
+        run: >
+          uv export --locked --all-extras --no-emit-project
+          --no-emit-package lilbee-engine
+          --format requirements-txt -o requirements-audit.txt
 
       - name: Run pip-audit
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
-          inputs: .
+          inputs: requirements-audit.txt
           # Keep this list mirrored with osv-scanner.toml. Per-ID rationale:
           # - CVE-2025-69872: diskcache pickle serialization; exploiting it needs
           #   write access to the user's own cache dir. No upstream fix yet.
