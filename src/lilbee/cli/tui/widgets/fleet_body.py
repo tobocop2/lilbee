@@ -128,12 +128,19 @@ class FleetPill(Static, can_focus=True):
 
 @dataclass
 class _RoleEdit:
-    """Mutable editor state for one role."""
+    """Mutable editor state for one role.
+
+    ``tensor_split`` carries a manual split from the loaded view so re-applying an
+    unedited placement preserves it (an even split would OOM the smaller of two
+    unequal cards). It is cleared the moment the user toggles this role's devices,
+    since a split sized for the old card set no longer applies to the new one.
+    """
 
     role: WorkerRole
     model: str
     devices: set[int]
     replicas: int
+    tensor_split: tuple[int, ...] | None = None
 
 
 class FleetBody(Widget):
@@ -210,7 +217,10 @@ class FleetBody(Widget):
         """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
-        edits = {r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles}
+        edits = {
+            r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas, r.tensor_split)
+            for r in view.roles
+        }
         # Rows render in _EDITOR_ROLE_ORDER; any role beyond it keeps plan order.
         self._edits = {role: edits.pop(role) for role in _EDITOR_ROLE_ORDER if role in edits}
         self._edits.update(edits)
@@ -327,8 +337,16 @@ class FleetBody(Widget):
         for edit in self._edits.values():
             if not edit.devices:
                 raise PlacementError(f"{edit.role.value} needs at least one GPU")
+            devices = tuple(sorted(edit.devices))
+            # Keep a loaded manual split only while it still matches the device set;
+            # a stale-length split would be rejected by the spec validator.
+            split = (
+                edit.tensor_split
+                if edit.tensor_split and len(edit.tensor_split) == len(devices)
+                else None
+            )
             roles[edit.role] = RolePlacement(
-                devices=tuple(sorted(edit.devices)), replicas=edit.replicas
+                devices=devices, replicas=edit.replicas, tensor_split=split
             )
         return PlacementSpec(roles=roles)
 
@@ -345,10 +363,13 @@ class FleetBody(Widget):
             self._build_editor()
             return
         if bid.startswith("dev-"):
-            _, role_value, idx_str = bid.split("-")
+            role_value, idx_str = bid.removeprefix("dev-").rsplit("-", 1)
             role = WorkerRole(role_value)
             edit = self._edits[role]
             idx = int(idx_str)
+            # Editing the device set invalidates any loaded manual split (its
+            # length was sized for the old cards); fall back to a capacity split.
+            edit.tensor_split = None
             if role in _SINGLE_ROLES:
                 # Single pinned instance: the picked card becomes the only one.
                 edit.devices = {idx}
@@ -364,7 +385,7 @@ class FleetBody(Widget):
                 edit.devices.add(idx)
                 event.pill.add_class("on")
         elif bid.startswith("rep-"):
-            _, role_value, op = bid.split("-")
+            role_value, op = bid.removeprefix("rep-").rsplit("-", 1)
             role = WorkerRole(role_value)
             edit = self._edits[role]
             edit.replicas = max(1, edit.replicas + (1 if op == "inc" else -1))
