@@ -17,7 +17,7 @@ test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v -n logical --dist loadgroup
 
 test-ci:
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n logical --dist loadgroup
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v -n logical --dist loadgroup
 
 test-ci-serial:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist

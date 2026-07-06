@@ -1,6 +1,7 @@
 """Tests for platform-level helpers."""
 
 import os
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -47,12 +48,15 @@ class TestNetworkPath:
         monkeypatch.setattr(system_mod, "_PROC_MOUNTS", mounts)
         return mounts
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mount-path semantics")
     def test_is_network_path_true_for_nfs(self, mounts_file):
         assert is_network_path(Path("/workspace/models/m.gguf")) is True
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mount-path semantics")
     def test_is_network_path_true_for_fuse_network(self, mounts_file):
         assert is_network_path(Path("/mnt/mfs/m.gguf")) is True
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mount-path semantics")
     def test_is_network_path_false_for_local(self, mounts_file):
         assert is_network_path(Path("/workspace/index/m.gguf")) is False
 
@@ -60,6 +64,7 @@ class TestNetworkPath:
         monkeypatch.setattr(system_mod, "_PROC_MOUNTS", tmp_path / "missing")
         assert is_network_path(Path("/anything")) is False
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mount-path semantics")
     def test_is_network_path_uses_raw_path_when_resolve_fails(self, mounts_file, monkeypatch):
         # Path.resolve has no injectable seam, so this one branch patches it.
         def _raise(self):
@@ -207,6 +212,7 @@ class TestScaledChatCtxTargetDefault:
 
 
 class TestStderrSuppressed:
+    @pytest.mark.skipif(sys.platform == "win32", reason="fd redirection is a win32 no-op")
     def test_fd2_points_at_devnull_inside_then_restores(self):
         devnull_stat = os.stat(os.devnull)
         with stderr_suppressed():
@@ -216,6 +222,7 @@ class TestStderrSuppressed:
         # ...and afterwards fd 2 is restored to a valid descriptor (no OSError).
         os.fstat(2)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="fd redirection is a win32 no-op")
     def test_restores_fd2_even_when_body_raises(self):
         with pytest.raises(ValueError, match="boom"), stderr_suppressed():
             raise ValueError("boom")

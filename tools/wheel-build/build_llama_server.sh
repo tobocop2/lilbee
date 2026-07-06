@@ -76,7 +76,11 @@ cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
   -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON -DBUILD_SHARED_LIBS=ON \
   -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF \
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH="${rpath}" ${CMAKE_ARGS}
-cmake --build "${src}/server-build" --target llama-server --config Release -j
+# Bounded parallelism: a bare -j lets make spawn unlimited jobs, and the CUDA/ROCm
+# translation units OOM-kill the compilers on 7GB CI runners. ENGINE_BUILD_JOBS
+# overrides; the default is the host's core count.
+build_jobs="${ENGINE_BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+cmake --build "${src}/server-build" --target llama-server --config Release -j "${build_jobs}"
 
 binary=$(find "${src}/server-build" -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
 [ -n "${binary}" ] || { echo "llama-server binary not found after build" >&2; exit 1; }
