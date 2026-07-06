@@ -34,6 +34,10 @@ class TestNetworkPath:
         # /workspace/models is nfs4 even though /workspace and / are ext4.
         assert _mount_fstype("/workspace/models/chat-00001.gguf", _MOUNTS) == "nfs4"
 
+    def test_mount_fstype_skips_malformed_lines(self):
+        mounts = "garbage\n/dev/sda1 / ext4 rw 0 0\n"
+        assert _mount_fstype("/x/y.gguf", mounts) == "ext4"
+
     def test_is_network_path_true_for_nfs(self, monkeypatch):
         monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
         monkeypatch.setattr(Path, "resolve", lambda self: Path("/workspace/models/m.gguf"))
@@ -55,6 +59,15 @@ class TestNetworkPath:
 
         monkeypatch.setattr(Path, "read_text", _raise)
         assert is_network_path(Path("/anything")) is False
+
+    def test_is_network_path_uses_raw_path_when_resolve_fails(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
+
+        def _raise(self):
+            raise OSError("resolve failed")
+
+        monkeypatch.setattr(Path, "resolve", _raise)
+        assert is_network_path(Path("/workspace/models/m.gguf")) is True
 
 
 class TestHelpers:
