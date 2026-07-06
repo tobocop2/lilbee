@@ -855,6 +855,10 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        # Pin the runtime env to empty: the real one reflects whatever CUDA
+        # wheels the host venv has installed, and the assertion below checks
+        # exact env equality for the pinning keys.
+        monkeypatch.setattr(planning_mod, "llama_server_runtime_env", lambda: {})
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})

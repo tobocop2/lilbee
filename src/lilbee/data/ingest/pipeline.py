@@ -754,15 +754,20 @@ async def _collect_results(
             )
             await to_ingest_thread(_purge_emptied_sources, to_purge)
         finally:
-            # Explicit loop: Nuitka miscompiles a comprehension in this async finally.
-            still_pending = []
-            for t in in_flight:
-                if not t.done():
-                    still_pending.append(t)
-            for task in still_pending:
-                task.cancel()
-            if still_pending:
-                await asyncio.gather(*still_pending, return_exceptions=True)
+            await _cancel_in_flight(in_flight)
+
+
+async def _cancel_in_flight(in_flight: set[asyncio.Task[_IngestResult]]) -> None:
+    """Cancel still-running tasks and await them so their CancelledErrors are retrieved."""
+    # Explicit loop: Nuitka miscompiled the comprehension form of this cleanup.
+    still_pending = []
+    for t in in_flight:
+        if not t.done():
+            still_pending.append(t)
+    for task in still_pending:
+        task.cancel()
+    if still_pending:
+        await asyncio.gather(*still_pending, return_exceptions=True)
 
 
 async def _buffer_and_maybe_flush(

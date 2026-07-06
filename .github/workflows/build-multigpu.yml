@@ -70,6 +70,12 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
+      # MSVC FileTracker dies past MAX_PATH; /tmp maps under AppData and overflows.
+      - name: Use a short build path (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LLAMA_BUILD_DIR=/c/lb" >> "$GITHUB_ENV"
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:

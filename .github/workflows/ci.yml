@@ -98,9 +98,13 @@ jobs:
         # forks exit via os._exit, skipping coverage.py's atexit save —
         # accepted tradeoff: 3.11 lanes prove the code runs, 3.12 and
         # 3.13 own the coverage story. Windows 3.11 is excluded above.
+        # Windows measures with .coveragerc-windows: same 100% gate, minus the
+        # two POSIX-only modules the Linux/macOS lanes already hold at 100%.
         run: |
           if [ "${{ matrix.python-version }}" = "3.11" ]; then
             make test-ci-forked
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            make test-ci COV_FLAGS="--cov-config=.coveragerc-windows"
           else
             make test-ci
           fi
