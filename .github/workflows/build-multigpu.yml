@@ -165,7 +165,9 @@ jobs:
         run: |
           set -x
           bin_dir="${PKG_DIR}/lilbee_engine/bin"
-          exe=$(find "${bin_dir}" -maxdepth 1 -type f -name 'llama-server*' | head -1)
+          # Exact names only: llama-server* also matches the Windows engine's
+          # llama-server-impl.dll, which is not executable.
+          exe=$(find "${bin_dir}" -maxdepth 1 -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
           [ -n "${exe}" ] || { echo "no bundled binary found"; exit 1; }
           "${exe}" --help
 
