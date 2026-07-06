@@ -79,7 +79,7 @@ All settings override via environment variables:
 - `LILBEE_VISION_MODEL` — vision OCR model (default: none)
 - `LILBEE_RERANKER_TYPE` — reranker serving mode: `auto` (default), `cross_encoder`, or `llm`.
 - `LILBEE_RERANKER_PROMPT` — relevance prompt for LLM rerankers (blank uses the built-in template).
-- `LILBEE_OCR_TIMEOUT` — per-page vision OCR timeout in seconds (default: `120`, `0` = no limit)
+- `LILBEE_OCR_TIMEOUT` — per-page vision OCR timeout in seconds (default: `300`, `0` = no limit)
 - `LILBEE_TESSERACT_TIMEOUT`: wall-clock timeout in seconds for the Tesseract OCR fallback (default: `60`, `0` = no limit). Only runs when no vision model is available.
 - `LILBEE_SSE_HEARTBEAT_INTERVAL` — seconds between SSE heartbeat events when the producer queue is idle (default: `30`). Set to `0` to disable.
 - `LILBEE_LLM_PROVIDER` — provider: `auto` (default; runs models locally on the managed `llama-server` fleet) or `remote` (external OpenAI-compatible endpoint; requires `pip install lilbee[litellm]`).

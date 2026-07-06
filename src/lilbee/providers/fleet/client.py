@@ -312,6 +312,26 @@ class ChatDeadlineError(ProviderError):
     """
 
 
+def retry_on_busy(call: Callable[[], _T], *, retries: int = _BUSY_RETRIES) -> _T:
+    """Run *call*, retrying a transient server-busy (RATE_LIMIT) with capped backoff.
+
+    A cold replica fleet 429s the first fan-out until its slots load; backing
+    off and retrying turns those drops into successes. *retries* bounds the
+    attempts -- interactive callers fail fast, bulk ingest waits out a cold
+    start. Non-RATE_LIMIT errors (and a final still-busy response) propagate.
+    """
+    delay = _BUSY_BACKOFF_BASE_S
+    for _ in range(retries - 1):
+        try:
+            return call()
+        except ProviderError as exc:
+            if exc.kind is not ProviderErrorKind.RATE_LIMIT:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, _BUSY_BACKOFF_MAX_S)
+    return call()
+
+
 class LlamaServerClient:
     """Calls one llama-server's OpenAI surface. Tracks in-flight requests so the
     fleet router can pick the least-busy replica."""
@@ -777,26 +797,7 @@ class LlamaServerClient:
                 _raise_for_status(resp)
                 return dict(resp.json())
 
-        return _llm_rerank_score(_first_token_top_logprobs(self._retry_on_busy(_call)))
-
-    def _retry_on_busy(self, call: Callable[[], _T], *, retries: int = _BUSY_RETRIES) -> _T:
-        """Run *call*, retrying a transient server-busy (RATE_LIMIT) with capped backoff.
-
-        A cold replica fleet 429s the first fan-out until its slots load; backing
-        off and retrying turns those drops into successes. *retries* bounds the
-        attempts -- interactive callers fail fast, bulk ingest waits out a cold
-        start. Non-RATE_LIMIT errors (and a final still-busy response) propagate.
-        """
-        delay = _BUSY_BACKOFF_BASE_S
-        for _ in range(retries - 1):
-            try:
-                return call()
-            except ProviderError as exc:
-                if exc.kind is not ProviderErrorKind.RATE_LIMIT:
-                    raise
-                time.sleep(delay)
-                delay = min(delay * 2, _BUSY_BACKOFF_MAX_S)
-        return call()
+        return _llm_rerank_score(_first_token_top_logprobs(retry_on_busy(_call)))
 
     def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
         """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
@@ -821,7 +822,7 @@ class LlamaServerClient:
             return list(data)
 
         # Bulk ingest can afford to wait out a cold-start warmup rather than drop files.
-        return self._retry_on_busy(_call, retries=_EMBED_BUSY_RETRIES)
+        return retry_on_busy(_call, retries=_EMBED_BUSY_RETRIES)
 
     def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
