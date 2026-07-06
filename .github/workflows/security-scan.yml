@@ -110,6 +110,9 @@ jobs:
           #   nltk and crawl4ai only loads hardcoded resource names, so the
           #   attacker-controlled-path vector is unreachable. bb-m851 tracks
           #   the bump to nltk >= 3.10 once it ships.
+          # - PYSEC-2026-597: second nltk path-traversal advisory for the
+          #   incomplete #3504 fix (percent-encoded ..%2f; CVE-2026-12243).
+          #   Same triage and tracking as GHSA-p4gq-832x-fm9v.
           ignore-vulns: |
             CVE-2025-69872
             PYSEC-2022-42969
@@ -121,6 +124,7 @@ jobs:
             PYSEC-2025-183
             PYSEC-2024-277
             GHSA-p4gq-832x-fm9v
+            PYSEC-2026-597
 
   osv-scan:
     name: OSV-Scanner (multi-ecosystem CVEs)
