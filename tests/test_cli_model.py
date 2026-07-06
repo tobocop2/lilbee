@@ -267,7 +267,7 @@ class TestRemoveModelDataFreedSize:
 
 class TestListNoEagerWarm:
     def test_model_list_disables_eager_warm(self, monkeypatch):
-        """`model list` reads installed files and must not warm the fleet (bb-v7r)."""
+        """`model list` reads installed files and must not warm the fleet."""
         monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
         seen: dict[str, object] = {}
 
@@ -503,7 +503,7 @@ class TestPullModelData:
         self, fake_manager, native_manifests, monkeypatch
     ):
         # Main GGUF present: still ensure the projector before reporting installed,
-        # so a cached vision model missing its mmproj becomes usable (bb-7yd).
+        # so a cached vision model missing its mmproj becomes usable.
         ensured: list[str] = []
         monkeypatch.setattr(model_mod, "_ensure_vision_projector", lambda ref: ensured.append(ref))
         result = model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)

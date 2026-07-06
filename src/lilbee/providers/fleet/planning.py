@@ -677,7 +677,7 @@ def _non_chat_reservation(
 
     A tensor-split chat shard must size its KV against the headroom left after the
     embed/rerank/vision servers on the same card, not the card's raw free VRAM, or
-    it over-commits and OOMs at launch (bb-48c). Chat is excluded because it sizes
+    it over-commits and OOMs at launch. Chat is excluded because it sizes
     its own weights; non-chat roles are single-device, so each charges its full
     footprint (once per replica) to its card.
     """
@@ -749,7 +749,7 @@ def _launch_for(
             slots=_SPLIT_CHAT_SLOTS,
             ratio=plan.tensor_split,
             # Headroom left after the embed/rerank servers on each shared card, not
-            # the card's raw free VRAM, so the chat KV doesn't over-commit (bb-48c).
+            # the card's raw free VRAM, so the chat KV doesn't over-commit.
             per_device_free_bytes=[max(0, d.free_bytes - reserved.get(d.index, 0)) for d in chosen],
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),

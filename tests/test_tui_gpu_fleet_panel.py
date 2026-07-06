@@ -64,7 +64,7 @@ class _PanelHost(LilbeeAppHost):
 
 def test_panel_initial_content_is_loading_not_empty() -> None:
     """Before the first probe returns the panel shows a loading state, not the
-    empty-GPUs text, so a multi-GPU box doesn't flash '(no GPUs detected)' (bb-bly)."""
+    empty-GPUs text, so a multi-GPU box doesn't flash '(no GPUs detected)'."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 

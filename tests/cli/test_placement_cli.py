@@ -38,7 +38,7 @@ def test_show_renders_cards(monkeypatch: object) -> None:
 
 def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:
     """--json (global flag -> cfg.json_mode) makes placement emit machine-readable
-    JSON instead of a Rich table, so scripts can consume it (bb-z9w)."""
+    JSON instead of a Rich table, so scripts can consume it."""
     monkeypatch.setattr(cli_placement, "get_placement", lambda: _view(manual=True))
     monkeypatch.setattr(cfg, "json_mode", True)
     result = runner.invoke(placement_app, ["show"])

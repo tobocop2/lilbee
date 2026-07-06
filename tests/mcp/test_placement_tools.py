@@ -27,7 +27,7 @@ def test_get_placement_tool(monkeypatch):
 
 
 def test_get_gpus_tool(monkeypatch):
-    """get_gpus exposes the detected GPUs to agents, matching HTTP /api/gpus (bb-z9w)."""
+    """get_gpus exposes the detected GPUs to agents, matching HTTP /api/gpus."""
     monkeypatch.setattr(mcp_server, "get_placement", lambda: _view())
     out = mcp_server.get_gpus_tool()
     assert [g["label"] for g in out["gpus"]] == ["CUDA0"]

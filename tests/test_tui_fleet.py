@@ -171,7 +171,7 @@ def _make_split_view():  # type: ignore[no-untyped-def]
 @pytest.mark.asyncio
 async def test_editor_preserves_manual_tensor_split_when_unedited(monkeypatch):
     """A loaded manual split is re-emitted verbatim, so re-applying an untouched
-    placement doesn't fall back to an even split that OOMs unequal cards (bb-a9i)."""
+    placement doesn't fall back to an even split that OOMs unequal cards."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.cli.tui.widgets.fleet_body import FleetBody
     from lilbee.providers.roles import WorkerRole
@@ -187,7 +187,7 @@ async def test_editor_preserves_manual_tensor_split_when_unedited(monkeypatch):
 @pytest.mark.asyncio
 async def test_editing_devices_clears_stale_tensor_split(monkeypatch):
     """Toggling a role's devices drops the loaded split: its length no longer fits
-    the new card set, so the planner re-derives a capacity split (bb-a9i)."""
+    the new card set, so the planner re-derives a capacity split."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
     from lilbee.cli.tui.widgets.fleet_body import FleetBody
     from lilbee.providers.roles import WorkerRole

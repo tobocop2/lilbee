@@ -1157,7 +1157,7 @@ def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) 
     assert p._warming is False  # guard cleared so a later warm-up can retry
     assert "warm-up failed" in caplog.text.lower()
     # The handled failure must not carry a traceback: a WARNING with exc_info
-    # reads like a crash for a condition the next real call recovers from (bb-v7r).
+    # reads like a crash for a condition the next real call recovers from.
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert warnings and all(r.exc_info is None for r in warnings)
 
@@ -1165,7 +1165,7 @@ def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) 
 def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
     # A fast CLI exit tears down the interpreter mid-warm; the pool submit then
     # raises RuntimeError. During finalization this must be dropped quietly, not
-    # logged as a scary WARNING traceback (bb-uv3).
+    # logged as a scary WARNING traceback.
     def _shutdown_race() -> list:
         raise RuntimeError("cannot schedule new futures after interpreter shutdown")
 

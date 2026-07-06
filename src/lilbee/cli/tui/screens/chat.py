@@ -1584,7 +1584,7 @@ class ChatScreen(Screen[None]):
         self._apply_input_busy_state()
 
     def on_fleet_body_placement_reloading(self, event: FleetBody.PlacementReloading) -> None:
-        """Hold chat submissions while the Fleet drawer reloads the fleet (bb-9zy)."""
+        """Hold chat submissions while the Fleet drawer reloads the fleet."""
         self.reloading_placement = event.active
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)

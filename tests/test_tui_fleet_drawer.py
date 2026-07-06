@@ -209,7 +209,7 @@ class _RecordingFleetApp(LilbeeAppHost):
 @pytest.mark.asyncio
 async def test_fleet_body_applying_emits_reloading_message(_patched):
     """Toggling `applying` posts PlacementReloading so the chat screen can hold
-    submissions during the reload (bb-9zy)."""
+    submissions during the reload."""
     from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
     app = _RecordingFleetApp()

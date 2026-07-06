@@ -319,7 +319,7 @@ def show_model_data(ref: str) -> ShowModelResult:
 
 
 def _ensure_vision_projector(ref: str) -> None:
-    """Fetch a vision model's mmproj projector when a cached install lacks it (bb-7yd).
+    """Fetch a vision model's mmproj projector when a cached install lacks it.
 
     No-op for non-vision refs. ``download_mmproj`` is idempotent against the HF
     cache, so this is cheap when the projector is already present.
@@ -352,8 +352,8 @@ def pull_model_data(
 
     if manager.is_installed(ref, source):
         # A cached vision install may carry the main GGUF but not its mmproj
-        # projector (bb-7yd); without it llama-server can't serve OCR, so ensure
-        # it before reporting already-installed.
+        # projector; without it llama-server can't serve OCR, so ensure it before
+        # reporting already-installed.
         _ensure_vision_projector(ref)
         return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
 

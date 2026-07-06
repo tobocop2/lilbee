@@ -3300,7 +3300,7 @@ async def test_apply_model_change_ignores_reentry_while_swapping():
 
 async def test_placement_reload_holds_submit_then_releases():
     """While the Fleet drawer reloads placement, a chat submit is held (not a 429),
-    and it's released once the reload finishes (bb-9zy)."""
+    and it's released once the reload finishes."""
     from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
     app = ChatTestApp()

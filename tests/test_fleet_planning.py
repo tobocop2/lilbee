@@ -883,7 +883,7 @@ class TestBuildFleetWiring:
 
     def test_launch_for_warns_on_oversize_network_fs_chat(self, tmp_path, monkeypatch, caplog):
         # A chat model served from a network volume that can't fit host RAM keeps
-        # mmap, which can hang the load; warn to advise local staging (bb-bw0).
+        # mmap, which can hang the load; warn to advise local staging.
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
@@ -902,7 +902,7 @@ class TestBuildFleetWiring:
     def test_launch_for_split_chat_subtracts_reserved_headroom(self, tmp_path, monkeypatch) -> None:
         # An embed/rerank server on a shared card leaves less room for the chat KV
         # than the card's raw free VRAM; sizing the split against raw free over-commits
-        # and OOMs at launch (bb-48c). The reservation is subtracted per device.
+        # and OOMs at launch. The reservation is subtracted per device.
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
@@ -929,7 +929,7 @@ class TestBuildFleetWiring:
 
     def test_launch_for_warns_on_pcie_split_chat(self, tmp_path, monkeypatch, caplog):
         # A chat model tensor-split across GPUs with no NVLink is all-reduce bound;
-        # warn so the slow-generation cause is visible (bb-qru).
+        # warn so the slow-generation cause is visible.
         model = tmp_path / "chat.gguf"
         model.write_bytes(b"x" * 2048)
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
@@ -1515,7 +1515,7 @@ class TestChatNoMmap:
 
     def test_network_fs_prefers_no_mmap_at_higher_fraction(self, monkeypatch) -> None:
         # A model at 70% of RAM keeps mmap on local disk but takes --no-mmap on a
-        # network volume, where mmap page faults can wedge the loader (bb-bw0).
+        # network volume, where mmap page faults can wedge the loader.
         monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
         assert planning_mod._chat_no_mmap(70 * 10**9) is False
         assert planning_mod._chat_no_mmap(70 * 10**9, on_network_fs=True) is True
