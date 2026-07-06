@@ -670,7 +670,7 @@ class TestBuildFleetWiring:
 
         def _estimate(role, ref, **_k):
             raise ProviderError(
-                "estimator returned no usable result",
+                "unexpected estimator output",
                 provider="llama-server",
                 kind=ProviderErrorKind.SERVER,
             )
