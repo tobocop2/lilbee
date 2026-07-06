@@ -669,6 +669,12 @@ class TestBuildFleetWiring:
         from lilbee.providers.base import ProviderError, ProviderErrorKind
 
         def _estimate(role, ref, **_k):
+            if role is WorkerRole.EMBED:
+                raise ProviderError(
+                    "no file for ref",
+                    provider="llama-server",
+                    kind=ProviderErrorKind.NOT_FOUND,
+                )
             raise ProviderError(
                 "unexpected estimator output",
                 provider="llama-server",
@@ -683,8 +689,12 @@ class TestBuildFleetWiring:
         with caplog.at_level(logging.WARNING):
             inputs, refs, _res = planning_mod._server_model_inputs()
         assert not refs and not inputs
-        assert "is not installed" not in caplog.text
-        assert "could not size" in caplog.text
+        # The genuinely-missing embed model says so; the chat sizing failure
+        # names the estimator instead of misdirecting toward the registry.
+        assert "model 'org/repo/embed.gguf' is not installed" in caplog.text
+        assert "could not size model 'org/repo/chat.gguf'" in caplog.text
+        assert "could not size model 'org/repo/embed.gguf'" not in caplog.text
+        assert "model 'org/repo/chat.gguf' is not installed" not in caplog.text
 
     def test_server_model_inputs_includes_configured_rerank(self, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -845,6 +855,10 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        # Pin the runtime env to empty: the real one reflects whatever CUDA
+        # wheels the host venv has installed, and the assertion below checks
+        # exact env equality for the pinning keys.
+        monkeypatch.setattr(planning_mod, "llama_server_runtime_env", lambda: {})
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
         launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
