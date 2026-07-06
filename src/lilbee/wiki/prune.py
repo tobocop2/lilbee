@@ -23,6 +23,7 @@ from lilbee.wiki.lint import IssueType, lint_wiki_page
 from lilbee.wiki.shared import (
     MIN_CLUSTER_SOURCES,
     WIKI_CONTENT_SUBDIRS,
+    WikiLogAction,
     WikiSubdir,
 )
 
@@ -80,9 +81,10 @@ def _archive_page(
     relative = wiki_source.removeprefix(config.wiki_dir + "/")
     source_path = wiki_root / relative
 
-    archive_dir = wiki_root / WikiSubdir.ARCHIVE
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = archive_dir / source_path.name
+    # Mirror the source subdir under archive/ (archive/concepts/foo.md), not a flat
+    # archive/foo.md: same-slug pages from different subdirs would overwrite there.
+    archive_path = wiki_root / WikiSubdir.ARCHIVE / relative
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     if source_path.exists():
         shutil.move(source_path, archive_path)
@@ -90,7 +92,12 @@ def _archive_page(
     else:
         log.warning("Wiki page file not found for archival: %s", source_path)
 
-    store.delete_by_source(wiki_source)
+    try:
+        store.delete_by_source(wiki_source)
+    except Exception:
+        # Best-effort maintenance: the page is already archived on disk, and a
+        # stale index row must not abort the rest of the prune pass.
+        log.warning("Failed to delete index rows for %s", wiki_source, exc_info=True)
     store.delete_citations_for_wiki(wiki_source)
 
 
@@ -188,7 +195,11 @@ def _finalize_prune(report: PruneReport, config: Config) -> None:
     )
     update_wiki_index(config)
     for rec in report.records:
-        append_wiki_log(f"pruned ({rec.action.value})", f"{rec.wiki_source}: {rec.reason}", config)
+        append_wiki_log(
+            WikiLogAction.PRUNE,
+            f"{rec.action.value} {rec.wiki_source}: {rec.reason}",
+            config,
+        )
 
 
 def prune_wiki(store: Store, config: Config | None = None) -> PruneReport:

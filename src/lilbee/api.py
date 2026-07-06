@@ -11,13 +11,20 @@ Usage::
     bee = Lilbee("./docs")
     bee.sync()
     results = bee.search("authentication")
+    bee.close()
+
+Each instance binds its own Config and Services for the duration of every call
+via contextvar scopes, so it runs against its own data root without mutating the
+process-global cfg or the shared services singleton. The scope is per task, so
+two instances may be driven from different threads or asyncio tasks without
+clobbering one another, and the global HTTP daemon's fleet is untouched. An
+instance holds a live engine between calls; call :meth:`Lilbee.close` to release
+it.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,36 +33,17 @@ from typing import TYPE_CHECKING
 # deferred at each callsite below because it transitively imports spaCy via
 # the wiki package and adds ~3s on first touch.
 from lilbee.app.ingest import copy_files
-from lilbee.app.services import reset_services
-from lilbee.core.config import Config, cfg
-from lilbee.data.store import MemoryKind, MemoryRow, Store
-from lilbee.providers.factory import create_provider
-from lilbee.retrieval.concepts import ConceptGraph
-from lilbee.retrieval.embedder import Embedder
-from lilbee.retrieval.query import Searcher
-from lilbee.retrieval.reranker import Reranker
+from lilbee.app.services import build_services, services_scope
+from lilbee.core.config import Config, cfg, config_scope
+from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow
 
 if TYPE_CHECKING:
+    from lilbee.app.services import Services
     from lilbee.data.ingest import SyncResult
-    from lilbee.data.store import SearchChunk
+    from lilbee.data.store import SearchChunk, Store
     from lilbee.providers.base import LLMProvider
-
-
-@contextmanager
-def _swap_config(target: Config) -> Iterator[None]:
-    """Temporarily replace the global cfg fields with *target*'s values.
-    Not thread-safe -- sequential use only.
-    """
-    snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
-    for name in type(target).model_fields:
-        setattr(cfg, name, getattr(target, name))
-    reset_services()
-    try:
-        yield
-    finally:
-        reset_services()
-        for name, val in snapshot.items():
-            setattr(cfg, name, val)
+    from lilbee.retrieval.embedder import Embedder
+    from lilbee.retrieval.query import Searcher
 
 
 class Lilbee:
@@ -108,19 +96,8 @@ class Lilbee:
         self._config.documents_dir.mkdir(parents=True, exist_ok=True)
         self._config.data_dir.mkdir(parents=True, exist_ok=True)
 
-        self._provider = provider or create_provider(self._config)
-        self._store = Store(self._config)
-        self._embedder = Embedder(self._config, self._provider)
-        self._reranker = Reranker(self._config)
-        self._concepts = ConceptGraph(self._config, self._store)
-        self._searcher = Searcher(
-            self._config,
-            self._provider,
-            self._store,
-            self._embedder,
-            self._reranker,
-            self._concepts,
-        )
+        self._services: Services = build_services(self._config, provider=provider)
+        self._closed = False
 
     @property
     def config(self) -> Config:
@@ -130,30 +107,30 @@ class Lilbee:
     @property
     def store(self) -> Store:
         """The Store component."""
-        return self._store
+        return self._services.store
 
     @property
     def embedder(self) -> Embedder:
         """The Embedder component."""
-        return self._embedder
+        return self._services.embedder
 
     @property
     def searcher(self) -> Searcher:
         """The Searcher component."""
-        return self._searcher
+        return self._services.searcher
 
     def sync(self, *, quiet: bool = True) -> SyncResult:
         """Sync documents to the vector store. Returns what changed."""
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
-        with _swap_config(self._config):
+        with config_scope(self._config), services_scope(self._services):
             return asyncio.run(_sync(quiet=quiet))
 
     def search(self, query: str, *, top_k: int = 0) -> list[SearchChunk]:
         """Search indexed documents. Returns ranked chunks."""
-        with _swap_config(self._config):
-            return self._searcher.search(query, top_k=top_k)
+        with config_scope(self._config), services_scope(self._services):
+            return self._services.searcher.search(query, top_k=top_k)
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.
@@ -163,19 +140,19 @@ class Lilbee:
         from lilbee.data.ingest import sync as _sync
 
         resolved = [Path(p).resolve() for p in paths]
-        with _swap_config(self._config):
+        with config_scope(self._config), services_scope(self._services):
             copy_files(resolved, force=True)
             return asyncio.run(_sync(quiet=True))
 
     def remove(self, name: str) -> None:
         """Remove a document from the index by source name."""
-        with _swap_config(self._config):
-            self._store.remove_documents([name], delete_files=True)
+        with config_scope(self._config), services_scope(self._services):
+            self._services.store.remove_documents([name], delete_files=True)
 
     def status(self) -> dict[str, object]:
         """Return index stats (document count, data directory, etc.)."""
-        with _swap_config(self._config):
-            sources = self._store.get_sources()
+        with config_scope(self._config), services_scope(self._services):
+            sources = self._services.store.get_sources()
             return {
                 "documents_dir": str(self._config.documents_dir),
                 "data_dir": str(self._config.data_dir),
@@ -188,7 +165,7 @@ class Lilbee:
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import sync as _sync
 
-        with _swap_config(self._config):
+        with config_scope(self._config), services_scope(self._services):
             return asyncio.run(_sync(force_rebuild=True, quiet=True))
 
     def remember(
@@ -207,18 +184,18 @@ class Lilbee:
         """
         from lilbee.app.memory import make_memory_row
 
-        with _swap_config(self._config):
-            record = make_memory_row(text, self._embedder.embed, kind=kind, shared=shared)
-            return self._store.add_memory(record)
+        with config_scope(self._config), services_scope(self._services):
+            record = make_memory_row(text, self._services.embedder.embed, kind=kind, shared=shared)
+            return self._services.store.add_memory(record)
 
     def recall(self, query: str, *, top_k: int | None = None) -> list[MemoryRow]:
-        """Recall facts relevant to *query* from long-term memory."""
-        from lilbee.data.store import local_owner_predicate
+        """Recall facts relevant to *query* (own memories plus agent-shared)."""
+        from lilbee.data.store import human_recall_predicate
 
-        with _swap_config(self._config):
-            return self._store.search_memories(
-                self._embedder.embed(query),
-                owner_predicate=local_owner_predicate(),
+        with config_scope(self._config), services_scope(self._services):
+            return self._services.store.search_memories(
+                self._services.embedder.embed_query(query),
+                owner_predicate=human_recall_predicate(),
                 top_k=self._config.memory_top_k if top_k is None else top_k,
                 max_distance=self._config.memory_max_distance,
             )
@@ -227,10 +204,18 @@ class Lilbee:
         """List all stored memories, newest first."""
         from lilbee.data.store import local_owner_predicate
 
-        with _swap_config(self._config):
-            return self._store.get_memories(owner_predicate=local_owner_predicate())
+        with config_scope(self._config), services_scope(self._services):
+            return self._services.store.get_memories(owner_predicate=local_owner_predicate())
 
-    def forget(self, memory_id: str) -> None:
-        """Delete a memory by id."""
-        with _swap_config(self._config):
-            self._store.delete_memory(memory_id)
+    def forget(self, memory_id: str) -> bool:
+        """Delete a local memory by id; True when it existed and was removed."""
+        with config_scope(self._config), services_scope(self._services):
+            return self._services.store.delete_memory(memory_id, owner=LOCAL_OWNER)
+
+    def close(self) -> None:
+        """Release the engine and store this instance holds. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        self._services.provider.shutdown()
+        self._services.store.close()

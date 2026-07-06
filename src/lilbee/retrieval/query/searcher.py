@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Generator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from lilbee.core.config import Config
@@ -19,7 +20,7 @@ from lilbee.data.store import (
     SearchChunk,
     Store,
     cosine_sim,
-    local_owner_predicate,
+    human_recall_predicate,
 )
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.embedder import Embedder
@@ -28,15 +29,17 @@ from lilbee.retrieval.query.dedup import (
     _relevance_weight,
     deduplicate_sources,
     filter_results,
+    order_by_fusion,
     prepare_results,
 )
 from lilbee.retrieval.query.expansion import EXPANSION_MAX_TOKENS, EXPANSION_PROMPT
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
-    _extract_cited_indices,
     build_context,
+    cited_subset,
     strip_llm_citations,
 )
+from lilbee.retrieval.query.history_window import estimate_text_tokens
 from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
@@ -57,6 +60,43 @@ log = logging.getLogger(__name__)
 # scores for the expansion-skip heuristic.
 _MIN_BM25_PROBE_RESULTS = 2
 
+# Structured-query mode names (the ``mode:`` prefix shortcut). Single source for
+# both the prefix parser and the dispatch in ``_search_structured``. "term"/"vec"/
+# "hyde" pick a retrieval strategy; "wiki"/"raw" are ChunkType scope shortcuts.
+_STRUCTURED_QUERY_MODES = ("term", "vec", "hyde", ChunkType.WIKI.value, ChunkType.RAW.value)
+
+
+def _bm25_confidence(score: float | None) -> float:
+    """Squash a raw, unbounded BM25 score into the (0, 1) confidence that the
+    expansion-skip thresholds are calibrated for (the config calls this the
+    "sigmoid-normalized BM25 score"). Absent or non-positive scores read as 0,
+    so a missing FTS signal never trips the skip.
+    """
+    if score is None or score <= 0.0:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-score))
+
+
+# RAG mode answer when retrieval finds no usable sources: a grounded refusal
+# instead of free-wheeling on the model's parametric knowledge. Users who want
+# off-corpus answers can switch to chat mode.
+_GROUNDED_REFUSAL = "I couldn't find anything in the indexed documents that answers that."
+
+# Ask/search needs an embedder to ground an answer. When none is loaded, refuse
+# with an actionable message rather than hard-failing or silently answering
+# ungrounded; chat mode stays available for an off-corpus reply.
+SEARCH_NEEDS_EMBEDDER = (
+    "Search needs an embedding model to ground answers in your documents. "
+    "Add one, or switch to chat mode for an ungrounded reply."
+)
+
+# Token reserve for the generated answer when budgeting RAG context to num_ctx.
+_ANSWER_RESERVE_TOKENS = 1024
+# Approximate token cost of the Context/Question template wrapper.
+_CONTEXT_TEMPLATE_TOKENS = 16
+# Approximate per-source overhead: the "[i] " marker plus blank-line separator.
+_PER_SOURCE_TOKENS = 8
+
 
 class ChatMessage(TypedDict):
     """A single chat message with role and content."""
@@ -66,10 +106,16 @@ class ChatMessage(TypedDict):
 
 
 class AskResult(BaseModel):
-    """Structured result from ask_raw -- answer text + raw search results."""
+    """Structured result from ask_raw: answer text, retrieved sources, and the cited subset.
+
+    ``sources`` is the full retrieved/reranked set; ``cited_sources`` is the subset the
+    answer actually referenced via [n] markers (empty when it cited nothing), so a JSON
+    consumer can tell whether the answer was grounded without re-parsing the text.
+    """
 
     answer: str
     sources: list[SearchChunk]
+    cited_sources: list[SearchChunk] = Field(default_factory=list)
 
 
 class Searcher:
@@ -149,9 +195,8 @@ class Searcher:
         response = self._provider.chat(
             messages, stream=False, options={"num_predict": EXPANSION_MAX_TOKENS}
         )
-        if not isinstance(response, str):
-            return []
-        variants = [line.strip() for line in response.strip().split("\n") if line.strip()]
+        text = response.text.strip()
+        variants = [line.strip() for line in text.split("\n") if line.strip()]
         return variants[:count]
 
     def _expand_query(
@@ -176,13 +221,13 @@ class Searcher:
             if count > 0 and not skip_llm:
                 llm_texts = list(self._llm_expand(question, count))
                 if llm_texts:
-                    llm_vectors = self._embedder.embed_batch(llm_texts)
+                    llm_vectors = self._embedder.embed_query_batch(llm_texts)
                     llm_variants = list(zip(llm_texts, llm_vectors, strict=True))
             llm_variants = self._apply_guardrails(llm_variants, question_vec)
 
             concept_texts = list(self._concept_query_expansion(question))
             if concept_texts:
-                concept_vectors = self._embedder.embed_batch(concept_texts)
+                concept_vectors = self._embedder.embed_query_batch(concept_texts)
                 llm_variants.extend(zip(concept_texts, concept_vectors, strict=True))
 
             return llm_variants
@@ -191,18 +236,22 @@ class Searcher:
             log.debug("Query expansion exception", exc_info=True)
             return []
 
-    def _should_skip_expansion(self, question: str) -> bool:
+    def _should_skip_expansion(self, question: str, chunk_type: ChunkType | None = None) -> bool:
         if self._config.expansion_skip_threshold <= 0:
             return False
-        results = self._store.bm25_probe(question, top_k=2)
+        # Probe the same pool the scoped search returns, else a confident hit in
+        # the wrong sub-pool could skip expansion the scoped result actually needs.
+        results = self._store.bm25_probe(
+            question, top_k=_MIN_BM25_PROBE_RESULTS, chunk_type=chunk_type
+        )
         if not results:
             return False
-        top_score = results[0].relevance_score or 0
+        top_score = _bm25_confidence(results[0].bm25_score)
         if top_score < self._config.expansion_skip_threshold:
             return False
         if len(results) < _MIN_BM25_PROBE_RESULTS:
             return True
-        second_score = results[1].relevance_score or 0
+        second_score = _bm25_confidence(results[1].bm25_score)
         return (top_score - second_score) >= self._config.expansion_skip_gap
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
@@ -214,16 +263,30 @@ class Searcher:
             query_concepts = self._concepts.extract_concepts(question)
             if not query_concepts:
                 return results
-            return self._concepts.boost_results(results, query_concepts)
+            boosted = self._concepts.boost_results(results, query_concepts)
+            # boost_results returns copies with adjusted relevance_score/distance in
+            # input order; re-sort so the boost actually re-ranks for callers that
+            # consume search() order directly (CLI search, MCP lilbee_search).
+            # order_by_fusion normalizes per scoring family so HyDE (distance) hits
+            # can't outrank a strong hybrid (RRF) hit purely on scale.
+            return order_by_fusion(boosted)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
             return results
 
-    def _hyde_search(self, question: str, top_k: int) -> list[SearchChunk]:
+    def _hyde_search(
+        self, question: str, top_k: int, chunk_type: ChunkType | None = None
+    ) -> list[SearchChunk]:
         """Hypothetical Document Embedding search.
         Gao et al. 2022, "Precise Zero-Shot Dense Retrieval without
         Relevance Labels" -- generates a hypothetical answer passage,
         embeds it, and uses the embedding to search for real documents.
+
+        The passage is deliberately embedded with ``embed_query`` (the query
+        instruction), not the document prefix: it stands in for the user's
+        query against the doc-prefixed index, staying in the same vector
+        space as every other query this searcher issues. Changing that is a
+        retrieval-quality experiment for the embedding bench, not a refactor.
         """
         try:
             response = self._provider.chat(
@@ -231,10 +294,11 @@ class Searcher:
                 stream=False,
                 options={"num_predict": EXPANSION_MAX_TOKENS},
             )
-            if not isinstance(response, str) or not response.strip():
+            text = response.text.strip()
+            if not text:
                 return []
-            hyde_vec = self._embedder.embed(response.strip())
-            return self._store.search(hyde_vec, top_k=top_k, query_text=None)
+            hyde_vec = self._embedder.embed_query(text)
+            return self._store.search(hyde_vec, top_k=top_k, query_text=None, chunk_type=chunk_type)
         except Exception:
             log.debug("HyDE search failed", exc_info=True)
             return []
@@ -254,9 +318,11 @@ class Searcher:
         return chunk_type
 
     def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
-        for prefix in ("term:", "vec:", "hyde:", "wiki:", "raw:"):
-            if question.strip().lower().startswith(prefix):
-                return prefix[:-1], question.strip()[len(prefix) :].strip()
+        stripped = question.strip()
+        for mode in _STRUCTURED_QUERY_MODES:
+            prefix = f"{mode}:"
+            if stripped.lower().startswith(prefix):
+                return mode, stripped[len(prefix) :].strip()
         return None, question
 
     def _search_structured(
@@ -267,16 +333,21 @@ class Searcher:
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
         if mode == "term":
-            return self._store.bm25_probe(query, top_k=top_k)
+            return self._store.bm25_probe(query, top_k=top_k, chunk_type=chunk_type)
         if mode == "vec":
-            query_vec = self._embedder.embed(query)
-            return self._store.search(query_vec, top_k=top_k, query_text=None)
+            query_vec = self._embedder.embed_query(query)
+            return self._store.search(
+                query_vec, top_k=top_k, query_text=None, chunk_type=chunk_type
+            )
         if mode == "hyde":
-            return self._hyde_search(query, top_k)
+            return self._hyde_search(query, top_k, chunk_type=chunk_type)
         if mode in (ChunkType.WIKI, ChunkType.RAW):
             # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
-            effective = chunk_type if chunk_type is not None else ChunkType(mode)
-            query_vec = self._embedder.embed(query)
+            # Route the prefix-derived type through the same wiki-disabled guard the
+            # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
+            requested = chunk_type if chunk_type is not None else ChunkType(mode)
+            effective = self._normalize_chunk_type(requested)
+            query_vec = self._embedder.embed_query(query)
             return self._store.search(
                 query_vec, top_k=top_k, query_text=query, chunk_type=effective
             )
@@ -340,9 +411,10 @@ class Searcher:
         results: list[SearchChunk],
         seen: set[tuple[str, int]],
         top_k: int,
+        chunk_type: ChunkType | None = None,
     ) -> None:
         """Append unseen HyDE hits to ``results`` (in place), reweighted by ``hyde_weight``."""
-        for r in self._hyde_search(question, top_k):
+        for r in self._hyde_search(question, top_k, chunk_type=chunk_type):
             key = (r.source, r.chunk_index)
             if key in seen:
                 continue
@@ -370,27 +442,39 @@ class Searcher:
         config, the filter is normalized to ``None`` (mixed pool) and a
         warning is logged: with wiki off the chunks table has no wiki rows,
         so honouring the filter would silently return zero results.
+
+        A ``mode:`` prefix (``term:``/``vec:``/``hyde:``/``wiki:``/``raw:``)
+        forces a single explicit retrieval strategy and so skips expansion and
+        concept boost, but the temporal date-range filter still applies -- it is
+        a filter, not a re-ranking, and a "recent" query must be honored in any
+        mode.
         """
         if top_k == 0:
             top_k = self._config.top_k
         chunk_type = self._normalize_chunk_type(chunk_type)
         mode, clean_query = self._parse_structured_query(question)
         if mode is not None:
-            return self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
-        query_vec = self._embedder.embed(question)
+            structured = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
+            return self._apply_temporal_filter(structured, clean_query)
+        query_vec = self._embedder.embed_query(question)
         results = self._store.search(
             query_vec,
             top_k=top_k,
             query_text=question,
             chunk_type=chunk_type,
         )
-        if self._should_skip_expansion(question):
-            return results[: top_k * 2]
-        seen = {(r.source, r.chunk_index) for r in results}
-        self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
-        if self._config.hyde:
-            self._merge_hyde_results(question, results, seen, top_k)
+        # Query expansion (variant + HyDE searches) is skipped for short/term
+        # queries, but concept boost is a separate graph re-rank that should still
+        # apply -- the early return used to drop it on the skip path.
+        if not self._should_skip_expansion(question, chunk_type):
+            seen = {(r.source, r.chunk_index) for r in results}
+            self._merge_variant_results(question, query_vec, results, seen, top_k, chunk_type)
+            if self._config.hyde:
+                self._merge_hyde_results(question, results, seen, top_k, chunk_type)
         results = self._apply_concept_boost(results, question)
+        # Apply the date-range filter here so the bare search() path (e.g. /api/search)
+        # honors a "recent"/"today" query, matching the chat/ask path.
+        results = self._apply_temporal_filter(results, question)
         return results[: top_k * 2]
 
     def build_rag_context(
@@ -415,20 +499,55 @@ class Searcher:
         results = prepare_results(results)
         if self._config.reranker_model:
             results = self._reranker.rerank(question, results)
-        results = self._apply_temporal_filter(results, question)
+        # Temporal filtering already ran inside search(); no need to repeat it here.
         results = self.select_context(results, question)
+        system = self._system_with_memory(self._config.rag_system_prompt, question)
+        results = self._fit_context_budget(results, system, question, history)
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
-        messages: list[ChatMessage] = [
-            {
-                "role": "system",
-                "content": self._system_with_memory(self._config.rag_system_prompt, question),
-            }
-        ]
+        messages: list[ChatMessage] = [{"role": "system", "content": system}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         return results, messages
+
+    def _fit_context_budget(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+    ) -> list[SearchChunk]:
+        """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
+
+        ``max_context_sources`` caps by count; this caps by tokens so a
+        retrieval-heavy query degrades gracefully instead of erroring with
+        CONTEXT_OVERFLOW. The top-ranked source is always kept.
+        """
+        ctx = self._config.num_ctx or self._config.chat_n_ctx_target
+        reserve = (
+            estimate_text_tokens(system)
+            + estimate_text_tokens(question)
+            + sum(estimate_text_tokens(m["content"]) for m in history or [])
+            + _ANSWER_RESERVE_TOKENS
+            + _CONTEXT_TEMPLATE_TOKENS
+        )
+        budget = ctx - reserve
+        kept: list[SearchChunk] = []
+        used = 0
+        for r in results:
+            cost = estimate_text_tokens(r.chunk) + _PER_SOURCE_TOKENS
+            if kept and used + cost > budget:
+                break
+            kept.append(r)
+            used += cost
+        if len(kept) < len(results):
+            log.info(
+                "Kept %d of %d sources to fit the model context window.",
+                len(kept),
+                len(results),
+            )
+        return kept
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""
@@ -444,14 +563,15 @@ class Searcher:
         """
         if not self._config.memory_enabled:
             return ""
-        owner_predicate = local_owner_predicate()
+        # The human's answers see their own memories plus any an agent shared.
+        owner_predicate = human_recall_predicate()
         preferences = self._store.get_memories(
             owner_predicate=owner_predicate,
             kind=MemoryKind.PREFERENCE,
         )
         facts: list[MemoryRow] = []
         if self._config.memory_top_k > 0 and self._embedder.embedding_available():
-            vector = self._embedder.embed(question)
+            vector = self._embedder.embed_query(question)
             facts = self._store.search_memories(
                 vector,
                 owner_predicate=owner_predicate,
@@ -465,6 +585,18 @@ class Searcher:
         return (
             self._config.chat_mode == ChatMode.CHAT.value
             or not self._embedder.embedding_available()
+        )
+
+    def search_unavailable(self) -> bool:
+        """Search mode is active but retrieval can't run because no embedder is loaded.
+
+        Ask refuses cleanly in this state (best UX: tell the user search needs an
+        embedder) rather than silently answering ungrounded. Chat mode is exempt --
+        it intentionally answers off-corpus, so it falls back instead of refusing.
+        """
+        return (
+            self._config.chat_mode != ChatMode.CHAT.value
+            and not self._embedder.embedding_available()
         )
 
     def direct_messages(
@@ -496,7 +628,8 @@ class Searcher:
         messages = self.direct_messages(question, history)
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
+        result = self._provider.chat(provider_messages, options=opts or None)
+        raw = result.text
         return raw if self._config.show_reasoning else strip_reasoning(raw)
 
     def ask_raw(
@@ -508,19 +641,22 @@ class Searcher:
         *,
         chunk_type: ChunkType | None = None,
     ) -> AskResult:
-        """Ask a question. Skips retrieval when chat_mode is 'chat' or
-        when no embedding model is configured."""
+        """Ask a question. Refuses cleanly without an embedder (search can't
+        ground); falls back to direct chat only when chat_mode is 'chat'."""
+        if self.search_unavailable():
+            return AskResult(answer=SEARCH_NEEDS_EMBEDDER, sources=[])
         if self.skip_retrieval():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            return AskResult(answer=self._direct_chat(question, history, options), sources=[])
+            return AskResult(answer=_GROUNDED_REFUSAL, sources=[])
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        raw = str(self._provider.chat(provider_messages, options=opts or None) or "")
+        result = self._provider.chat(provider_messages, options=opts or None)
+        raw = result.text
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
-        return AskResult(answer=clean, sources=results)
+        return AskResult(answer=clean, sources=results, cited_sources=cited_subset(clean, results))
 
     def ask(
         self,
@@ -537,10 +673,8 @@ class Searcher:
         )
         if not result.sources:
             return result.answer
-        cited = _extract_cited_indices(result.answer)
-        used = [result.sources[i - 1] for i in sorted(cited) if 1 <= i <= len(result.sources)]
         answer = strip_llm_citations(result.answer)
-        source_list = used if used else result.sources
+        source_list = result.cited_sources if result.cited_sources else result.sources
         citations = deduplicate_sources(source_list)
         return f"{answer}\n\nSources:\n" + "\n".join(citations)
 
@@ -577,13 +711,16 @@ class Searcher:
         chunk_type: ChunkType | None = None,
     ) -> Generator[StreamToken, None, None]:
         """Stream answer tokens with citations appended at the end."""
+        if self.search_unavailable():
+            yield StreamToken(content=SEARCH_NEEDS_EMBEDDER, is_reasoning=False)
+            return
         if self.skip_retrieval():
             yield from self._stream_direct(question, history, options)
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            yield from self._stream_direct(question, history, options)
+            yield StreamToken(content=_GROUNDED_REFUSAL, is_reasoning=False)
             return
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
@@ -608,8 +745,7 @@ class Searcher:
         # retroactively stripped. The system prompt discourages them; this
         # only filters the code-appended Sources block to cited chunks.
         full_answer = "".join(answer_parts)
-        cited = _extract_cited_indices(full_answer)
-        used = [results[i - 1] for i in sorted(cited) if 1 <= i <= len(results)]
+        used = cited_subset(full_answer, results)
         source_list = used if used else results
         citations = deduplicate_sources(source_list)
         yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)

@@ -24,11 +24,20 @@ from textual.widget import Widget
 
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
+    NATIVE_BACKEND,
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
-    KeyStatus,
     LocalCatalogRow,
+    SizeVariant,
+)
+from lilbee.cli.tui.widgets.catalog_card_shared import (
+    _FIT_LEVEL_BACKGROUND,
+    _build_local_status,
+    _build_specs,
+    _key_status_pill,
+    _render_fit_pill,
+    _truncate_name,
 )
 from lilbee.cli.tui.widgets.catalog_theme import MIDDLE_DOT, TASK_COLORS
 from lilbee.runtime.hardware import FitChip, FitLevel
@@ -138,6 +147,12 @@ class ModelGrid(Widget, can_focus=True):
         self._cards_per_row: int = _DEFAULT_COLUMNS
         self._last_click_index: int | None = None
         self._last_click_at: float = 0.0
+        # render_line is called once per terminal row, so each card is asked for
+        # _CARD_HEIGHT times per repaint; cache the built lines so a card renders
+        # once. Flushed on set_rows and highlight changes, and on a resize that
+        # shifts the column count; col_width is part of the key, so a width change
+        # at the same column count is served fresh without an explicit flush.
+        self._card_cache: dict[tuple[int, int, bool, str], _CardLines] = {}
 
     @property
     def rows(self) -> list[CatalogRow]:
@@ -152,6 +167,7 @@ class ModelGrid(Widget, can_focus=True):
     def set_rows(self, rows: list[CatalogRow]) -> None:
         """Replace the dataset and reset the highlight."""
         self._rows = list(rows)
+        self._card_cache.clear()
         self.highlighted = None
         self.refresh(layout=True)
 
@@ -159,6 +175,7 @@ class ModelGrid(Widget, can_focus=True):
         new_cols = self._columns_for_width(self.size.width)
         if new_cols != self._cards_per_row:
             self._cards_per_row = new_cols
+            self._card_cache.clear()
             self.refresh(layout=True)
 
     @staticmethod
@@ -191,6 +208,9 @@ class ModelGrid(Widget, can_focus=True):
         and ask the parent to scroll. The Highlighted message lets the
         catalog screen run keyboard-driven prefetch on every cursor move.
         """
+        # The two cards whose selected state flipped must re-render; clearing
+        # also bounds the cache to one repaint's worth of cards.
+        self._card_cache.clear()
         self.refresh()
         if new is None or self._cards_per_row <= 0 or self.size.width <= 0:
             return
@@ -316,6 +336,19 @@ class ModelGrid(Widget, can_focus=True):
         self.highlighted = index
         self.focus()
 
+    def _card_lines(
+        self, index: int, col_width: int, selected: bool, border_style: str
+    ) -> _CardLines:
+        """Build (and cache for this repaint) the card lines for one cell."""
+        key = (index, col_width, selected, border_style)
+        cached = self._card_cache.get(key)
+        if cached is None:
+            cached = _render_card_strip(
+                self._rows[index], selected=selected, width=col_width, border_style=border_style
+            )
+            self._card_cache[key] = cached
+        return cached
+
     def render_line(self, y: int) -> Strip:
         """Compose one terminal line by stitching the per-column card slices."""
         if y < 0:
@@ -332,26 +365,11 @@ class ModelGrid(Widget, can_focus=True):
                 # Empty slot in a partial last row -> match screen surface.
                 segments.append(Content.styled(" " * col_width, _GAP_STYLE))
                 continue
-            row = self._rows[index]
             selected = index == self.highlighted
-            card = _render_card_strip(
-                row, selected=selected, width=col_width, border_style=border_style
-            )
+            card = self._card_lines(index, col_width, selected, border_style)
             segments.append(card.lines[line_within])
         joined = Content("").join(segments)
         return Strip(joined.render_segments(Style.null())).simplify()
-
-
-_NAME_MAX_CHARS = 28
-"""Cap displayed model names so long refs don't blow up the grid layout."""
-
-_ELLIPSIS = "…"
-
-
-def _truncate_name(name: str) -> str:
-    if len(name) <= _NAME_MAX_CHARS:
-        return name
-    return name[: _NAME_MAX_CHARS - 1].rstrip() + _ELLIPSIS
 
 
 def _render_card_strip(
@@ -427,7 +445,7 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     # Drop the 'native' backend pill on cards to free horizontal space; the
     # backend is implied for local models. Remote backends (ollama, etc.)
     # still surface their pill since that's a meaningful distinction.
-    if row.backend and row.backend != "native":
+    if row.backend and row.backend != NATIVE_BACKEND:
         primary_pills.append(pill(row.backend, "$accent", "$text"))
     primary_line = Content(" ").join(primary_pills)
 
@@ -460,7 +478,7 @@ def _local_lines(row: LocalCatalogRow, *, selected: bool) -> list[Content]:
     return lines
 
 
-def _build_size_variant_strip(variants: list) -> Content:
+def _build_size_variant_strip(variants: list[SizeVariant]) -> Content:
     """Inline chip strip showing every quant for a family-aggregated card.
 
     Renders compact 'Q4 · Q5 · F16' style chips so the eye reads the
@@ -483,38 +501,14 @@ def _frontier_lines(row: FrontierCatalogRow) -> list[Content]:
     return [name, pill_line, Content(""), info, Content(""), Content("")]
 
 
-_FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {
-    FitLevel.FITS: "$success",
-    FitLevel.TIGHT: "$warning",
-    FitLevel.WONT_RUN: "$error",
-}
-
-
 _FIT_LEVEL_LABEL_COMPACT: dict[FitLevel, str] = {
     FitLevel.FITS: "fits",
     FitLevel.TIGHT: "tight",
     FitLevel.WONT_RUN: "won't run",
 }
 
-
-def _fit_pill(fit: FitChip) -> Content:
-    """Verbose fit chip with headroom GB, used by the detail drawer.
-
-    Headroom is signed; negative values mean the model overflows the host's
-    available memory by that much. The chip's background tracks the level so
-    colour-blind users still get the qualitative signal from the label itself.
-    Cards render the compact form (``fits`` / ``tight`` / ``won't run``)
-    via :func:`_fit_pill_compact` so the pill row fits the card width; the
-    headroom GB belongs in the wider drawer where it has room to breathe.
-    """
-    headroom_gb = fit.headroom_gb
-    if fit.level is FitLevel.FITS:
-        text = f"fits +{headroom_gb:.1f} GB"
-    elif fit.level is FitLevel.TIGHT:
-        text = f"tight +{max(0.0, headroom_gb):.1f} GB"
-    else:
-        text = f"won't {headroom_gb:.1f} GB"
-    return pill(text, _FIT_LEVEL_BACKGROUND[fit.level], "$text")
+# The verbose drawer fit pill is the shared renderer.
+_fit_pill = _render_fit_pill
 
 
 def _fit_pill_compact(fit: FitChip) -> Content:
@@ -522,22 +516,5 @@ def _fit_pill_compact(fit: FitChip) -> Content:
     return pill(_FIT_LEVEL_LABEL_COMPACT[fit.level], _FIT_LEVEL_BACKGROUND[fit.level], "$text")
 
 
-def _key_status_pill(status: KeyStatus) -> Content:
-    if status == KeyStatus.READY:
-        return pill("ready", "$success", "$text")
-    return pill("needs key", "$warning", "$text")
-
-
-def _build_specs(params: str, quant: str, size: str) -> Content:
-    parts = [p for p in (params, quant, size) if p and p != "--"]
-    if not parts:
-        return Content("--")
-    return Content(f" {MIDDLE_DOT} ".join(parts))
-
-
-def _build_local_status(row: LocalCatalogRow) -> Content | None:
-    if row.installed:
-        return pill("installed", "$success", "$text")
-    if row.sort_downloads > 0:
-        return Content.styled(f"↓ {row.downloads}", "$text-muted")
-    return None
+# _key_status_pill / _build_specs / _build_local_status live in
+# catalog_card_shared and are re-imported above.

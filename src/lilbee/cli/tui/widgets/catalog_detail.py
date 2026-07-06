@@ -14,11 +14,9 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.content import Content
 from textual.widgets import Static
 
 from lilbee.catalog.types import ModelCompat
-from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
     CatalogRowKind,
@@ -26,15 +24,10 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
     SizeVariant,
 )
-from lilbee.runtime.hardware import FitChip, FitLevel
+from lilbee.cli.tui.widgets.catalog_card_shared import _render_fit_pill
+from lilbee.runtime.hardware import FitLevel
 
 _CSS_FILE = Path(__file__).parent / "catalog_detail.tcss"
-
-_FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {
-    FitLevel.FITS: "$success",
-    FitLevel.TIGHT: "$warning",
-    FitLevel.WONT_RUN: "$error",
-}
 
 _EMPTY_HINT = "Highlight a model to see details."
 
@@ -104,16 +97,6 @@ class CatalogDetailDrawer(Vertical):
         self.query_one("#catalog-detail-description", Static).update(
             f"Cloud model accessed via the {row.provider} API."
         )
-
-
-def _render_fit_pill(fit: FitChip) -> Content:
-    if fit.level is FitLevel.FITS:
-        text = f"fits +{fit.headroom_gb:.1f} GB"
-    elif fit.level is FitLevel.TIGHT:
-        text = f"tight +{max(0.0, fit.headroom_gb):.1f} GB"
-    else:
-        text = f"won't {fit.headroom_gb:.1f} GB"
-    return pill(text, _FIT_LEVEL_BACKGROUND[fit.level], "$text")
 
 
 def _render_sizes_block(variants: list[SizeVariant]) -> str:

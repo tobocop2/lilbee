@@ -45,6 +45,7 @@ def store():
     store.add_memory.return_value = "newid"
     store.get_memories.return_value = []
     store.update_memory.return_value = True
+    store.delete_memory.return_value = True
     embedder = MagicMock()
     embedder.embed.return_value = [0.1] * 768
     svc_mod.set_services(make_mock_services(store=store, embedder=embedder))
@@ -57,9 +58,9 @@ def client(store):
     import lilbee.server.auth as auth_mod
     from lilbee.server.app import create_app
 
-    auth_mod.session_manager.token = None
+    auth_mod.session_manager.disable()
     yield TestClient(create_app())
-    auth_mod.session_manager.token = None
+    auth_mod.session_manager.cleanup()
 
 
 class TestList:
@@ -109,7 +110,7 @@ class TestUpdateShared:
         resp = client.patch("/api/memories/abc123", json={"shared": True})
         assert resp.status_code == 200
         assert resp.json() == {"id": "abc123", "updated": True}
-        store.update_memory.assert_called_once_with("abc123", shared=True)
+        store.update_memory.assert_called_once_with("abc123", shared=True, owner=LOCAL_OWNER)
 
     def test_patch_unknown_id_reports_not_updated(self, client, store):
         store.update_memory.return_value = False
@@ -121,8 +122,14 @@ class TestRemove:
     def test_delete_removes_memory(self, client, store):
         resp = client.delete("/api/memories/abc123")
         assert resp.status_code == 200
-        assert resp.json() == {"removed": "abc123"}
-        store.delete_memory.assert_called_once_with("abc123")
+        assert resp.json() == {"id": "abc123", "deleted": True}
+        store.delete_memory.assert_called_once_with("abc123", owner=LOCAL_OWNER)
+
+    def test_delete_unknown_id_reports_not_deleted(self, client, store):
+        store.delete_memory.return_value = False
+        resp = client.delete("/api/memories/missing")
+        assert resp.status_code == 200
+        assert resp.json() == {"id": "missing", "deleted": False}
 
     def test_disabled_returns_404(self, client, store):
         cfg.memory_enabled = False

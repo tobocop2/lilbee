@@ -87,3 +87,16 @@ def test_grid_card_lines_omit_compat_pill_for_supported() -> None:
     joined = "\n".join(line.plain for line in lines)
     assert COMPAT_PILL_UNSUPPORTED not in joined
     assert COMPAT_PILL_UNKNOWN not in joined
+
+
+def test_native_backend_pill_is_dropped() -> None:
+    """The implied 'native' backend pill is not rendered (parity with grid/list)."""
+    out = _render_local(_row(ModelCompat.SUPPORTED), selected=False)
+    assert "native" not in out.plain
+
+
+def test_non_native_backend_pill_is_shown() -> None:
+    row = _row(ModelCompat.SUPPORTED)
+    row.backend = "Ollama"
+    out = _render_local(row, selected=False)
+    assert "Ollama" in out.plain

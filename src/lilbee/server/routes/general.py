@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from litestar import Response, get, patch
+from litestar.exceptions import NotFoundException, ValidationException
+from litestar.response import Stream
 from pydantic import ValidationError
 
 from lilbee.server import handlers
@@ -24,6 +26,13 @@ from lilbee.server.models import (
 async def health_route() -> HealthResponse:
     """Service health check returning server version and uptime status."""
     return await handlers.health()
+
+
+@get("/api/warm/stream")
+@read_only
+async def warm_stream_route() -> Stream:
+    """Stream chat-model cold-load progress as SSE for a launcher's warm indicator."""
+    return Stream(handlers.warm_stream(), media_type="text/event-stream")
 
 
 @get("/api/status")
@@ -53,8 +62,6 @@ async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
     try:
         return await handlers.update_config(data)
     except (ValueError, ValidationError) as exc:
-        from litestar.exceptions import ValidationException
-
         raise ValidationException(str(exc)) from exc
 
 
@@ -64,15 +71,11 @@ async def source_content_route(
     source: str, raw: bool = False
 ) -> SourceContentResponse | Response[bytes]:
     """Return stored source file as JSON (``raw=0``) or raw bytes (``raw=1``)."""
-    from litestar.exceptions import NotFoundException
-
     try:
         result = await handlers.get_source_content(source, raw=raw)
     except FileNotFoundError as exc:
         raise NotFoundException(f"source not found: {source}") from exc
     except ValueError as exc:
-        from litestar.exceptions import ValidationException
-
         raise ValidationException(str(exc)) from exc
 
     # ``raw=True`` returns ``(bytes, content_type)``; narrow via ``isinstance``

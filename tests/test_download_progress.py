@@ -682,6 +682,34 @@ class TestProgressTracker:
         bar.close()
         assert tracker.was_used is True
 
+    def test_single_file_reports_shard_total(self) -> None:
+        # grand_total=0 (single file) falls back to the shard's own total.
+        events: list[tuple[int, int]] = []
+        tracker = _ProgressTracker(lambda d, t: events.append((d, t)))
+        bar = tracker.make_tqdm_class()(total=100)
+        bar.update(40)
+        assert events[-1] == (40, 100)
+
+    def test_split_shards_report_one_monotonic_progression(self) -> None:
+        # Two shards must report one 0->grand_total run, not two
+        # separate 0->100% cycles against the wrong (first-shard) total.
+        events: list[tuple[int, int]] = []
+        tracker = _ProgressTracker(lambda d, t: events.append((d, t)), grand_total=300)
+
+        shard1 = tracker.make_tqdm_class()(total=100)
+        shard1.update(100)
+        assert events[-1] == (100, 300)
+        tracker.shard_done(100)
+
+        shard2 = tracker.make_tqdm_class()(total=200)
+        shard2.update(50)
+        assert events[-1] == (150, 300)  # cumulative across shards, real total
+        shard2.update(150)
+        assert events[-1] == (300, 300)
+
+        # Numerator never goes backwards across the whole download.
+        assert [d for d, _ in events] == sorted(d for d, _ in events)
+
 
 class TestFetchExpectedFileSize:
     """fetch_expected_file_size reads hf_hub file metadata and degrades to unknown."""

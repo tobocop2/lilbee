@@ -17,7 +17,7 @@ pytestmark = pytest.mark.slow
 
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path, rag_pipeline):
-    """Point store at a temp directory, force llama-cpp provider.
+    """Point store at a temp directory, force the local-engine provider.
     Depends on rag_pipeline to guarantee the embedding model is downloaded.
     """
     from lilbee.app.services import reset_services
@@ -25,7 +25,7 @@ def isolated_db(tmp_path, rag_pipeline):
     original_dir = cfg.lancedb_dir
     original_provider = cfg.llm_provider
     cfg.lancedb_dir = tmp_path / "lancedb_test"
-    cfg.llm_provider = "llama-cpp"
+    cfg.llm_provider = "auto"
     reset_services()
     yield
     reset_services()

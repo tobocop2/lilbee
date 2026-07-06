@@ -21,17 +21,23 @@ def _fetch_sitemap_text(start_url: str) -> str | None:
 
     parsed = urlparse(start_url)
     sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+    # Validate the seed before any connection, and do not follow redirects: a
+    # 3xx could otherwise steer this best-effort fetch to a private/metadata
+    # host (SSRF) before the body is inspected. This is only a progress hint,
+    # so a redirecting or unvalidated sitemap simply yields an unknown total.
     try:
-        resp = httpx.get(sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=True)
+        require_valid_crawl_url(sitemap_url)
+    except ValueError:
+        return None
+    try:
+        resp = httpx.get(
+            sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=False
+        )
     except (httpx.HTTPError, OSError):
         return None
-    if resp.status_code >= HTTPStatus.BAD_REQUEST:
-        return None
-    # Redirects can steer the fetch to a private/metadata host (SSRF), so
-    # re-validate the final resolved URL before trusting the body.
-    try:
-        require_valid_crawl_url(str(resp.url))
-    except ValueError:
+    # Accept only a direct 2xx; an unfollowed 3xx (or any error status) yields
+    # no usable sitemap and is treated as a miss.
+    if not (HTTPStatus.OK <= resp.status_code < HTTPStatus.MULTIPLE_CHOICES):
         return None
     return resp.text
 

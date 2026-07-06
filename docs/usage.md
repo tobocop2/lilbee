@@ -347,7 +347,7 @@ lilbee --json sync                             # re-index after edits to the doc
 lilbee --json rebuild                          # nuke the index and re-ingest everything
 lilbee --json remove manual.pdf                # drop chunks (keeps the file on disk)
 lilbee --json remove manual.pdf --delete       # drop chunks and delete the source file
-lilbee --json ask "question"                   # full local RAG (llama-cpp or SDK backend)
+lilbee --json ask "question"                   # full local RAG (local llama-server fleet or remote backend)
 lilbee --json model pull <ref>                 # download a model, streams JSON progress events
 lilbee --json model pull <ref> --allow-unsupported  # override the architecture-compat check
 lilbee --json model rm <ref>                   # delete an installed model
@@ -420,8 +420,8 @@ the [REST API reference](https://lilbee.sh/api/).
 >    project's data than you expect.
 > 2. **Know where your agent sends data.** If the agent uses a cloud-hosted
 >    model, your document chunks will leave your machine. Use a local model
->    (native GGUF via llama-cpp or a local SDK backend) if your documents must
->    stay private.
+>    (native GGUF on the managed llama-server fleet, or a local
+>    OpenAI-compatible server) if your documents must stay private.
 
 ## Per-project libraries
 
@@ -725,6 +725,10 @@ effect on already-indexed material.
 | `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
+| `LILBEE_EMBED_REPLICAS` | `1` | Embedding servers to run in parallel, one per spare GPU, for large-scale ingest. Capped at runtime by the GPUs with room after the chat model is placed |
+| `LILBEE_VISION_REPLICAS` | `1` | Vision OCR servers to run in parallel, one per spare GPU, for large-scale ingest. Same runtime cap as `LILBEE_EMBED_REPLICAS` |
+| `LILBEE_VISION_OCR_MAX_TOKENS` | `4096` | Hard cap on tokens generated per OCR page. A real page is well under this; the cap bounds runaway repetition loops |
+| `LILBEE_VISION_OCR_CONCURRENCY` | `4` | Pages OCR'd concurrently, and the vision server's continuous-batching slots. Each slot adds KV cache, so lower it on small GPUs |
 
 ### Generation
 
@@ -740,10 +744,11 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_NUM_CTX` | *(auto)* | Context window size. Empty = sized automatically (aims for `LILBEE_CHAT_N_CTX_TARGET`, ceiling at `LILBEE_NUM_CTX_MAX` or the model's training_ctx). Set explicitly to lock a specific value |
 | `LILBEE_CHAT_N_CTX_TARGET` | *(auto)* | Target context size for the dynamic picker, scaled by total host RAM: `<16 GiB → 8192`, `16-32 GiB → 12288`, `32-64 GiB → 16384`, `≥64 GiB → 24576`. 8192 is the floor on smaller hosts. The picker still clamps the result to the model's training context and available memory at worker start. Set explicitly to override |
 | `LILBEE_NUM_CTX_MAX` | *(auto)* | Explicit ceiling for the dynamic context picker. Empty = use the model's training_ctx from GGUF metadata as the only ceiling. Set to cap below training_ctx on memory-constrained hosts |
-| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention. Empty/`auto` enables it with a TypeError fallback for older llama-cpp-python builds; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
+| `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention for the chat server. Empty/`auto` enables it; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
+| `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary; when set it is always used, even if the `lilbee-engine` wheel is installed. Empty = the bundled wheel's binary, else one found on `PATH` |
 
 ### Server
 
@@ -755,6 +760,7 @@ Only relevant when running the HTTP server.
 | `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
 | `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
+| `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |
 
 ### Wiki tuning (experimental)
 
@@ -780,8 +786,9 @@ reason the defaults are the defaults.
 
 ## Optional extras
 
-lilbee works out of the box with llama-cpp for local inference. These optional
-extras add capabilities that require heavier dependencies:
+lilbee works out of the box with its managed llama-server fleet for local
+inference. These optional extras add capabilities that require heavier
+dependencies:
 
 ```bash
 # pip
@@ -931,7 +938,7 @@ export LILBEE_CRAWL_SYNC_INTERVAL=30     # seconds between periodic syncs during
 ### Remote providers (SDK backend)
 
 Connect to hosted or local OpenAI-compatible LLM backends alongside lilbee's
-native in-process inference.
+managed local llama-server engine.
 
 **What it does:** Routes chat and embedding calls to any provider reachable
 via the SDK backend. The routing provider automatically detects which models
@@ -942,8 +949,7 @@ embeddings local for privacy, or to surface models from a local
 OpenAI-compatible daemon alongside lilbee's native GGUF models.
 
 **Install:** `pip install --pre 'lilbee[litellm]'` or
-`uv tool install --prerelease=allow 'lilbee[litellm]'` (the extra retains the
-adapter library name).
+`uv tool install --prerelease=allow 'lilbee[litellm]'`.
 
 **Configuration:**
 
@@ -955,8 +961,70 @@ export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
 
-Provider options: `auto` (default, routes intelligently), `llama-cpp` (local
-only), `remote` (hosted only).
+Provider options: `auto` (default; native GGUF models run on the local managed
+llama-server fleet, remote model names route to the SDK backend) and `remote`
+(everything goes to an external OpenAI-compatible endpoint).
+
+---
+
+## Tuning GPU placement
+
+By default lilbee decides which GPUs each model goes on automatically. It
+bin-packs all four roles (chat, embed, rerank, vision) across your available
+GPUs and tensor-splits anything too large for one card.
+
+If you want to pin specific models to specific cards, you can set a placement
+spec. The spec is a JSON object with one entry per role you want to control:
+
+```json
+{
+  "chat":   { "devices": [0, 1], "tensor_split": [1, 1] },
+  "embed":  { "devices": [2] },
+  "rerank": { "devices": [2] },
+  "vision": { "devices": [3] }
+}
+```
+
+Each role takes `devices` (GPU indices), an optional `tensor_split` list for
+spreading a single model across cards, and an optional `replicas` count for the
+embed and vision roles. Omit a role and the auto planner handles it.
+
+**To see what the auto planner would assign** (without changing anything):
+
+```bash
+lilbee placement preview
+```
+
+**To apply a spec from a file:**
+
+```bash
+lilbee placement set --spec placement.json
+```
+
+**To see the current spec** (or confirm auto is active):
+
+```bash
+lilbee placement show
+```
+
+**To go back to automatic:**
+
+```bash
+lilbee placement clear
+```
+
+The same operations are available in the TUI under the Placement screen and over
+MCP (`set_placement`, `clear_placement`). Applying or clearing placement rebuilds
+the shared fleet, so over HTTP `PUT`/`DELETE /api/placement` are refused by
+default. Set `allow_http_placement` (or `LILBEE_ALLOW_HTTP_PLACEMENT=1`) to enable
+them on a single-client or owned deployment, such as the Obsidian plugin's managed
+server or a personally-owned pod where you run `lilbee serve` yourself. The spec
+persists across restarts.
+
+If a pinned placement no longer fits the card it names (after a hardware
+change, for example), lilbee surfaces an error naming the card rather than
+starting in a broken state. `lilbee placement clear` returns to automatic
+placement in that case.
 
 ---
 
@@ -1077,10 +1145,10 @@ sudo apt install tesseract-ocr  # Ubuntu/Debian
 
 lilbee runs vision OCR in one of two ways:
 
-1. **Native mtmd backend.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
-   (e.g. `lightonocr`) and lilbee will load it with llama-cpp's mtmd backend
-   directly, in-process. This is the recommended path and supports an SSE
-   heartbeat for long scans.
+1. **Local vision model.** Point `LILBEE_VISION_MODEL` at a GGUF vision model
+   (e.g. `lightonocr`) and lilbee serves it on `llama-server` with an `--mmproj`
+   projector. This is the recommended path and supports an SSE heartbeat for
+   long scans.
 2. **Remote vision model.** With `pip install --pre 'lilbee[litellm]'` (or
    `uv tool install --prerelease=allow 'lilbee[litellm]'`), set the vision
    model to any remote name your SDK backend understands. lilbee will route

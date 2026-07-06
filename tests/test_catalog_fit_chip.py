@@ -36,5 +36,4 @@ def test_tight_pill_clamps_headroom_at_zero_for_display() -> None:
 def test_wont_run_pill_shows_negative_headroom() -> None:
     chip = FitChip(level=FitLevel.WONT_RUN, headroom_gb=-2.0)
     pill_content = _fit_pill(chip)
-    assert "won't" in pill_content.plain
-    assert "-2.0 GB" in pill_content.plain
+    assert "won't run, short by 2.0 GB" in pill_content.plain

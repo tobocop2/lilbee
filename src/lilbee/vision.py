@@ -1,10 +1,10 @@
 """Helpers for PDF rasterisation and vision-model OCR.
 
-Multi-page vision OCR runs through ``LlamaCppProvider.pdf_ocr`` and the
-persistent worker pool; this module hosts the small helpers (page count,
-rasterisation, prompt + chat-message construction, and the shared
-:class:`PageText` / :class:`PdfOcrChunk` types) that both the worker and
-the parent need.
+Multi-page vision OCR runs through ``FleetProvider.pdf_ocr``, which rasterises
+each page and sends it to the vision server; this module hosts the small helpers
+(page count, rasterisation, prompt + chat-message construction, and the shared
+:class:`PageText` / :class:`PdfOcrChunk` types) that the provider and its callers
+share.
 """
 
 import logging
@@ -35,6 +35,23 @@ OCR_PROMPT = (
     "Preserve table structure using markdown table syntax. "
     "Include all rows, columns, headers, and page text exactly as shown."
 )
+
+# Lowercase family token (as in the model ref or GGUF path) -> the model's
+# documented OCR prompt. Unlisted models fall back to OCR_PROMPT.
+_NATIVE_OCR_PROMPTS: tuple[tuple[str, str], ...] = (
+    ("deepseek-ocr", "<|grounding|>Convert the document to markdown."),
+    ("glm-ocr", "OCR"),
+)
+
+
+def resolve_ocr_prompt(model_ref: str) -> str:
+    """Return *model_ref*'s native OCR prompt, or the generic one if it has none."""
+    needle = model_ref.lower()
+    for family, prompt in _NATIVE_OCR_PROMPTS:
+        if family in needle:
+            return prompt
+    return OCR_PROMPT
+
 
 _RASTER_DPI = 150
 

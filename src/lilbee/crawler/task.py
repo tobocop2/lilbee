@@ -44,6 +44,7 @@ class CrawlTask:
     depth: int | None
     max_pages: int | None
     render_mode: CrawlRenderMode | None = None
+    include_subdomains: bool = False
     status: TaskStatus = TaskStatus.PENDING
     pages_crawled: int = 0
     pages_total: int | None = None
@@ -100,6 +101,7 @@ async def run_crawl(task: CrawlTask) -> None:
             depth=task.depth,
             max_pages=task.max_pages,
             on_progress=progress,
+            include_subdomains=task.include_subdomains,
             render_mode=task.render_mode,
         )
         task.status = TaskStatus.DONE
@@ -144,11 +146,14 @@ def start_crawl(
     depth: int | None = None,
     max_pages: int | None = None,
     render_mode: CrawlRenderMode | None = None,
+    *,
+    include_subdomains: bool = False,
 ) -> str:
     """Create a crawl task and launch it as an asyncio background task.
 
     Defaults to whole-site unbounded recursion. Pass depth=0 for single URL.
     ``render_mode`` of ``None`` defers to ``cfg.crawl_render_mode``.
+    ``include_subdomains`` widens whole-site scope to the host's subdomains.
     Returns the task_id for status polling.
     """
     _evict_completed()
@@ -159,6 +164,7 @@ def start_crawl(
         depth=depth,
         max_pages=max_pages,
         render_mode=render_mode,
+        include_subdomains=include_subdomains,
     )
     _registry.tasks[task_id] = task
     task._async_task = asyncio.create_task(run_crawl(task))

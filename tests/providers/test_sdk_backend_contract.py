@@ -256,7 +256,7 @@ class TestCompletionKwargs:
 
     def test_api_key_forwarded_to_embed(self, backend: LlmSdkBackend) -> None:
         fake = mock.MagicMock()
-        fake.embedding.return_value = {"data": [{"embedding": [0.1]}], "model": "x"}
+        fake.embedding.return_value = {"data": [{"embedding": [0.1], "index": 0}], "model": "x"}
         req = EmbeddingRequest(
             ref=parse_model_ref("openai/text-embedding-3-small"),
             inputs=["hi"],
@@ -271,10 +271,28 @@ class TestCompletionKwargs:
 class TestEmbedReturnsEmbeddingResult:
     def test_vectors_returned(self, backend: LlmSdkBackend) -> None:
         fake = mock.MagicMock()
-        fake.embedding.return_value = {"data": [{"embedding": [0.1, 0.2]}], "model": "fake"}
+        fake.embedding.return_value = {
+            "data": [{"embedding": [0.1, 0.2], "index": 0}],
+            "model": "fake",
+        }
         with mock.patch.dict(sys.modules, {"litellm": fake}):
             result = backend.embed(_embedding_request())
         assert result.vectors == [[0.1, 0.2]]
+
+    def test_embeddings_reordered_by_index(self, backend: LlmSdkBackend) -> None:
+        """A gateway returning the batch out of order is corrected by the response's
+        index, since the consumer zips vectors to inputs positionally."""
+        fake = mock.MagicMock()
+        fake.embedding.return_value = {
+            "data": [
+                {"embedding": [1.0], "index": 1},
+                {"embedding": [0.0], "index": 0},
+            ],
+            "model": "x",
+        }
+        with mock.patch.dict(sys.modules, {"litellm": fake}):
+            result = backend.embed(_embedding_request())
+        assert result.vectors == [[0.0], [1.0]]
 
     def test_embed_error_is_wrapped(self, backend: LlmSdkBackend) -> None:
         fake = mock.MagicMock()
@@ -288,7 +306,7 @@ class TestEmbedReturnsEmbeddingResult:
     def test_object_response_model_attribute(self, backend: LlmSdkBackend) -> None:
         # Some SDKs return a response object rather than a dict.
         resp = mock.MagicMock()
-        resp.data = [{"embedding": [0.3]}]
+        resp.data = [{"embedding": [0.3], "index": 0}]
         resp.model = "obj-model"
         fake = mock.MagicMock()
         fake.embedding.return_value = resp

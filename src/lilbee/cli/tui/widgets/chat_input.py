@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from textual import on
+from textual.actions import SkipAction
 from textual.binding import Binding, BindingType
 from textual.message import Message
 from textual.widgets import TextArea
@@ -79,6 +80,10 @@ class ChatInput(TextArea):
         return super().check_consume_key(key, character)
 
     def action_submit(self) -> None:
+        # Enter is a priority binding; when a drawer toggle holds focus, yield so
+        # Enter reaches that widget instead of submitting the prompt.
+        if not self.has_focus:
+            raise SkipAction()
         self.post_message(self.Submitted(chat_input=self, value=self.text))
 
     def action_newline(self) -> None:

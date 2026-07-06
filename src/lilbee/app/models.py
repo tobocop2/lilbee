@@ -73,7 +73,7 @@ class ModelEntry(BaseModel):
             name=ref,
             source=ModelSource.NATIVE.value,
             task=manifest.task if manifest else None,
-            size_gb=_bytes_to_gb(manifest.size_bytes) if manifest else None,
+            size_gb=_bytes_to_gb(manifest.disk_size_bytes) if manifest else None,
             display_name=clean_display_name(manifest.hf_repo) if manifest else "",
         )
 
@@ -146,8 +146,8 @@ class ManifestData(BaseModel):
             ref=manifest.ref,
             display_name=clean_display_name(manifest.hf_repo),
             task=manifest.task,
-            size_gb=_bytes_to_gb(manifest.size_bytes),
-            size_bytes=manifest.size_bytes,
+            size_gb=_bytes_to_gb(manifest.disk_size_bytes),
+            size_bytes=manifest.disk_size_bytes,
             hf_repo=manifest.hf_repo,
             gguf_filename=manifest.gguf_filename,
             downloaded_at=manifest.downloaded_at,
@@ -207,8 +207,9 @@ def adopt_embedder(ref: str) -> AdoptResult:
     from lilbee.catalog.types import ModelSource
 
     manager = get_services().model_manager
-    already_active = cfg.embedding_model == ref and manager.is_installed(ref, ModelSource.NATIVE)
-    if not manager.is_installed(ref, ModelSource.NATIVE):
+    installed = manager.is_installed(ref, ModelSource.NATIVE)
+    already_active = cfg.embedding_model == ref and installed
+    if not installed:
         pull_model_data(ref, ModelSource.NATIVE)
     result = apply_settings_update({"embedding_model": ref})
     return AdoptResult(
@@ -317,6 +318,32 @@ def show_model_data(ref: str) -> ShowModelResult:
     )
 
 
+def _vision_projector_missing(ref: str) -> bool:
+    """True when *ref*'s mmproj projector does not resolve on disk."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+    try:
+        find_mmproj_for_model(resolve_model_path(ref))
+    except (ProviderError, OSError, ValueError, KeyError):
+        return True
+    return False
+
+
+def _ensure_vision_projector(ref: str) -> None:
+    """Fetch a vision model's mmproj projector when a cached install lacks it.
+
+    No-op for non-vision refs and when the projector already resolves on disk,
+    so pulling a complete install never touches the network.
+    """
+    from lilbee.catalog import download_mmproj, resolve_pull_target
+
+    entry = resolve_pull_target(ref)
+    if entry is not None and entry.task is ModelTask.VISION and _vision_projector_missing(ref):
+        download_mmproj(entry)
+
+
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -337,6 +364,10 @@ def pull_model_data(
     manager = get_services().model_manager
 
     if manager.is_installed(ref, source):
+        # A cached vision install may carry the main GGUF but not its mmproj
+        # projector; without it llama-server can't serve OCR, so ensure it before
+        # reporting already-installed.
+        _ensure_vision_projector(ref)
         return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
 
     bytes_cb = make_download_callback(on_update) if on_update is not None else None
@@ -354,6 +385,17 @@ def pull_model_data(
     )
 
 
+def _legacy_disk_size(ref: str, *, fallback: int) -> int:
+    """Sum a split GGUF's shard sizes on disk; *fallback* on any failure/single file."""
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        shards = get_services().registry.shard_paths(ref)
+        if len(shards) > 1:
+            return sum(path.stat().st_size for path in shards)
+    return fallback
+
+
 def remove_model_data(
     ref: str,
     source: ModelSource | None = None,
@@ -361,7 +403,14 @@ def remove_model_data(
     """Remove *ref* and return a typed result with freed size."""
     manager = get_services().model_manager
     manifests = _native_manifest_index()
-    size_bytes = manifests[ref].size_bytes if ref in manifests else 0
+    # disk_size_bytes is the full multi-shard total; size_bytes alone would report
+    # only the first shard for a split GGUF.
+    manifest = manifests.get(ref)
+    size_bytes = manifest.disk_size_bytes if manifest is not None else 0
+    if manifest is not None and manifest.total_size_bytes is None:
+        # Legacy manifest without shard accounting: removal still frees every
+        # shard, so recover the true on-disk total from the shards for the report.
+        size_bytes = _legacy_disk_size(ref, fallback=size_bytes)
     removed = manager.remove(ref, source=source)
     return RemoveResult(
         model=ref,

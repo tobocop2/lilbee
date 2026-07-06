@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from lilbee.app.services import set_services
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.providers.base import ChatResult, FinishReason
 from tests._lilbee_app_test_host import LilbeeAppHost
 from tests.conftest import make_mock_services
 
@@ -147,11 +148,16 @@ def _fake_active_task(task_type):
 
 
 async def test_maybe_extract_skips_while_indexing(mock_svc, monkeypatch):
+    from lilbee.cli.tui.task_queue import Task, TaskType
+
     cfg.memory_enabled = True
     cfg.memory_auto_extract = True
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        _patch_active_tasks(monkeypatch, app.task_bar.queue, [_fake_active_task("sync")])
+        # A real Task carries every field the task-bar timer reads when a tick
+        # lands mid-test; a bare SimpleNamespace stub raced the timer (bb-5ze).
+        task = Task(task_id="t1", name="Indexing", task_type=TaskType.SYNC.value, fn=lambda: None)
+        _patch_active_tasks(monkeypatch, app.task_bar.queue, [task])
         with patch.object(app.screen, "_extract_memories_worker") as worker:
             app.screen._maybe_extract_memories("q", "a")
             await pilot.pause()
@@ -161,7 +167,11 @@ async def test_maybe_extract_skips_while_indexing(mock_svc, monkeypatch):
 async def test_maybe_extract_runs_when_idle(mock_svc):
     cfg.memory_enabled = True
     cfg.memory_auto_extract = True
-    mock_svc.provider.chat.return_value = '[{"text": "the user prefers rust", "kind": "fact"}]'
+    mock_svc.provider.chat.return_value = ChatResult(
+        text='[{"text": "the user prefers rust", "kind": "fact"}]',
+        tool_calls=(),
+        finish_reason=FinishReason.STOP,
+    )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)

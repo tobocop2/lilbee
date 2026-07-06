@@ -53,6 +53,62 @@ def _make_records(n=3, dim=None, chunk_type="raw"):
     ]
 
 
+class TestWriteLockDir:
+    def test_write_lock_keys_on_store_config_dir(self, store, test_config):
+        """A per-instance store locks its own lancedb_dir, not the global cfg dir."""
+        from lilbee.core.config import cfg as global_cfg
+
+        assert test_config.lancedb_dir != global_cfg.lancedb_dir
+        test_config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+        with store._write_lock(timeout=2):
+            assert (test_config.lancedb_dir / ".lock").exists()
+
+
+class TestClearAndAdd:
+    def test_replaces_rows_atomically(self, store):
+        import pyarrow as pa
+
+        schema = pa.schema([pa.field("concept", pa.utf8()), pa.field("n", pa.int64())])
+        store.clear_and_add("t_demo", schema, [{"concept": "a", "n": 1}], "concept IS NOT NULL")
+        store.clear_and_add("t_demo", schema, [{"concept": "b", "n": 2}], "concept IS NOT NULL")
+        rows = store.open_table("t_demo").search().to_list()
+        assert {r["concept"] for r in rows} == {"b"}  # old row replaced, not appended
+
+    def test_holds_lock_across_delete_and_add(self, store, monkeypatch):
+        import pyarrow as pa
+
+        from lilbee.runtime.lock import _write_mutex
+
+        schema = pa.schema([pa.field("concept", pa.utf8())])
+        store.clear_and_add("t_lock", schema, [{"concept": "seed"}], "concept IS NOT NULL")
+
+        locked_during: list[bool] = []
+        import lilbee.data.store.core as core_mod
+
+        real = core_mod._safe_delete_unlocked
+
+        def spy_delete(table, predicate):
+            locked_during.append(_write_mutex.locked())
+            return real(table, predicate)
+
+        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", spy_delete)
+        store.clear_and_add("t_lock", schema, [{"concept": "next"}], "concept IS NOT NULL")
+        assert locked_during == [True]  # delete ran under the write lock
+
+    def test_skips_add_when_delete_fails(self, store, monkeypatch):
+        import pyarrow as pa
+
+        import lilbee.data.store.core as core_mod
+
+        schema = pa.schema([pa.field("concept", pa.utf8())])
+        store.clear_and_add("t_fail", schema, [{"concept": "old"}], "concept IS NOT NULL")
+        # A failed delete must not add the new rows (would duplicate the stale ones).
+        monkeypatch.setattr(core_mod, "_safe_delete_unlocked", lambda table, predicate: False)
+        store.clear_and_add("t_fail", schema, [{"concept": "new"}], "concept IS NOT NULL")
+        rows = store.open_table("t_fail").search().to_list()
+        assert {r["concept"] for r in rows} == {"old"}  # unchanged; new rows not added
+
+
 class TestEnsureFtsIndex:
     def test_noop_when_no_table(self, store):
         store.ensure_fts_index()
@@ -119,6 +175,64 @@ class TestEnsureFtsIndex:
         # Verify replace was NOT True (would defeat the purpose of incremental)
         _args, kwargs = create_spy.call_args
         assert kwargs.get("replace") is False
+
+    def test_bm25_probe_populates_bm25_score(self, store):
+        """LanceDB FTS returns rows keyed on ``_score``; the probe must surface it as
+        ``bm25_score`` so confidence-based expansion-skip sees a real signal. It must
+        NOT land in the fusion-scale ``relevance_score`` (which stays None for FTS)."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        results = store.bm25_probe("text")
+        assert results
+        assert all(r.bm25_score is not None for r in results)
+        assert results[0].bm25_score > 0
+        assert all(r.relevance_score is None for r in results)
+
+    def test_bm25_probe_filters_by_chunk_type(self, store):
+        """An explicit scope on a ``term:`` query must be honoured by the probe."""
+        store.add_chunks(_make_records(n=2, chunk_type="raw"))
+        store.add_chunks(_make_records(n=2, chunk_type="wiki"))
+        store.ensure_fts_index()
+        results = store.bm25_probe("text", chunk_type=ChunkType.WIKI)
+        assert results
+        assert all(r.chunk_type == ChunkType.WIKI for r in results)
+
+
+class TestSearchChunkScoreAlias:
+    @staticmethod
+    def _row(**extra):
+        base = {
+            "source": "a.md",
+            "content_type": "text",
+            "chunk_type": "raw",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": "hi",
+            "chunk_index": 0,
+            "vector": [0.0] * cfg.embedding_dim,
+        }
+        base.update(extra)
+        return base
+
+    def test_fts_score_maps_to_bm25_score(self):
+        """BM25/FTS ``_score`` populates the dedicated ``bm25_score`` field, kept
+        separate from the fusion-scale ``relevance_score``."""
+        chunk = SearchChunk(**self._row(_score=2.5))
+        assert chunk.bm25_score == 2.5
+        assert chunk.relevance_score is None
+
+    def test_relevance_score_alias_still_works(self):
+        chunk = SearchChunk(**self._row(_relevance_score=0.03))
+        assert chunk.relevance_score == 0.03
+        assert chunk.bm25_score is None
+
+    def test_hybrid_row_keeps_scores_in_separate_fields(self):
+        """A hybrid row carrying both keeps RRF in relevance_score and BM25 in bm25_score."""
+        chunk = SearchChunk(**self._row(_relevance_score=0.03, _score=2.5))
+        assert chunk.relevance_score == 0.03
+        assert chunk.bm25_score == 2.5
 
 
 def _make_indexable_records(n, dim):
@@ -201,13 +315,18 @@ class TestEnsureVectorIndex:
             assert store.ensure_vector_index() is True
         optimize_spy.assert_called_once()
 
-    def test_build_failure_returns_false(self, store, test_config):
+    def test_build_failure_warns_and_returns_false(self, store, test_config, caplog):
+        """bb-con: a real ANN build failure at scale is surfaced as a warning with
+        the flat-search impact, not swallowed at debug."""
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
-        with mock.patch.object(
-            type(table), "create_index", side_effect=RuntimeError("too few rows")
+        with (
+            mock.patch.object(type(table), "create_index", side_effect=RuntimeError("boom")),
+            caplog.at_level("WARNING"),
         ):
             assert store.ensure_vector_index(force=True) is False
+        assert "ANN index build failed" in caplog.text
+        assert "flat scan" in caplog.text
 
     def test_has_vector_index_swallows_list_indices_errors(self, store):
         from lilbee.data.store.lance_helpers import _has_vector_index
@@ -262,6 +381,213 @@ class TestFtsIndexStaleFlag:
         assert store._fts_ready
         store.drop_all()
         assert not store._fts_ready
+
+
+def _records_for(source, n=2, dim=None):
+    if dim is None:
+        dim = cfg.embedding_dim
+    return [
+        {
+            "source": source,
+            "content_type": "text",
+            "chunk_type": "raw",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": f"{source} chunk {i}",
+            "chunk_index": i,
+            "vector": [float(i)] * dim,
+        }
+        for i in range(n)
+    ]
+
+
+class TestWriteChunksBatch:
+    def test_writes_many_docs_and_upserts_sources_in_one_pass(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        items = [
+            ChunkWrite("a.md", "hash_a", _records_for("a.md", 2), needs_cleanup=False),
+            ChunkWrite("b.md", "hash_b", _records_for("b.md", 3), needs_cleanup=False),
+        ]
+        added = store.write_chunks_batch(items)
+        assert added == 5
+        assert len(store.get_chunks_by_source("a.md")) == 2
+        assert len(store.get_chunks_by_source("b.md")) == 3
+        sources = {s["filename"]: s for s in store.get_sources()}
+        assert sources["a.md"]["chunk_count"] == 2
+        assert sources["b.md"]["file_hash"] == "hash_b"
+
+    def test_cleanup_replaces_a_source_without_duplicating(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        store.add_chunks(_records_for("a.md", 4))
+        # Re-ingest a.md with fewer chunks; needs_cleanup must drop the old ones.
+        store.write_chunks_batch(
+            [ChunkWrite("a.md", "h2", _records_for("a.md", 2), needs_cleanup=True)]
+        )
+        assert len(store.get_chunks_by_source("a.md")) == 2
+
+    def test_empty_batch_is_noop(self, store):
+        assert store.write_chunks_batch([]) == 0
+        assert store.get_sources() == []
+
+    def test_batch_uses_the_patient_lock_timeout(self, store):
+        """The flush lock waits BATCH_LOCK_TIMEOUT, not the interactive 30s.
+
+        Failing the flush replans and re-embeds the whole batch, so the batch
+        path outwaits a search-triggered FTS optimize instead of giving up.
+        """
+        from lilbee.data.store import ChunkWrite
+        from lilbee.data.store.core import BATCH_LOCK_TIMEOUT
+
+        seen: list[float] = []
+
+        @contextmanager
+        def _capture(_dir, timeout):
+            seen.append(timeout)
+            yield
+
+        with mock.patch("lilbee.data.store.core.write_lock", _capture):
+            store.write_chunks_batch(
+                [ChunkWrite("a.md", "h", _records_for("a.md", 1), needs_cleanup=False)]
+            )
+        assert seen == [BATCH_LOCK_TIMEOUT]
+
+    def test_replace_source_skips_add_on_swallowed_delete(self, store, monkeypatch):
+        # A swallowed delete must not leave two _sources rows for one filename:
+        # the replace skips the add and the file replans next sync.
+        store.upsert_source("a.md", "h1", chunk_count=2)
+        assert len([s for s in store.get_sources() if s["filename"] == "a.md"]) == 1
+        monkeypatch.setattr("lilbee.data.store.core._safe_delete_unlocked", lambda *a, **k: False)
+        store.upsert_source("a.md", "h2", chunk_count=9)
+        rows = [s for s in store.get_sources() if s["filename"] == "a.md"]
+        assert len(rows) == 1
+
+    def test_zero_chunk_item_persists_page_texts_and_source_row(self, store):
+        # A processed file with no chunkable text (whitespace-only OCR) keeps
+        # its pages and source row so it stops replanning every sync.
+        from lilbee.data.store import ChunkWrite
+
+        page = {"source": "scan.pdf", "page": 1, "text": "  ", "content_type": "pdf"}
+        items = [ChunkWrite("scan.pdf", "h", [], needs_cleanup=True, page_texts=[page])]
+        assert store.write_chunks_batch(items) == 0
+        sources = {s["filename"]: s for s in store.get_sources()}
+        assert sources["scan.pdf"]["chunk_count"] == 0
+        assert sources["scan.pdf"]["file_hash"] == "h"
+        assert [row["page"] for row in store.get_page_texts("scan.pdf")] == [1]
+        # Read paths stay healthy with a zero-chunk source present.
+        assert store.get_chunks_by_source("scan.pdf") == []
+        assert store.search([0.0] * cfg.embedding_dim) == []
+
+    def test_cleanup_deletes_are_constant_per_flush(self, store):
+        # N cleanup items go through one batched IN-delete pass, never one
+        # delete set per item.
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import ChunkWrite
+
+        total = 4
+        for i in range(total):
+            store.add_chunks(_records_for(f"f{i}.md", 1))
+        store.add_page_texts(
+            [
+                {"source": f"f{i}.md", "page": 1, "text": "old", "content_type": "pdf"}
+                for i in range(total)
+            ]
+        )
+        items = [
+            ChunkWrite(
+                f"f{i}.md",
+                f"h{i}",
+                _records_for(f"f{i}.md", 2),
+                needs_cleanup=True,
+                page_texts=[
+                    {"source": f"f{i}.md", "page": 1, "text": "new", "content_type": "pdf"}
+                ],
+            )
+            for i in range(total)
+        ]
+        with mock.patch.object(
+            core_mod.Store,
+            "_delete_by_sources_unlocked",
+            autospec=True,
+            side_effect=core_mod.Store._delete_by_sources_unlocked,
+        ) as spy:
+            store.write_chunks_batch(items)
+        assert spy.call_count == 1
+        assert sorted(spy.call_args.args[1]) == [f"f{i}.md" for i in range(total)]
+        # End state matches the per-item behavior: replaced rows, no orphans.
+        for i in range(total):
+            assert len(store.get_chunks_by_source(f"f{i}.md")) == 2
+            assert [row["text"] for row in store.get_page_texts(f"f{i}.md")] == ["new"]
+
+    def test_cleanup_delete_failure_propagates(self, store):
+        # A swallowed delete would leave every flushed file silently stale, so
+        # the flush must fail and let the files replan instead.
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import ChunkWrite
+
+        store.add_chunks(_records_for("a.md", 1))
+        real_open_table = store.open_table
+        broken = mock.MagicMock()
+        broken.delete.side_effect = RuntimeError("commit conflict")
+
+        def _broken_chunks_table(name):
+            if name == core_mod.CHUNKS_TABLE:
+                return broken
+            return real_open_table(name)
+
+        with (
+            mock.patch.object(store, "open_table", side_effect=_broken_chunks_table),
+            pytest.raises(RuntimeError, match="commit conflict"),
+        ):
+            store.write_chunks_batch(
+                [ChunkWrite("a.md", "h2", _records_for("a.md", 1), needs_cleanup=True)]
+            )
+
+    def test_quoted_filename_survives_the_batched_cleanup(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        name = "it's a note.md"
+        store.add_chunks(_records_for(name, 1))
+        store.write_chunks_batch(
+            [ChunkWrite(name, "h2", _records_for(name, 2), needs_cleanup=True)]
+        )
+        assert len(store.get_chunks_by_source(name)) == 2
+
+    def test_page_texts_land_in_the_batch_and_survive_cleanup(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        page = {"source": "a.pdf", "page": 1, "text": "page one", "content_type": "pdf"}
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    "a.pdf", "h1", _records_for("a.pdf", 1), needs_cleanup=True, page_texts=[page]
+                )
+            ]
+        )
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one"]
+
+        # Re-ingest: the same transaction's cleanup delete clears the old page
+        # rows, then the fresh ones land, so nothing the batch wrote is wiped.
+        edited = {**page, "text": "page one, edited"}
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    "a.pdf", "h2", _records_for("a.pdf", 1), needs_cleanup=True, page_texts=[edited]
+                )
+            ]
+        )
+        assert [row["text"] for row in store.get_page_texts("a.pdf")] == ["page one, edited"]
+
+    def test_dimension_mismatch_rejects_whole_batch(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        bad = _records_for("a.md", 1, dim=cfg.embedding_dim + 1)
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            store.write_chunks_batch([ChunkWrite("a.md", "h", bad, needs_cleanup=False)])
+        assert store.get_sources() == []
 
 
 class TestHybridSearch:
@@ -344,6 +670,38 @@ class TestChunkTypeFilter:
         results = store.search(query_vec, top_k=5, chunk_type="wiki")
         assert all(r.chunk_type == "wiki" for r in results)
         assert len(results) == 1
+
+    def test_vector_search_debug_logs_real_distance(self, store, test_config, caplog):
+        """The debug log reads LanceDB's '_distance' column, not a missing 'distance'.
+
+        With an orthogonal query the top distance is well above 0, so a wrong key
+        (defaulting to 0) would be visible in the logged values.
+        """
+        dim = test_config.embedding_dim
+        store.add_chunks(
+            [
+                {
+                    "source": "doc0.md",
+                    "content_type": "text",
+                    "chunk_type": "raw",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "chunk": "some text",
+                    "chunk_index": 0,
+                    "vector": [1.0] + [0.0] * (dim - 1),
+                }
+            ]
+        )
+        query_vec = [0.0] * (dim - 1) + [1.0]
+        with caplog.at_level("DEBUG"):
+            store.search(query_vec, top_k=5, max_distance=0)
+        distance_logs = [
+            r.getMessage() for r in caplog.records if "Top 5 distances" in r.getMessage()
+        ]
+        assert distance_logs
+        assert "0.0" not in distance_logs[0].replace("Top 5 distances: ", "")
 
     def test_hybrid_search_filters_by_chunk_type(self, store, test_config):
         """Hybrid search with chunk_type filters results."""
@@ -577,12 +935,12 @@ class TestRemoveDocuments:
     def test_removes_known_files(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked") as mock_del,
+            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
             assert result.not_found == []
-            mock_del.assert_called_once_with("a.md")
+            mock_del.assert_called_once_with(["a.md"])
 
     def test_not_found(self, store):
         with mock.patch.object(store, "get_sources", return_value=[]):
@@ -593,7 +951,7 @@ class TestRemoveDocuments:
     def test_deletes_physical_file(self, store, tmp_path):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked"),
+            mock.patch.object(store, "_remove_many_unlocked"),
         ):
             f = tmp_path / "a.md"
             f.write_text("content")
@@ -606,7 +964,7 @@ class TestRemoveDocuments:
             mock.patch.object(
                 store, "get_sources", return_value=[{"filename": "../../../etc/passwd"}]
             ),
-            mock.patch.object(store, "_remove_one_unlocked"),
+            mock.patch.object(store, "_remove_many_unlocked"),
         ):
             secret = tmp_path.parent / "secret.txt"
             secret.write_text("don't delete me")
@@ -619,7 +977,7 @@ class TestRemoveDocuments:
     def test_nonexistent_file_still_removes_from_store(self, store, tmp_path):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "gone.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked") as mock_del,
+            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
             result = store.remove_documents(["gone.md"], delete_files=True, documents_dir=tmp_path)
             assert result.removed == ["gone.md"]
@@ -628,7 +986,7 @@ class TestRemoveDocuments:
     def test_uses_default_documents_dir(self, store):
         with (
             mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_remove_one_unlocked"),
+            mock.patch.object(store, "_remove_many_unlocked"),
         ):
             result = store.remove_documents(["a.md"])
             assert result.removed == ["a.md"]
@@ -647,17 +1005,18 @@ class TestRemoveDocuments:
             yield
 
         with (
-            mock.patch.object(store, "get_sources", return_value=[{"filename": "a.md"}]),
-            mock.patch.object(store, "_delete_by_source_unlocked") as mock_chunks,
-            mock.patch.object(store, "_delete_source_unlocked") as mock_source,
+            mock.patch.object(
+                store, "get_sources", return_value=[{"filename": "a.md"}, {"filename": "b.md"}]
+            ),
+            mock.patch.object(store, "_delete_by_sources_unlocked") as mock_chunks,
+            mock.patch.object(store, "open_table", return_value=None),
             mock.patch("lilbee.data.store.core.write_lock", _tracking_lock),
         ):
-            result = store.remove_documents(["a.md"])
+            result = store.remove_documents(["a.md", "b.md"])
 
-        assert result.removed == ["a.md"]
-        mock_chunks.assert_called_once_with("a.md")
-        mock_source.assert_called_once_with("a.md")
-        # Exactly one lock acquisition covers both deletes for the document.
+        assert result.removed == ["a.md", "b.md"]
+        mock_chunks.assert_called_once_with(["a.md", "b.md"])
+        # Exactly one lock acquisition covers every delete for the whole set.
         assert acquisitions == ["acquire"]
 
     def test_removes_chunks_and_source_atomically(self, store):
@@ -711,8 +1070,11 @@ class TestEscapeSqlString:
     def test_escapes_single_quotes(self):
         assert escape_sql_string("it's") == "it''s"
 
-    def test_escapes_backslashes(self):
-        assert escape_sql_string("path\\file") == "path\\\\file"
+    def test_backslash_is_not_escaped(self):
+        # LanceDB's Datafusion treats backslash literally inside a '...' literal,
+        # so doubling it corrupts the value and a backslash-bearing name never
+        # matches its predicate (bb-7jg1).
+        assert escape_sql_string("path\\file") == "path\\file"
 
     def test_injection_payload(self):
         escaped = escape_sql_string("' OR 1=1 --")
@@ -721,6 +1083,24 @@ class TestEscapeSqlString:
         # No lone single quote remains (all are doubled)
         stripped = escaped.replace("''", "")
         assert "'" not in stripped
+
+    def test_delete_by_source_matches_backslash_source(self, store):
+        """A source name with a backslash must match its predicate end-to-end; the
+        prior backslash-doubling made it never match, leaking the source's chunks."""
+        backslash_src = r"win\dir\doc.md"
+        backslash = _make_records(n=1)
+        backslash[0]["source"] = backslash_src
+        plain = _make_records(n=1)
+        plain[0]["source"] = "plain.md"
+        plain[0]["chunk_index"] = 1
+        store.add_chunks(backslash + plain)
+
+        store.delete_by_source(backslash_src)
+
+        rows = store.open_table("chunks").search().to_list()
+        sources = {r["source"] for r in rows}
+        assert backslash_src not in sources
+        assert "plain.md" in sources
 
 
 class TestChunkTypeField:
@@ -885,6 +1265,22 @@ class TestGetSourcesPagination:
         store.upsert_source("other.py", "h99", 1)
         result = store.get_sources(search="readme", limit=5)
         assert len(result) == 5
+
+    def test_search_treats_underscore_literally(self, store):
+        # Without escaping, '_' is a LIKE single-char wildcard, so 'a_b' would
+        # also match 'axb'. The ESCAPE clause makes it match literally.
+        store.upsert_source("a_b.md", "h1", 1)
+        store.upsert_source("axb.md", "h2", 1)
+        matches = {s["filename"] for s in store.get_sources(search="a_b")}
+        assert matches == {"a_b.md"}
+
+    def test_search_treats_percent_literally(self, store):
+        # '%' is the LIKE any-length wildcard; a literal search must not match
+        # an unrelated filename just because the pattern contains '%'.
+        store.upsert_source("50%done.md", "h1", 1)
+        store.upsert_source("50xdone.md", "h2", 1)
+        matches = {s["filename"] for s in store.get_sources(search="50%done")}
+        assert matches == {"50%done.md"}
 
 
 class TestCountSources:
@@ -1496,3 +1892,232 @@ class TestEmbeddingModelGate:
         }
         with mock.patch.object(store, "get_meta", side_effect=[None, winning_meta]):
             assert store.initialize_meta_if_legacy() is False
+
+
+class TestSourceStatColumns:
+    """Size/mtime travel with each source row; legacy tables migrate in place."""
+
+    def test_upsert_with_stat_roundtrips(self, store):
+        from lilbee.data.store import SourceStat, source_stat
+
+        store.upsert_source("a.md", "h1", 2, stat=SourceStat(123, 456))
+        record = store.get_sources()[0]
+        assert source_stat(record) == SourceStat(123, 456)
+
+    def test_upsert_without_stat_reads_as_unknown(self, store):
+        from lilbee.data.store import source_stat
+
+        store.upsert_source("a.md", "h1", 2)
+        assert source_stat(store.get_sources()[0]) is None
+
+    def test_null_stat_columns_read_as_unknown_not_crash(self):
+        """A row whose nullable stat columns are NULL must read as unknown, not
+        crash with int(None). Regression: adding a file when the store already
+        held a null-stat row failed every add with 'int() argument ... NoneType'."""
+        from lilbee.data.store import source_stat
+
+        # NULL columns (present-but-None), as a nullable int64 column yields --
+        # distinct from a missing key, which .get already handled.
+        record = {"name": "a.pdf", "file_hash": "h", "size_bytes": None, "mtime_ns": None}
+        assert source_stat(record) is None  # type: ignore[arg-type]
+
+    def test_null_captured_with_valid_size_mtime_reads_stat(self):
+        """A null stat_captured_ns alongside valid size/mtime must not crash; the
+        capture time falls back to the unknown sentinel."""
+        from lilbee.data.store import SOURCE_STAT_UNKNOWN, SourceStat, source_stat
+
+        record = {
+            "name": "a.pdf",
+            "file_hash": "h",
+            "size_bytes": 10,
+            "mtime_ns": 20,
+            "stat_captured_ns": None,
+        }
+        assert source_stat(record) == SourceStat(10, 20, SOURCE_STAT_UNKNOWN)  # type: ignore[arg-type]
+
+    def test_write_chunks_batch_persists_stat(self, store):
+        from lilbee.data.store import ChunkWrite, SourceStat, source_stat
+
+        items = [
+            ChunkWrite(
+                "a.md", "h", _records_for("a.md", 1), needs_cleanup=False, stat=SourceStat(9, 8)
+            )
+        ]
+        store.write_chunks_batch(items)
+        assert source_stat(store.get_sources()[0]) == SourceStat(9, 8)
+
+    def test_legacy_sources_table_gains_stat_columns(self, store):
+        # Build a pre-stat table by hand (5 columns, one legacy row).
+        import pyarrow as pa
+
+        from lilbee.core.config import SOURCES_TABLE
+        from lilbee.data.store import SourceStat, ensure_table, source_stat
+
+        legacy_schema = pa.schema(
+            [
+                pa.field("filename", pa.utf8()),
+                pa.field("file_hash", pa.utf8()),
+                pa.field("ingested_at", pa.utf8()),
+                pa.field("chunk_count", pa.int32()),
+                pa.field("source_type", pa.utf8()),
+            ]
+        )
+        table = ensure_table(store.get_db(), SOURCES_TABLE, legacy_schema)
+        table.add(
+            [
+                {
+                    "filename": "old.md",
+                    "file_hash": "h",
+                    "ingested_at": "",
+                    "chunk_count": 1,
+                    "source_type": "document",
+                }
+            ]
+        )
+
+        # First write through the new path migrates the table and lands the stat.
+        store.upsert_source("new.md", "h2", 1, stat=SourceStat(5, 6))
+        records = {r["filename"]: r for r in store.get_sources()}
+        assert source_stat(records["old.md"]) is None  # backfilled sentinel
+        assert source_stat(records["new.md"]) == SourceStat(5, 6)
+
+    def test_update_source_stats_batches_one_delete_one_add(self, store):
+        from lilbee.data.store import SourceStat, SourceStatBackfill, source_stat
+
+        store.upsert_source("a.md", "ha", 1)
+        store.upsert_source("b.md", "hb", 2)
+        records = {r["filename"]: r for r in store.get_sources()}
+
+        backfills = [
+            SourceStatBackfill(records["a.md"], SourceStat(1, 2)),
+            SourceStatBackfill(records["b.md"], SourceStat(3, 4)),
+        ]
+        with mock.patch.object(
+            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+        ) as spy:
+            store.update_source_stats(backfills)
+        spy.assert_called_once()
+
+        records = {r["filename"]: r for r in store.get_sources()}
+        assert source_stat(records["a.md"]) == SourceStat(1, 2)
+        assert source_stat(records["b.md"]) == SourceStat(3, 4)
+        assert records["a.md"]["file_hash"] == "ha"
+
+    def test_update_source_stats_chunks_huge_backfills(self, store):
+        # A whole-corpus backfill must not join every filename into one delete
+        # predicate: rows are replaced in slices, each its own locked write.
+        import math
+
+        import lilbee.data.store.core as core_mod
+        from lilbee.data.store import SourceStat, SourceStatBackfill, source_stat
+
+        total, batch_rows = 5, 2
+        for i in range(total):
+            store.upsert_source(f"f{i}.md", f"h{i}", 1)
+        records = {r["filename"]: r for r in store.get_sources()}
+        backfills = [
+            SourceStatBackfill(records[f"f{i}.md"], SourceStat(i, i + 1)) for i in range(total)
+        ]
+        with (
+            mock.patch.object(core_mod, "_SOURCE_STAT_BATCH_ROWS", batch_rows),
+            mock.patch.object(
+                store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+            ) as spy,
+        ):
+            store.update_source_stats(backfills)
+        assert spy.call_count == math.ceil(total / batch_rows)
+        assert all(len(call.args[0]) <= batch_rows for call in spy.call_args_list)
+
+        records = {r["filename"]: r for r in store.get_sources()}
+        assert len(records) == total
+        for i in range(total):
+            assert source_stat(records[f"f{i}.md"]) == SourceStat(i, i + 1)
+            assert records[f"f{i}.md"]["file_hash"] == f"h{i}"
+
+    def test_update_source_stats_empty_is_noop(self, store):
+        store.update_source_stats([])
+        assert store.get_sources() == []
+
+
+class TestBatchedSourceUpserts:
+    """One flush of N files produces one delete + one add on the sources table."""
+
+    def test_write_chunks_batch_single_source_table_pass(self, store):
+        from lilbee.data.store import ChunkWrite
+
+        items = [
+            ChunkWrite(f"f{i}.md", f"h{i}", _records_for(f"f{i}.md", 1), needs_cleanup=False)
+            for i in range(5)
+        ]
+        with mock.patch.object(
+            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+        ) as spy:
+            store.write_chunks_batch(items)
+        spy.assert_called_once()
+        assert len(spy.call_args.args[0]) == 5
+        assert len(store.get_sources()) == 5
+
+    def test_optimize_sources_compacts(self, store):
+        store.upsert_source("a.md", "h", 1)
+        with mock.patch.object(store, "open_table", return_value=mock.MagicMock()) as opened:
+            store.optimize_sources()
+        opened.return_value.optimize.assert_called_once()
+
+    def test_optimize_sources_noop_without_table(self, store):
+        with mock.patch.object(store, "open_table", return_value=None) as opened:
+            store.optimize_sources()
+        opened.assert_called_once()
+
+    def test_optimize_sources_survives_failure(self, store):
+        failing = mock.MagicMock()
+        failing.optimize.side_effect = RuntimeError("compaction failed")
+        with mock.patch.object(store, "open_table", return_value=failing):
+            store.optimize_sources()
+        failing.optimize.assert_called_once()
+
+
+class TestDeleteBySourceConceptRows:
+    """Re-ingest cleanup removes the source's chunk-concept rows too."""
+
+    def test_delete_by_source_clears_chunk_concepts(self, store):
+        from lilbee.core.config import CHUNK_CONCEPTS_TABLE
+        from lilbee.data.store import ensure_table
+        from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
+
+        store.add_chunks(_records_for("doc.md", 2))
+        cc_table = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
+        cc_table.add(
+            [
+                {"chunk_source": "doc.md", "chunk_index": 0, "concept": "alpha"},
+                {"chunk_source": "other.md", "chunk_index": 0, "concept": "beta"},
+            ]
+        )
+
+        store.delete_by_source("doc.md")
+        cc_table.checkout_latest()  # bypass the read-consistency interval
+        remaining = cc_table.search().limit(None).to_list()
+        assert [r["chunk_source"] for r in remaining] == ["other.md"]
+        assert store.get_chunks_by_source("doc.md") == []
+
+
+class TestAnnNprobesScaling:
+    """nprobes follows the IVF partition count (~sqrt(N)) with a floor."""
+
+    def test_small_corpus_keeps_floor(self):
+        from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
+
+        assert _ann_nprobes(0) == _ANN_NPROBES_FLOOR
+        assert _ann_nprobes(50_000) == _ANN_NPROBES_FLOOR
+
+    def test_large_corpus_scales_past_floor(self):
+        from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
+
+        # 50M rows: isqrt(50_000_000) = 7071 partitions, ceil(7071 * 0.05) = 354 probes.
+        fifty_million = 50_000_000
+        assert _ann_nprobes(fifty_million) == 354
+        assert _ann_nprobes(fifty_million) > _ANN_NPROBES_FLOOR
+
+    def test_negative_row_count_clamps_to_floor(self):
+        from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
+
+        assert _ann_nprobes(-5) == _ANN_NPROBES_FLOOR

@@ -10,11 +10,11 @@ so wiki content participates in retrieval.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 from lilbee.app.services import get_services
 from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
@@ -70,9 +70,8 @@ _CHARS_PER_TOKEN = 4
 # so we suppress it whenever the provider reports the capability.
 _NO_THINK_DIRECTIVE = "/no_think"
 
-# Capability string returned by llama-cpp providers for reasoning models
-# (Qwen3, DeepSeek-R1). Defined locally so wiki.generation doesn't
-# depend on a specific provider-layer constant name.
+# Capability string a provider's get_capabilities reports for reasoning
+# models (Qwen3, DeepSeek-R1).
 _CAPABILITY_THINKING = "thinking"
 
 
@@ -150,14 +149,17 @@ def build_frontmatter(
     the generator and the extraction method from config, so a bad page
     is auditable without re-running the pipeline.
     """
-    sources_yaml = ", ".join(f'"{s}"' for s in sorted(source_names))
+    # JSON-serialize the list: a JSON array is valid YAML flow syntax and escapes
+    # quotes/backslashes/unicode, so a filename like ``a"b\c.txt`` can't corrupt
+    # the frontmatter (the hand-rolled per-name quoting did).
+    sources_yaml = json.dumps(sorted(source_names))
     hash_line = f"leaf_hash: {leaf_hash}\n" if leaf_hash else ""
     provenance_block = render_provenance(config, chunks) if chunks is not None else ""
     return (
         f"---\n"
         f"generated_by: {config.chat_model}\n"
         f"generated_at: {datetime.now(UTC).isoformat()}\n"
-        f"sources: [{sources_yaml}]\n"
+        f"sources: {sources_yaml}\n"
         f"faithfulness_score: {score:.2f}\n"
         f"{hash_line}"
         f"{provenance_block}"
@@ -186,7 +188,7 @@ def write_page(
         if ratio > drift_threshold:
             drafts_dir = wiki_root / WikiSubdir.DRAFTS
             diff_text = diff_summary(old_content, full_content)
-            return divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text)
+            return divert_to_drafts(full_content, drafts_dir, slug, ratio, diff_text, subdir)
 
     page_path.write_text(full_content, encoding="utf-8")
     return page_path
@@ -292,7 +294,7 @@ def generate_page(
     )
     try:
         response = provider.chat(messages, stream=False, options=options)
-        wiki_text = strip_reasoning(cast(str, response)).strip()
+        wiki_text = strip_reasoning(response.text).strip()
     except Exception as exc:
         log.warning("LLM failed to generate wiki page for %s: %s", label, exc)
         _emit("failed", error=str(exc))

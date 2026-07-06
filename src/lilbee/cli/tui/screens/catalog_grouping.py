@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg
@@ -139,9 +140,9 @@ def group_rows_for_grid(local_rows: list[LocalCatalogRow]) -> list[GridSection]:
     # then the rest in their incoming order. Stable so HF rank from the API
     # is preserved among non-featured rows.
     for bucket in by_task.values():
-        bucket.sort(key=lambda r: not getattr(r, "featured", False))
+        bucket.sort(key=lambda r: not cast("LocalCatalogRow", r).featured)
     for bucket in extras.values():
-        bucket.sort(key=lambda r: not getattr(r, "featured", False))
+        bucket.sort(key=lambda r: not cast("LocalCatalogRow", r).featured)
     return [
         GridSection(msg.HEADING_INSTALLED, installed),
         *[GridSection(task.capitalize(), by_task[task]) for task in TASK_BUCKET_ORDER],
