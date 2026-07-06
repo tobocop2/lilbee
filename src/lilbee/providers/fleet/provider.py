@@ -936,7 +936,17 @@ class FleetProvider:
                             ExtractEvent(file=path.name, page=page_idx + 1, total_pages=total),
                         )
                     _submit_next()
-        return [PageText(idx + 1, results[idx]) for idx in sorted(results)]
+        pages = [PageText(idx + 1, results[idx]) for idx in sorted(results)]
+        unrecovered = sum(1 for page in pages if not page.text)
+        if unrecovered:
+            log.warning(
+                "Vision OCR produced no text for %d of %d pages of %s "
+                "(timed out or server still busy); those pages are blank in the index.",
+                unrecovered,
+                total,
+                path.name,
+            )
+        return pages
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         clients = self._require_clients(WorkerRole.RERANK)

@@ -810,6 +810,29 @@ def test_pdf_ocr_ocrs_each_page_over_vision_server(monkeypatch) -> None:
     assert events == [(EventType.EXTRACT, 1, 2), (EventType.EXTRACT, 2, 2)]
 
 
+def test_pdf_ocr_tallies_unrecovered_pages(monkeypatch, caplog) -> None:
+    # A page skipped to empty text (timeout, persistently busy fleet) must surface
+    # in one end-of-run tally, not vanish silently as a blank index entry.
+    import logging
+
+    from lilbee.providers.base import ProviderError
+    from lilbee.vision import PageText
+
+    client = _fake_client(0)
+    client.chat.side_effect = [ProviderError("boom", provider="llama-server"), "page two"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    monkeypatch.setattr(cfg, "vision_model", "")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    monkeypatch.setattr("lilbee.vision.pdf_page_count", lambda _p: 2)
+    monkeypatch.setattr(
+        "lilbee.vision.rasterize_pdf", lambda _p: iter([(0, b"png0"), (1, b"png1")])
+    )
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.provider"):
+        result = p.pdf_ocr(Path("doc.pdf"), backend="vision")  # type: ignore[arg-type]
+    assert result == [PageText(1, ""), PageText(2, "page two")]
+    assert "no text for 1 of 2 pages" in caplog.text
+
+
 def test_pdf_ocr_runs_pages_concurrently_and_preserves_order(monkeypatch) -> None:
     # OCR fans pages across the vision server's batching slots; results must still
     # come back in page order, and more than one page must be in flight at once.
