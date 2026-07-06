@@ -324,7 +324,7 @@ hardware-change failures explicit.
 
 The surfaces go through the one `app/placement.py` use-case:
 CLI (`lilbee placement show/preview/set/clear`), MCP
-(`get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
+(`get_gpus`, `get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
 and the TUI Placement screen. Over HTTP the reads are always served
 (`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`).
 Applying or clearing placement restarts the fleet's moved roles, so `PUT`/`DELETE

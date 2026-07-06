@@ -208,6 +208,18 @@ def _ignore_user_global_config(monkeypatch):
     monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
 
 
+@pytest.fixture
+def overlay_reads_config_toml(monkeypatch):
+    """Opt a test back into the config.toml overlay path.
+
+    The suite runs with ``LILBEE_SKIP_TOML_CONFIG=1`` for hermeticity, and
+    ``overlay_persisted_settings`` honors that flag. Tests that specifically
+    exercise the overlay-applies behavior (writing a config.toml to a controlled
+    root and asserting it lands on cfg) must clear the flag so overlay runs.
+    """
+    monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _reset_xberg_extract_globals():
     """Start every test with the real extraction functions.
@@ -223,18 +235,6 @@ def _reset_xberg_extract_globals():
     """
     _xberg_extract.extract_document = _PRISTINE_EXTRACT_DOCUMENT
     _xberg_extract.aextract_document = _PRISTINE_AEXTRACT_DOCUMENT
-
-
-@pytest.fixture
-def overlay_reads_config_toml(monkeypatch):
-    """Opt a test back into the config.toml overlay path.
-
-    The suite runs with ``LILBEE_SKIP_TOML_CONFIG=1`` for hermeticity, and
-    ``overlay_persisted_settings`` honors that flag. Tests that specifically
-    exercise the overlay-applies behavior (writing a config.toml to a controlled
-    root and asserting it lands on cfg) must clear the flag so overlay runs.
-    """
-    monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
 
 
 @pytest.fixture(autouse=True)

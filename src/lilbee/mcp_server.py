@@ -1112,39 +1112,37 @@ def memory_forget(memory_id: str, agent_id: str = "", ctx: Context | None = None
 
 
 def _placement_dict(view: PlacementView) -> dict[str, Any]:
-    return {
-        "gpus": [vars(g) for g in view.gpus],
-        "roles": [
-            {
-                "role": r.role.value,
-                "model": r.model,
-                "devices": list(r.devices),
-                "tensor_split": list(r.tensor_split) if r.tensor_split else None,
-                "replicas": r.replicas,
-            }
-            for r in view.roles
-        ],
-        "unplaceable": [r.value for r in view.unplaceable],
-        "manual": view.manual,
-        "spec_json": view.spec_json,
-    }
+    from lilbee.server.models import PlacementResponse
+
+    return PlacementResponse.from_view(view).model_dump(mode="json")
 
 
-def _placement_result(action: Callable[[], PlacementView]) -> dict[str, Any]:
-    """Run a placement action and serialize it, returning a structured error on failure."""
+def _placement_guard(serialize: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run a placement query and serialize it, returning a structured error on failure."""
     from lilbee.providers.base import ProviderError
     from lilbee.providers.fleet.placement_spec import PlacementError
 
     try:
-        return _placement_dict(action())
+        return serialize()
     except (PlacementError, ProviderError) as exc:
         return _error(str(exc))
+
+
+def _placement_result(action: Callable[[], PlacementView]) -> dict[str, Any]:
+    """Run a placement action and serialize its view, returning a structured error on failure."""
+    return _placement_guard(lambda: _placement_dict(action()))
 
 
 def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     return PlacementSpec.from_json(json.dumps(spec)) if spec else None
+
+
+@_tool_named("get_gpus")
+def get_gpus_tool() -> dict[str, Any]:
+    """List detected GPUs with free/total VRAM (the placement HTTP /api/gpus equivalent)."""
+    return _placement_guard(lambda: {"gpus": _placement_dict(get_placement())["gpus"]})
 
 
 @_tool_named("get_placement")
@@ -1161,7 +1159,13 @@ def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]
 
 @_tool_named("set_placement")
 def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
-    """Set and apply a manual multi-GPU placement spec (persists to config)."""
+    """Set and apply a manual multi-GPU placement spec (persists to config).
+
+    The spec maps a role ("chat"/"embed"/"rerank"/"vision") to a placement, e.g.
+    ``{"chat": {"devices": [0, 1], "tensor_split": [1, 1]}}``. ``devices`` is the
+    GPU indices (get_gpus lists them); ``tensor_split`` is optional per-device
+    weights (omit for an even split). Omit a role to leave it auto-placed.
+    """
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     # set_placement restarts the shared fleet's moved roles: gate it on the

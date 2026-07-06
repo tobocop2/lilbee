@@ -108,6 +108,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 
 | Tool | Use |
 |---|---|
+| `lilbee_get_gpus()` | Detected GPUs with free/total VRAM (the placement HTTP `/api/gpus` equivalent). |
 | `lilbee_get_placement()` | Current effective placement: detected GPUs, per-role devices/replicas, whether manual. May run a device probe on a cold cache (a second or two). |
 | `lilbee_preview_placement(spec)` | Dry-run what a spec (or auto, when omitted) would place. No changes made. |
 | `lilbee_set_placement(spec)` | Validate, persist, and apply a manual placement. Rebuilds the model fleet, interrupting in-flight requests. |

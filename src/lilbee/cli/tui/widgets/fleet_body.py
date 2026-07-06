@@ -24,7 +24,12 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
-from lilbee.app.placement import get_placement, preview_placement, set_placement
+from lilbee.app.placement import (
+    get_placement,
+    preview_placement,
+    set_placement,
+    wait_chat_ready,
+)
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
@@ -128,12 +133,19 @@ class FleetPill(Static, can_focus=True):
 
 @dataclass
 class _RoleEdit:
-    """Mutable editor state for one role."""
+    """Mutable editor state for one role.
+
+    ``tensor_split`` carries a manual split from the loaded view so re-applying an
+    unedited placement preserves it (an even split would OOM the smaller of two
+    unequal cards). It is cleared the moment the user toggles this role's devices,
+    since a split sized for the old card set no longer applies to the new one.
+    """
 
     role: WorkerRole
     model: str
     devices: set[int]
     replicas: int
+    tensor_split: tuple[int, ...] | None = None
 
 
 class FleetBody(Widget):
@@ -142,6 +154,14 @@ class FleetBody(Widget):
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     applying: reactive[bool] = reactive(False)
+
+    class PlacementReloading(Message):
+        """Posted while an apply/clear reloads the fleet, so the chat screen can
+        hold submissions until the reload finishes instead of hitting a 429."""
+
+        def __init__(self, active: bool) -> None:
+            self.active = active
+            super().__init__()
 
     def __init__(self) -> None:
         super().__init__(id="fleet-body")
@@ -156,7 +176,9 @@ class FleetBody(Widget):
         }
 
     def watch_applying(self, applying: bool) -> None:
-        """Disable the editor controls while an apply/clear is in flight."""
+        """Disable the editor controls while an apply/clear is in flight and tell
+        the chat screen to hold submissions until the fleet finishes reloading."""
+        self.post_message(self.PlacementReloading(applying))
         with contextlib.suppress(NoMatches):
             self.query_one(_EDITOR_ID, Vertical).disabled = applying
 
@@ -200,7 +222,10 @@ class FleetBody(Widget):
         """Reset the widget (title, live table, editor) from a resolved placement view."""
         self._view_manual = view.manual
         self._device_indices = tuple(g.index for g in view.gpus)
-        edits = {r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas) for r in view.roles}
+        edits = {
+            r.role: _RoleEdit(r.role, r.model, set(r.devices), r.replicas, r.tensor_split)
+            for r in view.roles
+        }
         # Rows render in _EDITOR_ROLE_ORDER; any role beyond it keeps plan order.
         self._edits = {role: edits.pop(role) for role in _EDITOR_ROLE_ORDER if role in edits}
         self._edits.update(edits)
@@ -317,8 +342,16 @@ class FleetBody(Widget):
         for edit in self._edits.values():
             if not edit.devices:
                 raise PlacementError(f"{edit.role.value} needs at least one GPU")
+            devices = tuple(sorted(edit.devices))
+            # Keep a loaded manual split only while it still matches the device set;
+            # a stale-length split would be rejected by the spec validator.
+            split = (
+                edit.tensor_split
+                if edit.tensor_split and len(edit.tensor_split) == len(devices)
+                else None
+            )
             roles[edit.role] = RolePlacement(
-                devices=tuple(sorted(edit.devices)), replicas=edit.replicas
+                devices=devices, replicas=edit.replicas, tensor_split=split
             )
         return PlacementSpec(roles=roles)
 
@@ -335,10 +368,13 @@ class FleetBody(Widget):
             self._build_editor()
             return
         if bid.startswith("dev-"):
-            _, role_value, idx_str = bid.split("-")
+            role_value, idx_str = bid.removeprefix("dev-").rsplit("-", 1)
             role = WorkerRole(role_value)
             edit = self._edits[role]
             idx = int(idx_str)
+            # Editing the device set invalidates any loaded manual split (its
+            # length was sized for the old cards); fall back to a capacity split.
+            edit.tensor_split = None
             if role in _SINGLE_ROLES:
                 # Single pinned instance: the picked card becomes the only one.
                 edit.devices = {idx}
@@ -354,7 +390,7 @@ class FleetBody(Widget):
                 edit.devices.add(idx)
                 event.pill.add_class("on")
         elif bid.startswith("rep-"):
-            _, role_value, op = bid.split("-")
+            role_value, op = bid.removeprefix("rep-").rsplit("-", 1)
             role = WorkerRole(role_value)
             edit = self._edits[role]
             edit.replicas = max(1, edit.replicas + (1 if op == "inc" else -1))
@@ -396,14 +432,7 @@ class FleetBody(Widget):
 
     @work(thread=True, exit_on_error=False)
     def _apply_worker(self, spec: PlacementSpec | None) -> None:
-        try:
-            set_placement(spec)
-            view = get_placement()
-            call_from_thread(self, self._render_view, view)
-        except Exception as exc:
-            call_from_thread(self, self.notify, str(exc), severity="error")
-        finally:
-            call_from_thread(self, setattr, self, "applying", False)
+        self._change_placement(lambda: set_placement(spec))
 
     def action_clear(self) -> None:
         """Restore automatic placement."""
@@ -414,8 +443,19 @@ class FleetBody(Widget):
 
     @work(thread=True, exit_on_error=False)
     def _clear_worker(self) -> None:
+        self._change_placement(lambda: set_placement(None))
+
+    def _change_placement(self, change: Callable[[], PlacementView]) -> None:
+        """Apply a placement change off the UI thread, then wait out the chat warm.
+
+        ``applying`` (and with it the chat screen's submit hold) stays up until the
+        restarted chat role actually serves: releasing when the reload returns
+        still leaves the model warming, and a prompt sent then errors with the
+        busy 429 instead of an answer.
+        """
         try:
-            set_placement(None)
+            change()
+            wait_chat_ready()
             view = get_placement()
             call_from_thread(self, self._render_view, view)
         except Exception as exc:

@@ -55,8 +55,10 @@ esac
 #
 # arm64: NEON is mandatory in ARMv8 so a single baseline variant covers
 # every aarch64 system.
-common_x86="-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
-common_arm="-DGGML_NATIVE=OFF"
+# LLAMA_BUILD_UI=OFF: skip the npm/vite server-UI build (flaky on Windows
+# runners); assets fall back to the prebuilt HF bucket download.
+common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
+common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
 case "${backend}_${runner_os}" in
   cpu_Linux)

@@ -29,6 +29,78 @@ def _fake_run(stdout: str):
     return _run
 
 
+_TOPO_NVLINK = """\
+\tGPU0\tGPU1\tCPU Affinity\tNUMA Affinity
+GPU0\t X \tNV4\t0-31\t0
+GPU1\tNV4\t X \t0-31\t0
+"""
+_TOPO_PCIE = """\
+\tGPU0\tGPU1\tCPU Affinity
+GPU0\t X \tPHB\t0-31
+GPU1\tPHB\t X \t0-31
+"""
+
+
+# Captured from a live 3xH100 SXM pod: nvidia-smi underlines the header via SGR
+# escapes even when stdout is not a tty, and adds NIC columns plus a legend.
+_TOPO_REAL_H100 = (
+    "\t\x1b[4mGPU0\tGPU1\tGPU2\tNIC0\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\x1b[0m\n"
+    "GPU0\t X \tNV18\tNV18\tSYS\t0,2,4,6,8,10\t0\t\tN/A\n"
+    "GPU1\tNV18\t X \tNV18\tNODE\t1,3,5,7,9,11\t1\t\tN/A\n"
+    "GPU2\tNV18\tNV18\t X \tNODE\t1,3,5,7,9,11\t1\t\tN/A\n"
+    "NIC0\tSYS\tNODE\tNODE\t X \t\t\t\t\n"
+    "\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe\n"
+)
+
+
+class TestNvlinkTopology:
+    def test_real_h100_output_parses_despite_ansi_escapes(self) -> None:
+        # The SGR-wrapped header must still yield the GPU columns; without the
+        # strip, no pairs parse and an NVLinked host is mis-flagged as PCIe-only.
+        gpu_rows, pairs = dev_mod._parse_topo_matrix(_TOPO_REAL_H100)
+        assert gpu_rows == {0, 1, 2}
+        assert pairs == {frozenset({0, 1}), frozenset({0, 2}), frozenset({1, 2})}
+
+    def test_real_h100_host_has_nvlink(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_REAL_H100))
+        assert dev_mod.host_lacks_nvlink() is False
+
+    def test_parse_finds_nvlink_pair(self) -> None:
+        gpu_rows, pairs = dev_mod._parse_topo_matrix(_TOPO_NVLINK)
+        assert gpu_rows == {0, 1}
+        assert pairs == {frozenset({0, 1})}
+
+    def test_parse_pcie_only_has_no_pairs(self) -> None:
+        gpu_rows, pairs = dev_mod._parse_topo_matrix(_TOPO_PCIE)
+        assert gpu_rows == {0, 1}
+        assert pairs == set()
+
+    def test_lacks_nvlink_true_for_pcie_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_PCIE))
+        assert dev_mod.host_lacks_nvlink() is True
+
+    def test_lacks_nvlink_false_when_linked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_NVLINK))
+        assert dev_mod.host_lacks_nvlink() is False
+
+    def test_unparseable_topo_makes_no_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Garbage output parses zero GPU rows: stay silent rather than mis-warn.
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("some unrelated output\n"))
+        assert dev_mod.host_lacks_nvlink() is False
+
+    def test_single_gpu_host_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        single = "\tGPU0\tCPU Affinity\nGPU0\t X \t0-31\n"
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(single))
+        assert dev_mod.host_lacks_nvlink() is False
+
+    def test_probe_failure_is_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(*_a: object, **_k: object) -> object:
+            raise OSError("no nvidia-smi")
+
+        monkeypatch.setattr(dev_mod.subprocess, "run", _boom)
+        assert dev_mod.host_lacks_nvlink() is False
+
+
 def test_probe_parses_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_CUDA_LISTING))
     devices = probe_devices(Path("/bin/llama-server"))

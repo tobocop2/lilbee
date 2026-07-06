@@ -1,10 +1,13 @@
 """Tests for the `lilbee placement` CLI sub-app."""
 
+import json
+
 from typer.testing import CliRunner
 
 import lilbee.cli.placement as cli_placement
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
 from lilbee.cli.placement import placement_app
+from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 from lilbee.providers.roles import WorkerRole
@@ -31,6 +34,33 @@ def test_show_renders_cards(monkeypatch: object) -> None:
     assert "CUDA0" in result.stdout
     assert "NVIDIA A100-SXM4-80GB" in result.stdout
     assert "chat" in result.stdout
+
+
+def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:
+    """--json (global flag -> cfg.json_mode) makes placement emit machine-readable
+    JSON instead of a Rich table, so scripts can consume it."""
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: _view(manual=True))
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)  # must parse, unlike the Rich table
+    assert data["manual"] is True
+    assert data["gpus"][0]["label"] == "CUDA0"
+    assert data["roles"][0]["role"] == "chat"
+    assert data["spec_json"] == '{"chat": {"devices": [0]}}'
+
+
+def test_show_json_mode_error_emits_error_object(monkeypatch: object) -> None:
+    """A known failure in --json mode emits {"error": ...}, not a Rich error line."""
+
+    def _boom() -> PlacementView:
+        raise ProviderError("engine binary missing", provider="llama-server")
+
+    monkeypatch.setattr(cli_placement, "get_placement", _boom)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["error"] == "engine binary missing"
 
 
 def test_preview_auto(monkeypatch: object) -> None:

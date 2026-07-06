@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -21,6 +22,9 @@ from lilbee.data.export import (
 )
 from lilbee.data.store import EmbeddingModelMismatchError, PageTextRecord
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 
 class DatasetError(Exception):
@@ -66,15 +70,15 @@ def require_format(value: str) -> DatasetFormat:
         raise DatasetError(str(exc)) from None
 
 
-def _build_validated(source: str | None) -> list[PageTextRecord]:
-    """Build the dataset rows for *source* (or all), validating the request."""
+def _build_validated(source: str | None) -> pa.Table:
+    """Build the dataset table for *source* (or all), validating the request."""
     store = get_services().store
     if source is not None and source not in {s["filename"] for s in store.get_sources()}:
         raise DatasetError(f"Source not found: {source}")
-    rows = build_page_dataset(store, source)
-    if not rows:
+    table = build_page_dataset(store, source)
+    if table.num_rows == 0:
         raise DatasetError("Nothing to export: the store has no indexed pages.")
-    return rows
+    return table
 
 
 def export_to_path(output: Path, fmt_value: str, source: str | None) -> ExportSummary:
@@ -83,25 +87,25 @@ def export_to_path(output: Path, fmt_value: str, source: str | None) -> ExportSu
         fmt = resolve_format(fmt_value, output)
     except ValueError as exc:
         raise DatasetError(str(exc)) from None
-    rows = _build_validated(source)
-    write_dataset(rows, output, fmt)
+    table = _build_validated(source)
+    write_dataset(table, output, fmt)
     return ExportSummary(
         format=str(fmt),
         output=str(output),
-        pages=len(rows),
-        sources=len({row["source"] for row in rows}),
+        pages=table.num_rows,
+        sources=len(table.column("source").unique()),
     )
 
 
 def export_to_bytes(fmt_value: str, source: str | None) -> ExportPayload:
     """Encode the per-page dataset to bytes; empty *fmt_value* defaults to parquet."""
     fmt = require_format(fmt_value) if fmt_value else DatasetFormat.PARQUET
-    rows = _build_validated(source)
+    table = _build_validated(source)
     return ExportPayload(
-        data=serialize_dataset(rows, fmt),
+        data=serialize_dataset(table, fmt),
         fmt=fmt,
-        pages=len(rows),
-        sources=len({row["source"] for row in rows}),
+        pages=table.num_rows,
+        sources=len(table.column("source").unique()),
     )
 
 

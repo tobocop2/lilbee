@@ -837,10 +837,10 @@ class TestParseBool:
 
 
 class TestOcrTimeoutConfig:
-    def test_default_is_120(self, tmp_path) -> None:
+    def test_default_is_300(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.ocr_timeout == 120.0
+            assert c.ocr_timeout == 300.0
 
     def test_from_env(self) -> None:
         with mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "60.5"}):

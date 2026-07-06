@@ -15,11 +15,12 @@ from __future__ import annotations
 import functools
 import logging
 import re
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
@@ -29,10 +30,7 @@ from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
     is_connection_failure,
-)
-from lilbee.providers.fleet.replicas import (
-    gpu_device_count,
-    resolve_replica_count,
+    retry_on_busy,
 )
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import SwapManager, reap_stale, sweep_owned
@@ -80,6 +78,15 @@ _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # The server parses tool calls natively via ``--jinja``; this probe only decides
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
+# Ingest OCR is background work: back off and re-request a 429'd page rather
+# than dropping it from the index. Slot dispatch already prevents self-inflicted
+# 429s, so a busy response is a cold vision start (weights plus mmproj loading)
+# or foreign traffic. Capped backoff keeps the total wait near ~110s; a page
+# still busy after that fails like any extraction error.
+_VISION_BUSY_RETRIES = 18
+# How often a waiter blocked on full replicas re-polls their health: an
+# unhealthy replica re-admits itself by cool-down expiry, which notifies nobody.
+_DISPATCH_HEALTH_RECHECK_S = 0.5
 _T = TypeVar("_T")
 
 
@@ -206,58 +213,106 @@ def _supports_tools_cached(path_str: str, _mtime_ns: int) -> bool:
     return _TOOL_TEMPLATE_PATTERN.search(template) is not None
 
 
-class _VisionRequestGate:
-    """Process-wide cap on concurrent vision-server requests at the fleet's OCR slots.
+class _VisionReplica(NamedTuple):
+    """One vision server paired with its fitted ``--parallel`` slot count."""
 
-    The ingest file fan-out runs many files at once and xberg OCRs their pages
-    through per-image ``vision_ocr`` calls, so without a shared cap the aggregate
-    over-subscribes a single-replica vision server into a 429 storm. The semaphore is
-    rebuilt to the configured capacity (``vision_replicas * vision_ocr_concurrency``)
-    only while the gate is idle, so a capacity change never doubles the live cap.
+    client: LlamaServerClient
+    slots: int
+
+
+class _VisionDispatcher:
+    """Process-wide per-replica slot assignment for vision requests.
+
+    The ingest file fan-out runs many OCR requests at once; each request is
+    assigned one specific replica and only while that replica has a free
+    continuous-batching slot, so lilbee's own traffic can never oversubscribe a
+    vision server into a 429 (an aggregate cap plus racy least-busy routing
+    can). Requests past capacity wait in-process until any usable replica
+    frees a slot; unhealthy replicas take no new work until their half-open
+    cool-down re-admits them.
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._capacity = 0
-        self._in_flight = 0
-        self._semaphore: threading.BoundedSemaphore | None = None
+        self._cond = threading.Condition()
+        self._assigned: dict[LlamaServerClient, int] = {}
 
     @contextmanager
-    def slot(self) -> Iterator[None]:
-        """Hold one vision-request slot for the duration of the block.
-
-        The acquired semaphore is captured and released by this same call, so a
-        concurrent capacity change cannot release the wrong object.
-        """
-        sem = self._checkout()
-        # _checkout incremented _in_flight; decrement on every exit path,
-        # including one where acquire() raises, or a leaked count pins the gate
-        # non-idle and defers every later capacity resize forever.
+    def slot(self, pool: Sequence[_VisionReplica]) -> Iterator[LlamaServerClient]:
+        """Hold one batching slot on the pool's best replica; yields that client."""
+        client = self._acquire(pool)
         try:
-            sem.acquire()
-            try:
-                yield
-            finally:
-                sem.release()
+            yield client
         finally:
-            with self._lock:
-                self._in_flight -= 1
+            self._release(client)
 
-    def _checkout(self) -> threading.BoundedSemaphore:
-        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
-        capacity = max(1, replicas * cfg.vision_ocr_concurrency)
-        with self._lock:
-            # Resize only when idle: rebuilding while old-semaphore holders are
-            # in flight would briefly double the real cap, so a capacity change
-            # waits for the current batch to drain.
-            if self._semaphore is None or (self._capacity != capacity and self._in_flight == 0):
-                self._capacity = capacity
-                self._semaphore = threading.BoundedSemaphore(capacity)
-            self._in_flight += 1
-            return self._semaphore
+    def _acquire(self, pool: Sequence[_VisionReplica]) -> LlamaServerClient:
+        with self._cond:
+            while True:
+                client = self._pick(pool)
+                if client is not None:
+                    self._assigned[client] = self._assigned.get(client, 0) + 1
+                    return client
+                # The timed wait re-polls health: a replica can become routable
+                # again by cool-down expiry alone, which notifies no waiter.
+                self._cond.wait(timeout=_DISPATCH_HEALTH_RECHECK_S)
+
+    def _pick(self, pool: Sequence[_VisionReplica]) -> LlamaServerClient | None:
+        """The usable replica with the most free slots, or None while all are full.
+
+        Falls back to the full pool when every replica is unhealthy (mirrors
+        ``_least_in_flight``), so a dead pool surfaces the error instead of
+        queueing forever.
+        """
+        usable = [replica for replica in pool if replica.client.healthy] or list(pool)
+        best = max(usable, key=self._free_slots)
+        return best.client if self._free_slots(best) > 0 else None
+
+    def _free_slots(self, replica: _VisionReplica) -> int:
+        return replica.slots - self._assigned.get(replica.client, 0)
+
+    def _release(self, client: LlamaServerClient) -> None:
+        with self._cond:
+            remaining = self._assigned.get(client, 0) - 1
+            if remaining <= 0:
+                self._assigned.pop(client, None)
+            else:
+                self._assigned[client] = remaining
+            self._cond.notify_all()
 
 
-_VISION_GATE = _VisionRequestGate()
+_VISION_DISPATCHER = _VisionDispatcher()
+
+
+def _dispatch_vision(pool: Sequence[_VisionReplica], call: Callable[[LlamaServerClient], _T]) -> _T:
+    """Run *call* on a replica with a free batching slot, failing over once.
+
+    Blocks until a slot frees rather than racing requests at a full server. A
+    connection-level failure marks the replica unhealthy and retries once on
+    another replica's slot; with no other replica the failure surfaces.
+    """
+    with _VISION_DISPATCHER.slot(pool) as client:
+        try:
+            result = call(client)
+        except Exception as exc:
+            if not is_connection_failure(exc):
+                raise
+            client.mark_unhealthy()
+            failed, cause = client, exc
+        else:
+            client.mark_healthy()
+            return result
+    others = [replica for replica in pool if replica.client is not failed]
+    if not others:
+        raise _no_healthy_replica_error() from cause
+    with _VISION_DISPATCHER.slot(others) as retry_client:
+        try:
+            retry_result = call(retry_client)
+        except Exception as retry_exc:
+            if is_connection_failure(retry_exc):
+                retry_client.mark_unhealthy()
+            raise
+        retry_client.mark_healthy()
+        return retry_result
 
 
 def _vision_call(
@@ -269,7 +324,7 @@ def _vision_call(
     on one page (seen looping to tens of thousands of chars) can't dominate a
     scan's OCR time; a real page stays well under the cap. A timeout surfaces as
     a ``ProviderError`` so the page-level OCR caller can fail just that page.
-    Callers hold ``_VISION_GATE`` so queue time isn't billed against the timeout.
+    Callers hold a dispatcher slot, so queue time isn't billed against the timeout.
     """
 
     options = {"max_tokens": cfg.vision_ocr_max_tokens}
@@ -761,13 +816,35 @@ class FleetProvider:
         from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
         self._require_configured_model(model, str(cfg.vision_model), WorkerRole.VISION)
-        clients = self._require_clients(WorkerRole.VISION)
+        pool = self._vision_pool()
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
-        with _VISION_GATE.slot():
-            return _call_with_failover(
-                clients, lambda client: _vision_call(client, messages, timeout)
-            )
+        # Slot assignment makes a self-inflicted 429 impossible; a residual busy
+        # response is a still-warming server or foreign traffic. Backoff runs
+        # slot-free so a waiting sibling can use a replica that is ready.
+        return retry_on_busy(
+            lambda: _dispatch_vision(pool, lambda client: _vision_call(client, messages, timeout)),
+            retries=_VISION_BUSY_RETRIES,
+        )
+
+    def _vision_pool(self) -> list[_VisionReplica]:
+        """Each vision replica paired with its fitted ``--parallel`` slot count.
+
+        The fitted count can be lower than ``vision_ocr_concurrency`` when memory
+        forced a smaller fit; dispatching at the configured ceiling instead
+        over-subscribes that server. The configured ceiling applies per replica
+        only when no matching launch snapshot exists (a reload can momentarily
+        drop it between two reads).
+        """
+        clients = self._require_clients(WorkerRole.VISION)
+        launches = self._launches.get(WorkerRole.VISION)
+        if launches and len(launches) == len(clients):
+            return [
+                _VisionReplica(client, max(1, launch.slots))
+                for client, launch in zip(clients, launches, strict=True)
+            ]
+        fallback_slots = max(1, cfg.vision_ocr_concurrency)
+        return [_VisionReplica(client, fallback_slots) for client in clients]
 
     # PDF/image OCR now runs inside xberg via the registered lilbee-vision
     # backend (see data.ingest.vision_ocr_backend); this provider only exposes
@@ -890,8 +967,20 @@ class FleetProvider:
         try:
             self._ensure_fleet()
             self._preload_roles()
-        except Exception:
-            log.warning("Engine warm-up failed; roles will load on first use.", exc_info=True)
+        except Exception as exc:
+            if isinstance(exc, RuntimeError) and sys.is_finalizing():
+                # A fast CLI exit can tear down the interpreter while this daemon
+                # thread is still warming; pool submission then raises "cannot
+                # schedule new futures after interpreter shutdown". The process is
+                # leaving anyway, so drop it quietly instead of stack-tracing.
+                log.debug("Engine warm-up abandoned during interpreter shutdown: %s", exc)
+            else:
+                # A warm-up failure is handled (roles lazy-load on first use), so
+                # keep the full traceback at debug: a WARNING carrying exc_info
+                # reads like a crash for a condition the next real call recovers
+                # from.
+                log.warning("Engine warm-up failed; roles will load on first use: %s", exc)
+                log.debug("Engine warm-up failure detail.", exc_info=True)
         finally:
             with self._lock:
                 self._warming = False

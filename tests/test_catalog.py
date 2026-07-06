@@ -1766,7 +1766,7 @@ class TestVisionMmprojFiles:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """mmproj downloads go through the HF cache tree, not a flat local_dir.
-        Regression guard: previously _download_mmproj used ``local_dir=`` while
+        Regression guard: previously ``download_mmproj`` used ``local_dir=`` while
         the main download used ``cache_dir=``, producing two incompatible
         storage layouts under ``cfg.models_dir``.
         """
@@ -1839,7 +1839,7 @@ class TestVisionMmprojFallback:
     ) -> None:
         """When HF returns a cached mmproj (no tqdm invocation) the callback still fires.
         Regression guard for the ``not tracker.was_used`` cache-hit branch in
-        ``_download_mmproj``: without it, callers see 0% progress for the
+        ``download_mmproj``: without it, callers see 0% progress for the
         mmproj leg even though the file is fully present on disk.
         """
         monkeypatch.setattr(cfg, "models_dir", tmp_path)

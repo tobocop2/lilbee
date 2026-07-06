@@ -413,138 +413,202 @@ def test_vision_call_caps_output_tokens(monkeypatch) -> None:
     assert client.chat.call_args.kwargs["options"] == {"max_tokens": 4096}
 
 
-def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
-    # The gate must cap in-flight vision requests at the fleet's real OCR capacity
-    # (replicas x per-server slots) and rebuild to a new capacity while idle.
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
-    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
-    monkeypatch.setattr(cfg, "vision_replicas", 3)
+def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
+    # A 429 mid-ingest is transient (cold replicas, slot contention); the vision
+    # path must back off and retry so the page is ingested, not dropped.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    client = _fake_client()
+    client.chat.side_effect = [busy, busy, "ocr text"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert client.chat.call_count == 3
+
+
+def test_vision_ocr_gives_up_when_persistently_busy(monkeypatch) -> None:
+    # The retry budget is bounded; a fleet that never frees a slot fails the page.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    client.chat.side_effect = ProviderError(
+        "busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT
+    )
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError) as excinfo:
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert client.chat.call_count == prov_mod._VISION_BUSY_RETRIES
+
+
+def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
+    # A genuine extraction failure must surface immediately, not burn the budget.
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    client.chat.side_effect = ProviderError("boom", provider="llama-server")
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError, match="boom"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert client.chat.call_count == 1
+
+
+def test_vision_pool_pairs_each_replica_with_its_fitted_slots(monkeypatch) -> None:
+    # Dispatch admits per replica at the servers' fitted --parallel slots: planning
+    # can fit fewer slots than vision_ocr_concurrency asks for, and admitting more
+    # than the real slot count oversubscribes that server into a 429 storm.
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 16)
+    first_client, second_client = _fake_client(), _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [first_client, second_client]})
+    p._launches[WorkerRole.VISION] = (
+        _fake_launch(WorkerRole.VISION, slots=3),
+        _fake_launch(WorkerRole.VISION, slots=2, replica=1),
+    )
+    assert p._vision_pool() == [
+        prov_mod._VisionReplica(first_client, 3),
+        prov_mod._VisionReplica(second_client, 2),
+    ]
+
+
+def test_vision_pool_falls_back_to_configured_slots(monkeypatch) -> None:
+    # Without a launch snapshot (mid-reload) the configured per-server ceiling holds.
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
-    with prov_mod._VISION_GATE.slot():
-        first = prov_mod._VISION_GATE._semaphore
-    assert prov_mod._VISION_GATE._capacity == 12
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    with prov_mod._VISION_GATE.slot():
-        assert prov_mod._VISION_GATE._semaphore is not first  # rebuilt while idle
-    assert prov_mod._VISION_GATE._capacity == 4
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    assert p._vision_pool() == [prov_mod._VisionReplica(client, 4)]
 
 
-def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
-    # Resizing the gate while a request is in flight would build a
-    # fresh full-capacity semaphore beside the old holders and momentarily double
-    # the real cap. The resize must wait until the gate drains to idle.
-    import threading
-
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
-    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
-
-    entered = threading.Event()
-    release = threading.Event()
-    held: list[object] = []
-
-    def _hold() -> None:
-        with prov_mod._VISION_GATE.slot():
-            held.append(prov_mod._VISION_GATE._semaphore)
-            entered.set()
-            release.wait(timeout=5)
-
-    worker = threading.Thread(target=_hold)
-    worker.start()
-    try:
-        assert entered.wait(timeout=5)
-        # Capacity change arrives mid-flight; a checkout must reuse the live
-        # semaphore rather than swap, so the cap is never doubled.
-        monkeypatch.setattr(cfg, "vision_replicas", 4)
-        reused = prov_mod._VISION_GATE._checkout()
-        try:
-            assert reused is held[0]
-            assert prov_mod._VISION_GATE._capacity == 2
-        finally:
-            with prov_mod._VISION_GATE._lock:  # balance the raw _checkout increment
-                prov_mod._VISION_GATE._in_flight -= 1
-    finally:
-        release.set()
-        worker.join()
-
-    # Once idle again, the next checkout applies the deferred capacity.
-    with prov_mod._VISION_GATE.slot():
-        assert prov_mod._VISION_GATE._capacity == 8
+def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
+    # A launch snapshot that no longer matches the client pool (mid-reload race)
+    # must not misassign slot counts; the configured ceiling applies instead.
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+    clients = [_fake_client(), _fake_client()]
+    p = _provider_with_clients({WorkerRole.VISION: clients})
+    p._launches[WorkerRole.VISION] = (_fake_launch(WorkerRole.VISION, slots=3),)
+    assert [replica.slots for replica in p._vision_pool()] == [4, 4]
 
 
-def test_vision_gate_slot_decrements_in_flight_when_acquire_raises(monkeypatch) -> None:
-    # If acquire() raises (e.g. an interrupted blocking acquire), the in-flight
-    # counter must still be decremented, or a leaked count would pin the gate
-    # non-idle and defer every later capacity resize forever.
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
-    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
-
-    real_checkout = prov_mod._VISION_GATE._checkout
-
-    class _BoomSemaphore:
-        def acquire(self) -> None:
-            raise KeyboardInterrupt
-
-    def _checkout_returning_boom():
-        real_checkout()  # increments _in_flight like the real path
-        return _BoomSemaphore()
-
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_checkout", _checkout_returning_boom)
-
-    with pytest.raises(KeyboardInterrupt), prov_mod._VISION_GATE.slot():
-        pass  # pragma: no cover - acquire raises before the body
-
-    assert prov_mod._VISION_GATE._in_flight == 0  # counter not leaked
-
-
-def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
-    # The ingest file fan-out can launch far more concurrent OCR requests than the
-    # vision server has slots; the gate (held by every vision entry point) caps
-    # concurrent holders at vision_replicas * vision_ocr_concurrency so a
-    # single-replica server isn't 429-stormed. All callers still run.
+def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
+    # The ingest fan-out can launch far more concurrent OCR requests than the
+    # servers have slots; the dispatcher assigns a request to a replica only while
+    # that replica has a free slot, so no server can ever be oversubscribed by
+    # lilbee's own traffic. All callers still run.
     import threading
     import time
 
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
-    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
+    dispatcher = prov_mod._VisionDispatcher()
+    replica_a, replica_b = _fake_client(), _fake_client()
+    pool = [prov_mod._VisionReplica(replica_a, 2), prov_mod._VisionReplica(replica_b, 1)]
 
     lock = threading.Lock()
-    live = 0
-    peak = 0
+    live: dict[int, int] = {}
+    peaks: dict[int, int] = {}
     ran = 0
 
     def _hold() -> None:
-        nonlocal live, peak, ran
-        with prov_mod._VISION_GATE.slot():
+        nonlocal ran
+        with dispatcher.slot(pool) as client:
+            key = id(client)
             with lock:
-                live += 1
-                peak = max(peak, live)
+                live[key] = live.get(key, 0) + 1
+                peaks[key] = max(peaks.get(key, 0), live[key])
             time.sleep(0.02)
             with lock:
-                live -= 1
+                live[key] -= 1
                 ran += 1
 
-    threads = [threading.Thread(target=_hold) for _ in range(8)]
+    threads = [threading.Thread(target=_hold) for _ in range(9)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
 
-    assert peak == 2  # the cap is both reached and never exceeded
-    assert ran == 8  # every caller ran, just serialized through the gate
+    assert ran == 9  # every caller ran, queued in-process instead of 429ing
+    assert peaks[id(replica_a)] <= 2 and peaks[id(replica_b)] <= 1  # per-replica cap
+    assert set(peaks) == {id(replica_a), id(replica_b)}  # both replicas pulled work
+
+
+def test_vision_dispatcher_prefers_replica_with_most_free_slots() -> None:
+    # Balanced routing drains fastest: the next request goes to the replica with
+    # the most free slots, not to whichever raced ahead.
+    dispatcher = prov_mod._VisionDispatcher()
+    roomy, tight = _fake_client(), _fake_client()
+    pool = [prov_mod._VisionReplica(tight, 1), prov_mod._VisionReplica(roomy, 3)]
+    with dispatcher.slot(pool) as first, dispatcher.slot(pool) as second:
+        assert first is roomy  # 3 free beats 1
+        assert second is roomy  # still 2 free vs 1
+        with dispatcher.slot(pool) as third:
+            assert third is tight  # 1 free each; the earlier pool entry wins the tie
+
+
+def test_vision_dispatcher_skips_unhealthy_replica() -> None:
+    # A replica marked unhealthy takes no new assignments; its slots are dead
+    # weight until the half-open cooldown re-admits it.
+    dispatcher = prov_mod._VisionDispatcher()
+    dead, alive = _fake_client(), _fake_client()
+    dead.healthy = False
+    pool = [prov_mod._VisionReplica(dead, 4), prov_mod._VisionReplica(alive, 1)]
+    with dispatcher.slot(pool) as client:
+        assert client is alive
+
+
+def test_vision_dispatcher_falls_back_when_all_unhealthy() -> None:
+    # With every replica unhealthy the dispatcher still assigns (mirrors
+    # _least_in_flight): the call surfaces the error instead of queueing forever,
+    # and a success restores the replica.
+    dispatcher = prov_mod._VisionDispatcher()
+    dead = _fake_client()
+    dead.healthy = False
+    pool = [prov_mod._VisionReplica(dead, 1)]
+    with dispatcher.slot(pool) as client:
+        assert client is dead
+
+
+def test_dispatch_vision_fails_over_and_marks_health() -> None:
+    # A connection-dead replica is marked unhealthy and the request retries once
+    # on another replica, mirroring _call_with_failover.
+    import httpx as _httpx
+
+    from lilbee.providers.base import ProviderError
+
+    dead, alive = _fake_client(), _fake_client()
+    dead.chat.side_effect = _httpx.ConnectError("refused")
+    alive.chat.return_value = "ocr text"
+    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(alive, 1)]
+    result = prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    assert result == "ocr text"
+    dead.mark_unhealthy.assert_called_once()
+    alive.mark_healthy.assert_called_once()
+
+    # With no other replica the failure surfaces as the no-replica error.
+    lone = _fake_client()
+    lone.chat.side_effect = _httpx.ConnectError("refused")
+    with pytest.raises(ProviderError, match="no healthy replica"):
+        prov_mod._dispatch_vision(
+            [prov_mod._VisionReplica(lone, 1)],
+            lambda c: c.chat([], options={}, stream=False),
+        )
+
+
+def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
+    # The failover leg stamps health too: a second dead replica is marked
+    # unhealthy and the failure propagates.
+    import httpx as _httpx
+
+    dead_a, dead_b = _fake_client(), _fake_client()
+    dead_a.chat.side_effect = _httpx.ConnectError("refused")
+    dead_b.chat.side_effect = _httpx.ConnectError("refused")
+    pool = [prov_mod._VisionReplica(dead_a, 2), prov_mod._VisionReplica(dead_b, 1)]
+    with pytest.raises(_httpx.ConnectError):
+        prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False))
+    dead_a.mark_unhealthy.assert_called_once()
+    dead_b.mark_unhealthy.assert_called_once()
 
 
 def test_chat_streams_from_server() -> None:
@@ -1037,6 +1101,26 @@ def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) 
     assert p._swaps == {}
     assert p._warming is False  # guard cleared so a later warm-up can retry
     assert "warm-up failed" in caplog.text.lower()
+    # The handled failure must not carry a traceback: a WARNING with exc_info
+    # reads like a crash for a condition the next real call recovers from.
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings and all(r.exc_info is None for r in warnings)
+
+
+def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
+    # A fast CLI exit tears down the interpreter mid-warm; the pool submit then
+    # raises RuntimeError. During finalization this must be dropped quietly, not
+    # logged as a scary WARNING traceback.
+    def _shutdown_race() -> list:
+        raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _shutdown_race)
+    monkeypatch.setattr("lilbee.providers.fleet.provider.sys.is_finalizing", lambda: True)
+    p = FleetProvider()
+    with caplog.at_level("WARNING", logger="lilbee.providers.fleet.provider"):
+        p._warm_up_blocking()
+    assert p._warming is False
+    assert "warm-up failed" not in caplog.text.lower()  # no WARNING on shutdown
 
 
 def test_preload_roles_warms_each_role_and_fires_listeners(monkeypatch) -> None:

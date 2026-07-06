@@ -42,7 +42,7 @@ _retry_skipped_option = typer.Option(
 _ocr_timeout_option = typer.Option(
     None,
     "--ocr-timeout",
-    help="Per-page timeout in seconds for vision OCR (default: 120, 0 = no limit).",
+    help="Per-page timeout in seconds for vision OCR (default: 300, 0 = no limit).",
 )
 
 

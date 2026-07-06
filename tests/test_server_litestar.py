@@ -1627,6 +1627,21 @@ class TestSessionManagerFailClosed:
         with pytest.raises(NotAuthorizedException):
             mgr.validate("Bearer anything")
 
+    def test_cleanup_tolerates_locked_token_file(self, monkeypatch):
+        # A still-open handle on Windows makes unlink raise PermissionError;
+        # shutdown cleanup is best-effort and must not crash the lifespan exit.
+        from pathlib import Path
+
+        from lilbee.server.auth import SessionManager
+
+        def _locked(self, missing_ok=False):
+            raise PermissionError(13, "Access is denied")
+
+        monkeypatch.setattr(Path, "unlink", _locked)
+        mgr = SessionManager()
+        mgr.cleanup()  # must not raise
+        assert mgr.token is None
+
     def test_disable_allows_any_header(self):
         from lilbee.server.auth import SessionManager
 

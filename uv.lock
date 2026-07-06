@@ -1613,7 +1613,7 @@ wheels = [
 
 [[package]]
 name = "lilbee"
-version = "0.6.66b506"
+version = "0.6.90b420.dev710"
 source = { editable = "." }
 dependencies = [
     { name = "diskcache" },
@@ -1666,6 +1666,7 @@ release = [
 dev = [
     { name = "httpx" },
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1692,9 +1693,9 @@ requires-dist = [
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
     { name = "lilbee-engine", directory = "packaging/engine-wheel" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0,<1.92" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "mcp", specifier = ">=1.26.0" },
+    { name = "mcp", specifier = ">=1.26.0,<2" },
     { name = "numpy" },
     { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuda12'" },
     { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuda12'" },
@@ -1709,7 +1710,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
-    { name = "xberg", path = "../../../../kreuzberg/dist/xberg-1.0.0rc9-cp310-abi3-macosx_11_0_arm64.whl" },
+    { name = "xberg", path = "../../../Users/tobias/projects/kreuzberg/dist/xberg-1.0.0rc9-cp310-abi3-macosx_11_0_arm64.whl" },
 ]
 provides-extras = ["litellm", "graph", "crawler", "cuda12", "release"]
 
@@ -1717,6 +1718,7 @@ provides-extras = ["litellm", "graph", "crawler", "cuda12", "release"]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", specifier = ">=1.19.1" },
+    { name = "packaging", specifier = ">=24" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -4451,7 +4453,7 @@ wheels = [
 [[package]]
 name = "xberg"
 version = "1.0.0rc9"
-source = { path = "../../../../kreuzberg/dist/xberg-1.0.0rc9-cp310-abi3-macosx_11_0_arm64.whl" }
+source = { path = "../../../Users/tobias/projects/kreuzberg/dist/xberg-1.0.0rc9-cp310-abi3-macosx_11_0_arm64.whl" }
 wheels = [
     { filename = "xberg-1.0.0rc9-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:86b4248c863f69a9fe575f49ceaddeb395882115c11ef1598cd2ed49748f9a7c" },
 ]

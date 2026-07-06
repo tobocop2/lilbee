@@ -57,6 +57,9 @@ jobs:
 
     env:
       BACKEND: ${{ matrix.backend }}
+      # Hosted runners have ~7GB RAM; two parallel CUDA/ROCm compile jobs is the
+      # most that fits. Beefier self-hosted builders override this.
+      ENGINE_BUILD_JOBS: "2"
       LLAMA_BUILD_DIR: "/tmp/llama-build"
       LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -66,6 +69,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.ref }}
+
+      # MSVC FileTracker dies past MAX_PATH; /tmp maps under AppData and overflows.
+      - name: Use a short build path (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LLAMA_BUILD_DIR=/c/lb" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v6

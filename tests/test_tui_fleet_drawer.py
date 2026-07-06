@@ -188,6 +188,42 @@ class _FleetTabApp(LilbeeAppHost):
         yield FleetBody()
 
 
+class _RecordingFleetApp(LilbeeAppHost):
+    """Host that records PlacementReloading messages bubbled from its FleetBody."""
+
+    CSS = ""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reload_events: list[bool] = []
+
+    def compose(self) -> ComposeResult:
+        from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+        yield FleetBody()
+
+    def on_fleet_body_placement_reloading(self, event) -> None:
+        self.reload_events.append(event.active)
+
+
+@pytest.mark.asyncio
+async def test_fleet_body_applying_emits_reloading_message(_patched):
+    """Toggling `applying` posts PlacementReloading so the chat screen can hold
+    submissions during the reload."""
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    app = _RecordingFleetApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        app.reload_events.clear()
+        body.applying = True
+        await pilot.pause()
+        body.applying = False
+        await pilot.pause()
+        assert app.reload_events == [True, False]
+
+
 @pytest.mark.asyncio
 async def test_ctrl_g_noop_when_placement_already_shown(_patched):
     """On the Fleet tab (FleetBody already visible) ctrl+g does not add a drawer."""

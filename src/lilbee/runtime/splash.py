@@ -37,6 +37,10 @@ _active_handle: SplashHandle | None = None
 
 def _should_skip() -> bool:
     """Return True when the splash animation should be suppressed."""
+    if sys.platform == "win32":
+        # The splash hands its child a pipe fd via pass_fds, which subprocess
+        # does not support on Windows.
+        return True
     if not os.isatty(2):
         return True
     return bool(os.environ.get("LILBEE_NO_SPLASH", ""))

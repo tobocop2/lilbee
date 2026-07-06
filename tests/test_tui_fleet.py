@@ -152,6 +152,56 @@ async def test_toggle_device_updates_spec(monkeypatch):
         assert '"embed": {"devices": [0, 2]}' in _generated(app)
 
 
+def _make_split_view():  # type: ignore[no-untyped-def]
+    """A view whose chat role carries a manual, uneven tensor split across CUDA1+2."""
+    from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=tuple(
+            GpuInfo(i, "CUDA", f"CUDA{i}", "NVIDIA A40", 44 * GIB, 44 * GIB) for i in range(4)
+        ),
+        roles=(RolePlacementView(WorkerRole.CHAT, "org/chat.gguf", (1, 2), (3, 1), 1),),
+        unplaceable=(),
+        manual=True,
+        spec_json=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_editor_preserves_manual_tensor_split_when_unedited(monkeypatch):
+    """A loaded manual split is re-emitted verbatim, so re-applying an untouched
+    placement doesn't fall back to an even split that OOMs unequal cards."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", _make_split_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        spec = app.screen.query_one(FleetBody)._spec_from_editor()
+        assert spec.roles[WorkerRole.CHAT].tensor_split == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_editing_devices_clears_stale_tensor_split(monkeypatch):
+    """Toggling a role's devices drops the loaded split: its length no longer fits
+    the new card set, so the planner re-derives a capacity split."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", _make_split_view)
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await _toggle_device(pilot, "#dev-chat-3")  # chat now on CUDA1+2+3
+        spec = app.screen.query_one(FleetBody)._spec_from_editor()
+        assert spec.roles[WorkerRole.CHAT].devices == (1, 2, 3)
+        assert spec.roles[WorkerRole.CHAT].tensor_split is None
+
+
 @pytest.mark.asyncio
 async def test_cannot_remove_last_device(monkeypatch):
     """A role must keep at least one GPU; toggling its only device is a no-op."""

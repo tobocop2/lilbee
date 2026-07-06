@@ -44,11 +44,11 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
 
     ``chunk_size`` is token-denominated but the chunker enforces a CHARACTER
     budget (``chunk_size * CHARS_PER_TOKEN``). A BPE token is at least one
-    character, so that char budget is also the PROVABLE token ceiling for any
+    character, so that char budget is also the provable token ceiling for any
     chunk the chunker can emit: size the context to it and embed-time
-    truncation becomes impossible, not merely rare. (Observed live before the
-    fix: numeric-table chunks at ~1.5 chars/token reached 1982 tokens against a
-    2x-chunk_size cap and lost their tails -- silently unsearchable text.)"""
+    truncation becomes impossible. Token-dense text (numeric tables, dense
+    identifiers) otherwise reaches ~2x chunk_size tokens against a 1x cap and
+    silently loses its tail at embed time."""
     from lilbee.data.chunk import CHARS_PER_TOKEN
 
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)

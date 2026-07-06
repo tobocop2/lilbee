@@ -61,3 +61,7 @@ reason = "False positive against nltk 3.9.4. OSV advisory CVE-2026-0846 fixes th
 [[IgnoredVulns]]
 id = "GHSA-p4gq-832x-fm9v"
 reason = "Path traversal in nltk.data.load() via URL-encoded path separators (CVE-2026-54293). All nltk <= 3.9.4 are affected and no fixed version has been published to PyPI (3.9.4 is the latest release; 3.10.0 is still a pre-release). nltk is pulled in transitively by crawl4ai under the `crawler` extra; lilbee never imports nltk, and crawl4ai only calls it with hardcoded resource names (e.g. `tokenizers/punkt`) while crawled text is passed to sent_tokenize/word_tokenize as data, never as a resource path, so the attacker-controlled-path vector is unreachable. The Dependabot alert is dismissed as tolerable risk; bb-m851 tracks the bump to nltk >= 3.10 once it ships."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-597"
+reason = "nltk path traversal, second advisory for the incomplete #3504 fix (percent-encoded ..%2f bypass of _UNSAFE_NO_PROTOCOL_RE; alias CVE-2026-12243). Same triage as GHSA-p4gq-832x-fm9v: no fixed nltk release exists (3.9.4 is latest), nltk arrives transitively via crawl4ai under the crawler extra, lilbee never imports nltk, and crawl4ai only loads hardcoded resource names while crawled text flows in as tokenizer data, never as a resource path, so the attacker-controlled-path vector is unreachable. bb-m851 tracks the bump once nltk >= 3.10 ships."

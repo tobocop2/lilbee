@@ -5,7 +5,7 @@ Typed pydantic models so Litestar's OpenAPI schema has field-level detail.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -14,6 +14,9 @@ from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
+
+if TYPE_CHECKING:
+    from lilbee.app.placement import PlacementView
 
 
 def decode_chunk_type(value: str | None) -> ChunkType | None:
@@ -603,6 +606,26 @@ class PlacementResponse(BaseModel):
     unplaceable: list[str]
     manual: bool
     spec_json: str | None
+
+    @classmethod
+    def from_view(cls, view: PlacementView) -> PlacementResponse:
+        """The canonical serialized placement view, shared by the HTTP, MCP, and CLI surfaces."""
+        return cls(
+            gpus=[GpuInfoResponse(**vars(g)) for g in view.gpus],
+            roles=[
+                RolePlacementResponse(
+                    role=r.role,
+                    model=r.model,
+                    devices=list(r.devices),
+                    tensor_split=list(r.tensor_split) if r.tensor_split else None,
+                    replicas=r.replicas,
+                )
+                for r in view.roles
+            ],
+            unplaceable=[r.value for r in view.unplaceable],
+            manual=view.manual,
+            spec_json=view.spec_json,
+        )
 
 
 class PlacementSpecBody(BaseModel):

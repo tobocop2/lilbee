@@ -32,9 +32,11 @@ _FLAG_SPLIT_MODE = "--split-mode"
 _SPLIT_MODE_LAYER = "layer"
 _FLAG_JSON = "--json"
 
-# gguf-parser JSON keys (estimate.items[0] carries the per-instance footprint).
+# gguf-parser JSON keys: the per-instance footprint lives under estimate.items
+# (v0.24.x) or estimate.memory (upstream's post-v0.24.1 rename of the same list).
 _KEY_ESTIMATE = "estimate"
 _KEY_ITEMS = "items"
+_KEY_MEMORY = "memory"
 _KEY_RAM = "ram"
 _KEY_VRAMS = "vrams"
 _KEY_UMA = "uma"
@@ -217,9 +219,15 @@ def _run_parser(argv: list[str], path_str: str) -> str:
 
 
 def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
-    """Parse gguf-parser JSON into a UMA-aware footprint."""
+    """Parse gguf-parser JSON into a UMA-aware footprint.
+
+    Accepts both estimate payload keys: ``items`` (the pinned v0.24.x releases)
+    and ``memory`` (upstream renamed the key after v0.24.1), so an engine built
+    past the pin still sizes instead of failing every launch plan.
+    """
     try:
-        item = json.loads(stdout)[_KEY_ESTIMATE][_KEY_ITEMS][0]
+        estimate = json.loads(stdout)[_KEY_ESTIMATE]
+        item = (estimate.get(_KEY_ITEMS) or estimate[_KEY_MEMORY])[0]
         ram = item[_KEY_RAM]
         vrams = item[_KEY_VRAMS]
         per_device_vram = tuple(int(v[_KEY_NONUMA]) for v in vrams)
@@ -233,7 +241,8 @@ def _parse_estimate(stdout: str, path_str: str) -> GgufVramEstimate:
         )
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise ProviderError(
-            f"Could not size the model {path_str!r}: estimator returned no usable result.",
+            f"Could not size the model {path_str!r}: unexpected estimator output "
+            f"({type(exc).__name__}: {exc}).",
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from exc

@@ -1,6 +1,6 @@
 [project]
 name = "lilbee"
-version = "0.6.66b506"
+version = "0.6.90b420.dev710"
 description = "Run and manage local AI models, then search your files, code, and the web pages you crawl, with answers that cite the source. Everything runs on your machine in one process: per-project libraries, semantic and hybrid search, vision OCR, an auto-built wiki, CLI, TUI, MCP server, REST API, and Python library. No model server, no database server. Works with your own Ollama or LM Studio models too."
 readme = "README.md"
 license = "MIT"
@@ -41,7 +41,9 @@ dependencies = [
     "typer>=0.12",
     "tiktoken",
     "textual>=0.75",
-    "mcp>=1.26.0",
+    # mcp <2: the 2.x line is a breaking rewrite still in beta; the beta
+    # channel's --prerelease=allow would resolve to 2.0.0b1 otherwise.
+    "mcp>=1.26.0,<2",
     "pillow>=11.3.0",
     "litestar>=2.0",
     "uvicorn>=0.30",
@@ -58,7 +60,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.84.0"]
+# litellm <1.92: 1.92+ ships compiled (maturin) manylinux-only wheels, and the
+# beta channel's --prerelease=allow would resolve to 1.92.0rc1, whose sdist
+# fails to build on Windows/macOS. Raise the cap once litellm publishes wheels
+# for all supported platforms again.
+litellm = ["litellm>=1.84.0,<1.92"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.9.0"]
 # The CUDA 12 runtime the bundled llama-server links, from NVIDIA's official PyPI
@@ -105,6 +111,7 @@ xberg = { path = "/Users/tobias/projects/kreuzberg/dist/xberg-1.0.0rc9-cp310-abi
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
+    "packaging>=24",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",

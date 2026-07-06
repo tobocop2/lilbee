@@ -16,6 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _LIST_DEVICES_TIMEOUT_S = 60.0
+_TOPO_TIMEOUT_S = 15.0
+_GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
+# nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
+# not a tty; strip them or the header's GPU labels never match.
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+# A topo-matrix header is 2+ leading GPU labels; a data row has exactly one. And
+# a link needs at least two GPUs to exist between.
+_TOPO_MIN_GPUS = 2
 MIB = 1024 * 1024
 # Per-backend visible-devices env vars (the probe inherits them; the children
 # re-emit them, composed through any parent restriction).
@@ -45,6 +53,63 @@ class FleetDevice:
     name: str
     total_bytes: int
     free_bytes: int
+
+
+def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
+    """GPU row indices and NVLink-joined pairs from ``nvidia-smi topo -m`` output.
+
+    The matrix header row labels the GPU columns; each ``GPU<r>`` row lists the
+    link type to each column (``NV#`` is NVLink; ``PIX``/``PHB``/``SYS`` are PCIe).
+    """
+    header_cols: list[int] = []
+    gpu_rows: set[int] = set()
+    pairs: set[frozenset[int]] = set()
+    for line in _ANSI_SGR_RE.sub("", topo_text).splitlines():
+        tokens = line.split()
+        # Leading run of GPU-label tokens: the header is all labels (>=2), a data
+        # row is one label ("GPU3") followed by link-type cells. split() strips the
+        # header's leading whitespace, so this run length is what tells them apart.
+        leading_labels: list[int] = []
+        for token in tokens:
+            match = _GPU_LABEL_RE.match(token)
+            if match is None:
+                break
+            leading_labels.append(int(match.group(1)))
+        if len(leading_labels) >= _TOPO_MIN_GPUS:
+            header_cols = leading_labels
+        elif len(leading_labels) == 1:
+            row_idx = leading_labels[0]
+            gpu_rows.add(row_idx)
+            for col_idx, cell in zip(header_cols, tokens[1:], strict=False):
+                if row_idx != col_idx and cell.startswith("NV"):
+                    pairs.add(frozenset({row_idx, col_idx}))
+    return gpu_rows, pairs
+
+
+def host_lacks_nvlink() -> bool:
+    """Whether this host's GPUs are joined only by PCIe (no NVLink anywhere).
+
+    Tensor-splitting a large model across PCIe-only cards is all-reduce bound and
+    much slower than over NVLink. Deliberately a host-level claim: the fleet's
+    device indices live in the serving binary's backend index space, which does
+    not map onto ``nvidia-smi``'s physical numbering under a visible-devices
+    restriction (the very hazard this module exists to avoid), so per-pair
+    verdicts against plan indices would be unreliable. Returns False (no claim)
+    when the probe fails or reports fewer than two GPUs, so a non-NVIDIA or
+    single-card host stays silent rather than warning wrongly.
+    """
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "topo", "-m"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=_TOPO_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    gpu_rows, pairs = _parse_topo_matrix(proc.stdout)
+    return len(gpu_rows) >= _TOPO_MIN_GPUS and not pairs
 
 
 def _probe_env() -> dict[str, str]:

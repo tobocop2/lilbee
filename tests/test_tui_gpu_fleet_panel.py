@@ -62,10 +62,23 @@ class _PanelHost(LilbeeAppHost):
         yield GpuFleetPanel()
 
 
+def test_panel_initial_content_is_loading_not_empty() -> None:
+    """Before the first probe returns the panel shows a loading state, not the
+    empty-GPUs text, so a multi-GPU box doesn't flash '(no GPUs detected)'."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    panel = GpuFleetPanel()
+    content = str(panel.render())
+    assert msg.FLEET_GPU_PROBING in content
+    assert msg.FLEET_NO_GPUS not in content
+
+
 @pytest.mark.asyncio
 async def test_panel_renders_empty_state_with_no_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without any devices the panel shows the empty-state text."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 
     monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
@@ -75,7 +88,7 @@ async def test_panel_renders_empty_state_with_no_devices(monkeypatch: pytest.Mon
         await pilot.pause()
         panel = app.query_one(GpuFleetPanel)
         rendered = str(panel.render())
-        assert panel_mod._EMPTY_TEXT in rendered
+        assert msg.FLEET_NO_GPUS in rendered
 
 
 @pytest.mark.asyncio
