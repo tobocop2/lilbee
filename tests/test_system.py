@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from lilbee.core import system as system_mod
 from lilbee.core.system import (
     _mount_fstype,
     chat_ctx_target_for_total_bytes,
@@ -38,31 +39,29 @@ class TestNetworkPath:
         mounts = "garbage\n/dev/sda1 / ext4 rw 0 0\n"
         assert _mount_fstype("/x/y.gguf", mounts) == "ext4"
 
-    def test_is_network_path_true_for_nfs(self, monkeypatch):
-        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
-        monkeypatch.setattr(Path, "resolve", lambda self: Path("/workspace/models/m.gguf"))
+    @pytest.fixture
+    def mounts_file(self, tmp_path, monkeypatch):
+        """Point the module's /proc/mounts seam at a test-controlled file."""
+        mounts = tmp_path / "mounts"
+        mounts.write_text(_MOUNTS)
+        monkeypatch.setattr(system_mod, "_PROC_MOUNTS", mounts)
+        return mounts
+
+    def test_is_network_path_true_for_nfs(self, mounts_file):
         assert is_network_path(Path("/workspace/models/m.gguf")) is True
 
-    def test_is_network_path_true_for_fuse_network(self, monkeypatch):
-        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
-        monkeypatch.setattr(Path, "resolve", lambda self: Path("/mnt/mfs/m.gguf"))
+    def test_is_network_path_true_for_fuse_network(self, mounts_file):
         assert is_network_path(Path("/mnt/mfs/m.gguf")) is True
 
-    def test_is_network_path_false_for_local(self, monkeypatch):
-        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
-        monkeypatch.setattr(Path, "resolve", lambda self: Path("/workspace/index/m.gguf"))
+    def test_is_network_path_false_for_local(self, mounts_file):
         assert is_network_path(Path("/workspace/index/m.gguf")) is False
 
-    def test_is_network_path_false_when_mounts_unreadable(self, monkeypatch):
-        def _raise(self, **_k):
-            raise OSError("no /proc/mounts")
-
-        monkeypatch.setattr(Path, "read_text", _raise)
+    def test_is_network_path_false_when_mounts_unreadable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(system_mod, "_PROC_MOUNTS", tmp_path / "missing")
         assert is_network_path(Path("/anything")) is False
 
-    def test_is_network_path_uses_raw_path_when_resolve_fails(self, monkeypatch):
-        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
-
+    def test_is_network_path_uses_raw_path_when_resolve_fails(self, mounts_file, monkeypatch):
+        # Path.resolve has no injectable seam, so this one branch patches it.
         def _raise(self):
             raise OSError("resolve failed")
 

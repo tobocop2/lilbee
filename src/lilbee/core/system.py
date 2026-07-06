@@ -122,6 +122,7 @@ _NETWORK_FS_TYPES = frozenset(
 )
 # A /proc/mounts line is "device mountpoint fstype options ...": at least 3 fields.
 _PROC_MOUNTS_MIN_FIELDS = 3
+_PROC_MOUNTS = Path("/proc/mounts")
 
 
 def _mount_fstype(path: str, mounts_text: str) -> str:
@@ -148,7 +149,7 @@ def is_network_path(path: Path) -> bool:
     safe assumption.
     """
     try:
-        mounts_text = Path("/proc/mounts").read_text(encoding="utf-8")
+        mounts_text = _PROC_MOUNTS.read_text(encoding="utf-8")
     except OSError:
         return False
     try:
