@@ -76,6 +76,25 @@ jobs:
             echo "ref=${REF}"
           } >> "$GITHUB_OUTPUT"
 
+  # Fast fail-first gate: lock consistency, lint, and formatting in a few
+  # minutes, so a trivial breakage never burns hours of the executable matrix
+  # before surfacing. release.yml still runs its full gate (with tests) behind
+  # this for the binaries themselves.
+  checks:
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - run: make lint
+      - run: make format-check
+
   build-default-wheels:
     needs: [resolve, create-prerelease]
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-prerelease.result != 'failure' }}
@@ -115,8 +134,10 @@ jobs:
     secrets: inherit
 
   build-cuda:
-    needs: [resolve, create-prerelease]
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-prerelease.result != 'failure' }}
+    # Gated on checks: these are the longest cells (nvcc + Nuitka, hours each)
+    # and have no internal lint gate of their own.
+    needs: [resolve, create-prerelease, checks]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.checks.result == 'success' && needs.create-prerelease.result != 'failure' }}
     uses: ./.github/workflows/build-cuda-executables.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
@@ -149,9 +170,11 @@ jobs:
   # with this run's id passed as wheel_run_id / binary_run_id) when you want
   # to validate a candidate against the full QA grid.
 
-  # Auto-dispatch publish.yml the moment default wheels + sdist are built.
+  # Auto-dispatch publish.yml once every core artifact is attached to the
+  # release. Dispatching earlier (on wheels alone) raced the executable cells
+  # and made publish.yml's guard refuse a half-attached release.
   dispatch-publish:
-    needs: [resolve, build-default-wheels]
+    needs: [resolve, attach-prerelease]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -218,12 +241,6 @@ jobs:
         with:
           pattern: wheel-multigpu-*
           path: multigpu-wheels-staging/
-      - name: Download standalone server binaries
-        uses: actions/download-artifact@v8
-        with:
-          pattern: multigpu-exe-*
-          path: multigpu-bins/
-          merge-multiple: true
       - name: Disambiguate same-platform wheels with a backend build tag
         shell: bash
         run: |
@@ -237,11 +254,9 @@ jobs:
                   name, ver, rest = whl.name.split("-", 2)
                   shutil.copy(whl, out / f"{name}-{ver}-1.{backend}-{rest}")
           PY
-      - name: Attach multi-gpu wheels and binaries to the release
+      - name: Attach multi-gpu wheels to the release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
-          files: |
-            multigpu-wheels/*
-            multigpu-bins/*
+          files: multigpu-wheels/*
           prerelease: ${{ contains(needs.resolve.outputs.version, 'a') || contains(needs.resolve.outputs.version, 'b') || contains(needs.resolve.outputs.version, 'rc') }}

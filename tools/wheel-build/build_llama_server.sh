@@ -39,6 +39,23 @@ case "$(uname -s)" in
   *)      rpath='$ORIGIN' ;;
 esac
 
+# GitHub sometimes 403s unauthenticated clones from shared runner IPs; retry
+# with backoff, clearing any partial checkout first.
+clone_with_retry() {
+  local dest="${!#}" attempt
+  for attempt in 1 2 3; do
+    rm -rf "${dest}"
+    if git clone "$@"; then
+      return 0
+    fi
+    if [ "${attempt}" -lt 3 ]; then
+      echo "git clone failed (attempt ${attempt}/3); retrying" >&2
+      sleep $((attempt * 20))
+    fi
+  done
+  return 1
+}
+
 # llama-cpp-python vendors llama.cpp as a submodule; clone at the matching tag so
 # the server's GGUF support is a known-good combination.
 # Windows MAX_PATH (260 chars): llama.cpp's vendored server webui has paths long
@@ -47,7 +64,7 @@ git config --global core.longpaths true
 src="${build_dir}/llama-cpp-python-${version}"
 mkdir -p "${build_dir}"
 if [ ! -d "${src}" ]; then
-  git clone --depth 1 --branch "v${version}" --recurse-submodules \
+  clone_with_retry --depth 1 --branch "v${version}" --recurse-submodules \
     https://github.com/abetlen/llama-cpp-python "${src}"
 fi
 
@@ -110,11 +127,11 @@ case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe_suffix=".exe" ;; esac
 
 rm -rf "${go_build_dir}"
 mkdir -p "${go_build_dir}"
-git clone -q --depth 1 --branch "${_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${go_build_dir}/llama-swap"
+clone_with_retry -q --depth 1 --branch "${_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${go_build_dir}/llama-swap"
 ( cd "${go_build_dir}/llama-swap" && go build -trimpath -o "${pkg_bin_dir}/llama-swap${exe_suffix}" . )
 
 # gguf-parser's cmd has a nested go.mod, so build from inside cmd/gguf-parser.
-git clone -q --depth 1 --branch "${_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
+clone_with_retry -q --depth 1 --branch "${_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
 ( cd "${go_build_dir}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${pkg_bin_dir}/gguf-parser${exe_suffix}" . )
 
 echo "Built self-contained engine (${backend}: llama-server + llama-swap + gguf-parser) -> ${pkg_bin_dir}/"

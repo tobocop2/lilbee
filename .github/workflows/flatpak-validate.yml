@@ -86,6 +86,9 @@ jobs:
         uses: ./.github/actions/bundle-llama-server
         with:
           backend: vulkan
+          # Same container as release.yml's Linux cells, so they share one
+          # engine cache; running on main pushes, this also warms it for tag runs.
+          cache-env: quay.io/pypa/manylinux_2_34_x86_64
 
       - name: Build executable
         shell: bash

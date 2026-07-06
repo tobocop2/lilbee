@@ -1,13 +1,12 @@
 name: Build multi-GPU server wheels and executables
 
-# Opt-in lilbee[multi-gpu] artifacts: the lilbee-engine wheel (bundles the
-# compiled llama.cpp llama-server) AND the standalone server binary (for BYO /
-# frozen-exe / Docker channels that cannot pip-install the extra). Built across
-# the multi-GPU backend matrix (CUDA / Vulkan / ROCm) plus metal/cpu fallbacks.
+# Opt-in lilbee[multi-gpu] artifacts: the per-backend lilbee-engine wheel
+# (bundles the compiled llama.cpp llama-server). Built across the multi-GPU
+# backend matrix (CUDA / Vulkan / ROCm) plus metal/cpu fallbacks.
 #
 # This is its OWN path. Every cell is continue-on-error and the artifacts use a
-# distinct prefix (wheel-multigpu-*, multigpu-exe-*) so a failure here never
-# blocks the default wheels, extra wheels, or executable release paths.
+# distinct prefix (wheel-multigpu-*) so a failure here never blocks the
+# default wheels, extra wheels, or executable release paths.
 
 on:
   workflow_dispatch:
@@ -38,28 +37,28 @@ jobs:
       matrix:
         include:
           # Linux: cross-vendor Vulkan, CUDA (multi-GPU via tensor-split), ROCm, cpu fallback.
-          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-vulkan}
-          - {os: ubuntu-22.04,  backend: cu124,  wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-cu124, cuda: "12.4.0"}
-          - {os: ubuntu-22.04,  backend: cu125,  wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-cu125, cuda: "12.5.0"}
-          - {os: ubuntu-22.04,  backend: rocm,   wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-rocm}
-          - {os: ubuntu-latest, backend: cpu,    wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-cpu}
+          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64}
+          - {os: ubuntu-22.04,  backend: cu124,  wheel-plat: manylinux_2_17_x86_64, cuda: "12.4.0"}
+          - {os: ubuntu-22.04,  backend: cu125,  wheel-plat: manylinux_2_17_x86_64, cuda: "12.5.0"}
+          - {os: ubuntu-22.04,  backend: rocm,   wheel-plat: manylinux_2_17_x86_64}
+          - {os: ubuntu-latest, backend: cpu,    wheel-plat: manylinux_2_17_x86_64}
           # Windows: Vulkan, CUDA, cpu fallback.
-          - {os: windows-2022,   backend: cu124,  wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-cu124.exe, cuda: "12.4.0"}
-          - {os: windows-2022,   backend: cu125,  wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-cu125.exe, cuda: "12.5.0"}
-          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-vulkan.exe}
-          - {os: windows-latest, backend: cpu,    wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-cpu.exe}
+          - {os: windows-2022,   backend: cu124,  wheel-plat: win_amd64, cuda: "12.4.0"}
+          - {os: windows-2022,   backend: cu125,  wheel-plat: win_amd64, cuda: "12.5.0"}
+          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64}
+          - {os: windows-latest, backend: cpu,    wheel-plat: win_amd64}
           # macOS arm64: Metal (single Apple GPU) + cpu fallback.
-          - {os: macos-latest, backend: metal, wheel-plat: macosx_11_0_arm64, exe-name: llama-server-macos-arm64-metal}
-          - {os: macos-latest, backend: cpu,   wheel-plat: macosx_11_0_arm64, exe-name: llama-server-macos-arm64-cpu}
+          - {os: macos-latest, backend: metal, wheel-plat: macosx_11_0_arm64}
+          - {os: macos-latest, backend: cpu,   wheel-plat: macosx_11_0_arm64}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
 
     env:
       BACKEND: ${{ matrix.backend }}
-      # Hosted runners have ~7GB RAM; two parallel CUDA/ROCm compile jobs is the
-      # most that fits. Beefier self-hosted builders override this.
-      ENGINE_BUILD_JOBS: "2"
+      # Hosted runners have ~7GB RAM; two parallel nvcc/ROCm compile jobs is the
+      # most that fits. Plain C++ backends are lighter and take four.
+      ENGINE_BUILD_JOBS: ${{ (startsWith(matrix.backend, 'cu') || matrix.backend == 'rocm') && '2' || '4' }}
       LLAMA_BUILD_DIR: "/tmp/llama-build"
       LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -76,6 +75,19 @@ jobs:
         shell: bash
         run: echo "LLAMA_BUILD_DIR=/c/lb" >> "$GITHUB_ENV"
 
+      # Every engine source is tag-pinned in build_llama_server.sh, so the same
+      # key means byte-identical output. Caches saved from tag runs are not
+      # restorable by later runs, so warm-engine-cache.yml builds these on main;
+      # release runs (and the executable bundle steps, which share this key
+      # scheme) restore instead of rebuilding. On a hit the toolchain installs
+      # and the build are skipped wholesale.
+      - name: Restore the built engine
+        id: engine-cache
+        uses: actions/cache@v4
+        with:
+          path: packaging/engine-wheel/lilbee_engine/bin
+          key: engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -85,12 +97,12 @@ jobs:
         run: pip install build wheel
 
       - name: Install CUDA Toolkit (Linux)
-        if: startsWith(matrix.backend, 'cu') && runner.os == 'Linux'
+        if: steps.engine-cache.outputs.cache-hit != 'true' && startsWith(matrix.backend, 'cu') && runner.os == 'Linux'
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Install CUDA Toolkit (Windows)
-        if: startsWith(matrix.backend, 'cu') && runner.os == 'Windows'
+        if: steps.engine-cache.outputs.cache-hit != 'true' && startsWith(matrix.backend, 'cu') && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: ${{ matrix.cuda }}
@@ -98,12 +110,12 @@ jobs:
           sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
 
       - name: Install Vulkan loader (Linux)
-        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
+        if: steps.engine-cache.outputs.cache-hit != 'true' && matrix.backend == 'vulkan' && runner.os == 'Linux'
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Install Vulkan SDK (Windows)
-        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        if: steps.engine-cache.outputs.cache-hit != 'true' && matrix.backend == 'vulkan' && runner.os == 'Windows'
         uses: jakoch/install-vulkan-sdk-action@v1
         with:
           install_runtime: true
@@ -111,16 +123,18 @@ jobs:
           stripdown: true
 
       - name: Install ROCm (Linux)
-        if: matrix.backend == 'rocm' && runner.os == 'Linux'
+        if: steps.engine-cache.outputs.cache-hit != 'true' && matrix.backend == 'rocm' && runner.os == 'Linux'
         shell: bash
         run: bash tools/wheel-build/install_gpu_toolkit.sh
 
       - name: Set up Go (for llama-swap + gguf-parser)
+        if: steps.engine-cache.outputs.cache-hit != 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
       - name: Build the engine binaries from source
+        if: steps.engine-cache.outputs.cache-hit != 'true'
         shell: bash
         run: bash tools/wheel-build/build_llama_server.sh
 
@@ -153,27 +167,10 @@ jobs:
           [ -n "${exe}" ] || { echo "no bundled binary found"; exit 1; }
           "${exe}" --help
 
-      - name: Stage the standalone binary
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p multigpu-exe
-          bin_dir="${PKG_DIR}/lilbee_engine/bin"
-          exe=$(find "${bin_dir}" -maxdepth 1 -type f -name 'llama-server*' | head -1)
-          [ -n "${exe}" ] && cp "${exe}" "multigpu-exe/${{ matrix.exe-name }}"
-
       - name: Upload the multi-gpu wheel
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: wheel-multigpu-${{ matrix.os }}-${{ matrix.backend }}
           path: ${{ env.PKG_DIR }}/dist/*.whl
-          if-no-files-found: warn
-
-      - name: Upload the standalone server binary
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: multigpu-exe-${{ matrix.exe-name }}
-          path: multigpu-exe/${{ matrix.exe-name }}
           if-no-files-found: warn

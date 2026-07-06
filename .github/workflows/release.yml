@@ -244,6 +244,9 @@ jobs:
         uses: ./.github/actions/bundle-llama-server
         with:
           backend: ${{ matrix.backend }}
+          # Containerized cells build against the container's glibc; keep their
+          # engine cache separate from bare-runner builds.
+          cache-env: ${{ matrix.container || matrix.os }}
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
 

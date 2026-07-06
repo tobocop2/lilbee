@@ -163,6 +163,8 @@ jobs:
         with:
           backend: ${{ matrix.backend }}
           llama-cpp-version: ${{ matrix.llama-cpp-version }}
+          cache-env: ${{ matrix.os }}
+          toolkit-version: ${{ matrix.cuda }}
 
       - name: Build executable
         shell: bash
