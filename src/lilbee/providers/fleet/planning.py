@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lilbee.core.config.enums import KvCacheType
+from lilbee.core.system import is_network_path
 from lilbee.providers import model_cache
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
@@ -23,7 +24,12 @@ from lilbee.providers.fleet.adapters import (
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
-from lilbee.providers.fleet.devices import FleetDevice, probe_devices, visible_env
+from lilbee.providers.fleet.devices import (
+    FleetDevice,
+    gpus_lack_nvlink,
+    probe_devices,
+    visible_env,
+)
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.placement import (
     InstancePlan,
@@ -104,6 +110,11 @@ _SYSTEM_MEMORY_FLOOR_DIVISOR = 4
 # replicas share one set of page-cache pages, and per-replica host copies
 # would multiply RAM use for no load-time win.
 _NO_MMAP_MAX_RAM_FRACTION = 0.5
+# A network filesystem makes mmap dangerous (page faults served over the wire can
+# wedge the loader in uninterruptible I/O), so prefer a buffered read whenever the
+# host copy fits, at a higher RAM fraction than the local-disk hot-cache case. The
+# exact ceiling is tuned on a network-volume host.
+_NO_MMAP_NETWORK_RAM_FRACTION = 0.85
 
 # llama.cpp split-GGUF shard naming ("%s-%05d-of-%05d.gguf"); the cold-load
 # timeout must scale with the SUM of the shards, not the first file alone.
@@ -707,10 +718,26 @@ def _launch_for(
     is_chat = plan.role is WorkerRole.CHAT
     is_vision = plan.role is WorkerRole.VISION
     mmproj = _vision_mmproj(model_ref) if is_vision else None
+    chat_on_network_fs = is_chat and is_network_path(model_path)
+    if chat_on_network_fs and not _chat_no_mmap(weights_bytes, on_network_fs=True):
+        log.warning(
+            "Chat model %s is served from a network filesystem and is too large to load "
+            "into host RAM; mmap over the network can stall the load in uninterruptible "
+            "I/O. Stage it on local disk for a reliable load.",
+            model_ref,
+        )
     # A tensor-split chat serves one full-context sequence sized against the busiest
     # card's headroom. A cfg.num_ctx pin overrides the fit (handled by _role_ctx).
     multi_card_chat = is_chat and len(chosen) > 1
     split_chat = multi_card_chat and cfg.num_ctx is None
+    if multi_card_chat and gpus_lack_nvlink(plan.devices):
+        log.warning(
+            "Chat model %s is tensor-split across GPUs %s with no NVLink between them; "
+            "generation is PCIe all-reduce bound and can be very slow. A model that fits "
+            "on one or two NVLinked cards will generate faster.",
+            model_ref,
+            list(plan.devices),
+        )
     if split_chat:
         # circular: fleet.ctx -> engine_params -> app.services
         from lilbee.providers.fleet.ctx import fit_split_ctx
@@ -766,7 +793,7 @@ def _launch_for(
         cache_type=_cache_type_flag() if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
-        no_mmap=is_chat and _chat_no_mmap(weights_bytes),
+        no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
     )
     return InstanceLaunch(
         role=plan.role,
@@ -942,13 +969,15 @@ def _plan_free_system_memory() -> int:
     return probe.free_system if probe is not None else model_cache.free_system_memory()
 
 
-def _chat_no_mmap(weights_bytes: int) -> bool:
+def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
     """Whether the chat server should malloc its weights instead of mmapping them.
 
     See ``_NO_MMAP_MAX_RAM_FRACTION`` for the tradeoff and why the gate reads
-    total (not free) system memory.
+    total (not free) system memory. A model on a network filesystem prefers the
+    buffered read at a higher RAM fraction, since mmap over the network can hang.
     """
-    return weights_bytes <= model_cache.total_system_memory() * _NO_MMAP_MAX_RAM_FRACTION
+    fraction = _NO_MMAP_NETWORK_RAM_FRACTION if on_network_fs else _NO_MMAP_MAX_RAM_FRACTION
+    return weights_bytes <= model_cache.total_system_memory() * fraction
 
 
 def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:

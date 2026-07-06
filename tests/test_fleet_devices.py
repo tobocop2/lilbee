@@ -29,6 +29,44 @@ def _fake_run(stdout: str):
     return _run
 
 
+_TOPO_NVLINK = """\
+\tGPU0\tGPU1\tCPU Affinity\tNUMA Affinity
+GPU0\t X \tNV4\t0-31\t0
+GPU1\tNV4\t X \t0-31\t0
+"""
+_TOPO_PCIE = """\
+\tGPU0\tGPU1\tCPU Affinity
+GPU0\t X \tPHB\t0-31
+GPU1\tPHB\t X \t0-31
+"""
+
+
+class TestNvlinkTopology:
+    def test_parse_finds_nvlink_pair(self) -> None:
+        assert dev_mod._parse_nvlink_pairs(_TOPO_NVLINK) == {frozenset({0, 1})}
+
+    def test_parse_pcie_only_has_no_pairs(self) -> None:
+        assert dev_mod._parse_nvlink_pairs(_TOPO_PCIE) == set()
+
+    def test_lacks_nvlink_true_for_pcie(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_PCIE))
+        assert dev_mod.gpus_lack_nvlink([0, 1]) is True
+
+    def test_lacks_nvlink_false_when_linked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_NVLINK))
+        assert dev_mod.gpus_lack_nvlink([0, 1]) is False
+
+    def test_single_gpu_is_not_flagged(self) -> None:
+        assert dev_mod.gpus_lack_nvlink([0]) is False
+
+    def test_probe_failure_is_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(*_a: object, **_k: object) -> object:
+            raise OSError("no nvidia-smi")
+
+        monkeypatch.setattr(dev_mod.subprocess, "run", _boom)
+        assert dev_mod.gpus_lack_nvlink([0, 1]) is False
+
+
 def test_probe_parses_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_CUDA_LISTING))
     devices = probe_devices(Path("/bin/llama-server"))

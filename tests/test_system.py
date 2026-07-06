@@ -1,18 +1,60 @@
 """Tests for platform-level helpers."""
 
 import os
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from lilbee.core.system import (
+    _mount_fstype,
     chat_ctx_target_for_total_bytes,
     default_data_dir,
     find_local_root,
     is_ignored_dir,
+    is_network_path,
     scaled_chat_ctx_target_default,
     stderr_suppressed,
 )
+
+_MOUNTS = (
+    "proc /proc proc rw 0 0\n"
+    "/dev/sda1 / ext4 rw 0 0\n"
+    "/dev/sda1 /workspace ext4 rw 0 0\n"
+    "server:/vol /workspace/models nfs4 rw 0 0\n"
+    "mfs#src /mnt/mfs fuse.mfs rw 0 0\n"
+)
+
+
+class TestNetworkPath:
+    def test_local_ext4_is_not_network(self):
+        assert _mount_fstype("/workspace/index/foo.gguf", _MOUNTS) == "ext4"
+
+    def test_longest_mount_wins_nfs(self):
+        # /workspace/models is nfs4 even though /workspace and / are ext4.
+        assert _mount_fstype("/workspace/models/chat-00001.gguf", _MOUNTS) == "nfs4"
+
+    def test_is_network_path_true_for_nfs(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
+        monkeypatch.setattr(Path, "resolve", lambda self: Path("/workspace/models/m.gguf"))
+        assert is_network_path(Path("/workspace/models/m.gguf")) is True
+
+    def test_is_network_path_true_for_fuse_network(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
+        monkeypatch.setattr(Path, "resolve", lambda self: Path("/mnt/mfs/m.gguf"))
+        assert is_network_path(Path("/mnt/mfs/m.gguf")) is True
+
+    def test_is_network_path_false_for_local(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, **_k: _MOUNTS)
+        monkeypatch.setattr(Path, "resolve", lambda self: Path("/workspace/index/m.gguf"))
+        assert is_network_path(Path("/workspace/index/m.gguf")) is False
+
+    def test_is_network_path_false_when_mounts_unreadable(self, monkeypatch):
+        def _raise(self, **_k):
+            raise OSError("no /proc/mounts")
+
+        monkeypatch.setattr(Path, "read_text", _raise)
+        assert is_network_path(Path("/anything")) is False
 
 
 class TestHelpers:
