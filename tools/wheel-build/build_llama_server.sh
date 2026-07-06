@@ -89,9 +89,14 @@ if [[ "${CMAKE_ARGS}" == *"all-major"* ]]; then
   fi
 fi
 # shellcheck disable=SC2086
+# CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: the vendored cpp-httplib links whatever
+# OpenSSL the build host has (Homebrew on macOS runners, distro libssl on
+# Linux) even with LLAMA_SERVER_SSL=OFF, baking in a library path that does
+# not exist on user machines. The fleet only talks to localhost; hide OpenSSL
+# from the build entirely.
 cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
   -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON -DBUILD_SHARED_LIBS=ON \
-  -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF \
+  -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON \
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH="${rpath}" ${CMAKE_ARGS}
 # Bounded parallelism: a bare -j lets make spawn unlimited jobs, and the CUDA/ROCm
 # translation units OOM-kill the compilers on 7GB CI runners. ENGINE_BUILD_JOBS
@@ -99,9 +104,21 @@ cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
 build_jobs="${ENGINE_BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 cmake --build "${src}/server-build" --target llama-server --config Release -j "${build_jobs}"
 
-binary=$(find "${src}/server-build" -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
+# Prefer the collected bin/ output: CMake also leaves a per-target copy of the
+# binary in its target directory WITHOUT the shared libs beside it, and find's
+# traversal order is filesystem-dependent, so picking "whichever comes first"
+# shipped lib-less bundles.
+binary=""
+for candidate in "${src}/server-build/bin/llama-server" "${src}/server-build/bin/Release/llama-server.exe" "${src}/server-build/bin/llama-server.exe"; do
+  if [ -f "${candidate}" ]; then
+    binary="${candidate}"
+    break
+  fi
+done
+if [ -z "${binary}" ]; then
+  binary=$(find "${src}/server-build" -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
+fi
 [ -n "${binary}" ] || { echo "llama-server binary not found after build" >&2; exit 1; }
-bindir=$(dirname "${binary}")
 
 # Reset the bundle dir so a stale lib from a previous build can't ship.
 rm -rf "${pkg_bin_dir}"
@@ -109,13 +126,24 @@ mkdir -p "${pkg_bin_dir}"
 cp "${binary}" "${pkg_bin_dir}/"
 
 # Bundle EVERY shared lib the server links: ggml (+ its backend split libs),
-# llama, and mtmd. They sit beside the binary, and the baked rpath resolves them
+# llama, mtmd, and the server-impl split. Search the whole build tree, not just
+# the binary's directory: this llama.cpp scatters library outputs across target
+# directories. They sit beside the binary and the baked rpath resolves them
 # there, so the wheel is self-contained on every platform.
-shopt -s nullglob
-for lib in "${bindir}"/*.so "${bindir}"/*.so.* "${bindir}"/*.dylib "${bindir}"/*.dll; do
+# Symlinks included: the SONAME names the binary loads by (libllama.0.dylib)
+# are symlinks to the versioned files; cp dereferences each into a regular
+# file under the loadable name.
+while IFS= read -r -d '' lib; do
   cp "${lib}" "${pkg_bin_dir}/"
-done
-shopt -u nullglob
+done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o -path '*vulkan-shaders-gen-prefix*' \) -prune -o \
+  \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
+
+# The copied closure must actually resolve: exec the bundled binary from the
+# bundle dir. A missing lib fails here, at build time, instead of on a user's
+# machine. Skipped when cross-compiling (the host can't exec the target).
+if [ -z "${target_arch}" ]; then
+  "${pkg_bin_dir}/llama-server" --version
+fi
 
 # Build the two Go engine helpers into the same wheel bin/. llama-swap is the
 # process supervisor + OpenAI proxy; gguf-parser is the UMA-aware VRAM estimator.

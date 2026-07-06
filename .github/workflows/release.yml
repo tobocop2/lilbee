@@ -261,8 +261,25 @@ jobs:
           CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
+      # The manylinux container ships no gh CLI; the model-mirror restore below
+      # and the release attach at the end both need it.
+      - name: Install gh CLI in the build container
+        if: matrix.container != ''
+        shell: bash
+        run: |
+          if command -v gh >/dev/null 2>&1; then exit 0; fi
+          dnf install -y 'dnf-command(config-manager)'
+          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+          dnf install -y gh
+          gh --version
+
+      - name: Restore CI models (inference smoke)
+        uses: ./.github/actions/restore-ci-models
+
       - name: Smoke test
-        # End-to-end: --version, --help, server boot, /api/health version match.
+        # End-to-end: --version, --help, server boot, /api/health version match,
+        # then the core-functionality sweep (engine inference, ingest, search,
+        # ask, crawl) via tools/qa/artifact_smoke.sh.
         run: |
           set -euxo pipefail
           EXE="./dist/${{ matrix.asset_name }}"
@@ -367,6 +384,14 @@ jobs:
           fi
 
           echo "SMOKE TEST PASSED: --version, --help, server, /api/health all green"
+
+          # Core-functionality sweep: real engine inference (chat + embedding),
+          # ingest, search, RAG ask, and an http-mode crawl. This is what keeps
+          # a binary whose bundled engine cannot start from ever attaching.
+          kill $SERVER_PID 2>/dev/null || true
+          wait $SERVER_PID 2>/dev/null || true
+          trap - EXIT
+          LILBEE_EXE="$EXE" bash tools/qa/artifact_smoke.sh
         shell: bash
 
       - name: Upload binary as a run artifact
@@ -375,19 +400,6 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
 
-      # The Linux cell builds inside the manylinux container, which ships no gh
-      # CLI, so the attach below fails with "gh: command not found" (exit 127)
-      # every time, which silently strands the release fan-out. Install it here;
-      # the windows/macOS host runners already have gh.
-      - name: Install gh CLI in the build container
-        if: inputs.release_tag != '' && matrix.container != ''
-        shell: bash
-        run: |
-          if command -v gh >/dev/null 2>&1; then exit 0; fi
-          dnf install -y 'dnf-command(config-manager)'
-          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
-          dnf install -y gh
-          gh --version
 
       # Eager attach: release-candidate creates the pre-release shell before
       # calling, so the asset shows up as soon as this cell finishes.

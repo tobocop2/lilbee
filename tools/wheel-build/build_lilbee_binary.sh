@@ -80,6 +80,7 @@ uv run --no-sync python -m nuitka \
     --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
     --include-package=crawl4ai           --include-package-data=crawl4ai \
     --include-package=fake_useragent     --include-package-data=fake_useragent \
+    --include-package=chardet            --include-package-data=chardet \
     --include-package=playwright \
     --enable-plugin=spacy \
     --include-package=spacy              --include-package-data=spacy \

@@ -63,8 +63,15 @@ release:  ## Bump the beta version, tag, and push; CI builds + publishes
 release-promote:  ## Rewrite notes as headings and mark a release latest (TAG=... or newest); run after the PyPI publish is green
 	@tag="$(TAG)"; \
 	[ -n "$$tag" ] || tag=$$(gh release list --repo tobocop2/lilbee --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\")))"); \
+	verified=$$(gh run list --repo tobocop2/lilbee --workflow=verify-release.yml --limit 50 --json displayTitle,conclusion -q "[.[] | select(.displayTitle == \"Verify release $$tag\" and .conclusion == \"success\")] | length"); \
+	if [ "$$verified" = "0" ]; then \
+	  echo "REFUSING to promote $$tag: no green 'Verify release' run for it."; \
+	  echo "The verify-release workflow must pass against the release assets first:"; \
+	  echo "  gh workflow run verify-release.yml -f tag=$$tag"; \
+	  exit 1; \
+	fi; \
 	prev=$$(gh release list --repo tobocop2/lilbee --exclude-drafts --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\") and . != \"$$tag\"))"); \
-	echo "release-promote: $$tag (notes diff from $$prev)"; \
+	echo "release-promote: $$tag (verified; notes diff from $$prev)"; \
 	notes=$$(mktemp); \
 	bash scripts/release_notes.sh tobocop2/lilbee "$$tag" "$$prev" > "$$notes"; \
 	gh release edit "$$tag" --repo tobocop2/lilbee --notes-file "$$notes" --prerelease=false --latest; \

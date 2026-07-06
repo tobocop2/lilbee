@@ -1,0 +1,116 @@
+name: Verify release
+
+run-name: Verify release ${{ inputs.tag || github.event.workflow_run.head_branch }}
+
+# Downloads the user-facing assets from the GH release at a tag (standalone
+# executables and the pip wheel pair) and runs the core-functionality sweep
+# against each one: engine inference (chat + embedding), document ingest,
+# search, a RAG ask, and an http-mode crawl. This is the promotion gate:
+# `make release-promote` refuses to mark a tag latest until this workflow has
+# passed for it. Fires automatically when a Release candidate run finishes
+# green on a tag, or on demand for any tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to verify (e.g. v0.6.90b420.dev710)."
+        required: true
+  workflow_run:
+    workflows: ["Release candidate"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: verify-release-${{ inputs.tag || github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    # Dispatch carries the tag directly; the workflow_run path only proceeds
+    # for a green RC run that was triggered by a tag push.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        env:
+          TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+        run: echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  verify-executables:
+    needs: [resolve]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest,  asset: lilbee-linux-x86_64}
+          - {os: macos-latest,   asset: lilbee-macos-arm64}
+          - {os: windows-latest, asset: lilbee-windows-x86_64.exe}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download the release executable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '${{ matrix.asset }}' --dir dist/
+          chmod +x "dist/${{ matrix.asset }}"
+      - name: Restore CI models
+        uses: ./.github/actions/restore-ci-models
+      - name: Core-functionality sweep
+        shell: bash
+        run: LILBEE_EXE="dist/${{ matrix.asset }}" bash tools/qa/artifact_smoke.sh
+
+  verify-wheels:
+    needs: [resolve]
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest,  engine-pattern: "lilbee_engine-*-1.cpu-*manylinux*"}
+          - {os: macos-latest,   engine-pattern: "lilbee_engine-*-1.cpu-*macosx*"}
+          - {os: windows-latest, engine-pattern: "lilbee_engine-*-1.cpu-*win_amd64*"}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download the release wheels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'lilbee-*py3-none-any.whl' --dir wheels/
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '${{ matrix.engine-pattern }}' --dir engine/
+      - name: Restore CI models
+        uses: ./.github/actions/restore-ci-models
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the wheels and run the sweep
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m venv smoke-venv
+          bin="smoke-venv/bin"
+          [ -d "smoke-venv/Scripts" ] && bin="smoke-venv/Scripts"
+          lilbee_whls=(wheels/lilbee-*.whl); lilbee_whl="${lilbee_whls[0]}"
+          engine_whls=(engine/lilbee_engine-*.whl); engine_whl="${engine_whls[0]}"
+          ver=$(basename "${lilbee_whl}" | cut -d- -f2)
+          "${bin}/pip" install "${engine_whl}"
+          # ==ver pins resolution to the local wheel (PyPI has no such version
+          # yet); the crawler extra's own deps still come from PyPI.
+          "${bin}/pip" install "lilbee[crawler]==${ver}" --find-links wheels/
+          LILBEE_EXE="${bin}/lilbee" bash tools/qa/artifact_smoke.sh

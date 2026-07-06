@@ -157,8 +157,10 @@ jobs:
           python -m build --wheel
           python -m wheel tags --remove --platform-tag "${{ matrix.wheel-plat }}" dist/*.whl
 
+      # Hard gate: a lib-less bundle fails at exec with a loader error. This
+      # step swallowing failures (continue-on-error) is how a broken metal
+      # bundle once shipped.
       - name: Smoke test the bundled binary
-        continue-on-error: true
         shell: bash
         run: |
           set -x
