@@ -26,6 +26,25 @@ def test_get_placement_tool(monkeypatch):
     assert out["manual"] is False
 
 
+def test_get_gpus_tool(monkeypatch):
+    """get_gpus exposes the detected GPUs to agents, matching HTTP /api/gpus."""
+    monkeypatch.setattr(mcp_server, "get_placement", lambda: _view())
+    out = mcp_server.get_gpus_tool()
+    assert [g["label"] for g in out["gpus"]] == ["CUDA0"]
+    assert out["gpus"][0]["free_bytes"] == 72 * GIB
+
+
+def test_get_gpus_tool_returns_error_on_provider_failure(monkeypatch):
+    from lilbee.providers.base import ProviderError
+
+    def _boom():
+        raise ProviderError("engine binary missing", provider="llama-server")
+
+    monkeypatch.setattr(mcp_server, "get_placement", _boom)
+    out = mcp_server.get_gpus_tool()
+    assert out["error"] == "engine binary missing"
+
+
 def test_set_placement_tool(monkeypatch):
     seen = {}
 

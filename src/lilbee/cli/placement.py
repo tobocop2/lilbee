@@ -17,6 +17,8 @@ from lilbee.app.placement import (
 )
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
+from lilbee.cli.helpers import json_output
+from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
 
@@ -47,10 +49,20 @@ def _read_spec(spec: str | None) -> PlacementSpec | None:
 def _guard(action: Callable[[], PlacementView]) -> None:
     """Run a placement action and render it, turning known failures into a clean exit."""
     try:
-        _render_view(action())
+        view = action()
     except _PLACEMENT_ERRORS as exc:
-        console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(code=1) from exc
+    if cfg.json_mode:
+        # The same canonical shape the HTTP and MCP surfaces return.
+        from lilbee.server.models import PlacementResponse
+
+        json_output(PlacementResponse.from_view(view).model_dump(mode="json"))
+    else:
+        _render_view(view)
 
 
 def _render_view(view: PlacementView) -> None:

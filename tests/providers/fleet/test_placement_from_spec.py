@@ -117,9 +117,7 @@ def test_derives_planner_style_split_when_spec_has_none():
 
 def test_explicit_tensor_split_still_wins():
     # A spec that names its own split is honored verbatim, even when uneven.
-    spec = PlacementSpec(
-        {WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(3, 1))}
-    )
+    spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(3, 1))})
     est = _proportional_peak({WorkerRole.CHAT: 40})
     placement = placement_from_spec(
         spec, (WorkerRole.CHAT,), {0: 80 * GIB, 1: 80 * GIB}, estimate_peak=est

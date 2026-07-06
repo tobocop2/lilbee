@@ -16,6 +16,7 @@ from textual import work
 from textual.timer import Timer
 from textual.widgets import Static
 
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats
 
@@ -47,8 +48,6 @@ _TICK_INTERVAL_S = 1.0
 
 _GIB = 1024**3
 
-# Displayed when no GPU info is available
-_EMPTY_TEXT = "(no GPUs detected)"
 
 # Shown as the util reading when utilization_pct is None
 _UTIL_DASH = " -- "
@@ -140,7 +139,7 @@ def _render_stats(
     """Build the unified GPU table (one row per GPU) from a stat snapshot."""
     if not stats:
         muted = _theme_color(theme, "text-muted")
-        return f"[{muted}]  {_EMPTY_TEXT}[/]"
+        return f"[{muted}]  {msg.FLEET_NO_GPUS}[/]"
     return "\n".join(
         _render_row(stats[idx], labels.get(idx, f"GPU{idx}"), roles.get(idx, ""), theme)
         for idx in sorted(stats)
@@ -157,7 +156,9 @@ class GpuFleetPanel(Static):
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self) -> None:
-        super().__init__(_EMPTY_TEXT, id="gpu-fleet-panel")
+        # Initial content is the probing state, not FLEET_NO_GPUS, so a multi-GPU
+        # box doesn't flash the empty state while the first sample is in flight.
+        super().__init__(f"  {msg.FLEET_GPU_PROBING}", id="gpu-fleet-panel")
         self._devices: Sequence[DeviceLike] = []
         self._labels: dict[int, str] = {}
         self._roles: dict[int, str] = {}

@@ -247,11 +247,13 @@ class TestEstimateInstanceFootprint:
                 kv_cache_type=KvCacheType.F16,
             )
 
-    def test_unparseable_output_raises_provider_error(
+    def test_unparseable_output_raises_provider_error_with_cause(
         self, model_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The message carries the actual parse failure, so a future schema change
+        # reads as a one-line log instead of a wrong-subsystem debugging session.
         _patch_parser(monkeypatch, stdout="not json at all")
-        with pytest.raises(ProviderError, match="no usable result"):
+        with pytest.raises(ProviderError, match="unexpected estimator output"):
             estimate_instance_footprint(
                 model_file,
                 ctx=2048,
@@ -260,6 +262,27 @@ class TestEstimateInstanceFootprint:
                 flash_attn=True,
                 kv_cache_type=KvCacheType.F16,
             )
+
+    def test_parses_renamed_memory_schema(
+        self, model_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Upstream gguf-parser renamed estimate.items to estimate.memory after
+        # v0.24.1; an engine built past the pin must still size.
+        renamed = _sample_json(ram_uma=100, ram_nonuma=250, vrams=[(700, 2000)]).replace(
+            '"items"', '"memory"'
+        )
+        _patch_parser(monkeypatch, stdout=renamed)
+        est = estimate_instance_footprint(
+            model_file,
+            ctx=4096,
+            slots=2,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+        )
+        assert est.vram_bytes == 2000
+        assert est.ram_bytes == 250
+        assert est.unified_bytes == 100 + 700
 
 
 class TestBatchSizeFlags:

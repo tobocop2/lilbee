@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -265,6 +266,22 @@ class TestRemoveModelDataFreedSize:
         registry.shard_paths.assert_not_called()  # recorded total used directly
 
 
+class TestListNoEagerWarm:
+    def test_model_list_disables_eager_warm(self, monkeypatch):
+        """`model list` reads installed files and must not warm the fleet."""
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+        seen: dict[str, object] = {}
+
+        def _capture(*_args, **_kwargs):
+            seen["eager"] = cfg.worker_pool_eager_start
+            return ListModelsResult(models=[], total=0)
+
+        monkeypatch.setattr("lilbee.cli.model.list_models_data", _capture)
+        result = CliRunner().invoke(app, ["model", "list"])
+        assert result.exit_code == 0
+        assert seen["eager"] is False
+
+
 class TestListModelsData:
     def test_default_lists_both_sources(self, fake_manager, native_manifests, with_remote_classify):
         data = model_mod.list_models_data()
@@ -483,6 +500,17 @@ class TestPullModelData:
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
 
+    def test_already_installed_vision_ensures_mmproj(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        # Main GGUF present: still ensure the projector before reporting installed,
+        # so a cached vision model missing its mmproj becomes usable.
+        ensured: list[str] = []
+        monkeypatch.setattr(model_mod, "_ensure_vision_projector", lambda ref: ensured.append(ref))
+        result = model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)
+        assert result.status == PullStatus.ALREADY_INSTALLED
+        assert ensured == [_CHAT_REF]
+
     def test_pull_native_invokes_manager_and_callbacks(self, fake_manager, native_manifests):
         events = []
         target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -492,6 +520,74 @@ class TestPullModelData:
         assert events
         assert events[0].percent == 50
         assert fake_manager.pull_calls == [(target, ModelSource.NATIVE)]
+
+
+class TestEnsureVisionProjector:
+    def test_non_vision_ref_is_noop(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target",
+            lambda _q: SimpleNamespace(task=ModelTask.CHAT),
+        )
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda entry: called.append(entry))
+        model_mod._ensure_vision_projector("acme/chat/model.gguf")
+        assert called == []
+
+    def test_vision_ref_with_missing_projector_downloads_mmproj(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        entry = SimpleNamespace(task=ModelTask.VISION)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF")
+        assert called == [entry]
+
+    def test_vision_ref_with_projector_on_disk_skips_network(self, monkeypatch):
+        # A complete install must not resolve filenames over the network.
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        entry = SimpleNamespace(task=ModelTask.VISION)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: False)
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF")
+        assert called == []
+
+    def test_projector_missing_true_when_mmproj_unresolvable(self, monkeypatch):
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path",
+            lambda _r: Path("/models/vision.gguf"),
+        )
+
+        def _no_projector(_path):
+            raise ProviderError("no mmproj", provider="llama-server")
+
+        monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _no_projector)
+        assert model_mod._vision_projector_missing("org/vision-GGUF") is True
+
+    def test_projector_missing_false_when_mmproj_resolves(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path",
+            lambda _r: Path("/models/vision.gguf"),
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.find_mmproj_for_model",
+            lambda _p: Path("/models/mmproj.gguf"),
+        )
+        assert model_mod._vision_projector_missing("org/vision-GGUF") is False
 
 
 class TestAdoptEmbedder:

@@ -52,6 +52,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
     path_completion_prefix,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
@@ -177,6 +178,9 @@ class ChatScreen(Screen[None]):
     # submit handler and disables the input so the user can't fire a prompt into a
     # half-loaded fleet; cleared when the swap worker finishes (or fails).
     swapping_model: reactive[bool] = reactive(False)
+    # True while a placement apply/clear reloads the fleet (from the Fleet drawer);
+    # holds chat submissions so they don't race the reload into a 429.
+    reloading_placement: reactive[bool] = reactive(False)
 
     HELP = (
         "# Chat\n\n"
@@ -532,6 +536,9 @@ class ChatScreen(Screen[None]):
         """
         if self.swapping_model:
             self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
+            return True
+        if self.reloading_placement:
+            self.notify(msg.FLEET_RELOADING, severity="warning", timeout=3)
             return True
         if self.streaming:
             # Only one chat message may be in flight at a time; surface a toast
@@ -1556,19 +1563,29 @@ class ChatScreen(Screen[None]):
         self.app.notify(msg.MODEL_SWAP_APPLYING)
         self._reload_chat_model_worker()
 
-    def watch_swapping_model(self, swapping: bool) -> None:
-        """Disable the chat input while a swap loads so a prompt can't race it.
+    def _apply_input_busy_state(self) -> None:
+        """Disable the chat input while a swap or placement reload is loading.
 
-        Restores focus when the swap finishes so the user can type immediately
-        without re-clicking the input that was disabled out from under them.
-        Guarded because the unblock fires from the swap worker via
-        ``call_from_thread``, which can land after the user navigated away and
-        the input is no longer mounted.
+        Restores focus when the fleet is idle again so the user can type without
+        re-clicking the input that was disabled out from under them. Guarded
+        because the unblock can fire (via ``call_from_thread`` or a bubbled
+        message) after the user navigated away and the input is no longer mounted.
         """
+        busy = self.swapping_model or self.reloading_placement
         with contextlib.suppress(NoMatches):
-            self._chat_input.disabled = swapping
-            if not swapping and self._insert_mode:
+            self._chat_input.disabled = busy
+            if not busy and self._insert_mode:
                 self._chat_input.focus()
+
+    def watch_swapping_model(self, swapping: bool) -> None:
+        self._apply_input_busy_state()
+
+    def watch_reloading_placement(self, reloading: bool) -> None:
+        self._apply_input_busy_state()
+
+    def on_fleet_body_placement_reloading(self, event: FleetBody.PlacementReloading) -> None:
+        """Hold chat submissions while the Fleet drawer reloads the fleet."""
+        self.reloading_placement = event.active
 
     @work(thread=True, name=_MODEL_SWAP_WORKER, exit_on_error=False)
     def _reload_chat_model_worker(self) -> None:

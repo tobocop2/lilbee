@@ -670,7 +670,7 @@ class TestBuildFleetWiring:
 
         def _estimate(role, ref, **_k):
             raise ProviderError(
-                "estimator returned no usable result",
+                "unexpected estimator output",
                 provider="llama-server",
                 kind=ProviderErrorKind.SERVER,
             )
@@ -880,6 +880,85 @@ class TestBuildFleetWiring:
         assert launch.slots == planning_mod._SPLIT_CHAT_SLOTS
         ctx_total = 5000 * planning_mod._SPLIT_CHAT_SLOTS
         assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(ctx_total)
+
+    def test_launch_for_warns_on_oversize_network_fs_chat(self, tmp_path, monkeypatch, caplog):
+        # A chat model served from a network volume that can't fit host RAM keeps
+        # mmap, which can hang the load; warn to advise local staging.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        monkeypatch.setattr(planning_mod, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 200 * 10**9)
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
+        device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        assert "network filesystem" in caplog.text.lower()
+        assert "--no-mmap" not in launch.argv  # too big to malloc; mmap kept
+
+    def test_launch_for_split_chat_subtracts_reserved_headroom(self, tmp_path, monkeypatch) -> None:
+        # An embed/rerank server on a shared card leaves less room for the chat KV
+        # than the card's raw free VRAM; sizing the split against raw free over-commits
+        # and OOMs at launch. The reservation is subtracted per device.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        seen: dict = {}
+
+        def _fit(_model_path, *, per_device_free_bytes, **_k) -> int:
+            seen["free"] = per_device_free_bytes
+            return 5000
+
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fit)
+        d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        planning_mod._launch_for(
+            plan,
+            "ref",
+            Path("/bin/llama-server"),
+            {0: d0, 1: d1},
+            reserved_by_device={0: 10 * _GB},  # an embed server sits on card 0
+        )
+        assert seen["free"] == [60 * _GB, 60 * _GB]  # card 0 reduced by the 10 GiB embed
+
+    def test_launch_for_warns_on_pcie_split_chat(self, tmp_path, monkeypatch, caplog):
+        # A chat model tensor-split across GPUs with no NVLink is all-reduce bound;
+        # warn so the slow-generation cause is visible.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        monkeypatch.setattr(planning_mod, "host_lacks_nvlink", lambda: True)
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", lambda *_a, **_k: 5000)
+        d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1})
+        assert "nvlink" in caplog.text.lower()
+
+    def test_non_chat_reservation_sums_per_device(self) -> None:
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,), replica=1),
+            InstancePlan(role=WorkerRole.RERANK, devices=(1,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 2 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(instances, inputs)
+        # Chat is excluded (it sizes its own weights); two embed replicas stack on card 0.
+        assert reserved == {0: 6 * _GB, 1: 2 * _GB}
 
     def test_launch_for_pinned_multi_card_chat_runs_one_slot(self, tmp_path, monkeypatch) -> None:
         # A cfg.num_ctx pin skips the fit, but a multi-card chat still serves one slot
@@ -1433,6 +1512,13 @@ class TestChatNoMmap:
         # A malloc'd copy is unevictable; a model over half of RAM keeps mmap.
         monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 32 * 10**9)
         assert planning_mod._chat_no_mmap(20 * 10**9) is False
+
+    def test_network_fs_prefers_no_mmap_at_higher_fraction(self, monkeypatch) -> None:
+        # A model at 70% of RAM keeps mmap on local disk but takes --no-mmap on a
+        # network volume, where mmap page faults can wedge the loader.
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
+        assert planning_mod._chat_no_mmap(70 * 10**9) is False
+        assert planning_mod._chat_no_mmap(70 * 10**9, on_network_fs=True) is True
 
 
 class TestPlanProbe:

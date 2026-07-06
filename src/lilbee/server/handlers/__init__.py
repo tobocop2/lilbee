@@ -74,12 +74,15 @@ from lilbee.server.handlers.sse import (
     sse_error,
     sse_event,
 )
-from lilbee.server.models import HealthResponse, StatusResponse
+from lilbee.server.models import (
+    GpuInfoResponse,
+    HealthResponse,
+    PlacementResponse,
+    StatusResponse,
+)
 
 if TYPE_CHECKING:
-    from lilbee.app.placement import PlacementView
     from lilbee.providers.base import LLMProvider
-    from lilbee.server.models import GpuInfoResponse, PlacementResponse
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
 # bar advances smoothly without busy-spinning.
@@ -184,33 +187,11 @@ async def status() -> StatusResponse:
     return StatusResponse(**raw.model_dump(exclude_none=True))
 
 
-def _placement_response(view: PlacementView) -> PlacementResponse:
-    """Map a PlacementView to a PlacementResponse."""
-    from lilbee.server.models import GpuInfoResponse, PlacementResponse, RolePlacementResponse
-
-    return PlacementResponse(
-        gpus=[GpuInfoResponse(**vars(g)) for g in view.gpus],
-        roles=[
-            RolePlacementResponse(
-                role=r.role,
-                model=r.model,
-                devices=list(r.devices),
-                tensor_split=list(r.tensor_split) if r.tensor_split else None,
-                replicas=r.replicas,
-            )
-            for r in view.roles
-        ],
-        unplaceable=[r.value for r in view.unplaceable],
-        manual=view.manual,
-        spec_json=view.spec_json,
-    )
-
-
 async def placement() -> PlacementResponse:
     """Current effective placement."""
     from lilbee.app.placement import get_placement
 
-    return _placement_response(get_placement())
+    return PlacementResponse.from_view(get_placement())
 
 
 async def placement_preview(spec_json: str | None) -> PlacementResponse:
@@ -219,7 +200,7 @@ async def placement_preview(spec_json: str | None) -> PlacementResponse:
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     spec = PlacementSpec.from_json(spec_json) if spec_json else None
-    return _placement_response(preview_placement(spec))
+    return PlacementResponse.from_view(preview_placement(spec))
 
 
 async def placement_set(spec_json: str) -> PlacementResponse:
@@ -227,22 +208,21 @@ async def placement_set(spec_json: str) -> PlacementResponse:
     from lilbee.app.placement import set_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    return _placement_response(set_placement(PlacementSpec.from_json(spec_json)))
+    return PlacementResponse.from_view(set_placement(PlacementSpec.from_json(spec_json)))
 
 
 async def placement_clear() -> PlacementResponse:
     """Clear manual placement; returns to the auto planner and rebuilds the fleet."""
     from lilbee.app.placement import set_placement
 
-    return _placement_response(set_placement(None))
+    return PlacementResponse.from_view(set_placement(None))
 
 
 async def gpus() -> list[GpuInfoResponse]:
     """Detected GPUs with free/total VRAM."""
     from lilbee.app.placement import get_placement
-    from lilbee.server.models import GpuInfoResponse as _GpuInfoResponse
 
-    return [_GpuInfoResponse(**vars(g)) for g in get_placement().gpus]
+    return PlacementResponse.from_view(get_placement()).gpus
 
 
 __all__ = [

@@ -68,6 +68,8 @@ def memory_list_cmd(
 ) -> None:
     """List your stored memories."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Listing memories is a pure store read; don't warm the inference fleet.
+    cfg.worker_pool_eager_start = False
     if not memory_enabled():
         _disabled()
         return

@@ -15,6 +15,7 @@ from __future__ import annotations
 import functools
 import logging
 import re
+import sys
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -1023,8 +1024,20 @@ class FleetProvider:
         try:
             self._ensure_fleet()
             self._preload_roles()
-        except Exception:
-            log.warning("Engine warm-up failed; roles will load on first use.", exc_info=True)
+        except Exception as exc:
+            if isinstance(exc, RuntimeError) and sys.is_finalizing():
+                # A fast CLI exit can tear down the interpreter while this daemon
+                # thread is still warming; pool submission then raises "cannot
+                # schedule new futures after interpreter shutdown". The process is
+                # leaving anyway, so drop it quietly instead of stack-tracing.
+                log.debug("Engine warm-up abandoned during interpreter shutdown: %s", exc)
+            else:
+                # A warm-up failure is handled (roles lazy-load on first use), so
+                # keep the full traceback at debug: a WARNING carrying exc_info
+                # reads like a crash for a condition the next real call recovers
+                # from.
+                log.warning("Engine warm-up failed; roles will load on first use: %s", exc)
+                log.debug("Engine warm-up failure detail.", exc_info=True)
         finally:
             with self._lock:
                 self._warming = False
