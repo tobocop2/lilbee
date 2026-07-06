@@ -265,6 +265,22 @@ class TestRemoveModelDataFreedSize:
         registry.shard_paths.assert_not_called()  # recorded total used directly
 
 
+class TestListNoEagerWarm:
+    def test_model_list_disables_eager_warm(self, monkeypatch):
+        """`model list` reads installed files and must not warm the fleet (bb-v7r)."""
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+        seen: dict[str, object] = {}
+
+        def _capture(*_args, **_kwargs):
+            seen["eager"] = cfg.worker_pool_eager_start
+            return ListModelsResult(models=[], total=0)
+
+        monkeypatch.setattr("lilbee.cli.model.list_models_data", _capture)
+        result = CliRunner().invoke(app, ["model", "list"])
+        assert result.exit_code == 0
+        assert seen["eager"] is False
+
+
 class TestListModelsData:
     def test_default_lists_both_sources(self, fake_manager, native_manifests, with_remote_classify):
         data = model_mod.list_models_data()

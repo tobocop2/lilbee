@@ -39,6 +39,8 @@ def status(
 ) -> None:
     """Show indexed documents, paths, and chunk counts."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Status only reads the store; don't warm the inference fleet for a read.
+    cfg.worker_pool_eager_start = False
     if cfg.json_mode:
         json_output(gather_status().model_dump(exclude_none=True))
         return

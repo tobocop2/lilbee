@@ -149,6 +149,9 @@ def list_cmd(
 ) -> None:
     """List installed models across all sources."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Listing installed model files never runs inference; don't pay the fleet
+    # warm (and its scary-looking warm-up traceback on a slow host) for a read.
+    cfg.worker_pool_eager_start = False
     parsed_task = _parse_task_or_bad_param(task)
     data = list_models_data(source=_parse_source_or_bad_param(source), task=parsed_task)
     if cfg.json_mode:
