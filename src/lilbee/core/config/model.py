@@ -115,8 +115,10 @@ class Config(BaseSettings):
     # True = force OCR regardless of detection.
     # False = disable OCR entirely.
     enable_ocr: bool | None = ConfigField(default=None, writable=True)
-    # Per-page timeout in seconds for vision OCR (0 = no limit).
-    ocr_timeout: float = ConfigField(default=120.0, ge=0.0, writable=True)
+    # Per-page timeout in seconds for vision OCR (0 = no limit). Sized so a dense
+    # full-page scan finishes on modest hardware; a raised vision_ocr_max_tokens
+    # needs matching headroom here.
+    ocr_timeout: float = ConfigField(default=300.0, ge=0.0, writable=True)
     # Outer wall-clock budget for the streamed pool drain: load grace plus
     # per_page * pages. Tune up for slow hardware (M1 Pro vision is
     # ~5min/page) or down for fast hardware. ocr_timeout still governs the
@@ -125,6 +127,8 @@ class Config(BaseSettings):
     # Hard cap on tokens generated per OCR page. A real page is well under this;
     # the cap bounds the occasional runaway repetition loop (a page that loops to
     # tens of thousands of chars) which otherwise dominates a scan's OCR time.
+    # Raising it lengthens per-page generation on dense scans, so give ocr_timeout
+    # matching headroom.
     vision_ocr_max_tokens: int = ConfigField(default=4096, ge=256, writable=True)
     # Pages OCR'd concurrently, and the vision server's continuous-batching slots.
     # A single-page decode underutilizes a modern GPU (~half SM); batching several
