@@ -318,16 +318,29 @@ def show_model_data(ref: str) -> ShowModelResult:
     )
 
 
+def _vision_projector_missing(ref: str) -> bool:
+    """True when *ref*'s mmproj projector does not resolve on disk."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import find_mmproj_for_model
+
+    try:
+        find_mmproj_for_model(resolve_model_path(ref))
+    except (ProviderError, OSError, ValueError, KeyError):
+        return True
+    return False
+
+
 def _ensure_vision_projector(ref: str) -> None:
     """Fetch a vision model's mmproj projector when a cached install lacks it.
 
-    No-op for non-vision refs. ``download_mmproj`` is idempotent against the HF
-    cache, so this is cheap when the projector is already present.
+    No-op for non-vision refs and when the projector already resolves on disk,
+    so pulling a complete install never touches the network.
     """
     from lilbee.catalog import download_mmproj, resolve_pull_target
 
     entry = resolve_pull_target(ref)
-    if entry is not None and entry.task is ModelTask.VISION:
+    if entry is not None and entry.task is ModelTask.VISION and _vision_projector_missing(ref):
         download_mmproj(entry)
 
 
