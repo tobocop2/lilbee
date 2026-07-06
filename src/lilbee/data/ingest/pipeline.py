@@ -754,7 +754,11 @@ async def _collect_results(
             )
             await to_ingest_thread(_purge_emptied_sources, to_purge)
         finally:
-            still_pending = [t for t in in_flight if not t.done()]
+            # Explicit loop: Nuitka miscompiles a comprehension in this async finally.
+            still_pending = []
+            for t in in_flight:
+                if not t.done():
+                    still_pending.append(t)
             for task in still_pending:
                 task.cancel()
             if still_pending:
