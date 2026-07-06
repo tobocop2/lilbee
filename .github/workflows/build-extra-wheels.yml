@@ -22,9 +22,13 @@ on:
         description: "Override llama-cpp-python version (blank = read from uv.lock)."
         type: string
         default: ""
+      release_tag:
+        description: "GH release tag to eagerly attach each built wheel to (empty = artifacts only)."
+        type: string
+        default: ""
 
 permissions:
-  contents: read
+  contents: write  # eager release_tag attach; otherwise read-only behavior is unchanged
 
 jobs:
   build-extra-wheels:
@@ -135,3 +139,18 @@ jobs:
         with:
           name: wheel-extra-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
+
+      # Call-mode eager attach: stage through the same rename the batch attach
+      # uses, so the backend build tag (1.cu125 etc.) matches the PEP 503 index.
+      - name: Attach wheel to the GH pre-release (call mode)
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          staging="_eager-staging/wheel-extra-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}"
+          mkdir -p "$staging"
+          cp dist/*.whl "$staging"/
+          python -m tools.stage_release_assets _eager-staging/ _eager-assets/
+          gh release upload "$TAG" _eager-assets/* --clobber
