@@ -47,8 +47,12 @@ _TICK_INTERVAL_S = 1.0
 
 _GIB = 1024**3
 
-# Displayed when no GPU info is available
+# Displayed when a probe has run and reported no GPUs
 _EMPTY_TEXT = "(no GPUs detected)"
+
+# Displayed before the first probe returns, so a multi-GPU box doesn't flash the
+# empty state while the initial sample is still in flight
+_LOADING_TEXT = "  probing GPUs…"
 
 # Shown as the util reading when utilization_pct is None
 _UTIL_DASH = " -- "
@@ -157,7 +161,7 @@ class GpuFleetPanel(Static):
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
     def __init__(self) -> None:
-        super().__init__(_EMPTY_TEXT, id="gpu-fleet-panel")
+        super().__init__(_LOADING_TEXT, id="gpu-fleet-panel")
         self._devices: Sequence[DeviceLike] = []
         self._labels: dict[int, str] = {}
         self._roles: dict[int, str] = {}
