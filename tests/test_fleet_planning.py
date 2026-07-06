@@ -935,7 +935,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr(cfg, "num_ctx", None)
-        monkeypatch.setattr(planning_mod, "gpus_lack_nvlink", lambda _idx: True)
+        monkeypatch.setattr(planning_mod, "host_lacks_nvlink", lambda: True)
         monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", lambda *_a, **_k: 5000)
         d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
         d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)

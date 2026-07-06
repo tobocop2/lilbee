@@ -43,28 +43,39 @@ GPU1\tPHB\t X \t0-31
 
 class TestNvlinkTopology:
     def test_parse_finds_nvlink_pair(self) -> None:
-        assert dev_mod._parse_nvlink_pairs(_TOPO_NVLINK) == {frozenset({0, 1})}
+        gpu_rows, pairs = dev_mod._parse_topo_matrix(_TOPO_NVLINK)
+        assert gpu_rows == {0, 1}
+        assert pairs == {frozenset({0, 1})}
 
     def test_parse_pcie_only_has_no_pairs(self) -> None:
-        assert dev_mod._parse_nvlink_pairs(_TOPO_PCIE) == set()
+        gpu_rows, pairs = dev_mod._parse_topo_matrix(_TOPO_PCIE)
+        assert gpu_rows == {0, 1}
+        assert pairs == set()
 
-    def test_lacks_nvlink_true_for_pcie(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_lacks_nvlink_true_for_pcie_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_PCIE))
-        assert dev_mod.gpus_lack_nvlink([0, 1]) is True
+        assert dev_mod.host_lacks_nvlink() is True
 
     def test_lacks_nvlink_false_when_linked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_NVLINK))
-        assert dev_mod.gpus_lack_nvlink([0, 1]) is False
+        assert dev_mod.host_lacks_nvlink() is False
 
-    def test_single_gpu_is_not_flagged(self) -> None:
-        assert dev_mod.gpus_lack_nvlink([0]) is False
+    def test_unparseable_topo_makes_no_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Garbage output parses zero GPU rows: stay silent rather than mis-warn.
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("some unrelated output\n"))
+        assert dev_mod.host_lacks_nvlink() is False
+
+    def test_single_gpu_host_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        single = "\tGPU0\tCPU Affinity\nGPU0\t X \t0-31\n"
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(single))
+        assert dev_mod.host_lacks_nvlink() is False
 
     def test_probe_failure_is_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_a: object, **_k: object) -> object:
             raise OSError("no nvidia-smi")
 
         monkeypatch.setattr(dev_mod.subprocess, "run", _boom)
-        assert dev_mod.gpus_lack_nvlink([0, 1]) is False
+        assert dev_mod.host_lacks_nvlink() is False
 
 
 def test_probe_parses_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:

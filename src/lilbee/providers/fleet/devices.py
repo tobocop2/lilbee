@@ -12,7 +12,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,13 +52,14 @@ class FleetDevice:
     free_bytes: int
 
 
-def _parse_nvlink_pairs(topo_text: str) -> set[frozenset[int]]:
-    """GPU index pairs joined by NVLink in ``nvidia-smi topo -m`` output.
+def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
+    """GPU row indices and NVLink-joined pairs from ``nvidia-smi topo -m`` output.
 
     The matrix header row labels the GPU columns; each ``GPU<r>`` row lists the
     link type to each column (``NV#`` is NVLink; ``PIX``/``PHB``/``SYS`` are PCIe).
     """
     header_cols: list[int] = []
+    gpu_rows: set[int] = set()
     pairs: set[frozenset[int]] = set()
     for line in topo_text.splitlines():
         tokens = line.split()
@@ -76,23 +76,25 @@ def _parse_nvlink_pairs(topo_text: str) -> set[frozenset[int]]:
             header_cols = leading_labels
         elif len(leading_labels) == 1:
             row_idx = leading_labels[0]
+            gpu_rows.add(row_idx)
             for col_idx, cell in zip(header_cols, tokens[1:], strict=False):
                 if row_idx != col_idx and cell.startswith("NV"):
                     pairs.add(frozenset({row_idx, col_idx}))
-    return pairs
+    return gpu_rows, pairs
 
 
-def gpus_lack_nvlink(indices: Sequence[int]) -> bool:
-    """Whether the given GPUs are joined only by PCIe (no NVLink between any pair).
+def host_lacks_nvlink() -> bool:
+    """Whether this host's GPUs are joined only by PCIe (no NVLink anywhere).
 
     Tensor-splitting a large model across PCIe-only cards is all-reduce bound and
-    much slower than over NVLink. Runs ``nvidia-smi topo -m``; returns False (no
-    claim) for fewer than two GPUs or any probe failure, so a non-NVIDIA or
-    headless host stays silent rather than warning wrongly.
+    much slower than over NVLink. Deliberately a host-level claim: the fleet's
+    device indices live in the serving binary's backend index space, which does
+    not map onto ``nvidia-smi``'s physical numbering under a visible-devices
+    restriction (the very hazard this module exists to avoid), so per-pair
+    verdicts against plan indices would be unreliable. Returns False (no claim)
+    when the probe fails or reports fewer than two GPUs, so a non-NVIDIA or
+    single-card host stays silent rather than warning wrongly.
     """
-    wanted = set(indices)
-    if len(wanted) < _TOPO_MIN_GPUS:
-        return False
     try:
         proc = subprocess.run(
             ["nvidia-smi", "topo", "-m"],  # noqa: S607
@@ -103,7 +105,8 @@ def gpus_lack_nvlink(indices: Sequence[int]) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return not any(pair <= wanted for pair in _parse_nvlink_pairs(proc.stdout))
+    gpu_rows, pairs = _parse_topo_matrix(proc.stdout)
+    return len(gpu_rows) >= _TOPO_MIN_GPUS and not pairs
 
 
 def _probe_env() -> dict[str, str]:

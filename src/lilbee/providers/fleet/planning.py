@@ -26,7 +26,7 @@ from lilbee.providers.fleet.adapters import (
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
 from lilbee.providers.fleet.devices import (
     FleetDevice,
-    gpus_lack_nvlink,
+    host_lacks_nvlink,
     probe_devices,
     visible_env,
 )
@@ -730,11 +730,11 @@ def _launch_for(
     # card's headroom. A cfg.num_ctx pin overrides the fit (handled by _role_ctx).
     multi_card_chat = is_chat and len(chosen) > 1
     split_chat = multi_card_chat and cfg.num_ctx is None
-    if multi_card_chat and gpus_lack_nvlink(plan.devices):
+    if multi_card_chat and host_lacks_nvlink():
         log.warning(
-            "Chat model %s is tensor-split across GPUs %s with no NVLink between them; "
+            "Chat model %s is tensor-split across GPUs %s on a host without NVLink; "
             "generation is PCIe all-reduce bound and can be very slow. A model that fits "
-            "on one or two NVLinked cards will generate faster.",
+            "on fewer cards will generate faster.",
             model_ref,
             list(plan.devices),
         )
