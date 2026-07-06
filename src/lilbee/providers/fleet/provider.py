@@ -31,6 +31,7 @@ from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
     is_connection_failure,
+    retry_on_busy,
 )
 from lilbee.providers.fleet.replicas import (
     gpu_device_count,
@@ -84,6 +85,11 @@ _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # The server parses tool calls natively via ``--jinja``; this probe only decides
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
+# Ingest OCR is background work: back off and re-request a 429'd page (a cold
+# vision start loading weights plus mmproj, or a transient slot-contention burst)
+# rather than dropping it from the index. Capped backoff keeps the total wait
+# near ~110s; a page still busy after that fails like any extraction error.
+_VISION_BUSY_RETRIES = 18
 _T = TypeVar("_T")
 
 
@@ -215,9 +221,10 @@ class _VisionRequestGate:
 
     The ingest file fan-out runs many files at once and each file's ``pdf_ocr`` opens
     its own ``vision_ocr_concurrency`` page pool, so without a shared cap the aggregate
-    over-subscribes a single-replica vision server into a 429 storm. The semaphore is
-    rebuilt to the configured capacity (``vision_replicas * vision_ocr_concurrency``)
-    only while the gate is idle, so a capacity change never doubles the live cap.
+    over-subscribes a single-replica vision server into a 429 storm. *capacity* is
+    the fleet's real slot count (see ``_vision_gate_capacity``); the semaphore is
+    rebuilt to it only while the gate is idle, so a capacity change never doubles
+    the live cap.
     """
 
     def __init__(self) -> None:
@@ -227,13 +234,13 @@ class _VisionRequestGate:
         self._semaphore: threading.BoundedSemaphore | None = None
 
     @contextmanager
-    def slot(self) -> Iterator[None]:
-        """Hold one vision-request slot for the duration of the block.
+    def slot(self, capacity: int) -> Iterator[None]:
+        """Hold one of *capacity* vision-request slots for the duration of the block.
 
         The acquired semaphore is captured and released by this same call, so a
         concurrent capacity change cannot release the wrong object.
         """
-        sem = self._checkout()
+        sem = self._checkout(capacity)
         # _checkout incremented _in_flight; decrement on every exit path,
         # including one where acquire() raises, or a leaked count pins the gate
         # non-idle and defers every later capacity resize forever.
@@ -247,9 +254,7 @@ class _VisionRequestGate:
             with self._lock:
                 self._in_flight -= 1
 
-    def _checkout(self) -> threading.BoundedSemaphore:
-        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
-        capacity = max(1, replicas * cfg.vision_ocr_concurrency)
+    def _checkout(self, capacity: int) -> threading.BoundedSemaphore:
         with self._lock:
             # Resize only when idle: rebuilding while old-semaphore holders are
             # in flight would briefly double the real cap, so a capacity change
@@ -312,17 +317,19 @@ def _ocr_pdf_page(
     ocr_prompt: str,
     deadline: float | None,
     page_path: Path,
+    gate_capacity: int,
 ) -> tuple[int, str]:
     """OCR one rasterized page through the gated vision server; empty text on failure.
 
     Acquires the gate before reading the clock so queue time isn't billed against the
     page's share of the document-wide deadline; an exhausted budget skips the page
-    rather than running it un-timed.
+    rather than running it un-timed. A busy fleet (429) is retried with backoff
+    inside the held slot before the page is given up on.
     """
     from lilbee.vision import build_vision_messages
 
     messages = build_vision_messages(ocr_prompt, png)
-    with _VISION_GATE.slot():
+    with _VISION_GATE.slot(gate_capacity):
         remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
         if remaining == 0.0:
             log.warning(
@@ -332,8 +339,11 @@ def _ocr_pdf_page(
             )
             return idx, ""
         try:
-            return idx, _call_with_failover(
-                clients, lambda client: _vision_call(client, messages, remaining)
+            return idx, retry_on_busy(
+                lambda: _call_with_failover(
+                    clients, lambda client: _vision_call(client, messages, remaining)
+                ),
+                retries=_VISION_BUSY_RETRIES,
             )
         except ProviderError:
             # One failed/timed-out page yields empty text; siblings continue.
@@ -820,10 +830,30 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.VISION)
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
-        with _VISION_GATE.slot():
-            return _call_with_failover(
-                clients, lambda client: _vision_call(client, messages, timeout)
+        # Retry a busy fleet inside the held slot: backoff time must not free the
+        # slot for more work, and each attempt re-picks the least-busy replica.
+        with _VISION_GATE.slot(self._vision_gate_capacity()):
+            return retry_on_busy(
+                lambda: _call_with_failover(
+                    clients, lambda client: _vision_call(client, messages, timeout)
+                ),
+                retries=_VISION_BUSY_RETRIES,
             )
+
+    def _vision_gate_capacity(self) -> int:
+        """The vision servers' total continuous-batching slots, the 429-free ceiling.
+
+        Summed from the adopted launches' fitted ``--parallel`` counts, which can
+        be lower than ``vision_ocr_concurrency`` when memory forced a smaller fit;
+        capping at the configured ceiling instead over-subscribes the servers.
+        Falls back to the configured formula when no launch snapshot exists (a
+        reload can momentarily drop it between two reads).
+        """
+        launches = self._launches.get(WorkerRole.VISION)
+        if launches:
+            return max(1, sum(launch.slots for launch in launches))
+        replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
+        return max(1, replicas * cfg.vision_ocr_concurrency)
 
     def pdf_ocr(
         self,
@@ -871,6 +901,7 @@ class FleetProvider:
             ocr_prompt=ocr_prompt,
             deadline=deadline,
             page_path=path,
+            gate_capacity=self._vision_gate_capacity(),
         )
 
         # OCR pages concurrently (a single-page decode underuses the GPU; the vision

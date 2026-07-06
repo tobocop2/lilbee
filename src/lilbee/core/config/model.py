@@ -125,6 +125,8 @@ class Config(BaseSettings):
     # Hard cap on tokens generated per OCR page. A real page is well under this;
     # the cap bounds the occasional runaway repetition loop (a page that loops to
     # tens of thousands of chars) which otherwise dominates a scan's OCR time.
+    # Raising it lengthens per-page generation on dense scans, so give ocr_timeout
+    # matching headroom.
     vision_ocr_max_tokens: int = ConfigField(default=4096, ge=256, writable=True)
     # Pages OCR'd concurrently, and the vision server's continuous-batching slots.
     # A single-page decode underutilizes a modern GPU (~half SM); batching several

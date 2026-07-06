@@ -397,20 +397,84 @@ def test_vision_call_caps_output_tokens(monkeypatch) -> None:
     assert client.chat.call_args.kwargs["options"] == {"max_tokens": 4096}
 
 
-def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
-    # The gate must cap in-flight vision requests at the fleet's real OCR capacity
-    # (replicas x per-server slots) and rebuild to a new capacity while idle.
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
-    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
+    # A 429 mid-ingest is transient (cold replicas, slot contention); the vision
+    # path must back off and retry so the page is ingested, not dropped.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    client = _fake_client()
+    client.chat.side_effect = [busy, busy, "ocr text"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert client.chat.call_count == 3
+
+
+def test_vision_ocr_gives_up_when_persistently_busy(monkeypatch) -> None:
+    # The retry budget is bounded; a fleet that never frees a slot fails the page.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    client.chat.side_effect = ProviderError(
+        "busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT
+    )
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError) as excinfo:
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert client.chat.call_count == prov_mod._VISION_BUSY_RETRIES
+
+
+def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
+    # A genuine extraction failure must surface immediately, not burn the budget.
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    client = _fake_client()
+    client.chat.side_effect = ProviderError("boom", provider="llama-server")
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError, match="boom"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert client.chat.call_count == 1
+
+
+def test_vision_gate_capacity_sums_real_launch_slots(monkeypatch) -> None:
+    # The gate caps at the servers' fitted --parallel slots: planning can fit
+    # fewer slots than vision_ocr_concurrency asks for, and a cap above the real
+    # slot count oversubscribes the servers into a 429 storm.
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 16)
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(), _fake_client()]})
+    p._launches[WorkerRole.VISION] = (
+        _fake_launch(WorkerRole.VISION, slots=3),
+        _fake_launch(WorkerRole.VISION, slots=2, replica=1),
+    )
+    assert p._vision_gate_capacity() == 5
+
+
+def test_vision_gate_capacity_falls_back_to_configured_formula(monkeypatch) -> None:
+    # Without a launch snapshot (mid-reload) the configured ceiling still bounds it.
     monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
     monkeypatch.setattr(cfg, "vision_replicas", 3)
     monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
-    with prov_mod._VISION_GATE.slot():
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client()]})
+    assert p._vision_gate_capacity() == 12
+
+
+def test_vision_request_gate_tracks_fleet_capacity(monkeypatch) -> None:
+    # The gate must cap in-flight vision requests at the caller-supplied capacity
+    # and rebuild to a new capacity while idle.
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
+    with prov_mod._VISION_GATE.slot(12):
         first = prov_mod._VISION_GATE._semaphore
     assert prov_mod._VISION_GATE._capacity == 12
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    with prov_mod._VISION_GATE.slot():
+    with prov_mod._VISION_GATE.slot(4):
         assert prov_mod._VISION_GATE._semaphore is not first  # rebuilt while idle
     assert prov_mod._VISION_GATE._capacity == 4
 
@@ -424,16 +488,13 @@ def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
-    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
     entered = threading.Event()
     release = threading.Event()
     held: list[object] = []
 
     def _hold() -> None:
-        with prov_mod._VISION_GATE.slot():
+        with prov_mod._VISION_GATE.slot(2):
             held.append(prov_mod._VISION_GATE._semaphore)
             entered.set()
             release.wait(timeout=5)
@@ -444,8 +505,7 @@ def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
         assert entered.wait(timeout=5)
         # Capacity change arrives mid-flight; a checkout must reuse the live
         # semaphore rather than swap, so the cap is never doubled.
-        monkeypatch.setattr(cfg, "vision_replicas", 4)
-        reused = prov_mod._VISION_GATE._checkout()
+        reused = prov_mod._VISION_GATE._checkout(8)
         try:
             assert reused is held[0]
             assert prov_mod._VISION_GATE._capacity == 2
@@ -457,7 +517,7 @@ def test_vision_gate_resize_deferred_while_in_flight(monkeypatch) -> None:
         worker.join()
 
     # Once idle again, the next checkout applies the deferred capacity.
-    with prov_mod._VISION_GATE.slot():
+    with prov_mod._VISION_GATE.slot(8):
         assert prov_mod._VISION_GATE._capacity == 8
 
 
@@ -468,9 +528,6 @@ def test_vision_gate_slot_decrements_in_flight_when_acquire_raises(monkeypatch) 
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
-    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
     real_checkout = prov_mod._VISION_GATE._checkout
 
@@ -478,13 +535,13 @@ def test_vision_gate_slot_decrements_in_flight_when_acquire_raises(monkeypatch) 
         def acquire(self) -> None:
             raise KeyboardInterrupt
 
-    def _checkout_returning_boom():
-        real_checkout()  # increments _in_flight like the real path
+    def _checkout_returning_boom(capacity):
+        real_checkout(capacity)  # increments _in_flight like the real path
         return _BoomSemaphore()
 
     monkeypatch.setattr(prov_mod._VISION_GATE, "_checkout", _checkout_returning_boom)
 
-    with pytest.raises(KeyboardInterrupt), prov_mod._VISION_GATE.slot():
+    with pytest.raises(KeyboardInterrupt), prov_mod._VISION_GATE.slot(2):
         pass  # pragma: no cover - acquire raises before the body
 
     assert prov_mod._VISION_GATE._in_flight == 0  # counter not leaked
@@ -493,17 +550,14 @@ def test_vision_gate_slot_decrements_in_flight_when_acquire_raises(monkeypatch) 
 def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
     # The ingest file fan-out can launch far more concurrent OCR requests than the
     # vision server has slots; the gate (held by every vision entry point) caps
-    # concurrent holders at vision_replicas * vision_ocr_concurrency so a
-    # single-replica server isn't 429-stormed. All callers still run.
+    # concurrent holders at the fleet's real slot capacity so a single-replica
+    # server isn't 429-stormed. All callers still run.
     import threading
     import time
 
     monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_capacity", 0)
     monkeypatch.setattr(prov_mod._VISION_GATE, "_in_flight", 0)
-    monkeypatch.setattr(prov_mod, "gpu_device_count", lambda: 1)
-    monkeypatch.setattr(cfg, "vision_replicas", 1)
-    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 2)
 
     lock = threading.Lock()
     live = 0
@@ -512,7 +566,7 @@ def test_vision_gate_bounds_concurrency_to_capacity(monkeypatch) -> None:
 
     def _hold() -> None:
         nonlocal live, peak, ran
-        with prov_mod._VISION_GATE.slot():
+        with prov_mod._VISION_GATE.slot(2):
             with lock:
                 live += 1
                 peak = max(peak, live)
@@ -545,9 +599,34 @@ def test_ocr_pdf_page_skips_when_budget_exhausted(monkeypatch) -> None:
         ocr_prompt="describe",
         deadline=time.monotonic() - 1.0,  # already past
         page_path=Path("doc.pdf"),
+        gate_capacity=2,
     )
     assert (idx, text) == (3, "")
     assert called == []  # _vision_call never ran
+
+
+def test_ocr_pdf_page_retries_busy_then_keeps_text(monkeypatch) -> None:
+    # A 429 on a PDF page is retried like the image path, so the page text lands
+    # instead of the page being skipped to empty.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr(prov_mod._VISION_GATE, "_semaphore", None)
+    monkeypatch.setattr("lilbee.vision.build_vision_messages", lambda *_a, **_k: [])
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    client = _fake_client()
+    client.chat.side_effect = [busy, busy, "page text"]
+    idx, text = prov_mod._ocr_pdf_page(
+        0,
+        b"\x89PNG",
+        clients=[client],
+        ocr_prompt="describe",
+        deadline=None,
+        page_path=Path("doc.pdf"),
+        gate_capacity=2,
+    )
+    assert (idx, text) == (0, "page text")
+    assert client.chat.call_count == 3
 
 
 def test_chat_streams_from_server() -> None:
@@ -1716,6 +1795,7 @@ class TestReplicaHealthRouting:
             ocr_prompt="read it",
             deadline=None,
             page_path=Path("doc.pdf"),
+            gate_capacity=2,
         )
         assert (idx, text) == (0, "ocr text")
         assert dead.healthy is False
