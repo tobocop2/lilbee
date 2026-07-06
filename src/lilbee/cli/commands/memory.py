@@ -68,6 +68,8 @@ def memory_list_cmd(
 ) -> None:
     """List your stored memories."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Listing memories is a pure store read; don't warm the inference fleet.
+    cfg.worker_pool_eager_start = False
     if not memory_enabled():
         _disabled()
         return
@@ -129,8 +131,13 @@ def memory_remove(
     if not memory_enabled():
         _disabled()
         return
-    forget(memory_id)
+    deleted = forget(memory_id)
     if cfg.json_mode:
-        json_output({"removed": memory_id})
+        json_output({"id": memory_id, "deleted": deleted})
+        if not deleted:
+            raise typer.Exit(1)
         return
-    console.print(f"Removed {memory_id}.")
+    console.print(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found.")
+    # Exit non-zero on not-found, matching `model remove` / `remove`.
+    if not deleted:
+        raise typer.Exit(1)

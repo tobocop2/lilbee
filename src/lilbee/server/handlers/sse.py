@@ -7,8 +7,9 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 
@@ -21,13 +22,16 @@ from lilbee.runtime.progress import (
     SseErrorCode,
     SseEvent,
 )
+from lilbee.server.chat_completions_api.errors import CompletionsErrorCode
 
 log = logging.getLogger(__name__)
 
 # Machine-readable ``code`` on an SSE error event. Load-time failures use
-# SseErrorCode; failed provider calls reuse ProviderErrorKind directly rather
-# than mirroring it into a second enum.
-SseErrorCodeValue = SseErrorCode | ProviderErrorKind
+# SseErrorCode; failed provider calls reuse ProviderErrorKind directly; the
+# RAG chat stream reuses the wire-layer CompletionsErrorCode for typed
+# dispatch errors (unknown model, no tool support, context overflow) so a
+# single client-facing vocabulary covers both surfaces.
+SseErrorCodeValue = SseErrorCode | ProviderErrorKind | CompletionsErrorCode
 
 
 def sse_event(event: str, data: Any) -> str:
@@ -48,7 +52,7 @@ def sse_error(
 
 
 _OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "llama_context")
-_NOT_INSTALLED_MARKERS = ("not found in registry", "is not available", "pull it first")
+_NOT_INSTALLED_MARKERS = ("is not installed", "is not available", "pull it first")
 
 
 def classify_load_error(message: str) -> tuple[SseErrorCode | None, str]:
@@ -84,6 +88,88 @@ def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any
     return cfg.generation_options(**filter_options(options)) if options else None
 
 
+# Cap on buffered SSE events per stream. A bulk sync emits per-file and
+# per-chunk progress far faster than a slow client reads; past this bound the
+# stream sheds the oldest progress event rather than buffering millions.
+SSE_QUEUE_MAX_EVENTS = 1000
+
+# Progress-class event types: high-frequency, safe to coalesce under
+# backpressure. Everything else (done, errors, crawl/setup lifecycle) must land.
+_DROPPABLE_EVENT_TYPES: frozenset[EventType | SseEvent] = frozenset(
+    {
+        EventType.FILE_START,
+        EventType.FILE_DONE,
+        EventType.BATCH_PROGRESS,
+        EventType.EMBED,
+        EventType.EXTRACT,
+        EventType.CRAWL_PAGE,
+        EventType.SETUP_PROGRESS,
+        SseEvent.PROGRESS,
+    }
+)
+
+
+class _QueuedEvent(NamedTuple):
+    """A queued SSE payload tagged with whether backpressure may shed it."""
+
+    payload: str | None
+    droppable: bool
+
+
+class SseEventQueue(asyncio.Queue[str | None]):
+    """Bounded SSE queue: progress events shed under backpressure, the rest land.
+
+    ``put_nowait`` (lifecycle events, tokens, the ``None`` sentinel) always
+    enqueues, evicting the oldest progress event first when at capacity.
+    ``put_event_nowait`` enqueues progress-protocol events, dropping the oldest
+    progress event (or the incoming one when the head is not progress) at
+    capacity. ``join()`` semantics are not supported.
+    """
+
+    _queue: deque[_QueuedEvent]
+
+    def __init__(self, max_events: int = SSE_QUEUE_MAX_EVENTS) -> None:
+        super().__init__()
+        self._max_events = max_events
+        self._put_droppable = False
+        self.dropped_events = 0
+
+    def _put(self, item: str | None) -> None:
+        self._queue.append(_QueuedEvent(item, self._put_droppable))
+
+    def _get(self) -> str | None:
+        return self._queue.popleft().payload
+
+    def _evict_oldest_droppable(self) -> bool:
+        """Shed the queue head when it is a progress event; True when a slot freed."""
+        if self._queue and self._queue[0].droppable:
+            self._queue.popleft()
+            self.dropped_events += 1
+            return True
+        return False
+
+    def put_nowait(self, item: str | None) -> None:
+        """Enqueue an always-delivered event, evicting old progress when full."""
+        if self.qsize() >= self._max_events:
+            self._evict_oldest_droppable()
+        self._put_droppable = False
+        super().put_nowait(item)
+
+    def put_event_nowait(self, payload: str, event_type: EventType | SseEvent) -> None:
+        """Enqueue a progress-protocol event, shedding progress when full."""
+        if event_type not in _DROPPABLE_EVENT_TYPES:
+            self.put_nowait(payload)
+            return
+        if self.qsize() >= self._max_events and not self._evict_oldest_droppable():
+            self.dropped_events += 1
+            return
+        self._put_droppable = True
+        try:
+            super().put_nowait(payload)
+        finally:
+            self._put_droppable = False
+
+
 class SseStream:
     """Context object for SSE streaming with cancellation support.
     Bundles the queue, cancel event, and progress callback that every SSE
@@ -92,10 +178,20 @@ class SseStream:
     """
 
     def __init__(self) -> None:
-        self.queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self.queue: SseEventQueue = SseEventQueue()
         self.cancel = threading.Event()
         self.loop = asyncio.get_running_loop()
         self.callback: DetailedProgressCallback = self._build_callback()
+
+    def put_threadsafe(self, item: str | None) -> None:
+        """Enqueue an always-delivered event from a worker thread.
+
+        ``asyncio.Queue.put_nowait`` is not thread-safe: it wakes a pending
+        getter via ``Future.set_result``, which must run on the loop thread. A
+        producer running under ``run_in_executor`` therefore hands the put back
+        to the loop instead of mutating the queue directly.
+        """
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, item)
 
     def _build_callback(self) -> DetailedProgressCallback:
         """Create a progress callback that serializes events into the queue.
@@ -112,9 +208,9 @@ class SseStream:
             except RuntimeError:
                 running = None
             if running is loop:
-                queue.put_nowait(payload)
+                queue.put_event_nowait(payload, event_type)
             else:
-                loop.call_soon_threadsafe(queue.put_nowait, payload)
+                loop.call_soon_threadsafe(queue.put_event_nowait, payload, event_type)
 
         return _callback
 

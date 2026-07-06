@@ -1,17 +1,72 @@
 """Tests for platform-level helpers."""
 
 import os
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
+from lilbee.core import system as system_mod
 from lilbee.core.system import (
+    _mount_fstype,
     chat_ctx_target_for_total_bytes,
     default_data_dir,
     find_local_root,
     is_ignored_dir,
+    is_network_path,
     scaled_chat_ctx_target_default,
+    stderr_suppressed,
 )
+
+_MOUNTS = (
+    "proc /proc proc rw 0 0\n"
+    "/dev/sda1 / ext4 rw 0 0\n"
+    "/dev/sda1 /workspace ext4 rw 0 0\n"
+    "server:/vol /workspace/models nfs4 rw 0 0\n"
+    "mfs#src /mnt/mfs fuse.mfs rw 0 0\n"
+)
+
+
+class TestNetworkPath:
+    def test_local_ext4_is_not_network(self):
+        assert _mount_fstype("/workspace/index/foo.gguf", _MOUNTS) == "ext4"
+
+    def test_longest_mount_wins_nfs(self):
+        # /workspace/models is nfs4 even though /workspace and / are ext4.
+        assert _mount_fstype("/workspace/models/chat-00001.gguf", _MOUNTS) == "nfs4"
+
+    def test_mount_fstype_skips_malformed_lines(self):
+        mounts = "garbage\n/dev/sda1 / ext4 rw 0 0\n"
+        assert _mount_fstype("/x/y.gguf", mounts) == "ext4"
+
+    @pytest.fixture
+    def mounts_file(self, tmp_path, monkeypatch):
+        """Point the module's /proc/mounts seam at a test-controlled file."""
+        mounts = tmp_path / "mounts"
+        mounts.write_text(_MOUNTS)
+        monkeypatch.setattr(system_mod, "_PROC_MOUNTS", mounts)
+        return mounts
+
+    def test_is_network_path_true_for_nfs(self, mounts_file):
+        assert is_network_path(Path("/workspace/models/m.gguf")) is True
+
+    def test_is_network_path_true_for_fuse_network(self, mounts_file):
+        assert is_network_path(Path("/mnt/mfs/m.gguf")) is True
+
+    def test_is_network_path_false_for_local(self, mounts_file):
+        assert is_network_path(Path("/workspace/index/m.gguf")) is False
+
+    def test_is_network_path_false_when_mounts_unreadable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(system_mod, "_PROC_MOUNTS", tmp_path / "missing")
+        assert is_network_path(Path("/anything")) is False
+
+    def test_is_network_path_uses_raw_path_when_resolve_fails(self, mounts_file, monkeypatch):
+        # Path.resolve has no injectable seam, so this one branch patches it.
+        def _raise(self):
+            raise OSError("resolve failed")
+
+        monkeypatch.setattr(Path, "resolve", _raise)
+        assert is_network_path(Path("/workspace/models/m.gguf")) is True
 
 
 class TestHelpers:
@@ -149,3 +204,36 @@ class TestScaledChatCtxTargetDefault:
 
             assert _read_total_memory_bytes() == 0
             assert scaled_chat_ctx_target_default() == 8192
+
+
+class TestStderrSuppressed:
+    def test_fd2_points_at_devnull_inside_then_restores(self):
+        devnull_stat = os.stat(os.devnull)
+        with stderr_suppressed():
+            inside = os.fstat(2)
+        # Inside the block fd 2 is the null device...
+        assert (inside.st_dev, inside.st_ino) == (devnull_stat.st_dev, devnull_stat.st_ino)
+        # ...and afterwards fd 2 is restored to a valid descriptor (no OSError).
+        os.fstat(2)
+
+    def test_restores_fd2_even_when_body_raises(self):
+        with pytest.raises(ValueError, match="boom"), stderr_suppressed():
+            raise ValueError("boom")
+        os.fstat(2)  # restored despite the exception
+
+    def test_win32_passthrough_is_noop(self, monkeypatch):
+        """On win32 the context manager is a passthrough; fd 2 is left alone."""
+        import sys as _sys
+
+        monkeypatch.setattr(_sys, "platform", "win32")
+        original_stat = os.fstat(2)
+        executed = []
+        with stderr_suppressed():
+            executed.append(True)
+            current_stat = os.fstat(2)
+        assert executed == [True]
+        # fd 2 was not redirected.
+        assert (current_stat.st_dev, current_stat.st_ino) == (
+            original_stat.st_dev,
+            original_stat.st_ino,
+        )

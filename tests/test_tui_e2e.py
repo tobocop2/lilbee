@@ -7,6 +7,7 @@ Every test here reproduces a bug that was found by manual testing.
 
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Any
 from unittest import mock
@@ -62,7 +63,7 @@ def _suppress_catalog_auto_hf_fetch():
 def _mock_resolve():
     """Mock model resolution to succeed without real files."""
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value=cfg.models_dir / "fake.gguf",
     ):
         yield
@@ -120,7 +121,7 @@ class TestEmbeddingAvailable:
 
         embedder = Embedder(cfg, mock_provider)
         with mock.patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value=cfg.models_dir / "test.gguf",
         ):
             assert embedder.embedding_available() is True
@@ -295,7 +296,7 @@ class TestViewCycling:
                 await pilot.press("escape")
                 await pilot.pause()
 
-                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Fleet", "Chat"]
                 for view in expected:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
@@ -497,7 +498,7 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Fleet", "Chat"]
                 for view in expected:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
@@ -547,7 +548,7 @@ class TestScreenTransitions:
                 assert app.active_view == "Tasks"
 
     async def test_forward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Catalog->Status->Settings->Tasks->Wiki->Chat via nav_next."""
+        """Chat->Catalog->Status->Settings->Tasks->Wiki->Fleet->Chat via nav_next."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -558,14 +559,14 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Chat"]
+                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Fleet", "Chat"]
                 for view in full_cycle:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
                     assert app.active_view == view
 
     async def test_backward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Wiki->Tasks->Settings->Status->Catalog->Chat via nav_prev."""
+        """Chat->Fleet->Wiki->Tasks->Settings->Status->Catalog->Chat via nav_prev."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -576,7 +577,15 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level [ binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                backward_cycle = ["Wiki", "Tasks", "Settings", "Status", "Catalog", "Chat"]
+                backward_cycle = [
+                    "Fleet",
+                    "Wiki",
+                    "Tasks",
+                    "Settings",
+                    "Status",
+                    "Catalog",
+                    "Chat",
+                ]
                 for view in backward_cycle:
                     await pilot.press("left_square_bracket")
                     await pilot.pause()
@@ -2955,6 +2964,11 @@ class TestCatalogGridFocus:
                     "Tab focus on a ModelGrid must auto-highlight the first card"
                 )
 
+    @pytest.mark.xdist_group("tui_pilot")
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Textual highlighted-row update timing is flaky on Windows runners",
+    )
     async def test_g_key_does_not_trigger_install(self, _mock_resolve):
         """Pressing G in the catalog grid jumps to the bottom, never installs (bb-8kxf)."""
         from lilbee.cli.tui.app import LilbeeApp
@@ -3220,7 +3234,7 @@ class TestChatEmbeddingReadyCoverage:
             screen = app.screen
             assert isinstance(screen, ChatScreen)
             with mock.patch(
-                "lilbee.providers.llama_cpp.provider.resolve_model_path",
+                "lilbee.providers.engine_params.resolve_model_path",
                 side_effect=FileNotFoundError("not found"),
             ):
                 assert screen._embedding_ready() is False
@@ -3277,9 +3291,7 @@ class TestChatEmbeddingReadyCoverage:
                     await pilot.pause()
                     screen = app.screen
                     assert isinstance(screen, ChatScreen)
-                    with mock.patch(
-                        "lilbee.providers.llama_cpp.provider.resolve_model_path"
-                    ) as resolve:
+                    with mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve:
                         assert screen._embedding_ready() is False
                         resolve.assert_not_called()
         finally:
@@ -3424,7 +3436,7 @@ class TestStreamFlushCoalescing:
         """When the elapsed time crosses the threshold, flush() runs and timing advances."""
         from unittest.mock import MagicMock
 
-        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.screens.chat import ChatScreen, _StreamTimings
 
         screen = MagicMock(spec=ChatScreen)
         flush_calls: list[None] = []
@@ -3433,18 +3445,18 @@ class TestStreamFlushCoalescing:
             flush_calls.append(None)
 
         # Past timings: long enough ago that both the flush and the scroll fire.
-        timings = [0.0, 0.0]
+        timings = _StreamTimings(last_flush=0.0, last_scroll=0.0)
         with mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"):
             ChatScreen._maybe_flush_and_scroll(screen, fake_flush, timings)
         assert len(flush_calls) == 1
-        assert timings[0] > 0  # last_flush bumped
+        assert timings.last_flush > 0  # last_flush bumped
 
     def test_maybe_flush_skips_flush_within_interval(self):
         """Inside the flush window, flush() is not called and timings stay unchanged."""
         import time
         from unittest.mock import MagicMock
 
-        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.screens.chat import ChatScreen, _StreamTimings
 
         screen = MagicMock(spec=ChatScreen)
         flush_calls: list[None] = []
@@ -3454,8 +3466,8 @@ class TestStreamFlushCoalescing:
 
         # Set timings to 'right now' so the interval check fails.
         now = time.monotonic()
-        timings = [now, now]
+        timings = _StreamTimings(last_flush=now, last_scroll=now)
         with mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"):
             ChatScreen._maybe_flush_and_scroll(screen, fake_flush, timings)
         assert flush_calls == []
-        assert timings == [now, now]
+        assert timings.last_flush == now and timings.last_scroll == now

@@ -39,9 +39,6 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
     ("deepseek", "deepseek_api_key", "DEEPSEEK_API_KEY", "DeepSeek"),
 )
 
-# Derived set of config field names (for checking which updates touch API keys).
-API_KEY_FIELDS: frozenset[str] = frozenset(t[1] for t in PROVIDER_KEYS)
-
 # Provider name -> cfg attribute holding that provider's API key.
 PROVIDER_API_KEY_FIELD: dict[str, str] = {prov: field for prov, field, *_ in PROVIDER_KEYS}
 
@@ -108,12 +105,37 @@ def detect_backend_name(base_url: str) -> BackendName:
 
 
 @dataclass(frozen=True)
+class SdkToolCall:
+    """One tool call extracted from a non-streaming SDK chat response."""
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
+class SdkToolCallDelta:
+    """One streaming tool-call delta from an SDK chat chunk.
+
+    ``id`` and ``name`` arrive on the opener; ``arguments_delta`` accumulates
+    across subsequent chunks at the same ``index``. Mirrors the per-frame
+    shape that the dispatch's stream translator already understands.
+    """
+
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments_delta: str | None = None
+
+
+@dataclass(frozen=True)
 class CompletionResult:
     """Single-shot chat completion result returned by a backend."""
 
     content: str
     finish_reason: str | None = None
     model: str | None = None
+    tool_calls: tuple[SdkToolCall, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -122,6 +144,7 @@ class StreamChunk:
 
     content: str
     finish_reason: str | None = None
+    tool_call_deltas: tuple[SdkToolCallDelta, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -270,4 +293,8 @@ class LlmSdkBackend(Protocol):
 
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
         """Return model metadata dict or None if unsupported / not found."""
+        ...
+
+    def supports_tools(self, model_ref: str) -> bool:
+        """Return True iff the backend can route tool calls for *model_ref*."""
         ...

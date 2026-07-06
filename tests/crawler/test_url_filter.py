@@ -84,6 +84,59 @@ class TestValidateCrawlUrl:
         with pytest.raises(ValueError, match="Cannot resolve"):
             validate_crawl_url("http://nope.example.com")
 
+    def test_rejects_ipv4_mapped_ipv6_metadata(self, monkeypatch):
+        # ::ffff:169.254.169.254 is the cloud metadata IP smuggled as IPv6.
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", ("::ffff:169.254.169.254", 0, 0, 0))],
+        )
+        with pytest.raises(ValueError, match="private/reserved"):
+            validate_crawl_url("http://metadata.example.com")
+
+    def test_rejects_unspecified_zero_host(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("0.0.0.0", 0))],
+        )
+        with pytest.raises(ValueError, match="private/reserved"):
+            validate_crawl_url("http://zero.example.com")
+
+    @pytest.mark.parametrize(
+        "addr",
+        [
+            "::",  # IPv6 unspecified
+            "100.64.0.1",  # RFC 6598 CGNAT
+            "64:ff9b::a9fe:a9fe",  # NAT64 embedding 169.254.169.254
+            "2002:a9fe:a9fe::",  # 6to4 embedding 169.254.169.254
+            "::169.254.169.254",  # IPv4-compatible embedding metadata
+            "::ffff:0:7f00:1",  # IPv4-translated/SIIT embedding 127.0.0.1
+        ],
+    )
+    def test_rejects_reserved_via_embedding_or_range(self, monkeypatch, addr):
+        family = 10 if ":" in addr else 2
+        sockaddr = (addr, 0, 0, 0) if family == 10 else (addr, 0)
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(family, 1, 6, "", sockaddr)],
+        )
+        with pytest.raises(ValueError, match="private/reserved"):
+            validate_crawl_url("http://sneaky.example.com")
+
+    @pytest.mark.parametrize(
+        "addr",
+        [
+            "2001:4860:4860::8888",  # public IPv6 (Google DNS)
+            "2002:808:808::",  # public 6to4 embedding 8.8.8.8
+        ],
+    )
+    def test_accepts_public_ipv6(self, monkeypatch, addr):
+        # Guards against an over-eager _embedded_ipv4 edit blocking public v6.
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(10, 1, 6, "", (addr, 0, 0, 0))],
+        )
+        validate_crawl_url("http://public.example.com")  # must not raise
+
 
 class TestRequireValidCrawlUrl:
     def test_rejects_non_url(self):
@@ -173,27 +226,29 @@ class TestSitemapFetch:
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         assert _fetch_sitemap_text("https://example.com/start") == "<urlset></urlset>"
 
-    def test_rejects_redirect_to_private_ip(self, monkeypatch):
-        """A 30x to a private/metadata host must drop the body (SSRF)."""
-        fake = MagicMock(status_code=200, text="<urlset></urlset>")
-        # httpx exposes the FINAL resolved URL after following redirects.
-        fake.url = "http://169.254.169.254/latest/meta-data/"
-        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
+    def test_does_not_follow_redirects(self, monkeypatch):
+        """A 30x is not followed; an unfollowed redirect yields no sitemap (SSRF-safe)."""
+        fake = MagicMock(status_code=301, text="<urlset></urlset>")
+        captured = {}
 
-        def _resolve(host, *a, **kw):
-            if host == "169.254.169.254":
-                return [(2, 1, 6, "", ("169.254.169.254", 0))]
-            return [(2, 1, 6, "", ("93.184.216.34", 0))]
+        def _get(url, *a, **kw):
+            captured.update(kw)
+            return fake
 
-        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
+        monkeypatch.setattr("httpx.get", _get)
         assert _fetch_sitemap_text("https://example.com/start") is None
+        assert captured.get("follow_redirects") is False
 
-    def test_rejects_redirect_to_non_http_scheme(self, monkeypatch):
-        """A redirect that lands on a file:// target is rejected."""
-        fake = MagicMock(status_code=200, text="<urlset></urlset>")
-        fake.url = "file:///etc/passwd"
-        monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
-        assert _fetch_sitemap_text("https://example.com/start") is None
+    def test_validates_seed_before_any_fetch(self, monkeypatch):
+        """A private/metadata seed host is rejected without making a request."""
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("169.254.169.254", 0))],
+        )
+        called = []
+        monkeypatch.setattr("httpx.get", lambda *a, **kw: called.append(1))
+        assert _fetch_sitemap_text("http://metadata.internal/start") is None
+        assert called == []
 
 
 class TestSitemapCount:

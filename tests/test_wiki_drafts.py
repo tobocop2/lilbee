@@ -35,11 +35,14 @@ def _draft_content(
     faithfulness: float | None = 0.85,
     drift_pct: int | None = None,
     bad_title: bool = False,
+    origin: str | None = None,
 ) -> str:
     drift_marker = ""
     if drift_pct is not None:
+        origin_note = f"; origin: {origin}" if origin else ""
         drift_marker = (
-            f"<!-- DRIFT: {drift_pct}% content changed - flagged for human review -->\n\n"
+            f"<!-- DRIFT: {drift_pct}% content changed{origin_note} "
+            "- flagged for human review -->\n\n"
         )
     fm_lines = ["---"]
     if faithfulness is not None:
@@ -169,6 +172,36 @@ class TestAcceptDraft:
             result = accept_draft("fresh", wiki_root, store)
         assert WikiSubdir.SUMMARIES in result.moved_to.parts
         assert (wiki_root / WikiSubdir.SUMMARIES / "fresh.md").is_file()
+
+    def test_accepts_into_origin_subdir_when_no_published_counterpart(self, tmp_path: Path) -> None:
+        # A concept page whose published counterpart was deleted drifts to a draft;
+        # accepting it must restore it under concepts/, not misfile it to summaries/.
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "torque.md",
+            _draft_content("torque body", drift_pct=50, origin=WikiSubdir.CONCEPTS),
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("torque", wiki_root, store)
+        assert WikiSubdir.CONCEPTS in result.moved_to.parts
+        assert (wiki_root / WikiSubdir.CONCEPTS / "torque.md").is_file()
+        assert not (wiki_root / WikiSubdir.SUMMARIES / "torque.md").exists()
+
+    def test_origin_marker_outside_content_subdirs_falls_back_to_summaries(
+        self, tmp_path: Path
+    ) -> None:
+        # A marker naming a non-content subdir (drafts/archive) or an unknown value
+        # must not route there; the summaries fallback still applies.
+        wiki_root = tmp_path / "wiki"
+        _write(
+            wiki_root / WikiSubdir.DRAFTS / "bogus.md",
+            _draft_content("body", drift_pct=50, origin=WikiSubdir.ARCHIVE),
+        )
+        store = MagicMock()
+        with patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = accept_draft("bogus", wiki_root, store)
+        assert WikiSubdir.SUMMARIES in result.moved_to.parts
 
     def test_strips_drift_marker_from_accepted_content(self, tmp_path: Path) -> None:
         wiki_root = tmp_path / "wiki"
@@ -402,3 +435,38 @@ class TestAcceptPendingParse:
         assert "losing body that won curation" in body
         assert "PENDING" not in body
         assert not draft.exists()
+
+
+class TestPathTraversalRejected:
+    """A crafted slug must not let draft routes touch files outside the wiki tree."""
+
+    def test_diff_draft_rejects_traversal_slug(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        secret = tmp_path / "secret.md"
+        _write(secret, "TOP SECRET")
+        with pytest.raises(ValueError, match="escapes"):
+            diff_draft("../../secret", wiki_root)
+        assert secret.read_text() == "TOP SECRET"
+
+    def test_reject_draft_rejects_traversal_slug(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        victim = tmp_path / "victim.md"
+        _write(victim, "do not delete")
+        with pytest.raises(ValueError, match="escapes"):
+            reject_draft("../../victim", wiki_root)
+        assert victim.exists()
+
+    def test_accept_draft_rejects_traversal_slug(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        victim = tmp_path / "victim.md"
+        _write(victim, "original")
+        with pytest.raises(ValueError, match="escapes"):
+            accept_draft("../../victim", wiki_root, MagicMock())
+        assert victim.read_text() == "original"
+
+    def test_legitimate_nested_slug_still_resolves(self, tmp_path: Path) -> None:
+        wiki_root = tmp_path / "wiki"
+        _write(wiki_root / WikiSubdir.DRAFTS / "src" / "page.md", _draft_content("hi"))
+        # No traversal: diff against an absent published page returns the draft body.
+        out = diff_draft("src/page", wiki_root)
+        assert "hi" in out

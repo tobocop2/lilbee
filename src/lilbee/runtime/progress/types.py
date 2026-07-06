@@ -33,7 +33,10 @@ class SseEvent(StrEnum):
     PROGRESS = "progress"
     HEARTBEAT = "heartbeat"
     ALREADY_INGESTING = "already_ingesting"
+    WARMING = "warming"
+    WARM = "warm"
     MEMORY_EXTRACTED = "memory_extracted"
+    GPU_STATS = "gpu_stats"
 
 
 class SseErrorCode(StrEnum):

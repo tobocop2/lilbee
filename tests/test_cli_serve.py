@@ -131,9 +131,9 @@ class TestServeCommand:
 
 class TestPortFile:
     def test_port_file_path(self):
-        from lilbee.cli.commands.servers import _port_file
+        from lilbee.cli.commands.servers import port_file
 
-        assert _port_file() == cfg.data_dir / "server.port"
+        assert port_file() == cfg.data_dir / "server.port"
 
 
 class TestLogLoopException:

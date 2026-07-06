@@ -6,7 +6,8 @@ SSE event sequence mirrors what the TUI does in
 matching ``setup`` progress indicator.
 
 Endpoints:
-    GET  /setup/crawler/status → { installed, component, browsers_path }
+    GET  /setup/crawler/status → { installed, package_installed,
+                                   chromium_installed, component, browsers_path }
     POST /setup/crawler         → text/event-stream of setup_start →
                                    setup_progress → setup_done → done
 """
@@ -26,10 +27,12 @@ from lilbee.crawler import (
     crawler_available,
     crawler_browsers_path,
 )
+from lilbee.server.auth import read_only
 from lilbee.server.handlers import SseStream, sse_done, sse_error
 
 
 @get("/setup/crawler/status")
+@read_only
 async def setup_crawler_status_route() -> dict[str, Any]:
     """Return whether the crawler is fully ready (Python package + Chromium)."""
     package_installed = crawler_available()

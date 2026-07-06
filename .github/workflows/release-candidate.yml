@@ -1,7 +1,7 @@
 name: Release candidate
 
 # Tag push (v*): build every release artifact ONCE -- default wheels + sdist,
-# CUDA/Intel-Mac extra wheels, the standalone executables -- and attach the
+# multi-GPU engine builds, the standalone executables -- and attach the
 # executables to a GH pre-release. Dispatch: same build, no release attach.
 # The QA matrix runs on demand via qa-matrix.yml; it is no longer gated to
 # this workflow so a flaky TUI test on one platform can't strand the wheel
@@ -85,15 +85,6 @@ jobs:
       release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
     secrets: inherit
 
-  build-extra-wheels:
-    needs: [resolve, create-prerelease]
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-prerelease.result != 'failure' }}
-    uses: ./.github/workflows/build-extra-wheels.yml
-    with:
-      ref: ${{ needs.resolve.outputs.ref }}
-      release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
-    secrets: inherit
-
   # Pre-release shell created up front so every build job can attach its
   # asset the moment it builds instead of waiting for the slowest cell.
   create-prerelease:
@@ -133,15 +124,14 @@ jobs:
       release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
     secrets: inherit
 
-  # Attach this run's executables AND every wheel to a GH pre-release. The
-  # wheels live on the release page because GitHub Pages has a 1 GB per-deploy
-  # cap that the full default + extra wheel set (~6 GB) blows through; the
-  # PEP 503 index at lilbee.sh/<backend>/lilbee/ now links to these release
-  # asset URLs instead of trying to host the wheels itself. A GH release is
-  # reversible (delete + retag) so this is safe to do eagerly; the
+  # Attach this run's executables AND the lilbee wheel + sdist to a GH
+  # pre-release. (The per-backend engine wheels are attached separately by
+  # attach-multigpu.) The PEP 503 index at lilbee.sh/<backend>/ links to those
+  # release asset URLs rather than hosting multi-gigabyte wheels itself. A GH
+  # release is reversible (delete + retag) so this is safe to do eagerly; the
   # irreversible step (PyPI) waits for a human to run publish.yml.
   attach-prerelease:
-    needs: [resolve, build-default-wheels, build-extra-wheels, build-binaries, build-cuda]
+    needs: [resolve, build-default-wheels, build-binaries, build-cuda]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -201,3 +191,57 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
           REPO: ${{ github.repository }}
         run: gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
+
+  # Supplementary opt-in lilbee[multi-gpu] artifacts on their OWN path. Fully
+  # decoupled: not in attach-prerelease's needs and not gating dispatch-publish,
+  # so a failure here never blocks the release. Builds are continue-on-error.
+  build-multigpu:
+    needs: [resolve]
+    uses: ./.github/workflows/build-multigpu.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+    secrets: inherit
+
+  attach-multigpu:
+    needs: [resolve, build-multigpu]
+    if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Download multi-gpu wheels
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-multigpu-*
+          path: multigpu-wheels-staging/
+      - name: Download standalone server binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: multigpu-exe-*
+          path: multigpu-bins/
+          merge-multiple: true
+      - name: Disambiguate same-platform wheels with a backend build tag
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, shutil
+          out = pathlib.Path("multigpu-wheels")
+          out.mkdir(exist_ok=True)
+          for d in pathlib.Path("multigpu-wheels-staging").glob("wheel-multigpu-*"):
+              backend = d.name.rsplit("-", 1)[-1]
+              for whl in d.glob("*.whl"):
+                  name, ver, rest = whl.name.split("-", 2)
+                  shutil.copy(whl, out / f"{name}-{ver}-1.{backend}-{rest}")
+          PY
+      - name: Attach multi-gpu wheels and binaries to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          files: |
+            multigpu-wheels/*
+            multigpu-bins/*
+          prerelease: ${{ contains(needs.resolve.outputs.version, 'a') || contains(needs.resolve.outputs.version, 'b') || contains(needs.resolve.outputs.version, 'rc') }}

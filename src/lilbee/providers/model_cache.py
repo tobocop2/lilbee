@@ -1,9 +1,10 @@
-"""Llama-cpp loader-mode constants and dynamic-context / GPU-memory helpers."""
+"""Loader-mode constants and dynamic-context / GPU-memory helpers for llama-server."""
 
 from __future__ import annotations
 
 import logging
 import platform
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 
@@ -118,39 +119,73 @@ def compute_dynamic_ctx(
     return max(floor, quantized)
 
 
-def get_available_memory(fraction: float) -> int:
+def get_available_memory(fraction: float, *, total: bool = False) -> int:
     """Return usable GPU/unified memory in bytes, scaled by *fraction*.
     - macOS (Apple Silicon): unified memory via psutil
     - Linux with NVIDIA GPU: pynvml -> nvidia-smi -> psutil fallback
     - Other: psutil system memory
+
+    With multiple NVIDIA GPUs, *total* sums every card's memory (whole-fleet
+    capacity, for deciding whether a model can run tensor-split across all of
+    them); the default sizes against the smallest single card.
     """
     import psutil
 
     system = platform.system()
 
     if system == "Darwin":
-        total = psutil.virtual_memory().total
-        return int(total * fraction)
+        return int(psutil.virtual_memory().total * fraction)
 
     if system in ("Linux", "Windows"):
-        nvidia_mem = _try_nvidia_memory()
+        nvidia_mem = _try_nvidia_memory(sum if total else min)
         if nvidia_mem is not None:
             return int(nvidia_mem * fraction)
 
-    total = psutil.virtual_memory().total
-    return int(total * fraction)
+    return int(psutil.virtual_memory().total * fraction)
 
 
-def _try_nvidia_memory() -> int | None:
-    """Try to get NVIDIA GPU total memory via pynvml, then nvidia-smi."""
+def free_system_memory() -> int:
+    """Live allocatable system RAM in bytes (free + reclaimable), right now.
+
+    The load-time counterpart to :func:`get_available_memory`, which scales total
+    capacity for sizing rather than reporting what is free this instant.
+    """
+    import psutil
+
+    return int(psutil.virtual_memory().available)
+
+
+def total_system_memory() -> int:
+    """Total installed system RAM in bytes."""
+    import psutil
+
+    return int(psutil.virtual_memory().total)
+
+
+def has_nvidia_gpu() -> bool:
+    """Whether an NVIDIA GPU is detectable on this host (NVML or nvidia-smi)."""
+    return _try_nvidia_memory() is not None
+
+
+def _try_nvidia_memory(reducer: Callable[[list[int]], int] = min) -> int | None:
+    """NVIDIA GPU total memory via pynvml, then nvidia-smi.
+
+    *reducer* combines the per-device totals. ``min`` (the default) sizes against
+    the smallest card, the safe budget for a single server or a per-card
+    tensor-split share. ``sum`` gives whole-fleet capacity, used only by the
+    catalog fit chip to decide whether a model can run split across every card.
+    """
     try:
         import pynvml  # type: ignore[import-untyped]
 
         pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        totals = [
+            int(pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(i)).total)
+            for i in range(pynvml.nvmlDeviceGetCount())
+        ]
         pynvml.nvmlShutdown()
-        return int(info.total)
+        if totals:
+            return reducer(totals)
     except Exception:  # noqa: S110 -- optional GPU detect; absence is expected on non-NVIDIA hosts
         pass
 
@@ -166,8 +201,9 @@ def _try_nvidia_memory() -> int | None:
             timeout=5,
         )
         if result.returncode == 0:
-            mib = int(result.stdout.strip().split("\n")[0])
-            return mib * 1024 * 1024
+            mibs = [int(line) for line in result.stdout.strip().splitlines() if line.strip()]
+            if mibs:
+                return reducer(mibs) * 1024 * 1024
     except Exception:  # noqa: S110 -- optional GPU detect; same rationale as above
         pass
 

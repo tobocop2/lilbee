@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from textual.app import App, ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
 from textual.screen import Screen
@@ -21,8 +23,9 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
+from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
-from lilbee.providers.worker.transport import WorkerRole
+from lilbee.providers.roles import WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -67,20 +70,28 @@ def _make_wiki() -> Screen:
     return WikiScreen()
 
 
-_BASE_VIEWS: dict[str, Callable[[], Screen]] = {
+def _make_fleet() -> Screen:
+    from lilbee.cli.tui.screens.fleet import FleetScreen
+
+    return FleetScreen()
+
+
+# Screen factory per managed view name (Chat is special-cased in switch_view and
+# has no factory). The active set + order + wiki gate come from msg.get_nav_views,
+# so the view universe lives in exactly one place (messages.ALL_NAV_VIEWS).
+_VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
     "Catalog": _make_catalog,
     "Status": _make_status,
     "Settings": _make_settings,
     "Tasks": _make_tasks,
+    "Wiki": _make_wiki,
+    "Fleet": _make_fleet,
 }
 
 
 def get_views() -> dict[str, Callable[[], Screen]]:
-    """Return the active view factories, including wiki when enabled."""
-    views = dict(_BASE_VIEWS)
-    if cfg.wiki:
-        views["Wiki"] = _make_wiki
-    return views
+    """Return the active view factories, derived from the nav view list."""
+    return {name: _VIEW_FACTORIES[name] for name in msg.get_nav_views() if name in _VIEW_FACTORIES}
 
 
 class LilbeeApp(App[None]):
@@ -130,6 +141,7 @@ class LilbeeApp(App[None]):
         ),
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
         Binding("S", "run_sync", "Sync", show=False, priority=True),
+        Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True),
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
@@ -159,11 +171,11 @@ class LilbeeApp(App[None]):
     # Production never sets it. See tests/_lilbee_app_test_host.py.
     _test_skip_auto_init: ClassVar[bool] = False
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         if self._test_skip_auto_init:
             return
-        self._canonicalize_persisted_models()
-        self.title = f"lilbee: {cfg.chat_model}"
+        await self._canonicalize_persisted_models()
+        self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the default.
         persisted = cfg.theme or _DEFAULT_THEME
@@ -202,17 +214,24 @@ class LilbeeApp(App[None]):
 
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
-    def _canonicalize_persisted_models(self) -> None:
-        """Swap stale persisted refs to a working fallback, persist, and log once."""
+    async def _canonicalize_persisted_models(self) -> None:
+        """Swap stale persisted refs to a working fallback, persist, and log once.
+
+        Canonicalization can probe local model servers over HTTP/DNS, so it runs
+        off the event loop to keep the TUI from freezing at mount. The probes
+        finish before the chat screen installs, so it still sees a settled ref.
+        """
         from lilbee.modelhub.model_manager import (
             ValidationResult,
             canonicalize_chat_model,
             canonicalize_embedding_model,
         )
 
+        chat_canon = await asyncio.to_thread(canonicalize_chat_model)
+        embedding_canon = await asyncio.to_thread(canonicalize_embedding_model)
         for canon, field, label in (
-            (canonicalize_chat_model(), "chat_model", "Chat"),
-            (canonicalize_embedding_model(), "embedding_model", "Embedding"),
+            (chat_canon, "chat_model", "Chat"),
+            (embedding_canon, "embedding_model", "Embedding"),
         ):
             if canon.status == ValidationResult.OK:
                 continue
@@ -277,19 +296,24 @@ class LilbeeApp(App[None]):
         self.theme = name
         apply_settings_update({"theme": name})
 
+    def _reject_if_downloading(self, value: object) -> bool:
+        """Toast and return True if *value* is a model ref still downloading, so a
+        half-pulled file can't land in a model slot."""
+        if not isinstance(value, str):
+            return False
+        downloading = self.task_bar.downloading_label_for(value)
+        if downloading is None:
+            return False
+        self.notify(msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning")
+        return True
+
     def set_active_model(self, key: str, value: str) -> None:
         """Persist an active model ref through the shared write boundary.
 
         Refs whose download is still queued or active are refused before the
         boundary runs, so a half-pulled file cannot land in a model slot.
         """
-
-        downloading = self.task_bar.downloading_label_for(value)
-        if downloading is not None:
-            self.notify(
-                msg.MODEL_BEING_DOWNLOADED.format(name=downloading),
-                severity="warning",
-            )
+        if self._reject_if_downloading(value):
             return
         try:
             apply_settings_update({key: value})
@@ -305,7 +329,10 @@ class LilbeeApp(App[None]):
         or values rejected by pydantic validation. Callers either catch and toast or let it
         propagate.
         """
-
+        # A model-role ref still downloading must not land in a slot (parity with
+        # set_active_model); toast and skip rather than half-pull.
+        if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
+            return
         apply_settings_update({key: value})
         normalized = getattr(cfg, key)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
@@ -345,40 +372,49 @@ class LilbeeApp(App[None]):
     def switch_view(self, view_name: str) -> None:
         """Switch to a named view, installing each screen at most once.
 
-        Guards against concurrent switches via ``self._switching`` so
-        rapid keypresses don't corrupt the screen stack.
-        ``active_view`` is updated after the switch completes.
+        Guards against concurrent switches via ``self._switching`` so rapid
+        keypresses can't corrupt the screen stack. ``active_view`` is updated
+        after the switch completes.
         """
         if self._switching:
             return
+        if view_name != "Chat" and get_views().get(view_name) is None:
+            return
         self._switching = True
 
+        awaitable: AwaitComplete | None = None
         if view_name == "Chat":
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             if not isinstance(self.screen, ChatScreen):
-                self.switch_screen(_CHAT_SCREEN_NAME)
+                awaitable = self.switch_screen(_CHAT_SCREEN_NAME)
             # Already on Chat, just update state below.
         else:
-            factory = get_views().get(view_name)
-            if factory is None:
-                self._switching = False
-                return
             screen_name = _view_screen_name(view_name)
             if screen_name not in self._installed_screen_names:
-                self.install_screen(factory(), name=screen_name)
+                self.install_screen(get_views()[view_name](), name=screen_name)
                 self._installed_screen_names.add(screen_name)
-            self.switch_screen(screen_name)
+            awaitable = self.switch_screen(screen_name)
 
-        def _finish() -> None:
-            self.active_view = view_name
+        self.active_view = view_name
+        # ViewTabs.on_mount captured active_view before this runs, so the
+        # highlight would lag by one step without this push.
+        with contextlib.suppress(NoMatches):
+            self.screen.query_one(ViewTabs).active_view = view_name
+
+        async def _release() -> None:
+            # switch_screen updates the stack synchronously but finishes mounting
+            # in a deferred AwaitComplete. Releasing the guard on the next tick
+            # (the old call_later) let a rapid second nav re-enter switch_screen
+            # mid-transition and pop an empty result-callback stack (a Textual
+            # IndexError). Awaiting the transition first keeps the guard up for
+            # the whole switch; call_next is flushed by the same event loop, so a
+            # single completed switch still releases promptly.
+            if awaitable is not None:
+                await awaitable
             self._switching = False
-            # ViewTabs.on_mount captured active_view before this callback
-            # runs, so the highlight would lag by one step without this push.
-            with contextlib.suppress(NoMatches):
-                self.screen.query_one(ViewTabs).active_view = view_name
 
-        self.call_later(_finish)
+        self.call_next(_release)
 
     def action_push_help(self) -> None:
         if self.screen.query("HelpPanel"):
@@ -433,6 +469,20 @@ class LilbeeApp(App[None]):
     def action_open_tasks(self) -> None:
         """Jump to the Task Center screen (t key)."""
         self.switch_view("Tasks")
+
+    def action_toggle_fleet(self) -> None:
+        """Toggle the Fleet drawer (ctrl+g): dock placement beside the current
+        screen, or close it if already open. No-op on the Fleet tab, which
+        already shows the full placement editor."""
+        from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+        drawers = self.screen.query(FleetDrawer)
+        if drawers:
+            drawers.first().remove()
+            return
+        if self.screen.query("FleetBody"):  # Fleet tab already shows placement
+            return
+        self.screen.mount(FleetDrawer())
 
     def action_global_slash_to_chat(self) -> None:
         """Route a slash typed on a non-slash-bound screen back to Chat's prompt.

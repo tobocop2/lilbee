@@ -160,14 +160,13 @@ class _Profiler:
         self.report.add(StepResult(name=name, ms=ms, budget_ms=budget, over_budget=over, error=err))
 
 
-async def run_profile() -> ProfileReport:
+async def run_profile() -> ProfileReport:  # noqa: C901, PLR0915 -- linear screen-by-screen QA walk
     """Drive a LilbeeApp through every screen + a few interactions."""
     # Imports inside the runner so module-import time doesn't pollute
     # the boot measurement.
     from textual.widgets import Input
 
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.widgets.chat_input import ChatInput
 
     report = ProfileReport()
@@ -176,6 +175,7 @@ async def run_profile() -> ProfileReport:
     app = LilbeeApp()
 
     async with app.run_test(size=(160, 48)) as pilot:
+
         async def boot() -> None:
             await pilot.pause()
 

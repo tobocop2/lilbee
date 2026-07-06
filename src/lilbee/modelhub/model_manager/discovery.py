@@ -2,11 +2,18 @@
 
 import logging
 import os
+import time
 from collections.abc import Callable
+from threading import Lock
 
 import httpx
 
 from lilbee.app.services import get_services
+from lilbee.catalog.query import (
+    EMBEDDING_NAME_PATTERNS,
+    RERANKER_NAME_PATTERNS,
+    VISION_NAME_PATTERNS,
+)
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.model_manager.types import RemoteModel
@@ -18,18 +25,12 @@ from lilbee.providers.local_servers import (
     openai_models_url,
 )
 from lilbee.providers.local_servers.config_urls import configured_local_servers
+from lilbee.providers.model_ref import format_remote_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 
 log = logging.getLogger(__name__)
 
 _EMBEDDING_FAMILIES = frozenset({"bert", "nomic-bert", "e5", "bge"})
-# Embedding detection by name, for servers (LM Studio) that report ids but no
-# family. Trailing hyphens keep chat models that merely contain the letters out.
-_EMBEDDING_NAME_PATTERNS = frozenset({"embed", "bge-", "e5-", "gte-"})
-_VISION_NAME_PATTERNS = frozenset({"llava", "vision", "moondream", "ocr", "minicpm-v"})
-# Reranker detection runs before embedding detection so ``bge-reranker-*``
-# (family "bge") is not misclassified as EMBEDDING.
-_RERANKER_NAME_PATTERNS = frozenset({"reranker", "rerank", "cross-encoder"})
 
 _CLASSIFY_DEFAULT_TIMEOUT_S = 5.0
 
@@ -41,32 +42,16 @@ def _classify_remote_task(name: str, family: str) -> ModelTask:
     servers like LM Studio that report no family.
     """
     name_lower = name.lower()
-    if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
+    if any(rp in name_lower for rp in RERANKER_NAME_PATTERNS):
         return ModelTask.RERANK
     family_lower = family.lower()
     if any(ef in family_lower for ef in _EMBEDDING_FAMILIES) or any(
-        ep in name_lower for ep in _EMBEDDING_NAME_PATTERNS
+        ep in name_lower for ep in EMBEDDING_NAME_PATTERNS
     ):
         return ModelTask.EMBEDDING
-    if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
+    if any(vp in name_lower for vp in VISION_NAME_PATTERNS):
         return ModelTask.VISION
     return ModelTask.CHAT
-
-
-def reclassify_by_name(ref: str, declared_task: str) -> str:
-    """Override declared_task to RERANK / VISION when ref names a known role.
-
-    Defends against pre-fix manifests that stored ``task="chat"`` for
-    models whose ref obviously identifies them as rerankers (e.g.
-    ``bge-reranker-*``) or vision loaders. The model bar uses this so a
-    historical mis-tag does not surface a reranker in the chat picker.
-    """
-    name_lower = ref.lower()
-    if any(rp in name_lower for rp in _RERANKER_NAME_PATTERNS):
-        return ModelTask.RERANK
-    if any(vp in name_lower for vp in _VISION_NAME_PATTERNS):
-        return ModelTask.VISION
-    return declared_task
 
 
 def classify_remote_models(
@@ -216,3 +201,70 @@ def discover_api_models() -> dict[str, list[RemoteModel]]:
 def detect_remote_embedding_models() -> list[str]:
     """Return embedding-model names across every configured local server."""
     return [m.name for m in classify_all_remote_models() if m.task == ModelTask.EMBEDDING]
+
+
+def _installed_native_refs() -> set[str]:
+    """Canonical refs from the native registry; empty set if the walk fails."""
+    try:
+        return {m.ref for m in get_services().registry.list_installed()}
+    except Exception:
+        log.warning("Native registry walk failed; contributing no installed refs", exc_info=True)
+        return set()
+
+
+def gather_known_model_refs() -> set[str]:
+    """Canonical refs from the native registry, every configured local server, and APIs.
+
+    Each primitive swallows its own failures, so a backend being down contributes an
+    empty subset rather than raising.
+    """
+    refs = _installed_native_refs()
+    for rm in classify_all_remote_models():
+        refs.add(format_remote_ref(rm.name, rm.provider))
+    for models in discover_api_models().values():
+        for rm in models:
+            refs.add(format_remote_ref(rm.name, rm.provider))
+    return refs
+
+
+class KnownModelCache:
+    """TTL-cached union of native + remote + frontier model refs."""
+
+    DEFAULT_TTL_S = 30.0
+
+    def __init__(self, ttl_s: float = DEFAULT_TTL_S) -> None:
+        self._ttl_s = ttl_s
+        self._refs: frozenset[str] = frozenset()
+        self._expires_at: float = 0.0
+        self._generation: int = 0
+        self._lock = Lock()
+
+    def refs(self) -> frozenset[str]:
+        """Cached canonical-ref set, refreshing past the TTL (fan-out runs off the lock)."""
+        with self._lock:
+            if time.monotonic() < self._expires_at:
+                return self._refs
+            captured_generation = self._generation
+        fresh = frozenset(gather_known_model_refs())
+        with self._lock:
+            self._refs = fresh
+            if self._generation == captured_generation:
+                self._expires_at = time.monotonic() + self._ttl_s
+            return self._refs
+
+    def resolve(self, model: str) -> str | None:
+        """Resolve *model* to its canonical ref, or None if unknown."""
+        refs = self.refs()
+        if model in refs:
+            return model
+        if "/" not in model and ":" in model:
+            prefixed = OLLAMA.qualify(model)
+            if prefixed in refs:
+                return prefixed
+        return None
+
+    def invalidate(self) -> None:
+        """Force the next ``refs()`` call to re-probe."""
+        with self._lock:
+            self._expires_at = 0.0
+            self._generation += 1

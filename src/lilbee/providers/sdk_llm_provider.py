@@ -20,10 +20,23 @@ from pathlib import Path
 from typing import Any, Literal, overload
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ClosableIterator, LLMProvider, ProviderError
+from lilbee.providers.base import (
+    ChatMessage,
+    ChatResult,
+    ChatStreamItem,
+    ChatToolResult,
+    ClosableIterator,
+    FinishReason,
+    LLMProvider,
+    ProviderError,
+    StreamFinish,
+    ToolCall,
+    ToolCallDelta,
+)
 from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
 from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
+from lilbee.providers.roles import OcrBackend
 from lilbee.providers.sdk_backend import (
     PROVIDER_KEYS,
     CompletionRequest,
@@ -31,7 +44,6 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
-from lilbee.providers.worker.transport import OcrBackend
 from lilbee.vision import PageText
 
 log = logging.getLogger(__name__)
@@ -54,7 +66,9 @@ def inject_provider_keys() -> None:
     shell.
     """
     for _, cfg_field, env_var, _ in PROVIDER_KEYS:
-        value = getattr(cfg, cfg_field, "")
+        # No default: every PROVIDER_KEYS field is a declared config attribute, so
+        # a typo in the table should surface as AttributeError, not silently read "".
+        value = getattr(cfg, cfg_field)
         if value and not os.environ.get(env_var):
             os.environ[env_var] = value
 
@@ -119,7 +133,9 @@ class SdkLLMProvider(LLMProvider):
         stream: Literal[False] = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult: ...
 
     @overload
     def chat(
@@ -129,7 +145,9 @@ class SdkLLMProvider(LLMProvider):
         stream: Literal[True],
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> ClosableIterator[str]: ...
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ClosableIterator[ChatStreamItem]: ...
 
     def chat(
         self,
@@ -138,11 +156,31 @@ class SdkLLMProvider(LLMProvider):
         stream: bool = False,
         options: dict[str, Any] | None = None,
         model: str | None = None,
-    ) -> str | ClosableIterator[str]:
-        """Chat completion via the configured backend."""
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> ChatResult | ClosableIterator[ChatStreamItem]:
+        """Chat completion via the configured backend.
+
+        Non-streaming returns a :class:`ChatResult` carrying the assistant
+        text, any tool-call frames the model emitted, and a finish reason.
+        Streaming yields :data:`ChatStreamItem` frames (text tokens and
+        tool-call deltas).
+        """
         self._ensure_initialized()
         ref = parse_model_ref(model or cfg.chat_model)
+        if tools and not self.supports_tools(model or cfg.chat_model):
+            chosen = model or cfg.chat_model
+            raise ProviderError(
+                f"Model {chosen!r} does not support tool calls. Pick a different "
+                f"chat model that advertises tool support, or remove tools from "
+                f"the request.",
+                provider=self._backend.provider_name,
+            )
         translated = translate_options(options, ref) if options else {}
+        if tools is not None:
+            translated["tools"] = tools
+        if tool_choice is not None:
+            translated["tool_choice"] = tool_choice
         request = CompletionRequest(
             ref=ref,
             messages=list(messages),
@@ -160,10 +198,47 @@ class SdkLLMProvider(LLMProvider):
             raise ProviderError(
                 f"Chat failed: {exc}", provider=self._backend.provider_name
             ) from exc
-        return result.content
+        return ChatResult(
+            text=result.content,
+            tool_calls=tuple(
+                ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in result.tool_calls
+            ),
+            finish_reason=FinishReason.coerce(result.finish_reason),
+        )
 
-    def _chat_stream(self, request: CompletionRequest) -> ClosableIterator[str]:
-        """Yield content tokens from a streaming completion.
+    def supports_tools(self, model_ref: str) -> bool:
+        """Delegate to the backend's ``supports_tools`` probe."""
+        return self._backend.supports_tools(model_ref)
+
+    def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> ChatToolResult:
+        """Tool-calling chat for remote/SDK models.
+
+        The base stub raises, but this backend advertises tool support and ``chat``
+        already forwards tools/tool_choice, so route through it instead of refusing.
+        """
+        result = self.chat(
+            # Pass each message through whole: a tool conversation carries
+            # ``tool_calls`` / ``tool_call_id`` / ``name`` that link an assistant
+            # call to its result, and stripping to role+content breaks that chain.
+            [dict(m) for m in messages],
+            stream=False,
+            options=options,
+            model=model,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        return ChatToolResult(content=result.text, tool_calls=list(result.tool_calls))
+
+    def _chat_stream(self, request: CompletionRequest) -> ClosableIterator[ChatStreamItem]:
+        """Yield content tokens and tool-call deltas from a streaming completion.
 
         Exceptions surfaced by the backend at either call time or during
         iteration are re-raised as ``ProviderError`` so callers always
@@ -174,6 +249,17 @@ class SdkLLMProvider(LLMProvider):
             for chunk in stream:
                 if chunk.content:
                     yield chunk.content
+                for delta in chunk.tool_call_deltas:
+                    yield ToolCallDelta(
+                        index=delta.index,
+                        id=delta.id,
+                        name=delta.name,
+                        arguments_delta=delta.arguments_delta,
+                    )
+                if chunk.finish_reason is not None:
+                    # The closing chunk's finish_reason lets the dispatch report
+                    # length/stop, matching the non-streaming path.
+                    yield StreamFinish(reason=FinishReason.coerce(chunk.finish_reason))
         except ProviderError:
             raise
         except Exception as exc:
@@ -190,23 +276,30 @@ class SdkLLMProvider(LLMProvider):
         timeout: float | None = None,
     ) -> str:
         """OCR via a multipart chat completion; ``timeout`` enforced via thread pool."""
-        from lilbee.vision import OCR_PROMPT, build_vision_messages
+        from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
-        messages = build_vision_messages(prompt or OCR_PROMPT, png_bytes)
+        messages = build_vision_messages(prompt or resolve_ocr_prompt(model), png_bytes)
         if timeout and timeout > 0:
             from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(max_workers=1) as pool:
+            # Don't use the context manager: its __exit__ shutdown(wait=True) would
+            # block until a hung call returns, so the caller would not be freed at
+            # the deadline. Shut down without waiting (matching the fleet OCR path);
+            # a wedged call's worker thread lives until the backend httpx timeout.
+            pool = ThreadPoolExecutor(max_workers=1)
+            try:
                 future = pool.submit(self.chat, messages, stream=False, model=model)
                 result = future.result(timeout=timeout)
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
         else:
             result = self.chat(messages, stream=False, model=model)
-        if not isinstance(result, str):
+        if not isinstance(result, ChatResult):
             raise ProviderError(
                 f"Vision OCR returned non-text response ({type(result).__name__}).",
                 provider=self._backend.provider_name,
             )
-        return result
+        return result.text
 
     def pdf_ocr(
         self,
@@ -226,19 +319,19 @@ class SdkLLMProvider(LLMProvider):
         )
 
     def list_models(self) -> list[str]:
-        """List models across every configured local server (empty list on SDK errors)."""
+        """List models across every configured local server.
+
+        A single unreachable server is logged and skipped so its outage does not
+        drop the models served by the other reachable servers.
+        """
         names: list[str] = []
-        for _spec, base_url in configured_local_servers():
+        for spec, base_url in configured_local_servers():
             try:
                 names.extend(self._backend.list_models(base_url=base_url, api_key=self._api_key))
             except NotImplementedError:
                 continue
-            except ProviderError:
-                raise
             except Exception as exc:
-                raise ProviderError(
-                    f"Listing models failed: {exc}", provider=self._backend.provider_name
-                ) from exc
+                log.debug("Skipping unreachable local server %s: %s", spec.key, exc)
         return names
 
     def list_chat_models(self, provider: str) -> list[str]:

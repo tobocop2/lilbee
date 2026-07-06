@@ -5,27 +5,31 @@ Typed pydantic models so Litestar's OpenAPI schema has field-level detail.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.data.store import ChunkType, MemoryKind, SearchScope
+from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
+from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 
+if TYPE_CHECKING:
+    from lilbee.app.placement import PlacementView
 
-def _validate_chunk_type(value: str | None) -> ChunkType | None:
+
+def decode_chunk_type(value: str | None) -> ChunkType | None:
     """Decode a ``chunk_type`` string into a ``ChunkType`` at the HTTP boundary.
 
-    Matches the CLI/MCP behaviour: only ``"raw"`` or ``"wiki"`` filter the
-    pool; everything else (including ``None`` and the UI-side ``"both"``)
-    means no filter. Any other string raises ``ValueError``.
+    Delegates to the canonical :func:`scope_to_chunk_type` so query-param and
+    request-body routes share one decoder: only ``"raw"`` or ``"wiki"`` filter
+    the pool; everything else (including ``None`` and the UI-side ``"both"``)
+    means no filter. Any other string raises ``ValueError`` with boundary-
+    friendly guidance.
     """
-    if value is None or value == SearchScope.BOTH.value:
-        return None
     try:
-        return ChunkType(value)
+        return scope_to_chunk_type(value)
     except ValueError as exc:
         raise ValueError(
             f"chunk_type must be one of 'raw', 'wiki', 'both', or omitted; got {value!r}"
@@ -43,7 +47,7 @@ class AskRequest(BaseModel):
     @field_validator("chunk_type", mode="before")
     @classmethod
     def _check_chunk_type(cls, v: str | None) -> ChunkType | None:
-        return _validate_chunk_type(v)
+        return decode_chunk_type(v)
 
 
 class ChatRequest(BaseModel):
@@ -51,14 +55,16 @@ class ChatRequest(BaseModel):
 
     question: str
     history: list[ChatMessage] = []
-    top_k: int = Field(default=0, le=100)
+    # None (unspecified) grounds with the configured top_k; an explicit 0 is a
+    # pure-LLM call that skips retrieval entirely.
+    top_k: int | None = Field(default=None, le=100)
     options: dict[str, Any] | None = None
     chunk_type: ChunkType | None = None
 
     @field_validator("chunk_type", mode="before")
     @classmethod
     def _check_chunk_type(cls, v: str | None) -> ChunkType | None:
-        return _validate_chunk_type(v)
+        return decode_chunk_type(v)
 
 
 class SyncRequest(BaseModel):
@@ -168,13 +174,35 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    chat_ready: bool = False
+    """True once the chat engine is loaded and ready to serve a first token.
+
+    A launcher polls this to wait out the cold model load before handing off to
+    a client, so the client never lands on an apparently-dead stream.
+    """
+    chat_status: Literal["ready", "loading", "not_started", "error"] = "not_started"
+    """Finer-grained chat readiness than the ``chat_ready`` bool.
+
+    Lets a polling client tell a fleet that is still loading (wait) apart from one
+    that never started warming (``not_started`` -- no chat model resolved / planned,
+    so it will not come up on its own) or failed (``error``). Without this a bare
+    ``chat_ready:false`` reads the same for "loading" and "hung", which looked like a
+    silent hang on a fresh box with no chat model installed."""
+    chat_ctx: int | None = None
+    """Per-slot context the chat engine serves, so a launcher can tell the client
+    its window and the client trims history to fit. None until the engine is up."""
 
 
 class AskResponse(BaseModel):
-    """Response for /api/ask and /api/chat."""
+    """Response for /api/ask and /api/chat.
+
+    ``sources`` is the full retrieved set; ``cited_sources`` is the subset the answer
+    actually cited, so a client can tell a grounded answer from an off-corpus one.
+    """
 
     answer: str
     sources: list[CleanedChunk]
+    cited_sources: list[CleanedChunk] = Field(default_factory=list)
 
 
 class SetModelResponse(BaseModel):
@@ -201,15 +229,18 @@ class CrawlRequest(BaseModel):
     """Request body for /api/crawl.
 
     depth: null / omitted = whole-site unbounded recursion. 0 = single URL
-    only. Positive int = max depth. max_pages: null / omitted = no cap.
-    Positive int = explicit page cap. render_mode: null / omitted = configured
-    default; "http" is browserless, "browser" runs Chromium with JavaScript.
+    only. Positive int = max depth. max_pages: null / omitted = the protective
+    safety cap. 0 = explicitly unlimited (the CRAWL_PAGES_UNLIMITED sentinel the
+    TUI and crawler honor). Positive int = explicit page cap. render_mode: null /
+    omitted = configured default; "http" is browserless, "browser" runs Chromium
+    with JavaScript.
     """
 
     url: str
     depth: int | None = Field(default=None, ge=0)
-    max_pages: int | None = Field(default=None, ge=1)
+    max_pages: int | None = Field(default=None, ge=0)
     render_mode: CrawlRenderMode | None = Field(default=None)
+    include_subdomains: bool = Field(default=False)
 
 
 class DocumentInfo(BaseModel):
@@ -337,16 +368,6 @@ class AddSummary(BaseModel):
     skipped: list[str]
     errors: list[str]
     sync: SyncSummary | None = None
-
-
-class WikiPageSummary(BaseModel):
-    """Summary of a wiki page for list endpoints."""
-
-    slug: str
-    title: str = ""
-    page_type: str = "unknown"
-    source_count: int = 0
-    created_at: str = ""
 
 
 class WikiCitationRecord(BaseModel):
@@ -530,9 +551,10 @@ class MemoryFlagsResponse(BaseModel):
 
 
 class MemoryRemoveResponse(BaseModel):
-    """Outcome of deleting a memory."""
+    """Outcome of deleting a memory; ``deleted`` is False when the id was unknown."""
 
-    removed: str
+    id: str
+    deleted: bool
 
 
 class MemoryExtractedItem(BaseModel):
@@ -553,3 +575,60 @@ class MemoryExtractedEvent(BaseModel):
 
     count: int
     items: list[MemoryExtractedItem]
+
+
+class GpuInfoResponse(BaseModel):
+    """One GPU as returned by GET /api/gpus and embedded in PlacementResponse."""
+
+    index: int
+    backend: str
+    label: str
+    name: str
+    total_bytes: int
+    free_bytes: int
+
+
+class RolePlacementResponse(BaseModel):
+    """Where one role's model is placed in the resolved plan."""
+
+    role: WorkerRole
+    model: str
+    devices: list[int]
+    tensor_split: list[int] | None
+    replicas: int
+
+
+class PlacementResponse(BaseModel):
+    """Response for placement read, preview, set, and clear routes."""
+
+    gpus: list[GpuInfoResponse]
+    roles: list[RolePlacementResponse]
+    unplaceable: list[str]
+    manual: bool
+    spec_json: str | None
+
+    @classmethod
+    def from_view(cls, view: PlacementView) -> PlacementResponse:
+        """The canonical serialized placement view, shared by the HTTP, MCP, and CLI surfaces."""
+        return cls(
+            gpus=[GpuInfoResponse(**vars(g)) for g in view.gpus],
+            roles=[
+                RolePlacementResponse(
+                    role=r.role,
+                    model=r.model,
+                    devices=list(r.devices),
+                    tensor_split=list(r.tensor_split) if r.tensor_split else None,
+                    replicas=r.replicas,
+                )
+                for r in view.roles
+            ],
+            unplaceable=[r.value for r in view.unplaceable],
+            manual=view.manual,
+            spec_json=view.spec_json,
+        )
+
+
+class PlacementSpecBody(BaseModel):
+    """Request body for placement routes that accept a manual spec."""
+
+    spec: dict[str, dict[str, object]] | None = None

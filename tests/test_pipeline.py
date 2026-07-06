@@ -272,3 +272,72 @@ class TestSourceTracking:
         store.upsert_source("drop_test.pdf", "hash", 3)
         store.drop_all()
         assert store.get_sources() == []
+
+
+class TestMaxConcurrent:
+    """``_max_concurrent`` scales ingest file-concurrency to the replica fleet."""
+
+    def test_defaults_to_cpu_quota_without_vision(self, monkeypatch) -> None:
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 6)
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 6
+
+    def test_scales_to_total_vision_slots_when_replicated(self, monkeypatch) -> None:
+        # 8 vision replicas x 4 OCR slots each = 32, which must outvote a 4-core quota
+        # so the extra GPUs are not starved.
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 8)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 32
+
+    def test_single_replica_caps_at_vision_slots(self, monkeypatch) -> None:
+        # A single vision server has vision_ocr_concurrency continuous-batching slots;
+        # file-concurrency tracks that capacity so all slots stay fed.
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 8)
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 8
+
+    def test_single_vision_server_not_flooded_by_cpu_quota(self, monkeypatch) -> None:
+        # The 429-storm bug: a many-core box must NOT fan cpu_quota (dozens) of OCR
+        # requests at one vision server's few slots; the cap is the vision capacity.
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 32)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 4
+
+    def test_scales_to_embed_replicas_when_no_vision(self, monkeypatch) -> None:
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embed_replicas", 8)
+        assert pipeline._max_concurrent() == 8
+
+    def test_auto_embed_replicas_fans_out_to_gpu_count(self, monkeypatch) -> None:
+        # embed_replicas=0 (the auto default) must fan out to one slot per GPU so
+        # a multi-GPU box does not stall extra cards waiting for ingest work.
+        import lilbee.providers.fleet.replicas as replicas_mod
+        from lilbee.data.ingest import pipeline
+
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 2)
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "embed_replicas", 0)
+        monkeypatch.setattr(replicas_mod, "gpu_device_count", lambda: 4)
+        result = pipeline._max_concurrent()
+        assert result >= 4, f"expected at least 4 (one per GPU), got {result}"

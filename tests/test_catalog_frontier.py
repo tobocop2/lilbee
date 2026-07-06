@@ -280,13 +280,6 @@ class TestFrontierTabBehavior:
             assert "2" in text  # 2 cloud models
             assert "providers" in text
 
-    async def test_populate_library_list_silently_returns_when_widget_missing(self) -> None:
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        screen = CatalogScreen.__new__(CatalogScreen)
-        screen._frontier_rows = []
-        screen._populate_library_list()
-
     async def test_action_load_more_is_noop_on_frontier_tab(self) -> None:
         from textual.app import ComposeResult
         from textual.widgets import TabbedContent
@@ -310,14 +303,6 @@ class TestFrontierTabBehavior:
             with mock.patch.object(screen, "_load_more") as mock_load:
                 screen.action_load_more()
                 mock_load.assert_not_called()
-
-    async def test_populate_library_list_swallows_lookup_failure(self) -> None:
-        """_populate_library_list returns silently if catalog-tabs is gone."""
-        from lilbee.cli.tui.screens.catalog import CatalogScreen
-
-        screen = CatalogScreen.__new__(CatalogScreen)
-        screen._frontier_rows = [_frontier("x")]
-        screen._populate_library_list()
 
     async def test_populate_library_list_repopulates_when_tab_already_present(self) -> None:
         from textual.app import ComposeResult

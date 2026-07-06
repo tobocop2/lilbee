@@ -16,6 +16,7 @@ from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.screens.fleet import FleetScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
@@ -75,7 +76,7 @@ def _patch_chat_setup():
 
 
 async def test_bracket_keys_cycle_all_screens():
-    """Press ] through all 5 views from normal mode (Escape first on Chat)."""
+    """Press ] through all 6 views from normal mode (Escape first on Chat)."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -85,13 +86,45 @@ async def test_bracket_keys_cycle_all_screens():
         await pilot.press("escape")
         await pilot.pause()
 
-        expected = [CatalogScreen, StatusScreen, SettingsScreen, TaskCenter, ChatScreen]
+        expected = [
+            CatalogScreen,
+            StatusScreen,
+            SettingsScreen,
+            TaskCenter,
+            FleetScreen,
+            ChatScreen,
+        ]
         for screen_type in expected:
             await pilot.press("right_square_bracket")
             await pilot.pause()
             assert isinstance(app.screen, screen_type), (
                 f"Expected {screen_type.__name__}, got {type(app.screen).__name__}"
             )
+
+
+async def test_view_switch_guard_held_until_transition_completes():
+    """The switch guard stays up until Textual's deferred transition completes,
+    so a rapid second switch is dropped instead of re-entering switch_screen
+    mid-transition and crashing on an empty result-callback stack.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+
+        app.switch_view("Catalog")
+        # Guard is set synchronously; a re-entrant switch is dropped.
+        assert app._switching is True
+        app.switch_view("Settings")
+        assert app.active_view == "Catalog"
+
+        await pilot.pause()
+        # Guard releases only after the transition finishes; now the next
+        # switch is accepted.
+        assert app._switching is False
+        assert isinstance(app.screen, CatalogScreen)
+        app.switch_view("Settings")
+        await pilot.pause()
+        assert isinstance(app.screen, SettingsScreen)
 
 
 async def test_bracket_keys_typed_literally_when_chat_input_focused():
@@ -130,11 +163,11 @@ async def test_bracket_keys_cycle_backward():
 
         await pilot.press("left_square_bracket")
         await pilot.pause()
-        assert isinstance(app.screen, TaskCenter)
+        assert isinstance(app.screen, FleetScreen)
 
         await pilot.press("left_square_bracket")
         await pilot.pause()
-        assert isinstance(app.screen, SettingsScreen)
+        assert isinstance(app.screen, TaskCenter)
 
 
 async def test_bracket_keys_work_from_settings():
@@ -195,6 +228,36 @@ async def test_settings_escape_returns_to_chat():
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         assert isinstance(app.screen, ChatScreen)
+
+
+async def test_rapid_fleet_back_does_not_corrupt_screen_stack():
+    """Rapid back-to-back Fleet transitions must not crash or corrupt the stack.
+
+    A raw pop_screen on go_back let a second transition race in and pop Textual's
+    result-callback stack while empty (IndexError, bb-ce4). The Fleet view inherits
+    the same guarded switch_view back-navigation.
+    """
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        for _ in range(5):
+            app.switch_view("Fleet")
+            await pilot.pause()
+            fleet = app.screen
+            if not isinstance(fleet, FleetScreen):
+                continue
+            # Two back actions fired before the first transition settles: the
+            # guard must drop the second instead of underflowing the stack.
+            fleet.action_go_back()
+            fleet.action_go_back()
+            await pilot.pause()
+        # No IndexError raised; back on Chat. Asserting on Textual's private
+        # _result_callbacks is intentional: this regression is about that internal
+        # stack underflowing, and one entry confirms it never did.
+        assert isinstance(app.screen, ChatScreen)
+        assert len(app.screen._result_callbacks) == 1
 
 
 async def test_slash_catalog_routes_through_switch_view_under_lilbee_app():
@@ -431,27 +494,28 @@ async def test_switching_guard_blocks_concurrent_switch():
 
 
 async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
-    """``on_mount`` calls ``Services.add_pool_listener`` so spawn lifecycle
-    surfaces as Textual notifications. Verified by replacing the Services
-    singleton with a recording pool, then firing the captured callbacks
-    from a worker thread (call_from_thread requires a different thread)
-    so their notify() bodies execute against the live app."""
+    """``on_mount`` calls ``Services.add_pool_listener`` so server spawn
+    lifecycle surfaces as Textual notifications. Verified by replacing the
+    Services singleton with a provider whose ``add_spawn_listener`` records the
+    callbacks, then firing them from a worker thread (call_from_thread requires a
+    different thread) so their notify() bodies execute against the live app."""
     import threading
+    from unittest.mock import MagicMock
 
     from lilbee.app import services as services_mod
-    from lilbee.providers.worker.transport import WorkerRole
+    from lilbee.providers.base import LLMProvider
+    from lilbee.providers.roles import WorkerRole
     from tests.conftest import make_mock_services
 
     captured: dict[str, object] = {}
 
-    class _RecordingPool:
-        registered_roles: tuple[str, ...] = ()
+    def _record(*, on_spawning=None, on_spawned=None) -> None:
+        captured["on_spawning"] = on_spawning
+        captured["on_spawned"] = on_spawned
 
-        def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
-            captured["on_spawning"] = on_spawning
-            captured["on_spawned"] = on_spawned
-
-    services_mod.set_services(make_mock_services(worker_pool=_RecordingPool()))
+    provider = MagicMock(spec=LLMProvider)
+    provider.add_spawn_listener.side_effect = _record
+    services_mod.set_services(make_mock_services(provider=provider))
     try:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:

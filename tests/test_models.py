@@ -4,7 +4,6 @@ from unittest import mock
 
 import pytest
 
-from lilbee.core.config import cfg
 from lilbee.modelhub import models
 from lilbee.modelhub.models import MODEL_CATALOG, ModelInfo
 
@@ -257,54 +256,37 @@ class TestPullWithProgress:
 
 
 class TestEnsureChatModel:
-    @mock.patch("lilbee.app.services.get_services")
-    def test_noop_when_chat_models_exist(self, mock_get_manager):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.return_value = ["llama3:latest", "nomic-embed-text:latest"]
-        mock_get_manager.return_value.model_manager = mock_manager
-        models.ensure_chat_model()  # should not raise or pull
+    """ensure_chat_model bootstraps only when no chat-task model is installed.
 
-    @mock.patch("lilbee.app.services.get_services")
-    def test_connection_error_raises(self, mock_get_manager):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.side_effect = RuntimeError("refused")
-        mock_get_manager.return_value.model_manager = mock_manager
-        with pytest.raises(RuntimeError, match="Cannot list models"):
-            models.ensure_chat_model()
+    It consults the task-aware ``list_installed_models`` (chat-task only), so a
+    pulled vision/reranker model -- or a remote non-chat model -- no longer
+    short-circuits the bootstrap.
+    """
+
+    def test_noop_when_chat_model_exists(self):
+        with mock.patch.object(models, "list_installed_models", return_value=["llama3:latest"]):
+            assert models.ensure_chat_model() is None  # no pull
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
-    @mock.patch("lilbee.app.services.get_services")
+    @mock.patch.object(models, "list_installed_models", return_value=[])
     def test_non_interactive_auto_picks(
-        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull
+        self, _mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull
     ):
-        # Pin embedding model so the filter correctly excludes it from chat models
-        old_embed = cfg.embedding_model
-        embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
-        cfg.embedding_model = embed_ref
-        try:
-            mock_manager = mock.MagicMock()
-            mock_manager.list_installed.return_value = [embed_ref]
-            mock_get_manager.return_value.model_manager = mock_manager
-            with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
-                pulled = models.ensure_chat_model()
-            expected = models.pick_default_model(32.0)
-            mock_pull.assert_called_once_with(expected.ref, console=None)
-            assert pulled == expected.ref
-        finally:
-            cfg.embedding_model = old_embed
+        with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
+            pulled = models.ensure_chat_model()
+        expected = models.pick_default_model(32.0)
+        mock_pull.assert_called_once_with(expected.ref, console=None)
+        assert pulled == expected.ref
 
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=8.0)
-    @mock.patch("lilbee.app.services.get_services")
+    @mock.patch.object(models, "list_installed_models", return_value=[])
     def test_non_interactive_low_ram(
-        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull
+        self, _mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull
     ):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.return_value = []
-        mock_get_manager.return_value.model_manager = mock_manager
         with mock.patch.object(models.sys.stdin, "isatty", return_value=False):
             models.ensure_chat_model()
         expected = models.pick_default_model(8.0)
@@ -313,13 +295,10 @@ class TestEnsureChatModel:
     @mock.patch.object(models, "pull_with_progress")
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
-    @mock.patch("lilbee.app.services.get_services")
+    @mock.patch.object(models, "list_installed_models", return_value=[])
     def test_interactive_uses_picker(
-        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate, mock_pull
+        self, _mock_list, mock_vram_estimate, mock_disk_estimate, mock_pull
     ):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.return_value = []
-        mock_get_manager.return_value.model_manager = mock_manager
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="1"),
@@ -329,44 +308,39 @@ class TestEnsureChatModel:
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=0.01)
     @mock.patch.object(models, "get_system_ram_gb", return_value=32.0)
-    @mock.patch("lilbee.app.services.get_services")
-    def test_insufficient_disk_raises(
-        self, mock_get_manager, mock_vram_estimate, mock_disk_estimate
-    ):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.return_value = []
-        mock_get_manager.return_value.model_manager = mock_manager
+    @mock.patch.object(models, "list_installed_models", return_value=[])
+    def test_insufficient_disk_raises(self, _mock_list, mock_vram_estimate, mock_disk_estimate):
         with (
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
             pytest.raises(RuntimeError, match="Not enough disk space"),
         ):
             models.ensure_chat_model()
 
-    @mock.patch("lilbee.app.services.get_services")
-    def test_empty_model_list_triggers_pull(self, mock_get_manager):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.return_value = []
-        mock_get_manager.return_value.model_manager = mock_manager
-        with (
-            mock.patch.object(models, "get_system_ram_gb", return_value=16.0),
-            mock.patch.object(models, "get_free_disk_gb", return_value=50.0),
-            mock.patch.object(models, "pull_with_progress"),
-            mock.patch.object(models.sys.stdin, "isatty", return_value=False),
-        ):
-            models.ensure_chat_model()
+    @mock.patch.object(models, "pull_with_progress")
+    @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
+    @mock.patch.object(models, "get_system_ram_gb", return_value=16.0)
+    def test_non_chat_only_install_still_pulls(self, mock_ram, mock_disk, mock_pull):
+        """Regression (bb-ziks.67): an installed reranker/vision model is not a chat
+        model, so the real (task-filtered) list_installed_models excludes it and the
+        bootstrap still pulls one rather than short-circuiting. Drives the real
+        list_installed_models through reclassify_by_name (no mock of the classifier)."""
+        from lilbee.catalog.types import ModelTask
 
-    @mock.patch("lilbee.app.services.get_services")
-    def test_only_embedding_model_triggers_pull(self, mock_get_manager):
-        mock_manager = mock.MagicMock()
-        mock_manager.list_installed.return_value = ["nomic-embed-text:latest"]
-        mock_get_manager.return_value.model_manager = mock_manager
+        # A manifest that declares task="chat" but whose ref names a reranker; the
+        # name-based reclassifier must demote it so it never counts as a chat model.
+        reranker = mock.Mock(ref="bge-reranker-v2-m3", task=ModelTask.CHAT)
         with (
-            mock.patch.object(models, "get_system_ram_gb", return_value=16.0),
-            mock.patch.object(models, "get_free_disk_gb", return_value=50.0),
-            mock.patch.object(models, "pull_with_progress"),
+            mock.patch.object(models, "ModelRegistry") as mock_registry,
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
             mock.patch.object(models.sys.stdin, "isatty", return_value=False),
         ):
-            models.ensure_chat_model()
+            mock_registry.return_value.list_installed.return_value = [reranker]
+            # The reranker is excluded, so the chat-task list is empty...
+            assert models.list_installed_models() == []
+            # ...and the bootstrap therefore pulls a real chat model.
+            pulled = models.ensure_chat_model()
+        assert pulled == models.pick_default_model(16.0).ref
+        mock_pull.assert_called_once()
 
 
 # ensure_tag was removed alongside the alias system. Tag normalisation has

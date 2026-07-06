@@ -10,6 +10,26 @@ class ChatMode(StrEnum):
     CHAT = "chat"
 
 
+class LlmProvider(StrEnum):
+    """Inference backend that ``create_provider`` builds.
+
+    ``auto`` prefix-routes: native GGUF refs to the local llama-server engine,
+    remote-prefixed refs (``ollama/``, ``openai/``, ...) to the SDK backend.
+    ``remote`` forces the SDK backend.
+    """
+
+    AUTO = "auto"
+    REMOTE = "remote"
+
+
+class RerankerType(StrEnum):
+    """How the reranker GGUF is served. ``auto`` detects by architecture."""
+
+    AUTO = "auto"
+    CROSS_ENCODER = "cross_encoder"
+    LLM = "llm"
+
+
 class CrawlRenderMode(StrEnum):
     """How a crawl fetches pages. ``http`` uses no browser; ``browser`` runs Chromium with JS."""
 

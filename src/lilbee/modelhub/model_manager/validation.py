@@ -16,12 +16,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager.discovery import (
     classify_remote_models,
     discover_api_models,
-    reclassify_by_name,
 )
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
@@ -66,9 +66,8 @@ def _is_local_installed(ref: str) -> bool:
     """True iff ``ref`` resolves to an installed GGUF in the local registry."""
     try:
         registry = ModelRegistry(cfg.models_dir)
-        installed = {m.ref for m in registry.list_installed()} | {
-            m.hf_repo for m in registry.list_installed()
-        }
+        installed_models = registry.list_installed()
+        installed = {m.ref for m in installed_models} | {m.hf_repo for m in installed_models}
         return ref in installed
     except Exception:  # pragma: no cover - defensive for fresh installs
         log.debug("Local registry probe failed for %r", ref, exc_info=True)

@@ -320,6 +320,33 @@ class TestTomlConfigFile:
             c = Config()
             assert c.enable_ocr is True
 
+    def test_list_field_from_toml_stays_a_list(self, tmp_path):
+        """A TOML array maps to a native list, not its stringified repr."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            'cors_origins = ["https://a.example", "https://b.example"]\n'
+            'crawl_exclude_patterns = [".*/private/.*"]\n'
+            'crawl_browser_extra_args = ["--disable-gpu", "--no-sandbox"]\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.cors_origins == ["https://a.example", "https://b.example"]
+            assert c.crawl_exclude_patterns == [".*/private/.*"]
+            # No before-validator splitter, so the old str(v) coercion hard-failed here.
+            assert c.crawl_browser_extra_args == ["--disable-gpu", "--no-sandbox"]
+
+    def test_empty_string_scalar_in_toml_falls_back_to_default(self, tmp_path):
+        """Legacy '' sentinel (set_setting wrote it for None) is dropped, not coerced."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text('chat_model = ""\n')
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.chat_model == _DEFAULT_CHAT_REF
+
     def test_top_p_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("top_p = 0.9\n")
@@ -1384,6 +1411,34 @@ class TestCrawlExcludePatternsValidator:
         assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
 
 
+class TestCrawlBrowserExtraArgsValidator:
+    def test_newline_separated_string_splits(self):
+        """The persist path joins list values with newlines; reload must split them."""
+        from lilbee.core.config import Config
+
+        result = Config._split_crawl_browser_extra_args("--flag-a\n--flag-b")
+        assert result == ["--flag-a", "--flag-b"]
+
+    def test_list_passes_through_unchanged(self):
+        from lilbee.core.config import Config
+
+        assert Config._split_crawl_browser_extra_args(["--a", "--b"]) == ["--a", "--b"]
+
+    def test_persisted_newline_string_round_trips(self, tmp_path):
+        """A value persisted as a newline-joined string must not crash the whole
+        config load (which would silently discard every other setting)."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            'crawl_browser_extra_args = "--flag-a\\n--flag-b"\nchat_model = "ollama/keep:latest"\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.crawl_browser_extra_args == ["--flag-a", "--flag-b"]
+            assert c.chat_model == "ollama/keep:latest"  # other settings survive
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = _clean_env(tmp_path)
@@ -1593,6 +1648,38 @@ class TestBuildCfgFallback:
             _, error = _build_cfg()
         assert error is None
 
+    def test_fresh_import_honors_toml_model_fields(self, tmp_path):
+        """A config.toml with model refs must survive first package import.
+
+        The model-ref validator imports the catalog package, which once imported
+        cfg back at module level: on a fresh interpreter the cycle rejected every
+        config.toml carrying a model field, silently falling back to defaults.
+        Only a subprocess exercises the fresh-import path, so this test shells out.
+        """
+        import json
+        import subprocess
+        import sys
+
+        pinned = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
+        (tmp_path / "config.toml").write_text(
+            f'chat_model = "{pinned}"\nchat_n_ctx_target = 131072\n'
+        )
+        env = _clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["PATH"] = os.environ["PATH"]
+        probe = (
+            "import json\n"
+            "from lilbee.core.config import cfg, config_load_error\n"
+            "print(json.dumps({'error': str(config_load_error), "
+            "'chat_model': str(cfg.chat_model)}))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True
+        )
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "None"
+        assert payload["chat_model"] == pinned
+
     def test_empty_string_persisted_nullable_uses_default(self, tmp_path):
         """Legacy bug: set_setting wrote None as ""; pydantic can't coerce.
 
@@ -1648,3 +1735,36 @@ class TestChatCtxTargetDefault:
         ):
             c = Config()
         assert c.chat_n_ctx_target == 8192
+
+
+class TestEngineKnobValidators:
+    """The tri-state engine knobs accept string aliases from env/config."""
+
+    def test_flash_attention_auto_is_none(self):
+        with mock.patch.dict(os.environ, {"LILBEE_FLASH_ATTENTION": "auto"}):
+            assert Config().flash_attention is None
+
+    def test_n_gpu_layers_cpu_alias_is_zero(self):
+        # Call the before-validator directly: the env source coerces int-typed
+        # fields before the validator runs, so "cpu" must be exercised here.
+        assert Config._parse_n_gpu_layers("cpu") == 0
+
+    def test_n_gpu_layers_auto_alias_is_none(self):
+        assert Config._parse_n_gpu_layers("auto") is None
+
+
+class TestActiveConfigScope:
+    """``config_scope`` binds a Config for the block; ``active_config`` reads it."""
+
+    def test_active_config_defaults_to_global(self):
+        from lilbee.core.config import active_config, cfg
+
+        assert active_config() is cfg
+
+    def test_config_scope_binds_and_restores(self, tmp_path):
+        from lilbee.core.config import active_config, cfg, config_scope
+
+        scoped = cfg.model_copy(update={"data_root": tmp_path})
+        with config_scope(scoped):
+            assert active_config() is scoped
+        assert active_config() is cfg

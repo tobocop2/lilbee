@@ -1,4 +1,4 @@
-"""Tests for the llama-cpp loader-mode helpers (kv-size, dynamic ctx, available memory)."""
+"""Tests for the loader-mode helpers (kv-size, dynamic ctx, available memory)."""
 
 from __future__ import annotations
 
@@ -15,8 +15,11 @@ from lilbee.providers.model_cache import (
     _try_nvidia_memory,
     compute_dynamic_ctx,
     estimate_model_memory,
+    free_system_memory,
     get_available_memory,
+    has_nvidia_gpu,
     kv_bytes_per_token,
+    total_system_memory,
 )
 
 
@@ -189,15 +192,51 @@ class TestGetAvailableMemory:
         fake_psutil.virtual_memory.return_value.total = 800_000_000
         monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
         monkeypatch.setattr(platform, "system", lambda: "Linux")
-        monkeypatch.setattr("lilbee.providers.model_cache._try_nvidia_memory", lambda: None)
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache._try_nvidia_memory", lambda reducer=min: None
+        )
         assert get_available_memory(0.25) == 200_000_000
 
     def test_linux_with_nvidia_uses_gpu_total(self, monkeypatch) -> None:
         monkeypatch.setattr(platform, "system", lambda: "Linux")
         monkeypatch.setattr(
-            "lilbee.providers.model_cache._try_nvidia_memory", lambda: 4_000_000_000
+            "lilbee.providers.model_cache._try_nvidia_memory",
+            lambda reducer=min: 4_000_000_000,
         )
         assert get_available_memory(0.5) == 2_000_000_000
+
+    def test_total_uses_sum_reducer_default_uses_min(self, monkeypatch) -> None:
+        """total=True sums every card; the default sizes against the smallest."""
+        captured: dict[str, object] = {}
+
+        def fake(reducer=min):  # per-card totals for a 3-GPU host
+            captured["reducer"] = reducer
+            return reducer([10, 20, 30])
+
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr("lilbee.providers.model_cache._try_nvidia_memory", fake)
+        assert get_available_memory(1.0) == 10
+        assert captured["reducer"] is min
+        assert get_available_memory(1.0, total=True) == 60
+        assert captured["reducer"] is sum
+
+
+class TestFreeSystemMemory:
+    def test_returns_live_psutil_available(self, monkeypatch) -> None:
+        # Unlike get_available_memory (total capacity), this is what's free right
+        # now -- the number that decides whether a model load would swap-thrash.
+        fake_psutil = mock.MagicMock()
+        fake_psutil.virtual_memory.return_value.available = 7_000_000_000
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        assert free_system_memory() == 7_000_000_000
+
+
+class TestTotalSystemMemory:
+    def test_returns_psutil_total(self, monkeypatch) -> None:
+        fake_psutil = mock.MagicMock()
+        fake_psutil.virtual_memory.return_value.total = 8_000_000_000
+        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        assert total_system_memory() == 8_000_000_000
 
 
 class TestTryNvidiaMemory:
@@ -249,3 +288,69 @@ class TestTryNvidiaMemory:
         result = mock.MagicMock(returncode=returncode, stdout="")
         monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
         assert _try_nvidia_memory() is None
+
+
+class TestHeterogeneousGpuSizing:
+    def test_pynvml_takes_minimum_total_across_devices(self, monkeypatch) -> None:
+        # Heterogeneous GPUs: sizing against the smallest card is conservative.
+        fake_pynvml = mock.MagicMock()
+        fake_pynvml.nvmlDeviceGetCount.return_value = 2
+        infos = {0: mock.MagicMock(total=24 * 1024**3), 1: mock.MagicMock(total=8 * 1024**3)}
+        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = lambda i: i
+        fake_pynvml.nvmlDeviceGetMemoryInfo.side_effect = lambda handle: infos[handle]
+        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake_pynvml)
+        assert _try_nvidia_memory() == 8 * 1024**3
+
+    def test_pynvml_sum_reducer_totals_every_device(self, monkeypatch) -> None:
+        # The fit chip sums all cards: a model can tensor-split across the fleet.
+        fake_pynvml = mock.MagicMock()
+        fake_pynvml.nvmlDeviceGetCount.return_value = 2
+        infos = {0: mock.MagicMock(total=24 * 1024**3), 1: mock.MagicMock(total=8 * 1024**3)}
+        fake_pynvml.nvmlDeviceGetHandleByIndex.side_effect = lambda i: i
+        fake_pynvml.nvmlDeviceGetMemoryInfo.side_effect = lambda handle: infos[handle]
+        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake_pynvml)
+        assert _try_nvidia_memory(sum) == 32 * 1024**3
+
+    def test_pynvml_zero_devices_falls_through_to_nvidia_smi(self, monkeypatch) -> None:
+        fake_pynvml = mock.MagicMock()
+        fake_pynvml.nvmlDeviceGetCount.return_value = 0
+        monkeypatch.setitem(__import__("sys").modules, "pynvml", fake_pynvml)
+        result = mock.MagicMock(returncode=0, stdout="4096\n")
+        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
+        assert _try_nvidia_memory() == 4096 * 1024 * 1024
+
+    def test_nvidia_smi_takes_minimum_total_across_lines(self, monkeypatch) -> None:
+        original_import = __import__("builtins").__import__
+
+        def _no_pynvml(name, *args, **kwargs):
+            if name == "pynvml":
+                raise ImportError("not installed")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", _no_pynvml)
+        result = mock.MagicMock(returncode=0, stdout="24576\n8192\n")
+        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
+        assert _try_nvidia_memory() == 8192 * 1024 * 1024
+
+    def test_nvidia_smi_sum_reducer_totals_every_line(self, monkeypatch) -> None:
+        original_import = __import__("builtins").__import__
+
+        def _no_pynvml(name, *args, **kwargs):
+            if name == "pynvml":
+                raise ImportError("not installed")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", _no_pynvml)
+        result = mock.MagicMock(returncode=0, stdout="24576\n8192\n")
+        monkeypatch.setattr("subprocess.run", mock.MagicMock(return_value=result))
+        assert _try_nvidia_memory(sum) == (24576 + 8192) * 1024 * 1024
+
+
+class TestHasNvidiaGpu:
+    def test_true_when_memory_detected(self, monkeypatch) -> None:
+        monkeypatch.setattr("lilbee.providers.model_cache._try_nvidia_memory", lambda: 8 * 1024**3)
+        assert has_nvidia_gpu() is True
+
+    def test_false_when_no_gpu(self, monkeypatch) -> None:
+        monkeypatch.setattr("lilbee.providers.model_cache._try_nvidia_memory", lambda: None)
+        assert has_nvidia_gpu() is False

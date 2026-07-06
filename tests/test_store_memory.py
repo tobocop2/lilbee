@@ -13,6 +13,7 @@ from lilbee.data.store import (
     MemorySource,
     Store,
     agent_owner,
+    human_recall_predicate,
     is_agent_owner,
 )
 
@@ -184,21 +185,119 @@ class TestSearchMemories:
 class TestUpdateAndDelete:
     def test_update_toggles_shared(self, store):
         store.add_memory(_memory(store, text="x", memory_id="u1", axis=0))
-        assert store.update_memory("u1", shared=True) is True
+        assert store.update_memory("u1", shared=True, owner=LOCAL_OWNER) is True
         got = store.get_memories(owner_predicate=LOCAL_PREDICATE)[0]
         assert got.shared is True
 
     def test_update_missing_returns_false(self, store):
         store.add_memory(_memory(store, text="x", axis=0))
-        assert store.update_memory("nope", shared=True) is False
+        assert store.update_memory("nope", shared=True, owner=LOCAL_OWNER) is False
 
     def test_update_no_table_returns_false(self, store):
-        assert store.update_memory("nope", shared=True) is False
+        assert store.update_memory("nope", shared=True, owner=LOCAL_OWNER) is False
 
     def test_delete_removes(self, store):
         store.add_memory(_memory(store, text="x", memory_id="d1", axis=0))
-        store.delete_memory("d1")
+        assert store.delete_memory("d1", owner=LOCAL_OWNER) is True
         assert store.get_memories(owner_predicate=LOCAL_PREDICATE) == []
+
+
+class TestSwallowedDeleteFailOpen:
+    """A swallowed LanceDB delete must not corrupt state or report false success."""
+
+    @staticmethod
+    def _fail_delete(monkeypatch):
+        # Simulate _safe_delete_unlocked swallowing a delete failure (returns False
+        # without removing anything), as it does on a real LanceDB delete error.
+        monkeypatch.setattr("lilbee.data.store.core._safe_delete_unlocked", lambda *a, **k: False)
+
+    def test_delete_memory_reports_failure(self, store, monkeypatch):
+        store.add_memory(_memory(store, text="x", memory_id="d1", axis=0))
+        self._fail_delete(monkeypatch)
+        assert store.delete_memory("d1", owner=LOCAL_OWNER) is False
+        assert len(store.get_memories(owner_predicate=LOCAL_PREDICATE)) == 1
+
+    def test_update_memory_failed_delete_adds_no_duplicate(self, store, monkeypatch):
+        store.add_memory(_memory(store, text="x", memory_id="u1", axis=0))
+        self._fail_delete(monkeypatch)
+        assert store.update_memory("u1", shared=True, owner=LOCAL_OWNER) is False
+        assert len(store.get_memories(owner_predicate=LOCAL_PREDICATE)) == 1
+
+    def test_add_memory_failed_dedup_delete_keeps_distinct_ids(self, store, monkeypatch):
+        store.add_memory(_memory(store, text="orig", axis=0, memory_id="first"))
+        self._fail_delete(monkeypatch)
+        # Same vector/owner/kind -> dedup path; the dedup delete fails, so the new
+        # row must keep a fresh id rather than collide with the surviving original.
+        store.add_memory(_memory(store, text="new", axis=0, memory_id="second"))
+        rows = store.get_memories(owner_predicate=LOCAL_PREDICATE)
+        ids = [r.id for r in rows]
+        assert len(ids) == len(set(ids))  # no id collision
+
+    def test_get_meta_returns_newest_when_duplicate_rows_exist(self, store, monkeypatch):
+        import lilbee.data.store.core as core
+
+        dim = store._config.embedding_dim
+        # Stamp explicit, far-apart timestamps (not wall-clock) so the assertion
+        # is deterministic: the stale row is written first, the current row last.
+        times = iter(["2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00"])
+
+        class _FakeDatetime:
+            @staticmethod
+            def now(tz=None):
+                return datetime.fromisoformat(next(times))
+
+        monkeypatch.setattr(core, "datetime", _FakeDatetime)
+        store._write_meta_unlocked(embedding_model="model-stale", embedding_dim=dim)
+        self._fail_delete(monkeypatch)  # second write's delete is swallowed -> 2 rows
+        store._write_meta_unlocked(embedding_model="model-current", embedding_dim=dim)
+        meta = store.get_meta()
+        assert meta is not None
+        assert meta["embedding_model"] == "model-current"
+
+
+class TestHumanRecallPredicate:
+    """The human's view includes local memories plus agent-shared ones."""
+
+    def test_human_sees_local_and_shared_agent_memories(self, store):
+        store.add_memory(_memory(store, text="mine", owner=LOCAL_OWNER, axis=0))
+        shared = _memory(store, text="shared by agent", owner=agent_owner("a"), axis=1)
+        shared.shared = True
+        store.add_memory(shared)
+        store.add_memory(_memory(store, text="agent private", owner=agent_owner("a"), axis=2))
+        rows = store.get_memories(owner_predicate=human_recall_predicate())
+        assert {r.text for r in rows} == {"mine", "shared by agent"}
+
+
+class TestOwnerScopedMutation:
+    """delete_memory/update_memory must reject ids the caller does not own."""
+
+    def test_agent_cannot_delete_local_memory(self, store):
+        store.add_memory(_memory(store, text="human", owner=LOCAL_OWNER, memory_id="m1", axis=0))
+        deleted = store.delete_memory("m1", owner=agent_owner("evil"))
+        assert deleted is False
+        assert [m.text for m in store.get_memories(owner_predicate=LOCAL_PREDICATE)] == ["human"]
+
+    def test_agent_cannot_delete_other_agents_memory(self, store):
+        store.add_memory(
+            _memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0)
+        )
+        deleted = store.delete_memory("m1", owner=agent_owner("bob"))
+        assert deleted is False
+        alice = store.get_memories(owner_predicate=f"owner = '{agent_owner('alice')}'")
+        assert [m.text for m in alice] == ["a"]
+
+    def test_owner_can_delete_own_memory(self, store):
+        store.add_memory(
+            _memory(store, text="a", owner=agent_owner("alice"), memory_id="m1", axis=0)
+        )
+        assert store.delete_memory("m1", owner=agent_owner("alice")) is True
+        assert store.get_memories(owner_predicate=f"owner = '{agent_owner('alice')}'") == []
+
+    def test_agent_cannot_flip_shared_on_local_memory(self, store):
+        store.add_memory(_memory(store, text="human", owner=LOCAL_OWNER, memory_id="m1", axis=0))
+        updated = store.update_memory("m1", shared=True, owner=agent_owner("evil"))
+        assert updated is False
+        assert store.get_memories(owner_predicate=LOCAL_PREDICATE)[0].shared is False
 
 
 class TestDropAllPreservesMemory:
@@ -231,7 +330,9 @@ class TestRebuildEmbeddings:
 
     def test_empty_table_returns_zero(self, store):
         store.add_memory(_memory(store, text="x", axis=0))
-        store.delete_memory(store.get_memories(owner_predicate=LOCAL_PREDICATE)[0].id)
+        store.delete_memory(
+            store.get_memories(owner_predicate=LOCAL_PREDICATE)[0].id, owner=LOCAL_OWNER
+        )
         assert store.rebuild_memory_embeddings(lambda texts: []) == 0
 
     def test_recreates_at_new_dim_preserving_text(self, store):
@@ -258,6 +359,22 @@ class TestRebuildEmbeddings:
         store.rebuild_memory_embeddings(embed)
         got = store.get_memories(owner_predicate=LOCAL_PREDICATE)[0]
         assert got.vector[3] == 1.0
+
+    def test_snapshot_and_embed_run_under_write_lock(self, store):
+        # The read+embed must hold the lock, or a concurrent add_memory
+        # committing in the embed window is erased by the unconditional drop_table.
+        from lilbee.runtime.lock import _write_mutex
+
+        store.add_memory(_memory(store, text="x", axis=0))
+        dim = store._config.embedding_dim
+        locked_during: list[bool] = []
+
+        def embed(texts: list[str]) -> list[list[float]]:
+            locked_during.append(_write_mutex.locked())
+            return [_unit_vector(dim, 3) for _ in texts]
+
+        store.rebuild_memory_embeddings(embed)
+        assert locked_during == [True]  # embed ran while the write lock was held
 
 
 class TestEmbeddingCompat:

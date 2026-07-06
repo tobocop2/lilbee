@@ -1,0 +1,37 @@
+name: Bundle engine
+description: >-
+  Build the self-contained engine (llama-server + its ggml/llama/mtmd libs with a
+  baked rpath, plus the llama-swap and gguf-parser Go helpers) and install the
+  lilbee_engine package so the Nuitka build bundles the whole local engine into
+  the onefile. Run before the executable is built.
+inputs:
+  backend:
+    description: "Backend matching the executable (cpu|vulkan|metal|cu121..cu125|rocm|sycl)."
+    required: true
+  llama-cpp-version:
+    description: >-
+      llama.cpp source tag to build from (blank = the pin in build_llama_server.sh).
+      Set for a backend whose toolchain can't compile the default (e.g. CUDA 12.1).
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Set up Go (for llama-swap + gguf-parser)
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.23"
+    - name: Build the self-contained engine
+      shell: bash
+      env:
+        BACKEND: ${{ inputs.backend }}
+        LLAMA_CPP_VERSION: ${{ inputs.llama-cpp-version }}
+        LLAMA_BUILD_DIR: /tmp/llama-server-build
+      run: bash tools/wheel-build/build_llama_server.sh
+    - name: Install lilbee_engine into the build venv
+      shell: bash
+      # The wheel carries all three binaries (llama-server self-contained with its
+      # backend libs, plus the static Go helpers); Nuitka bundles them via
+      # --include-package-data and the runtime resolver finds each via
+      # lilbee_engine.get_llama_server_path() / get_llama_swap_path() / get_gguf_parser_path().
+      run: uv pip install --no-deps ./packaging/engine-wheel

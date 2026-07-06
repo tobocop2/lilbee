@@ -8,6 +8,7 @@ import pytest
 from litestar.testing import AsyncTestClient
 
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.server import auth as _auth_mod
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_PARSE
 
@@ -163,6 +164,21 @@ class TestWikiEnabled:
         assert pages[0]["source_count"] == 1
         assert pages[0]["created_at"] == "2026-04-04T12:00:00+00:00"
 
+    async def test_status_counts_all_content_subdirs(self, isolated_env: Path):
+        """pages counts every content subdir (summary + 2 concepts here), not just
+        summaries+drafts; the pending draft is not counted."""
+        wiki_root = isolated_env / "wiki"
+        _make_wiki_page(wiki_root, "summaries", "s1")
+        _make_wiki_page(wiki_root, "concepts", "c1")
+        _make_wiki_page(wiki_root, "concepts", "c2")
+        _make_wiki_page(wiki_root, "drafts", "d1")
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["pages"] == 3
+        assert body["drafts"] == 1
+
     async def test_list_multiple_subdirs(self, isolated_env: Path):
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "doc-a")
@@ -301,6 +317,30 @@ class TestWikiEnabled:
         assert body["warnings"] == 0
         assert body["issues"] == []
 
+    async def test_lint_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """lint_all scans every page and embeds, so it runs in a worker thread, not
+        on the event loop that serves every other REST/MCP request (bb-ziks.44)."""
+        import threading
+
+        from conftest import make_mock_services
+        from lilbee.wiki import lint as lint_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def fake_lint(store, config=None):
+            seen.append(threading.get_ident())
+            return lint_mod.LintReport()
+
+        monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/lint", headers=_h())
+        assert resp.status_code == 201
+        assert seen and seen[0] != loop_tid
+
     async def test_lint_status_route_removed(self):
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/lint/task-abc", headers=_h())
@@ -314,6 +354,52 @@ class TestWikiEnabled:
         assert "records" in body
         assert body["archived"] == 0
         assert body["flagged"] == 0
+
+    async def test_prune_runs_off_the_event_loop(self, monkeypatch: pytest.MonkeyPatch):
+        """prune_wiki walks the whole tree + store; it runs in a worker thread, not
+        on the event loop (bb-ziks.44)."""
+        import threading
+
+        from conftest import make_mock_services
+        from lilbee.wiki import prune as prune_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def fake_prune(store):
+            seen.append(threading.get_ident())
+            return prune_mod.PruneReport()
+
+        monkeypatch.setattr(prune_mod, "prune_wiki", fake_prune)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/prune", headers=_h())
+        assert resp.status_code == 201
+        assert seen and seen[0] != loop_tid
+
+    async def test_status_runs_lint_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The status route's lint pass embeds; it runs off the event loop (bb-ziks.44)."""
+        import threading
+
+        from conftest import make_mock_services
+        from lilbee.wiki import lint as lint_mod
+
+        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        _make_wiki_page(isolated_env / "wiki", "summaries", "s1")  # so status reaches lint
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def fake_lint(store, config=None):
+            seen.append(threading.get_ident())
+            return lint_mod.LintReport()
+
+        monkeypatch.setattr(lint_mod, "lint_all", fake_lint)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        assert seen and seen[0] != loop_tid
 
     async def test_build_returns_summary(self, monkeypatch):
         monkeypatch.setattr(
@@ -432,7 +518,7 @@ class TestWikiEnabled:
         assert body["wiki_enabled"] is True
         assert body["pages"] == 0
 
-    async def test_status_counts_summaries_and_drafts(self, monkeypatch, tmp_path):
+    async def test_status_reports_drafts_but_excludes_them_from_pages(self, monkeypatch, tmp_path):
         from lilbee.wiki import lint as lint_mod
 
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -453,7 +539,8 @@ class TestWikiEnabled:
         body = resp.json()
         assert body["summaries"] == 2
         assert body["drafts"] == 1
-        assert body["pages"] == 3
+        # pages counts published content (the 2 summaries); pending drafts are not pages.
+        assert body["pages"] == 2
 
 
 def _make_draft(
@@ -524,6 +611,58 @@ class TestWikiDraftsEndpoints:
         assert resp.status_code == 404
         assert "draft not found" in resp.json()["detail"]
 
+    async def test_diff_traversal_slug_maps_to_generic_400(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        # The traversal guard raises ValueError carrying the absolute candidate
+        # path; the route must map it to a generic 400 that does not leak it.
+        def _raise(slug: str, root: Path) -> str:
+            raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
+
+        monkeypatch.setattr(server_wiki_mod, "diff_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/drafts/diff/anything", headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "invalid draft slug"
+
+    async def test_accept_traversal_slug_maps_to_generic_400(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        def _raise(slug: str, root: Path, store: object) -> object:
+            raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/anything", headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "invalid draft slug"
+
+    async def test_accept_indexing_valueerror_is_not_masked(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        # A non-traversal ValueError from re-indexing (e.g. embedding-dim drift)
+        # must NOT be mislabeled as a 400 "invalid draft slug"; it surfaces as 500.
+        def _raise(slug: str, root: Path, store: object) -> object:
+            raise ValueError("Vector dimension mismatch: expected 768, got 1024")
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/real-slug", headers=_h())
+        assert resp.status_code == 500
+        assert resp.json().get("detail") != "invalid draft slug"
+
+    async def test_reject_traversal_slug_maps_to_generic_400(self, monkeypatch: pytest.MonkeyPatch):
+        from lilbee.server import wiki as server_wiki_mod
+
+        def _raise(slug: str, root: Path) -> None:
+            raise PathTraversalError(f"Path escapes allowed directory: {root}/secret.md")
+
+        monkeypatch.setattr(server_wiki_mod, "reject_draft", _raise)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.delete("/api/wiki/drafts/anything", headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "invalid draft slug"
+
     async def test_accept_happy(self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.server import wiki as server_wiki_mod
         from lilbee.wiki.drafts import AcceptResult
@@ -553,6 +692,36 @@ class TestWikiDraftsEndpoints:
         assert body["reindexed_chunks"] == 3
         assert body["moved_to"].endswith("summaries/cv-manual.md")
         assert captured["slug"] == "cv-manual"
+
+    async def test_accept_runs_off_the_event_loop(
+        self, isolated_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """accept_draft re-chunks + embeds; it runs in a worker thread, not on the
+        event loop that serves every other request (bb-ziks.44)."""
+        import threading
+
+        from lilbee.server import wiki as server_wiki_mod
+        from lilbee.wiki.drafts import AcceptResult
+
+        wiki_root = isolated_env / "wiki"
+        _make_draft(wiki_root, "cv-manual", drift_pct=20)
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def _fake_accept(slug: str, root: Path, store: object) -> AcceptResult:
+            seen.append(threading.get_ident())
+            return AcceptResult(
+                slug=slug,
+                requested_slug=slug,
+                moved_to=root / "summaries" / f"{slug}.md",
+                reindexed_chunks=1,
+            )
+
+        monkeypatch.setattr(server_wiki_mod, "accept_draft", _fake_accept)
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.post("/api/wiki/drafts/accept/cv-manual", headers=_h())
+        assert resp.status_code == 201
+        assert seen and seen[0] != loop_tid
 
     async def test_accept_missing_404(self, monkeypatch: pytest.MonkeyPatch):
         from lilbee.server import wiki as server_wiki_mod
@@ -694,13 +863,6 @@ class TestHelpers:
 
 
 class TestPydanticModels:
-    def test_wiki_page_summary_defaults(self):
-        from lilbee.server.models import WikiPageSummary
-
-        s = WikiPageSummary(slug="test", title="Test", page_type="summary")
-        assert s.source_count == 0
-        assert s.created_at == ""
-
     def test_wiki_citation_record_defaults(self):
         from lilbee.server.models import WikiCitationRecord
 

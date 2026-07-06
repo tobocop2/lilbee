@@ -2,10 +2,43 @@
 
 import os
 import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 #: Directory name for a project-local lilbee knowledge base (sibling of ``.git/``).
 LOCAL_ROOT_DIRNAME = ".lilbee"
+
+_STDERR_LOCK = threading.Lock()
+
+
+@contextmanager
+def stderr_suppressed() -> Iterator[None]:
+    """Redirect fd 2 to /dev/null for the duration of the block.
+
+    Silences C-library stderr (native document extractors, GGUF readers) that
+    bypasses Python's logging. Holds a process lock so concurrent fd-2 swaps
+    can't clobber each other's saved descriptor. Wrap the whole native call, not
+    each inner iteration, so the lock doesn't serialize a hot loop.
+
+    On Windows, MSVC-built native extensions use GetStdHandle rather than the
+    CRT fd 2, so the fd-dup technique has no effect there. The context manager
+    is a no-op on Windows to avoid false suppression expectations.
+    """
+    if sys.platform == "win32":  # pragma: no cover - Windows-only passthrough
+        yield
+        return
+    with _STDERR_LOCK:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(2)
+        os.dup2(devnull, 2)
+        try:
+            yield
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(devnull)
+            os.close(old_stderr)
 
 
 def default_data_dir() -> Path:
@@ -17,7 +50,7 @@ def default_data_dir() -> Path:
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     elif sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")).expanduser()
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return base / "lilbee"
@@ -78,3 +111,50 @@ def _read_total_memory_bytes() -> int:
 def scaled_chat_ctx_target_default() -> int:
     """Pick a chat_n_ctx_target from this host's total RAM at config-load time."""
     return chat_ctx_target_for_total_bytes(_read_total_memory_bytes())
+
+
+# Filesystem types whose backing store is a network, where mmap page faults are
+# served over the wire and can wedge the model loader in uninterruptible I/O. The
+# exact type string a given volume reports (e.g. a RunPod network volume) is
+# confirmed on the target host and added here.
+_NETWORK_FS_TYPES = frozenset(
+    {"nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "ceph", "glusterfs", "lustre", "beegfs", "afs"}
+)
+# A /proc/mounts line is "device mountpoint fstype options ...": at least 3 fields.
+_PROC_MOUNTS_MIN_FIELDS = 3
+_PROC_MOUNTS = Path("/proc/mounts")
+
+
+def _mount_fstype(path: str, mounts_text: str) -> str:
+    """Filesystem type of the longest mount point in *mounts_text* that covers *path*."""
+    best_mount = ""
+    best_type = ""
+    for line in mounts_text.splitlines():
+        parts = line.split()
+        if len(parts) < _PROC_MOUNTS_MIN_FIELDS:
+            continue
+        mount_point, fs_type = parts[1], parts[2]
+        covers = path == mount_point or path.startswith(mount_point.rstrip("/") + "/")
+        if covers and len(mount_point) >= len(best_mount):
+            best_mount, best_type = mount_point, fs_type
+    return best_type
+
+
+def is_network_path(path: Path) -> bool:
+    """Whether *path* lives on a network filesystem.
+
+    mmap over a network filesystem faults pages over the wire, which can stall a
+    large-model load in uninterruptible I/O. Linux-only (reads ``/proc/mounts``);
+    returns False on other platforms and on any read failure, so local disk is the
+    safe assumption.
+    """
+    try:
+        mounts_text = _PROC_MOUNTS.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    fstype = _mount_fstype(resolved, mounts_text)
+    return fstype in _NETWORK_FS_TYPES or fstype.startswith("fuse.")

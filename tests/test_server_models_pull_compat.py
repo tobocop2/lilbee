@@ -12,8 +12,12 @@ from lilbee.server import handlers
 
 
 @pytest.mark.asyncio
-async def test_pull_native_unsupported_raises_409() -> None:
-    """When _enforce_arch_compat raises, the handler converts to HTTPException 409."""
+async def test_enforce_arch_compat_raises_409() -> None:
+    """The route-level precheck converts an unsupported arch to HTTPException 409.
+
+    It must live outside the models_pull async generator: a raise there fires only
+    on first iteration, after the 200 SSE headers flush, and can't set the status.
+    """
     mock_manager = MagicMock()
     mock_manager._enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
 
@@ -24,8 +28,7 @@ async def test_pull_native_unsupported_raises_409() -> None:
         ),
         pytest.raises(HTTPException) as excinfo,
     ):
-        gen = handlers.models_pull("acme/foo-GGUF", source="native")
-        await gen.__anext__()
+        await handlers.enforce_pull_arch_compat("acme/foo-GGUF", source="native")
 
     assert excinfo.value.status_code == 409
     extra = excinfo.value.extra
@@ -34,6 +37,38 @@ async def test_pull_native_unsupported_raises_409() -> None:
     assert extra["ref"] == "acme/foo-GGUF"
     assert "supported_examples" in extra
     assert isinstance(extra["total_supported"], int)
+
+
+@pytest.mark.asyncio
+async def test_enforce_arch_compat_skips_remote_and_override() -> None:
+    """Remote source and allow_unsupported both bypass the native arch precheck."""
+    mock_manager = MagicMock()
+    with patch(
+        "lilbee.server.handlers.models.get_services",
+        return_value=MagicMock(model_manager=mock_manager),
+    ):
+        await handlers.enforce_pull_arch_compat("ollama:llama3", source="remote")
+        await handlers.enforce_pull_arch_compat("acme/foo", source="native", allow_unsupported=True)
+    mock_manager._enforce_arch_compat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_models_pull_generator_does_not_precheck() -> None:
+    """The generator no longer prechecks (the route does); a raise here would be too
+    late. manager.pull still enforces compatibility during the pull itself."""
+    mock_manager = MagicMock()
+    mock_manager._enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+    mock_manager.pull.return_value = None
+
+    with patch(
+        "lilbee.server.handlers.models.get_services",
+        return_value=MagicMock(model_manager=mock_manager),
+    ):
+        events = [e async for e in handlers.models_pull("acme/foo-GGUF", source="native")]
+
+    mock_manager._enforce_arch_compat.assert_not_called()
+    mock_manager.pull.assert_called_once()
+    assert events is not None
 
 
 @pytest.mark.asyncio

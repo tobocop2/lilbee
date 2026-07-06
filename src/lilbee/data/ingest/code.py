@@ -17,7 +17,7 @@ def ingest_code_sync(
     on_progress: DetailedProgressCallback = noop_callback,
 ) -> list[ChunkRecord]:
     """Parse code with tree-sitter, chunk, embed, and return store-ready records."""
-    code_chunks: list[CodeChunk] = chunk_code(path)
+    code_chunks: list[CodeChunk] = chunk_code(path, source_name=source_name)
     if not code_chunks:
         return []
 

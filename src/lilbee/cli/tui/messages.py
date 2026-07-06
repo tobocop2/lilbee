@@ -7,8 +7,19 @@ and ensures consistent messaging.
 
 from __future__ import annotations
 
+import logging
+
 from lilbee.core.config import cfg
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
+
+log = logging.getLogger(__name__)
+
+
+def app_title(model: str) -> str:
+    """The window title showing the active chat model. Single source so every
+    code path that sets the title uses the same format."""
+    return f"lilbee: {model}"
+
 
 CMD_UNKNOWN = "Unknown command: {cmd}"
 CMD_ADD_NOT_FOUND = "Not found: {path}"
@@ -48,9 +59,7 @@ SYNC_SKIPPED_NO_VISION = (
     "Configure a vision_model in Settings to OCR scanned PDFs."
 )
 SYNC_SKIPPED_VISION_FAILED = (
-    "Skipped (vision OCR returned no text): {files}. "
-    "See ~/Library/Application Support/lilbee/logs/worker-vision.log "
-    "for the underlying error."
+    "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )
 CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
 CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
@@ -65,7 +74,8 @@ def sync_skipped_message(files: str) -> str:
     do something they have already done.
     """
     if cfg.vision_model:
-        return SYNC_SKIPPED_VISION_FAILED.format(files=files)
+        log_path = cfg.data_root / "logs" / "server.log"
+        return SYNC_SKIPPED_VISION_FAILED.format(files=files, log_path=log_path)
     return SYNC_SKIPPED_NO_VISION.format(files=files)
 
 
@@ -75,6 +85,7 @@ def retry_skipped_message(count: int) -> str:
 
 
 CMD_DELETE_NO_DOCS = "No documents indexed"
+CMD_DELETE_READ_FAILED = "Could not read the document list"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
 CMD_DELETE_SUCCESS = "Deleted {name}"
@@ -104,6 +115,14 @@ CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
 CMD_SET_READONLY = "{key} is read-only; use the Models screen"
 CMD_MODEL_SET = "Model set to {name}"
+# Shown while a model swap's fleet reload runs off the event loop, so the swap
+# reads as in-progress instead of a frozen TUI.
+MODEL_SWAP_APPLYING = "Switching model, loading..."
+MODEL_SWAP_DONE = "Now using {name}"
+MODEL_SWAP_FAILED = "Could not switch model: {error}"
+# Shown when the user tries to send a prompt while the new chat model is still loading.
+CHAT_MODEL_SWITCHING = "Still switching model. One moment, then send your prompt."
+FLEET_RELOADING = "Applying placement, reloading the fleet. One moment, then send your prompt."
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"
@@ -277,7 +296,10 @@ def _spacy_available() -> bool:
     except (ImportError, OSError):
         return False
     except Exception:
-        return True
+        # An unexpected spaCy-internal failure: don't claim availability (that
+        # would hide the install guidance); log it and treat spaCy as absent.
+        log.debug("spaCy availability check failed unexpectedly", exc_info=True)
+        return False
     return True
 
 
@@ -323,6 +345,8 @@ MEMORIES_DELETE_CONFIRM_TITLE = "Delete memory?"
 MEMORIES_DELETE_CONFIRM_MESSAGE = "Delete this memory? This cannot be undone."
 MEMORIES_DELETED = "Deleted memory"
 MEMORIES_DELETE_FAILED = "Delete failed: {error}"
+MEMORIES_DELETE_NOT_FOUND = "Memory not found; it may already be gone."
+MEMORIES_FLAG_NOT_FOUND = "Memory not found; it may already be gone."
 MEMORIES_SHARED_ON = "Shared with agents"
 MEMORIES_SHARED_OFF = "No longer shared with agents"
 MEMORIES_FLAG_FAILED = "Update failed: {error}"
@@ -365,15 +389,48 @@ COMPAT_MODAL_BODY = (
     "so loading after download will probably fail. Pull anyway?"
 )
 DEFAULT_VIEW = "Chat"
-_BASE_NAV_VIEWS: tuple[str, ...] = (DEFAULT_VIEW, "Catalog", "Status", "Settings", "Tasks")
+WIKI_VIEW = "Wiki"
+FLEET_VIEW = "Fleet"
+FLEET_TITLE = "Placement"
+FLEET_STATE_AUTO = "auto"
+FLEET_STATE_MANUAL = "manual"
+FLEET_STATE_EDITED = "edited · ctrl+s to apply"
+FLEET_SINGLE_GPU_NOTE = "One graphics card: everything runs here."
+FLEET_GPU_PROBING = "probing GPUs…"
+FLEET_NO_GPUS = "(no GPUs detected)"
+FLEET_CMD_PREVIEW = "Preview"
+FLEET_CMD_APPLY = "Apply"
+FLEET_CMD_AUTO = "Auto"
+FLEET_TAG_SPLIT = "split"
+FLEET_TAG_SINGLE = "one card"
+FLEET_HELP_ICON = "?"
+# Single hover explanation for the whole drawer (kept friendly, no jargon).
+FLEET_HELP_TOOLTIP = (
+    "Top: how busy each GPU is right now.\n"
+    "Grid: what runs on which GPU.\n"
+    "  • chat is one model split across the highlighted cards (they work as one).\n"
+    "  • embed/vision run as a full copy on each highlighted card.\n"
+    "  • rerank runs on one card; pick a single GPU.\n"
+    "Click a cell to change it, then Apply. Auto lets lilbee choose."
+)
+# The full nav-view universe in order. Single source for the view set: the
+# settings bar pre-creates a tab per entry (toggling Wiki visibility at
+# runtime), get_nav_views() gates Wiki, and app.get_views() derives its
+# factory map from get_nav_views().
+ALL_NAV_VIEWS: tuple[str, ...] = (
+    DEFAULT_VIEW,
+    "Catalog",
+    "Status",
+    "Settings",
+    "Tasks",
+    WIKI_VIEW,
+    FLEET_VIEW,
+)
 
 
 def get_nav_views() -> list[str]:
     """Return the active nav view names, including Wiki when enabled."""
-    views = list(_BASE_NAV_VIEWS)
-    if cfg.wiki:
-        views.append("Wiki")
-    return views
+    return [v for v in ALL_NAV_VIEWS if v != WIKI_VIEW or cfg.wiki]
 
 
 MODE_NORMAL = "NORMAL"

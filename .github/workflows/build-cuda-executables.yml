@@ -54,7 +54,7 @@ jobs:
             backend: cu121
             cuda: "12.1.0"
             asset_name: lilbee-linux-x86_64-cu121
-            llama-cpp-version: "0.3.20"
+            llama-cpp-version: "0.3.30"
           - os: ubuntu-22.04
             backend: cu124
             cuda: "12.4.0"
@@ -134,23 +134,7 @@ jobs:
           max-size: '2G'
 
       - name: Install dependencies
-        # `pip` is required by build_llama_cpp.sh's `pip wheel` invocation.
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
-
-      - name: Build llama-cpp-python from source (CUDA + AVX baseline)
-        shell: bash
-        env:
-          BACKEND: ${{ matrix.backend }}
-          LLAMA_BUILD_DIR: "/tmp/llama-build"
-          # Per-cell pin (cu121) wins; else blank -> build_llama_cpp.sh reads uv.lock.
-          LLAMA_CPP_VERSION: ${{ matrix.llama-cpp-version }}
-        run: bash tools/wheel-build/build_llama_cpp.sh
-
-      - name: Install the freshly-built llama-cpp-python into the venv
-        shell: bash
-        run: |
-          set -euxo pipefail
-          uv pip install --reinstall --no-deps /tmp/llama-build/llama_cpp_python-*.whl
 
       - name: Verify extras installed in build venv
         shell: bash
@@ -170,6 +154,15 @@ jobs:
           uv pip install --reinstall --no-deps \
             --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.33.0+compat
+
+      # Build the self-contained CUDA llama-server (binary + ggml/llama/mtmd libs
+      # with a baked rpath) and install lilbee_engine so Nuitka bundles the
+      # whole engine into the onefile.
+      - name: Bundle llama-server
+        uses: ./.github/actions/bundle-llama-server
+        with:
+          backend: ${{ matrix.backend }}
+          llama-cpp-version: ${{ matrix.llama-cpp-version }}
 
       - name: Build executable
         shell: bash

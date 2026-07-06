@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from litestar import delete, get, patch, post
-from litestar.exceptions import NotFoundException
+from litestar.exceptions import ClientException, NotFoundException
 from litestar.params import Parameter
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.server.auth import read_only
 from lilbee.server.models import (
     DraftInfoResponse,
@@ -44,7 +45,12 @@ from lilbee.wiki.drafts import (
     reject_draft,
 )
 from lilbee.wiki.index import update_wiki_index
-from lilbee.wiki.shared import WIKI_DISABLED_ERROR, WikiSubdir
+from lilbee.wiki.shared import (
+    INVALID_DRAFT_SLUG_ERROR,
+    WIKI_DISABLED_ERROR,
+    WikiSubdir,
+    total_wiki_pages,
+)
 
 
 def _wiki_root() -> Path:
@@ -72,13 +78,17 @@ async def wiki_list_route() -> list[dict[str, Any]]:
     """
     _require_wiki()
     root = _wiki_root()
+    # The index regen walks and rewrites files and list_pages walks the tree;
+    # offload both so the listing doesn't block the event loop.
+    return await asyncio.to_thread(_list_wiki_pages_sync, root)
 
+
+def _list_wiki_pages_sync(root: Path) -> list[dict[str, Any]]:
+    """Blocking body of :func:`wiki_list_route`: refresh index, then walk pages."""
     index_path = root / "index.md"
     if index_path.is_file():
         update_wiki_index()
-
-    pages = list_pages(root)
-    return [p.to_dict() for p in pages]
+    return [p.to_dict() for p in list_pages(root)]
 
 
 @get("/api/wiki/drafts")
@@ -105,6 +115,8 @@ async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
         diff = diff_draft(slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except PathTraversalError as exc:
+        raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftDiffResponse(slug=slug, diff=diff)
 
 
@@ -118,9 +130,13 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
     slug = slug.lstrip("/")
     store = svc_mod.get_services().store
     try:
-        result = accept_draft(slug, _wiki_root(), store)
+        # accept_draft re-chunks and embeds the page; offload so it doesn't block
+        # the event loop (and every other REST/MCP request on it).
+        result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except PathTraversalError as exc:
+        raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftAcceptResponse(**result.to_dict())
 
 
@@ -133,6 +149,8 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
         reject_draft(slug, _wiki_root())
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
+    except PathTraversalError as exc:
+        raise ClientException(detail=INVALID_DRAFT_SLUG_ERROR) from exc
     return WikiDraftRejectResponse(slug=slug)
 
 
@@ -145,7 +163,8 @@ async def wiki_citations_reverse_route(
     _require_wiki()
     if not source:
         return []
-    records = svc_mod.get_services().store.get_citations_for_source(source)
+    # get_citations_for_source queries LanceDB; offload like wiki_lint_route.
+    records = await asyncio.to_thread(svc_mod.get_services().store.get_citations_for_source, source)
     return [WikiCitationRecord(**r) for r in records]
 
 
@@ -157,7 +176,7 @@ async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     slug = slug.lstrip("/")
     if slug.endswith("/citations"):
         real_slug = slug.removesuffix("/citations")
-        return _citations_for_slug(real_slug)
+        return await _citations_for_slug(real_slug)
     result = read_page(_wiki_root(), slug)
     if result is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
@@ -168,13 +187,16 @@ async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     )
 
 
-def _citations_for_slug(slug: str) -> WikiCitationsResult:
+async def _citations_for_slug(slug: str) -> WikiCitationsResult:
     """Return citation chain for a wiki page."""
     path = _find_page(slug)
     if path is None:
         raise NotFoundException(detail=f"wiki page not found: {slug}")
     wiki_source = f"{cfg.wiki_dir}/{slug}.md"
-    records = svc_mod.get_services().store.get_citations_for_wiki(wiki_source)
+    # get_citations_for_wiki queries LanceDB; offload like wiki_lint_route.
+    records = await asyncio.to_thread(
+        svc_mod.get_services().store.get_citations_for_wiki, wiki_source
+    )
     return WikiCitationsResult(slug=slug, citations=[WikiCitationRecord(**r) for r in records])
 
 
@@ -182,7 +204,8 @@ def _citations_for_slug(slug: str) -> WikiCitationsResult:
 async def wiki_lint_route() -> WikiLintResult:
     """Trigger a full wiki lint."""
     _require_wiki()
-    report = lint_mod.lint_all(svc_mod.get_services().store)
+    # lint_all scans every page and embeds; offload so it doesn't block the loop.
+    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
     return WikiLintResult(
         issues=[WikiLintIssueItem(**i.to_dict()) for i in report.issues],
         errors=report.error_count,
@@ -194,7 +217,8 @@ async def wiki_lint_route() -> WikiLintResult:
 async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    report = prune_mod.prune_wiki(svc_mod.get_services().store)
+    # prune_wiki walks the whole wiki tree and store; offload off the loop.
+    report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
     return WikiPruneResult(
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
@@ -275,12 +299,12 @@ async def wiki_status_route() -> WikiStatusResult:
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
-    report = lint_mod.lint_all(svc_mod.get_services().store)
+    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
     return WikiStatusResult(
         wiki_enabled=cfg.wiki,
         summaries=len(summaries),
         drafts=len(drafts),
-        pages=len(summaries) + len(drafts),
+        pages=total_wiki_pages(root),
         lint_errors=report.error_count,
         lint_warnings=report.warning_count,
     )

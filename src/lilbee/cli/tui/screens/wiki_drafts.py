@@ -25,7 +25,9 @@ from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.wiki.drafts import accept_draft, diff_draft, list_drafts, reject_draft
+from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
 
 if TYPE_CHECKING:
     from lilbee.wiki.drafts import DraftInfo
@@ -197,6 +199,11 @@ class WikiDraftsScreen(Screen[None]):
         except FileNotFoundError:
             self._show_diff(msg.WIKI_DRAFTS_DIFF_EMPTY)
             return
+        except PathTraversalError:
+            # Traversal slug: show the generic, path-free message its sibling
+            # transports use rather than leaking the absolute candidate path.
+            self._show_diff(INVALID_DRAFT_SLUG_ERROR)
+            return
         except Exception as exc:
             log.debug("Failed to compute diff for %s", slug, exc_info=True)
             self._show_diff(msg.WIKI_DRAFTS_DIFF_FAILED.format(error=exc))
@@ -279,6 +286,9 @@ class WikiDraftsScreen(Screen[None]):
         except FileNotFoundError:
             self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=f"missing: {slug}"))
             return
+        except PathTraversalError:
+            self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=INVALID_DRAFT_SLUG_ERROR))
+            return
         except Exception as exc:
             log.debug("Accept failed for %s", slug, exc_info=True)
             self.notify(msg.WIKI_DRAFTS_ACCEPT_FAILED.format(error=exc))
@@ -312,6 +322,9 @@ class WikiDraftsScreen(Screen[None]):
             reject_draft(slug, _wiki_root())
         except FileNotFoundError:
             self.notify(msg.WIKI_DRAFTS_REJECT_FAILED.format(error=f"missing: {slug}"))
+            return
+        except PathTraversalError:
+            self.notify(msg.WIKI_DRAFTS_REJECT_FAILED.format(error=INVALID_DRAFT_SLUG_ERROR))
             return
         except Exception as exc:
             log.debug("Reject failed for %s", slug, exc_info=True)

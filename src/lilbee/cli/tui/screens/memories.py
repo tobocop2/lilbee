@@ -207,12 +207,12 @@ class MemoriesScreen(Screen[None]):
     def _do_delete(self, memory_id: str) -> None:
         """Execute the delete and refresh the list."""
         try:
-            forget(memory_id)
+            deleted = forget(memory_id)
         except Exception as exc:
             log.debug("Delete failed for %s", memory_id, exc_info=True)
             self.notify(msg.MEMORIES_DELETE_FAILED.format(error=exc), severity="error")
             return
-        self.notify(msg.MEMORIES_DELETED)
+        self.notify(msg.MEMORIES_DELETED if deleted else msg.MEMORIES_DELETE_NOT_FOUND)
         self._load_memories()
 
     def action_toggle_shared(self) -> None:
@@ -225,10 +225,14 @@ class MemoriesScreen(Screen[None]):
             return
         new_shared = not memory.shared
         try:
-            set_memory_shared(memory_id, shared=new_shared)
+            updated = set_memory_shared(memory_id, shared=new_shared)
         except Exception as exc:
             log.debug("Toggle shared failed for %s", memory_id, exc_info=True)
             self.notify(msg.MEMORIES_FLAG_FAILED.format(error=exc), severity="error")
+            return
+        if not updated:
+            self.notify(msg.MEMORIES_FLAG_NOT_FOUND)
+            self._load_memories()
             return
         self.notify(msg.MEMORIES_SHARED_ON if new_shared else msg.MEMORIES_SHARED_OFF)
         self._load_memories()

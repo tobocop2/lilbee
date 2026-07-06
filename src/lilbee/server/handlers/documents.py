@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 
 from lilbee.app.services import get_services
@@ -106,7 +107,14 @@ async def get_source_content(
     """Return a stored source file: JSON with markdown text for text types, or
     ``(bytes, content_type)`` when *raw* is True. Binary types return empty
     markdown so clients know to re-request with ``raw=1``.
+
+    Reads the file off the event loop so a large source doesn't stall it.
     """
+    return await asyncio.to_thread(_get_source_content_sync, source, raw)
+
+
+def _get_source_content_sync(source: str, raw: bool) -> SourceContentResponse | tuple[bytes, str]:
+    """Blocking body of :func:`get_source_content`: path validation + file read."""
     from lilbee.wiki.index import parse_title
 
     if not source or not source.strip():

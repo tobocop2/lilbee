@@ -4,39 +4,38 @@ All runtime dependencies (provider, store, embedder, reranker, concepts,
 clusterer, searcher, worker pool) are created lazily on first call to
 ``get_services()`` and cached for the process lifetime. Tests call
 ``reset_services()`` between runs.
+
+``build_services(config)`` is the construction seam: it builds a full container
+against an arbitrary Config without touching the process-global singleton. The
+library API (:class:`lilbee.Lilbee`) builds one per instance and installs it for
+the duration of each call via :func:`services_scope`, so ingest code reaching for
+``get_services()`` resolves the caller's container. The override is a ContextVar,
+so ``reset_services`` / ``set_services`` / ``peek_services`` (which operate only
+on the global singleton) never see it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import atexit
-import logging
 import threading
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from lilbee.providers.worker.pool import shutdown_pool_runtime
-
-log = logging.getLogger(__name__)
-
-_RELOAD_CLOSE_TIMEOUT_S = 5.0
-"""Wall-clock budget for closing a detached worker channel during reload_role.
-
-Matches ``_DEFAULT_SHUTDOWN_TIMEOUT_S`` in ``providers.worker.pool``: a worker
-that does not ack SHUTDOWN within this window is terminated so the new model
-load is not blocked.
-"""
-
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from lilbee.catalog.hf_client import HfClient
+    from lilbee.core.config import Config
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
+    from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.base import LLMProvider
-    from lilbee.providers.worker.health_ticker import HealthTickerHandle
-    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
-    from lilbee.providers.worker.transport import WorkerRole
+    from lilbee.providers.roles import WorkerRole
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
@@ -57,11 +56,11 @@ class CrawlerSyncState:
 class Services:
     """Holds all runtime service instances.
 
-    The worker pool sits on Services (not on the provider) so any
-    subsystem can reach it for cancellation, health checks, or
-    diagnostics without crossing into ``LlamaCppProvider``'s private
-    API. ``cancel_inference()`` is the canonical entry point used by
-    Ctrl+C and the chat-stream cancel action.
+    Inference lifecycle (cancel, per-role reload, spawn notifications) is owned
+    by the provider, which manages the llama-server fleet. Services exposes thin
+    pass-throughs so callers (Ctrl+C, the chat-stream cancel action, the settings
+    and model-bar pickers, the TUI task bar) need not reach into the provider's
+    API. ``cancel_inference()`` is the canonical cancel entry point.
     """
 
     provider: LLMProvider
@@ -77,32 +76,27 @@ class Services:
     model_manager: ModelManager
     crawler_semaphore: asyncio.Semaphore | None
     crawler_sync_state: CrawlerSyncState
-    worker_pool: WorkerPool
-    pool_runtime: PoolRuntime
-    pool_health_ticker: HealthTickerHandle
+    known_models: KnownModelCache
 
     def cancel_inference(self) -> None:
-        """Flip the abort flag on every registered worker pool role. Idempotent."""
-        for role_name in self.worker_pool.registered_roles:
-            self.worker_pool.accessor(role_name).cancel()
+        """Interrupt any in-flight generation. Idempotent.
 
-    def reload_role(self, role_name: WorkerRole) -> None:
-        """Drop *role_name*'s current worker so the next call lazy-respawns with cfg.
-
-        Detaches the channel synchronously (subsequent calls see no live worker),
-        then closes the old channel in the background on the pool runtime so the
-        caller's event loop is not stalled. Other roles' workers and any
-        in-flight stream they own are untouched. Use when only one role-bound
-        model setting has changed (e.g. embedding_model).
+        The fleet engine stops a llama-server by client disconnect (the chat
+        worker closes the active stream), so this is a no-op there; it stays the
+        canonical entry point in case a backend needs an explicit interrupt.
         """
-        channel = self.worker_pool.detach_channel(role_name)
-        if channel is None:
-            return
+        self.provider.cancel_inference()
 
-        async def _close() -> None:
-            await channel.close(timeout=_RELOAD_CLOSE_TIMEOUT_S)
+    def reload_role(self, role_name: WorkerRole, *, wait: bool = False) -> None:
+        """Respawn only *role_name*'s model server so it picks up changed cfg.
 
-        self.pool_runtime.submit(_close())
+        Other roles' servers and any in-flight stream they own are untouched. Use
+        when one role-bound model setting changed (e.g. embedding_model). The
+        respawn runs off the caller's thread, so this returns immediately, unless
+        ``wait=True`` (the caller is already off the event loop and wants to block
+        until the new model has loaded).
+        """
+        self.provider.reload_role(role_name, wait=wait)
 
     def add_pool_listener(
         self,
@@ -110,85 +104,90 @@ class Services:
         on_spawning: Callable[[WorkerRole], None] | None = None,
         on_spawned: Callable[[WorkerRole], None] | None = None,
     ) -> None:
-        """Subscribe to worker spawn lifecycle events.
+        """Subscribe to server spawn lifecycle events.
 
-        Forwards directly to :meth:`WorkerPool.add_listener`. The TUI uses this
-        to surface "Starting <role> worker..." / "<role> worker ready"
-        notifications during the cold-start window.
+        Forwards to :meth:`LLMProvider.add_spawn_listener`. The TUI uses this to
+        surface "Starting <role>..." / "<role> ready" notifications when a role's
+        server (re)spawns (cold start after a non-eager boot, or a reload).
         """
-        self.worker_pool.add_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+        self.provider.add_spawn_listener(on_spawning=on_spawning, on_spawned=on_spawned)
 
 
-_svc: Services | None = None
-"""Cached singleton, set on first ``get_services()`` call.
+class _ServicesState:
+    """The cached process-global singleton plus the per-task scoped override.
 
-Concurrency contract: lilbee runs the asyncio loop on a single worker
-thread + Textual's main thread. ``get_services()`` is idempotent (the
-``if _svc is not None: return`` early-out covers re-entry from a
-background thread). Tests that need a custom container call
-``set_services(make_mock_services(...))`` explicitly; ``peek_services()``
-is the read-only inspector for cleanup fixtures. The Services dataclass
-itself is logically immutable post-construction (its fields are
-references to long-lived service objects), so concurrent reads are safe
-without a lock.
-"""
+    ``singleton`` is set on first ``get_services()`` call. Concurrency
+    contract: lilbee runs the asyncio loop on a single worker thread +
+    Textual's main thread; ``get_services()`` is idempotent (the early-out
+    covers re-entry from a background thread), and the Services dataclass is
+    logically immutable post-construction, so concurrent reads are safe
+    without a lock. Tests that need a custom container call
+    ``set_services(make_mock_services(...))``; ``peek_services()`` is the
+    read-only inspector for cleanup fixtures.
 
-
-def get_services() -> Services:
-    """Return the cached Services singleton, creating on first call.
-
-    Service modules are imported inside the function to keep CLI
-    startup fast: ``services`` is on every CLI import path, and the
-    concrete service modules transitively pull in heavy libraries
-    (llama-cpp, lancedb, kreuzberg). Deferring the loads until first
-    ``get_services()`` call makes ``lilbee --help`` and TUI splash
-    render in milliseconds instead of seconds.
+    ``override`` shadows the singleton for the entering task: set by
+    :func:`services_scope` (the library API's per-call binding), read by
+    :func:`get_services`, and invisible to ``reset_services`` /
+    ``set_services`` / ``peek_services``, which only touch the singleton.
     """
-    global _svc
-    if _svc is not None:
-        return _svc
 
+    def __init__(self) -> None:
+        self.singleton: Services | None = None
+        self.override: ContextVar[Services | None] = ContextVar(
+            "lilbee_services_override", default=None
+        )
+
+
+_state = _ServicesState()
+
+
+def build_services(
+    config: Config,
+    *,
+    provider: LLMProvider | None = None,
+    registry: ModelRegistry | None = None,
+) -> Services:
+    """Build a full Services container bound to *config*, without caching it.
+
+    ``get_services()`` calls this with the process-global cfg; the library API
+    calls it per instance. Service modules are imported inside the function to
+    keep CLI startup fast (they transitively pull in lancedb / kreuzberg). Pass
+    *provider* to reuse a caller-supplied one; otherwise it is built from
+    *config* via the provider factory. Pass *registry* to reuse one already built
+    (get_services builds it for embedding-dim reconciliation). Embedding-dim
+    reconciliation is a global-cfg concern owned by :func:`get_services`, not
+    done here.
+    """
     from lilbee.catalog.hf_client import HfClient
-    from lilbee.core.config import cfg
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
+    from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
     from lilbee.providers.factory import create_provider
-    from lilbee.providers.worker.health_ticker import start_health_ticker
-    from lilbee.providers.worker.pool import PoolRuntime, WorkerPool
-    from lilbee.providers.worker.transport import default_spawner
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
-    from lilbee.runtime.asyncio_loop import get_loop
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
-    worker_pool = WorkerPool(
-        spawner=default_spawner(),
-        max_idle_s=cfg.worker_pool_max_idle_s,
-    )
-    pool_runtime = PoolRuntime()
-    provider = create_provider(cfg)
-    store = Store(cfg)
-    embedder = Embedder(cfg, provider)
-    reranker = Reranker(cfg)
-    concepts = ConceptGraph(cfg, store)
-    clusterer = Clusterer(cfg, store)
-    registry = ModelRegistry(cfg.models_dir)
-    searcher = Searcher(cfg, provider, store, embedder, reranker, concepts)
+    provider = provider or create_provider(config)
+    registry = registry or ModelRegistry(config.models_dir)
+    store = Store(config)
+    embedder = Embedder(config, provider)
+    reranker = Reranker(config)
+    concepts = ConceptGraph(config, store)
+    clusterer = Clusterer(config, store)
+    searcher = Searcher(config, provider, store, embedder, reranker, concepts)
     hf_client = HfClient()
     ingest_lock_registry = IngestLockRegistry()
-    model_manager = ModelManager(cfg.models_dir)
+    model_manager = ModelManager(config.models_dir)
     crawler_semaphore = (
-        asyncio.Semaphore(cfg.crawl_max_concurrent) if cfg.crawl_max_concurrent > 0 else None
+        asyncio.Semaphore(config.crawl_max_concurrent) if config.crawl_max_concurrent > 0 else None
     )
     crawler_sync_state = CrawlerSyncState()
-    pool_health_ticker: HealthTickerHandle = start_health_ticker(
-        worker_pool, pool_runtime, get_loop()
-    )
-    _svc = Services(
+    known_models = KnownModelCache()
+    return Services(
         provider=provider,
         store=store,
         embedder=embedder,
@@ -202,32 +201,64 @@ def get_services() -> Services:
         model_manager=model_manager,
         crawler_semaphore=crawler_semaphore,
         crawler_sync_state=crawler_sync_state,
-        worker_pool=worker_pool,
-        pool_runtime=pool_runtime,
-        pool_health_ticker=pool_health_ticker,
+        known_models=known_models,
     )
-    # Eager start is the default: pay 1-3 s per worker at TUI mount so the
-    # first user action lands on a warm pool. Roles whose model is unset are
-    # skipped, so a setup with only chat + embed never spawns rerank or
-    # vision. Set ``cfg.worker_pool_eager_start = false`` for headless
-    # scripts where mount time matters more than first-call latency.
+
+
+def get_services() -> Services:
+    """Return the active container: a scoped override if set, else the cached singleton.
+
+    Creates the singleton on first call (against the process-global cfg). A
+    config-file embedding_model with no embedding_dim would otherwise build the
+    store at the stale 768 default, so the width is pinned to the embedder before
+    the store is built.
+    """
+    override = _state.override.get()
+    if override is not None:
+        return override
+    if _state.singleton is not None:
+        return _state.singleton
+
+    from lilbee.app.settings import reconcile_embedding_dim
+    from lilbee.core.config import cfg
+    from lilbee.modelhub.registry import ModelRegistry
+
+    registry = ModelRegistry(cfg.models_dir)
+    # Pin the store width to the embedder before Store(); pass the registry so
+    # resolution doesn't re-enter this half-built get_services.
+    reconcile_embedding_dim(registry)
+    _state.singleton = build_services(cfg, registry=registry)
+    # Eager start is the default: pay the spawn cost per role server at TUI mount
+    # so the first user action lands on a warm fleet. Roles whose model is unset
+    # are skipped, so a setup with only chat + embed never spawns rerank or
+    # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
+    # where mount time matters more than first-call latency.
     if cfg.worker_pool_eager_start:
-        try:
-            provider.warm_up_pool()
-            pool_runtime.start()
-            pool_runtime.run_sync(worker_pool.start_eager(), timeout=30.0)
-        except Exception:
-            log.warning(
-                "Eager worker-pool start failed; workers will retry on first use",
-                exc_info=True,
-            )
-    return _svc
+        from contextlib import suppress
+
+        with suppress(Exception):
+            _state.singleton.provider.warm_up_pool()
+    return _state.singleton
+
+
+@contextmanager
+def services_scope(services: Services) -> Iterator[None]:
+    """Bind *services* as the container ``get_services()`` returns for this block.
+
+    Isolated to the entering task via a ContextVar (it propagates into
+    ``to_ingest_thread`` workers), and never affects the global singleton, so
+    ``reset_services`` is unnecessary and unused around a scoped call.
+    """
+    token = _state.override.set(services)
+    try:
+        yield
+    finally:
+        _state.override.reset(token)
 
 
 def set_services(services: Services | None) -> None:
     """Replace the cached Services singleton (for testing)."""
-    global _svc
-    _svc = services
+    _state.singleton = services
 
 
 def peek_services() -> Services | None:
@@ -236,28 +267,33 @@ def peek_services() -> Services | None:
     Public read-only accessor for test cleanup helpers that need to
     inspect the singleton without forcing initialization.
     """
-    return _svc
+    return _state.singleton
 
 
 def reset_services() -> None:
-    """Shut down and discard all cached instances."""
-    global _svc
-    if _svc is not None:
-        shutdown_pool_runtime(_svc.worker_pool, _svc.pool_runtime, _svc.pool_health_ticker)
-        _svc.provider.shutdown()
-        _svc.store.close()
-    _svc = None
+    """Shut down and discard all cached instances.
+
+    Swap the module reference to ``None`` *before* tearing the old instances
+    down, so a new caller never observes a half-closed container. On the shared
+    HTTP daemon every entry point that would call this mid-flight is refused, so
+    it only ever runs single-client (CLI, TUI, stdio MCP).
+    """
+    old = _state.singleton
+    _state.singleton = None
+    if old is not None:
+        old.provider.shutdown()
+        old.store.close()
 
 
 def reset_store() -> None:
     """Close and rebuild only the Store and its dependents; keep providers loaded.
 
     Used after a data-dir wipe (``/reset``) where the LanceDB handle is invalid
-    but the loaded llama-cpp/embedder/reranker models are still good. Avoids the
+    but the running provider/embedder/reranker are still good. Avoids the
     multi-second reload cost of ``reset_services()``.
     """
-    global _svc
-    if _svc is None:
+    svc = _state.singleton
+    if svc is None:
         return
     from dataclasses import replace
 
@@ -267,18 +303,21 @@ def reset_store() -> None:
     from lilbee.retrieval.concepts import ConceptGraph
     from lilbee.retrieval.query import Searcher
 
-    _svc.store.close()
+    # Build the replacement, swap the reference, then close the old store last so
+    # a new caller never observes a closed handle mid-swap.
+    old_store = svc.store
     store = Store(cfg)
     concepts = ConceptGraph(cfg, store)
     clusterer = Clusterer(cfg, store)
-    searcher = Searcher(cfg, _svc.provider, store, _svc.embedder, _svc.reranker, concepts)
-    _svc = replace(
-        _svc,
+    searcher = Searcher(cfg, svc.provider, store, svc.embedder, svc.reranker, concepts)
+    _state.singleton = replace(
+        svc,
         store=store,
         concepts=concepts,
         clusterer=clusterer,
         searcher=searcher,
     )
+    old_store.close()
 
 
 atexit.register(reset_services)

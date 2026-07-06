@@ -4,7 +4,7 @@ Same demos as on [lilbee.sh/](https://lilbee.sh/),
 with the captions long-form and a handful of extras that don't fit in the site's
 tab list.
 
-The nine that match the site reel, in order:
+The ten that match the site reel, in order:
 
 1. [First run](#first-run)
 2. [TUI tour](#tui-tour)
@@ -15,6 +15,7 @@ The nine that match the site reel, in order:
 7. [Settings](#settings)
 8. [Agent: code (lilbee talking to lilbee)](#agent-code-lilbee-talking-to-lilbee)
 9. [Agent: PDF](#agent-pdf)
+10. [Run a model bigger than one card](#run-a-model-bigger-than-one-card)
 
 Extras: [agent: live indexing](#agent-live-indexing), [agent: Godot codegen against the full class reference](#agent-godot-codegen-against-the-full-class-reference), [command surface](#command-surface).
 
@@ -83,6 +84,22 @@ The agent finds `cv-manual.pdf` in the project, delegates the index to
 
 ![mcp + manual](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-manual.gif)
 
+## Run a model bigger than one card
+
+A chat model too large for any single GPU is split across as many cards as it
+needs. Here lilbee indexes its own source live, then answers "what is lilbee"
+and "how does lilbee run a model too big for one GPU", with a 235B model
+tensor-split across three A40s and the GPU monitor showing the load alongside.
+
+![a model too big for one card auto-split across the GPUs, answering from lilbee's own indexed source](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-multi-gpu-self-index.gif)
+
+You can also place each role by hand. The placement editor refuses a layout
+that won't fit with the exact shortfall (pinning chat to one 40 GiB card when
+it needs 97.5 GiB), then accepts the model spread back across the cards and
+answers on the fleet you chose, citing `placement.py`.
+
+![the placement editor: a too-small layout refused with the exact shortfall, then spread across the cards and applied](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-manual-placement.gif)
+
 ## Extras
 
 These don't have a tab on the site, but they're part of the same reel.
@@ -121,7 +138,7 @@ Each agent demo ships with a drop-in [`AGENTS.md`](../examples/agent-integration
 [`lilbee-worker` subagent](../examples/agent-integration/.opencode/agents/lilbee-worker.md) that
 handles the long-running ops (`lilbee_add`, `lilbee_sync`, `lilbee_crawl`,
 `lilbee_model_pull`), and the
-[`lilbee-mcp` skill](agent-skills/lilbee-mcp/SKILL.md) (opencode / Claude Skill
+[`lilbee-mcp` skill](../src/lilbee/skills/lilbee_mcp/SKILL.md) (opencode / Claude Skill
 format) that documents every MCP tool with a quick-vs-long split. The agent runs
 on the dev's default cloud model (MiniMax M2.7); the lilbee library stays local.
 On screen, inline: `# lilbee_<tool>` for each tool call,

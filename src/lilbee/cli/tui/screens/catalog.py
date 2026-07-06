@@ -28,6 +28,7 @@ from lilbee.catalog import (
     get_families,
     resolve_filename,
 )
+from lilbee.catalog.models import estimate_min_ram_gb
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
@@ -78,7 +79,7 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
-from lilbee.providers.sdk_backend import get_provider_api_key
+from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, get_provider_api_key
 from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
 
 log = logging.getLogger(__name__)
@@ -92,6 +93,21 @@ _HF_PAGE_SIZE = 4
 _HF_LOAD_MORE_TRIGGER = 4
 _NOTIFY_SEARCHING_TIMEOUT_SECONDS = 4
 _ALL_TASKS = tuple(ModelTask)
+
+# Which config model-role field a selected model is assigned to, keyed by its task.
+# Remote/frontier rows surface into their matching task tab, so selecting one must
+# persist to that role, not always to chat_model.
+_TASK_TO_MODEL_FIELD: dict[ModelTask, str] = {
+    ModelTask.CHAT: "chat_model",
+    ModelTask.EMBEDDING: "embedding_model",
+    ModelTask.VISION: "vision_model",
+    ModelTask.RERANK: "reranker_model",
+}
+
+
+def _model_field_for_task(task: ModelTask | str) -> str:
+    return _TASK_TO_MODEL_FIELD.get(ModelTask(task), "chat_model")
+
 
 _WORKER_FETCH_HF = "fetch_hf_models"
 _WORKER_FETCH_MORE_HF = "fetch_more_hf"
@@ -817,7 +833,9 @@ class CatalogScreen(Screen[None]):
             return
         self._rows.extend(new_rows)
         self._list_widget.append_rows(list(new_rows))
-        self._list_cache_key = (
+        # Update the per-tab cache key (not a stray singular attribute) so a
+        # subsequent _refresh_list for this tab sees the appended rows as cached.
+        self._list_cache_keys[self._active_tab_id_cache] = (
             tuple((r.name, r.installed) for r in self._rows),
             self._get_search_text(),
         )
@@ -872,13 +890,10 @@ class CatalogScreen(Screen[None]):
         search = self._get_search_text()
         installed_rows: list[LocalCatalogRow] = []
         for source in (self._all_family_rows, self._all_hf_rows, self._all_remote_rows):
-            with contextlib.suppress(AttributeError):
-                installed_rows.extend(r for r in source() if r.installed)
+            installed_rows.extend(r for r in source() if r.installed)
         if search:
             installed_rows = [r for r in installed_rows if matches_search(r, search)]
-        frontier: list[FrontierCatalogRow] = []
-        with contextlib.suppress(AttributeError):
-            frontier = self._build_frontier_rows(search)
+        frontier = self._build_frontier_rows(search)
         self._render_library_list(installed_rows, frontier)
         self._render_library_grid(installed_rows, frontier)
 
@@ -1397,9 +1412,14 @@ class CatalogScreen(Screen[None]):
         """
         if self._search_focused:
             return
-        digit_to_index = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5}
-        index = digit_to_index.get(event.key)
-        if index is None:
+        # 1-based digit -> 0-based tab index; bounded by the tab count so the
+        # 1..6 contract derives from ALL_TAB_IDS rather than a parallel map.
+        from lilbee.cli.tui.screens.catalog_utils import ALL_TAB_IDS
+
+        if not event.key.isdigit():
+            return
+        index = int(event.key) - 1
+        if not 0 <= index < len(ALL_TAB_IDS):
             return
         event.stop()
         event.prevent_default()
@@ -1706,16 +1726,16 @@ class CatalogScreen(Screen[None]):
         elif row.catalog_model:
             self._install_model(row.catalog_model)
         elif row.remote_model:
-            apply_active_model(self.app, "chat_model", row.ref)
+            apply_active_model(self.app, _model_field_for_task(row.remote_model.task), row.ref)
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
         """Activate a cloud model, or jump to settings when the key is missing."""
         if row.key_status == KeyStatus.READY:
-            apply_active_model(self.app, "chat_model", row.ref)
+            apply_active_model(self.app, _model_field_for_task(row.task), row.ref)
             self.notify(msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider))
             return
-        key_field = f"{row.provider_id}_api_key"
+        key_field = PROVIDER_API_KEY_FIELD.get(row.provider_id, f"{row.provider_id}_api_key")
         self.notify(
             msg.CATALOG_NEEDS_KEY.format(provider=row.provider, key_field=key_field),
             severity="warning",
@@ -1812,7 +1832,7 @@ class CatalogScreen(Screen[None]):
             hf_repo=variant.hf_repo,
             gguf_filename=variant.filename,
             size_gb=variant.size_mb / 1024,
-            min_ram_gb=max(2.0, (variant.size_mb / 1024) * 1.5),
+            min_ram_gb=estimate_min_ram_gb(variant.size_mb / 1024),
             description=family.description,
             featured=True,
             downloads=0,

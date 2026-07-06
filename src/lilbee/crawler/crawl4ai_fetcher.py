@@ -22,7 +22,7 @@ from lilbee.crawler.models import (
     FetchedPage,
     FilterSpec,
 )
-from lilbee.crawler.url_filter import validate_crawl_url
+from lilbee.crawler.url_filter import host_in_scope, validate_crawl_url
 
 if TYPE_CHECKING:
     from lilbee.crawler.fetcher import WebFetcher
@@ -170,12 +170,19 @@ def _safe_strategy_cancel(strategy: Any) -> None:
 
 
 async def _safe_aclose(stream: Any) -> None:
-    """Close an async generator stream; no-op for list / single-result shapes."""
+    """Close an async generator stream; no-op for list / single-result shapes.
+
+    aclose() runs the generator's own cleanup, which can surface arbitrary
+    downstream errors. A teardown failure must not mask the crawl's real result,
+    so it is logged at debug rather than propagated or silently dropped.
+    """
     if stream is None:
         return
     if inspect.isasyncgen(stream):
-        with contextlib.suppress(Exception):
+        try:
             await stream.aclose()
+        except Exception as exc:
+            log.debug("crawl stream aclose() raised during teardown: %s", exc)
 
 
 async def _iter_crawl_stream(stream: Any) -> AsyncIterator[Any]:
@@ -196,7 +203,10 @@ def _link_passes_ssrf(url: str) -> bool:
     """Return True when a discovered link resolves to a public, http(s) target.
 
     Re-validates every followed link against the IP blocklist so a discovered
-    or DNS-rebound link to a private/metadata host is dropped before fetch.
+    link to a private/metadata host is dropped before fetch. This is a
+    best-effort check at filter time, not DNS-rebinding protection: the fetcher
+    resolves the host again when it connects, so a record that rebinds between
+    this check and the fetch is a TOCTOU window this does not close.
     """
     try:
         validate_crawl_url(url)
@@ -220,15 +230,12 @@ def _host_scope_filter(start_url: str, *, include_subdomains: bool) -> Any:
     if not host:
         return None
 
-    def _in_scope(link_host: str) -> bool:
-        if link_host == host:
-            return True
-        return include_subdomains and link_host.endswith(f".{host}")
-
     class _ScopedSsrfFilter(URLFilter):  # type: ignore[misc]
         def apply(self, url: str) -> bool:
             link_host = (urlparse(url).hostname or "").lower()
-            ok = _in_scope(link_host) and _link_passes_ssrf(url)
+            ok = host_in_scope(
+                link_host, host, include_subdomains=include_subdomains
+            ) and _link_passes_ssrf(url)
             self._update_stats(ok)
             return ok
 

@@ -110,11 +110,19 @@ class LilbeeCommandProvider(Provider):
         display = value or "off"
         app.notify(f"{attr}: {display}")
         if attr == "chat_model":
-            app.title = f"lilbee: {value}"
+            app.title = msg.app_title(value)
 
     def _delete_doc(self, name: str) -> None:
-        get_services().store.remove_documents([name])
-        self.screen.app.notify(f"Deleted {name}")
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
+
+        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
+        # non-destructive delete; the file stays on disk).
+        remove_documents_durably([name])
+        # Invalidate the document cache like the chat /delete path, so the
+        # deleted file stops being offered by autocomplete and the palette.
+        invalidate_document_cache()
+        self.screen.app.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _action_sync(self) -> None:
         self._app.action_run_sync()
@@ -155,4 +163,4 @@ class LilbeeCommandProvider(Provider):
         if chat is None:
             app.notify("Open Chat to run /reset")
             return
-        chat._cmd_reset("")
+        chat.request_reset()

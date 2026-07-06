@@ -8,9 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import lilbee.app.services as svc_mod
-import lilbee.mcp_server as mcp_server
 from lilbee.core.config import cfg
-from lilbee.crawler.task import clear_tasks
+from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk, Store
 from lilbee.mcp_server import (
@@ -26,6 +25,7 @@ from lilbee.mcp_server import (
     remove,
     reset,
     search,
+    set_http_mounted,
     settings_get,
     settings_list,
     settings_reset,
@@ -148,10 +148,22 @@ class TestSearch:
         search("q", top_k=3, scope="both")
         mock_svc.searcher.search.assert_called_once_with("q", top_k=3, chunk_type=None)
 
-    def test_invalid_scope_returns_error(self, mock_svc):
-        result = search("q", top_k=3, scope="bogus")
-        assert "error" in result
-        mock_svc.searcher.search.assert_not_called()
+    def test_invalid_scope_falls_back_to_both(self, mock_svc, caplog):
+        """Smaller models echo prose like 'indexed docs' back as scope; we
+        warn and run the search against the default scope instead of
+        hard-erroring, so the model's intent ('do a search') still resolves.
+        """
+        import logging
+
+        mock_svc.searcher.search.return_value = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
+            result = search("q", top_k=3, scope="bogus")
+        assert result == []
+        mock_svc.searcher.search.assert_called_once()
+        # chunk_type=None means "both" -> no filter at the data layer.
+        call_kwargs = mock_svc.searcher.search.call_args.kwargs
+        assert call_kwargs["chunk_type"] is None
+        assert any("unknown scope" in record.message for record in caplog.records)
 
     def test_filters_irrelevant_results(self, mock_svc):
         """Results with distance > max_distance are excluded."""
@@ -441,6 +453,14 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
+    def test_init_retunes_search_scope_for_new_vault(self, tmp_path):
+        """Switching vaults re-tunes the search-tool scope hint for the new corpus."""
+        target = tmp_path / "proj"
+        target.mkdir()
+        with mock.patch("lilbee.mcp_server._tune_search_scope_for_corpus") as mock_tune:
+            init(str(target))
+        mock_tune.assert_called_once()
+
     def test_bare_name_tag_rejected_after_init(self, tmp_path):
         """The cfg validator rejects bare ``name:tag`` shapes."""
         from pydantic import ValidationError
@@ -465,7 +485,7 @@ class TestInit:
         init(str(target))
         assert os.environ.get("LILBEE_DATA") == str(target)
 
-    def test_init_overlays_per_root_config_toml(self, tmp_path):
+    def test_init_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
         """init() must re-read the project base's config.toml, the same fix as
         the CLI's --data-dir entry point. Without this, switching the MCP
         session to a project that has its own model preferences silently
@@ -482,6 +502,87 @@ class TestInit:
 
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
+
+
+class TestHttpDaemonGate:
+    """init/reset refuse to run on the shared HTTP daemon (teardown-race guard)."""
+
+    def test_init_refused_on_http_daemon_without_mutating_cfg(self, tmp_path):
+        before = cfg.data_root
+        set_http_mounted(True)
+        try:
+            result = init(str(tmp_path / "proj"))
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert not (tmp_path / "proj" / ".lilbee").exists()  # no side effects
+        assert cfg.data_root == before  # cfg untouched
+
+    def test_reset_refused_on_http_daemon(self):
+        set_http_mounted(True)
+        try:
+            result = reset(confirm=True)
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+
+    def test_init_allowed_on_stdio(self, tmp_path):
+        set_http_mounted(False)  # stdio default
+        result = init(str(tmp_path / "proj"))
+        assert result.get("command") == "init"
+
+    def test_provider_switch_refused_on_http_daemon(self, isolated_env):
+        # settings_set('llm_provider') triggers reset_services(); refuse it on the
+        # daemon for the same teardown-race reason init/reset are refused.
+        cfg.data_root = isolated_env
+        before = cfg.llm_provider
+        set_http_mounted(True)
+        try:
+            result = settings_set({"llm_provider": "remote"})
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert cfg.llm_provider == before  # no teardown, cfg untouched
+
+    def test_non_provider_settings_allowed_on_http_daemon(self, isolated_env):
+        cfg.data_root = isolated_env
+        set_http_mounted(True)
+        try:
+            result = settings_set({"top_k": 7})
+        finally:
+            set_http_mounted(False)
+        assert result["command"] == "settings_set"
+        assert cfg.top_k == 7
+
+    def test_provider_reset_refused_on_http_daemon(self, isolated_env):
+        # settings_reset(['llm_provider']) also triggers reset_services(); the
+        # daemon must refuse it just like settings_set and init/reset.
+        cfg.data_root = isolated_env
+        before = cfg.llm_provider
+        set_http_mounted(True)
+        try:
+            result = settings_reset(["llm_provider"])
+        finally:
+            set_http_mounted(False)
+        assert "error" in result
+        assert "HTTP server" in result["error"]
+        assert cfg.llm_provider == before
+
+    def test_non_provider_reset_allowed_on_http_daemon(self, isolated_env):
+        from lilbee.core.config import Config
+
+        cfg.data_root = isolated_env
+        cfg.top_k = 99
+        set_http_mounted(True)
+        try:
+            result = settings_reset(["top_k"])
+        finally:
+            set_http_mounted(False)
+        assert result["command"] == "settings_reset"
+        assert cfg.top_k == Config.model_fields["top_k"].default  # actually reset
 
 
 class TestAdd:
@@ -590,29 +691,6 @@ class TestAdd:
         assert "warning" in result
 
 
-class TestConditionalToolRegistration:
-    def test_disabled_subsystems_register_no_tools(self):
-        """Defaults (wiki off, memory off) leave the tool registry untouched."""
-        before = set(mcp_server.mcp._tool_manager._tools)
-        mcp_server.register_conditional_tools()
-        assert set(mcp_server.mcp._tool_manager._tools) == before
-        assert not any(name.startswith(("wiki_", "memory_")) for name in before)
-
-    def test_enabled_subsystems_register_tools(self):
-        before = set(mcp_server.mcp._tool_manager._tools)
-        cfg.wiki = True
-        cfg.memory_enabled = True
-        try:
-            mcp_server.register_conditional_tools()
-            names = set(mcp_server.mcp._tool_manager._tools)
-            assert {"wiki_status", "wiki_build", "memory_remember", "memory_forget"} <= names
-        finally:
-            cfg.wiki = False
-            cfg.memory_enabled = False
-            for name in set(mcp_server.mcp._tool_manager._tools) - before:
-                del mcp_server.mcp._tool_manager._tools[name]
-
-
 class TestMain:
     @mock.patch("lilbee.mcp_server.mcp")
     def test_main_calls_run(self, mock_mcp):
@@ -682,52 +760,114 @@ class TestAddWithUrls:
 
 class TestCrawl:
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="abc123")
-    def test_returns_task_id(self, mock_start, _mock_avail, isolated_env):
+    async def test_returns_task_id(self, mock_start, _mock_dns, _mock_avail, isolated_env):
         """Non-blocking crawl returns a task_id immediately."""
-        result = crawl(url="https://example.com")
+        result = await crawl(url="https://example.com")
         assert result["status"] == "started"
         assert result["task_id"] == "abc123"
         assert result["url"] == "https://example.com"
         mock_start.assert_called_once_with(
-            "https://example.com", depth=None, max_pages=None, render_mode=None
+            "https://example.com",
+            depth=None,
+            max_pages=None,
+            render_mode=None,
+            include_subdomains=False,
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="def456")
-    def test_passes_depth_and_max_pages(self, mock_start, _mock_avail, isolated_env):
+    async def test_passes_depth_and_max_pages(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
         """Depth and max_pages are forwarded to start_crawl."""
-        result = crawl(url="https://example.com", depth=2, max_pages=10)
+        result = await crawl(url="https://example.com", depth=2, max_pages=10)
         assert result["task_id"] == "def456"
         mock_start.assert_called_once_with(
-            "https://example.com", depth=2, max_pages=10, render_mode=None
+            "https://example.com",
+            depth=2,
+            max_pages=10,
+            render_mode=None,
+            include_subdomains=False,
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl")
+    async def test_rejects_negative_depth(self, mock_start, _mock_avail, isolated_env):
+        """A negative depth is a clean error, not an unbounded crawl (REST parity)."""
+        result = await crawl(url="https://example.com", depth=-1)
+        assert "error" in result
+        mock_start.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.mcp_server.start_crawl")
+    async def test_rejects_negative_max_pages(self, mock_start, _mock_avail, isolated_env):
+        """A negative max_pages is a clean error (0 = unlimited, REST parity)."""
+        result = await crawl(url="https://example.com", max_pages=-5)
+        assert "error" in result
+        mock_start.assert_not_called()
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    @mock.patch("lilbee.mcp_server.start_crawl", return_value="sub123")
+    async def test_forwards_include_subdomains(
+        self, mock_start, _mock_dns, _mock_avail, isolated_env
+    ):
+        """include_subdomains reaches start_crawl (MCP/REST parity with CLI/TUI)."""
+        await crawl(url="https://example.com", include_subdomains=True)
+        assert mock_start.call_args.kwargs["include_subdomains"] is True
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
     @mock.patch("lilbee.mcp_server.start_crawl", return_value="ghi789")
-    def test_passes_render_mode(self, mock_start, _mock_avail, isolated_env):
+    async def test_passes_render_mode(self, mock_start, _mock_dns, _mock_avail, isolated_env):
         """An explicit render_mode is forwarded to start_crawl."""
         from lilbee.core.config.enums import CrawlRenderMode
 
-        crawl(url="https://example.com", render_mode=CrawlRenderMode.BROWSER)
+        await crawl(url="https://example.com", render_mode=CrawlRenderMode.BROWSER)
         mock_start.assert_called_once_with(
             "https://example.com",
             depth=None,
             max_pages=None,
             render_mode=CrawlRenderMode.BROWSER,
+            include_subdomains=False,
         )
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
-    def test_rejects_invalid_url(self, _mock_avail):
-        result = crawl(url="ftp://bad.com")
+    async def test_rejects_invalid_url(self, _mock_avail):
+        result = await crawl(url="ftp://bad.com")
         assert "error" in result
 
-    def test_crawler_not_installed(self):
+    async def test_crawler_not_installed(self):
         """Returns error when crawl4ai is not installed."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
-            result = crawl(url="https://example.com")
+            result = await crawl(url="https://example.com")
             assert "error" in result
             assert "pip install" in result["error"].lower()
+
+    def test_crawl_is_async_so_it_runs_on_the_loop(self):
+        """crawl must be a coroutine function: _offload_sync passes async handlers
+        straight through to the loop instead of a worker thread, so start_crawl's
+        asyncio.create_task has a running loop."""
+        import inspect
+
+        assert inspect.iscoroutinefunction(crawl)
+
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.crawler.url_filter.socket.getaddrinfo")
+    async def test_schedules_crawl_task_on_running_loop(self, _mock_dns, _mock_avail, isolated_env):
+        """Regression (bb-ziks.3): with the real start_crawl the create_task must
+        run on the loop. When crawl was offloaded to a worker thread this raised
+        'no running event loop' and every MCP crawl call failed."""
+        import lilbee.crawler.task as task_mod
+
+        clear_tasks()
+        with mock.patch.object(task_mod, "run_crawl", new_callable=AsyncMock):
+            result = await crawl(url="https://example.com", depth=0)
+        assert result["status"] == "started"
+        assert get_task(result["task_id"]) is not None
 
 
 class TestCrawlStatus:
@@ -830,19 +970,25 @@ class TestWikiStatus:
         assert result["wiki_enabled"] is True
         assert result["pages"] == 0
 
-    def test_with_pages(self, tmp_path, mock_svc):
+    def test_pages_count_all_built_content_not_drafts(self, tmp_path, mock_svc):
+        """pages counts every content subdir (here 1 summary + 2 concepts), not just
+        summaries+drafts -- a normal build writes concepts/entities/synthesis."""
         cfg.data_root = tmp_path
         cfg.wiki_dir = "wiki"
         cfg.wiki = True
-        (tmp_path / "wiki" / "summaries").mkdir(parents=True)
-        (tmp_path / "wiki" / "summaries" / "a.md").write_text("content")
-        (tmp_path / "wiki" / "drafts").mkdir(parents=True)
-        (tmp_path / "wiki" / "drafts" / "b.md").write_text("content")
+        wiki = tmp_path / "wiki"
+        (wiki / "summaries").mkdir(parents=True)
+        (wiki / "summaries" / "a.md").write_text("content")
+        (wiki / "concepts").mkdir(parents=True)
+        (wiki / "concepts" / "c1.md").write_text("content")
+        (wiki / "concepts" / "c2.md").write_text("content")
+        (wiki / "drafts").mkdir(parents=True)
+        (wiki / "drafts" / "b.md").write_text("content")
         mock_svc.store.get_citations_for_wiki.return_value = []
         result = wiki_status()
         assert result["summaries"] == 1
         assert result["drafts"] == 1
-        assert result["pages"] == 2
+        assert result["pages"] == 3
 
 
 class TestWikiBuildTool:
@@ -1037,6 +1183,15 @@ class TestWikiDraftsMcp:
         result = wiki_drafts_diff("missing")
         assert "error" in result
 
+    def test_wiki_drafts_diff_traversal_slug_generic_error_no_leak(self, isolated_env):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        cfg.wiki_dir = "wiki"
+        (isolated_env / "wiki" / "drafts").mkdir(parents=True)
+        result = wiki_drafts_diff("../../secret")
+        assert result == {"error": "invalid draft slug"}
+        assert str(isolated_env) not in str(result)
+
 
 class TestSettingsMcp:
     """MCP settings_* tools read and write through the canonical write boundary."""
@@ -1092,6 +1247,29 @@ class TestSettingsMcp:
         result = settings_set({"top_k": 12, "chunk_size": 1})
         assert "error" in result
         assert cfg.top_k == 5
+
+    def test_settings_set_validates_string_chunk_overlap(self, isolated_env):
+        # MCP forwards raw JSON, so an agent can send a numeric as a string. The
+        # chunk_overlap < chunk_size guard must still fire.
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": "1024"})
+        assert "error" in result
+        assert "chunk_overlap" in result["error"]
+        assert cfg.chunk_overlap != 1024
+
+    def test_settings_set_validates_string_chunk_size_minimum(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"chunk_size": "1"})
+        assert "error" in result
+        assert "chunk_size must be >=" in result["error"]
+
+    def test_settings_set_accepts_valid_string_numeric(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.chunk_size = 512
+        result = settings_set({"chunk_overlap": "64"})
+        assert result["command"] == "settings_set"
+        assert cfg.chunk_overlap == 64
 
     def test_settings_set_rolls_back_when_pydantic_rejects_second_field(self, isolated_env):
         cfg.data_root = isolated_env
@@ -1485,6 +1663,168 @@ class TestCatalogBrowseMcp:
         with mock.patch("lilbee.catalog.query.get_catalog", side_effect=ValueError("bad filter")):
             result = catalog_browse(task="embedding", featured=True)
         assert result == {"error": "bad filter"}
+
+
+class TestToolsSchemaSize:
+    """Schema budget: keep the per-request OpenAI tools schema under a ceiling
+    so any model with ``n_ctx >= ~16K`` has room for system + history + content
+    after the tools schema is rendered. the original 20K-token schema on
+    Qwen3-8B making 51% of the context unusable; trimming docstrings and
+    gating the wiki / crawler tools dropped that significantly. A higher
+    number doesn't fail builds, it forces a deliberate cap bump that
+    reviewers can scrutinise.
+    """
+
+    def test_tool_if_true_returns_mcp_tool_decorator(self) -> None:
+        """``_tool_if(True)`` returns a real decorator; ``_tool_if(False)``
+        returns a pass-through so the function stays importable but isn't on
+        the MCP wire. Cleans up after itself so the test doesn't pollute the
+        shared FastMCP server with a sentinel tool.
+        """
+        from lilbee.mcp_server import _tool_if
+        from lilbee.mcp_server import mcp as _mcp
+
+        sentinel_name = "_schema_size_test_sentinel"
+
+        def _schema_size_test_sentinel() -> None: ...
+
+        gated_off = _tool_if(False)(_schema_size_test_sentinel)
+        assert gated_off is _schema_size_test_sentinel
+        assert sentinel_name not in _mcp._tool_manager._tools
+
+        gated_on = _tool_if(True)(_schema_size_test_sentinel)
+        try:
+            assert callable(gated_on)
+            assert sentinel_name in _mcp._tool_manager._tools
+        finally:
+            _mcp._tool_manager._tools.pop(sentinel_name, None)
+
+    async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
+        """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
+        from lilbee.core.config import cfg as _cfg
+        from lilbee.mcp_server import mcp as _mcp
+
+        assert _cfg.wiki is False
+        tools = await _mcp.list_tools()
+        wiki_tool_names = [t.name for t in tools if t.name.startswith("wiki_")]
+        assert wiki_tool_names == []
+
+    async def test_default_tools_schema_under_budget(self) -> None:
+        """Default schema (wiki off, crawler off unless the extra is installed)
+        must stay under the cap so small-context (16K) chat models keep room
+        for the user's actual content. _strip_schema_noise removes title /
+        default / null-arm-anyOf / additionalProperties=true noise, hitting
+        ~5.2 KB today.
+        """
+        import json as _json
+
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        payload = [
+            {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+            for t in tools
+        ]
+        total_bytes = len(_json.dumps(payload))
+        # Bumped 6_000 -> 7_000 (export/import tools) -> 8_800 when merging the
+        # local-model-api fleet/model-management tools with the crawl-render-mode
+        # feature (render_mode params; 23 tools total). Verbose Args sections were
+        # trimmed first (add/crawl/memory_remember). ~2.1K tokens still leaves a
+        # 16K-context model ample room for system + history + content.
+        ceiling = 8_800
+        assert total_bytes <= ceiling, (
+            f"Default OpenAI tools schema is {total_bytes} bytes, exceeds "
+            f"{ceiling}. Each MCP tool's docstring becomes the schema "
+            "description; trim verbose Args sections before bumping the cap."
+        )
+
+    async def test_no_title_noise_in_input_schema(self) -> None:
+        """``_strip_schema_noise`` keeps FastMCP-auto-generated title fields
+        off the wire. Adding a tool whose schema contains a title fails here.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            assert "title" not in t.inputSchema, f"{t.name}: top-level title leaked into schema"
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert "title" not in pdef, (
+                        f"{t.name}.{pname}: per-property title leaked into schema"
+                    )
+
+    async def test_descriptions_have_no_indented_body_lines(self) -> None:
+        """_strip_schema_noise flattens docstring indentation before it ships. A
+        triple-quoted docstring indents every continuation line; textwrap.dedent
+        alone left those 4-space prefixes in place because the summary line's zero
+        indent makes the common prefix empty."""
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for line in (t.description or "").splitlines():
+                assert not line.startswith("    "), f"{t.name}: indented body line on the wire"
+
+    def test_flatten_tool_description_dedents_body(self) -> None:
+        from lilbee.mcp_server import _flatten_tool_description
+
+        text = "Summary line.\n\n    Indented body.\n    Second line."
+        assert _flatten_tool_description(text) == "Summary line.\n\nIndented body.\nSecond line."
+
+    def test_flatten_tool_description_single_line(self) -> None:
+        from lilbee.mcp_server import _flatten_tool_description
+
+        assert _flatten_tool_description("Just a summary.") == "Just a summary."
+
+    async def test_no_default_value_noise_in_input_schema(self) -> None:
+        """The model picks tools from name + description; ``default`` values
+        on properties are server-side trivia that cost tokens at every dispatch.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert "default" not in pdef, (
+                        f"{t.name}.{pname}: default leaked into schema; "
+                        "remove via _strip_property_noise"
+                    )
+
+    async def test_nullable_anyof_collapsed_in_input_schema(self) -> None:
+        """``T | None`` should serialize as ``{type: T}``, not a two-arm
+        ``anyOf`` with a null branch the model gains nothing from.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    arms = pdef.get("anyOf")
+                    if isinstance(arms, list):
+                        null_arms = [
+                            a for a in arms if isinstance(a, dict) and a.get("type") == "null"
+                        ]
+                        assert not null_arms, (
+                            f"{t.name}.{pname}: nullable anyOf branch leaked "
+                            "into schema; collapse via _strip_property_noise"
+                        )
+
+    async def test_no_redundant_additional_properties_true(self) -> None:
+        """``additionalProperties: true`` is JSON Schema's default; serializing
+        it explicitly is bytes for nothing.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        for t in tools:
+            for pname, pdef in t.inputSchema.get("properties", {}).items():
+                if isinstance(pdef, dict):
+                    assert pdef.get("additionalProperties") is not True, (
+                        f"{t.name}.{pname}: additionalProperties=true leaked "
+                        "into schema; remove via _strip_property_noise"
+                    )
 
 
 class _StubEmbedder:

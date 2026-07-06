@@ -1,0 +1,170 @@
+name: Build multi-GPU server wheels and executables
+
+# Opt-in lilbee[multi-gpu] artifacts: the lilbee-engine wheel (bundles the
+# compiled llama.cpp llama-server) AND the standalone server binary (for BYO /
+# frozen-exe / Docker channels that cannot pip-install the extra). Built across
+# the multi-GPU backend matrix (CUDA / Vulkan / ROCm) plus metal/cpu fallbacks.
+#
+# This is its OWN path. Every cell is continue-on-error and the artifacts use a
+# distinct prefix (wheel-multigpu-*, multigpu-exe-*) so a failure here never
+# blocks the default wheels, extra wheels, or executable release paths.
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_cpp_version:
+        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in tools/wheel-build/build_llama_server.sh)."
+        default: ""
+        required: false
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build (defaults to the calling workflow's ref)."
+        type: string
+        default: ""
+      llama_cpp_version:
+        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in tools/wheel-build/build_llama_server.sh)."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-multigpu:
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: cross-vendor Vulkan, CUDA (multi-GPU via tensor-split), ROCm, cpu fallback.
+          - {os: ubuntu-latest, backend: vulkan, wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-vulkan}
+          - {os: ubuntu-22.04,  backend: cu124,  wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-cu124, cuda: "12.4.0"}
+          - {os: ubuntu-22.04,  backend: cu125,  wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-cu125, cuda: "12.5.0"}
+          - {os: ubuntu-22.04,  backend: rocm,   wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-rocm}
+          - {os: ubuntu-latest, backend: cpu,    wheel-plat: manylinux_2_17_x86_64, exe-name: llama-server-linux-x86_64-cpu}
+          # Windows: Vulkan, CUDA, cpu fallback.
+          - {os: windows-2022,   backend: cu124,  wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-cu124.exe, cuda: "12.4.0"}
+          - {os: windows-2022,   backend: cu125,  wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-cu125.exe, cuda: "12.5.0"}
+          - {os: windows-latest, backend: vulkan, wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-vulkan.exe}
+          - {os: windows-latest, backend: cpu,    wheel-plat: win_amd64, exe-name: llama-server-windows-x86_64-cpu.exe}
+          # macOS arm64: Metal (single Apple GPU) + cpu fallback.
+          - {os: macos-latest, backend: metal, wheel-plat: macosx_11_0_arm64, exe-name: llama-server-macos-arm64-metal}
+          - {os: macos-latest, backend: cpu,   wheel-plat: macosx_11_0_arm64, exe-name: llama-server-macos-arm64-cpu}
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+
+    env:
+      BACKEND: ${{ matrix.backend }}
+      LLAMA_BUILD_DIR: "/tmp/llama-build"
+      LLAMA_CPP_VERSION: ${{ inputs.llama_cpp_version }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      PKG_DIR: packaging/engine-wheel
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build wheel
+
+      - name: Install CUDA Toolkit (Linux)
+        if: startsWith(matrix.backend, 'cu') && runner.os == 'Linux'
+        shell: bash
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
+
+      - name: Install CUDA Toolkit (Windows)
+        if: startsWith(matrix.backend, 'cu') && runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ matrix.cuda }}
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","thrust","visual_studio_integration"]'
+
+      - name: Install Vulkan loader (Linux)
+        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
+        shell: bash
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
+
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      - name: Install ROCm (Linux)
+        if: matrix.backend == 'rocm' && runner.os == 'Linux'
+        shell: bash
+        run: bash tools/wheel-build/install_gpu_toolkit.sh
+
+      - name: Set up Go (for llama-swap + gguf-parser)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Build the engine binaries from source
+        shell: bash
+        run: bash tools/wheel-build/build_llama_server.sh
+
+      - name: Set wheel version to the lilbee version
+        shell: bash
+        run: |
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          python - "$VERSION" <<'PY'
+          import pathlib, re, sys
+          version = sys.argv[1]
+          path = pathlib.Path("packaging/engine-wheel/pyproject.toml")
+          text = re.sub(r'(?m)^version = ".*"$', f'version = "{version}"', path.read_text(), count=1)
+          path.write_text(text)
+          PY
+
+      - name: Build the lilbee-engine wheel
+        shell: bash
+        working-directory: ${{ env.PKG_DIR }}
+        run: |
+          python -m build --wheel
+          python -m wheel tags --remove --platform-tag "${{ matrix.wheel-plat }}" dist/*.whl
+
+      - name: Smoke test the bundled binary
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -x
+          bin_dir="${PKG_DIR}/lilbee_engine/bin"
+          exe=$(find "${bin_dir}" -maxdepth 1 -type f -name 'llama-server*' | head -1)
+          [ -n "${exe}" ] || { echo "no bundled binary found"; exit 1; }
+          "${exe}" --help
+
+      - name: Stage the standalone binary
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p multigpu-exe
+          bin_dir="${PKG_DIR}/lilbee_engine/bin"
+          exe=$(find "${bin_dir}" -maxdepth 1 -type f -name 'llama-server*' | head -1)
+          [ -n "${exe}" ] && cp "${exe}" "multigpu-exe/${{ matrix.exe-name }}"
+
+      - name: Upload the multi-gpu wheel
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-multigpu-${{ matrix.os }}-${{ matrix.backend }}
+          path: ${{ env.PKG_DIR }}/dist/*.whl
+          if-no-files-found: warn
+
+      - name: Upload the standalone server binary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: multigpu-exe-${{ matrix.exe-name }}
+          path: multigpu-exe/${{ matrix.exe-name }}
+          if-no-files-found: warn

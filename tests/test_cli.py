@@ -17,6 +17,7 @@ from lilbee.app.version import get_version
 from lilbee.cli import app
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import list_installed_models
@@ -276,6 +277,12 @@ class TestAsk:
         result = runner.invoke(app, ["ask", "test question"])
         assert result.exit_code == 0
 
+    def test_ask_rejects_empty_question(self, mock_svc):
+        result = runner.invoke(app, ["ask", "   "])
+        assert result.exit_code != 0
+        assert "must not be empty" in result.output
+        mock_svc.searcher.ask_stream.assert_not_called()
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_with_model_flag(self, mock_sync, mock_svc):
         mock_svc.searcher.ask_stream.return_value = _mock_stream("answer")
@@ -302,6 +309,28 @@ class TestAsk:
         result = runner.invoke(app, ["ask", "q"])
         assert result.exit_code == 0
         assert mock_svc.searcher.ask_stream.call_args.kwargs.get("chunk_type") is None
+
+    @mock.patch("lilbee.cli.commands.search_chat.auto_sync")
+    def test_ask_syncs_by_default(self, mock_auto, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        mock_auto.assert_called_once()
+
+    @mock.patch("lilbee.cli.commands.search_chat.auto_sync")
+    def test_ask_no_sync_flag_skips_auto_sync(self, mock_auto, mock_svc):
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "--no-sync", "q"])
+        assert result.exit_code == 0
+        mock_auto.assert_not_called()
+
+    @mock.patch("lilbee.cli.commands.search_chat.auto_sync")
+    def test_ask_auto_sync_config_false_skips(self, mock_auto, mock_svc, monkeypatch):
+        monkeypatch.setattr(cfg, "auto_sync", False)
+        mock_svc.searcher.ask_stream.return_value = _mock_stream("a")
+        result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 0
+        mock_auto.assert_not_called()
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_invalid_scope_exits_nonzero(self, mock_sync, mock_svc):
@@ -635,7 +664,7 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.7
         cfg.temperature = None
 
-    def test_data_dir_overlays_per_root_config_toml(self, tmp_path):
+    def test_data_dir_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
         """A per-vault config.toml in the data-dir must be re-read when --data-dir lands.
 
         Regression: cfg's scalar fields (chat_model, embedding_model, ...) were
@@ -659,7 +688,9 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
-    def test_data_dir_without_config_toml_leaves_cfg_unchanged(self, tmp_path):
+    def test_data_dir_without_config_toml_leaves_cfg_unchanged(
+        self, tmp_path, overlay_reads_config_toml
+    ):
         """An empty / missing config.toml must not stomp on existing cfg values."""
         from lilbee.cli import apply_overrides
 
@@ -672,7 +703,9 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/kept-from-import:latest"
         assert cfg.embedding_model == "ollama/kept-embed:latest"
 
-    def test_data_dir_overlay_covers_writable_scalar_fields(self, tmp_path):
+    def test_data_dir_overlay_covers_writable_scalar_fields(
+        self, tmp_path, overlay_reads_config_toml
+    ):
         """Writable scalar fields (e.g. temperature, top_k) overlay too, not just models."""
         from lilbee.cli import apply_overrides
 
@@ -686,7 +719,9 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.2
         assert cfg.top_k == 20
 
-    def test_use_global_overlays_global_config_toml(self, tmp_path, monkeypatch):
+    def test_use_global_overlays_global_config_toml(
+        self, tmp_path, monkeypatch, overlay_reads_config_toml
+    ):
         """--global must also re-read the global root's config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -702,7 +737,9 @@ class TestApplyOverrides:
         assert cfg.data_root == fake_global
         assert cfg.chat_model == "ollama/from-global:latest"
 
-    def test_lilbee_data_env_overlays_config_toml(self, tmp_path, monkeypatch):
+    def test_lilbee_data_env_overlays_config_toml(
+        self, tmp_path, monkeypatch, overlay_reads_config_toml
+    ):
         """The LILBEE_DATA env-var path must also overlay its config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -718,15 +755,12 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/from-env:latest"
 
     def test_apply_data_root_exports_lilbee_data_env(self, tmp_path, monkeypatch):
-        """``_apply_data_root`` exports ``LILBEE_DATA`` so workers can find log files.
+        """``_apply_data_root`` exports ``LILBEE_DATA`` for lilbee subprocesses.
 
-        Worker subprocesses (multiprocessing.spawn) re-import lilbee in a
-        fresh process with no inherited cfg state, so without this export
-        the worker's ``configure_worker_logging`` and the supervisor's
-        ``_worker_log_path`` would silently skip log-file creation when a
-        user invoked lilbee with ``--data-dir`` instead of via the env.
-        On Windows this turns an embed-worker heap-corruption crash into
-        an opaque "subprocess exited unexpectedly" with no trail.
+        Spawned lilbee processes (the launchers' ``lilbee serve``, the splash
+        runner) re-import lilbee fresh with no inherited cfg state, so without
+        this export a ``--data-dir`` override would silently fall back to the
+        default data root in the child.
         """
         from lilbee.cli import apply_overrides
 
@@ -746,7 +780,7 @@ class TestApplyOverrides:
         apply_overrides(use_global=True)
         assert os.environ.get("LILBEE_DATA") == str(fake_global)
 
-    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path):
+    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path, overlay_reads_config_toml):
         """Stale or unrecognised keys in config.toml don't blow up startup."""
         from lilbee.cli import apply_overrides
 
@@ -760,7 +794,9 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/from-vault:latest"
         assert not hasattr(cfg, "totally_unknown_key")
 
-    def test_data_dir_overlay_logs_and_skips_invalid_value(self, tmp_path, caplog):
+    def test_data_dir_overlay_logs_and_skips_invalid_value(
+        self, tmp_path, caplog, overlay_reads_config_toml
+    ):
         """A malformed persisted value is logged and skipped, not raised."""
         from lilbee.cli import apply_overrides
 
@@ -774,7 +810,9 @@ class TestApplyOverrides:
         assert cfg.top_k == 7
         assert any("top_k" in rec.message for rec in caplog.records)
 
-    def test_data_dir_overlay_handles_unreadable_config_toml(self, tmp_path, monkeypatch, caplog):
+    def test_data_dir_overlay_handles_unreadable_config_toml(
+        self, tmp_path, monkeypatch, caplog, overlay_reads_config_toml
+    ):
         """A read failure on config.toml is logged and treated as 'no overlay'."""
         from lilbee.cli import apply_overrides
         from lilbee.core import settings as settings_mod
@@ -1171,6 +1209,31 @@ class TestSearch:
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["results"] == []
+
+    def test_search_caps_top_k(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        result = runner.invoke(app, ["search", "q", "--top-k", "500"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+
+    def test_search_rejects_empty_query(self, mock_svc):
+        result = runner.invoke(app, ["search", "   "])
+        assert result.exit_code != 0
+        assert "must not be empty" in result.output
+
+    def test_search_applies_max_distance_filter(self, mock_svc, monkeypatch):
+        """CLI search drops chunks beyond cfg.max_distance, like REST and MCP."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "max_distance", 0.5)
+        near = _MOCK_SEARCH_RESULTS[0]  # distance 0.25
+        far = _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": "far.pdf", "distance": 0.9})
+        mock_svc.searcher.search.return_value = [near, far]
+        result = runner.invoke(app, ["--json", "search", "q"])
+        assert result.exit_code == 0
+        sources = [r["source"] for r in json.loads(result.output.strip())["results"]]
+        assert "manual.pdf" in sources
+        assert "far.pdf" not in sources
 
     def test_search_human_output(self, mock_svc):
         mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
@@ -1686,7 +1749,12 @@ class TestReset:
             result = runner.invoke(app, ["--json", "reset", "--yes"])
 
         assert result.exit_code == 0
-        data = json.loads(result.output.strip())
+        # Use result.stdout (not result.output) so the WARNING log that reset
+        # emits for each locked file does not pollute the JSON when a Rich log
+        # handler is active on the root logger (installed by FastMCP at import
+        # time of lilbee.mcp_server).  The JSON command output goes to stdout;
+        # the warning goes to stderr.
+        data = json.loads(result.stdout.strip())
         assert data["deleted_docs"] == 0
         assert len(data["skipped"]) == 1
         assert "locked.exe" in data["skipped"][0]
@@ -1703,7 +1771,7 @@ class TestReset:
             result = runner.invoke(app, ["--json", "reset", "--yes"])
 
         assert result.exit_code == 0
-        data = json.loads(result.output.strip())
+        data = json.loads(result.stdout.strip())
         assert data["deleted_docs"] == 0
         assert len(data["skipped"]) == 2
 
@@ -1848,6 +1916,16 @@ class TestRebuildJson:
 
 class TestAddJson:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json_suppresses_eager_start(self, mock_sync, isolated_env, tmp_path):
+        """Headless json add only needs embed; it must not eager-warm every role."""
+        src = tmp_path / "source" / "m.txt"
+        src.parent.mkdir()
+        src.write_text("x")
+        cfg.worker_pool_eager_start = True
+        runner.invoke(app, ["--json", "add", str(src)])
+        assert cfg.worker_pool_eager_start is False
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json(self, mock_sync, isolated_env, tmp_path):
         src = tmp_path / "source" / "manual.txt"
         src.parent.mkdir()
@@ -1912,6 +1990,9 @@ class TestAskJson:
         assert len(data["sources"]) == 1
         assert "vector" not in data["sources"][0]
         assert "distance" in data["sources"][0]
+        # bb-ky3: cited_sources is present and empty when the answer cited nothing,
+        # so a JSON consumer can tell a grounded answer from an off-corpus one.
+        assert data["cited_sources"] == []
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):
@@ -1925,6 +2006,32 @@ class TestAskJson:
         data = json.loads(result.output.strip())
         assert data["sources"] == []
         assert "No relevant" in data["answer"]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_reports_cited_subset(self, mock_sync, mock_svc):
+        """bb-ky3: cited_sources carries only the source the answer actually cited."""
+        from lilbee.retrieval.query import AskResult
+
+        cited = SearchChunk(
+            source="manual.pdf",
+            content_type="pdf",
+            page_start=1,
+            page_end=1,
+            line_start=0,
+            line_end=0,
+            chunk="oil",
+            chunk_index=0,
+            distance=0.3,
+            vector=[0.1],
+        )
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="5 quarts [1]", sources=[cited], cited_sources=[cited]
+        )
+        result = runner.invoke(app, ["--json", "ask", "oil capacity?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert [s["source"] for s in data["cited_sources"]] == ["manual.pdf"]
+        assert "vector" not in data["cited_sources"][0]
 
 
 class TestAskModelNotFound:
@@ -2151,22 +2258,26 @@ class TestIngestShutdownError:
     def test_process_one_converts_shutdown_error(self):
         """RuntimeError from executor shutdown is converted to CancelledError."""
         import asyncio
+        from pathlib import Path
 
         from lilbee.data.ingest import ingest_batch
+        from lilbee.data.ingest.types import FileToProcess
 
         shutdown_err = RuntimeError("cannot schedule new futures after shutdown")
 
         async def _run():
-            added = ["test.txt"]
-            updated: list[str] = []
-            failed: list[str] = []
-            skipped: list[str] = []
+            added = {"test.txt": None}
+            updated: dict[str, None] = {}
+            failed: dict[str, None] = {}
+            skipped: dict[str, None] = {}
             with (
-                mock.patch("lilbee.data.ingest.pipeline._ingest_file", side_effect=shutdown_err),
+                mock.patch(
+                    "lilbee.data.ingest.pipeline._produce_records", side_effect=shutdown_err
+                ),
                 pytest.raises(asyncio.CancelledError),
             ):
                 await ingest_batch(
-                    [("test.txt", __import__("pathlib").Path("test.txt"), "text", "abc123", False)],
+                    [FileToProcess("test.txt", Path("test.txt"), "text", "abc123", False)],
                     added,
                     updated,
                     failed,
@@ -2175,6 +2286,25 @@ class TestIngestShutdownError:
                 )
 
         asyncio.run(_run())
+
+
+class TestBatchIngestNoEagerWarm:
+    def test_sync_runner_disables_eager_warm(self, monkeypatch):
+        """Batch ingest is headless: by the time the sync runs, the eager warm is
+        off, so services init never spawns the chat role's server."""
+        import lilbee.data.ingest as ingest_mod
+        from lilbee.cli.commands.ingest_sync import _run_sync_with_signal_cancel
+
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+        seen: dict[str, object] = {}
+
+        async def _fake_sync(**_kwargs):
+            seen["eager"] = cfg.worker_pool_eager_start
+            return object()
+
+        monkeypatch.setattr(ingest_mod, "sync", _fake_sync)
+        _run_sync_with_signal_cancel()
+        assert seen["eager"] is False
 
 
 class TestAddWithUrls:
@@ -2732,6 +2862,24 @@ class TestWikiBuild:
         assert data["count"] == 1
         assert data["entities"] == 0
 
+    def test_status_counts_all_content_pages(self, mock_svc, isolated_env):
+        """wiki status pages counts every content subdir (1 summary + 2 concepts),
+        not summaries+drafts; the pending draft is excluded."""
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        (wiki_root / "summaries").mkdir(parents=True)
+        (wiki_root / "summaries" / "s.md").write_text("x")
+        (wiki_root / "concepts").mkdir(parents=True)
+        (wiki_root / "concepts" / "c1.md").write_text("x")
+        (wiki_root / "concepts" / "c2.md").write_text("x")
+        (wiki_root / "drafts").mkdir(parents=True)
+        (wiki_root / "drafts" / "d.md").write_text("x")
+        result = runner.invoke(app, ["--json", "wiki", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["pages"] == 3
+        assert data["drafts"] == 1
+
     def test_update_reruns_build(self, mock_svc, isolated_env, monkeypatch):
         """wiki update currently delegates to wiki build (see bb-he8o for smarter version)."""
         monkeypatch.setattr(
@@ -3115,6 +3263,74 @@ class TestWikiDraftsCli:
         data = json.loads(result.output)
         assert "error" in data
 
+    def test_diff_traversal_slug_generic_error_no_path_leak(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.diff_draft",
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "diff", "anything"])
+        assert result.exit_code == 1
+        assert "invalid draft slug" in result.output
+        assert str(isolated_env) not in result.output
+
+    def test_diff_traversal_slug_json_mode_generic_error(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.diff_draft",
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
+        ):
+            result = runner.invoke(app, ["--json", "wiki", "drafts", "diff", "anything"])
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {"error": "invalid draft slug"}
+        assert str(isolated_env) not in result.output
+
+    def test_accept_traversal_slug_generic_error_no_path_leak(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.accept_draft",
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "anything"])
+        assert result.exit_code == 1
+        assert "invalid draft slug" in result.output
+        assert str(isolated_env) not in result.output
+
+    def test_reject_traversal_slug_generic_error_no_path_leak(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.reject_draft",
+            side_effect=PathTraversalError(
+                f"Path escapes allowed directory: {isolated_env}/secret.md"
+            ),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "reject", "anything"])
+        assert result.exit_code == 1
+        assert "invalid draft slug" in result.output
+        assert str(isolated_env) not in result.output
+
+    def test_accept_indexing_valueerror_is_not_masked(self, mock_svc, isolated_env):
+        # A non-traversal ValueError from re-indexing must not be reported as
+        # "invalid draft slug" (only PathTraversalError gets the generic mapping).
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        with mock.patch(
+            "lilbee.wiki.drafts.accept_draft",
+            side_effect=ValueError("Vector dimension mismatch: expected 768, got 1024"),
+        ):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "real-slug"])
+        assert "invalid draft slug" not in result.output
+
     def test_accept_moves_draft_into_published(self, mock_svc, isolated_env):
         self._seed(isolated_env)
         with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=2):
@@ -3374,13 +3590,15 @@ class TestChatSyncCallback:
 
 class TestTemporaryOcrConfig:
     def test_ocr_timeout_override(self):
-        """temporary_ocr_config overrides ocr_timeout and restores it."""
+        """temporary_ocr_config overrides the effective timeout without mutating cfg."""
         from lilbee.app.ingest import temporary_ocr_config
+        from lilbee.data.ingest.extract import _effective_ocr_timeout
 
         original = cfg.ocr_timeout
         with temporary_ocr_config(ocr_timeout=99.0):
-            assert cfg.ocr_timeout == 99.0
-        assert cfg.ocr_timeout == original
+            assert _effective_ocr_timeout() == 99.0
+            assert cfg.ocr_timeout == original  # global cfg is never mutated
+        assert _effective_ocr_timeout() == original
 
 
 class TestSyncResultToJson:
@@ -3520,44 +3738,80 @@ class TestSetupCrawlerCommand:
 
 
 class TestSelfCheck:
-    """`lilbee self-check` runs both legs through ``load_llama`` so the dynamic
-    ``n_ctx`` picker, flash-attention default, KV cache mapping, ``n_gpu_layers``
-    resolution, and OOM retry path all run in addition to verifying the vendored
-    llama-cpp-python shared libraries load.
-
-    Leg 1: chat (``create_completion``): exercises chat-mode ``load_llama`` and
-    a tiny decoder-style inference.
-    Leg 2: embedding (``create_embedding``): exercises embed-mode ``load_llama``
-    (with the n_ctx clamp) and a single embedding call. Catches the historical
-    "Memory is not initialized" assert from llama-cpp-python <0.3.19.
-
-    Tests stub the urllib download and ``load_llama`` so they don't hit
-    HuggingFace or load a real GGUF.
+    """`lilbee self-check` spawns a llama-server for each leg via ``_self_check_chat``
+    and ``_self_check_embed``. Tests stub the urllib download and those two helpers
+    so they don't hit HuggingFace or require a real llama-server binary.
     """
 
     @staticmethod
-    def _patch_load_llama(*, chat_text: str = " 4", embed_dims: int = 768):
-        """Patch ``load_llama`` to return chat-leg then embed-leg fakes."""
-        chat_llm = MagicMock()
-        chat_llm.create_completion.return_value = {"choices": [{"text": chat_text}]}
-        embed_llm = MagicMock()
-        embed_llm.create_embedding.return_value = {"data": [{"embedding": [0.1] * embed_dims}]}
-        return mock.patch(
-            "lilbee.providers.llama_cpp.provider.load_llama",
-            side_effect=[chat_llm, embed_llm],
+    def _patch_self_check(*, chat_text: str = " 4", embed_dims: int = 768):
+        """Patch ``_self_check_chat`` and ``_self_check_embed`` with stub results."""
+        return (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat",
+                return_value=chat_text,
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed",
+                return_value=embed_dims,
+            ),
         )
+
+    def test_download_failure_cleans_temp_dir(self, tmp_path: Path, monkeypatch) -> None:
+        import urllib.error
+        import urllib.request
+
+        from lilbee.cli.commands import setup
+
+        d = tmp_path / "dl"
+        d.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
+
+        def _down(*_a, **_k):
+            raise urllib.error.URLError("offline")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _down)
+        with pytest.raises(RuntimeError):
+            setup._download_self_check_model("repo/x", "f.gguf")
+        assert not d.exists()
+
+    def test_self_check_server_cleans_work_dir_on_start_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        d = tmp_path / "wd"
+        d.mkdir()
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(d))
+        # The llama-server binary isn't present in CI; stub the resolver so the
+        # function reaches the swap.start cleanup path under test.
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+        )
+        fake_swap = mock.MagicMock()
+        fake_swap.start.side_effect = RuntimeError("engine died")
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: fake_swap
+        )
+        with pytest.raises(RuntimeError):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+        assert not d.exists()
+        fake_swap.shutdown.assert_called_once()
 
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
+        chat_patch, embed_patch = self._patch_self_check()
         with (
             mock.patch(
                 "lilbee.cli.commands.setup._download_self_check_model",
                 side_effect=AssertionError("must not download when --model-path given"),
             ),
-            self._patch_load_llama(),
+            chat_patch,
+            embed_patch,
         ):
             result = runner.invoke(
                 app,
@@ -3592,12 +3846,14 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
+        chat_patch, embed_patch = self._patch_self_check()
         with (
             mock.patch(
                 "lilbee.cli.commands.setup._download_self_check_model",
                 side_effect=[chat, emb],
             ),
-            self._patch_load_llama(),
+            chat_patch,
+            embed_patch,
         ):
             result = runner.invoke(app, ["--json", "self-check"])
         assert result.exit_code == 0, result.output
@@ -3607,9 +3863,11 @@ class TestSelfCheck:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         download = mock.Mock(return_value=chat)
+        chat_patch, embed_patch = self._patch_self_check()
         with (
             mock.patch("lilbee.cli.commands.setup._download_self_check_model", download),
-            self._patch_load_llama(),
+            chat_patch,
+            embed_patch,
         ):
             result = runner.invoke(app, ["--json", "self-check", "--skip-embedding"])
         assert result.exit_code == 0, result.output
@@ -3619,27 +3877,20 @@ class TestSelfCheck:
         assert payload["ok"] is True
         assert "embedding_dims" not in payload
 
-    def test_self_check_invokes_load_llama_for_each_leg(self, tmp_path: Path) -> None:
-        """Both legs must route through load_llama with the right LoaderMode.
-
-        Pins the user-visible promise: self-check exercises the lilbee provider
-        stack (dynamic ctx + FA + KV cache + GPU layers + OOM retry), not just
-        a hand-rolled ``llama_cpp.Llama(...)`` call.
-        """
-        from lilbee.providers.model_cache import LoaderMode
-
+    def test_self_check_invokes_helpers_for_each_leg(self, tmp_path: Path) -> None:
+        """Both legs must route through _self_check_chat and _self_check_embed."""
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        chat_llm = MagicMock()
-        chat_llm.create_completion.return_value = {"choices": [{"text": " ok"}]}
-        embed_llm = MagicMock()
-        embed_llm.create_embedding.return_value = {"data": [{"embedding": [0.0] * 4}]}
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.load_llama",
-            side_effect=[chat_llm, embed_llm],
-        ) as load_llama:
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat", return_value=" ok"
+            ) as check_chat,
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed", return_value=4
+            ) as check_embed,
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -3652,9 +3903,8 @@ class TestSelfCheck:
                 ],
             )
         assert result.exit_code == 0, result.output
-        assert load_llama.call_count == 2
-        assert load_llama.call_args_list[0] == mock.call(chat, mode=LoaderMode.CHAT)
-        assert load_llama.call_args_list[1] == mock.call(emb, mode=LoaderMode.EMBED)
+        check_chat.assert_called_once()
+        check_embed.assert_called_once()
 
     def test_chat_download_failure_emits_json_error(self) -> None:
         with mock.patch(
@@ -3667,11 +3917,11 @@ class TestSelfCheck:
         assert payload["ok"] is False
         assert "network is down" in payload["error"]
 
-    def test_chat_llama_load_failure_emits_json_error(self, tmp_path: Path) -> None:
+    def test_chat_failure_emits_json_error(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         with mock.patch(
-            "lilbee.providers.llama_cpp.provider.load_llama",
+            "lilbee.cli.commands.setup._self_check_chat",
             side_effect=RuntimeError("Shared library not found"),
         ):
             result = runner.invoke(
@@ -3692,7 +3942,11 @@ class TestSelfCheck:
     def test_empty_chat_response_emits_json_error(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
-        with self._patch_load_llama(chat_text="   "):
+        chat_patch, embed_patch = self._patch_self_check(chat_text="   ")
+        with (
+            chat_patch,
+            embed_patch,
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -3710,7 +3964,11 @@ class TestSelfCheck:
     def test_empty_chat_response_human_mode(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
-        with self._patch_load_llama(chat_text="   "):
+        chat_patch, embed_patch = self._patch_self_check(chat_text="   ")
+        with (
+            chat_patch,
+            embed_patch,
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -3724,17 +3982,21 @@ class TestSelfCheck:
         assert "SELF-CHECK FAILED" in result.output
         assert "empty inference response" in result.output
 
-    def test_embedding_load_failure_emits_json_error(self, tmp_path: Path) -> None:
-        """The Memory-is-not-initialized class of bug: embed-leg load_llama raises."""
+    def test_embed_failure_emits_json_error(self, tmp_path: Path) -> None:
+        """The Memory-is-not-initialized class of bug: embed leg raises."""
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        chat_llm = MagicMock()
-        chat_llm.create_completion.return_value = {"choices": [{"text": " 4"}]}
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.load_llama",
-            side_effect=[chat_llm, AssertionError("Memory is not initialized")],
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat",
+                return_value=" 4",
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed",
+                side_effect=AssertionError("Memory is not initialized"),
+            ),
         ):
             result = runner.invoke(
                 app,
@@ -3757,13 +4019,15 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        chat_llm = MagicMock()
-        chat_llm.create_completion.return_value = {"choices": [{"text": " 4"}]}
-        embed_llm = MagicMock()
-        embed_llm.create_embedding.return_value = {"data": [{"embedding": []}]}
-        with mock.patch(
-            "lilbee.providers.llama_cpp.provider.load_llama",
-            side_effect=[chat_llm, embed_llm],
+        with (
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_chat",
+                return_value=" 4",
+            ),
+            mock.patch(
+                "lilbee.cli.commands.setup._self_check_embed",
+                return_value=0,
+            ),
         ):
             result = runner.invoke(
                 app,
@@ -3786,7 +4050,11 @@ class TestSelfCheck:
         chat.write_bytes(b"chat")
         emb = tmp_path / "emb.gguf"
         emb.write_bytes(b"emb")
-        with self._patch_load_llama(chat_text=" hello", embed_dims=384):
+        chat_patch, embed_patch = self._patch_self_check(chat_text=" hello", embed_dims=384)
+        with (
+            chat_patch,
+            embed_patch,
+        ):
             result = runner.invoke(
                 app,
                 [
@@ -3801,8 +4069,6 @@ class TestSelfCheck:
         assert "SELF-CHECK PASSED" in result.output
         assert "hello" in result.output
         assert "384" in result.output
-        # The provider readout is the user-visible signal that the new
-        # cfg-driven knobs were resolved this run.
         assert "Provider:" in result.output
         assert "kv_cache_type=" in result.output
         assert "flash_attention=" in result.output
@@ -3811,7 +4077,7 @@ class TestSelfCheck:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
         with mock.patch(
-            "lilbee.providers.llama_cpp.provider.load_llama",
+            "lilbee.cli.commands.setup._self_check_chat",
             side_effect=OSError("boom"),
         ):
             result = runner.invoke(
@@ -3825,6 +4091,130 @@ class TestSelfCheck:
             )
         assert result.exit_code == 1
         assert "SELF-CHECK FAILED" in result.output
+
+
+class TestSelfCheckHelpers:
+    """The leg helpers run one model through a one-off llama-swap and do inference."""
+
+    @staticmethod
+    def _patch_fleet_primitives(monkeypatch, *, swap, client) -> None:
+        """Stub binary resolution, metadata, ctx/layer math, argv, SwapManager, client."""
+        from pathlib import Path
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server",
+            lambda: Path("/bin/llama-server"),
+        )
+        monkeypatch.setattr("lilbee.providers.fleet.binary.llama_server_runtime_env", lambda: {})
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr("lilbee.providers.gguf_meta.train_ctx_from_meta", lambda *_a, **_k: 512)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *_a: 4096)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_n_gpu_layers", lambda **_k: 99)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.adapters.build_server_argv",
+            lambda **_k: ["/bin/llama-server"],
+        )
+        swap.endpoint.return_value = "http://127.0.0.1:5800"
+        monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.client.LlamaServerClient", lambda _endpoint, _model: client
+        )
+
+    def test_self_check_chat_runs_completion(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.chat.return_value = " 4"
+        swap = mock.MagicMock()
+        self._patch_fleet_primitives(monkeypatch, swap=swap, client=client)
+
+        result = setup._self_check_chat(tmp_path / "chat.gguf", max_tokens=5)
+        assert result == " 4"
+        swap.start.assert_called_once()
+        swap.shutdown.assert_called_once()  # always torn down
+
+    def test_self_check_embed_returns_dimensionality(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.embed.return_value = [[0.1, 0.2, 0.3]]
+        swap = mock.MagicMock()
+        self._patch_fleet_primitives(monkeypatch, swap=swap, client=client)
+
+        assert setup._self_check_embed(tmp_path / "embed.gguf") == 3
+        swap.shutdown.assert_called_once()
+
+    def test_self_check_embed_empty_vectors_returns_zero(self, monkeypatch, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.embed.return_value = []
+        swap = mock.MagicMock()
+        self._patch_fleet_primitives(monkeypatch, swap=swap, client=client)
+
+        assert setup._self_check_embed(tmp_path / "embed.gguf") == 0
+
+    def test_self_check_tears_down_swap_on_inference_failure(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        # The upstream loads on the first request; a load/inference failure surfaces
+        # from that call, and the one-off swap is still torn down.
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+
+        client = mock.MagicMock()
+        client.embed.side_effect = RuntimeError("upstream exited prematurely")
+        swap = mock.MagicMock()
+        self._patch_fleet_primitives(monkeypatch, swap=swap, client=client)
+
+        with pytest.raises(RuntimeError, match="upstream exited"):
+            setup._self_check_embed(tmp_path / "embed.gguf")
+        swap.shutdown.assert_called_once()
+
+    def test_self_check_client_addresses_the_replica_model_id(self, monkeypatch, tmp_path) -> None:
+        # The client must address the model by its llama-swap id (role-0), matching
+        # the generated config, or the request would not route.
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        swap = mock.MagicMock()
+        self._patch_fleet_primitives(monkeypatch, swap=swap, client=mock.MagicMock())
+        seen: dict[str, str] = {}
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.client.LlamaServerClient",
+            lambda _endpoint, model: seen.update(model=model) or mock.MagicMock(),
+        )
+        setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
+        assert seen["model"] == "chat-0"
+
+    def test_self_check_embed_applies_decoder_pooling(self, monkeypatch, tmp_path) -> None:
+        # The embed self-check must launch with the same pooling a real ingest uses,
+        # so a decoder embedder is exercised with --pooling last (bb-872r).
+        from unittest import mock
+
+        from lilbee.cli.commands import setup
+        from lilbee.providers.roles import WorkerRole
+
+        self._patch_fleet_primitives(monkeypatch, swap=mock.MagicMock(), client=mock.MagicMock())
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+        )
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.adapters.build_server_argv",
+            lambda **kw: seen.update(kw) or ["/bin/llama-server"],
+        )
+        setup._self_check_server(WorkerRole.EMBED, tmp_path / "embed.gguf")
+        assert seen["spec"].extra_args == ("--embeddings", "--pooling", "last")
 
 
 class TestSelfCheckExtras:
@@ -4009,3 +4399,22 @@ class TestCrawlDefaultCapNotice:
         monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
         _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=9)
         assert "--max-pages 0" not in capsys.readouterr().err
+
+
+def test_mcp_command_applies_data_dir_then_starts(tmp_path):
+    """The stdio MCP command accepts --data-dir/--global like its serve sibling and
+    applies the override (mutating cfg to point at the alt root) before main()."""
+    from lilbee.core.config import cfg
+
+    alt = tmp_path / "alt"
+    applied_root: list = []
+    with mock.patch(
+        "lilbee.mcp_server.main", side_effect=lambda: applied_root.append(cfg.data_root)
+    ) as mock_main:
+        result = runner.invoke(app, ["mcp", "--data-dir", str(alt)])
+    assert result.exit_code == 0, result.output
+    assert "No such option" not in result.output
+    mock_main.assert_called_once()
+    # The override was applied before the server started, not merely parsed: main()
+    # observed cfg.data_root already pointing at the alt root.
+    assert applied_root == [alt]

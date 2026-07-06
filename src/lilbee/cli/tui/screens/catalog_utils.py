@@ -23,6 +23,10 @@ from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.providers.model_ref import format_remote_ref
 from lilbee.runtime.hardware import FitChip
 
+# Backend label for local GGUF models. Renderers drop this pill (the backend is
+# implied for local models) and only show it for non-native SDK backends.
+NATIVE_BACKEND = "native"
+
 
 class CatalogRowKind(StrEnum):
     """Discriminator for the sealed CatalogRow union."""
@@ -268,7 +272,7 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> LocalCat
         sort_downloads=0,
         sort_size=v.size_mb / 1024,
         ref=v.hf_repo,
-        backend="native",
+        backend=NATIVE_BACKEND,
         variant=v,
         family=f,
     )
@@ -289,7 +293,7 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> LocalCatalogRow:
         sort_downloads=m.downloads,
         sort_size=m.size_gb,
         ref=m.ref,
-        backend="native",
+        backend=NATIVE_BACKEND,
         catalog_model=m,
         compat=m.compat,
     )
