@@ -1625,7 +1625,7 @@ wheels = [
 
 [[package]]
 name = "lilbee"
-version = "0.6.66b506"
+version = "0.6.66b507"
 source = { editable = "." }
 dependencies = [
     { name = "diskcache" },
@@ -1678,6 +1678,7 @@ release = [
 dev = [
     { name = "httpx" },
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1705,9 +1706,9 @@ requires-dist = [
     { name = "lancedb" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
     { name = "lilbee-engine", directory = "packaging/engine-wheel" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0,<1.92" },
     { name = "litestar", specifier = ">=2.0" },
-    { name = "mcp", specifier = ">=1.26.0" },
+    { name = "mcp", specifier = ">=1.26.0,<2" },
     { name = "numpy" },
     { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuda12'" },
     { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuda12'" },
@@ -1729,6 +1730,7 @@ provides-extras = ["litellm", "graph", "crawler", "cuda12", "release"]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", specifier = ">=1.19.1" },
+    { name = "packaging", specifier = ">=24" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest" },
     { name = "pytest-asyncio" },

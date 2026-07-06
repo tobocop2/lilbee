@@ -77,14 +77,16 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build-default-wheels:
-    needs: [resolve]
+    needs: [resolve, create-prerelease]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.create-prerelease.result != 'failure' }}
     uses: ./.github/workflows/build-default-wheels.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
+      release_tag: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) && needs.resolve.outputs.tag || '' }}
     secrets: inherit
 
-  # Pre-release shell created up front so executable build jobs can attach
-  # their asset the moment it builds instead of waiting for the slowest cell.
+  # Pre-release shell created up front so every build job can attach its
+  # asset the moment it builds instead of waiting for the slowest cell.
   create-prerelease:
     needs: [resolve]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

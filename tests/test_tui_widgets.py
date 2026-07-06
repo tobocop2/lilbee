@@ -2468,6 +2468,18 @@ class TestGetCompletions:
         r = get_completions(f"/add {d}/")
         assert any("testfile.txt" in x for x in r)
 
+    def test_path_exists_swallows_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A path the OS refuses to stat must read as missing, not raise."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets import autocomplete
+
+        def _boom(self: P) -> P:
+            raise OSError("bad path")
+
+        monkeypatch.setattr(P, "expanduser", _boom)
+        assert autocomplete._path_exists("~oops") is False
+
     def test_add_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:
         """Regression (bb-7wq): a fully-typed existing directory or file (no
         trailing separator) yields no completions, so the dropdown collapses and
