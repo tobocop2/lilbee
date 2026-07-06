@@ -80,6 +80,9 @@ def _isolated_env(tmp_path, monkeypatch) -> Path:
     cfg.data_dir.mkdir(exist_ok=True)
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    # On Windows the launcher writes under %APPDATA%\opencode; point it at the
+    # same tmp .config layout the POSIX path uses so expectations are uniform.
+    monkeypatch.setenv("APPDATA", str(tmp_path / ".config"))
     yield tmp_path
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))

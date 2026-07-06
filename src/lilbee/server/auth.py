@@ -72,9 +72,9 @@ class SessionManager:
         self.token = secrets.token_urlsafe(_TOKEN_BYTES)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"token": self.token}), encoding="utf-8")
-        if sys.platform != "win32":
-            # pragma: no cover - POSIX-only; Windows relies on the
-            # inherited %LOCALAPPDATA% DACL for owner-only access control.
+        if sys.platform != "win32":  # pragma: no cover - Windows uses the DACL
+            # POSIX-only; Windows relies on the inherited %LOCALAPPDATA% DACL
+            # for owner-only access control.
             path.chmod(0o600)
         self._initialized = True
         return self.token
@@ -111,7 +111,12 @@ class SessionManager:
         self.token = None
         self._initialized = False
         path = server_json_path()
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # A still-open handle on Windows makes unlink raise; the token is
+            # already invalidated above and the file is rewritten on next boot.
+            log.debug("Could not remove %s at shutdown.", path, exc_info=True)
 
     def validate(self, auth_header: str) -> bool:
         """Check whether *auth_header* carries a valid bearer token.

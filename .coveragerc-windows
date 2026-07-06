@@ -1,0 +1,19 @@
+# Coverage config for the Windows CI lanes. Mirrors [tool.coverage] in
+# pyproject.toml (same 100% gate) but omits the two modules whose bodies are
+# POSIX-only by design (fd-2 duplication and /proc/mounts in core/system.py,
+# the pass_fds splash subprocess in runtime/splash.py). The Linux and macOS
+# lanes measure those files at 100%, Windows skips their tests wholesale.
+[run]
+source = lilbee
+concurrency = thread
+omit =
+    */lilbee/core/system.py
+    */lilbee/runtime/splash.py
+
+[report]
+show_missing = True
+fail_under = 100
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    class.*Protocol
