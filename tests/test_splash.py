@@ -126,6 +126,7 @@ class TestDismiss:
         finally:
             splash_mod._active_handle = original
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="splash child needs pass_fds")
     def test_dismiss_waits_for_process_and_clears_handle(self) -> None:
         """dismiss() waits for the subprocess and clears _active_handle
         so atexit does not re-run stop() while Textual owns the terminal.
