@@ -659,6 +659,28 @@ def _server_model_inputs(
     return ordered, model_refs, reservation
 
 
+def _non_chat_reservation(
+    instances: Sequence[InstancePlan], inputs: Sequence[ModelPlacementInput]
+) -> dict[int, int]:
+    """Per-device VRAM the non-chat role servers occupy, keyed by device index.
+
+    A tensor-split chat shard must size its KV against the headroom left after the
+    embed/rerank/vision servers on the same card, not the card's raw free VRAM, or
+    it over-commits and OOMs at launch (bb-48c). Chat is excluded because it sizes
+    its own weights; non-chat roles are single-device, so each charges its full
+    footprint (once per replica) to its card.
+    """
+    charge_by_role = {inp.role: inp.est_vram_bytes for inp in inputs}
+    reserved: dict[int, int] = {}
+    for inst in instances:
+        if inst.role is WorkerRole.CHAT:
+            continue
+        charge = charge_by_role[inst.role]
+        for device in inst.devices:
+            reserved[device] = reserved.get(device, 0) + charge
+    return reserved
+
+
 def _launch_for(
     plan: InstancePlan,
     model_ref: str,
@@ -667,6 +689,7 @@ def _launch_for(
     *,
     unified_budget: int | None = None,
     chat_reservation: int = 0,
+    reserved_by_device: dict[int, int] | None = None,
 ) -> InstanceLaunch:
     """Build the launch spec (argv + device-pinning env) for one planned instance."""
     from lilbee.providers.engine_params import (
@@ -692,12 +715,15 @@ def _launch_for(
         # circular: fleet.ctx -> engine_params -> app.services
         from lilbee.providers.fleet.ctx import fit_split_ctx
 
+        reserved = reserved_by_device or {}
         ctx = fit_split_ctx(
             model_path,
             meta=meta,
             slots=_SPLIT_CHAT_SLOTS,
             ratio=plan.tensor_split,
-            per_device_free_bytes=[d.free_bytes for d in chosen],
+            # Headroom left after the embed/rerank servers on each shared card, not
+            # the card's raw free VRAM, so the chat KV doesn't over-commit (bb-48c).
+            per_device_free_bytes=[max(0, d.free_bytes - reserved.get(d.index, 0)) for d in chosen],
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
@@ -1033,6 +1059,7 @@ def plan_launches(
             role.value,
             model_refs[role],
         )
+    reserved_by_device = _non_chat_reservation(placement.instances, inputs)
     return [
         _launch_for(
             plan,
@@ -1041,6 +1068,7 @@ def plan_launches(
             by_index,
             unified_budget=unified_budget,
             chat_reservation=reservation,
+            reserved_by_device=reserved_by_device,
         )
         for plan in placement.instances
     ]

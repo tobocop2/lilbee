@@ -881,6 +881,50 @@ class TestBuildFleetWiring:
         ctx_total = 5000 * planning_mod._SPLIT_CHAT_SLOTS
         assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(ctx_total)
 
+    def test_launch_for_split_chat_subtracts_reserved_headroom(self, tmp_path, monkeypatch) -> None:
+        # An embed/rerank server on a shared card leaves less room for the chat KV
+        # than the card's raw free VRAM; sizing the split against raw free over-commits
+        # and OOMs at launch (bb-48c). The reservation is subtracted per device.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        seen: dict = {}
+
+        def _fit(_model_path, *, per_device_free_bytes, **_k) -> int:
+            seen["free"] = per_device_free_bytes
+            return 5000
+
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fit)
+        d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        d1 = FleetDevice("CUDA", 1, "gpu", 80 * _GB, 60 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        planning_mod._launch_for(
+            plan,
+            "ref",
+            Path("/bin/llama-server"),
+            {0: d0, 1: d1},
+            reserved_by_device={0: 10 * _GB},  # an embed server sits on card 0
+        )
+        assert seen["free"] == [60 * _GB, 60 * _GB]  # card 0 reduced by the 10 GiB embed
+
+    def test_non_chat_reservation_sums_per_device(self) -> None:
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,), replica=1),
+            InstancePlan(role=WorkerRole.RERANK, devices=(1,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 2 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(instances, inputs)
+        # Chat is excluded (it sizes its own weights); two embed replicas stack on card 0.
+        assert reserved == {0: 6 * _GB, 1: 2 * _GB}
+
     def test_launch_for_pinned_multi_card_chat_runs_one_slot(self, tmp_path, monkeypatch) -> None:
         # A cfg.num_ctx pin skips the fit, but a multi-card chat still serves one slot
         # so --ctx-size matches the single-sequence footprint the planner reserved.
