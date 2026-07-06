@@ -46,36 +46,6 @@ def _read_spec(spec: str | None) -> PlacementSpec | None:
     return PlacementSpec.from_json(raw)
 
 
-def _view_to_dict(view: PlacementView) -> dict:
-    """Serialize a placement view for --json output (enums as their string values)."""
-    return {
-        "manual": view.manual,
-        "gpus": [
-            {
-                "index": g.index,
-                "backend": g.backend,
-                "label": g.label,
-                "name": g.name,
-                "total_bytes": g.total_bytes,
-                "free_bytes": g.free_bytes,
-            }
-            for g in view.gpus
-        ],
-        "roles": [
-            {
-                "role": r.role.value,
-                "model": r.model,
-                "devices": list(r.devices),
-                "tensor_split": list(r.tensor_split) if r.tensor_split else None,
-                "replicas": r.replicas,
-            }
-            for r in view.roles
-        ],
-        "unplaceable": [role.value for role in view.unplaceable],
-        "spec_json": view.spec_json,
-    }
-
-
 def _guard(action: Callable[[], PlacementView]) -> None:
     """Run a placement action and render it, turning known failures into a clean exit."""
     try:
@@ -87,7 +57,10 @@ def _guard(action: Callable[[], PlacementView]) -> None:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(code=1) from exc
     if cfg.json_mode:
-        json_output(_view_to_dict(view))
+        # The same canonical shape the HTTP and MCP surfaces return.
+        from lilbee.server.models import PlacementResponse
+
+        json_output(PlacementResponse.from_view(view).model_dump(mode="json"))
     else:
         _render_view(view)
 

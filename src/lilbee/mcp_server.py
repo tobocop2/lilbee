@@ -1112,22 +1112,9 @@ def memory_forget(memory_id: str, agent_id: str = "", ctx: Context | None = None
 
 
 def _placement_dict(view: PlacementView) -> dict[str, Any]:
-    return {
-        "gpus": [vars(g) for g in view.gpus],
-        "roles": [
-            {
-                "role": r.role.value,
-                "model": r.model,
-                "devices": list(r.devices),
-                "tensor_split": list(r.tensor_split) if r.tensor_split else None,
-                "replicas": r.replicas,
-            }
-            for r in view.roles
-        ],
-        "unplaceable": [r.value for r in view.unplaceable],
-        "manual": view.manual,
-        "spec_json": view.spec_json,
-    }
+    from lilbee.server.models import PlacementResponse
+
+    return PlacementResponse.from_view(view).model_dump(mode="json")
 
 
 def _placement_guard(serialize: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -1155,7 +1142,7 @@ def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
 @_tool_named("get_gpus")
 def get_gpus_tool() -> dict[str, Any]:
     """List detected GPUs with free/total VRAM (the placement HTTP /api/gpus equivalent)."""
-    return _placement_guard(lambda: {"gpus": [vars(g) for g in get_placement().gpus]})
+    return _placement_guard(lambda: {"gpus": _placement_dict(get_placement())["gpus"]})
 
 
 @_tool_named("get_placement")
