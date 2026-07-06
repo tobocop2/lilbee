@@ -21,9 +21,13 @@ on:
         description: "Override llama-cpp-python version (blank = read from uv.lock)."
         type: string
         default: ""
+      release_tag:
+        description: "GH release tag to eagerly attach each built wheel to (empty = artifacts only)."
+        type: string
+        default: ""
 
 permissions:
-  contents: read
+  contents: write  # eager release_tag attach; otherwise read-only behavior is unchanged
 
 jobs:
   build-default-wheels:
@@ -102,6 +106,17 @@ jobs:
         with:
           name: wheel-default-${{ matrix.os }}-${{ matrix.backend }}-py${{ matrix.python-version }}
           path: dist/*.whl
+
+      # Call-mode eager attach: the caller created the pre-release shell, so
+      # the wheel appears on the release as soon as this cell builds it.
+      # Default wheels keep their canonical PyPI filenames.
+      - name: Attach wheel to the GH pre-release (call mode)
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$TAG" dist/*.whl --clobber
 
   build-sdist:
     runs-on: ubuntu-latest
