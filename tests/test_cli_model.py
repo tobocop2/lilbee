@@ -499,6 +499,17 @@ class TestPullModelData:
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
 
+    def test_already_installed_vision_ensures_mmproj(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        # Main GGUF present: still ensure the projector before reporting installed,
+        # so a cached vision model missing its mmproj becomes usable (bb-7yd).
+        ensured: list[str] = []
+        monkeypatch.setattr(model_mod, "_ensure_vision_projector", lambda ref: ensured.append(ref))
+        result = model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)
+        assert result.status == PullStatus.ALREADY_INSTALLED
+        assert ensured == [_CHAT_REF]
+
     def test_pull_native_invokes_manager_and_callbacks(self, fake_manager, native_manifests):
         events = []
         target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -508,6 +519,34 @@ class TestPullModelData:
         assert events
         assert events[0].percent == 50
         assert fake_manager.pull_calls == [(target, ModelSource.NATIVE)]
+
+
+class TestEnsureVisionProjector:
+    def test_non_vision_ref_is_noop(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target",
+            lambda _q: SimpleNamespace(task=ModelTask.CHAT),
+        )
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda entry: called.append(entry))
+        model_mod._ensure_vision_projector("acme/chat/model.gguf")
+        assert called == []
+
+    def test_vision_ref_downloads_mmproj(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        entry = SimpleNamespace(task=ModelTask.VISION)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF")
+        assert called == [entry]
 
 
 class TestAdoptEmbedder:

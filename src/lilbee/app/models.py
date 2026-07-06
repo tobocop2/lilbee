@@ -318,6 +318,19 @@ def show_model_data(ref: str) -> ShowModelResult:
     )
 
 
+def _ensure_vision_projector(ref: str) -> None:
+    """Fetch a vision model's mmproj projector when a cached install lacks it (bb-7yd).
+
+    No-op for non-vision refs. ``download_mmproj`` is idempotent against the HF
+    cache, so this is cheap when the projector is already present.
+    """
+    from lilbee.catalog import download_mmproj, resolve_pull_target
+
+    entry = resolve_pull_target(ref)
+    if entry is not None and entry.task is ModelTask.VISION:
+        download_mmproj(entry)
+
+
 def pull_model_data(
     ref: str,
     source: ModelSource,
@@ -338,6 +351,10 @@ def pull_model_data(
     manager = get_services().model_manager
 
     if manager.is_installed(ref, source):
+        # A cached vision install may carry the main GGUF but not its mmproj
+        # projector (bb-7yd); without it llama-server can't serve OCR, so ensure
+        # it before reporting already-installed.
+        _ensure_vision_projector(ref)
         return PullResult(model=ref, source=source.value, status=PullStatus.ALREADY_INSTALLED)
 
     bytes_cb = make_download_callback(on_update) if on_update is not None else None

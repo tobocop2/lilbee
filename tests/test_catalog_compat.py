@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from gguf import MODEL_ARCH_NAMES
 
 from lilbee.catalog.compat import (

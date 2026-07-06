@@ -8,6 +8,7 @@ Three levels:
 
 from lilbee.catalog.download import (
     DownloadConfig,
+    download_mmproj,
     download_model,
     find_mmproj_file,
     resolve_filename,
@@ -70,6 +71,7 @@ __all__ = [
     "build_adhoc_entry",
     "clean_display_name",
     "display_label_for_ref",
+    "download_mmproj",
     "download_model",
     "download_task_name",
     "enrich_catalog",

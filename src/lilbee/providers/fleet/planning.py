@@ -611,6 +611,15 @@ def _server_model_inputs(
         if not ref:
             return  # unconfigured optional role -> no server
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
+            # A configured vision model with no mmproj is skipped, which silently
+            # disables OCR; warn so the cause (a missing projector, fixed by
+            # re-pulling the model) is visible instead of "no usable text".
+            log.warning(
+                "Vision model %s has no mmproj (CLIP projector); OCR is disabled. "
+                "Re-run 'lilbee model pull %s' to fetch the projector.",
+                ref,
+                ref,
+            )
             return  # no projector -> vision can't run on a server
         try:
             estimate = _estimate_role(
