@@ -187,3 +187,81 @@ def test_view_multi_replica_unions_devices():
     role_view = embed_views[0]
     assert role_view.replicas == 2
     assert role_view.devices == (0, 1)
+
+
+class _WaitProvider:
+    """Provider stub scripting role_ready / warm_progress across polls."""
+
+    def __init__(self, ready_after: int, snapshots: list) -> None:
+        self._ready_after = ready_after
+        self._snapshots = snapshots
+        self.polls = 0
+
+    def role_ready(self, role: WorkerRole) -> bool:
+        self.polls += 1
+        return self.polls > self._ready_after
+
+    def warm_progress(self):
+        idx = min(self.polls - 1, len(self._snapshots) - 1)
+        return self._snapshots[idx] if self._snapshots else None
+
+
+class _WaitServices:
+    def __init__(self, provider: _WaitProvider) -> None:
+        self.provider = provider
+
+
+def test_wait_chat_ready_true_when_role_already_serves(monkeypatch):
+    provider = _WaitProvider(ready_after=0, snapshots=[])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    assert app_placement.wait_chat_ready(timeout_s=5) is True
+
+
+def test_wait_chat_ready_waits_out_an_active_warm(monkeypatch):
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    loading = WarmProgress(phase=WarmPhase.LOADING_ENGINE)
+    provider = _WaitProvider(ready_after=2, snapshots=[loading, loading])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.01)
+    assert app_placement.wait_chat_ready(timeout_s=5) is True
+    assert provider.polls == 3  # two loading polls, then ready
+
+
+def test_wait_chat_ready_stops_when_no_warm_in_flight(monkeypatch):
+    # Not ready, nothing warming (stale finished snapshot): release after the
+    # grace instead of holding the caller until the timeout.
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    done = WarmProgress(phase=WarmPhase.READY)
+    provider = _WaitProvider(ready_after=10_000, snapshots=[done])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.01)
+    monkeypatch.setattr(app_placement, "_CHAT_READY_GRACE_S", 0.0)
+    assert app_placement.wait_chat_ready(timeout_s=5) is False
+
+
+def test_wait_chat_ready_stops_on_warm_error(monkeypatch):
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    failed = WarmProgress(phase=WarmPhase.ERROR, error="boom")
+    provider = _WaitProvider(ready_after=10_000, snapshots=[failed])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.01)
+    monkeypatch.setattr(app_placement, "_CHAT_READY_GRACE_S", 0.0)
+    assert app_placement.wait_chat_ready(timeout_s=5) is False
+
+
+def test_wait_chat_ready_false_without_services(monkeypatch):
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    assert app_placement.wait_chat_ready(timeout_s=5) is False
+
+
+def test_wait_chat_ready_times_out_while_warm_never_finishes(monkeypatch):
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    stuck = WarmProgress(phase=WarmPhase.LOADING_ENGINE)
+    provider = _WaitProvider(ready_after=10_000, snapshots=[stuck])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.005)
+    assert app_placement.wait_chat_ready(timeout_s=0.02) is False

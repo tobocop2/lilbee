@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 
 from lilbee.app.services import peek_services
@@ -14,8 +15,20 @@ from lilbee.providers.fleet.planning import (
     resolve_placement_plan,
 )
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.warm_progress import WarmPhase
 
 _PLACEMENT_KEY = "placement"
+
+# Ceiling and cadence for waiting out the post-reload chat warm: a cold
+# tensor-split giant off a slow filesystem takes minutes, and the wait stops
+# early when nothing is warming or the warm failed. The grace covers the gap
+# between reload_placement returning and its off-thread warm stamping a phase.
+_CHAT_READY_TIMEOUT_S = 1800.0
+_CHAT_READY_POLL_S = 0.5
+_CHAT_READY_GRACE_S = 3.0
+_ACTIVE_WARM_PHASES = frozenset(
+    {WarmPhase.STARTING, WarmPhase.READING_WEIGHTS, WarmPhase.LOADING_ENGINE}
+)
 
 
 @dataclass(frozen=True)
@@ -145,3 +158,32 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     else:
         services.provider.reload_placement(wait=True)
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+
+
+def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
+    """Block while a chat warm is in flight after a placement change; True when ready.
+
+    ``reload_placement(wait=True)`` returns once the proxies are healthy while the
+    restarted model still warms off-thread, so a chat request sent right after an
+    apply hits the busy 429 path. Callers that gate user input on the reload call
+    this to hold until the model actually serves. Waits only while a warm is
+    actively in flight: with no fleet, no warm, or a failed/finished warm it
+    returns at once, so a change that never restarts chat cannot stall the caller.
+    The brief grace covers the reload kicking its warm on a separate thread.
+    """
+    services = peek_services()
+    if services is None:
+        return False
+    provider = services.provider
+    started = time.monotonic()
+    deadline = started + timeout_s
+    grace_deadline = started + _CHAT_READY_GRACE_S
+    while time.monotonic() < deadline:
+        if provider.role_ready(WorkerRole.CHAT):
+            return True
+        snapshot = provider.warm_progress()
+        warm_in_flight = snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES
+        if not warm_in_flight and time.monotonic() > grace_deadline:
+            return False
+        time.sleep(_CHAT_READY_POLL_S)
+    return False

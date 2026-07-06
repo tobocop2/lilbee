@@ -24,7 +24,12 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
-from lilbee.app.placement import get_placement, preview_placement, set_placement
+from lilbee.app.placement import (
+    get_placement,
+    preview_placement,
+    set_placement,
+    wait_chat_ready,
+)
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
@@ -427,14 +432,7 @@ class FleetBody(Widget):
 
     @work(thread=True, exit_on_error=False)
     def _apply_worker(self, spec: PlacementSpec | None) -> None:
-        try:
-            set_placement(spec)
-            view = get_placement()
-            call_from_thread(self, self._render_view, view)
-        except Exception as exc:
-            call_from_thread(self, self.notify, str(exc), severity="error")
-        finally:
-            call_from_thread(self, setattr, self, "applying", False)
+        self._change_placement(lambda: set_placement(spec))
 
     def action_clear(self) -> None:
         """Restore automatic placement."""
@@ -445,8 +443,19 @@ class FleetBody(Widget):
 
     @work(thread=True, exit_on_error=False)
     def _clear_worker(self) -> None:
+        self._change_placement(lambda: set_placement(None))
+
+    def _change_placement(self, change: Callable[[], PlacementView]) -> None:
+        """Apply a placement change off the UI thread, then wait out the chat warm.
+
+        ``applying`` (and with it the chat screen's submit hold) stays up until the
+        restarted chat role actually serves: releasing when the reload returns
+        still leaves the model warming, and a prompt sent then errors with the
+        busy 429 instead of an answer.
+        """
         try:
-            set_placement(None)
+            change()
+            wait_chat_ready()
             view = get_placement()
             call_from_thread(self, self._render_view, view)
         except Exception as exc:
