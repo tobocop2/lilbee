@@ -41,7 +41,30 @@ GPU1\tPHB\t X \t0-31
 """
 
 
+# Captured from a live 3xH100 SXM pod: nvidia-smi underlines the header via SGR
+# escapes even when stdout is not a tty, and adds NIC columns plus a legend.
+_TOPO_REAL_H100 = (
+    "\t\x1b[4mGPU0\tGPU1\tGPU2\tNIC0\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\x1b[0m\n"
+    "GPU0\t X \tNV18\tNV18\tSYS\t0,2,4,6,8,10\t0\t\tN/A\n"
+    "GPU1\tNV18\t X \tNV18\tNODE\t1,3,5,7,9,11\t1\t\tN/A\n"
+    "GPU2\tNV18\tNV18\t X \tNODE\t1,3,5,7,9,11\t1\t\tN/A\n"
+    "NIC0\tSYS\tNODE\tNODE\t X \t\t\t\t\n"
+    "\nLegend:\n\n  X    = Self\n  SYS  = Connection traversing PCIe\n"
+)
+
+
 class TestNvlinkTopology:
+    def test_real_h100_output_parses_despite_ansi_escapes(self) -> None:
+        # The SGR-wrapped header must still yield the GPU columns; without the
+        # strip, no pairs parse and an NVLinked host is mis-flagged as PCIe-only.
+        gpu_rows, pairs = dev_mod._parse_topo_matrix(_TOPO_REAL_H100)
+        assert gpu_rows == {0, 1, 2}
+        assert pairs == {frozenset({0, 1}), frozenset({0, 2}), frozenset({1, 2})}
+
+    def test_real_h100_host_has_nvlink(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_TOPO_REAL_H100))
+        assert dev_mod.host_lacks_nvlink() is False
+
     def test_parse_finds_nvlink_pair(self) -> None:
         gpu_rows, pairs = dev_mod._parse_topo_matrix(_TOPO_NVLINK)
         assert gpu_rows == {0, 1}

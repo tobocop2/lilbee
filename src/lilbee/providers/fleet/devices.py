@@ -18,6 +18,9 @@ from pathlib import Path
 _LIST_DEVICES_TIMEOUT_S = 60.0
 _TOPO_TIMEOUT_S = 15.0
 _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
+# nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
+# not a tty; strip them or the header's GPU labels never match.
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 # A topo-matrix header is 2+ leading GPU labels; a data row has exactly one. And
 # a link needs at least two GPUs to exist between.
 _TOPO_MIN_GPUS = 2
@@ -61,7 +64,7 @@ def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
     header_cols: list[int] = []
     gpu_rows: set[int] = set()
     pairs: set[frozenset[int]] = set()
-    for line in topo_text.splitlines():
+    for line in _ANSI_SGR_RE.sub("", topo_text).splitlines():
         tokens = line.split()
         # Leading run of GPU-label tokens: the header is all labels (>=2), a data
         # row is one label ("GPU3") followed by link-type cells. split() strips the
