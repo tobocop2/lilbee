@@ -3298,6 +3298,22 @@ async def test_apply_model_change_ignores_reentry_while_swapping():
             mock_worker.assert_not_called()
 
 
+async def test_placement_reload_holds_submit_then_releases():
+    """While the Fleet drawer reloads placement, a chat submit is held (not a 429),
+    and it's released once the reload finishes (bb-9zy)."""
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.on_fleet_body_placement_reloading(FleetBody.PlacementReloading(True))
+        assert screen.reloading_placement is True
+        assert screen._reject_submit_when_busy() is True  # held, not sent to a warming fleet
+        screen.on_fleet_body_placement_reloading(FleetBody.PlacementReloading(False))
+        assert screen.reloading_placement is False
+        assert screen._reject_submit_when_busy() is False  # released once the reload finished
+
+
 async def test_reload_chat_worker_reloads_only_chat_and_unblocks():
     """The worker reloads the CHAT role (keeping the store) and unblocks input."""
     from lilbee.providers.roles import WorkerRole

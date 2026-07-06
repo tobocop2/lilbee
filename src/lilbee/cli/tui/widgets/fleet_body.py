@@ -143,6 +143,14 @@ class FleetBody(Widget):
 
     applying: reactive[bool] = reactive(False)
 
+    class PlacementReloading(Message):
+        """Posted while an apply/clear reloads the fleet, so the chat screen can
+        hold submissions until the reload finishes instead of hitting a 429."""
+
+        def __init__(self, active: bool) -> None:
+            self.active = active
+            super().__init__()
+
     def __init__(self) -> None:
         super().__init__(id="fleet-body")
         self._edits: dict[WorkerRole, _RoleEdit] = {}
@@ -156,7 +164,9 @@ class FleetBody(Widget):
         }
 
     def watch_applying(self, applying: bool) -> None:
-        """Disable the editor controls while an apply/clear is in flight."""
+        """Disable the editor controls while an apply/clear is in flight and tell
+        the chat screen to hold submissions until the fleet finishes reloading."""
+        self.post_message(self.PlacementReloading(applying))
         with contextlib.suppress(NoMatches):
             self.query_one(_EDITOR_ID, Vertical).disabled = applying
 
