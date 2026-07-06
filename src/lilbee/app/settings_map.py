@@ -14,6 +14,8 @@ from lilbee.core.config.enums import (
     ClustererBackend,
     CrawlRenderMode,
     KvCacheType,
+    LlmProvider,
+    RerankerType,
     WikiEntityMode,
 )
 
@@ -69,6 +71,9 @@ class SettingDef:
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
+    # List editors validate each line as a regex only when this is set; flag-style
+    # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
+    validate_regex: bool = False
 
 
 def get_default(key: str) -> object:
@@ -117,6 +122,24 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
         ),
     ),
+    "vision_ocr_max_tokens": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Hard cap on tokens generated per OCR page (bounds runaway repetition loops)",
+    ),
+    "vision_ocr_concurrency": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
+    ),
+    "auto_sync": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Run a sync before `lilbee ask` (disable on large static corpora)",
+    ),
     "semantic_chunking": SettingDef(
         bool,
         nullable=False,
@@ -142,6 +165,22 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         writable=False,
         group=SettingGroup.MODELS,
         help_text="Cross-encoder model for result reranking",
+    ),
+    "reranker_type": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        choices=tuple(t.value for t in RerankerType),
+        help_text=(
+            "Reranker serving mode: auto (detect cross-encoder vs LLM by model), "
+            "cross_encoder, or llm"
+        ),
+    ),
+    "reranker_prompt": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        help_text="Relevance prompt for LLM rerankers (blank uses the built-in template)",
     ),
     "temperature": SettingDef(
         float,
@@ -200,9 +239,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.GENERATION,
         help_text=(
-            "Flash attention. Empty (auto) tries it on with a fallback for older "
-            "llama-cpp-python builds; resolves the V-cache padding warning on "
-            "models with uneven per-layer V dims."
+            "Flash attention. Empty (auto) enables it; disable for backends or "
+            "models where it misbehaves. Resolves the V-cache padding warning "
+            "on models with uneven per-layer V dims."
         ),
     ),
     "kv_cache_type": SettingDef(
@@ -618,6 +657,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.CRAWLING,
         render=RenderStyle.LIST_COLLAPSED,
+        validate_regex=True,
         help_text=(
             "Regex patterns that skip URLs at link-discovery time during "
             "recursive crawls. One per line."
@@ -687,31 +727,22 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
-    "worker_pool_call_timeout_s": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text=(
-            "Per-call deadline for one worker-pool round-trip in seconds. "
-            "Raise this for very large embed batches on slow machines"
-        ),
-    ),
     "worker_pool_eager_start": SettingDef(
         bool,
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Spawn every registered worker at TUI startup instead of on first use. "
-            "Trades 1-3 seconds of cold-start per role for first-call latency"
+            "Spawn every configured role server at TUI startup instead of on first use. "
+            "Trades cold-start time per role for first-call latency"
         ),
     ),
-    "worker_pool_max_idle_s": SettingDef(
-        float,
+    "agent_mcp_enabled": SettingDef(
+        bool,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.SYSTEM,
         help_text=(
-            "Shut a worker down after this many seconds idle to free RAM/VRAM. "
-            "0 disables idle reaping"
+            "Register lilbee's MCP search tool into agent launchers (opencode, hermes). "
+            "Disable to bring your own MCP servers; lilbee stays the model provider"
         ),
     ),
     "max_tokens": SettingDef(
@@ -740,6 +771,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text="Fraction of GPU memory the model is allowed to claim (0.1-1.0)",
+    ),
+    "embed_replicas": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text="Embedding servers in parallel (0 = auto, one per GPU; positive pins the count)",
+    ),
+    "vision_replicas": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text="Vision OCR servers in parallel (0 = auto, one per GPU; positive pins the count)",
     ),
     "candidate_multiplier": SettingDef(
         int,
@@ -880,9 +923,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        choices=("auto", "llama-cpp", "remote"),
+        choices=tuple(p.value for p in LlmProvider),
         help_text=(
-            "Provider routing: auto picks the first key present; force a specific one when set"
+            "Inference provider: auto (default, runs models locally on llama-server) "
+            "or remote (external OpenAI-compatible endpoint)"
         ),
     ),
     "ollama_base_url": SettingDef(
@@ -896,6 +940,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.LOCAL_SERVERS,
         help_text="LM Studio server URL (blank uses http://localhost:1234/v1)",
+    ),
+    "llama_server_path": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.API_KEYS,
+        help_text="Path to a llama-server binary (empty: bundled wheel or PATH)",
     ),
     "wiki_summary_max_tokens": SettingDef(
         int,

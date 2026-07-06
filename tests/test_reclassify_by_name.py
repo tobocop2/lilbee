@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import pytest
+
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
-from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 
 
 def test_passes_through_when_name_has_no_special_pattern() -> None:
     assert reclassify_by_name("Qwen/Qwen3-0.6B-GGUF", "chat") == "chat"
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "Qwen/Qwen3-Reranker-8B-GGUF/Qwen3-Reranker-8B-Q4_K_M.gguf",
+        "mixedbread-ai/mxbai-rerank-base-v2-GGUF/mxbai-rerank-base-v2.Q4_K_M.gguf",
+    ],
+)
+def test_decoder_reranker_classified_rerank_by_name(ref) -> None:
+    # Decoder rerankers have a chat arch (qwen2/qwen3); name reclassification is
+    # what lets role validation accept them as the RERANK slot.
+    assert reclassify_by_name(ref, ModelTask.CHAT) == ModelTask.RERANK
 
 
 def test_overrides_to_rerank_when_name_contains_reranker() -> None:
@@ -32,3 +47,23 @@ def test_overrides_to_vision_when_name_contains_moondream() -> None:
 
 def test_passes_through_embedding() -> None:
     assert reclassify_by_name("nomic-embed-text-v1.5", "embedding") == "embedding"
+
+
+def test_overrides_to_embedding_when_name_contains_embedding() -> None:
+    # Qwen3-Embedding is a qwen3 decoder arch (classifies as chat) + a pooling head,
+    # so the name is the only signal short of probing the GGUF pooling type (bb-m3b).
+    ref = "Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf"
+    assert reclassify_by_name(ref, "chat") == ModelTask.EMBEDDING
+
+
+def test_reranker_wins_over_embedding_pattern() -> None:
+    # bge-reranker matches both the bge- embedder pattern and the rerank pattern;
+    # rerank is checked first so it stays a reranker.
+    assert reclassify_by_name("gpustack/bge-reranker-v2-m3-GGUF", "chat") == ModelTask.RERANK
+
+
+def test_embedding_wins_over_vision_pattern() -> None:
+    # nomic-embed-vision matches both the "embed" embedder pattern and the
+    # "vision" pattern; it is an image embedder, so embedding must win. This also
+    # keeps reclassify_by_name aligned with discovery._classify_remote_task.
+    assert reclassify_by_name("nomic-embed-vision-v1.5", "chat") == ModelTask.EMBEDDING

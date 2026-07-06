@@ -15,7 +15,7 @@ import base64
 import functools
 import logging
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -35,13 +35,15 @@ from lilbee.providers.sdk_backend import (
     EmbeddingResult,
     RerankRequest,
     RerankResult,
+    SdkToolCall,
+    SdkToolCallDelta,
     StreamChunk,
     detect_backend_name,
 )
 
 log = logging.getLogger(__name__)
 
-_PROVIDER_NAME = "litellm"
+_PROVIDER_NAME = "remote"
 
 # Substrings dropped from the "LiteLLM" logger before they reach the user's
 # terminal. Two classes of noise: (1) the model-cost-map fetch failure that
@@ -85,6 +87,16 @@ def install_litellm_log_filter() -> None:
 # importing this module, so installing here always beats litellm's first
 # warning to the punch.
 install_litellm_log_filter()
+
+
+def _sdk_attr(obj: object, name: str) -> Any:
+    """Read an optional attribute off a litellm response/chunk object (absent -> None).
+
+    Shared helper for the view adapters' dynamic reads of the SDK's loosely-typed
+    objects, whose tool-call fields are absent (not just ``None``) across litellm
+    chunk shapes.
+    """
+    return getattr(obj, name, None)
 
 
 class _LitellmResponseView:
@@ -138,6 +150,63 @@ class _LitellmResponseView:
         choice = self._first_choice()
         return getattr(choice, "finish_reason", None) if choice is not None else None
 
+    @property
+    def tool_calls(self) -> tuple[SdkToolCall, ...]:
+        """Tool calls from the first choice's message (non-stream path)."""
+        choice = self._first_choice()
+        if choice is None:
+            return ()
+        message = _sdk_attr(choice, "message")
+        if message is None:
+            return ()
+        raw_calls = _sdk_attr(message, "tool_calls") or []
+        return tuple(_extract_tool_call(call) for call in raw_calls)
+
+    @property
+    def delta_tool_calls(self) -> tuple[SdkToolCallDelta, ...]:
+        """Tool-call deltas from the first choice's streaming delta."""
+        choice = self._first_choice()
+        if choice is None:
+            return ()
+        delta = _sdk_attr(choice, "delta")
+        if delta is None:
+            return ()
+        raw_calls = _sdk_attr(delta, "tool_calls") or []
+        return tuple(
+            _extract_tool_call_delta(call, fallback_index=i) for i, call in enumerate(raw_calls)
+        )
+
+
+def _extract_tool_call(call: Any) -> SdkToolCall:
+    """Pull one ``SdkToolCall`` out of a litellm tool-call object."""
+    call_id = str(_sdk_attr(call, "id") or "")
+    function = _sdk_attr(call, "function")
+    name = str(_sdk_attr(function, "name") or "") if function is not None else ""
+    arguments = str(_sdk_attr(function, "arguments") or "") if function is not None else ""
+    return SdkToolCall(id=call_id, name=name, arguments=arguments)
+
+
+def _extract_tool_call_delta(call: Any, *, fallback_index: int) -> SdkToolCallDelta:
+    """Pull one ``SdkToolCallDelta`` out of a streaming chunk's tool-call slot.
+
+    Empty-string ``name`` / ``arguments`` are normalised to ``None`` so the
+    SDK stream shape matches the native worker's deltas (the dispatch's
+    ``_StreamState`` gates on ``is not None``; emitting ``""`` produces a
+    spurious empty ContentBlockDelta on every opener).
+    """
+    raw_index = _sdk_attr(call, "index")
+    index = int(raw_index) if isinstance(raw_index, int) else fallback_index
+    call_id = _sdk_attr(call, "id")
+    function = _sdk_attr(call, "function")
+    raw_name = _sdk_attr(function, "name") if function is not None else None
+    raw_args = _sdk_attr(function, "arguments") if function is not None else None
+    return SdkToolCallDelta(
+        index=index,
+        id=str(call_id) if call_id else None,
+        name=str(raw_name) if raw_name else None,
+        arguments_delta=str(raw_args) if raw_args else None,
+    )
+
 
 @functools.cache
 def litellm_available() -> bool:
@@ -171,14 +240,6 @@ def _require_litellm() -> Any:
     except ImportError as exc:
         raise ProviderError(_LITELLM_MISSING_MSG, provider=_PROVIDER_NAME) from exc
     return litellm
-
-
-def _cache_ollama_defaults(model: str, params_text: str) -> None:
-    """Parse Ollama parameters and store in the model defaults cache."""
-    from lilbee.providers.model_defaults import parse_kv_parameters, set_defaults
-
-    defaults = parse_kv_parameters(params_text)
-    set_defaults(model, defaults)
 
 
 def _route_model(ref: ProviderModelRef, api_base: str | None) -> str:
@@ -255,6 +316,33 @@ _KIND_MESSAGES: dict[ProviderErrorKind, str] = {
         "side, not a lilbee problem. Try again shortly or pick a different model."
     ),
 }
+
+
+def _embedding_index(item: Any) -> int:
+    """Return an embedding item's ``index`` across the dict and object response shapes.
+
+    The OpenAI embeddings response always carries ``index``; mirrors the rerank
+    path's direct read rather than a defaulted lookup.
+    """
+    idx = item["index"] if isinstance(item, dict) else item.index
+    return int(idx)
+
+
+def _embedding_vector(item: Any) -> list[float]:
+    """Return an embedding item's vector across the dict and object response shapes."""
+    vector = item["embedding"] if isinstance(item, dict) else item.embedding
+    return cast("list[float]", vector)
+
+
+def _response_model(response: Any) -> str | None:
+    """Return a litellm response's ``model`` across the dict and object shapes.
+
+    Optional (a proxy may omit it), so the lookup defaults to ``None``.
+    """
+    if isinstance(response, dict):
+        return response.get("model")
+    return cast("str | None", _sdk_attr(response, "model"))
+
 
 # Operation labels prefixed onto the fallback message for an unrecognised error.
 _CHAT_FAILED = "Chat failed"
@@ -341,6 +429,15 @@ class LitellmSdkBackend:
         """Return True if the underlying SDK is installed."""
         return litellm_available()
 
+    def supports_tools(self, _model_ref: str) -> bool:
+        """Optimistic: all SDK-routed refs report tool support.
+
+        A model that lacks a tool template just returns an empty
+        ``tool_calls`` array, which the dispatch handles as a normal
+        end-of-turn.
+        """
+        return True
+
     def configure_logging(self, *, suppress_debug: bool) -> None:
         """Apply litellm's debug-info suppression toggle when requested."""
         if not suppress_debug:
@@ -365,6 +462,7 @@ class LitellmSdkBackend:
             content=view.message_content,
             finish_reason=view.finish_reason,
             model=view.model,
+            tool_calls=view.tool_calls,
         )
 
     def complete_stream(self, request: CompletionRequest) -> Iterator[StreamChunk]:
@@ -391,8 +489,13 @@ class LitellmSdkBackend:
                 view = _LitellmResponseView(chunk)
                 content = view.delta_content
                 finish_reason = view.finish_reason
-                if content or finish_reason:
-                    yield StreamChunk(content=content, finish_reason=finish_reason)
+                tool_call_deltas = view.delta_tool_calls
+                if content or finish_reason or tool_call_deltas:
+                    yield StreamChunk(
+                        content=content,
+                        finish_reason=finish_reason,
+                        tool_call_deltas=tool_call_deltas,
+                    )
         except ProviderError:
             raise
         except Exception as exc:
@@ -430,12 +533,13 @@ class LitellmSdkBackend:
         except Exception as exc:
             raise _provider_error(_EMBED_FAILED, exc, request.ref.for_display()) from exc
         data = response["data"] if isinstance(response, dict) else response.data
-        vectors = [item["embedding"] for item in data]
-        if isinstance(response, dict):
-            model = response.get("model")
-        else:
-            model = getattr(response, "model", None)
-        return EmbeddingResult(vectors=vectors, model=model)
+        # Order by the response's ``index`` rather than arrival order: a proxy or
+        # gateway may return the batch out of order, and the consumer zips vectors
+        # to inputs positionally, so a reorder would silently mis-pair every chunk
+        # with the wrong vector. ``index`` is required (always present in a
+        # spec-conforming response), mirroring the rerank path's direct read.
+        vectors = [_embedding_vector(item) for item in sorted(data, key=_embedding_index)]
+        return EmbeddingResult(vectors=vectors, model=_response_model(response))
 
     def rerank(self, request: RerankRequest) -> RerankResult:
         """Rerank documents via ``litellm.rerank`` (Cohere, Voyage, Jina, Together, HF TEI).
@@ -466,11 +570,7 @@ class LitellmSdkBackend:
             idx = item["index"] if isinstance(item, dict) else item.index
             score = item["relevance_score"] if isinstance(item, dict) else item.relevance_score
             scores[idx] = float(score)
-        if isinstance(response, dict):
-            model = response.get("model")
-        else:
-            model = getattr(response, "model", None)
-        return RerankResult(scores=scores, model=model)
+        return RerankResult(scores=scores, model=_response_model(response))
 
     def list_models(self, *, base_url: str, api_key: str) -> list[str]:
         """List models from Ollama (``/api/tags``) or an OpenAI-compatible ``/v1/models``."""
@@ -565,8 +665,7 @@ class LitellmSdkBackend:
     def show_model(self, model: str, *, base_url: str) -> dict[str, Any] | None:
         """Get model info via the Ollama ``/api/show`` endpoint.
 
-        Parses and caches per-model generation defaults from the
-        ``parameters`` field. Also extracts the ``capabilities`` list
+        Returns the raw ``parameters`` text and the ``capabilities`` list
         (newer Ollama versions) so callers can check for vision support.
         Returns ``None`` for servers without a metadata endpoint (LM Studio).
         """
@@ -592,10 +691,8 @@ class LitellmSdkBackend:
 
         params = data.get("parameters", "")
         if isinstance(params, str) and params:
-            _cache_ollama_defaults(model, params)
             result["parameters"] = params
         elif params:
-            _cache_ollama_defaults(model, str(params))
             result["parameters"] = str(params)
 
         capabilities = data.get("capabilities")

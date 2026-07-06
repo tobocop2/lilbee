@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import logging
 import re
+import threading
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.text import is_valid_label, make_slug
@@ -93,11 +94,15 @@ class NerConceptsExtractor:
             "kept_entity_surfaces": 0,
         }
         cleaned_texts = (pre_clean_for_ner(c.chunk) for c in chunks)
-        for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
-            ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
-            _accumulate_doc_entities(
-                doc, ref, entity_records, allowed_ent_types, funnel, debug_enabled
-            )
+        # _load_spacy returns a process-global Language shared by every extractor
+        # instance; a spaCy Language is not safe for concurrent processing, so
+        # serialize the whole lazy nlp.pipe iteration behind the module lock.
+        with _NLP_LOCK:
+            for chunk, doc in zip(chunks, nlp.pipe(cleaned_texts), strict=True):
+                ref = ChunkRef(source=chunk.source, chunk_index=chunk.chunk_index)
+                _accumulate_doc_entities(
+                    doc, ref, entity_records, allowed_ent_types, funnel, debug_enabled
+                )
 
         if debug_enabled:
             log.debug(
@@ -179,6 +184,13 @@ def _make_record(agg: _Aggregate, kind: EntityKind, min_mentions: int) -> Extrac
         type_hint=agg.type_hint,
         chunk_refs=_sorted_refs(agg.refs),
     )
+
+
+_NLP_LOCK = threading.Lock()
+"""Serializes use of the shared (``@functools.cache``d) spaCy Language.
+
+A spaCy Language is not safe for concurrent processing; every extract() call
+runs ``nlp.pipe`` on the same cached instance, so the daemon serializes them."""
 
 
 @functools.cache

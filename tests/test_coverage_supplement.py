@@ -561,7 +561,7 @@ class TestAppCanonicalizeFallbackNotice:
                 ) as mock_update_values,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                app._canonicalize_persisted_models()
+                await app._canonicalize_persisted_models()
                 mock_update_values.assert_called_once()
                 persisted_args = mock_update_values.call_args.args
                 assert persisted_args[0] == cfg.data_root
@@ -611,7 +611,7 @@ class TestAppCanonicalizeFallbackNotice:
             caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
         ):
             # Must not raise.
-            app._canonicalize_persisted_models()
+            await app._canonicalize_persisted_models()
         assert any("ollama/nomic-embed-text" in r.getMessage() for r in caplog.records), (
             "a rejected swap must be logged at WARNING"
         )
@@ -651,7 +651,7 @@ class TestAppCanonicalizeFallbackNotice:
                 mock.patch("lilbee.cli.tui.app.apply_settings_update") as mock_apply,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                app._canonicalize_persisted_models()
+                await app._canonicalize_persisted_models()
                 mock_apply.assert_not_called()
             assert cfg.embedding_model == snapshot_embed, "an un-fallbackable ref is left intact"
             assert notifications, "the user must be told why before the wizard opens"
@@ -842,51 +842,32 @@ class TestSettingsPopulatePaneBodyMissing:
 
 
 class TestServicesPoolListener:
-    """``Services.add_pool_listener`` forwards to the underlying WorkerPool."""
+    """``Services.add_pool_listener`` forwards to ``provider.add_spawn_listener``."""
 
-    def test_forwards_both_callbacks_to_pool(self) -> None:
-        from lilbee.providers.worker.transport import WorkerRole
+    def test_forwards_both_callbacks_to_provider(self) -> None:
+        from unittest import mock
+
         from tests.conftest import make_mock_services
 
-        seen_spawning: list[WorkerRole] = []
-        seen_spawned: list[WorkerRole] = []
-
-        class _RecordingPool:
-            registered_roles: tuple[WorkerRole, ...] = ()
-
-            def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
-                # Re-fire with a synthetic role to verify both callbacks routed.
-                if on_spawning is not None:
-                    on_spawning(WorkerRole.EMBED)
-                    seen_spawning.append(WorkerRole.EMBED)
-                if on_spawned is not None:
-                    on_spawned(WorkerRole.EMBED)
-                    seen_spawned.append(WorkerRole.EMBED)
-
-        services = make_mock_services(worker_pool=_RecordingPool())
-        services.add_pool_listener(
-            on_spawning=lambda _r: None,
-            on_spawned=lambda _r: None,
+        on_spawning = mock.MagicMock()
+        on_spawned = mock.MagicMock()
+        services = make_mock_services()
+        services.add_pool_listener(on_spawning=on_spawning, on_spawned=on_spawned)
+        services.provider.add_spawn_listener.assert_called_once_with(
+            on_spawning=on_spawning, on_spawned=on_spawned
         )
-        assert seen_spawning == [WorkerRole.EMBED]
-        assert seen_spawned == [WorkerRole.EMBED]
 
     def test_either_callback_is_optional(self) -> None:
+        from unittest import mock
+
         from tests.conftest import make_mock_services
 
-        captured: dict[str, object] = {}
-
-        class _CapturingPool:
-            registered_roles: tuple[str, ...] = ()
-
-            def add_listener(self, *, on_spawning=None, on_spawned=None) -> None:
-                captured["on_spawning"] = on_spawning
-                captured["on_spawned"] = on_spawned
-
-        services = make_mock_services(worker_pool=_CapturingPool())
-        services.add_pool_listener(on_spawning=lambda _r: None)
-        assert captured["on_spawning"] is not None
-        assert captured["on_spawned"] is None
+        on_spawning = mock.MagicMock()
+        services = make_mock_services()
+        services.add_pool_listener(on_spawning=on_spawning)
+        services.provider.add_spawn_listener.assert_called_once_with(
+            on_spawning=on_spawning, on_spawned=None
+        )
 
 
 class TestModelInfoModal:
@@ -1371,7 +1352,11 @@ class TestSyncSkippedMessageBranches:
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = "stub/vision"
-        assert "vision OCR returned no text" in sync_skipped_message("a.pdf")
+        msg = sync_skipped_message("a.pdf")
+        assert "vision OCR returned no text" in msg
+        # The log path must be the resolved, per-platform location (not a
+        # hardcoded macOS string), so it's correct on Linux/Windows too.
+        assert str(cfg.data_root / "logs" / "server.log") in msg
 
     def test_returns_no_vision_when_vision_model_unset(self) -> None:
         from lilbee.cli.tui.messages import sync_skipped_message
@@ -1474,14 +1459,16 @@ class TestWikiEmptyStateSpacyBranches:
         ):
             assert _spacy_available() is False
 
-    def test_spacy_available_returns_true_on_other_exception(self) -> None:
+    def test_spacy_available_returns_false_on_unexpected_exception(self) -> None:
+        """An unexpected spaCy error must not fail open to 'available' (which
+        would hide the install guidance)."""
         from lilbee.cli.tui.messages import _spacy_available
 
         with mock.patch(
             "lilbee.retrieval.concepts.nlp.load_spacy_pipeline",
             side_effect=RuntimeError,
         ):
-            assert _spacy_available() is True
+            assert _spacy_available() is False
 
     def test_spacy_available_returns_true_on_success(self) -> None:
         from lilbee.cli.tui.messages import _spacy_available
@@ -1532,7 +1519,7 @@ class TestModelCardTruncate:
     """`_truncate_name` shortens names longer than the visible budget."""
 
     def test_long_name_is_truncated(self) -> None:
-        from lilbee.cli.tui.widgets.model_card import _NAME_MAX_CHARS, _truncate_name
+        from lilbee.cli.tui.widgets.catalog_card_shared import _NAME_MAX_CHARS, _truncate_name
 
         long_name = "x" * (_NAME_MAX_CHARS + 5)
         out = _truncate_name(long_name)
@@ -1543,7 +1530,7 @@ class TestModelGridTruncateAndPad:
     """The model_grid module has its own _truncate_name + render padding."""
 
     def test_grid_truncate_name_long(self) -> None:
-        from lilbee.cli.tui.widgets.model_grid import _NAME_MAX_CHARS, _truncate_name
+        from lilbee.cli.tui.widgets.catalog_card_shared import _NAME_MAX_CHARS, _truncate_name
 
         long_name = "x" * (_NAME_MAX_CHARS + 5)
         out = _truncate_name(long_name)
@@ -1568,6 +1555,26 @@ class TestModelGridTruncateAndPad:
         with mock.patch.object(mg, "_frontier_lines", return_value=[Content("hi")]):
             out = mg._render_card_strip(row, selected=False, width=20, border_style="dim")
         assert out.lines, "expected card lines"
+
+    def test_card_lines_builds_each_card_once_per_repaint(self) -> None:
+        """The per-cell cache means a card builds once, not _CARD_HEIGHT times."""
+        from lilbee.cli.tui.screens.catalog_utils import FrontierCatalogRow, KeyStatus
+        from lilbee.cli.tui.widgets import model_grid as mg
+
+        row = FrontierCatalogRow(
+            name="api",
+            ref="acme/api",
+            task="chat",
+            provider="Acme",
+            provider_id="acme",
+            key_status=KeyStatus.READY,
+        )
+        grid = mg.ModelGrid(rows=[row])
+        with mock.patch.object(mg, "_render_card_strip", wraps=mg._render_card_strip) as spy:
+            first = grid._card_lines(0, 20, False, "dim")
+            again = grid._card_lines(0, 20, False, "dim")
+        assert first is again
+        assert spy.call_count == 1
 
     def test_cell_at_returns_none_in_gutter_row(self) -> None:
         from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
@@ -1796,7 +1803,7 @@ class TestModelBarVisionSidecarPicker:
                 return_value=registry,
             ),
             mock.patch(
-                "lilbee.modelhub.model_manager.discovery.reclassify_by_name",
+                "lilbee.catalog.query.reclassify_by_name",
                 return_value=ModelTask.CHAT,
             ),
             mock.patch(
@@ -1824,71 +1831,6 @@ class TestScopeChipPillNoChipReturns:
             await pilot.pause()
             pill = pilot.app.query_one("#scope-pill-both", ScopePill)
             pill.action_select()
-
-
-class TestProviderProtocolBranches:
-    """Each persistent-pool wrapper raises ProviderError when the worker returns the wrong type."""
-
-    def _provider(self) -> Any:
-        from lilbee.providers.llama_cpp.provider import LlamaCppProvider
-
-        return LlamaCppProvider()
-
-    def test_embed_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value="not-a-list")
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.embed(["text"])
-
-    def test_rerank_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value="not-a-list")
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.rerank("q", ["a", "b"])
-
-    def test_vision_ocr_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value=42)
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.vision_ocr(b"png", "ref")
-
-    def test_chat_protocol_error(self) -> None:
-        from lilbee.providers.base import ProviderError
-
-        provider = self._provider()
-        accessor = mock.MagicMock()
-        runtime = mock.MagicMock()
-        runtime.run_sync = mock.MagicMock(return_value=42)
-        with (
-            mock.patch.object(provider, "_get_pool_accessor", return_value=accessor),
-            mock.patch.object(provider, "_pool_runtime", return_value=runtime),
-            pytest.raises(ProviderError),
-        ):
-            provider.chat(messages=[{"role": "user", "content": "hi"}])
 
 
 class TestCatalogPriorScrollAndPrefetchEdges:
@@ -2375,6 +2317,33 @@ class TestAppSetActiveModelDownloadGuard:
         finally:
             cfg.chat_model = chat_default
 
+    async def test_set_setting_blocks_model_role_while_downloading(self) -> None:
+        """set_setting applies the same download guard for model-role keys."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+        from lilbee.core.config import cfg
+
+        chat_default = cfg.chat_model
+        ref = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+        notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        app = LilbeeApp()
+        try:
+            app.task_bar.queue.enqueue(lambda: None, "Qwen2.5 0.5B", TaskType.DOWNLOAD.value)
+            with (
+                mock.patch.object(
+                    app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
+                ),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values"
+                ) as mock_update_values,
+            ):
+                app.set_setting("chat_model", ref)
+            assert cfg.chat_model == chat_default
+            mock_update_values.assert_not_called()
+            assert len(notify_calls) == 1
+        finally:
+            cfg.chat_model = chat_default
+
     async def test_unrelated_download_does_not_block_assignment(self) -> None:
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.task_queue import TaskType
@@ -2390,3 +2359,52 @@ class TestAppSetActiveModelDownloadGuard:
             assert cfg.chat_model == ref
         finally:
             cfg.chat_model = chat_default
+
+    async def test_reject_if_downloading_passes_non_string_value(self) -> None:
+        """A non-string setting value cannot be a model ref, so the guard lets it through."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        assert app._reject_if_downloading(True) is False
+        assert app._reject_if_downloading(7) is False
+
+
+class TestModelInfoExceptionBranches:
+    """``_read_chat_arch`` / ``_read_embed_arch`` swallow read errors and return the info object."""
+
+    def test_chat_arch_swallows_exception_when_path_resolve_fails(self) -> None:
+        from lilbee.modelhub.model_info import ModelArchInfo, _read_chat_arch
+
+        info = ModelArchInfo()
+        info.active_handler = ""
+        with mock.patch(
+            "lilbee.providers.engine_params.resolve_model_path",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _read_chat_arch(info)
+        # Failure path swallowed: function returns info; the success branch's
+        # ``info.active_handler = 'llama-server'`` assignment was never reached.
+        assert result is info
+        assert info.active_handler == ""
+
+    def test_embed_arch_swallows_exception_when_metadata_read_fails(self) -> None:
+        from pathlib import Path
+
+        from lilbee.modelhub.model_info import ModelArchInfo, _read_embed_arch
+
+        info = ModelArchInfo()
+        info.embed_arch = "sentinel"
+        with (
+            mock.patch(
+                "lilbee.providers.engine_params.resolve_model_path",
+                return_value=Path("/fake/embed.gguf"),
+            ),
+            mock.patch(
+                "lilbee.providers.gguf_meta.read_gguf_metadata",
+                side_effect=OSError("disk read failed"),
+            ),
+        ):
+            result = _read_embed_arch(info)
+        assert result is info
+        # Exception swallowed before the success branch overwrites the field.
+        assert info.embed_arch == "sentinel"

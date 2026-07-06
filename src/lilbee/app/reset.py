@@ -9,7 +9,6 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from lilbee.core.config import cfg
-from lilbee.core.security import validate_path_within
 
 
 class ResetResult(BaseModel):
@@ -30,9 +29,14 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
     if not base_dir.exists():
         return deleted
     for item in list(base_dir.iterdir()):
-        validate_path_within(item, base_dir)
         try:
-            if item.is_dir():
+            # iterdir yields direct children only, so the entry is within
+            # base_dir by construction. Remove a symlink as the link itself
+            # (never follow it) -- resolving it would both escape base_dir and
+            # risk deleting the target, neither of which reset intends.
+            if item.is_symlink():
+                item.unlink()
+            elif item.is_dir():
                 shutil.rmtree(item)
             else:
                 item.unlink()

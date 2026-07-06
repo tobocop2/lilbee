@@ -1,0 +1,27 @@
+# Re-record both reels on A100 ONLY. The prebuilt cu124 engine has no sm_90
+# kernels, so it fails on H100 ("no CUDA-capable device"); A100 (sm_80) is the
+# known-good GPU for every prior reel. Reuses the lilbee-agentqa volume, which
+# already has the model + built engine cached, so warm is fast.
+#   sky launch -c lilbee-reels tools/qa/lilbee_reels/pod-a100.sky.yaml --retry-until-up -y
+name: lilbee-reels
+resources:
+  cloud: runpod
+  disk_size: 100
+  ordered:
+    - accelerators: A100-80GB-SXM:1
+    - accelerators: A100-80GB:1
+volumes:
+  /workspace: lilbee-agentqa
+envs:
+  BRANCH: feat/agent-launcher-shared-home
+  BACKEND: cu124
+  REEL_MODEL: "unsloth/Qwen3-Coder-Next-GGUF/Qwen3-Coder-Next-Q4_K_M.gguf"
+  HF_TOKEN: ""
+setup: |
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${BRANCH}/tools/qa/opencode/pod_bootstrap.sh" -o /tmp/pod_bootstrap.sh
+  BRANCH="${BRANCH}" BACKEND="${BACKEND}" bash /tmp/pod_bootstrap.sh
+run: |
+  cd /workspace/lilbee
+  source /workspace/qa_env.sh
+  REEL_MODEL="${REEL_MODEL}" bash tools/qa/lilbee_reels/run.sh
+  REEL_MODEL="${REEL_MODEL}" bash tools/qa/lilbee_reels/run-hermes.sh

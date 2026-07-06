@@ -1,0 +1,18 @@
+# Minimal pull-only pod: mounts the lilbee-agentqa volume (where the recorded
+# reels live) and idles, so the reel artifacts can be scp'd off. No setup, no
+# re-record. Tear down immediately after the scp.
+name: lilbee-agentqa
+resources:
+  cloud: runpod
+  disk_size: 20
+  ordered:
+    - accelerators: A100-80GB-SXM:1
+    - accelerators: A100-80GB:1
+volumes:
+  /workspace: lilbee-agentqa
+setup: |
+  echo "pull-only - skip setup"
+run: |
+  echo "PULL-ONLY reels at /workspace/reels-out"
+  ls -la /workspace/reels-out || echo "no reels-out"
+  sleep 1800

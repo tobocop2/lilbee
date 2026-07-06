@@ -57,6 +57,8 @@ class TaskBar(Static):
         # flash holds the coloured dot + summary past queue drain.
         self._flash_until_tick: int | None = None
         self._flash_outcome: TaskStatus | None = None
+        # Failures among the just-finished batch (not all of persistent history).
+        self._flash_failed_count: int = 0
         # Task ids we've already flashed on. Task Center rows linger in
         # history after DONE/FAILED/CANCELLED so the user can review
         # recent work; without this gate the bar would re-flash the same
@@ -183,16 +185,24 @@ class TaskBar(Static):
             # Center until cleared), so we must gate by task_id instead
             # of "history is non-empty".
             if not active and not queued and history:
-                last = history[-1]
-                if last.task_id not in self._flashed_ids and last.status in (
-                    TaskStatus.DONE,
-                    TaskStatus.FAILED,
-                ):
-                    self._flashed_ids.add(last.task_id)
+                new_done = [
+                    t
+                    for t in history
+                    if t.task_id not in self._flashed_ids
+                    and t.status in (TaskStatus.DONE, TaskStatus.FAILED)
+                ]
+                if new_done:
+                    for t in new_done:
+                        self._flashed_ids.add(t.task_id)
                     self._flash_until_tick = self._tick_count + int(
                         _DONE_FLASH_SECONDS / _POLL_INTERVAL_ACTIVE_S
                     )
-                    self._flash_outcome = last.status
+                    self._flash_failed_count = sum(
+                        1 for t in new_done if t.status == TaskStatus.FAILED
+                    )
+                    self._flash_outcome = (
+                        TaskStatus.FAILED if self._flash_failed_count else TaskStatus.DONE
+                    )
 
         idle = not active and not queued and not in_flash and self._flash_outcome is None
         pending = self._controller.pending_sync_count if idle else 0
@@ -292,7 +302,7 @@ class TaskBar(Static):
         if self._flash_outcome == TaskStatus.DONE:
             return "$success", msg.TASKBAR_ALL_DONE
         if self._flash_outcome == TaskStatus.FAILED:
-            count = sum(1 for t in self.queue.history if t.status == TaskStatus.FAILED)
+            count = self._flash_failed_count
             key = msg.TASKBAR_FAILED if count == 1 else msg.TASKBAR_FAILED_PLURAL
             return "$error", key.format(count=count)
 

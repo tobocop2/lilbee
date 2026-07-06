@@ -40,8 +40,7 @@ flowchart LR
     end
 
     subgraph Providers
-        LLAMA[llama-cpp-python]
-        MTMD[mtmd vision backend]
+        FLEET[llama-server fleet]
         SDK[SDK backend litellm]
         HF[HuggingFace Hub]
     end
@@ -56,14 +55,14 @@ flowchart LR
     INGEST --> VISION
     INGEST --> CONCEPT
     CONCEPT --> LANCE
-    VISION --> MTMD
+    VISION --> PROV
     SEARCH --> LANCE
     SEARCH --> CONCEPT
     SEARCH --> GEN
     WIKI --> LANCE & WIKIDIR
     WIKI --> GEN
     GEN --> PROV
-    PROV --> LLAMA & SDK
+    PROV --> FLEET & SDK
     INGEST --> HF
 ```
 
@@ -73,15 +72,16 @@ flowchart LR
 
 Documents are chunked, embedded, and stored as vectors for later retrieval.
 
-- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed.
+- **File discovery.** Recursive walk of `documents/` with SHA-256 hash-based change detection so only modified files are re-indexed. Each source row also stores the file's size and mtime, so an unchanged file is skipped on a stat alone; the hash runs only when the stat pair drifts. Stores created before these columns re-hash once and backfill.
 - **Markdown.** Heading-aware chunking via kreuzberg's `chunker_type="markdown"` with `prepend_heading_context=True`. Splits at heading boundaries and prepends the full hierarchy path (e.g., `# Setup > ## Install`) so each chunk's section context travels with it. Inspired by Anthropic's Contextual Retrieval (2024), which showed adding context to chunks reduces retrieval failures by 49%.
 - **Code.** tree-sitter AST splitting via tree-sitter-language-pack for 150+ languages, with symbol name, type, and line range in chunk headers.
-- **PDF.** kreuzberg text extraction with an OCR fallback chain (text extraction → Tesseract OCR → GGUF vision model via mtmd). PDF page rasterization is delegated to kreuzberg's `PdfPageIterator`.
-- **Vision OCR.** When `LILBEE_VISION_MODEL` is set, scanned PDFs and images are transcribed by a GGUF vision model through llama-cpp's native mtmd backend. The pipeline streams an SSE heartbeat during long scans and preserves tables, headings, and multi-column layout as structured markdown. Falls back to Tesseract when no vision model is configured.
+- **PDF.** kreuzberg text extraction with an OCR fallback chain (text extraction → Tesseract OCR → GGUF vision model on `llama-server`). PDF page rasterization is delegated to kreuzberg's `PdfPageIterator`.
+- **Vision OCR.** When `LILBEE_VISION_MODEL` is set, scanned PDFs and images are transcribed by a GGUF vision model served by `llama-server` with an `--mmproj` projector. The pipeline streams an SSE heartbeat during long scans and preserves tables, headings, and multi-column layout as structured markdown. Falls back to Tesseract when no vision model is configured.
 - **Structured files.** kreuzberg handles XML, JSON, JSONL, YAML, and CSV natively. Language detection for code-shaped content is delegated to tree-sitter-language-pack's `detect_language()`.
 - **Web pages.** crawl4ai fetches HTML with JavaScript rendering via Playwright, converts to markdown, and saves to `documents/_web/` for indexing. Recursive crawls emit live progress, respect per-domain rate limits, and retry on HTTP 429/503 with jitter. SSRF protection blocks internal networks by default.
 - **Chunking strategy.** Fixed-size chunking (default, token-aware) for reliability on procedural and reference docs. Opt-in semantic chunking (`LILBEE_SEMANTIC_CHUNKING=true`) splits at topic boundaries via kreuzberg's ONNX embedding model; better on prose-heavy corpora at the cost of roughly 9x more downstream embedding calls.
-- **Embedding.** Provider-agnostic: native GGUF via llama-cpp-python by default, or any backend reachable via the SDK protocol when `pip install lilbee[litellm]` is available.
+- **Embedding.** Provider-agnostic: native GGUF on the local `llama-server` engine by default, or any backend reachable via the SDK protocol when `pip install lilbee[litellm]` is available.
+- **Asymmetric query/document embedding.** Instruction-tuned embedders (Qwen3-Embedding, e5/gte `*-instruct`) only reach their retrieval scores when the query carries a task instruction (`Instruct: ...\nQuery: <q>`) embedded differently from documents; base e5 uses `query:`/`passage:` prefixes. lilbee detects the family from the configured embedder ref and applies the right prefixes automatically (`retrieval/embedding_profiles.py`): the query path uses `embed_query`/`embed_query_batch`, the document path keeps `embed`/`embed_batch`. Symmetric models (bge-m3, nomic) and unrecognized models get no prefix, so behavior is unchanged for them. There is no instruction config: a wrong template silently underperforms, so support for a new family is a curated map entry, not a user knob.
 - **Concept extraction (opt-in).** With `pip install lilbee[graph]`, spaCy noun phrases are extracted per chunk, a co-occurrence graph is built with PPMI weights, and Leiden clustering assigns concepts to communities.
 - **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
@@ -95,17 +95,16 @@ lilbee treats chat, embedding, vision (OCR), and reranking as independent **mode
 ```mermaid
 flowchart TD
     APP[Application Code] --> ROUTE[RoutingProvider]
-    ROUTE --> CHECK{SDK backend installed & model available?}
+    ROUTE --> CHECK{Model ref prefix is a remote provider?}
     CHECK -->|Yes| SDK_BACK[SDK backend via litellm]
-    CHECK -->|No| LCPP[llama-cpp-python GGUF]
+    CHECK -->|No| FLEET[FleetProvider: local llama-server]
 
-    APP -->|explicit config| SDK_P[SDKLLMProvider]
-    APP -->|explicit config| LCPP_P[LlamaCppProvider]
+    APP -->|explicit config| SDK_P[SdkLLMProvider]
+    APP -->|explicit config| FLEET_P[FleetProvider]
 ```
 
-- **auto** (default). `RoutingProvider` checks if the SDK backend is installed and the requested model is available via its API. If so, routes through the SDK; otherwise falls back to local GGUF via llama-cpp.
+- **auto** (default). `RoutingProvider` dispatches by model-ref prefix: a remote ref (`ollama/`, `openai/`, ...) goes to the SDK backend; a native GGUF ref runs locally on the managed `llama-server` engine.
 - **remote**. Force all calls through the SDK backend (anything litellm reaches). Requires `pip install lilbee[litellm]`.
-- **llama-cpp**. Force local GGUF inference via llama-cpp-python (always available).
 
 **Model roles** (`lilbee model list --task <role>`):
 
@@ -118,149 +117,333 @@ flowchart TD
 
 `validate_model_task_assignment` (invoked at config write time) rejects assignments where the model's capability declaration doesn't match the role, so you can't accidentally wire a pure-chat model into the vision slot.
 
-**Model management.** Native GGUF support tracks [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) 1:1, so any GGUF that loads there loads in lilbee. Pulls come from HuggingFace via the catalog (`lilbee model pull`, `/models` in the TUI). Featured picks per role live in `src/lilbee/featured_models.toml`; the catalog view additionally exposes the full HuggingFace GGUF search. External models reached via the SDK backend are used for inference when available but are not managed by lilbee.
+**Model management.** Native GGUF support tracks [llama.cpp](https://github.com/ggml-org/llama.cpp) 1:1, so any GGUF that `llama-server` loads loads in lilbee. Pulls come from HuggingFace via the catalog (`lilbee model pull`, `/models` in the TUI). Featured picks per role live in `src/lilbee/featured_models.toml`; the catalog view additionally exposes the full HuggingFace GGUF search. External models reached via the SDK backend are used for inference when available but are not managed by lilbee.
 
 ---
 
-## Inference Worker Pool
+## Local inference engine
 
-`LlamaCppProvider` routes every embed, chat, rerank, and vision call through a persistent per-role subprocess. Isolating native llama-cpp inference in its own process keeps the TUI's asyncio event loop responsive under load and prevents one role's GIL-holding inference from stalling another. The pool is the only path; there is no in-process fallback.
+The local engine is a managed `llama-server` fleet (`FleetProvider`,
+`src/lilbee/providers/fleet/`): lilbee starts one `llama-server` per
+configured role, routes each call to the least-busy healthy server for that role,
+and tears them down on exit. A single machine is a fleet-of-one; the same code
+scales to N GPUs by bin-packing models across them. Placement is planned jointly
+for every configured role up front, but each role's server spawns lazily on first
+use, so a batch `lilbee add` that only embeds never loads the chat model's VRAM;
+the interactive warm-up (`worker_pool_eager_start`) brings every role up at once. There is no separate engine to
+install or run, and no in-process binding: the engine is 100% llama.cpp, and lilbee
+adds a placement planner, a process supervisor, and a thin httpx router. All four
+roles run over HTTP: chat and vision use `/v1/chat/completions` (chat with
+`--jinja` for native tool calls; vision adds an `--mmproj` projector), embed and
+rerank use `/v1/embeddings` (rerank with `--pooling rank` and a
+`query</s></s>candidate` pairing, never the template-dependent `/v1/rerank`). A
+configured role whose server cannot start surfaces a user-facing `ProviderError`
+rather than degrading silently.
+
+```mermaid
+flowchart TD
+    APP["App<br/>chat · embed · rerank · vision · search · ingest"]
+    FP["FleetProvider"]
+    SUP["Planner + supervisor<br/>VRAM bin-pack · pin per backend<br/>health · restart · reap orphans"]
+
+    APP --> FP
+    FP -->|"least-busy healthy server"| FLEET
+
+    subgraph FLEET["Managed llama-server fleet"]
+        direction LR
+        CS["chat / vision<br/>(/v1/chat/completions)"]
+        ES["embed / rerank<br/>(/v1/embeddings)"]
+    end
+
+    SUP -. "spawn · pin · health · restart" .-> FLEET
+
+    CS --> G0["GPU 0"]
+    CS --> G1["GPU 1"]
+    ES --> G1
+```
+
+#### Supervision layout
+
+Follow the numbers: the planner measures, renders a config per role, each role's
+llama-swap spawns and watches that role's servers, and the provider routes live
+requests by role. Rerank and vision follow the same shape as embed. Because every
+role has its own supervisor, config, log, and state file, a placement change
+restarts only the roles whose launches changed (see the reload diff below).
 
 ```mermaid
 flowchart LR
-    subgraph TUIProc["TUI process (asyncio + Textual)"]
-        UI[Chat / Search / Ingest screens]
-        Provider[LlamaCppProvider]
-        Pool[WorkerPool<br/>per-role accessors]
-        Health[health_ticker<br/>30 s ping + idle reap]
-        UI --> Provider --> Pool
-        Health --> Pool
+    subgraph app ["lilbee"]
+        planner["placement planner"]
+        gguf["gguf-parser"]
+        provider["FleetProvider"]
+        planner -->|"1: measure each GGUF"| gguf
     end
-
-    subgraph EmbedProc["embed subprocess"]
-        EW[embed_worker]
+    subgraph swaps ["llama-swap, one per role"]
+        sc["swap: chat<br/>own config, log, state"]
+        se["swap: embed<br/>own config, log, state"]
     end
-    subgraph RerankProc["rerank subprocess"]
-        RW[rerank_worker]
+    subgraph servers ["llama-server processes"]
+        chat["chat<br/>split across its GPUs"]
+        e1["embed replica"]
+        e2["embed replica"]
     end
-    subgraph ChatProc["chat subprocess"]
-        CW[chat_worker]
-    end
-    subgraph VisionProc["vision subprocess"]
-        VW[vision_worker]
-    end
-
-    Pool <-- PipeChannel --> EW
-    Pool <-- PipeChannel --> RW
-    Pool <-- PipeChannel --> CW
-    Pool <-- PipeChannel --> VW
-
-    Cancel["Esc / Ctrl+C<br/>Services.cancel_inference()"] -->|flip shared abort flag| EW & RW & CW & VW
+    planner -->|"2: render JSON config per role"| sc
+    planner -->|"2: render JSON config per role"| se
+    sc -->|"3: spawn and watch"| chat
+    se -->|"3: spawn and watch"| e1
+    se -->|"3: spawn and watch"| e2
+    provider -->|"4: requests by role"| sc
+    provider -->|"4: requests by role"| se
 ```
 
-Every byte across a pipe is a `(kind, payload)` tuple. The data pipe carries one call at a time: `PipeChannel.call` and `PipeChannel.stream` hold a channel-level `asyncio.Lock` for the full request/reply (or request/stream) window, so a frame the parent reads can only belong to the call that currently holds the lock. New callers queue on the lock until the active call returns. There is no per-frame routing id and no dispatcher thread; the call that holds the lock is the sole reader.
+- **Detection** (`devices.probe_devices`): GPUs come from the binary's own
+  `llama-server --list-devices`, so enumeration and pinning share one backend-native
+  index space. A device index from one API (Vulkan) is meaningless to another (CUDA),
+  so we never cross them; the Vulkan VRAM probe (`gpu_select`) is only a fallback.
+- **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
+  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the
+  environment presets another order), ROCm via
+  `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`, Vulkan via `GGML_VK_VISIBLE_DEVICES`.
+  When the parent environment already restricts a visible-devices var (a pod preset
+  like `CUDA_VISIBLE_DEVICES=2,3`), the probe's indices are relative to that list,
+  so the child env maps them back through it (integer or UUID entries) and keeps
+  naming the same physical cards the probe saw.
+- **VRAM estimation** (`vram.py`): each instance's footprint comes from
+  **`gguf-parser`** (`estimate_instance_footprint`), a UMA-aware estimator run as a
+  subprocess and memoized on the GGUF's path + mtime + sizing. It reports both a
+  discrete-GPU footprint (`nonuma`, what lands in device VRAM) and a unified-memory
+  footprint (`uma`, total resident on an Apple Silicon / shared-RAM host); the
+  planner charges whichever matches the host. For a multi-GPU tensor-split it passes
+  `--tensor-split`, so gguf-parser returns the **per-device** breakdown; placement
+  then charges each card its own share and gates on each card's headroom, with the
+  busiest card (`peak_footprint`) as the binding constraint, because a split OOMs on
+  whichever GPU is fullest, not on the summed total. The estimate also carries the
+  same `--batch-size`/`--ubatch-size` the launch will use (pooled embed/rerank raise
+  them to the full context), so the compute-buffer estimate matches what the server
+  actually allocates. This replaced a hand-rolled
+  weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
+  ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
+  of the budget and 503-ing every search.
+- **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
+  A model that fits one GPU is a single pinned instance; small models co-locate; a
+  model too big for one GPU is tensor-split across enough cards that each card's
+  per-device footprint fits, charged against each card's total VRAM capacity (so a
+  warm fleet's own resident models aren't double-counted, and unequal GPUs don't OOM
+  the smaller one). For the chat model the planner does not stop at the fewest fitting
+  cards: it sizes each candidate shard's served context the way the launch will
+  (`ctx.fit_split_ctx`, against the **clean-box plan snapshot**) and **widens onto idle cards** when
+  a tighter shard would starve KV below the context target, falling back to the
+  largest-context shard when no shard reaches it. This keeps placement and launch in
+  agreement, so a giant chat that just fits the fewest cards no longer collapses to the
+  512-token floor while spare cards sit idle; a chat already comfortable on few cards
+  stays there (no needless inter-GPU traffic), and the context target follows
+  `cfg.num_ctx` / `cfg.chat_n_ctx_target`. A tensor-split chat serves **one full-context sequence**
+  (`--parallel 1`): a giant filling several cards has no room to divide its context
+  across batching slots, so the planner reserves and launches it at the single-sequence
+  footprint rather than `ceiling x` the single-GPU slot count (multi-slot batching is
+  for a chat that fits one card). Its context is then sized (`ctx.fit_split_ctx`, a
+  binary search over the gguf-parser estimate) so **each card's own share fits that
+  card's own headroom**, never the combined pool, so the per-GPU compute buffer can't
+  overflow device 0 even when the cards are unequal. On a
+  single CPU/Metal box this
+  is a fleet-of-one against one shared pool, where the **search-critical roles
+  (embed/rerank) are reserved before the elastic chat model**: chat's slot count and
+  context are sized against the budget *minus* the search footprint, and the shared
+  pool places search first, so a large chat can never starve search (the proven
+  embed-starvation bug). Placement gates against **free system RAM** rather than a
+  GPU budget: unified memory is shared with the OS, so a model that exceeds free RAM
+  is marked unplaceable (no server, clean error) instead of loaded. Loading past free
+  RAM on a unified-memory host drives the OS into a swap-thrash OOM livelock that
+  hard-freezes the machine, so refusing is the safe outcome; chat slot count
+  (`--parallel`) steps down the same way before refusing.
 
-Three patterns cover all traffic:
+- **Reload and the plan snapshot** (`planning.capture_plan_probe`,
+  `provider._reload_pass`): each role runs behind its own llama-swap process, and
+  a reload re-plans the whole fleet but restarts **only the roles whose launches
+  changed**. That diff is sound because launches are a pure function of config,
+  hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
+  and free system RAM are captured once per boot (right after stale-server
+  reaping, when nothing lilbee owns is loaded) and every re-plan reads the
+  snapshot instead of probing live. A live probe under a loaded fleet would
+  report the fleet's own residency as unavailable, shrinking chat context and
+  slot counts, widening splits, and (on unified memory) evicting roles outright.
+  Full fleet teardown clears the snapshot, so the next boot probes fresh and
+  still respects VRAM other processes hold. The read/view surfaces
+  (`GET /api/placement`, `placement show`, preview) keep a live short-TTL probe
+  so displayed free bytes stay current; they never feed the launch path.
 
 ```mermaid
-sequenceDiagram
-    participant Parent as TUI (PipeChannel)
-    participant Worker as worker subprocess
-
-    Note over Parent,Worker: Call / response (embed, rerank, vision)
-    Parent->>Worker: (embed, texts)
-    Worker-->>Parent: (result, vectors)
-
-    Note over Parent,Worker: Streaming (chat), token batching
-    Parent->>Worker: (chat, prompt)
-    Worker-->>Parent: (stream_chunk, "first token")
-    loop batched: 16 tokens or 50ms whichever comes first
-        Worker-->>Parent: (stream_chunk, "batched tokens")
+flowchart TB
+    CFG[config + placement spec] --> PLAN[planner: estimate + bin-pack + ctx fit]
+    SNAP[clean-box snapshot: devices / VRAM / RAM] --> PLAN
+    PLAN --> DIFF{per-role launch diff}
+    DIFF -->|unchanged| KEEP[role keeps serving, model stays resident]
+    DIFF -->|changed| RESTART[stop role's llama-swap, start with new argv]
+    subgraph fleet [one llama-swap per role]
+        CHAT[chat group]
+        EMBED[embed group xN]
+        RERANK[rerank group]
     end
-    Worker-->>Parent: (stream_end, None)
-
-    Note over Parent,Worker: Liveness and shutdown (dedicated thread)
-    Parent->>Worker: (ping, None)
-    Worker-->>Parent: (pong, None)
-    Parent->>Worker: (shutdown, None)
-    Worker-->>Parent: (ack, None)
+    RESTART --> fleet
+    KEEP --> fleet
 ```
 
-`WorkerPool` (in `providers/worker/pool.py`) owns lifecycle. `Services` constructs it once at startup with a `default_spawner()` from `providers/worker/transport.py`. The pool talks to workers exclusively through the `WorkerChannel` and `WorkerSpawner` Protocols; the only concrete impl today is `transport_pipe.PipeChannel` / `PipeSpawner`, backed by `multiprocessing.Pipe`.
+#### Manual placement
 
-### Lifecycle contract
+By default the auto planner runs every time a fleet is built. When a `placement`
+spec is set, it replaces the planner entirely: the spec's assignments are used
+as-is and the VRAM bin-pack does not run.
 
-1. `WorkerPool(spawner=..., max_idle_s=...)` builds the pool object with no subprocesses spawned. Roles are registered with `pool.register(role, worker_main, config_factory)`.
-2. `await pool.start_eager()` spawns one process per registered role concurrently. Optional, gated on `cfg.worker_pool_eager_start`. Most callers rely on lazy spawn instead.
-3. `await pool.<role>.call(...)` lazy-spawns the role's worker on first call and reuses the live channel afterwards.
-4. `await pool.shutdown(timeout=5.0)` sends shutdown to every live worker, awaits graceful exit, terminates stragglers. Idempotent.
-5. Per-role accessors raise `PoolShutdownError` after `shutdown`.
+The spec is per-role. Each role entry accepts:
 
-The pool is async-safe: per-role accessor lookups and lazy spawn serialize on a per-role `asyncio.Lock` so two concurrent first-callers do not race to spawn two workers.
+- `devices` (required): list of GPU indices to use for that role.
+- `tensor_split` (optional): per-device weight proportions for a tensor-split
+  instance. When omitted, the model is split evenly across the listed devices.
+- `replicas` (optional): how many independent servers to run for embed and
+  vision roles. Defaults to 1.
 
-### Restart-on-crash policy
+```json
+{
+  "chat":    { "devices": [0, 1], "tensor_split": [1, 1] },
+  "embed":   { "devices": [2], "replicas": 2 },
+  "rerank":  { "devices": [2] },
+  "vision":  { "devices": [3] }
+}
+```
 
-A channel that raises `WorkerCrashError` (or reports `is_alive == False`) is dropped via `_on_crash`; the next call spawns a fresh worker. The pool tracks each role's crash timestamps in a deque and refuses to spawn past `_RESTART_BUDGET` (3) crashes within `_RESTART_WINDOW_S` (60s). Past that, consumers see `RoleDegradedError` until the user calls `reset_role_failures` (typically a TUI "retry" affordance) or restarts the process.
+The `placement` field is stored as a JSON scalar in `config.toml` (a single
+`placement = '{"chat": ...}'` key), because the config store is a flat
+key-value file and cannot represent the nested shape natively. The placement
+surfaces (CLI, HTTP, MCP, TUI) handle encoding and decoding; editing
+`config.toml` by hand is not the intended path.
 
-### Idle reaping
+When a pinned placement no longer fits the card it names, lilbee surfaces a
+hard error that identifies the card by name (e.g. `CUDA0: RTX 4090
+(23.7 GiB free, 24.0 GiB total)`) rather than failing silently. This makes
+hardware-change failures explicit.
 
-If `cfg.worker_pool_max_idle_s > 0`, every successful round-trip stamps the role's `last_used` timestamp. `reap_idle()` (driven by the `health_ticker` at 30s intervals) closes any role whose `last_used` is older than the budget and whose `in_flight` counter is zero. The next request respawns the role transparently.
+The surfaces go through the one `app/placement.py` use-case:
+CLI (`lilbee placement show/preview/set/clear`), MCP
+(`get_gpus`, `get_placement`, `preview_placement`, `set_placement`, `clear_placement`),
+and the TUI Placement screen. Over HTTP the reads are always served
+(`GET /api/placement`, `POST /api/placement/preview`, `GET /api/gpus`).
+Applying or clearing placement restarts the fleet's moved roles, so `PUT`/`DELETE
+/api/placement` are refused by default and gated on `allow_http_placement`
+(`LILBEE_ALLOW_HTTP_PLACEMENT`), which an operator enables for a single-client
+or owned deployment (the plugin's managed server, or a personally-owned pod) to
+get the same apply/clear capability as the CLI and TUI. The `preview` operation is a dry-run: it shows
+what the auto planner would assign (or what a candidate spec would assign)
+including each card's backend+index label, name, and free/total VRAM, without
+touching the running fleet.
 
-### Health pings
+- **Resident tiers and the elastic ingest pool**: placement reserves a persistent
+  query fleet first: chat, one embed server (`embed-0`), rerank, and one vision
+  server (`vision-0`). These stay resident so a chat request issued during ingest
+  always has capacity. This reservation applies to discrete-GPU placement; the
+  shared-memory path on a unified-memory or CPU host packs the same pool
+  differently and does not hold back the elastic replicas. Extra embed and vision
+  replicas (`embed-1..N`, additional
+  vision) are placed only into the VRAM that remains after the query fleet is
+  committed. When an ingest finishes, each extra replica is unloaded individually
+  via llama-swap's `POST /api/models/unload`, freeing its VRAM without disturbing
+  the resident servers. If llama-swap is restarted or found dead, the fleet
+  re-probes once and rebuilds its model config before reporting a failure.
+- **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
+  vision roles can run as N independent servers, fanning embedding and OCR across
+  the box during ingest. Setting either value to `0` (the default) means auto: one
+  replica per GPU, capped by how much VRAM remains after the query fleet is placed.
+  A positive value pins the replica count to exactly that number. The provider
+  holds a client pool per role and round-robins to the least-busy replica. Each
+  replica is its own llama-swap model id (`<role>-<n>`); a role is ready once any
+  replica is. Replicas are ingest-only and reclaimed after ingest completes.
+- **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
+  cfg and the model's GGUF metadata for that role and config. Chat carries
+  `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and
+  `--cache-type-k/-v` from `kv_cache_type`; it also loads with `--no-mmap`
+  (a malloc'd host copy) when its weights fit in at most half of total system
+  RAM -- a buffered sequential read reaches ready ~20% faster than mmap's
+  page-fault-driven upload (measured 33s vs 43s for a 112GB model on 3 GPUs),
+  while replicated roles keep mmap so their replicas share one set of
+  page-cache pages. The gate reads total (not free) memory so replans never
+  flap the flag; embed and rerank raise
+  `--batch-size`/`--ubatch-size` to the full context (the server caps embeddings at
+  `n_ubatch`, default 512); vision uses the full-core thread default and always
+  offloads every layer. Embed and rerank requests also send `embd_normalize=-1` to
+  get raw, un-normalized vectors (the server would L2-normalize pooled output by
+  default, which would also collapse a rank score to +-1). Context and GPU-layer
+  counts come from the shared `engine_params` helpers, never a hardcoded budget.
+  `main_gpu` is the one
+  setting deliberately not forwarded: it selects a single card by global index, which
+  is meaningless once a server is pinned to a subset, and placement owns card choice
+  in fleet mode.
+- **Lifecycle** (`swap_manager.py` / `provider.py`): each role runs behind its own llama-swap process
+  with its own config file, so restarting one role's group (a placement or
+  per-role model change) never touches another role's loaded servers. A reload
+  re-plans the whole fleet and diffs the fresh plan per role against the
+  running launches, restarting only the roles whose launches changed; an
+  untouched 100GB chat model stays resident while the embedder moves. Each
+  server runs in its own process group and claims
+  its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
+  the model loads); the cold-load health timeout scales with the heaviest member's
+  weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
+  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per role group
+  (named with the group and its pid, written atomically so a concurrent scan never reads a torn
+  file) recording that group's llama-swap pid, process group, and create time, the
+  member servers' ports, plus the owner's pid and create time; before the next build
+  launches the fleet (so the cards are actually free for it and the context sizer
+  reads true free VRAM), every state file is
+  scanned and each dead owner's surviving llama-swap and its servers are reaped
+  (guarded against pid reuse by create-time matches for both the swap and the owner,
+  falling back to a command-line match for legacy files, and left alone while the
+  owning lilbee is still alive; an unparseable file is skipped, never deleted, since
+  it may be a sibling's in-flight write). Servers that outlive a dead swap (each runs
+  in its own process group) are matched by binary name plus recorded port and stopped
+  the same way; force-killed processes are waited on so the VRAM probe sees their
+  memory actually freed. Clean shutdown removes only the
+  owner's own file. A background monitor restarts a dead server with
+  backoff, and the router serves only healthy clients. Teardown group-kills (SIGTERM
+  then SIGKILL).
+- **Routing** (`provider.py`): each role goes to its least-in-flight healthy server;
+  rerank reuses the client's rank-pooling embeddings call and vision the chat call
+  with image content. A connection-level failure marks the replica unhealthy and the
+  embed/rerank call retries once on a different replica; an unhealthy replica rejoins
+  the pool after a short cool-down, where recovery is probed by live traffic and
+  unmetered: every caller that routes to it once cooled is a probe (a success
+  restores it, another connection failure re-starts the cool-down).
+  A per-call model that differs from the role's configured model
+  is rejected (switching models is a config change that respawns the server), and a
+  role with no healthy server surfaces a `ProviderError`. Fleet build is single-flight
+  and the in-flight counter is atomic, because the HTTP and MCP servers route concurrently.
+- **Binary** (`binary.py`): the bundled wheel ships `llama-server`; resolution falls
+  back to `LILBEE_LLAMA_SERVER_PATH` / PATH. Never auto-downloaded.
+- **Delegate alternative:** to use an external fleet (GPUStack, vLLM), point the
+  `remote` provider at it (`LILBEE_LLM_PROVIDER=remote`); the managed fleet is the
+  local, single-box option.
+- **Hardware QA:** `tools/qa/multi_gpu_smoke.py` validates enumeration, placement,
+  concurrency, restart, and orphan cleanup on a real multi-GPU host.
 
-`ping_role()` issues one ping/pong round-trip against a live channel and propagates timeout/crash as `WorkerCrashError`. The `health_ticker` invokes this on the same 30s cadence as `reap_idle`. Cap is `_HEALTH_TIMEOUT_S` (5s).
+### Chat context-window management
 
-### Health pipe isolation
+The fleet provider windows the request messages to fit the served chat
+context before sending them to llama-server (`_fit_chat_context` in
+`providers/fleet/provider.py`, the fitting logic in
+`providers/fleet/windowing.py`). The budget is the served `n_ctx` minus
+a generation reserve (the request's `num_predict`, else a default) and
+a safety margin; the oldest conversation turns are dropped until the
+estimated prompt fits. System messages and the most recent turn are
+always kept, and a kept suffix never starts with an orphan tool result
+whose originating call was dropped.
 
-The control plane (pings, shutdown) travels on a dedicated `mp.Pipe` per worker, separate from the data pipe that carries call/stream traffic. Control frames cannot interleave with stream chunks by construction; the parent reader on each pipe never sees frames meant for the other.
+The estimate does not tokenize the real rendered prompt (llama-server
+renders the chat template server-side at inference time); it counts
+characters at a conservative 3 chars per token and adds a per-message
+overhead for role markers and template wrappers, so the window errs
+toward dropping more rather than overflowing.
 
-The worker dedicates a daemon thread to the health pipe. The thread blocks in `health_conn.recv()`, answers `ping` with `pong`, and on `shutdown` sends `ack` and sets a shared `shutdown_event` that the main data loop checks every `_DATA_POLL_INTERVAL_S` poll. This means a long-running data-frame handler (a chat stream that spends seconds inside `_handle_chat_streaming`, an embed batch chewing through a multi-thousand-vector payload) cannot starve the heartbeat or block shutdown: pings return promptly, and `close()` ack returns within the heartbeat thread's processing budget regardless of what the data loop is doing. The main data loop exits within one poll interval after the event fires.
-
-### Cross-boundary cancel
-
-`Services.cancel_inference()` is the canonical entry point used by Ctrl+C and the chat-stream cancel action. It calls `accessor.cancel()` on every registered role, which sets the worker's shared `mp.Value` abort flag. The chat worker's llama-cpp `abort_callback` reads that flag at every token tick and unwinds inference.
-
-### Token batching
-
-Per-token `conn.send()` was the largest non-inference cost in the chat worker (9.14% of py-spy samples on a 10-minute streaming session, vs. ~1.5% spent in actual ggml decode + sample). `_handle_chat_streaming` now batches: the very first token flushes immediately so the user sees output without delay, and subsequent tokens accumulate in a buffer that flushes when it hits 16 chunks or 50 ms since the last flush, whichever comes first. The pipe sees roughly one syscall per batch instead of one per token. A `try/finally` flushes any buffered tail before the outer error handler emits an error frame, so the user still sees partial output before a mid-stream LLM exception.
-
-### IPC discipline rules (pipe transport)
-
-The pipe transport (`transport_pipe.py`) enforces these rules that keep the parent and worker in lockstep:
-
-1. **Channel-level serialization.** A single `asyncio.Lock` (`_call_lock`) per channel is held for the full request/reply or request/stream lifetime. Concurrent callers queue on the lock; the call that holds the lock is the sole reader of the data pipe. A reply or stream frame can only belong to the active call by construction, so no frame-routing id is needed and no stale-frame discard is possible.
-2. **Pull-based backpressure.** Pipe buffers are ~64 KiB on Linux; `conn.send()` blocks once full. Because there is only one in-flight call at a time, the worker's reply send never queues behind earlier pending replies, and a slow consumer applies backpressure naturally.
-3. **Pickle size cap.** `Connection.send()` raises `ValueError` past about 32 MiB on POSIX. `call` and `stream` enforce the cap (`_PICKLE_MAX_BYTES`) with a clear `PayloadTooLarge` error before the pickle round-trip.
-4. **Bounded poll.** Worker main loops use `conn.poll(timeout=...)` not bare `recv` so the shutdown event set by the heartbeat thread (and SIGTERM in real deployments) fires within `_DATA_POLL_INTERVAL_S`. Bare `recv` ignores both signals and event flags.
-5. **Picklable error wire.** Exceptions are serialized through `_serialize_exception` to a `(type_name, message, traceback)` triple, which falls back gracefully when the live exception is not picklable (`_thread.RLock` references in tracebacks, several `OSError` subclasses, structlog wrappers).
-6. **In-flight counter for idle reaping.** Idle reaping checks `PipeChannel.in_flight` is zero, not "no recent message". A pending `recv` in the middle of a request stays in-flight until the terminator arrives.
-7. **Control plane on the health pipe.** Ping/pong and shutdown/ack travel on a dedicated `mp.Pipe`, served by a worker-side daemon thread. A long inference on the data pipe never blocks liveness checks or process termination.
-8. **xdist isolation.** `pytest-xdist` parallelism nests with our spawn; integration tests that exercise the pool annotate themselves with `pytest.mark.xdist_group(...)` so two pool tests do not race.
-9. **Daemon flag.** `daemon=True` workers cannot spawn children. `PipeSpawner` defaults to `daemon=True`; vision/mtmd workers that ever shell out to ffmpeg etc. must override via `PipeSpawner(daemon=False)` and rely on the pool's `atexit` shutdown.
-10. **Best-effort abort.** Once the parent flips the abort flag, in-flight `stream_chunk` messages already in the pipe still drain (a few extra tokens). The user-facing toast should say "Cancelling..." until the worker emits its terminator.
-
-### Spawn context must be spawn
-
-`PipeSpawner` always uses `multiprocessing.get_context("spawn")`. Two reasons:
-
-- **Native context isolation.** Metal/CUDA contexts that the worker initializes are isolated. Fork inheritance crashes them (see vllm#8893 for the reference report).
-- **Forward compatibility.** Python 3.14 deprecates fork as the POSIX default; relying on the per-OS default is forward-incompatible.
-
-The cost is that spawn re-imports Python in the child, adding ~1-3s cold start per worker. The pool's lazy spawn and idle reaping keep that cost rare.
-
-### Future zmq transport
-
-The `WorkerChannel` and `WorkerSpawner` Protocols make the IPC primitive swappable. A future `transport_zmq.py` (pyzmq) would only need to add a new factory call site; consumer code never imports `multiprocessing` directly.
-
-### Per-call model override
-
-Two of the four worker roles let the parent swap models without respawning the subprocess: `chat_worker` and `vision_worker` accept a `model` field on every request and check it against the currently-loaded path inside `_ensure_loaded`; if it differs they close the old `Llama` and load the new one in place. `LOAD_AFFECTING_KEYS` lists every config key that requires reloading; the subset `PER_CALL_RELOADABLE_KEYS = {"chat_model", "vision_model"}` is the slice that the parent skips when calling `invalidate_load_cache`, because the worker will pick up the change on the next request automatically. `embed_worker` and `rerank_worker` do not have per-call model overrides — those models change at config time, not per-call, so the simpler "release the role + lazy respawn" path is correct there.
-
-### Resource budget
-
-Each active role spawns a subprocess. Memory cost: ~50 MB Python overhead per worker plus the loaded model's resident size. Typical sizes are embed 100–500 MB, rerank 100–300 MB, chat 1–8 GB depending on quantization, vision 2–4 GB. With all four roles warm, total resident memory is usually 4–8 GB, dominated by chat and vision. Idle reaping (`cfg.worker_pool_max_idle_s > 0`) shrinks the working set when a role goes quiet.
-
-First-call latency per role is the spawn + model-load cost: 1–3 s on Apple Silicon, longer on cold disk. The TUI surfaces this via spawn notifications wired through `Services.add_pool_listener` (see `cli/tui/app.py`), and `cfg.worker_pool_eager_start` opts into amortizing the cost at TUI startup.
+When even the system messages, tools, and the final turn exceed the
+budget, the provider raises a `CONTEXT_OVERFLOW` `ProviderError`, which
+the chat-completions route maps to a clean 400 `context_length_exceeded`
+rather than a 500 from the server.
 
 ---
 
@@ -428,7 +611,7 @@ Useful for benchmarking (compare BM25 vs vector on the same question), debugging
 **Threshold-gated.** Below `LILBEE_ANN_INDEX_THRESHOLD` chunks (default 50,000) search uses an exact brute-force scan, which is fast and exact for personal vaults and is all a laptop needs. At/above the threshold, `sync` builds an approximate index so search stays fast at millions of vectors; `lilbee index` forces a build for the publish-a-large-index workflow.
 
 - **Index type**: IVF_PQ. Product Quantization compresses each vector so the index fits in memory at 10M+ scale; the inverted file (IVF) restricts the scan to a few partitions.
-- **Recall recovery**: PQ is lossy, so search probes multiple partitions (`nprobes`) and re-ranks the candidates against the full vectors (`refine_factor`) to keep results close to the exact scan. These are module constants in `data/store/core.py`, not config, until a real tuning need appears.
+- **Recall recovery**: PQ is lossy, so search probes multiple partitions (`nprobes`) and re-ranks the candidates against the full vectors (`refine_factor`) to keep results close to the exact scan. `nprobes` is computed per query as `max(floor, ceil(sqrt(N) * fraction))` with N the indexed row count, since the IVF partition count grows ~sqrt(N) and a fixed probe count would collapse recall at large N. The floor, fraction, and refine factor are module constants in `data/store/core.py`, not config, until a real tuning need appears.
 - **Lifecycle**: built once when the corpus crosses the threshold; subsequent syncs fold new rows in via `optimize()` rather than rebuilding. The index lives inside the LanceDB directory, so a downloaded index ships with it and searches fast on the first query.
 - **Why threshold-gated**: IVF_PQ needs enough vectors to train, and brute force already beats an index for small N. Setting the threshold to `0` keeps search flat regardless of size.
 
@@ -495,12 +678,15 @@ After each build, `wiki/links.py::rewrite_wiki_links` rewrites plain-text slug s
 - `lilbee wiki build` / `wiki lint` / `wiki synthesize` / `wiki drafts` / `wiki prune`: wiki layer
 - `lilbee serve`: start the REST API server
 - `lilbee mcp`: launch the MCP server
+- `lilbee launch <client>` (e.g. `opencode`): spawn the local server, install the lilbee skill, pass the provider + MCP wiring and the startup-model pin to the client per session (inline env config; the session's port and token are ephemeral, so nothing is persisted into the client's own config), exec the client, clean up on exit
+- `lilbee agent-config <client>` (e.g. `opencode`, `litellm`): print the client config block for hand-wired persistent setups
 - `--json` / `-j` on any command for structured output
 
 ### TUI (Textual)
 Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog, settings, setup wizard, wiki, wiki-drafts review, status. Slash commands route through `src/lilbee/cli/tui/command_registry.py` (single source of truth). Every background job (sync, crawl, wiki build, model pull) runs in the app-level `TaskBarController` and is cancellable with `/cancel`.
 
 ### REST API (Litestar)
+- OpenAI-compatible: `GET /v1/models`, `POST /v1/chat/completions` (streaming + tools). Errors use the OpenAI envelope with the codes in `src/lilbee/server/chat_completions_api/errors.py::CompletionsErrorCode` (`invalid_request`, `model_not_found`, `model_does_not_support_tools`, `context_length_exceeded`, `invalid_api_key`, `rate_limit_exceeded`, `internal_error`).
 - Search: `GET /api/search`, `POST /api/ask`, `POST /api/chat`, `POST /api/ask/stream`, `POST /api/chat/stream` (SSE)
 - Documents: `GET /api/documents`, `POST /api/documents/remove`, `POST /api/add`, `POST /api/sync`, `GET /api/source` (vault-aware source retrieval)
 - Models: `GET /api/models`, `GET /api/models/catalog`, `GET /api/models/installed`, `PUT /api/models/{chat,embedding,vision,reranker}`, `POST /api/models/pull`, `DELETE /api/models/{model}`
@@ -509,10 +695,76 @@ Launched by `lilbee` or `lilbee chat`. Screens: chat, task center, model catalog
 - Status/health: `GET /api/status`, `GET /api/health`
 - Interactive docs at `/schema/redoc`; OpenAPI JSON at `/schema/openapi.json`
 
-### MCP Server (`lilbee mcp`)
+All chat-generating endpoints (`/api/ask`, `/api/chat`, both their `/stream` variants, and `POST /v1/chat/completions`) share a process-wide chat lock so only one inference call runs at a time per server. Concurrent requests queue server-side; if the wait exceeds the configured timeout the request returns 429 with a `Retry-After: 1` header.
+
+### Auth model
+
+All network surfaces, the `/v1/*` model runtime, the `/api/*` REST routes, and the `/mcp` streamable-http endpoint, share **one** bearer session token. The daemon generates it on startup, persists it to `server.json` (mode `0600`), and hands it to local clients through `lilbee agent-config` / `lilbee launch`. Clients send `Authorization: Bearer <token>`; `AuthMiddleware` (`src/lilbee/server/auth.py`) checks it on every mutating request.
+
+This is deliberately a single, unscoped token rather than a per-client or per-scope system. lilbee is a local-first, single-user tool: the daemon binds localhost only (with DNS-rebinding protection), and any process running as the user can read `server.json` regardless, so a per-agent token would not add a boundary that the filesystem doesn't already remove. The token exists to keep out other local users and drive-by browser requests, not to isolate the user's own agents from each other.
+
+The tradeoff is that the token is all-or-nothing: a client trusted with retrieval also gets generation and the mutating tools (`reset`, `remove`, `model_rm`, `settings_set`). That is acceptable for the user's own agents on localhost. Giving retrieval-only access to a less-trusted client would require a scoped token, which lilbee does not have today.
+
+### MCP Server
 - Search + lifecycle: `search(query, top_k, scope)`, `status`, `sync`, `add`, `crawl`, `crawl_status`, `init`, `remove`, `list_documents`, `reset`
 - Models: `model_list`, `model_show`, `model_pull`, `model_rm`
 - Wiki: `wiki_list`, `wiki_read`, `wiki_status`, `wiki_synthesize`, `wiki_lint`, `wiki_citations`, `wiki_drafts_list`, `wiki_drafts_diff`, `wiki_prune`
+
+#### Transports
+
+The same FastMCP tool server is reachable two ways:
+
+- **stdio** (`lilbee mcp`): the default for a single agent. The client spawns
+  the process, which loads its own in-process `Services` (its own model copy).
+  Zero configuration, no network.
+- **streamable-http** (on the `lilbee serve` daemon): for multiple agents
+  sharing one warm backend. The tool server mounts as a Litestar sub-app at
+  `/mcp`, behind the same bearer-token `AuthMiddleware` as `/v1/*` and REST, and
+  resolves the same process-wide `Services`. Sync tool handlers are offloaded
+  off the event loop so one slow call cannot stall the other connected agents.
+  Retrieval reads run concurrently; generation shares the chat lock above.
+
+```mermaid
+flowchart LR
+    A1[Agent A]
+    A2[Agent B]
+
+    subgraph stdio["stdio (default, single agent)"]
+        M1["lilbee mcp"]
+        S1[(Services + own model copy)]
+        M1 --> S1
+    end
+
+    subgraph daemon["lilbee serve daemon (shared)"]
+        AUTH["AuthMiddleware (bearer token)"]
+        MCPSUB["/mcp (FastMCP sub-app)"]
+        REST["/v1 + REST"]
+        SVC[(one warm Services)]
+        AUTH --> MCPSUB
+        AUTH --> REST
+        MCPSUB --> SVC
+        REST --> SVC
+    end
+
+    A1 -->|stdio| M1
+    A1 -.->|http + Bearer| AUTH
+    A2 -.->|http + Bearer| AUTH
+```
+
+#### Schema-size discipline
+
+The OpenAI tools schema ships on every chat request; bloat there taxes
+every turn. lilbee's default surface is ~5.7 KB of raw JSON across 17
+tools (~10% of a 32K context, ~35% of Gemma 4's 7K).
+
+- Wiki tools and crawler tools are gated off the schema unless
+  `cfg.wiki` is on or `lilbee[crawler]` is installed.
+- Tool docstrings stay at one or two sentences (FastMCP turns them
+  into per-parameter schema descriptions).
+- `_strip_schema_noise` in `mcp_server.py` drops the FastMCP/Pydantic
+  auto-generated `title` keys before the tools hit the wire.
+- `tests/test_mcp.py::TestToolsSchemaSize` caps the schema at 7 KB; new
+  tools or doc bloat trip the cap and force a deliberate review.
 
 ### Python library
 ```python
@@ -534,9 +786,9 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` | Model used for `ask`, `chat`, and wiki generation | Native GGUF by default; with `[litellm]`, any remote name the SDK backend understands |
+| `LILBEE_CHAT_MODEL` | `Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf` | Model used for `ask`, `chat`, and wiki generation | Native GGUF by default; with `[remote]`, any remote name the SDK backend understands |
 | `LILBEE_EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf` | Model for computing vector embeddings | Changing this requires a full `lilbee rebuild` |
-| `LILBEE_VISION_MODEL` | *(none)* | GGUF vision model for OCR (via mtmd backend) | When set, takes precedence over Tesseract for scanned PDFs and images |
+| `LILBEE_VISION_MODEL` | *(none)* | GGUF vision model for OCR (served with `--mmproj`) | When set, takes precedence over Tesseract for scanned PDFs and images |
 | `LILBEE_TOP_K` | `10` | Number of search results returned | Higher values provide more context but increase LLM latency and token cost |
 | `LILBEE_MAX_DISTANCE` | `0.9` | Cosine distance cutoff for vector results | Lower values are stricter (fewer but more precise results). Set to 1.0 to disable filtering. |
 | `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Enable adaptive threshold widening | When true, automatically widens distance threshold if too few results found. Useful for ensuring minimum result count. |
@@ -584,7 +836,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
-| `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, llama-cpp, remote | auto = use the SDK backend if installed and reachable, otherwise llama-cpp |
+| `LILBEE_LLM_PROVIDER` | `auto` | Backend selection: auto, remote | auto = SDK backend for remote refs, the local `llama-server` engine for native GGUF refs |
 | `LILBEE_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (blank uses the default) | |
 | `LILBEE_LM_STUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio server URL (blank uses the default) | |
 
@@ -625,13 +877,13 @@ Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-wai
 
 ### Notes
 
-- **Single build location.** Wheels, sdist, and every executable (Vulkan, Metal, and CUDA) are produced only by the `release-candidate.yml` run for the tag. `release.yml` builds the Vulkan/Metal exes, `build-cuda-executables.yml` builds the CUDA exes, both called as siblings of the wheel builders; `attach-prerelease` waits on all four and picks every artifact up via the `lilbee-*` glob. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. CUDA / Intel-Mac extra wheels run in parallel with QA (`continue-on-error`, soft-fail) so a slow GPU cell never holds up anything; the same `continue-on-error` policy applies to the CUDA executable cells.
-- **PyPI publishes early; the fan-out waits.** `publish.yml` gates only on the default-wheel + sdist artifacts being complete in the RC run, so PyPI gets the release ~30 min after the tag push regardless of the executables/CUDA/QA still running. The Homebrew/AUR/Nix/Docker fan-out for the default `lilbee` package pins the executables by hash, so `fanout-packaging` self-skips (with a warning) until those assets are attached to the GH release; re-running `publish.yml` then completes the fan-out. The PyPI upload is `skip-existing`, so re-running is safe.
+- **Single build location.** The lilbee wheel (pure Python), sdist, the per-backend `lilbee-engine` wheels, and every executable (Vulkan, Metal, CUDA) are produced only by the `release-candidate.yml` run for the tag. `build-default-wheels.yml` builds the lilbee wheel + sdist, `build-multigpu.yml` builds the engine wheels, `release.yml` the Vulkan/Metal exes, `build-cuda-executables.yml` the CUDA exes. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. The engine wheels and CUDA executable cells are `continue-on-error` so a slow GPU cell never holds up anything.
+- **PyPI publishes early; the fan-out waits.** `publish.yml` gates on the lilbee wheel + sdist + the three default engine wheels (Vulkan Linux/Win, Metal macOS) being complete in the RC run, then uploads all of them so a plain `pip install lilbee` resolves the engine. The Homebrew/AUR/Nix/Docker fan-out for the default `lilbee` package pins the executables by hash, so `fanout-packaging` self-skips (with a warning) until those assets are attached to the GH release; re-running `publish.yml` then completes the fan-out. The PyPI upload is `skip-existing`, so re-running is safe.
 - **CUDA fan-out is its own lane.** `publish.yml`'s `dispatch-cuda` job runs in parallel with `publish-pypi` (it needs `guard` only, not the PyPI upload), polls the release for `lilbee-linux-x86_64-cu125`, and dispatches `publish-cuda-packages.yml` as soon as that asset attaches. That workflow updates the `lilbee-cuda` Homebrew formula, the `lilbee-cuda` AUR package, and the `sources-cuda.json` flake entry. Vulkan and CUDA fan-outs are fully decoupled: a slow Windows CUDA cell can't stall the `lilbee` Homebrew update, and a PyPI hiccup can't stall the `lilbee-cuda` update.
 - **`sources-cuda.json` is the CUDA flake state.** `publish-packages.yml` rewrites `sources.json` from scratch on every release (the Vulkan/Metal entries); the CUDA flake entry lives in a separate `sources-cuda.json` so the Vulkan publish can't wipe it. `flake.nix` reads both files; the `lilbee-cuda` package output only appears when `sources-cuda.json` lists a system. `flake-check.yml` triggers on either file.
 - **`lilbee` and `lilbee-cuda` are separate Homebrew / AUR / Nix packages.** Both ship a `lilbee` binary; the formula and `PKGBUILD` declare `conflicts_with` / `provides` so users swap between them. The Nix flake exposes them as parallel package outputs (`#default` vs `#lilbee-cuda`).
 - **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates. `build-cuda-executables.yml` has no such gate (CI cost there is dominated by the CUDA-toolkit install + Nuitka build itself, not the test re-run).
 - **Package versions auto-increment.** `publish-docker.yml`, `publish-packages.yml`, and `publish-cuda-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formulas, the AUR `PKGBUILD`s, and the Nix flake all bump to the new version on their own — no manual edits.
 - **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.
-- **`llama-cpp-python` version comes from `uv.lock`.** It's built from source in CI (no upstream prebuilts for our backends). The version isn't hardcoded in the workflows: `tools/wheel-build/build_llama_cpp.sh` reads the resolved version out of `uv.lock`, so `uv lock`-ing a new release is all it takes. Set `LLAMA_CPP_VERSION` (or the `llama_cpp_version` workflow input) to override for a one-off build.
+- **The engine ships as the `lilbee-engine` wheel.** `build-multigpu.yml` builds a self-contained `llama-server` (binary + ggml/llama/mtmd libs, rpath-baked) per backend via `tools/wheel-build/build_llama_server.sh`, plus the `llama-swap` supervisor/proxy and the `gguf-parser` VRAM estimator (static Go binaries built from pinned source in the same script). The default backends (Vulkan on Linux/Win, Metal on macOS) publish to PyPI so a plain `pip install lilbee` pulls the engine; the CUDA/ROCm/CPU variants live on the per-backend PEP 503 index (`lilbee.sh/<backend>/`). The standalone executables bundle the same self-contained engine via Nuitka, so brew / Docker / AUR carry it too. The llama.cpp source tag and the llama-swap / gguf-parser source tags are pinned in `build_llama_server.sh`.
 

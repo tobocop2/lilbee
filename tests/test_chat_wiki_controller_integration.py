@@ -270,8 +270,13 @@ def test_do_crawl_reports_setup_progress() -> None:
 
     def _worker() -> None:
         try:
-            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
-            with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
+            # The screen is unmounted (__new__ without __init__), so the trailing
+            # success notify cannot reach a live app; patch the dispatch so the
+            # test isolates _do_crawl's progress wiring.
+            with (
+                patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+                patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
+            ):
                 screen._do_crawl("https://x", 0, 2, reporter)
         except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)
@@ -313,8 +318,13 @@ def test_do_crawl_reports_page_progress() -> None:
 
     def _worker() -> None:
         try:
-            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
-            with patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl):
+            # The screen is unmounted (__new__ without __init__), so the trailing
+            # success notify cannot reach a live app; patch the dispatch so the
+            # test isolates _do_crawl's progress wiring.
+            with (
+                patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+                patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
+            ):
                 screen._do_crawl("https://x", 0, 2, reporter)
         except Exception as e:  # pragma: no cover - re-raised
             exc.append(e)

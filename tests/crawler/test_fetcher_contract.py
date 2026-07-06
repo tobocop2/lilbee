@@ -13,7 +13,7 @@ import asyncio
 import threading
 from collections.abc import AsyncIterator, Callable
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -21,6 +21,7 @@ from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
 from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
+from tests._sys_modules import inject_modules
 
 
 def _mock_crawl4ai_modules(instance: Any) -> dict[str, Any]:
@@ -115,7 +116,7 @@ class TestFetcherContract:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", _mock_crawl4ai_modules(mock_instance)):
+        with inject_modules(_mock_crawl4ai_modules(mock_instance)):
             async with fetcher_factory() as f:
                 assert isinstance(f, WebFetcher)
                 assert hasattr(f, "fetch_single")
@@ -127,7 +128,7 @@ class TestFetcherContract:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", _mock_crawl4ai_modules(mock_instance)):
+        with inject_modules(_mock_crawl4ai_modules(mock_instance)):
             async with fetcher_factory() as f:
                 page = await f.fetch_single("https://example.com", timeout=30.0)
         assert isinstance(page, FetchedPage)
@@ -142,7 +143,7 @@ class TestFetcherContract:
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.dict("sys.modules", _mock_crawl4ai_modules(mock_instance)):
+        with inject_modules(_mock_crawl4ai_modules(mock_instance)):
             async with fetcher_factory() as f:
                 page = await f.fetch_single("https://example.com", timeout=30.0)
         assert page.success is False
@@ -159,7 +160,7 @@ class TestFetcherContract:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         received: list[FetchedPage] = []
-        with patch.dict("sys.modules", _mock_crawl4ai_modules(mock_instance)):
+        with inject_modules(_mock_crawl4ai_modules(mock_instance)):
             async with fetcher_factory() as f:
                 async for page in f.fetch_recursive(
                     "https://example.com",
@@ -192,7 +193,7 @@ class TestFetcherContract:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         received: list[FetchedPage] = []
-        with patch.dict("sys.modules", _mock_crawl4ai_modules(mock_instance)):
+        with inject_modules(_mock_crawl4ai_modules(mock_instance)):
             async with fetcher_factory() as f:
                 async for page in f.fetch_recursive(
                     "https://example.com",
@@ -217,7 +218,7 @@ class TestFetcherContract:
         mock_instance.__aexit__ = AsyncMock(return_value=False)
 
         received: list[FetchedPage] = []
-        with patch.dict("sys.modules", _mock_crawl4ai_modules(mock_instance)):
+        with inject_modules(_mock_crawl4ai_modules(mock_instance)):
             async with fetcher_factory() as f:
                 async for page in f.fetch_recursive(
                     "https://example.com",

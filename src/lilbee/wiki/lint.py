@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 
 from lilbee.core.config import Config, cfg
-from lilbee.core.security import validate_path_within
+from lilbee.core.security import PathTraversalError, validate_path_within
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord, Store
 from lilbee.wiki.citation import (
@@ -31,6 +31,11 @@ from lilbee.wiki.shared import (
 )
 
 _ORPHAN_CANDIDATE_SUBDIRS: tuple[str, ...] = (WikiSubdir.CONCEPTS, WikiSubdir.ENTITIES)
+
+# Subdirs whose links don't count as "published" backlinks for orphan detection:
+# a [[slug]] living only in a draft or an archived page must not exempt a live
+# concept/entity page from the orphan flag.
+_UNPUBLISHED_SUBDIRS: tuple[str, ...] = (WikiSubdir.DRAFTS, WikiSubdir.ARCHIVE)
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +194,12 @@ def lint_wiki_page(
     # wiki_source is like "wiki/summaries/doc.md": strip the wiki_dir prefix
     relative = str(wiki_source).removeprefix(str(config.wiki_dir) + "/")
     wiki_path = wiki_root / relative
+    # wiki_source reaches here straight from the CLI/MCP, so a traversal source
+    # ("../../etc/passwd") would otherwise read and disclose an arbitrary file.
+    try:
+        validate_path_within(wiki_path, wiki_root)
+    except PathTraversalError:
+        return issues
     if wiki_path.exists():
         text = wiki_path.read_text(encoding="utf-8", errors="replace")
         issues.extend(_lint_unmarked(wiki_source, text))
@@ -237,8 +248,14 @@ def lint_changed_sources(
 def lint_all(
     store: Store,
     config: Config | None = None,
+    *,
+    record_log: bool = True,
 ) -> LintReport:
-    """Full lint: check every wiki page in the store."""
+    """Full lint: check every wiki page in the store.
+
+    ``record_log=False`` skips the audit-log append so a read-only status check
+    can reuse this without mutating ``log.md``.
+    """
     if config is None:
         config = cfg
     report = LintReport()
@@ -257,11 +274,12 @@ def lint_all(
             report.issues.extend(lint_wiki_page(wiki_source, store, config))
 
     report.issues.extend(_lint_orphans(wiki_root, config))
-    append_wiki_log(
-        WikiLogAction.LINT,
-        f"{report.error_count} error(s), {report.warning_count} warning(s)",
-        config,
-    )
+    if record_log:
+        append_wiki_log(
+            WikiLogAction.LINT,
+            f"{report.error_count} error(s), {report.warning_count} warning(s)",
+            config,
+        )
     return report
 
 
@@ -277,12 +295,16 @@ def _lint_orphans(wiki_root: Path, config: Config) -> list[LintIssue]:
     referenced: set[str] = set()
     candidates: list[Path] = []
     candidate_roots = {wiki_root / sub for sub in _ORPHAN_CANDIDATE_SUBDIRS}
+    unpublished_roots = {wiki_root / sub for sub in _UNPUBLISHED_SUBDIRS}
     for md_path in wiki_root.rglob("*.md"):
-        text = md_path.read_text(encoding="utf-8", errors="replace")
-        for match in WIKI_LINK_RE.finditer(text):
-            slug = match.group(1).split("|", 1)[0].strip().lower()
-            if slug:
-                referenced.add(slug)
+        # Only published pages contribute backlinks; a link from a draft or an
+        # archived page must not keep a live concept/entity page off the orphan list.
+        if not any(root in md_path.parents for root in unpublished_roots):
+            text = md_path.read_text(encoding="utf-8", errors="replace")
+            for match in WIKI_LINK_RE.finditer(text):
+                slug = match.group(1).split("|", 1)[0].strip().lower()
+                if slug:
+                    referenced.add(slug)
         if any(root in md_path.parents for root in candidate_roots):
             candidates.append(md_path)
 

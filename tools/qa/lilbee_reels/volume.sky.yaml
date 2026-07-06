@@ -1,0 +1,12 @@
+# Dedicated, fresh volume for the agent-launcher reels. SEPARATE from the
+# protected lilbee-qa volume (which this project never touches). Small, because
+# the reels need one ~17GB model + the engine cache, not the giant matrix set.
+# Kept only so retakes don't re-pull the model; delete it once the reels are done:
+#   sky volumes delete lilbee-agentqa
+#
+# Same DC as the (idle) lilbee-qa volume — CA-MTL-3 has A100-80GB-SXM — but a
+# distinct volume, so nothing of the protected one is mounted or modified.
+name: lilbee-agentqa
+type: runpod-network-volume
+infra: runpod/CA/CA-MTL-3
+size: 120Gi

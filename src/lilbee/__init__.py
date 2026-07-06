@@ -5,13 +5,12 @@ from __future__ import annotations
 import os
 import threading
 
-# Disable huggingface_hub's xet transfer layer before any HF submodule loads.
-# huggingface_hub.constants reads HF_HUB_DISABLE_XET at import time, so this
-# must run before the first `import huggingface_hub` anywhere in the process.
-# Workaround for HF issue #4058: xet-core reports progress in 3-4 coarse jumps
-# instead of continuously, making download bars appear stuck on large files.
-# Forcing the HTTP path restores smooth per-chunk tqdm updates. Users can still
-# opt back into xet by setting HF_HUB_DISABLE_XET=0 in their environment.
+# Disable huggingface_hub's xet transfer by default so the download bar stays
+# smooth: xet reports progress in a few coarse jumps (the bar looks stuck),
+# while the plain HTTP path with small chunks updates several times a second.
+# The catalog re-enables xet per-download for large files (catalog/download.py),
+# where xet's speed is worth the coarser bar. Set HF_HUB_DISABLE_XET=0 to force
+# xet for every download.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 # Suppress HF-default tqdm bars (metadata probes, snapshot summaries) that
@@ -114,8 +113,23 @@ __all__ = ["Lilbee"]
 
 
 def __getattr__(name: str) -> object:
+    """Lazy-load ``Lilbee`` and fall back to normal submodule import."""
     if name == "Lilbee":
         from lilbee.api import Lilbee
 
         return Lilbee
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if name.startswith("__") and name.endswith("__"):
+        # Introspection probes (__wrapped__, __all__ fallbacks, copy/pickle
+        # dunders) are frequent and never name a submodule; skip the import.
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    # PEP 562: `lilbee.<submodule>` must behave like a plain package attribute
+    # even when the submodule has not been imported yet (dotted-path resolvers
+    # such as monkeypatch.setattr and mock.patch rely on getattr succeeding).
+    import importlib
+
+    try:
+        return importlib.import_module(f".{name}", __name__)
+    except ModuleNotFoundError as exc:
+        if exc.name == f"{__name__}.{name}":
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+        raise
