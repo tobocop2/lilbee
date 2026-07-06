@@ -1,6 +1,7 @@
 """Tests for platform-level helpers."""
 
 import os
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -207,6 +208,7 @@ class TestScaledChatCtxTargetDefault:
 
 
 class TestStderrSuppressed:
+    @pytest.mark.skipif(sys.platform == "win32", reason="fd redirection is a win32 no-op")
     def test_fd2_points_at_devnull_inside_then_restores(self):
         devnull_stat = os.stat(os.devnull)
         with stderr_suppressed():
@@ -216,6 +218,7 @@ class TestStderrSuppressed:
         # ...and afterwards fd 2 is restored to a valid descriptor (no OSError).
         os.fstat(2)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="fd redirection is a win32 no-op")
     def test_restores_fd2_even_when_body_raises(self):
         with pytest.raises(ValueError, match="boom"), stderr_suppressed():
             raise ValueError("boom")
