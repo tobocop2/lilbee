@@ -39,10 +39,9 @@ class ChatInput(TextArea):
     _UNCONSUMED_KEYS: ClassVar[frozenset[str]] = frozenset()
 
     # Per-keystroke layout cost is dominated by ``height: auto`` reflow.
-    # Pin the visual height to a single row while the content has no
-    # newline; flip to auto-grow only once a newline appears (Shift+Enter
-    # or pasted multi-line text). The CSS hook is the ``-multiline``
-    # class added by :meth:`_track_multiline`.
+    # Pin the visual height to a single row while the content fits one row;
+    # flip to auto-grow once it wraps or holds a newline. The CSS hook is the
+    # ``-multiline`` class added by :meth:`_track_multiline`.
 
     @dataclass
     class Submitted(Message):
@@ -97,6 +96,5 @@ class ChatInput(TextArea):
 
     @on(TextArea.Changed)
     def _track_multiline(self, _event: TextArea.Changed) -> None:
-        """Toggle the ``-multiline`` class so CSS can pin height for the
-        single-line case and let it grow only when newlines are present."""
-        self.set_class("\n" in self.text, "-multiline")
+        """Add ``-multiline`` when the prompt spans more than one wrapped row."""
+        self.set_class(self.wrapped_document.height > 1, "-multiline")
