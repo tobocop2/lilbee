@@ -472,13 +472,20 @@ class TestTaskBar:
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
         assert _warm_detail(None) is None
-        assert _warm_detail(WarmProgress(phase=WarmPhase.STARTING)) == "starting"
-        assert _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE)) == "loading engine"
         assert _warm_detail(WarmProgress(phase=WarmPhase.READY)) is None
-        reading = WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
-        assert _warm_detail(reading) == "reading weights 42%"
+        # Each active phase carries a progress bar plus the phase word.
+        starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
+        assert "starting" in starting and "▓" in starting
+        loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
+        assert "loading engine" in loading and ("▓" in loading or "░" in loading)
+        reading = _warm_detail(
+            WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
+        )
+        assert "reading weights 42%" in reading
+        assert reading.startswith("▓▓▓▓▓")  # round(0.42 * 12) = 5 filled cells
         # No total yet: percent floors to 0 instead of dividing by zero.
-        assert _warm_detail(WarmProgress(phase=WarmPhase.READING_WEIGHTS)) == "reading weights 0%"
+        zero = _warm_detail(WarmProgress(phase=WarmPhase.READING_WEIGHTS))
+        assert "reading weights 0%" in zero
 
     async def test_warm_line_shows_phase_when_chat_warming(self) -> None:
         from unittest import mock
@@ -498,10 +505,20 @@ class TestTaskBar:
         async with app.run_test() as pilot:
             await pilot.pause()
             bar = app.query_one(TaskBar)
-            assert bar._warm_line() == "loading chat · reading weights 25%"
+            warm = bar._warm_line()
+            assert warm.startswith("loading chat · ")
+            assert "reading weights 25%" in warm and "▓" in warm
             bar._refresh_display()
             await pilot.pause()
             assert bar.display is True
+
+    def test_sweep_bar_animates_and_keeps_width(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import _WARM_BAR_WIDTH, _sweep_bar
+
+        frames = [_sweep_bar(t) for t in range(_WARM_BAR_WIDTH + 4)]
+        assert all(len(f) == _WARM_BAR_WIDTH for f in frames)  # fixed width every frame
+        assert len({*frames}) > 1  # the lit window moves, so frames differ
+        assert all("▓" in f for f in frames)  # always shows a lit window
 
     async def test_warm_line_none_when_not_warming(self) -> None:
         from lilbee.cli.tui.widgets.task_bar import TaskBar

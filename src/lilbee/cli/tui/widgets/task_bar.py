@@ -34,22 +34,47 @@ _POLL_INTERVAL_IDLE_S = 1.0
 _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
 
+# Warm progress bar: filled/track glyphs and width, matching the fleet panel bars.
+_WARM_BAR_FILL = "▓"
+_WARM_BAR_TRACK = "░"
+_WARM_BAR_WIDTH = 12
+# Indeterminate sweep (loading engine has no byte signal): a lit window that walks
+# the track so the bar reads as "working", not stalled. Advanced by the poll tick.
+_WARM_SWEEP_WIDTH = 3
 
-def _warm_detail(progress: WarmProgress | None) -> str | None:
-    """Phase (and byte % while paging weights) for the cold-start chat warm line.
 
-    None once the warm is past an active phase, so the line reads as progress, not
-    a stuck spinner.
+def _progress_bar(fraction: float) -> str:
+    """A determinate fill bar for the byte-progress (reading-weights) phase."""
+    filled = round(max(0.0, min(1.0, fraction)) * _WARM_BAR_WIDTH)
+    return _WARM_BAR_FILL * filled + _WARM_BAR_TRACK * (_WARM_BAR_WIDTH - filled)
+
+
+def _sweep_bar(tick: int) -> str:
+    """An indeterminate bar with a lit window of fixed width walking (and wrapping)
+    across the track, keyed to *tick*, so it always shows motion, never a blank."""
+    start = tick % _WARM_BAR_WIDTH
+    lit = {(start + offset) % _WARM_BAR_WIDTH for offset in range(_WARM_SWEEP_WIDTH)}
+    return "".join(_WARM_BAR_FILL if i in lit else _WARM_BAR_TRACK for i in range(_WARM_BAR_WIDTH))
+
+
+def _warm_detail(progress: WarmProgress | None, tick: int = 0) -> str | None:
+    """Phase word plus a progress bar for the cold-start chat warm line.
+
+    A determinate byte bar while paging weights, an indeterminate sweep while the
+    engine loads (no byte signal). None once past an active phase, so the line
+    reads as live progress, not a stalled spinner.
     """
     if progress is None:
         return None
     if progress.phase is WarmPhase.STARTING:
-        return msg.TASKBAR_WARM_STARTING
+        return f"{_sweep_bar(tick)}  {msg.TASKBAR_WARM_STARTING}"
     if progress.phase is WarmPhase.LOADING_ENGINE:
-        return msg.TASKBAR_WARM_LOADING
+        return f"{_sweep_bar(tick)}  {msg.TASKBAR_WARM_LOADING}"
     if progress.phase is WarmPhase.READING_WEIGHTS:
-        pct = int(progress.bytes_done / progress.bytes_total * 100) if progress.bytes_total else 0
-        return msg.TASKBAR_WARM_READING.format(pct=pct)
+        fraction = progress.bytes_done / progress.bytes_total if progress.bytes_total else 0.0
+        return (
+            f"{_progress_bar(fraction)}  {msg.TASKBAR_WARM_READING.format(pct=int(fraction * 100))}"
+        )
     return None
 
 
@@ -285,7 +310,7 @@ class TaskBar(Static):
         """The cold-start chat warm line, or None when chat isn't warming."""
         from lilbee.app.placement import active_chat_warm_progress
 
-        detail = _warm_detail(active_chat_warm_progress())
+        detail = _warm_detail(active_chat_warm_progress(), self._tick_count)
         return msg.TASKBAR_WARM.format(detail=detail) if detail else None
 
     def _spawning_workers_template(self, roles: list[str]) -> str:
