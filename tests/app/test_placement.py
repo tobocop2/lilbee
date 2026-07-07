@@ -22,6 +22,89 @@ def _resolved():
     )
 
 
+def _resolved_with_skipped():
+    from lilbee.providers.fleet.planning import ResolvedPlacement
+
+    return ResolvedPlacement(
+        devices=(FleetDevice("CUDA", 0, "NVIDIA A100", 80 * GIB, 72 * GIB),),
+        instances=(InstancePlan(role=WorkerRole.EMBED, devices=(0,), tensor_split=None),),
+        unplaceable_roles=(),
+        model_refs={WorkerRole.EMBED: "org/embed.gguf"},
+        skipped_not_installed={WorkerRole.CHAT: "org/Qwen3-4B.gguf"},
+    )
+
+
+def test_view_surfaces_skipped_not_installed(monkeypatch):
+    from lilbee.app.placement import SkippedRole
+
+    monkeypatch.setattr(
+        app_placement, "resolve_placement_plan", lambda spec: _resolved_with_skipped()
+    )
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    view = app_placement.get_placement()
+    assert view.skipped_not_installed == (
+        SkippedRole(role=WorkerRole.CHAT, model="org/Qwen3-4B.gguf"),
+    )
+    # The skipped role is absent from the placed roles (that is the bug it explains).
+    assert all(r.role is not WorkerRole.CHAT for r in view.roles)
+
+
+def test_view_has_no_skipped_when_all_installed(monkeypatch):
+    monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec: _resolved())
+    monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
+    assert app_placement.get_placement().skipped_not_installed == ()
+
+
+def _provider_with(role_ready, warm_phase):
+    import unittest.mock as m
+
+    from lilbee.providers.warm_progress import WarmProgress
+
+    provider = m.MagicMock()
+    provider.role_ready.return_value = role_ready
+    provider.warm_progress.return_value = (
+        WarmProgress(phase=warm_phase) if warm_phase is not None else None
+    )
+    services = m.MagicMock()
+    services.provider = provider
+    return services
+
+
+def test_warm_progress_none_without_services(monkeypatch):
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    assert app_placement.active_chat_warm_progress() is None
+
+
+def test_warm_progress_none_when_role_ready(monkeypatch):
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _provider_with(True, None))
+    assert app_placement.active_chat_warm_progress() is None
+
+
+def test_warm_progress_returns_snapshot_during_active_phase(monkeypatch):
+    from lilbee.providers.warm_progress import WarmPhase
+
+    monkeypatch.setattr(
+        app_placement, "peek_services", lambda: _provider_with(False, WarmPhase.READING_WEIGHTS)
+    )
+    snapshot = app_placement.active_chat_warm_progress()
+    assert snapshot is not None
+    assert snapshot.phase is WarmPhase.READING_WEIGHTS
+
+
+def test_warm_progress_none_when_not_warming(monkeypatch):
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _provider_with(False, None))
+    assert app_placement.active_chat_warm_progress() is None
+
+
+def test_warm_progress_none_on_warm_error(monkeypatch):
+    from lilbee.providers.warm_progress import WarmPhase
+
+    monkeypatch.setattr(
+        app_placement, "peek_services", lambda: _provider_with(False, WarmPhase.ERROR)
+    )
+    assert app_placement.active_chat_warm_progress() is None
+
+
 def test_active_spec_reads_cfg(monkeypatch):
     monkeypatch.setattr(app_placement.cfg, "placement", None)
     assert app_placement._active_spec() is None
