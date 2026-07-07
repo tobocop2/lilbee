@@ -274,6 +274,20 @@ class TestRoutingProvider:
         rp._local = None
         assert rp.warm_progress() is None
 
+    def test_vision_slot_capacity_delegates_to_local_engine(self) -> None:
+        rp = self._make_provider()
+        mock_local = mock.MagicMock()
+        mock_local.vision_slot_capacity.return_value = 5
+        rp._local = mock_local
+        assert rp.vision_slot_capacity() == 5
+        mock_local.vision_slot_capacity.assert_called_once_with()
+
+    def test_vision_slot_capacity_none_without_a_local_engine(self) -> None:
+        # Sizing the fan-out must not build the fleet; before it exists, None.
+        rp = self._make_provider()
+        rp._local = None
+        assert rp.vision_slot_capacity() is None
+
     def test_warm_progress_delegates_to_local_engine(self) -> None:
         from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 

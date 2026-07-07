@@ -277,6 +277,18 @@ class TestSourceTracking:
 class TestMaxConcurrent:
     """``_max_concurrent`` scales ingest file-concurrency to the replica fleet."""
 
+    @staticmethod
+    def _stub_vision_capacity(monkeypatch, value: int | None) -> None:
+        """Force ``provider.vision_slot_capacity()`` so the estimate vs fitted path is
+        deterministic without a running fleet."""
+        from unittest.mock import MagicMock
+
+        from lilbee.data.ingest import pipeline
+
+        services = MagicMock()
+        services.provider.vision_slot_capacity.return_value = value
+        monkeypatch.setattr(pipeline, "get_services", lambda: services)
+
     def test_defaults_to_cpu_quota_without_vision(self, monkeypatch) -> None:
         from lilbee.data.ingest import pipeline
 
@@ -286,10 +298,11 @@ class TestMaxConcurrent:
         assert pipeline._max_concurrent() == 6
 
     def test_scales_to_total_vision_slots_when_replicated(self, monkeypatch) -> None:
-        # 8 vision replicas x 4 OCR slots each = 32, which must outvote a 4-core quota
-        # so the extra GPUs are not starved.
+        # Before the fleet is up (capacity None) the estimate stands: 8 vision replicas
+        # x 4 OCR slots each = 32, which must outvote a 4-core quota so GPUs aren't starved.
         from lilbee.data.ingest import pipeline
 
+        self._stub_vision_capacity(monkeypatch, None)
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
         monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
         monkeypatch.setattr(cfg, "vision_replicas", 8)
@@ -297,11 +310,25 @@ class TestMaxConcurrent:
         monkeypatch.setattr(cfg, "embed_replicas", 1)
         assert pipeline._max_concurrent() == 32
 
+    def test_prefers_fitted_vision_slots_when_fleet_up(self, monkeypatch) -> None:
+        # Once the fleet is up the fan-out sizes to the servers' real fitted slots, not
+        # the requested concurrency a modest card could not fit.
+        from lilbee.data.ingest import pipeline
+
+        self._stub_vision_capacity(monkeypatch, 5)
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "vision_replicas", 8)
+        monkeypatch.setattr(cfg, "vision_ocr_concurrency", 4)  # would estimate 32
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 5
+
     def test_single_replica_caps_at_vision_slots(self, monkeypatch) -> None:
         # A single vision server has vision_ocr_concurrency continuous-batching slots;
         # file-concurrency tracks that capacity so all slots stay fed.
         from lilbee.data.ingest import pipeline
 
+        self._stub_vision_capacity(monkeypatch, None)
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 4)
         monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
         monkeypatch.setattr(cfg, "vision_replicas", 1)
@@ -314,6 +341,7 @@ class TestMaxConcurrent:
         # requests at one vision server's few slots; the cap is the vision capacity.
         from lilbee.data.ingest import pipeline
 
+        self._stub_vision_capacity(monkeypatch, None)
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 32)
         monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
         monkeypatch.setattr(cfg, "vision_replicas", 1)

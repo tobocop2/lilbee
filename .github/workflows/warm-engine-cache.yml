@@ -1,0 +1,29 @@
+name: Warm engine cache
+
+# GitHub scopes cache saves to the creating ref, so caches saved during tag
+# (release) runs are unrestorable by later runs. Build the pinned engine
+# matrix once here on main; release runs then restore instead of rebuilding.
+# Doubles as pre-tag validation of the engine builds themselves.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/wheel-build/build_llama_server.sh'
+      - 'tools/wheel-build/cmake_args.sh'
+      - 'tools/wheel-build/install_gpu_toolkit.sh'
+      - '.github/workflows/build-multigpu.yml'
+      - '.github/workflows/warm-engine-cache.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warm-engine-cache
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    uses: ./.github/workflows/build-multigpu.yml
+    secrets: inherit

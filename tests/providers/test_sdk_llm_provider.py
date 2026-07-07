@@ -281,6 +281,10 @@ class TestChatNonStream:
         assert provider.supports_tools("openai/gpt-4o") is True
         assert backend.supports_tools_calls == ["openai/gpt-4o"]
 
+    def test_vision_slot_capacity_is_none(self) -> None:
+        # Hosted backends have no local OCR slots; the ingest fan-out estimates.
+        assert SdkLLMProvider(FakeBackend()).vision_slot_capacity() is None
+
     def test_builds_completion_request_with_parsed_ref(self) -> None:
         backend = FakeBackend()
         provider = SdkLLMProvider(backend)

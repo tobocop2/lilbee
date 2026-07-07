@@ -81,11 +81,10 @@ _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # The server parses tool calls natively via ``--jinja``; this probe only decides
 # whether to offer tools to a given model at all.
 _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions|function_calls)\b")
-# Ingest OCR is background work: back off and re-request a 429'd page rather
-# than dropping it from the index. Slot dispatch already prevents self-inflicted
-# 429s, so a busy response is a cold vision start (weights plus mmproj loading)
-# or foreign traffic. Capped backoff keeps the total wait near ~110s; a page
-# still busy after that fails like any extraction error.
+# Attempt cap for the busy-retry only when a page has no deadline (ocr_timeout=0,
+# "no limit"): it backstops the retry so a persistently busy fleet can't spin
+# forever. A page with a deadline retries until that deadline instead (see
+# _ocr_dispatch), so the count doesn't bound the common case.
 _VISION_BUSY_RETRIES = 18
 # How often a waiter blocked on full replicas re-polls their health: an
 # unhealthy replica re-admits itself by cool-down expiry, which notifies nobody.
@@ -362,6 +361,36 @@ def _bounded_vision_chat(
         ) from None
 
 
+def _ocr_dispatch(
+    pool: Sequence[_VisionReplica],
+    messages: Sequence[Mapping[str, Any]],
+    deadline: float | None,
+) -> str:
+    """OCR *messages* on a free replica slot, retrying a busy server until *deadline*.
+
+    Backpressure (the dispatcher blocking until a slot frees) makes a
+    self-inflicted 429 unreachable; a residual busy response is a still-warming
+    server or foreign traffic. The retry is deadline-bound rather than
+    attempt-bound so a page on a deep queue waits for a genuinely free slot until
+    its own budget passes instead of dropping after a fixed count. Each attempt
+    is bounded by the budget remaining before *deadline*; an exhausted budget
+    raises :class:`_PageBudgetExhausted`. A ``None`` deadline (no limit) falls
+    back to a bounded attempt count so the retry can't spin forever.
+    """
+
+    def _attempt(client: LlamaServerClient) -> str:
+        remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
+        if remaining == 0.0:
+            raise _PageBudgetExhausted
+        return _vision_call(client, messages, remaining)
+
+    return retry_on_busy(
+        lambda: _dispatch_vision(pool, _attempt),
+        retries=_VISION_BUSY_RETRIES,
+        deadline=deadline,
+    )
+
+
 def _ocr_pdf_page(
     idx: int,
     png: bytes,
@@ -375,23 +404,13 @@ def _ocr_pdf_page(
 
     The document-deadline clock is read only once a slot is held, so queue time
     isn't billed against the page's share; an exhausted budget skips the page
-    rather than running it un-timed. A busy server (429, still warming) is
-    retried with backoff before the page is given up on.
+    rather than running it un-timed.
     """
     from lilbee.vision import build_vision_messages
 
     messages = build_vision_messages(ocr_prompt, png)
-
-    def _page(client: LlamaServerClient) -> str:
-        remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
-        if remaining == 0.0:
-            raise _PageBudgetExhausted
-        return _vision_call(client, messages, remaining)
-
     try:
-        return idx, retry_on_busy(
-            lambda: _dispatch_vision(pool, _page), retries=_VISION_BUSY_RETRIES
-        )
+        return idx, _ocr_dispatch(pool, messages, deadline)
     except _PageBudgetExhausted:
         log.warning(
             "Vision OCR budget exhausted before page %d of %s; skipping.",
@@ -422,6 +441,17 @@ def _pdf_drain_budget(total_pages: int, per_page_timeout_s: float | None) -> flo
     if not per_page_timeout_s or per_page_timeout_s <= 0:
         return None
     return total_pages * per_page_timeout_s + cfg.vision_load_budget_s
+
+
+def _ocr_deadline(per_page_timeout_s: float | None) -> float | None:
+    """Absolute monotonic deadline for one image OCR, or None when uncapped.
+
+    An image is a one-page document, so it gets the same budget as a PDF page:
+    the per-page timeout plus the cold-load grace, spanning queue wait and
+    generation together.
+    """
+    budget = _pdf_drain_budget(1, per_page_timeout_s)
+    return None if budget is None else time.monotonic() + budget
 
 
 class FleetProvider:
@@ -884,13 +914,26 @@ class FleetProvider:
         pool = self._vision_pool()
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
-        # Slot assignment makes a self-inflicted 429 impossible; a residual busy
-        # response is a still-warming server or foreign traffic. Backoff runs
-        # slot-free so a waiting sibling can use a replica that is ready.
-        return retry_on_busy(
-            lambda: _dispatch_vision(pool, lambda client: _vision_call(client, messages, timeout)),
-            retries=_VISION_BUSY_RETRIES,
-        )
+        try:
+            return _ocr_dispatch(pool, messages, _ocr_deadline(timeout))
+        except _PageBudgetExhausted:
+            raise ProviderError(
+                "Vision OCR timed out waiting for a free vision slot.",
+                provider=_PROVIDER_NAME,
+            ) from None
+
+    def vision_slot_capacity(self) -> int | None:
+        """Total fitted ``--parallel`` slots across the running vision replicas.
+
+        ``None`` before the fleet is up (no launch snapshot yet), so the ingest
+        fan-out keeps its own estimate until real capacity is known. A modest
+        card that fit fewer slots than requested reports the smaller real number,
+        so the fan-out never queues more pages than the servers can serve.
+        """
+        launches = self._launches.get(WorkerRole.VISION)
+        if not launches:
+            return None
+        return max(1, sum(launch.slots for launch in launches))
 
     def _vision_pool(self) -> list[_VisionReplica]:
         """Each vision replica paired with its fitted ``--parallel`` slot count.
