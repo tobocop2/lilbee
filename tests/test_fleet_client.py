@@ -1002,6 +1002,39 @@ def test_close_closes_owned_client() -> None:
     assert c._http.is_closed
 
 
+def test_loopback_ssl_context_is_shared_and_unverified() -> None:
+    """Loopback clients reuse one minimal SSL context instead of rebuilding the
+    default (CA-loading) one on every reload."""
+    import ssl
+
+    from lilbee.providers.fleet.client import _LOOPBACK_SSL_CONTEXT
+
+    assert _LOOPBACK_SSL_CONTEXT.verify_mode == ssl.CERT_NONE
+    assert _LOOPBACK_SSL_CONTEXT.check_hostname is False
+
+
+def test_owned_client_uses_shared_context_not_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a client must reuse the shared context and never call the expensive
+    create_default_context on the reload path."""
+    import lilbee.providers.fleet.client as client_mod
+
+    captured: dict[str, object] = {}
+    real_client = httpx.Client
+
+    def _spy_client(**kwargs: object) -> httpx.Client:
+        captured.update(kwargs)
+        return real_client(transport=httpx.MockTransport(_handler))
+
+    monkeypatch.setattr(client_mod.httpx, "Client", _spy_client)
+    monkeypatch.setattr(client_mod.ssl, "create_default_context", _boom_create_default_context)
+    LlamaServerClient("http://gpu0", "m")
+    assert captured["verify"] is client_mod._LOOPBACK_SSL_CONTEXT
+
+
+def _boom_create_default_context(*_a: object, **_k: object) -> object:
+    raise AssertionError("create_default_context must not be called on the reload path")
+
+
 def test_close_leaves_injected_client_open() -> None:
     http = httpx.Client(transport=httpx.MockTransport(_handler))
     c = LlamaServerClient("http://gpu0", "m", http=http)

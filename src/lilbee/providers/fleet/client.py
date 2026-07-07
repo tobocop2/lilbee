@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import math
+import ssl
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
@@ -31,6 +32,15 @@ from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.roles import RerankMode
 
 _PROVIDER_NAME = "llama-server"
+
+# Fleet clients only ever talk to a loopback llama-server over plain HTTP, so TLS is
+# never negotiated. httpx still builds a default SSL context per client (loads the
+# system CA bundle, ~13 ms each and slower on macOS via the keychain), which is pure
+# overhead paid on every fleet reload. Build one minimal context and share it so a
+# reload doesn't reload the CA bundle for each replica.
+_LOOPBACK_SSL_CONTEXT = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+_LOOPBACK_SSL_CONTEXT.check_hostname = False
+_LOOPBACK_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 # Reranker pair format: query and candidate are joined with this separator into
 # one document so a cross-encoder GGUF scores the pair as a single sequence.
 _RERANK_PAIR_SEPARATOR = "</s></s>"
@@ -359,7 +369,9 @@ class LlamaServerClient:
     ) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
-        self._http = http or httpx.Client(base_url=self._base, timeout=timeout)
+        self._http = http or httpx.Client(
+            base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
+        )
         self._owns_http = http is None
         # Per-slot context for embed/rerank servers: inputs longer than this are
         # token-truncated (via the server's tokenizer) before embedding, mirroring
