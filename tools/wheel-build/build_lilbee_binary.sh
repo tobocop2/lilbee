@@ -51,18 +51,21 @@ done
 # the engine wheel still succeeds (resolver falls back to PATH).
 LLAMA_SERVER_FLAGS=()
 if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
+    # --include-package pulls the __init__.py and, on Linux, the .so libraries
+    # (Nuitka classifies a bare .so as an extension module and places it beside
+    # the binary). --include-package-data ships the executables (llama-server,
+    # llama-swap, gguf-parser) as data.
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
-    # The engine bin/ holds llama-server plus its whole shared-library closure
-    # (ggml/llama/mtmd + the server-impl split, and their SONAME symlinks copied
-    # as real files) and the llama-swap / gguf-parser helpers. Both
-    # --include-package-data AND --include-data-dir route any .dylib/.so/.dll
-    # through Nuitka's DLL dependency tracker, which then DROPS the engine's
-    # libraries because nothing Nuitka scans references the bundled llama-server
-    # binary -- shipping a server that cannot start (@rpath library not loaded).
-    # Enumerate every file and force each in with --include-data-files, which
-    # copies verbatim: exec bits and the baked @loader_path/$ORIGIN rpath intact.
+    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
+    # Platform gap: macOS .dylib and Windows .dll are NOT extension modules, so
+    # --include-package-data routes them through Nuitka's DLL tracker, which
+    # discards the engine's library closure (nothing Nuitka scans references the
+    # bundled llama-server) and ships a server that cannot start. Force those in
+    # verbatim with --include-data-files (rpath/exec bit preserved). Linux .so is
+    # deliberately excluded: it is already an extension, and data-files-ing it
+    # FATALs with an extension/data conflict.
     ENGINE_BIN=$(uv run --no-sync python -c "import lilbee_engine, pathlib; print(pathlib.Path(lilbee_engine.__file__).parent / 'bin')")
-    for _f in "${ENGINE_BIN}"/*; do
+    for _f in "${ENGINE_BIN}"/*.dylib "${ENGINE_BIN}"/*.dll; do
         [ -f "${_f}" ] || continue
         LLAMA_SERVER_FLAGS+=(--include-data-files="${_f}=lilbee_engine/bin/$(basename "${_f}")")
     done
