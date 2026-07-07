@@ -22,6 +22,16 @@ _AMD_SMI_JSON_NESTED = (
     '[{"gpu": 0, "gfx_activity": {"value": 72, "unit": "%"}, "temperature": {"edge": 61}}]'
 )
 
+# Real amd-smi 6.x `metric --usage --temperature --json`: readings live under
+# per-category blocks, so the util key is not at the item top level at all.
+_AMD_SMI_JSON_USAGE_BLOCK = (
+    '[{"gpu": 0,'
+    ' "usage": {"gfx_activity": {"value": 45, "unit": "%"},'
+    ' "umc_activity": {"value": 30, "unit": "%"}},'
+    ' "temperature": {"edge": {"value": 61, "unit": "C"},'
+    ' "hotspot": {"value": 68, "unit": "C"}}}]'
+)
+
 _ROCM_SMI_JSON = (
     '{"card0": {"GPU use (%)": "35", "Temperature (Sensor edge) (C)": "52"},'
     ' "card1": {"GPU use (%)": "80", "Temperature (Sensor edge) (C)": "67"}}'
@@ -70,6 +80,13 @@ def test_parse_amd_smi_gpu_dict_wrapper() -> None:
     raw = '{"gpu": [{"gpu": 0, "gfx_activity": 55, "temperature_c": 40}]}'
     result = _parse_amd_smi(raw, frozenset({0}))
     assert result[0].utilization_pct == 55
+
+
+def test_parse_amd_smi_usage_block_real_format() -> None:
+    """Real amd-smi 6.x nests util/temp under category blocks; both must be read."""
+    result = _parse_amd_smi(_AMD_SMI_JSON_USAGE_BLOCK, frozenset({0}))
+    assert result[0].utilization_pct == 45
+    assert result[0].temperature_c == 61
 
 
 def test_parse_amd_smi_vram_sentinel() -> None:

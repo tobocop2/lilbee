@@ -7,6 +7,7 @@ import json
 from lilbee.providers.fleet.gpu_backends.base import (
     UtilSample,
     extract_int,
+    find_metric,
     parse_device_index,
     run_smi,
 )
@@ -44,20 +45,15 @@ def _rocm_smi_output() -> str:
     return run_smi(_TOOL_ROCM_SMI, list(_ROCM_SMI_ARGS), _TIMEOUT_S)
 
 
-def _nested_int(obj: dict[str, object], key: str, nested_key: str = "value") -> int | None:
-    """Extract an int from obj[key] when that value is a nested {"value": N} dict."""
-    val = obj.get(key)
-    if isinstance(val, dict):
-        return extract_int(val, (nested_key,))
-    return None
-
-
 def _parse_amd_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
     """Parse amd-smi JSON into UtilSample per index, or {} on failure.
 
-    Tolerates two shapes emitted by different amd-smi versions:
-    - Flat:   {"gfx_activity": 72, "temperature_c": 61}
-    - Nested: {"gfx_activity": {"value": 72, "unit": "%"}, "temperature": {"edge": 61}}
+    amd-smi nests the same readings differently across versions: flat
+    ({"gfx_activity": 72}), value-wrapped ({"gfx_activity": {"value": 72}}), or under
+    a block ({"usage": {"gfx_activity": {"value": 72}}, "temperature": {"edge":
+    {"value": 61}}}). ``find_metric`` reads any of these by key at any depth. The
+    index-carrying key ("gpu") is read at the top level so a nested "gpu" block
+    can't be mistaken for it.
     """
     if not raw:
         return {}
@@ -72,26 +68,15 @@ def _parse_amd_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
         if not isinstance(item, dict):
             continue
         raw_index = item.get("gpu") if "gpu" in item else item.get("id", -1)
-        try:
-            index = int(raw_index)  # type: ignore[arg-type]
-        except (ValueError, TypeError):
+        index = extract_int({"i": raw_index}, ("i",))
+        if index is None or index not in indices:
             continue
-        if index not in indices:
-            continue
-        # Util: try flat keys first, then nested {"value": N} form.
-        util = extract_int(item, ("gfx_activity", "gfx_busy_percent", "gpu_activity"))
-        if util is None:
-            util = (
-                _nested_int(item, "gfx_activity")
-                or _nested_int(item, "gfx_busy_percent")
-                or _nested_int(item, "gpu_activity")
-            )
-        # Temp: flat keys, then nested sensor dict {"edge": N} under "temperature".
-        temp = extract_int(item, ("temperature_c", "temp_edge", "edge"))
-        if temp is None:
-            temp_block = item.get("temperature")
-            if isinstance(temp_block, dict):
-                temp = extract_int(temp_block, ("edge", "junction", "mem"))
+        util = find_metric(item, ("gfx_activity", "gfx_busy_percent", "gpu_activity"))
+        temp_block = item.get("temperature")
+        if isinstance(temp_block, dict):
+            temp = find_metric(temp_block, ("edge", "junction", "hotspot"))
+        else:
+            temp = find_metric(item, ("temperature_c", "temp_edge"))
         # VRAM not reliably present in metric mode; leave 0 so the orchestrator
         # keeps structural VRAM.
         samples[index] = UtilSample(
