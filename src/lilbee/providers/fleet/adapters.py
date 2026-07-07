@@ -42,10 +42,11 @@ ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
         endpoint_path="/v1/chat/completions",
         # --jinja renders the model's own chat template and parses native
         # tool-call syntax into structured message.tool_calls.
-        # --reasoning-format none keeps <think>...</think> inline in content;
-        # without it, recent llama-server extracts reasoning into a separate
-        # reasoning_content field and lilbee's <think>-based parser sees none.
-        extra_args=("--jinja", "--reasoning-format", "none"),
+        # --reasoning-format deepseek makes the server parse every model's native
+        # reasoning dialect (<think>, gpt-oss harmony, ...) into reasoning_content;
+        # the chat client re-inlines it as <think> so downstream parsing stays
+        # format-agnostic and control tokens never leak into answers.
+        extra_args=("--jinja", "--reasoning-format", "deepseek"),
         server_capable=True,
     ),
     WorkerRole.EMBED: RoleServerSpec(

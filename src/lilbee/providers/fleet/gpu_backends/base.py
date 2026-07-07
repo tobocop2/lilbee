@@ -71,3 +71,42 @@ def parse_device_index(key: str) -> int | None:
     """Extract a GPU index from keys like 'card0', 'GPU[0]', '0'."""
     m = re.search(r"\d+", key)
     return int(m.group()) if m else None
+
+
+def _coerce_metric(val: object) -> int | None:
+    """Coerce a metric value to int: a bare number, a decimal string, or {"value": N}."""
+    if isinstance(val, dict):
+        val = val.get("value")
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return int(val)
+    if isinstance(val, str):
+        try:
+            return int(float(val))
+        except ValueError:
+            return None
+    return None
+
+
+def find_metric(obj: object, keys: tuple[str, ...]) -> int | None:
+    """Find the first of *keys* anywhere in a nested dict and coerce it to int.
+
+    SMI tools nest the same reading differently across versions -- flat
+    (``{"gfx_activity": 45}``), value-wrapped (``{"gfx_activity": {"value": 45}}``),
+    or under a block (``{"usage": {"gfx_activity": {"value": 45}}}``). Searching by
+    key at any depth reads all three without hard-coding one layout.
+    """
+    if not isinstance(obj, dict):
+        return None
+    for key in keys:
+        if key in obj:
+            found = _coerce_metric(obj[key])
+            if found is not None:
+                return found
+    for val in obj.values():
+        if isinstance(val, dict):
+            found = find_metric(val, keys)
+            if found is not None:
+                return found
+    return None

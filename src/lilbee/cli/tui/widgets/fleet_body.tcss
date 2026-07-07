@@ -42,6 +42,15 @@ FleetBody {
         color: $text-muted;
     }
 
+    /* Hidden until a configured role is skipped for a missing model; then it
+     * explains the empty slot instead of leaving the panel looking broken. */
+    #placement-skipped {
+        display: none;
+        height: auto;
+        margin-bottom: 1;
+        color: $warning;
+    }
+
     /* One hover-help for the whole drawer; keeps the surface otherwise minimal. */
     #placement-help {
         width: 3;
