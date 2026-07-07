@@ -366,11 +366,12 @@ def _ocr_dispatch(
     messages: Sequence[Mapping[str, Any]],
     deadline: float | None,
 ) -> str:
-    """OCR *messages* on a free replica slot, retrying a busy server until *deadline*.
+    """OCR *messages* on a free replica slot, retrying transient failures until *deadline*.
 
     Backpressure (the dispatcher blocking until a slot frees) makes a
     self-inflicted 429 unreachable; a residual busy response is a still-warming
-    server or foreign traffic. The retry is deadline-bound rather than
+    server or foreign traffic, and a gateway error is a replica restarting
+    mid-run. The retry is deadline-bound rather than
     attempt-bound so a page on a deep queue waits for a genuinely free slot until
     its own budget passes instead of dropping after a fixed count. Each attempt
     is bounded by the budget remaining before *deadline*; an exhausted budget

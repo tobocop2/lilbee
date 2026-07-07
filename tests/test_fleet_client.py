@@ -79,6 +79,71 @@ def test_raise_for_status_maps_429_to_rate_limit() -> None:
     assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
 
 
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_raise_for_status_maps_gateway_errors_to_server(status: int) -> None:
+    # llama-swap answers for a momentarily-unreachable upstream (restarting,
+    # OOM-killed, mid-swap) with a gateway error; the kind must be retryable,
+    # not terminal.
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(httpx.Response(status, text="Bad Gateway"))
+    assert excinfo.value.kind is ProviderErrorKind.SERVER
+
+
+def test_raise_for_status_gateway_premature_exit_stays_connection(monkeypatch) -> None:
+    # A 502 whose body carries the died marker keeps its CONNECTION kind (and
+    # with it the replica failover path); the gateway status must not shadow it.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda _resp: "")
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(
+            httpx.Response(502, text='{"error": "upstream command exited prematurely"}')
+        )
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_embed_retries_transient_gateway_error_then_succeeds(monkeypatch) -> None:
+    # A 502 while the upstream restarts is retried like a busy 429 instead of
+    # dropping the input.
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]})
+
+    assert _client(handler).embed(["hello"]) == [[0.1, 0.2]]
+    assert calls["n"] == 3
+
+
+def test_retry_on_busy_deadline_retries_gateway_error(monkeypatch) -> None:
+    # The deadline-bound OCR retry rides out a transient 502 the same way it
+    # rides out a busy 429: the page is re-attempted, not dropped.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+    from lilbee.providers.fleet.client import retry_on_busy
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
+    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise gateway
+        return "ok"
+
+    assert retry_on_busy(_call, deadline=100.0) == "ok"
+    assert calls["n"] == 3
+
+
 def test_embed_retries_on_busy_then_succeeds(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     calls = {"n": 0}
