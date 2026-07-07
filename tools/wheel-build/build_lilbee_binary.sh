@@ -52,7 +52,34 @@ done
 LLAMA_SERVER_FLAGS=()
 if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
-    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
+    # The engine bin/ holds llama-server plus its whole shared-library closure
+    # (ggml/llama/mtmd + the server-impl split, and their SONAME symlinks copied
+    # as real files) and the llama-swap / gguf-parser helpers. Both
+    # --include-package-data AND --include-data-dir route any .dylib/.so/.dll
+    # through Nuitka's DLL dependency tracker, which then DROPS the engine's
+    # libraries because nothing Nuitka scans references the bundled llama-server
+    # binary -- shipping a server that cannot start (@rpath library not loaded).
+    # Enumerate every file and force each in with --include-data-files, which
+    # copies verbatim: exec bits and the baked @loader_path/$ORIGIN rpath intact.
+    ENGINE_BIN=$(uv run --no-sync python -c "import lilbee_engine, pathlib; print(pathlib.Path(lilbee_engine.__file__).parent / 'bin')")
+    for _f in "${ENGINE_BIN}"/*; do
+        [ -f "${_f}" ] || continue
+        LLAMA_SERVER_FLAGS+=(--include-data-files="${_f}=lilbee_engine/bin/$(basename "${_f}")")
+    done
+fi
+
+# chardet ships its detection models as .bin data files that crawl4ai loads on
+# every http fetch. Neither --include-package-data nor --include-data-dir keeps
+# .bin (Nuitka does not classify it as data), so the frozen crawl path dies with
+# a missing models.bin. Force each .bin in explicitly. The package's .py/.so
+# come from --include-package=chardet above, so only the .bin data is listed.
+CHARDET_FLAGS=()
+CHARDET_MODELS=$(uv run --no-sync python -c "import chardet, pathlib; d = pathlib.Path(chardet.__file__).parent / 'models'; print(d if d.is_dir() else '')" 2>/dev/null || true)
+if [ -n "${CHARDET_MODELS}" ]; then
+    for _f in "${CHARDET_MODELS}"/*.bin; do
+        [ -f "${_f}" ] || continue
+        CHARDET_FLAGS+=(--include-data-files="${_f}=chardet/models/$(basename "${_f}")")
+    done
 fi
 # Spawned via `python -m`, never statically imported, so Nuitka's import
 # following misses it; include it explicitly or the splash subprocess dies.
@@ -80,6 +107,7 @@ uv run --no-sync python -m nuitka \
     --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
     --include-package=crawl4ai           --include-package-data=crawl4ai \
     --include-package=fake_useragent     --include-package-data=fake_useragent \
+    --include-package=chardet            --include-package-data=chardet \
     --include-package=playwright \
     --enable-plugin=spacy \
     --include-package=spacy              --include-package-data=spacy \
@@ -101,5 +129,6 @@ uv run --no-sync python -m nuitka \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
     "${SPLASH_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \
+    "${CHARDET_FLAGS[@]}" \
     "${LLAMA_SERVER_FLAGS[@]}" \
     src/lilbee/__main__.py

@@ -14,19 +14,43 @@ inputs:
       Set for a backend whose toolchain can't compile the default (e.g. CUDA 12.1).
     required: false
     default: ""
+  cache-env:
+    description: >-
+      Build-environment discriminator for the engine cache key: the container
+      image for containerized cells, the runner image label otherwise. Binaries
+      built in different environments carry different glibc floors and must not
+      share a cache entry.
+    required: true
+  toolkit-version:
+    description: "GPU toolkit version the caller installed (e.g. the CUDA version); part of the cache key."
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
+    # Same key scheme as build-multigpu.yml: pinned sources, so identical keys
+    # mean byte-identical binaries. Hits come from warm-engine-cache.yml on main
+    # or an earlier cell in the same run; a miss builds and saves for the rest
+    # of the run (tag-scoped saves are still restorable across a moved tag).
+    - name: Restore the built engine
+      id: engine-cache
+      uses: actions/cache@v4
+      with:
+        path: packaging/engine-wheel/lilbee_engine/bin
+        key: engine-${{ inputs.cache-env }}-${{ inputs.backend }}-tk${{ inputs.toolkit-version }}-llcp${{ inputs.llama-cpp-version }}-${{ hashFiles('tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
     - name: Set up Go (for llama-swap + gguf-parser)
+      if: steps.engine-cache.outputs.cache-hit != 'true'
       uses: actions/setup-go@v5
       with:
         go-version: "1.23"
     - name: Build the self-contained engine
+      if: steps.engine-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         BACKEND: ${{ inputs.backend }}
         LLAMA_CPP_VERSION: ${{ inputs.llama-cpp-version }}
-        LLAMA_BUILD_DIR: /tmp/llama-server-build
+        # MSVC FileTracker dies past MAX_PATH; /tmp maps under AppData and overflows.
+        LLAMA_BUILD_DIR: ${{ runner.os == 'Windows' && '/c/lsb' || '/tmp/llama-server-build' }}
       run: bash tools/wheel-build/build_llama_server.sh
     - name: Install lilbee_engine into the build venv
       shell: bash

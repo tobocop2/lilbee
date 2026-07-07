@@ -61,16 +61,6 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
 
-      - name: Download standalone server binaries from the run
-        uses: actions/download-artifact@v8
-        continue-on-error: true
-        with:
-          pattern: multigpu-exe-*
-          path: multigpu-bins/
-          merge-multiple: true
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-
       # Same-platform engine wheels share PEP 427 filenames; stage them through
       # a backend build tag (1.cu125 etc.) so all variants coexist on one
       # release. Mirrors attach-multigpu in release-candidate.yml.
@@ -89,7 +79,7 @@ jobs:
           PY
 
       - name: List assets
-        run: ls -lh bins/ default-wheels/ multigpu-wheels/ multigpu-bins/ || true
+        run: ls -lh bins/ default-wheels/ multigpu-wheels/ || true
 
       - name: Attach to the GH release
         uses: softprops/action-gh-release@v3
@@ -99,6 +89,5 @@ jobs:
             bins/*
             default-wheels/*
             multigpu-wheels/*
-            multigpu-bins/*
           generate_release_notes: true
           prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}
