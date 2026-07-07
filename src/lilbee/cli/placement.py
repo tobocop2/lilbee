@@ -100,6 +100,12 @@ def _render_view(view: PlacementView) -> None:
     for role in view.unplaceable:
         console.print(f"  [{theme.ERROR}]{role.value}: does not fit, no server[/{theme.ERROR}]")
 
+    for skipped in view.skipped_not_installed:
+        console.print(
+            f"  [{theme.WARNING}]{skipped.role.value}: {skipped.model} not downloaded, "
+            f"pull it to place it[/{theme.WARNING}]"
+        )
+
 
 @placement_app.command("show")
 def show(

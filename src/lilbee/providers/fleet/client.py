@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import math
+import ssl
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
@@ -16,6 +17,8 @@ import httpx
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import (
+    THINK_CLOSE_TAG,
+    THINK_OPEN_TAG,
     ChatResult,
     ChatToolResult,
     FinishReason,
@@ -31,6 +34,15 @@ from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.roles import RerankMode
 
 _PROVIDER_NAME = "llama-server"
+
+# Fleet clients only ever talk to a loopback llama-server over plain HTTP, so TLS is
+# never negotiated. httpx still builds a default SSL context per client (loads the
+# system CA bundle, ~13 ms each and slower on macOS via the keychain), which is pure
+# overhead paid on every fleet reload. Build one minimal context and share it so a
+# reload doesn't reload the CA bundle for each replica.
+_LOOPBACK_SSL_CONTEXT = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+_LOOPBACK_SSL_CONTEXT.check_hostname = False
+_LOOPBACK_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 # Reranker pair format: query and candidate are joined with this separator into
 # one document so a cross-encoder GGUF scores the pair as a single sequence.
 _RERANK_PAIR_SEPARATOR = "</s></s>"
@@ -373,11 +385,17 @@ class LlamaServerClient:
         token_cap: int | None = None,
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
+        inline_reasoning: bool = False,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
-        self._http = http or httpx.Client(base_url=self._base, timeout=timeout)
+        self._http = http or httpx.Client(
+            base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
+        )
         self._owns_http = http is None
+        # Chat-role clients re-inline server-extracted reasoning as <think> text;
+        # the other roles (vision OCR) keep dropping it, as their servers already did.
+        self._inline_reasoning = inline_reasoning
         # Per-slot context for embed/rerank servers: inputs longer than this are
         # token-truncated (via the server's tokenizer) before embedding, mirroring
         # the in-process backstop. None for chat/vision, which don't truncate inputs.
@@ -481,11 +499,14 @@ class LlamaServerClient:
             _raise_for_status(resp)
             # content is null for a refusal / content-filter stop / empty completion;
             # coerce to "" (like chat_result/chat_tools) so callers never see "None".
-            return resp.json()["choices"][0]["message"].get("content") or ""
+            return _inline_message_reasoning(
+                resp.json()["choices"][0]["message"], enabled=self._inline_reasoning
+            )
 
     def _chat_stream(
         self, payload: dict[str, Any], timeout: Any = httpx.USE_CLIENT_DEFAULT
     ) -> Iterator[str]:
+        inliner = _ThinkInliner(enabled=self._inline_reasoning)
         with (
             self._track(),
             self._http.stream(
@@ -494,9 +515,12 @@ class LlamaServerClient:
         ):
             _raise_for_status(resp)
             for line in resp.iter_lines():
-                delta = _parse_sse_delta(line)
+                delta = inliner.feed(*_parse_sse_deltas(line))
                 if delta:
                     yield delta
+            tail = inliner.finish()
+            if tail:
+                yield tail
 
     def chat_bounded(
         self,
@@ -516,6 +540,7 @@ class LlamaServerClient:
         """
         payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
         deadline = time.monotonic() + deadline_s
+        inliner = _ThinkInliner(enabled=self._inline_reasoning)
         parts: list[str] = []
         with (
             self._track(),
@@ -528,7 +553,8 @@ class LlamaServerClient:
                         f"llama-server chat exceeded its {deadline_s:.0f}s deadline.",
                         provider=_PROVIDER_NAME,
                     )
-                parts.append(_parse_sse_delta(line))
+                parts.append(inliner.feed(*_parse_sse_deltas(line)))
+            parts.append(inliner.finish())
         return "".join(parts)
 
     def chat_tools(
@@ -558,7 +584,7 @@ class LlamaServerClient:
             resp = self._http.post(_CHAT_PATH, json=payload)
             _raise_for_status(resp)
             message = resp.json()["choices"][0]["message"]
-        content = message.get("content") or ""
+        content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
         native = _parse_native_tool_calls(message.get("tool_calls"))
         if native:
             return ChatToolResult(content=content, tool_calls=native)
@@ -591,7 +617,7 @@ class LlamaServerClient:
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
         message = choice["message"]
-        content = message.get("content") or ""
+        content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
         finish_reason = _coerce_finish_reason(choice.get("finish_reason"))
         native = _parse_native_tool_calls(message.get("tool_calls"))
         if native:
@@ -650,13 +676,17 @@ class LlamaServerClient:
     ) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
         """Open one SSE chat stream and yield its frames; raises before the first frame."""
         payload = self._chat_payload(messages, tools, tool_choice, options, stream=True)
+        inliner = _ThinkInliner(enabled=self._inline_reasoning)
         with (
             self._track(),
             self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
         ):
             _raise_for_status(resp)
             for line in resp.iter_lines():
-                yield from _parse_sse_stream_items(line)
+                yield from _parse_sse_stream_items(line, inliner)
+            tail = inliner.finish()
+            if tail:
+                yield tail
 
     def _chat_payload(
         self,
@@ -997,21 +1027,70 @@ def _llm_rerank_score(top_logprobs: list[dict[str, Any]]) -> float:
     return yes_e / (yes_e + no_e)
 
 
-def _parse_sse_delta(line: str) -> str:
-    """Extract the content delta from one OpenAI SSE line, ``""`` if none."""
+def _parse_sse_deltas(line: str) -> tuple[str, str]:
+    """Extract the (reasoning, content) deltas from one OpenAI SSE line."""
     if not line.startswith(_DATA_PREFIX):
-        return ""
+        return "", ""
     body = line[len(_DATA_PREFIX) :].strip()
     if not body or body == _DONE_SENTINEL:
-        return ""
+        return "", ""
     try:
         obj = json.loads(body)
     except json.JSONDecodeError:
-        return ""
+        return "", ""
     choices = obj.get("choices") or []
     if not choices:
+        return "", ""
+    delta = choices[0].get("delta") or {}
+    return str(delta.get("reasoning_content") or ""), str(delta.get("content") or "")
+
+
+class _ThinkInliner:
+    """Re-inlines server-extracted reasoning deltas as inline ``<think>`` text.
+
+    The server parses each model's reasoning format natively (``--reasoning-format``)
+    and streams it as ``reasoning_content``; lilbee's pipeline speaks inline
+    ``<think>`` text, so the chat boundary opens the tag on the first reasoning
+    delta and closes it when the answer starts (or at end of stream). Disabled
+    (the non-chat roles), reasoning is dropped and content passes through, matching
+    the server-extracted default those roles already ran with.
+    """
+
+    def __init__(self, *, enabled: bool) -> None:
+        self._enabled = enabled
+        self._in_think = False
+
+    def feed(self, reasoning: str, content: str) -> str:
+        if not self._enabled:
+            return content
+        parts: list[str] = []
+        if reasoning:
+            if not self._in_think:
+                self._in_think = True
+                parts.append(THINK_OPEN_TAG)
+            parts.append(reasoning)
+        if content:
+            if self._in_think:
+                self._in_think = False
+                parts.append(THINK_CLOSE_TAG)
+            parts.append(content)
+        return "".join(parts)
+
+    def finish(self) -> str:
+        """Close an unterminated think block at end of stream."""
+        if self._in_think:
+            self._in_think = False
+            return THINK_CLOSE_TAG
         return ""
-    return str(choices[0].get("delta", {}).get("content") or "")
+
+
+def _inline_message_reasoning(message: Mapping[str, Any], *, enabled: bool) -> str:
+    """A non-streaming message's text with any extracted reasoning re-inlined."""
+    content = str(message.get("content") or "")
+    reasoning = str(message.get("reasoning_content") or "") if enabled else ""
+    if reasoning:
+        return f"{THINK_OPEN_TAG}{reasoning}{THINK_CLOSE_TAG}{content}"
+    return content
 
 
 def _usage_from_body(body: Mapping[str, Any]) -> TokenUsage | None:
@@ -1058,14 +1137,16 @@ def _tool_call_delta_from_chunk(call: Mapping[str, Any], *, fallback_index: int)
     )
 
 
-def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
+def _parse_sse_stream_items(
+    line: str, inliner: _ThinkInliner
+) -> Iterator[str | ToolCallDelta | TokenUsage | StreamFinish]:
     """Yield text tokens, tool-call deltas, and the finish frame from one SSE line.
 
-    A chunk can carry a ``content`` token, a ``tool_calls`` delta array, or
-    both; each is yielded as its own :data:`ChatStreamItem` frame. The chunk
-    that closes the turn carries ``choices[0].finish_reason``, surfaced as a
-    :class:`StreamFinish` so the dispatch reports ``length`` (and friends), not
-    just the default end-of-turn.
+    A chunk can carry a ``content`` token, a ``reasoning_content`` token (routed
+    through *inliner*), a ``tool_calls`` delta array, or a mix; each is yielded as
+    its own :data:`ChatStreamItem` frame. The chunk that closes the turn carries
+    ``choices[0].finish_reason``, surfaced as a :class:`StreamFinish` so the
+    dispatch reports ``length`` (and friends), not just the default end-of-turn.
     """
     if not line.startswith(_DATA_PREFIX):
         return
@@ -1086,9 +1167,11 @@ def _parse_sse_stream_items(line: str) -> Iterator[str | ToolCallDelta | TokenUs
             yield usage
         return
     delta = choices[0].get("delta") or {}
-    content = delta.get("content")
-    if content:
-        yield str(content)
+    text = inliner.feed(
+        str(delta.get("reasoning_content") or ""), str(delta.get("content") or "")
+    )
+    if text:
+        yield text
     raw_calls = delta.get("tool_calls") or []
     for i, call in enumerate(raw_calls):
         if isinstance(call, Mapping):

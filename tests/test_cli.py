@@ -4117,7 +4117,8 @@ class TestSelfCheckHelpers:
         swap.endpoint.return_value = "http://127.0.0.1:5800"
         monkeypatch.setattr("lilbee.providers.fleet.swap_manager.SwapManager", lambda _d, _g: swap)
         monkeypatch.setattr(
-            "lilbee.providers.fleet.client.LlamaServerClient", lambda _endpoint, _model: client
+            "lilbee.providers.fleet.client.LlamaServerClient",
+            lambda _endpoint, _model, **_kw: client,
         )
 
     def test_self_check_chat_runs_completion(self, monkeypatch, tmp_path: Path) -> None:
@@ -4191,7 +4192,7 @@ class TestSelfCheckHelpers:
         seen: dict[str, str] = {}
         monkeypatch.setattr(
             "lilbee.providers.fleet.client.LlamaServerClient",
-            lambda _endpoint, model: seen.update(model=model) or mock.MagicMock(),
+            lambda _endpoint, model, **_kw: seen.update(model=model) or mock.MagicMock(),
         )
         setup._self_check_server(WorkerRole.CHAT, tmp_path / "chat.gguf")
         assert seen["model"] == "chat-0"

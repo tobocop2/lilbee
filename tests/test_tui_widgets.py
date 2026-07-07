@@ -467,6 +467,69 @@ class TestTaskBar:
             out = bar._spawning_workers_template(["chat", "embed"])
             assert out == "Starting chat, embed workers..."
 
+    def test_warm_detail_phases(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import _warm_detail
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        assert _warm_detail(None) is None
+        assert _warm_detail(WarmProgress(phase=WarmPhase.READY)) is None
+        # Each active phase carries a progress bar plus the phase word.
+        starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
+        assert "starting" in starting and "▓" in starting
+        loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
+        assert "loading engine" in loading and ("▓" in loading or "░" in loading)
+        reading = _warm_detail(
+            WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
+        )
+        assert "reading weights 42%" in reading
+        assert reading.startswith("▓▓▓▓▓")  # round(0.42 * 12) = 5 filled cells
+        # No total yet: percent floors to 0 instead of dividing by zero.
+        zero = _warm_detail(WarmProgress(phase=WarmPhase.READING_WEIGHTS))
+        assert "reading weights 0%" in zero
+
+    async def test_warm_line_shows_phase_when_chat_warming(self) -> None:
+        from unittest import mock
+
+        from lilbee.app.services import set_services
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        services = mock.MagicMock()
+        services.provider.role_ready.return_value = False
+        services.provider.warm_progress.return_value = WarmProgress(
+            phase=WarmPhase.READING_WEIGHTS, bytes_done=1, bytes_total=4
+        )
+        set_services(services)
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            warm = bar._warm_line()
+            assert warm.startswith("loading chat · ")
+            assert "reading weights 25%" in warm and "▓" in warm
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+
+    def test_sweep_bar_animates_and_keeps_width(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import _WARM_BAR_WIDTH, _sweep_bar
+
+        frames = [_sweep_bar(t) for t in range(_WARM_BAR_WIDTH + 4)]
+        assert all(len(f) == _WARM_BAR_WIDTH for f in frames)  # fixed width every frame
+        assert len({*frames}) > 1  # the lit window moves, so frames differ
+        assert all("▓" in f for f in frames)  # always shows a lit window
+
+    async def test_warm_line_none_when_not_warming(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            # Default mock services report ready, so there is no warm line.
+            assert bar._warm_line() is None
+
     async def test_renders_spawning_summary_when_idle_with_spawn(self) -> None:
         """When idle except for in-flight worker spawns, the bar surfaces the
         'Starting <role> worker...' summary instead of hiding."""

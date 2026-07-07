@@ -36,6 +36,38 @@ def test_show_renders_cards(monkeypatch: object) -> None:
     assert "chat" in result.stdout
 
 
+def _view_with_skipped() -> PlacementView:
+    from lilbee.app.placement import SkippedRole
+
+    return PlacementView(
+        gpus=(GpuInfo(0, "MTL", "MTL0", "Apple M3", 24 * _GIB, 20 * _GIB),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        skipped_not_installed=(SkippedRole(WorkerRole.CHAT, "org/Qwen3-4B.gguf"),),
+    )
+
+
+def test_show_renders_not_downloaded_note(monkeypatch: object) -> None:
+    """A role skipped for a missing model prints a 'not downloaded' line."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_skipped)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "chat" in result.stdout
+    assert "not downloaded" in result.stdout
+
+
+def test_show_json_includes_skipped_not_installed(monkeypatch: object) -> None:
+    """The canonical JSON surfaces skipped-not-installed roles for HTTP/MCP/CLI parity."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_skipped)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["skipped_not_installed"] == [{"role": "chat", "model": "org/Qwen3-4B.gguf"}]
+
+
 def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:
     """--json (global flag -> cfg.json_mode) makes placement emit machine-readable
     JSON instead of a Rich table, so scripts can consume it."""

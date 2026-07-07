@@ -76,7 +76,7 @@ def test_panel_initial_content_is_loading_not_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_panel_renders_empty_state_with_no_devices(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without any devices the panel shows the empty-state text."""
+    """A completed probe that finds no devices shows the empty-state text."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
@@ -87,8 +87,48 @@ async def test_panel_renders_empty_state_with_no_devices(monkeypatch: pytest.Mon
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([], labels={})
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         rendered = str(panel.render())
         assert msg.FLEET_NO_GPUS in rendered
+
+
+@pytest.mark.asyncio
+async def test_panel_holds_probing_until_devices_probed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The empty-GPUs text must not appear until the parent device probe completes.
+
+    Regression for the cold-probe flash: the panel's own stat probe returns {}
+    on a cold start (before set_devices runs), and that must keep the 'probing'
+    placeholder, not flash '(no GPUs detected)'.
+    """
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        before_probe = str(panel.render())
+        assert msg.FLEET_GPU_PROBING in before_probe
+        assert msg.FLEET_NO_GPUS not in before_probe
+
+        # A completed probe that genuinely finds no devices does show the empty state.
+        panel.set_devices([], labels={})
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        after_probe = str(panel.render())
+        assert msg.FLEET_NO_GPUS in after_probe
 
 
 @pytest.mark.asyncio

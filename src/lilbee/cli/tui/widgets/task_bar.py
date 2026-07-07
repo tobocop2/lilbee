@@ -15,6 +15,7 @@ from textual.widgets import Label, Static
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -32,6 +33,49 @@ _POLL_INTERVAL_IDLE_S = 1.0
 # matching the active-row rail pulse in the Task Center.
 _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
+
+# Warm progress bar: filled/track glyphs and width, matching the fleet panel bars.
+_WARM_BAR_FILL = "▓"
+_WARM_BAR_TRACK = "░"
+_WARM_BAR_WIDTH = 12
+# Indeterminate sweep (loading engine has no byte signal): a lit window that walks
+# the track so the bar reads as "working", not stalled. Advanced by the poll tick.
+_WARM_SWEEP_WIDTH = 3
+
+
+def _progress_bar(fraction: float) -> str:
+    """A determinate fill bar for the byte-progress (reading-weights) phase."""
+    filled = round(max(0.0, min(1.0, fraction)) * _WARM_BAR_WIDTH)
+    return _WARM_BAR_FILL * filled + _WARM_BAR_TRACK * (_WARM_BAR_WIDTH - filled)
+
+
+def _sweep_bar(tick: int) -> str:
+    """An indeterminate bar with a lit window of fixed width walking (and wrapping)
+    across the track, keyed to *tick*, so it always shows motion, never a blank."""
+    start = tick % _WARM_BAR_WIDTH
+    lit = {(start + offset) % _WARM_BAR_WIDTH for offset in range(_WARM_SWEEP_WIDTH)}
+    return "".join(_WARM_BAR_FILL if i in lit else _WARM_BAR_TRACK for i in range(_WARM_BAR_WIDTH))
+
+
+def _warm_detail(progress: WarmProgress | None, tick: int = 0) -> str | None:
+    """Phase word plus a progress bar for the cold-start chat warm line.
+
+    A determinate byte bar while paging weights, an indeterminate sweep while the
+    engine loads (no byte signal). None once past an active phase, so the line
+    reads as live progress, not a stalled spinner.
+    """
+    if progress is None:
+        return None
+    if progress.phase is WarmPhase.STARTING:
+        return f"{_sweep_bar(tick)}  {msg.TASKBAR_WARM_STARTING}"
+    if progress.phase is WarmPhase.LOADING_ENGINE:
+        return f"{_sweep_bar(tick)}  {msg.TASKBAR_WARM_LOADING}"
+    if progress.phase is WarmPhase.READING_WEIGHTS:
+        fraction = progress.bytes_done / progress.bytes_total if progress.bytes_total else 0.0
+        return (
+            f"{_progress_bar(fraction)}  {msg.TASKBAR_WARM_READING.format(pct=int(fraction * 100))}"
+        )
+    return None
 
 
 class TaskBar(Static):
@@ -207,7 +251,8 @@ class TaskBar(Static):
         idle = not active and not queued and not in_flash and self._flash_outcome is None
         pending = self._controller.pending_sync_count if idle else 0
         spawning_roles = sorted(self._controller.spawning_roles) if idle else []
-        fully_idle = idle and pending == 0 and not spawning_roles
+        warm_line = self._warm_line() if idle else None
+        fully_idle = idle and pending == 0 and not spawning_roles and warm_line is None
         self._sync_poll_cadence(fully_idle)
         if fully_idle:
             self.display = False
@@ -215,15 +260,9 @@ class TaskBar(Static):
             return
 
         self.display = True
-        if idle and spawning_roles:
-            dot_color = "$primary"
-            summary = self._spawning_workers_template(spawning_roles)
-        elif idle and pending > 0:
-            dot_color = "$text-muted"
-            key = self._pending_sync_template(pending)
-            summary = key.format(count=pending)
-        else:
-            dot_color, summary = self._compose_segments(active, queued)
+        dot_color, summary = self._status_line(
+            active, queued, spawning_roles, pending, warm_line, idle=idle
+        )
         hint_text = self._hint_copy()
         # Fingerprint captures every variable the label content depends
         # on. Recomputing it is essentially free; the win comes from
@@ -237,6 +276,7 @@ class TaskBar(Static):
             self._flash_outcome,
             pending,
             tuple(spawning_roles),
+            warm_line,
         )
         if fingerprint == self._last_render_fingerprint:
             return
@@ -246,6 +286,32 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
+
+    def _status_line(
+        self,
+        active: list,  # type: ignore[type-arg]
+        queued: list,  # type: ignore[type-arg]
+        spawning_roles: list[str],
+        pending: int,
+        warm_line: str | None,
+        *,
+        idle: bool,
+    ) -> tuple[str, str]:
+        """Pick the dot color and summary text for the current bar state."""
+        if idle and warm_line is not None:
+            return "$primary", warm_line
+        if idle and spawning_roles:
+            return "$primary", self._spawning_workers_template(spawning_roles)
+        if idle and pending > 0:
+            return "$text-muted", self._pending_sync_template(pending).format(count=pending)
+        return self._compose_segments(active, queued)
+
+    def _warm_line(self) -> str | None:
+        """The cold-start chat warm line, or None when chat isn't warming."""
+        from lilbee.app.placement import active_chat_warm_progress
+
+        detail = _warm_detail(active_chat_warm_progress(), self._tick_count)
+        return msg.TASKBAR_WARM.format(detail=detail) if detail else None
 
     def _spawning_workers_template(self, roles: list[str]) -> str:
         """Render the active worker-warmup hint for the bottom bar."""

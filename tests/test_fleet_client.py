@@ -14,7 +14,8 @@ from lilbee.providers.fleet.client import (
     LlamaServerClient,
     _first_token_top_logprobs,
     _llm_rerank_score,
-    _parse_sse_delta,
+    _parse_sse_deltas,
+    _ThinkInliner,
 )
 from lilbee.providers.roles import RerankMode
 
@@ -1067,6 +1068,39 @@ def test_close_closes_owned_client() -> None:
     assert c._http.is_closed
 
 
+def test_loopback_ssl_context_is_shared_and_unverified() -> None:
+    """Loopback clients reuse one minimal SSL context instead of rebuilding the
+    default (CA-loading) one on every reload."""
+    import ssl
+
+    from lilbee.providers.fleet.client import _LOOPBACK_SSL_CONTEXT
+
+    assert _LOOPBACK_SSL_CONTEXT.verify_mode == ssl.CERT_NONE
+    assert _LOOPBACK_SSL_CONTEXT.check_hostname is False
+
+
+def test_owned_client_uses_shared_context_not_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a client must reuse the shared context and never call the expensive
+    create_default_context on the reload path."""
+    import lilbee.providers.fleet.client as client_mod
+
+    captured: dict[str, object] = {}
+    real_client = httpx.Client
+
+    def _spy_client(**kwargs: object) -> httpx.Client:
+        captured.update(kwargs)
+        return real_client(transport=httpx.MockTransport(_handler))
+
+    monkeypatch.setattr(client_mod.httpx, "Client", _spy_client)
+    monkeypatch.setattr(client_mod.ssl, "create_default_context", _boom_create_default_context)
+    LlamaServerClient("http://gpu0", "m")
+    assert captured["verify"] is client_mod._LOOPBACK_SSL_CONTEXT
+
+
+def _boom_create_default_context(*_a: object, **_k: object) -> object:
+    raise AssertionError("create_default_context must not be called on the reload path")
+
+
 def test_close_leaves_injected_client_open() -> None:
     http = httpx.Client(transport=httpx.MockTransport(_handler))
     c = LlamaServerClient("http://gpu0", "m", http=http)
@@ -1074,21 +1108,26 @@ def test_close_leaves_injected_client_open() -> None:
     assert not http.is_closed
 
 
-class TestParseSseDelta:
+class TestParseSseDeltas:
     def test_non_data_line_is_empty(self) -> None:
-        assert _parse_sse_delta("event: message") == ""
+        assert _parse_sse_deltas("event: message") == ("", "")
 
     def test_done_sentinel_is_empty(self) -> None:
-        assert _parse_sse_delta("data: [DONE]") == ""
+        assert _parse_sse_deltas("data: [DONE]") == ("", "")
 
     def test_invalid_json_is_empty(self) -> None:
-        assert _parse_sse_delta("data: {not json") == ""
+        assert _parse_sse_deltas("data: {not json") == ("", "")
 
     def test_no_choices_is_empty(self) -> None:
-        assert _parse_sse_delta('data: {"choices": []}') == ""
+        assert _parse_sse_deltas('data: {"choices": []}') == ("", "")
 
     def test_extracts_content(self) -> None:
-        assert _parse_sse_delta('data: {"choices":[{"delta":{"content":"hi"}}]}') == "hi"
+        line = 'data: {"choices":[{"delta":{"content":"hi"}}]}'
+        assert _parse_sse_deltas(line) == ("", "hi")
+
+    def test_extracts_reasoning(self) -> None:
+        line = 'data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}'
+        assert _parse_sse_deltas(line) == ("hmm", "")
 
 
 def _tools() -> list[dict]:
@@ -1563,13 +1602,13 @@ def test_coerce_finish_reason_non_string_is_stop() -> None:
 def test_parse_sse_stream_items_skips_malformed_json() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
-    assert list(_parse_sse_stream_items("data: {not json")) == []
+    assert list(_parse_sse_stream_items("data: {not json", _ThinkInliner(enabled=True))) == []
 
 
 def test_parse_sse_stream_items_skips_empty_choices() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
-    assert list(_parse_sse_stream_items('data: {"choices": []}')) == []
+    assert list(_parse_sse_stream_items('data: {"choices": []}', _ThinkInliner(enabled=True))) == []
 
 
 def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
@@ -1577,7 +1616,7 @@ def test_parse_sse_stream_items_emits_finish_frame_on_length() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": "length"}]}'
-    items = list(_parse_sse_stream_items(line))
+    items = list(_parse_sse_stream_items(line, _ThinkInliner(enabled=True)))
     assert items == ["x", StreamFinish(reason=FinishReason.LENGTH)]
 
 
@@ -1586,7 +1625,7 @@ def test_parse_sse_stream_items_no_finish_frame_without_reason() -> None:
     from lilbee.providers.fleet.client import _parse_sse_stream_items
 
     line = 'data: {"choices": [{"delta": {"content": "x"}, "finish_reason": null}]}'
-    items = list(_parse_sse_stream_items(line))
+    items = list(_parse_sse_stream_items(line, _ThinkInliner(enabled=True)))
     assert not any(isinstance(i, StreamFinish) for i in items)
 
 
@@ -1724,3 +1763,108 @@ def test_chat_forwards_per_request_timeout() -> None:
 
     _client(handler).chat([{"role": "user", "content": "hi"}], timeout=7.5)
     assert seen["timeout"] == {"connect": 7.5, "read": 7.5, "write": 7.5, "pool": 7.5}
+
+
+class TestThinkInliner:
+    def test_wraps_reasoning_then_content(self) -> None:
+        inliner = _ThinkInliner(enabled=True)
+        out = (
+            inliner.feed("step one", "")
+            + inliner.feed(" step two", "")
+            + inliner.feed("", "answer")
+        )
+        out += inliner.finish()
+        assert out == "<think>step one step two</think>answer"
+
+    def test_mixed_delta_carries_both(self) -> None:
+        inliner = _ThinkInliner(enabled=True)
+        assert inliner.feed("thought", "answer") == "<think>thought</think>answer"
+
+    def test_unterminated_reasoning_closed_at_finish(self) -> None:
+        inliner = _ThinkInliner(enabled=True)
+        out = inliner.feed("endless thought", "") + inliner.finish()
+        assert out == "<think>endless thought</think>"
+
+    def test_disabled_drops_reasoning_and_passes_content(self) -> None:
+        inliner = _ThinkInliner(enabled=False)
+        assert inliner.feed("secret reasoning", "ocr text") == "ocr text"
+        assert inliner.finish() == ""
+
+    def test_no_reasoning_passthrough(self) -> None:
+        inliner = _ThinkInliner(enabled=True)
+        assert inliner.feed("", "plain") == "plain"
+        assert inliner.finish() == ""
+
+
+def _reasoning_handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "content": "The answer.",
+                        "reasoning_content": "Let me think.",
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    )
+
+
+def test_chat_result_inlines_reasoning_for_chat_clients() -> None:
+    http = httpx.Client(transport=httpx.MockTransport(_reasoning_handler), base_url="http://gpu0")
+    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    result = c.chat_result([{"role": "user", "content": "q"}])
+    assert result.text == "<think>Let me think.</think>The answer."
+
+
+def test_chat_result_drops_reasoning_when_disabled() -> None:
+    http = httpx.Client(transport=httpx.MockTransport(_reasoning_handler), base_url="http://gpu0")
+    c = LlamaServerClient("http://gpu0", "m", http=http)
+    assert c.chat_result([{"role": "user", "content": "q"}]).text == "The answer."
+
+
+def _reasoning_sse_handler(request: httpx.Request) -> httpx.Response:
+    lines = (
+        'data: {"choices":[{"delta":{"reasoning_content":"hmm "}}]}\n\n'
+        'data: {"choices":[{"delta":{"reasoning_content":"ok"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"4"}}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    return httpx.Response(200, content=lines.encode())
+
+
+def test_chat_stream_inlines_reasoning_deltas() -> None:
+    http = httpx.Client(
+        transport=httpx.MockTransport(_reasoning_sse_handler), base_url="http://gpu0"
+    )
+    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    text = "".join(c.chat([{"role": "user", "content": "2+2?"}], stream=True))
+    assert text == "<think>hmm ok</think>4"
+
+
+def _unterminated_reasoning_sse_handler(request: httpx.Request) -> httpx.Response:
+    # Reasoning streams but the answer never starts (e.g. token budget exhausted).
+    lines = 'data: {"choices":[{"delta":{"reasoning_content":"endless"}}]}\n\ndata: [DONE]\n\n'
+    return httpx.Response(200, content=lines.encode())
+
+
+def test_chat_stream_closes_unterminated_reasoning() -> None:
+    http = httpx.Client(
+        transport=httpx.MockTransport(_unterminated_reasoning_sse_handler), base_url="http://gpu0"
+    )
+    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    text = "".join(c.chat([{"role": "user", "content": "q"}], stream=True))
+    assert text == "<think>endless</think>"
+
+
+def test_chat_stream_items_closes_unterminated_reasoning() -> None:
+    http = httpx.Client(
+        transport=httpx.MockTransport(_unterminated_reasoning_sse_handler), base_url="http://gpu0"
+    )
+    c = LlamaServerClient("http://gpu0", "m", http=http, inline_reasoning=True)
+    items = list(c.chat_stream_items([{"role": "user", "content": "q"}]))
+    text = "".join(i for i in items if isinstance(i, str))
+    assert text == "<think>endless</think>"
