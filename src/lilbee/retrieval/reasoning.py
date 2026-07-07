@@ -21,35 +21,20 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Callable, Generator, Iterator
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ClosableIterator
+from lilbee.providers.base import THINK_CLOSE_TAG, THINK_OPEN_TAG, ClosableIterator
 
 if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
 
-_OPEN_TAG = "<think>"
-_CLOSE_TAG = "</think>"
-_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>\s*|<think>[\s\S]*$")
+_THINK_BLOCK_RE = re.compile(
+    rf"{THINK_OPEN_TAG}[\s\S]*?{THINK_CLOSE_TAG}\s*|{THINK_OPEN_TAG}[\s\S]*$"
+)
 _PROGRESS_TICK_CHARS = 256
 """Coarseness of the progress callback: fire when reasoning grows by at least this many chars."""
-
-# OpenAI harmony control tokens (gpt-oss). The stream leaks them as text because
-# the chat server runs with --reasoning-format none (keeps <think> inline); lilbee
-# classifies the channels itself, the same way it parses <think>.
-_HARMONY_OPEN = "<|"
-_HARMONY_CLOSE = "|>"
-_HARMONY_CHANNEL = "<|channel|>"
-_HARMONY_MESSAGE = "<|message|>"
-_HARMONY_START = "<|start|>"
-_HARMONY_END = "<|end|>"
-_HARMONY_RETURN = "<|return|>"
-_HARMONY_CALL = "<|call|>"
-_HARMONY_BODY_ENDERS = frozenset({_HARMONY_START, _HARMONY_END, _HARMONY_RETURN, _HARMONY_CALL})
-_FINAL_CHANNEL = "final"
 
 CAP_CONTINUATION_PROMPT = (
     "Stop thinking now. Give your final answer directly, without any further <think> blocks."
@@ -68,21 +53,6 @@ REASONING_EXHAUSTED_NOTICE = (
 
 Lets a caller tell "the model thought itself to death" apart from a genuine empty
 response, which an empty string alone cannot."""
-
-
-class _HarmonySection(StrEnum):
-    """Which part of a harmony message the parser is currently reading."""
-
-    HEADER = "header"  # role name after <|start|>; not emitted
-    CHANNEL = "channel"  # channel name after <|channel|>; captured, not emitted
-    BODY = "body"  # message text after <|message|>; classified by channel
-
-
-class _Route(StrEnum):
-    """Which stream dialect the dispatcher committed to."""
-
-    HARMONY = "harmony"  # gpt-oss channels
-    TAG = "tag"  # plain text or <think> reasoning
 
 
 @dataclass
@@ -131,9 +101,9 @@ class TagParser:
         return StreamToken(content=self.buf, is_reasoning=False)
 
     def _process_thinking(self) -> StreamToken | None:
-        close_idx = self.buf.find(_CLOSE_TAG)
+        close_idx = self.buf.find(THINK_CLOSE_TAG)
         if close_idx == -1:
-            if _could_be_partial(_CLOSE_TAG, self.buf):
+            if _could_be_partial(THINK_CLOSE_TAG, self.buf):
                 return None
             content = self.buf
             self.reasoning_chars += len(content)
@@ -145,160 +115,24 @@ class TagParser:
             )
         thinking_content = self.buf[:close_idx]
         self.reasoning_chars += len(thinking_content)
-        self.buf = self.buf[close_idx + len(_CLOSE_TAG) :]
+        self.buf = self.buf[close_idx + len(THINK_CLOSE_TAG) :]
         self.in_thinking = False
         if thinking_content and self.show:
             return StreamToken(content=thinking_content, is_reasoning=True)
         return StreamToken(content="", is_reasoning=True)
 
     def _process_normal(self) -> StreamToken | None:
-        open_idx = self.buf.find(_OPEN_TAG)
+        open_idx = self.buf.find(THINK_OPEN_TAG)
         if open_idx == -1:
-            if _could_be_partial(_OPEN_TAG, self.buf):
+            if _could_be_partial(THINK_OPEN_TAG, self.buf):
                 return None
             content = self.buf
             self.buf = ""
             return StreamToken(content=content, is_reasoning=False)
         before = self.buf[:open_idx]
-        self.buf = self.buf[open_idx + len(_OPEN_TAG) :]
+        self.buf = self.buf[open_idx + len(THINK_OPEN_TAG) :]
         self.in_thinking = True
         return StreamToken(content=before, is_reasoning=False)
-
-
-@dataclass
-class HarmonyParser:
-    """Stateful parser for gpt-oss harmony channels.
-
-    Emits the ``final`` channel as answer text and every other channel (analysis,
-    commentary) as reasoning, stripping all ``<|...|>`` control tokens. Mirrors
-    ``TagParser``'s ``feed`` / ``flush`` / ``reasoning_chars`` contract so the same
-    orchestrator and cap logic drive either dialect.
-    """
-
-    show: bool
-    buf: str = ""
-    section: _HarmonySection = _HarmonySection.HEADER
-    channel: str = ""
-    channel_buf: str = ""
-    reasoning_chars: int = 0
-
-    def feed(self, token: str) -> list[StreamToken]:
-        """Feed a token and return any complete StreamTokens."""
-        self.buf += token
-        result: list[StreamToken] = []
-        while self.buf:
-            emitted = self._step()
-            if emitted is None:
-                break
-            if emitted.content:
-                result.append(emitted)
-        return result
-
-    def flush(self) -> StreamToken | None:
-        """Bodies stream fully during feed; only a trailing partial token is left to drop."""
-        self.buf = ""
-        return None
-
-    def _step(self) -> StreamToken | None:
-        open_idx = self.buf.find(_HARMONY_OPEN)
-        if open_idx == -1:
-            return self._emit_plain()
-        if open_idx > 0:
-            text, self.buf = self.buf[:open_idx], self.buf[open_idx:]
-            return self._classify(text)
-        close_idx = self.buf.find(_HARMONY_CLOSE)
-        if close_idx == -1:
-            return None  # incomplete control token; wait for more
-        marker, self.buf = (
-            self.buf[: close_idx + len(_HARMONY_CLOSE)],
-            self.buf[close_idx + len(_HARMONY_CLOSE) :],
-        )
-        self._handle_marker(marker)
-        return StreamToken(content="", is_reasoning=False)
-
-    def _emit_plain(self) -> StreamToken | None:
-        """Consume buffered text with no control token, holding back a lone trailing '<'."""
-        if self.buf == _HARMONY_OPEN[0]:
-            return None  # could be the start of the next control token
-        if self.buf.endswith(_HARMONY_OPEN[0]):
-            text, self.buf = self.buf[:-1], _HARMONY_OPEN[0]
-            return self._classify(text)
-        text, self.buf = self.buf, ""
-        return self._classify(text)
-
-    def _classify(self, text: str) -> StreamToken:
-        """Route body text by channel; capture channel names; drop header text."""
-        if self.section is _HarmonySection.CHANNEL:
-            self.channel_buf += text
-            return StreamToken(content="", is_reasoning=False)
-        if self.section is not _HarmonySection.BODY:
-            return StreamToken(content="", is_reasoning=False)
-        if self.channel == _FINAL_CHANNEL:
-            return StreamToken(content=text, is_reasoning=False)
-        self.reasoning_chars += len(text)
-        return StreamToken(content=text if self.show else "", is_reasoning=True)
-
-    def _handle_marker(self, marker: str) -> None:
-        if marker == _HARMONY_CHANNEL:
-            self.section = _HarmonySection.CHANNEL
-            self.channel_buf = ""
-        elif marker == _HARMONY_MESSAGE:
-            if self.section is _HarmonySection.CHANNEL:
-                self.channel = self.channel_buf.strip()
-            self.section = _HarmonySection.BODY
-        elif marker in _HARMONY_BODY_ENDERS:
-            self.section = _HarmonySection.HEADER
-
-
-@dataclass
-class ReasoningParser:
-    """Routes a chat stream to harmony or ``<think>`` handling by its opening tokens.
-
-    A harmony stream (gpt-oss) opens with a ``<|`` control token; everything else,
-    plain text and ``<think>`` reasoning, is handled by ``TagParser``. The choice is
-    made from the leading bytes and never switches mid-stream.
-    """
-
-    show: bool
-    reasoning_chars: int = 0
-    _inner: TagParser | HarmonyParser | None = field(default=None, repr=False)
-    _probe: str = ""
-
-    def feed(self, token: str) -> list[StreamToken]:
-        if self._inner is None:
-            self._probe += token
-            route = _route_reasoning(self._probe)
-            if route is None:
-                return []  # ambiguous prefix; keep buffering until the dialect is clear
-            self._inner = (
-                HarmonyParser(show=self.show)
-                if route is _Route.HARMONY
-                else TagParser(show=self.show)
-            )
-            token, self._probe = self._probe, ""
-        out = self._inner.feed(token)
-        self.reasoning_chars = self._inner.reasoning_chars
-        return out
-
-    def flush(self) -> StreamToken | None:
-        if self._inner is not None:
-            tail = self._inner.flush()
-            self.reasoning_chars = self._inner.reasoning_chars
-            return tail
-        if self._probe:
-            tail, self._probe = StreamToken(content=self._probe, is_reasoning=False), ""
-            return tail
-        return None
-
-
-def _route_reasoning(probe: str) -> _Route | None:
-    """Pick the stream dialect from its leading bytes; None while still ambiguous."""
-    lead = probe.lstrip()
-    if lead.startswith(_HARMONY_OPEN):
-        return _Route.HARMONY
-    if lead in ("", _HARMONY_OPEN[0]):
-        return None  # could still become a "<|" control token
-    return _Route.TAG
 
 
 def filter_reasoning(
@@ -309,7 +143,7 @@ def filter_reasoning(
     on_cap: Callable[[], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> Iterator[StreamToken]:
-    """Classify reasoning tokens (``<think>`` or harmony) and stop past the cap.
+    """Classify ``<think>...</think>`` tokens and stop when reasoning exceeds the cap.
 
     *cap_chars* bounds reasoning content. When exceeded, ``on_cap`` is
     fired (no payload), the upstream iterator is closed, and iteration
@@ -318,7 +152,7 @@ def filter_reasoning(
     the running reasoning-chars count each time it grows by at least 256
     characters. A non-positive *cap_chars* disables the cap.
     """
-    parser = ReasoningParser(show=show)
+    parser = TagParser(show=show)
     last_progress_tick = 0
     try:
         for token in tokens:
@@ -447,21 +281,8 @@ def _close_iterator(tokens: Iterator[Any]) -> None:
 
 
 def strip_reasoning(text: str) -> str:
-    """Reduce a complete (non-streaming) string to its final-answer text.
-
-    Removes ``<think>...</think>`` blocks, and for gpt-oss harmony output keeps
-    only the ``final`` channel, stripping the analysis channel and every
-    ``<|...|>`` control token.
-    """
-    if _HARMONY_OPEN in text:
-        return _final_channel_text(text)
+    """Remove ``<think>...</think>`` blocks from a complete (non-streaming) string."""
     return _THINK_BLOCK_RE.sub("", text)
-
-
-def _final_channel_text(text: str) -> str:
-    """Run harmony *text* through the parser and keep only answer (final) tokens."""
-    parser = HarmonyParser(show=False)
-    return "".join(tok.content for tok in parser.feed(text) if not tok.is_reasoning)
 
 
 def _could_be_partial(tag: str, buf: str) -> bool:

@@ -25,8 +25,8 @@ from lilbee.retrieval.reasoning import (
     CAP_NOTICE_TEMPLATE,
     REASONING_EXHAUSTED_NOTICE,
     CapNotice,
-    ReasoningParser,
     StreamToken,
+    TagParser,
     effective_reasoning_cap,
     stream_chat_with_cap,
     strip_reasoning,
@@ -457,7 +457,7 @@ async def _cap_aware_chat_events(
     show = cfg.show_reasoning
     answered = False
 
-    first_parser = ReasoningParser(show=show)
+    first_parser = TagParser(show=show)
     async for tok in _drive_stream(dispatch_chat_stream(req), first_parser, cap_chars):
         answered = answered or (not tok.is_reasoning and bool(tok.content))
         yield tok
@@ -465,7 +465,7 @@ async def _cap_aware_chat_events(
     if cap_chars > 0 and first_parser.reasoning_chars > cap_chars:
         yield CapNotice(cap_chars=cap_chars)
         nudged = _nudged_request(req)
-        cont_parser = ReasoningParser(show=show)
+        cont_parser = TagParser(show=show)
         async for tok in _drive_stream(dispatch_chat_stream(nudged), cont_parser, cap_chars=0):
             answered = answered or bool(tok.content)
             # Continuation tokens are always treated as final-answer text.
@@ -479,7 +479,7 @@ async def _cap_aware_chat_events(
 
 async def _drive_stream(
     stream: AsyncIterator[Any],
-    parser: ReasoningParser,
+    parser: TagParser,
     cap_chars: int,
 ) -> AsyncIterator[StreamToken]:
     """Feed *stream* through *parser*; yield ``StreamToken``s; stop on cap-fire."""

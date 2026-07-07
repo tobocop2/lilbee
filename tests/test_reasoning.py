@@ -1,6 +1,5 @@
 """Tests for reasoning token filter and cap-aware chat orchestrator."""
 
-from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -452,92 +451,6 @@ class TestStreamChatWithCap:
         assert second_closed["value"]
 
 
-class TestHarmonyChannels:
-    """gpt-oss harmony channels: render only 'final', strip control tokens."""
-
-    _ANALYSIS_FINAL: ClassVar[list[str]] = [
-        "<|channel|>analysis<|message|>Let's produce answer with citations.<|end|>",
-        "<|start|>assistant<|channel|>final<|message|>Pre-trip checklist: check tires.<|return|>",
-    ]
-
-    def test_final_channel_only_when_hidden(self):
-        out = _collect(self._ANALYSIS_FINAL, show=False)
-        text = "".join(t.content for t in out)
-        assert text == "Pre-trip checklist: check tires."
-        assert "<|" not in text
-        assert "analysis" not in text
-        assert "produce answer" not in text
-
-    def test_analysis_is_reasoning_when_shown(self):
-        out = _collect(self._ANALYSIS_FINAL, show=True)
-        reasoning = "".join(t.content for t in out if t.is_reasoning)
-        answer = "".join(t.content for t in out if not t.is_reasoning)
-        assert "Let's produce answer with citations." in reasoning
-        assert answer == "Pre-trip checklist: check tires."
-        assert "<|" not in reasoning + answer
-
-    def test_control_tokens_split_across_chunks(self):
-        chunks = ["<|chan", "nel|>fin", "al<|mess", "age|>Hi", " there<|ret", "urn|>"]
-        out = _collect(chunks, show=False)
-        assert "".join(t.content for t in out) == "Hi there"
-
-    def test_think_stream_unaffected_by_harmony_routing(self):
-        out = _collect(["<think>reason</think>answer"], show=False)
-        assert "".join(t.content for t in out) == "answer"
-
-    def test_start_role_header_dropped(self):
-        out = _collect(self._ANALYSIS_FINAL, show=True)
-        assert "assistant" not in "".join(t.content for t in out)
-
-    def test_commentary_channel_is_reasoning(self):
-        chunks = ["<|channel|>commentary<|message|>calling a tool<|end|>"]
-        out = _collect(chunks, show=False)
-        assert "".join(t.content for t in out) == ""
-        shown = _collect(chunks, show=True)
-        assert "calling a tool" in "".join(t.content for t in shown if t.is_reasoning)
-
-    def test_final_body_flushed_without_closing_token(self):
-        out = _collect(["<|channel|>final<|message|>partial answer"], show=False)
-        assert "".join(t.content for t in out) == "partial answer"
-
-    def test_trailing_partial_control_token_dropped_on_flush(self):
-        out = _collect(["<|channel|>final<|message|>done<|ret"], show=False)
-        assert "".join(t.content for t in out) == "done"
-
-    def test_literal_angle_bracket_in_final_answer_preserved(self):
-        chunks = ["<|channel|>final<|message|>a < b", "<|return|>"]
-        out = _collect(chunks, show=False)
-        assert "".join(t.content for t in out) == "a < b"
-
-    def test_leading_whitespace_before_harmony_token(self):
-        chunks = [" <|channel|>final<|message|>hi<|return|>"]
-        assert "".join(t.content for t in _collect(chunks, show=False)) == "hi"
-
-    def test_lone_angle_bracket_stream_is_plain_text(self):
-        assert "".join(t.content for t in _collect(["<"], show=False)) == "<"
-
-    def test_whitespace_prefix_then_think(self):
-        out = _collect(["  ", "<think>x</think>y"], show=False)
-        assert "".join(t.content for t in out) == "  y"
-
-    def test_final_body_lone_angle_bracket_token_held(self):
-        # A "<" arriving as its own chunk is held (could open <|return|>), then resolves.
-        chunks = ["<|channel|>final<|message|>a", "<", "|return|>tail"]
-        out = _collect(chunks, show=False)
-        assert "".join(t.content for t in out) == "a"
-
-    def test_final_body_trailing_angle_bracket_then_more(self):
-        chunks = ["<|channel|>final<|message|>b<", "c<|return|>"]
-        out = _collect(chunks, show=False)
-        assert "".join(t.content for t in out) == "b<c"
-
-    def test_cap_counts_harmony_analysis(self):
-        chunks = ["<|channel|>analysis<|message|>" + "z" * 50 + "<|end|>"]
-        out = _collect(chunks, show=True, cap_chars=10)
-        # The cap fires on the analysis channel, so no final answer is produced.
-        assert all(t.is_reasoning for t in out)
-
-
 class TestStripReasoning:
     def test_strips_think_block(self):
         assert strip_reasoning("<think>internal</think>answer") == "answer"
@@ -561,13 +474,6 @@ class TestStripReasoning:
 
     def test_unclosed_think_tag_stripped(self):
         assert strip_reasoning("answer<think>truncated reasoning") == "answer"
-
-    def test_strips_harmony_to_final_channel(self):
-        text = (
-            "<|channel|>analysis<|message|>thinking hard<|end|>"
-            "<|start|>assistant<|channel|>final<|message|>The answer.<|return|>"
-        )
-        assert strip_reasoning(text) == "The answer."
 
     def test_only_unclosed_think_tag(self):
         assert strip_reasoning("<think>all reasoning no answer") == ""
