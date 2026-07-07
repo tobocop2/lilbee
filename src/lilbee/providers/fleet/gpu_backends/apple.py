@@ -11,8 +11,11 @@ from lilbee.providers.fleet.gpu_backends.base import UtilSample, run_smi
 BACKEND_KEY = "MTL"
 
 _TOOL = "ioreg"
-# The GPU accelerator's PerformanceStatistics dict, readable without sudo.
-_ARGS = ("-r", "-d", "1", "-k", "PerformanceStatistics")
+# Root at the GPU accelerator (AGXAccelerator conforms to IOAccelerator on every
+# Apple Silicon generation) and read its properties. A plain "-d 1 -k
+# PerformanceStatistics" never reaches the GPU node -- it caps traversal at depth
+# 1 and matches a shallow always-zero entry, so the bar read 0% even under load.
+_ARGS = ("-r", "-c", "IOAccelerator", "-d", "1")
 _TIMEOUT_S = 5.0
 
 # Apple Silicon exposes one integrated GPU; its load is "Device Utilization %".
