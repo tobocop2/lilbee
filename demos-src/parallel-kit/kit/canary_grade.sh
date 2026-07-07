@@ -4,7 +4,12 @@
 # any reel records. 3/3 asks must contain the trailer-limit and GCW facts.
 set -uo pipefail
 source /root/kit/env.sh
-python3 /root/kit/stage.py /root/kit/reels.yaml pm-gptoss-20b
+CANARY_REEL=$(python3 -c "
+import yaml
+m = yaml.safe_load(open('/root/kit/reels.yaml'))
+print(next(k for k,r in m['reels'].items() if r.get('pod_group')=='CANARY'))")
+echo "canary reel: $CANARY_REEL"
+python3 /root/kit/stage.py /root/kit/reels.yaml "$CANARY_REEL"
 
 PASS=0
 for i in 1 2 3; do

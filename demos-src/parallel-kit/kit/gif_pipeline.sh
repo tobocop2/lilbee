@@ -14,9 +14,11 @@ case "$MODE" in
   *) echo "unknown mode $MODE"; exit 1 ;;
 esac
 
-ffmpeg -v quiet -y -i "$SRC" -vf "$VF,fps=25,palettegen=stats_mode=diff" "$TMP/pal.png"
+# hold the final frame ~2.5s so viewers can read the settled answer
+HOLD="tpad=stop_mode=clone:stop_duration=2.5"
+ffmpeg -v quiet -y -i "$SRC" -vf "$VF,$HOLD,fps=25,palettegen=stats_mode=diff" "$TMP/pal.png"
 ffmpeg -v quiet -y -i "$SRC" -i "$TMP/pal.png" \
-  -lavfi "$VF,fps=25 [x]; [x][1:v] paletteuse=dither=${DITHER}:diff_mode=rectangle" \
+  -lavfi "$VF,$HOLD,fps=25 [x]; [x][1:v] paletteuse=dither=${DITHER}:diff_mode=rectangle" \
   "$TMP/raw.gif"
 gifsicle -O2 --lossy=20 "$TMP/raw.gif" -o "$OUT"
 

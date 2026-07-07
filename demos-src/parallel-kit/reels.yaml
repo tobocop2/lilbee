@@ -162,10 +162,10 @@ reels:
   # per-model reels: shared permodel body, identical grammar. windows.boot/gen
   # are conservative defaults; Phase 2 reconciles them from the rendered
   # per-model tapes on the volume (/workspace/reels/permodel-*.tape).
-  pm-qwen3-30b:   { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: qwen3-30b,   kb: manual, must_strings: ['1,500', '6,600'], pod_group: D, vram_gb: est 34,  windows: {boot: 70, gen: 60} }
+  pm-qwen3-30b:   { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: qwen3-30b,   kb: manual, must_strings: ['1,500', '6,600'], pod_group: CANARY, vram_gb: est 34,  windows: {boot: 70, gen: 60} }
   pm-gemma4-31b:  { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: gemma4-31b,  kb: manual, must_strings: ['1,500', '6,600'], pod_group: E, vram_gb: est 32,  windows: {boot: 70, gen: 60} }
   pm-qwen36-35b:  { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: qwen36-35b,  kb: manual, must_strings: ['1,500', '6,600'], pod_group: F, vram_gb: est 36,  windows: {boot: 70, gen: 60} }
-  pm-gptoss-20b:  { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: gptoss-20b,  kb: manual, must_strings: ['1,500', '6,600'], pod_group: CANARY, vram_gb: est 15, windows: {boot: 60, gen: 55} }
+  pm-gptoss-20b:  { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: gptoss-20b,  kb: manual, must_strings: ['1,500', '6,600'], pod_group: D, vram_gb: est 15, windows: {boot: 60, gen: 55} }
   pm-gptoss-120b: { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: gptoss-120b, kb: manual, must_strings: ['1,500', '6,600'], pod_group: G, vram_gb: est 64,  windows: {boot: 85, gen: 70} }
   pm-glm45-air:   { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: glm45-air,   kb: manual, must_strings: ['1,500', '6,600'], pod_group: H, vram_gb: est 96,  windows: {boot: 95, gen: 80} }
   pm-glm46:       { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: glm46,       kb: manual, must_strings: ['1,500', '6,600'], pod_group: I, vram_gb: est 165, windows: {boot: 110, gen: 90} }

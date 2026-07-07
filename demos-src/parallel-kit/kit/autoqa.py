@@ -117,14 +117,14 @@ def main() -> None:
         findings.append(f"dims {got} != {want}")
     dur = float(probe["format"]["duration"])
     rep["duration_s"] = round(dur, 1)
-    tape_for_dur = tapes_dir / f"{reel_name}.tape"
-    bounds = reel.get("duration_s")
-    if not bounds and tape_for_dur.exists():
-        exp = tape_visible_seconds(tape_for_dur)
-        bounds = {"min": exp * 0.6, "max": exp * 1.5 + 20}
-        rep["derived_bounds"] = [round(bounds["min"]), round(bounds["max"])]
-    if bounds and not (bounds["min"] <= dur <= bounds["max"]):
-        findings.append(f"duration {dur:.0f}s outside [{bounds['min']:.0f},{bounds['max']:.0f}]")
+    # The chrome screencast only emits frames while the screen CHANGES, so
+    # static/idle sleeps are dropped and output duration ~= active-content
+    # time, not tape wall-clock. Duration is therefore a wide sanity guard
+    # only (a real take is never <6s or >5min); content/settle/palette are the
+    # real quality gates. A manifest duration_s override stays authoritative.
+    bounds = reel.get("duration_s") or {"min": 6, "max": 300}
+    if not (bounds["min"] <= dur <= bounds["max"]):
+        findings.append(f"duration {dur:.0f}s outside sanity [{bounds['min']:.0f},{bounds['max']:.0f}]")
 
     with tempfile.TemporaryDirectory() as td:
         frames = extract_frames(mp4, td)
@@ -169,8 +169,10 @@ def main() -> None:
         if len(events) > allowed:
             findings.append(f"{len(events)} redraw burst events mid-take (expected <= {allowed} Show cuts) at frames {[e[0] for e in events][:10]}")
 
-        # settle: final 2s must be static
-        tail = diffs[-2 * g["framerate"]:]
+        # settle: the last handful of emitted frames must be near-identical
+        # (a settled, complete answer). A short tail is expected because static
+        # frames are dropped; check the final frames, not a fixed 2s window.
+        tail = diffs[-6:] if len(diffs) >= 6 else diffs
         if tail and max(tail) > SETTLE_MAX:
             findings.append(f"no settle: max tail diff {max(tail):.3f}")
 
