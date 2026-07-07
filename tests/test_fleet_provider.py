@@ -412,21 +412,61 @@ def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
     assert client.chat.call_count == 3
 
 
-def test_vision_ocr_gives_up_when_persistently_busy(monkeypatch) -> None:
-    # The retry budget is bounded; a fleet that never frees a slot fails the page.
+def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
+    # On a deep OCR queue the drain time exceeds the fixed attempt budget, so a
+    # 429'd image must keep retrying until its own deadline rather than being
+    # dropped after _VISION_BUSY_RETRIES attempts (bb-z34 regression).
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
-    client.chat.side_effect = ProviderError(
-        "busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT
-    )
+    # timeout > 0 routes through the bounded (chat_bounded) path.
+    client.chat_bounded.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["ocr text"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
+    assert client.chat_bounded.call_count == prov_mod._VISION_BUSY_RETRIES + 6
+
+
+def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
+    # A fleet that never frees a slot fails the page once its deadline passes.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    clock = {"t": 0.0}
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: clock["t"])
+    monkeypatch.setattr("lilbee.providers.fleet.provider.time.monotonic", lambda: clock["t"])
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 0.0)  # deadline == the 20s timeout
+
+    def _busy(*_a, **_k):
+        clock["t"] += 5.0  # each attempt advances the clock toward the deadline
+        raise ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+
+    client = _fake_client()
+    client.chat_bounded.side_effect = _busy
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError) as excinfo:
-        p.vision_ocr(b"png", "org/repo/v.gguf")
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
     assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
-    assert client.chat.call_count == prov_mod._VISION_BUSY_RETRIES
+
+
+def test_vision_ocr_deadline_passed_before_generation_raises_timeout(monkeypatch) -> None:
+    # A slot that only frees after the image's deadline has already passed yields a
+    # user-facing timeout, not the internal budget-exhausted signal.
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_load_budget_s", 0.0)  # deadline == the 20s timeout
+    ticks = iter([0.0, 100.0])  # deadline computed at 0; the slot frees at 100 (past 20)
+    monkeypatch.setattr("lilbee.providers.fleet.provider.time.monotonic", lambda: next(ticks))
+    client = _fake_client()
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError, match="timed out waiting for a free vision slot"):
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
+    client.chat.assert_not_called()  # the deadline lapsed before any generation ran
 
 
 def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
@@ -476,6 +516,21 @@ def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
     p = _provider_with_clients({WorkerRole.VISION: clients})
     p._launches[WorkerRole.VISION] = (_fake_launch(WorkerRole.VISION, slots=3),)
     assert [replica.slots for replica in p._vision_pool()] == [4, 4]
+
+
+def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
+    # The ingest fan-out sizes to this: the sum of the running servers' fitted slots.
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(), _fake_client()]})
+    p._launches[WorkerRole.VISION] = (
+        _fake_launch(WorkerRole.VISION, slots=3),
+        _fake_launch(WorkerRole.VISION, slots=2, replica=1),
+    )
+    assert p.vision_slot_capacity() == 5
+
+
+def test_vision_slot_capacity_none_before_fleet_up() -> None:
+    # No launch snapshot yet: the fan-out keeps its own estimate.
+    assert FleetProvider().vision_slot_capacity() is None
 
 
 def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
@@ -633,6 +688,31 @@ def test_ocr_pdf_page_retries_busy_then_keeps_text(monkeypatch) -> None:
     )
     assert (idx, text) == (0, "page text")
     assert client.chat.call_count == 3
+
+
+def test_ocr_pdf_page_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
+    # The per-page path is deadline-bound too: a deep queue that 429s past the
+    # attempt cap still lands the page while the document deadline holds (bb-z34).
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("lilbee.providers.fleet.provider.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("lilbee.vision.build_vision_messages", lambda *_a, **_k: [])
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    client = _fake_client()
+    # A positive remaining budget routes through the bounded (chat_bounded) path.
+    client.chat_bounded.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["page text"]
+    idx, text = prov_mod._ocr_pdf_page(
+        0,
+        b"\x89PNG",
+        pool=[prov_mod._VisionReplica(client, 2)],
+        ocr_prompt="describe",
+        deadline=100.0,
+        page_path=Path("doc.pdf"),
+    )
+    assert (idx, text) == (0, "page text")
+    assert client.chat_bounded.call_count == prov_mod._VISION_BUSY_RETRIES + 6
 
 
 def test_chat_streams_from_server() -> None:

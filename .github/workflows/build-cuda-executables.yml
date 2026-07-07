@@ -163,6 +163,8 @@ jobs:
         with:
           backend: ${{ matrix.backend }}
           llama-cpp-version: ${{ matrix.llama-cpp-version }}
+          cache-env: ${{ matrix.os }}
+          toolkit-version: ${{ matrix.cuda }}
 
       - name: Build executable
         shell: bash
@@ -176,7 +178,11 @@ jobs:
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
       - name: Smoke test
-        # CUDA binaries on no-GPU runners fall back to CPU because GGML_CPU stays on by default.
+        # CUDA cells run on GPU-less runners: the bundled server links the CUDA
+        # driver (libcuda.so.1), so it cannot run inference here. The full
+        # inference sweep runs on the CPU/Vulkan/Metal executables, which share
+        # the identical Nuitka bundling and engine-copy logic; this cell gates
+        # the launcher itself (--version/--help, frozen-multiprocessing).
         if: inputs.skip_tests != true
         shell: bash
         run: |

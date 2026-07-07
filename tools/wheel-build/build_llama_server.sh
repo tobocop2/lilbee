@@ -39,6 +39,23 @@ case "$(uname -s)" in
   *)      rpath='$ORIGIN' ;;
 esac
 
+# GitHub sometimes 403s unauthenticated clones from shared runner IPs; retry
+# with backoff, clearing any partial checkout first.
+clone_with_retry() {
+  local dest="${!#}" attempt
+  for attempt in 1 2 3; do
+    rm -rf "${dest}"
+    if git clone "$@"; then
+      return 0
+    fi
+    if [ "${attempt}" -lt 3 ]; then
+      echo "git clone failed (attempt ${attempt}/3); retrying" >&2
+      sleep $((attempt * 20))
+    fi
+  done
+  return 1
+}
+
 # llama-cpp-python vendors llama.cpp as a submodule; clone at the matching tag so
 # the server's GGUF support is a known-good combination.
 # Windows MAX_PATH (260 chars): llama.cpp's vendored server webui has paths long
@@ -47,7 +64,7 @@ git config --global core.longpaths true
 src="${build_dir}/llama-cpp-python-${version}"
 mkdir -p "${build_dir}"
 if [ ! -d "${src}" ]; then
-  git clone --depth 1 --branch "v${version}" --recurse-submodules \
+  clone_with_retry --depth 1 --branch "v${version}" --recurse-submodules \
     https://github.com/abetlen/llama-cpp-python "${src}"
 fi
 
@@ -72,9 +89,14 @@ if [[ "${CMAKE_ARGS}" == *"all-major"* ]]; then
   fi
 fi
 # shellcheck disable=SC2086
+# CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: the vendored cpp-httplib links whatever
+# OpenSSL the build host has (Homebrew on macOS runners, distro libssl on
+# Linux) even with LLAMA_SERVER_SSL=OFF, baking in a library path that does
+# not exist on user machines. The fleet only talks to localhost; hide OpenSSL
+# from the build entirely.
 cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
   -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_SERVER=ON -DBUILD_SHARED_LIBS=ON \
-  -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF \
+  -DLLAMA_SERVER_SSL=OFF -DLLAMA_CURL=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON \
   -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH="${rpath}" ${CMAKE_ARGS}
 # Bounded parallelism: a bare -j lets make spawn unlimited jobs, and the CUDA/ROCm
 # translation units OOM-kill the compilers on 7GB CI runners. ENGINE_BUILD_JOBS
@@ -82,9 +104,21 @@ cmake -S "${src}/vendor/llama.cpp" -B "${src}/server-build" \
 build_jobs="${ENGINE_BUILD_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 cmake --build "${src}/server-build" --target llama-server --config Release -j "${build_jobs}"
 
-binary=$(find "${src}/server-build" -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
+# Prefer the collected bin/ output: CMake also leaves a per-target copy of the
+# binary in its target directory WITHOUT the shared libs beside it, and find's
+# traversal order is filesystem-dependent, so picking "whichever comes first"
+# shipped lib-less bundles.
+binary=""
+for candidate in "${src}/server-build/bin/llama-server" "${src}/server-build/bin/Release/llama-server.exe" "${src}/server-build/bin/llama-server.exe"; do
+  if [ -f "${candidate}" ]; then
+    binary="${candidate}"
+    break
+  fi
+done
+if [ -z "${binary}" ]; then
+  binary=$(find "${src}/server-build" -type f \( -name 'llama-server' -o -name 'llama-server.exe' \) | head -1)
+fi
 [ -n "${binary}" ] || { echo "llama-server binary not found after build" >&2; exit 1; }
-bindir=$(dirname "${binary}")
 
 # Reset the bundle dir so a stale lib from a previous build can't ship.
 rm -rf "${pkg_bin_dir}"
@@ -92,13 +126,32 @@ mkdir -p "${pkg_bin_dir}"
 cp "${binary}" "${pkg_bin_dir}/"
 
 # Bundle EVERY shared lib the server links: ggml (+ its backend split libs),
-# llama, and mtmd. They sit beside the binary, and the baked rpath resolves them
+# llama, mtmd, and the server-impl split. Search the whole build tree, not just
+# the binary's directory: this llama.cpp scatters library outputs across target
+# directories. They sit beside the binary and the baked rpath resolves them
 # there, so the wheel is self-contained on every platform.
-shopt -s nullglob
-for lib in "${bindir}"/*.so "${bindir}"/*.so.* "${bindir}"/*.dylib "${bindir}"/*.dll; do
+# Symlinks included: the SONAME names the binary loads by (libllama.0.dylib)
+# are symlinks to the versioned files; cp dereferences each into a regular
+# file under the loadable name.
+while IFS= read -r -d '' lib; do
   cp "${lib}" "${pkg_bin_dir}/"
-done
-shopt -u nullglob
+done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o -path '*vulkan-shaders-gen-prefix*' \) -prune -o \
+  \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
+
+# The copied closure must actually resolve: exec the bundled binary from the
+# bundle dir. A missing bundled lib fails here, at build time, instead of on a
+# user's machine. Skipped when cross-compiling (the host can't exec the target)
+# and for GPU-driver backends, whose binaries link the driver runtime
+# (libcuda.so.1 / libamdhip64.so) that is absent on the driverless build host;
+# the CPU/Vulkan/Metal cells exercise the identical copy logic, so the closure
+# is still gated on every push.
+case "${backend}" in
+  cu* | rocm | sycl) _can_exec="" ;;
+  *)                 _can_exec="1" ;;
+esac
+if [ -n "${_can_exec}" ] && [ -z "${target_arch}" ]; then
+  "${pkg_bin_dir}/llama-server" --version
+fi
 
 # Build the two Go engine helpers into the same wheel bin/. llama-swap is the
 # process supervisor + OpenAI proxy; gguf-parser is the UMA-aware VRAM estimator.
@@ -110,11 +163,11 @@ case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe_suffix=".exe" ;; esac
 
 rm -rf "${go_build_dir}"
 mkdir -p "${go_build_dir}"
-git clone -q --depth 1 --branch "${_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${go_build_dir}/llama-swap"
+clone_with_retry -q --depth 1 --branch "${_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${go_build_dir}/llama-swap"
 ( cd "${go_build_dir}/llama-swap" && go build -trimpath -o "${pkg_bin_dir}/llama-swap${exe_suffix}" . )
 
 # gguf-parser's cmd has a nested go.mod, so build from inside cmd/gguf-parser.
-git clone -q --depth 1 --branch "${_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
+clone_with_retry -q --depth 1 --branch "${_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
 ( cd "${go_build_dir}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${pkg_bin_dir}/gguf-parser${exe_suffix}" . )
 
 echo "Built self-contained engine (${backend}: llama-server + llama-swap + gguf-parser) -> ${pkg_bin_dir}/"
