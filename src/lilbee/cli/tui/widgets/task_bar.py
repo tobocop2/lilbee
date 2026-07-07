@@ -15,6 +15,7 @@ from textual.widgets import Label, Static
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.task_queue import TaskQueue, TaskStatus
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -32,6 +33,24 @@ _POLL_INTERVAL_IDLE_S = 1.0
 # matching the active-row rail pulse in the Task Center.
 _DOT_PULSE_HALF_TICKS = 5
 _DOT_GLYPH = "●"
+
+
+def _warm_detail(progress: WarmProgress | None) -> str | None:
+    """Phase (and byte % while paging weights) for the cold-start chat warm line.
+
+    None once the warm is past an active phase, so the line reads as progress, not
+    a stuck spinner.
+    """
+    if progress is None:
+        return None
+    if progress.phase is WarmPhase.STARTING:
+        return msg.TASKBAR_WARM_STARTING
+    if progress.phase is WarmPhase.LOADING_ENGINE:
+        return msg.TASKBAR_WARM_LOADING
+    if progress.phase is WarmPhase.READING_WEIGHTS:
+        pct = int(progress.bytes_done / progress.bytes_total * 100) if progress.bytes_total else 0
+        return msg.TASKBAR_WARM_READING.format(pct=pct)
+    return None
 
 
 class TaskBar(Static):
@@ -207,7 +226,8 @@ class TaskBar(Static):
         idle = not active and not queued and not in_flash and self._flash_outcome is None
         pending = self._controller.pending_sync_count if idle else 0
         spawning_roles = sorted(self._controller.spawning_roles) if idle else []
-        fully_idle = idle and pending == 0 and not spawning_roles
+        warm_line = self._warm_line() if idle else None
+        fully_idle = idle and pending == 0 and not spawning_roles and warm_line is None
         self._sync_poll_cadence(fully_idle)
         if fully_idle:
             self.display = False
@@ -215,15 +235,9 @@ class TaskBar(Static):
             return
 
         self.display = True
-        if idle and spawning_roles:
-            dot_color = "$primary"
-            summary = self._spawning_workers_template(spawning_roles)
-        elif idle and pending > 0:
-            dot_color = "$text-muted"
-            key = self._pending_sync_template(pending)
-            summary = key.format(count=pending)
-        else:
-            dot_color, summary = self._compose_segments(active, queued)
+        dot_color, summary = self._status_line(
+            active, queued, spawning_roles, pending, warm_line, idle=idle
+        )
         hint_text = self._hint_copy()
         # Fingerprint captures every variable the label content depends
         # on. Recomputing it is essentially free; the win comes from
@@ -237,6 +251,7 @@ class TaskBar(Static):
             self._flash_outcome,
             pending,
             tuple(spawning_roles),
+            warm_line,
         )
         if fingerprint == self._last_render_fingerprint:
             return
@@ -246,6 +261,32 @@ class TaskBar(Static):
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
+
+    def _status_line(
+        self,
+        active: list,  # type: ignore[type-arg]
+        queued: list,  # type: ignore[type-arg]
+        spawning_roles: list[str],
+        pending: int,
+        warm_line: str | None,
+        *,
+        idle: bool,
+    ) -> tuple[str, str]:
+        """Pick the dot color and summary text for the current bar state."""
+        if idle and warm_line is not None:
+            return "$primary", warm_line
+        if idle and spawning_roles:
+            return "$primary", self._spawning_workers_template(spawning_roles)
+        if idle and pending > 0:
+            return "$text-muted", self._pending_sync_template(pending).format(count=pending)
+        return self._compose_segments(active, queued)
+
+    def _warm_line(self) -> str | None:
+        """The cold-start chat warm line, or None when chat isn't warming."""
+        from lilbee.app.placement import active_chat_warm_progress
+
+        detail = _warm_detail(active_chat_warm_progress())
+        return msg.TASKBAR_WARM.format(detail=detail) if detail else None
 
     def _spawning_workers_template(self, roles: list[str]) -> str:
         """Render the active worker-warmup hint for the bottom bar."""

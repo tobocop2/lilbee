@@ -368,7 +368,7 @@ def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
     monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
     # Only EMBED requested -> chat is filtered out even though it is configured.
-    _inputs, refs, _res = planning_mod._server_model_inputs((WorkerRole.EMBED,))
+    _inputs, refs, _res, _skipped = planning_mod._server_model_inputs((WorkerRole.EMBED,))
     assert set(refs) == {WorkerRole.EMBED}
 
 
@@ -388,7 +388,9 @@ def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypa
         return ModelPlacementInput(role, sizes.get(role, 10 * _GB))
 
     monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
-    _inputs, _refs, reservation = planning_mod._server_model_inputs(unified_budget=20 * _GB)
+    _inputs, _refs, reservation, _skipped = planning_mod._server_model_inputs(
+        unified_budget=20 * _GB
+    )
     assert reservation == 5 * _GB  # embed (2) + rerank (3)
     assert seen["chat_reservation"] == 5 * _GB
 
@@ -408,7 +410,7 @@ def test_server_model_inputs_no_reservation_on_discrete_gpu(monkeypatch) -> None
         return ModelPlacementInput(role, 2 * _GB)
 
     monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
-    _inputs, _refs, reservation = planning_mod._server_model_inputs(unified_budget=None)
+    _inputs, _refs, reservation, _skipped = planning_mod._server_model_inputs(unified_budget=None)
     assert reservation == 0
     assert seen["chat_reservation"] == 0
 
@@ -634,7 +636,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(cfg, "reranker_model", "")  # unconfigured -> skipped
         monkeypatch.setattr(cfg, "vision_model", "")
-        inputs, refs, _res = planning_mod._server_model_inputs()
+        inputs, refs, _res, _skipped = planning_mod._server_model_inputs()
         assert {i.role for i in inputs} == {WorkerRole.CHAT, WorkerRole.EMBED}
         assert set(refs) == {WorkerRole.CHAT, WorkerRole.EMBED}
 
@@ -642,11 +644,13 @@ class TestBuildFleetWiring:
         # Search-only indexing must not require an installed chat model: a
         # configured-but-missing chat model is skipped, not fatal, so the embed
         # server still gets planned.
-        from lilbee.providers.base import ProviderError
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
 
         def _estimate(role, ref, **_k):
             if role is WorkerRole.CHAT:
-                raise ProviderError("not installed", provider="llama-server")
+                raise ProviderError(
+                    "not installed", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+                )
             return ModelPlacementInput(role, _GB)
 
         monkeypatch.setattr(planning_mod, "_estimate_role", _estimate)
@@ -654,9 +658,11 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "")
-        inputs, refs, _res = planning_mod._server_model_inputs()
+        inputs, refs, _res, skipped = planning_mod._server_model_inputs()
         assert WorkerRole.CHAT not in refs
         assert {i.role for i in inputs} == {WorkerRole.EMBED}
+        # The missing chat model is reported as not-installed so a surface can say so.
+        assert skipped == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
     def test_server_model_inputs_distinguishes_sizing_failure_from_missing(
         self, monkeypatch, caplog
@@ -687,7 +693,7 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "reranker_model", "")
         monkeypatch.setattr(cfg, "vision_model", "")
         with caplog.at_level(logging.WARNING):
-            inputs, refs, _res = planning_mod._server_model_inputs()
+            inputs, refs, _res, _skipped = planning_mod._server_model_inputs()
         assert not refs and not inputs
         # The genuinely-missing embed model says so; the chat sizing failure
         # names the estimator instead of misdirecting toward the registry.
@@ -702,7 +708,7 @@ class TestBuildFleetWiring:
         )
         monkeypatch.setattr(cfg, "reranker_model", "some/reranker.gguf")
         monkeypatch.setattr(cfg, "vision_model", "")
-        _inputs, refs, _res = planning_mod._server_model_inputs()
+        _inputs, refs, _res, _skipped = planning_mod._server_model_inputs()
         assert WorkerRole.RERANK in refs
 
     def test_server_model_inputs_includes_vision_only_with_mmproj(self, monkeypatch) -> None:
@@ -1185,6 +1191,7 @@ class TestBuildFleetWiring:
                 [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
                 {WorkerRole.CHAT: "ref"},
                 0,
+                {},
             ),
         )
         monkeypatch.setattr(
@@ -1213,6 +1220,7 @@ class TestBuildFleetWiring:
                 [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
                 {WorkerRole.CHAT: "ref"},
                 0,
+                {},
             ),
         )
 

@@ -211,6 +211,7 @@ SCOPE_PILL_BOTH = "Both"
 SCOPE_PILL_WIKI = "Wiki"
 SCOPE_PILL_RAW = "Raw"
 CHAT_BUSY = "Already answering. Press Ctrl+C to cancel, then submit your next prompt."
+CHAT_WARMING = "Loading the chat model. One moment, then send your prompt."
 CHAT_MODEL_DOWNLOADING = "{name} is still downloading. Wait for it to finish, then submit."
 MODEL_BEING_DOWNLOADED = (
     "{name} is still downloading. Wait for it to finish before setting it active."
@@ -398,6 +399,9 @@ FLEET_STATE_EDITED = "edited · ctrl+s to apply"
 FLEET_SINGLE_GPU_NOTE = "One graphics card: everything runs here."
 FLEET_GPU_PROBING = "probing GPUs…"
 FLEET_NO_GPUS = "(no GPUs detected)"
+# Shown for a role that has no placement because its model isn't downloaded, so the
+# empty slot reads as a fixable state instead of "GPU placement is broken".
+FLEET_MODEL_NOT_DOWNLOADED = "{role}: {model} not downloaded, pull it to place it"
 FLEET_CMD_PREVIEW = "Preview"
 FLEET_CMD_APPLY = "Apply"
 FLEET_CMD_AUTO = "Auto"
@@ -445,6 +449,12 @@ STATUS_DOCS_EMPTY = "(no documents yet)"
 STATUS_DOCS_TITLE = "Documents"
 TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
 TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
+# Cold-start chat warm line: phase (and byte % while paging weights) so the held
+# input reads as "loading", not "stuck".
+TASKBAR_WARM = "loading chat · {detail}"
+TASKBAR_WARM_STARTING = "starting"
+TASKBAR_WARM_READING = "reading weights {pct}%"
+TASKBAR_WARM_LOADING = "loading engine"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
