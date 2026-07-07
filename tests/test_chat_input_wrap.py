@@ -69,6 +69,22 @@ async def test_long_prompt_wraps_and_grows_the_box():
         assert chat_input.size.height > 3
 
 
+async def test_grows_when_terminal_narrows_after_typing():
+    app = _ChatHost()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        chat_input = app.screen.query_one("#chat-input", ChatInput)
+        # Fits one row at 120 cols, so it starts single-row.
+        chat_input.value = "a prompt that comfortably fits on a single row at a wide terminal width"
+        await pilot.pause()
+        assert not chat_input.has_class("-multiline")
+        # Narrowing the terminal wraps it; the box must grow, not clip.
+        await pilot.resize_terminal(48, 40)
+        await pilot.pause()
+        await pilot.pause()
+        assert chat_input.has_class("-multiline")
+
+
 async def test_literal_newline_still_grows():
     app = _ChatHost()
     async with app.run_test(size=(80, 40)) as pilot:

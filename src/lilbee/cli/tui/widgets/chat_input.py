@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from textual import on
+from textual import events, on
 from textual.actions import SkipAction
 from textual.binding import Binding, BindingType
 from textual.message import Message
@@ -94,7 +94,15 @@ class ChatInput(TextArea):
         last_col = len(self.document.get_line(last_line))
         self.move_cursor((last_line, last_col))
 
-    @on(TextArea.Changed)
-    def _track_multiline(self, _event: TextArea.Changed) -> None:
+    def _sync_multiline(self) -> None:
         """Add ``-multiline`` when the prompt spans more than one wrapped row."""
         self.set_class(self.wrapped_document.height > 1, "-multiline")
+
+    @on(TextArea.Changed)
+    def _track_multiline(self, _event: TextArea.Changed) -> None:
+        self._sync_multiline()
+
+    def on_resize(self, _event: events.Resize) -> None:
+        # A narrower terminal can wrap a prompt that fit one row when typed; re-check
+        # after the refresh (so the document has re-wrapped) and grow instead of clip.
+        self.call_after_refresh(self._sync_multiline)
