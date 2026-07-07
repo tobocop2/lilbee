@@ -1,0 +1,201 @@
+# Parallel reel manifest. Source of truth for tape classes, pod sizing, gates.
+# All demos record off origin/main (user directive 2026-07-06).
+# vram_gb values here are informal notes; the binding numbers live in
+# kit/vram_table.json (gguf-parser, per gpu-count) — scatter launch() refuses
+# to run without that file and filters candidates against it.
+
+globals:
+  branch: main
+  volume_id: rruqm4zcur      # reels-v2, US-GA-2 (fresh; old z6pgg1msdh is US-CA-2, capacity-dry)
+  datacenter: US-GA-2
+  framerate: 25
+  supersample: 2            # W/H/FontSize/Padding x2, LetterSpacing 2, WindowBarSize 60
+  font_family: "JetBrains Mono, Symbols Nerd Font Mono, Noto Color Emoji"
+  pod_outputs: [mp4, png]   # gifs are generated locally during gather, never on pods
+  vhs_version: "0.10.0"
+  ttyd_version: "1.7.7"
+  container_image: "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+  cuda_archs: "80;86;89;90"
+  reels_out: /workspace/reels-out
+  error_strings:
+    - "Error"
+    - "error:"
+    - "Traceback"
+    - "429"
+    - "llama-server is busy"
+    - "no GPUs detected"
+    - "Welcome to lilbee"        # setup wizard flash
+    - "exited prematurely"
+
+# Tape classes: each replaced asset keeps ITS original look. 1x values shown;
+# retape.py emits the 2x header. agent/plain classes are themeless: VHS default
+# palette (bg #171717), asserted by autoqa. lilbee classes are rose-pine-moon.
+classes:
+  flagship:      { shell: bash, width: 1400, height: 900, fontsize: 14, padding: 20, theme: rose-pine-moon, windowbar: Colorful }
+  agent:         { shell: bash, width: 1400, height: 900, fontsize: 14, padding: 20, theme: null, windowbar: Colorful }
+  plain-small:   { shell: zsh,  width: 1200, height: 600, fontsize: 14, padding: 20, theme: null, windowbar: null }
+  plain-godot:   { shell: zsh,  width: 1200, height: 700, fontsize: 14, padding: 20, theme: null, windowbar: null }
+  mcp:           { shell: zsh,  width: 1400, height: 900, fontsize: 18, padding: 30, theme: rose-pine-moon, windowbar: Colorful }
+  drawer:        { shell: bash, width: 1850, height: 1000, fontsize: 18, padding: 30, theme: rose-pine-moon, windowbar: Colorful }
+
+# choreography: authoritative tape body. volume: paths are reconciled in Phase 2
+# (the v8 bodies that produced the passing takes live in /workspace/kit).
+# new: choreography must be authored (matches the original asset's story).
+reels:
+  reel1-selfindex:
+    class: flagship
+    choreography: new:reel1-selfindex   # proven local v8 body (empty boot, live /add, drawer, hidden settle)
+    replaces: demos/tui-multi-gpu-self-index.gif   # 1400x900
+    pod_group: A
+    models: [qwen3-235b]
+    kb: corpus
+    empty_kb_boot: true   # KB is added live on camera
+    bg_target: rose-pine
+    must_strings: []          # explanation answer; graded by content audit
+  reel2-placement:
+    class: flagship
+    choreography: new:reel2-placement   # re-authored to the v8 flow (empty boot, /add corpus, walk, apply, hidden settle); 3-GPU-layout-bound walk
+    replaces: demos/tui-manual-placement.gif
+    pod_group: A
+    models: [qwen3-235b]
+    kb: corpus
+    pre_roll: placement_dryrun   # scripted tmux apply->settle->ask; main lacks reloading_placement guard
+    empty_kb_boot: true   # KB is added live on camera
+    bg_target: rose-pine
+  fleet-drawer:
+    class: drawer
+    choreography: new:fleet-drawer   # original demos/fleet-drawer.tape story, 25fps native
+    replaces: demos/fleet-drawer.gif  # 1850x1000
+    pod_group: A
+    models: [qwen3-235b]
+    kb: corpus
+    windows: {boot: 90, gen: 55}
+    bg_target: rose-pine
+  reel3-chat:
+    class: flagship
+    choreography: new:reel3-chat   # v1 body + drawer-open moved into hidden cut (v1 flashed 'no GPUs detected' on camera at 15s)
+    replaces: demos/tui-chat.gif
+    pod_group: B
+    models: [qwen3-235b]
+    kb: manual
+    empty_kb_boot: true   # KB is added live on camera
+    bg_target: rose-pine
+    must_strings: ["1,500", "6,600"]   # towing musts; jump-start gate via ground_truth.json
+  agent-opencode:
+    class: agent
+    choreography: new:agent-opencode
+    replaces: demos/agent-opencode.gif
+    pod_group: B
+    models: [qwen3-235b]
+    kb: corpus
+    soft_error_check: false
+    bg_target: opencode
+  agent-hermes:
+    class: agent
+    choreography: new:agent-hermes
+    replaces: demos/agent-hermes.gif
+    pod_group: B
+    models: [qwen3-235b]
+    kb: corpus
+    notes: banner scroll must finish inside hidden boot; autoqa frame-diff verifies
+    soft_error_check: false
+    bg_target: opencode
+  agent-opencode-godot:
+    class: agent
+    choreography: new:agent-opencode-godot
+    replaces: demos/agent-opencode-godot.gif
+    pod_group: C
+    models: [qwen3-235b]
+    kb: godot
+    soft_error_check: false
+    bg_target: opencode
+  agent-hermes-godot:
+    class: agent
+    choreography: new:agent-hermes-godot
+    replaces: demos/agent-hermes-godot.gif
+    pod_group: C
+    models: [qwen3-235b]
+    kb: godot
+    soft_error_check: false
+    bg_target: opencode
+  godot-with-lilbee:
+    class: plain-godot
+    choreography: new:godot-with   # original story, lilbee launch opencode --mcp
+    replaces: demos/godot-with-lilbee.gif  # 1200x700
+    pod_group: C
+    models: [qwen3-235b]
+    kb: godot
+    windows: {boot: 95, gen: 180}
+    soft_error_check: false
+    bg_target: opencode
+  godot-without-lilbee:
+    class: plain-godot
+    choreography: new:godot-without  # --no-mcp
+    replaces: demos/godot-without-lilbee.gif
+    pod_group: C
+    models: [qwen3-235b]
+    kb: godot
+    windows: {boot: 95, gen: 180}
+    soft_error_check: false
+    bg_target: opencode
+  code-search:
+    class: plain-small
+    choreography: new:code-search   # original shipped choreography, pod paths
+    replaces: demos/code-search.gif  # 1200x600, gif-only asset
+    pod_group: K
+    models: []            # search only; embedder
+    kb: corpus
+    soft_error_check: false
+    bg_target: vhs-default
+  mcp-manual:
+    class: mcp
+    choreography: new:mcp-manual   # original demos-src/mcp-manual.tape story
+    replaces: demos/mcp-manual.gif  # 1400x900 @ fontsize18/pad30
+    pod_group: K
+    models: [gptoss-20b]
+    kb: manual
+    windows: {boot: 90, gen: 105}
+    empty_kb_boot: true   # agent indexes the pdf live
+    soft_error_check: false
+    bg_target: opencode
+
+  # per-model reels: shared permodel body, identical grammar. windows.boot/gen
+  # are conservative defaults; Phase 2 reconciles them from the rendered
+  # per-model tapes on the volume (/workspace/reels/permodel-*.tape).
+  pm-qwen3-30b:   { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: qwen3-30b,   kb: manual, must_strings: ['1,500', '6,600'], pod_group: D, vram_gb: est 34,  windows: {boot: 70, gen: 60} }
+  pm-gemma4-31b:  { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: gemma4-31b,  kb: manual, must_strings: ['1,500', '6,600'], pod_group: E, vram_gb: est 32,  windows: {boot: 70, gen: 60} }
+  pm-qwen36-35b:  { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: qwen36-35b,  kb: manual, must_strings: ['1,500', '6,600'], pod_group: F, vram_gb: est 36,  windows: {boot: 70, gen: 60} }
+  pm-gptoss-20b:  { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: gptoss-20b,  kb: manual, must_strings: ['1,500', '6,600'], pod_group: CANARY, vram_gb: est 15, windows: {boot: 60, gen: 55} }
+  pm-gptoss-120b: { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: gptoss-120b, kb: manual, must_strings: ['1,500', '6,600'], pod_group: G, vram_gb: est 64,  windows: {boot: 85, gen: 70} }
+  pm-glm45-air:   { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: glm45-air,   kb: manual, must_strings: ['1,500', '6,600'], pod_group: H, vram_gb: est 96,  windows: {boot: 95, gen: 80} }
+  pm-glm46:       { class: flagship, bg_target: rose-pine, choreography: template:permodel, model: glm46,       kb: manual, must_strings: ['1,500', '6,600'], pod_group: I, vram_gb: est 165, windows: {boot: 110, gen: 90} }
+
+models:
+  qwen3-235b:  { ref: "unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF", quant: "UD-Q4_K_XL", gb: 135, ctx: 65536 }
+  qwen3-30b:   { ref: "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",   quant: "Q8_0",       gb: 32,  ctx: 32768 }
+  gemma4-31b:  { ref: "unsloth/gemma-4-31b-it-GGUF",                quant: "Q8_0",       gb: 30,  ctx: 32768 }
+  qwen36-35b:  { ref: "unsloth/Qwen3.6-35B-A3B-GGUF",               quant: "Q8_0",       gb: 34,  ctx: 32768 }
+  gptoss-20b:  { ref: "unsloth/gpt-oss-20b-GGUF",                   quant: "F16",        gb: 13,  ctx: 32768 }
+  gptoss-120b: { ref: "unsloth/gpt-oss-120b-GGUF",                  quant: "F16",        gb: 61,  ctx: 32768 }
+  glm45-air:   { ref: "unsloth/GLM-4.5-Air-GGUF",                   quant: "Q6_K",       gb: 92,  ctx: 32768 }
+  glm46:       { ref: "unsloth/GLM-4.6-GGUF",                       quant: "Q3_K_M",     gb: 159, ctx: 32768 }
+
+pod_groups:
+  # FRESH-DC PROFILE (US-GA-2): capacity verified by create-probes 2026-07-06.
+  # Only H100 NVL (94GB) / H100 80GB HBM3 / H200 (141GB) exist here, so every
+  # group rides H100-class; models arrive per-pod via `lilbee model pull`
+  # (transfer mode hf), the volume carries golden+KBs+reels-out only.
+  # Group A stays THREE GPUs: reel2's walk is bound to the 3-GPU drawer layout.
+  A:      { gpus: ["NVIDIA H100 NVL x3", "NVIDIA H100 80GB HBM3 x3", "NVIDIA H200 x3"], min_vcpu: 24, disk_gb: 250 }
+  B:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x2"], min_vcpu: 24, disk_gb: 250 }
+  C:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x2"], min_vcpu: 24, disk_gb: 250 }
+  D:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
+  E:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
+  F:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
+  G:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 160 }
+  H:      { gpus: ["NVIDIA H200 x1", "NVIDIA H100 NVL x2", "NVIDIA H100 80GB HBM3 x2"], min_vcpu: 24, disk_gb: 200 }
+  I:      { gpus: ["NVIDIA H200 x2", "NVIDIA H100 NVL x2"], min_vcpu: 24, disk_gb: 260 }
+  K:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1"], min_vcpu: 16, disk_gb: 100 }
+  CANARY: { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1"], min_vcpu: 16, disk_gb: 100 }
+  PREP:   { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
+  GATHER: { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 8,  disk_gb: 30 }

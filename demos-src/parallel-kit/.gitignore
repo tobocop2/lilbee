@@ -1,0 +1,11 @@
+# generated / environment-specific artifacts (regenerated on the prep pod)
+kit/__pycache__/
+kit/pull_refs.json
+kit/vram_table.json
+kit/calibration.json
+kit/geometry_cal.json
+kit/pod_ledger.json
+tapes/generated/
+trial/
+docker/out/
+*.pyc
