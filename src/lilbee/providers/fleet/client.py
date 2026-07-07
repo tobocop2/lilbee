@@ -191,21 +191,28 @@ def _raise_for_status(resp: httpx.Response) -> None:
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
         provider=_PROVIDER_NAME,
-        kind=_classify_error_body(body),
+        kind=_classify_error(resp.status_code, body),
     )
 
 
-def _classify_error_body(body: str) -> ProviderErrorKind:
-    """Error kind from a llama-server/llama-swap error body.
+def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
+    """Error kind from a llama-server/llama-swap error status and body.
 
     An input past the server's n_batch is a 500 whose body says "too large to
     process" (CONTEXT_OVERFLOW, so the embed path re-truncates exactly); a dead
-    upstream is CONNECTION, so the router can mark the replica unhealthy.
+    upstream is CONNECTION, so the router can mark the replica unhealthy. The
+    body markers win over the status: llama-swap reports a died upstream under
+    gateway statuses too, and that case needs the failover path, not a retry
+    against the same dead server. A bare gateway error (502/503/504) is a
+    momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
+    it is SERVER, which the busy retry treats as transient.
     """
     if _BATCH_OVERFLOW_MARKER in body:
         return ProviderErrorKind.CONTEXT_OVERFLOW
     if _UPSTREAM_DIED_MARKER in body:
         return ProviderErrorKind.CONNECTION
+    if status_code in _TRANSIENT_GATEWAY_STATUSES:
+        return ProviderErrorKind.SERVER
     return ProviderErrorKind.UNKNOWN
 
 
@@ -218,12 +225,13 @@ def is_connection_failure(exc: Exception) -> bool:
 
 
 def _is_transient_probe_failure(exc: Exception) -> bool:
-    """Whether a probe failure is transient (dead replica or a busy 429), not a
-    template verdict. A cold replica 429s its first traffic, so a busy response
-    must not be read as the template rejecting the exchange."""
+    """Whether a probe failure is transient (dead replica, busy 429, gateway
+    error), not a template verdict. A cold replica 429s or 502s its first
+    traffic, so neither response must be read as the template rejecting the
+    exchange."""
     if is_connection_failure(exc):
         return True
-    return isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.RATE_LIMIT
+    return isinstance(exc, ProviderError) and exc.kind in _TRANSIENT_KINDS
 
 
 def _upstream_failure_tail(resp: httpx.Response) -> str:
@@ -278,6 +286,14 @@ _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
 _HTTP_BAD_REQUEST = 400
 _HTTP_TOO_MANY_REQUESTS = 429
+# Gateway statuses llama-swap returns while an upstream is unreachable
+# (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
+# succeeds once the upstream is back, so these must never terminalize a call.
+_TRANSIENT_GATEWAY_STATUSES = frozenset({502, 503, 504})
+# Error kinds the busy retry treats as transient: a 429 (slots still loading)
+# and a bare gateway error (upstream momentarily unreachable) both clear on
+# their own once the server is ready again.
+_TRANSIENT_KINDS = frozenset({ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.SERVER})
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
@@ -315,14 +331,15 @@ class ChatDeadlineError(ProviderError):
 def retry_on_busy(
     call: Callable[[], _T], *, retries: int = _BUSY_RETRIES, deadline: float | None = None
 ) -> _T:
-    """Run *call*, retrying a transient server-busy (RATE_LIMIT) with capped backoff.
+    """Run *call*, retrying transient failures (429, gateway errors) with capped backoff.
 
-    A cold replica fleet 429s the first fan-out until its slots load; backing
-    off and retrying turns those drops into successes. With a *deadline*
-    (``time.monotonic`` epoch) the retry waits out a busy server until that
+    A cold replica fleet 429s the first fan-out until its slots load, and a
+    replica restarting mid-run answers 502 until it is back; backing off and
+    retrying turns both drops into successes. With a *deadline*
+    (``time.monotonic`` epoch) the retry waits out the server until that
     deadline -- a page on a deep OCR queue keeps waiting for a genuinely free
     slot instead of dropping after a fixed budget. Without one, *retries* bounds
-    the attempts. Non-RATE_LIMIT errors (and the final still-busy response)
+    the attempts. Non-transient errors (and the final still-failing response)
     propagate.
     """
     delay = _BUSY_BACKOFF_BASE_S
@@ -331,7 +348,7 @@ def retry_on_busy(
         try:
             return call()
         except ProviderError as exc:
-            if exc.kind is not ProviderErrorKind.RATE_LIMIT:
+            if exc.kind not in _TRANSIENT_KINDS:
                 raise
             attempt += 1
             exhausted = (
