@@ -79,8 +79,9 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
             if index not in stats:
                 continue
             base = stats[index]
-            # Keep structural VRAM when the backend returns 0/0 (amd-smi metric
-            # mode omits VRAM; xpu-smi populates it so it takes precedence).
+            # Keep structural VRAM when the backend returns the 0/0 sentinel
+            # (amd-smi metric mode and xpu-smi stats both omit total VRAM); a
+            # backend that does report memory takes precedence.
             free = sample.free_bytes if sample.free_bytes or sample.total_bytes else base.free_bytes
             total = sample.total_bytes if sample.total_bytes else base.total_bytes
             stats[index] = GpuStat(

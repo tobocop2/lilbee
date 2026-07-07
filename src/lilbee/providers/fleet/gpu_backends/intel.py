@@ -1,64 +1,89 @@
-"""SYCL/Intel GPU utilization via xpu-smi."""
+"""SYCL/Intel GPU utilization via xpu-smi.
+
+`xpu-smi stats -d <id> -j` reports device metrics as a ``device_level`` array of
+``{"metrics_type": "XPUM_STATS_...", "value": N}`` objects (one metric per entry),
+not the flat ``gpu_utilization`` keys an earlier parser assumed. The metrics_type
+strings are the names of xpum_stats_type_enum; utilization is a percentage and
+memory-used is in bytes. Total VRAM is not reported by stats, so VRAM is left as
+the 0/0 sentinel and the orchestrator falls back to structural VRAM.
+
+stats reports one device per call, so we run it once per requested index.
+"""
 
 from __future__ import annotations
 
 import json
 
-from lilbee.providers.fleet.devices import MIB
 from lilbee.providers.fleet.gpu_backends.base import UtilSample, extract_int, run_smi
 
 _TOOL = "xpu-smi"
-_ARGS = ("stats", "--json")
 _TIMEOUT_S = 5.0
+
+# xpum_stats_type_enum names, as emitted verbatim in the device_level "metrics_type".
+_METRIC_UTIL = "XPUM_STATS_GPU_UTILIZATION"
+_METRIC_TEMP = "XPUM_STATS_GPU_CORE_TEMPERATURE"
 
 
 class IntelBackend:
-    """SYCL util via xpu-smi."""
+    """SYCL util via xpu-smi, one `stats -d <id>` call per device."""
 
     def sample(self, indices: frozenset[int]) -> dict[int, UtilSample]:
-        return _xpu_smi_samples(indices)
+        samples: dict[int, UtilSample] = {}
+        for index in sorted(indices):
+            sample = _parse_xpu_smi(_xpu_smi_output(index), index)
+            if sample is not None:
+                samples[index] = sample
+        return samples
 
 
-def _xpu_smi_output() -> str:
-    """xpu-smi JSON stdout, or "" when it can't run."""
-    return run_smi(_TOOL, list(_ARGS), _TIMEOUT_S)
+def _xpu_smi_output(index: int) -> str:
+    """xpu-smi stats JSON stdout for one device, or "" when it can't run."""
+    return run_smi(_TOOL, ["stats", "-d", str(index), "-j"], _TIMEOUT_S)
 
 
-def _parse_xpu_smi(raw: str, indices: frozenset[int]) -> dict[int, UtilSample]:
-    """Parse xpu-smi JSON into UtilSample per index, or {} on failure."""
+def _device_level(data: object) -> list[object]:
+    """Return the device_level metric array from parsed stats JSON, or []."""
+    # stats -d <id> -j emits a single device object with a "device_level" array.
+    # Tolerate a bare list or a {"device_list": [...]} wrapper defensively.
+    if isinstance(data, dict):
+        top_level = data.get("device_level")
+        if isinstance(top_level, list):
+            return top_level
+        wrapped = data.get("device_list")
+        if isinstance(wrapped, list) and wrapped and isinstance(wrapped[0], dict):
+            inner = wrapped[0].get("device_level")
+            return inner if isinstance(inner, list) else []
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        inner = data[0].get("device_level")
+        return inner if isinstance(inner, list) else []
+    return []
+
+
+def _metric_int(entries: list[object], metrics_type: str) -> int | None:
+    """First device_level entry with this metrics_type, coerced to int, or None."""
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("metrics_type") == metrics_type:
+            return extract_int(entry, ("value",))
+    return None
+
+
+def _parse_xpu_smi(raw: str, index: int) -> UtilSample | None:
+    """Parse one device's xpu-smi stats JSON into a UtilSample, or None on failure."""
     if not raw:
-        return {}
+        return None
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return {}
-    # xpu-smi stats --json emits a list of device objects or {"device_list": [...]}.
-    items: list[object] = data if isinstance(data, list) else data.get("device_list", [])
-    samples: dict[int, UtilSample] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        try:
-            index = int(item.get("device_id", -1))
-        except (ValueError, TypeError):
-            continue
-        if index not in indices:
-            continue
-        util = extract_int(item, ("gpu_utilization", "eu_active", "xe_eu_active"))
-        temp = extract_int(item, ("gpu_temperature", "temperature"))
-        used_mib = extract_int(item, ("gpu_memory_used_in_mb", "mem_used"))
-        total_mib = extract_int(item, ("gpu_memory_size_in_mb", "mem_total"))
-        free = max((total_mib or 0) - (used_mib or 0), 0) * MIB if total_mib else 0
-        total = (total_mib or 0) * MIB
-        samples[index] = UtilSample(
-            index=index,
-            utilization_pct=util,
-            temperature_c=temp,
-            free_bytes=free,
-            total_bytes=total,
-        )
-    return samples
-
-
-def _xpu_smi_samples(indices: frozenset[int]) -> dict[int, UtilSample]:
-    return _parse_xpu_smi(_xpu_smi_output(), indices)
+        return None
+    entries = _device_level(data)
+    if not entries:
+        return None
+    return UtilSample(
+        index=index,
+        utilization_pct=_metric_int(entries, _METRIC_UTIL),
+        temperature_c=_metric_int(entries, _METRIC_TEMP),
+        # stats reports memory-used but not total; leave the 0/0 sentinel so the
+        # orchestrator keeps structural VRAM.
+        free_bytes=0,
+        total_bytes=0,
+    )
