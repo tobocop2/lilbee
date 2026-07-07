@@ -57,16 +57,20 @@ if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
     # llama-swap, gguf-parser) as data.
     LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
     LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
-    # Platform gap: macOS .dylib and Windows .dll are NOT extension modules, so
-    # --include-package-data routes them through Nuitka's DLL tracker, which
-    # discards the engine's library closure (nothing Nuitka scans references the
-    # bundled llama-server) and ships a server that cannot start. Force those in
-    # verbatim with --include-data-files (rpath/exec bit preserved). Linux .so is
-    # deliberately excluded: it is already an extension, and data-files-ing it
-    # FATALs with an extension/data conflict.
+    # Platform gap: --include-package-data keeps the extensionless executables on
+    # Linux/macOS but drops the macOS .dylib / Windows .dll closure AND the
+    # Windows .exe executables (Nuitka routes those through its DLL/program
+    # handling, discarding what nothing it scans references) -- shipping a server
+    # that cannot start or is not found. Force every engine file in verbatim with
+    # --include-data-files (rpath and exec bit preserved), EXCEPT Linux .so: those
+    # are Python extension modules Nuitka already includes via --include-package,
+    # and data-files-ing a .so FATALs with an extension/data conflict.
     ENGINE_BIN=$(uv run --no-sync python -c "import lilbee_engine, pathlib; print(pathlib.Path(lilbee_engine.__file__).parent / 'bin')")
-    for _f in "${ENGINE_BIN}"/*.dylib "${ENGINE_BIN}"/*.dll; do
+    for _f in "${ENGINE_BIN}"/*; do
         [ -f "${_f}" ] || continue
+        case "${_f}" in
+            *.so | *.so.* ) continue ;;
+        esac
         LLAMA_SERVER_FLAGS+=(--include-data-files="${_f}=lilbee_engine/bin/$(basename "${_f}")")
     done
 fi
