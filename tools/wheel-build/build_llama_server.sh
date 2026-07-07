@@ -139,9 +139,17 @@ done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o
   \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
 
 # The copied closure must actually resolve: exec the bundled binary from the
-# bundle dir. A missing lib fails here, at build time, instead of on a user's
-# machine. Skipped when cross-compiling (the host can't exec the target).
-if [ -z "${target_arch}" ]; then
+# bundle dir. A missing bundled lib fails here, at build time, instead of on a
+# user's machine. Skipped when cross-compiling (the host can't exec the target)
+# and for GPU-driver backends, whose binaries link the driver runtime
+# (libcuda.so.1 / libamdhip64.so) that is absent on the driverless build host;
+# the CPU/Vulkan/Metal cells exercise the identical copy logic, so the closure
+# is still gated on every push.
+case "${backend}" in
+  cu* | rocm | sycl) _can_exec="" ;;
+  *)                 _can_exec="1" ;;
+esac
+if [ -n "${_can_exec}" ] && [ -z "${target_arch}" ]; then
   "${pkg_bin_dir}/llama-server" --version
 fi
 

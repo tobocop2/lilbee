@@ -177,12 +177,12 @@ jobs:
           CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
-      - name: Restore CI models (inference smoke)
-        if: inputs.skip_tests != true
-        uses: ./.github/actions/restore-ci-models
-
       - name: Smoke test
-        # CUDA binaries on no-GPU runners fall back to CPU because GGML_CPU stays on by default.
+        # CUDA cells run on GPU-less runners: the bundled server links the CUDA
+        # driver (libcuda.so.1), so it cannot run inference here. The full
+        # inference sweep runs on the CPU/Vulkan/Metal executables, which share
+        # the identical Nuitka bundling and engine-copy logic; this cell gates
+        # the launcher itself (--version/--help, frozen-multiprocessing).
         if: inputs.skip_tests != true
         shell: bash
         run: |
@@ -209,10 +209,6 @@ jobs:
           fi
 
           echo "CUDA smoke test passed (--version, --help)"
-
-          # Core-functionality sweep: engine inference (CPU fallback on the
-          # GPU-less runner), ingest, search, RAG ask, and an http-mode crawl.
-          LILBEE_EXE="$EXE" bash tools/qa/artifact_smoke.sh
 
       - name: Upload binary as a run artifact
         uses: actions/upload-artifact@v7

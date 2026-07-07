@@ -159,8 +159,12 @@ jobs:
 
       # Hard gate: a lib-less bundle fails at exec with a loader error. This
       # step swallowing failures (continue-on-error) is how a broken metal
-      # bundle once shipped.
+      # bundle once shipped. Skipped for GPU-driver backends, whose binaries
+      # link libcuda.so.1 / libamdhip64.so and cannot load on the driverless
+      # runner; their closure is identical to the CPU/Vulkan/Metal cells that
+      # do run this gate.
       - name: Smoke test the bundled binary
+        if: ${{ !startsWith(matrix.backend, 'cu') && matrix.backend != 'rocm' && matrix.backend != 'sycl' }}
         shell: bash
         run: |
           set -x

@@ -108,9 +108,8 @@ jobs:
           [ -d "smoke-venv/Scripts" ] && bin="smoke-venv/Scripts"
           lilbee_whls=(wheels/lilbee-*.whl); lilbee_whl="${lilbee_whls[0]}"
           engine_whls=(engine/lilbee_engine-*.whl); engine_whl="${engine_whls[0]}"
-          ver=$(basename "${lilbee_whl}" | cut -d- -f2)
+          [ -f "${lilbee_whl}" ] || { echo "no lilbee wheel downloaded" >&2; ls -la wheels/; exit 1; }
+          [ -f "${engine_whl}" ] || { echo "no engine wheel downloaded" >&2; ls -la engine/; exit 1; }
           "${bin}/pip" install "${engine_whl}"
-          # ==ver pins resolution to the local wheel (PyPI has no such version
-          # yet); the crawler extra's own deps still come from PyPI.
-          "${bin}/pip" install "lilbee[crawler]==${ver}" --find-links wheels/
+          "${bin}/pip" install "${lilbee_whl}[crawler]"
           LILBEE_EXE="${bin}/lilbee" bash tools/qa/artifact_smoke.sh
