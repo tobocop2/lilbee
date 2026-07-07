@@ -318,6 +318,10 @@ class SdkLLMProvider(LLMProvider):
             "Set LILBEE_VISION_MODEL to a local GGUF vision model to enable it."
         )
 
+    def vision_slot_capacity(self) -> int | None:
+        """Hosted backends have no local OCR slots; the caller estimates."""
+        return None
+
     def list_models(self) -> list[str]:
         """List models across every configured local server.
 

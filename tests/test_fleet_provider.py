@@ -518,6 +518,21 @@ def test_vision_pool_falls_back_on_launch_client_mismatch(monkeypatch) -> None:
     assert [replica.slots for replica in p._vision_pool()] == [4, 4]
 
 
+def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
+    # The ingest fan-out sizes to this: the sum of the running servers' fitted slots.
+    p = _provider_with_clients({WorkerRole.VISION: [_fake_client(), _fake_client()]})
+    p._launches[WorkerRole.VISION] = (
+        _fake_launch(WorkerRole.VISION, slots=3),
+        _fake_launch(WorkerRole.VISION, slots=2, replica=1),
+    )
+    assert p.vision_slot_capacity() == 5
+
+
+def test_vision_slot_capacity_none_before_fleet_up() -> None:
+    # No launch snapshot yet: the fan-out keeps its own estimate.
+    assert FleetProvider().vision_slot_capacity() is None
+
+
 def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
     # The ingest fan-out can launch far more concurrent OCR requests than the
     # servers have slots; the dispatcher assigns a request to a replica only while

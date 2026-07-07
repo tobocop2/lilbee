@@ -922,6 +922,19 @@ class FleetProvider:
                 provider=_PROVIDER_NAME,
             ) from None
 
+    def vision_slot_capacity(self) -> int | None:
+        """Total fitted ``--parallel`` slots across the running vision replicas.
+
+        ``None`` before the fleet is up (no launch snapshot yet), so the ingest
+        fan-out keeps its own estimate until real capacity is known. A modest
+        card that fit fewer slots than requested reports the smaller real number,
+        so the fan-out never queues more pages than the servers can serve.
+        """
+        launches = self._launches.get(WorkerRole.VISION)
+        if not launches:
+            return None
+        return max(1, sum(launch.slots for launch in launches))
+
     def _vision_pool(self) -> list[_VisionReplica]:
         """Each vision replica paired with its fitted ``--parallel`` slot count.
 
