@@ -142,6 +142,50 @@ def test_embed_rides_out_cold_start_past_interactive_budget(monkeypatch) -> None
     assert calls["n"] == warmup + 1
 
 
+def test_retry_on_busy_deadline_retries_past_attempt_cap(monkeypatch) -> None:
+    # Under deep-queue contention the queue drains far slower than the fixed
+    # attempt budget, so a deadline-bound retry must keep waiting past
+    # _BUSY_RETRIES until the caller's own deadline, not drop the page.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+    from lilbee.providers.fleet.client import _BUSY_RETRIES, retry_on_busy
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    attempts = _BUSY_RETRIES + 5  # more 429s than the attempt cap would tolerate
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        if calls["n"] <= attempts:
+            raise busy
+        return "ok"
+
+    assert retry_on_busy(_call, deadline=100.0) == "ok"
+    assert calls["n"] == attempts + 1
+
+
+def test_retry_on_busy_deadline_gives_up_when_deadline_passes(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+    from lilbee.providers.fleet.client import retry_on_busy
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    clock = {"t": 0.0}
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: clock["t"])
+    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    calls = {"n": 0}
+
+    def _call() -> str:
+        calls["n"] += 1
+        clock["t"] += 1.0  # each attempt advances the clock toward the deadline
+        raise busy
+
+    with pytest.raises(ProviderError) as excinfo:
+        retry_on_busy(_call, deadline=3.0)
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert calls["n"] < 10  # bounded by the deadline, not looping forever
+
+
 def test_busy_backoff_is_capped(monkeypatch) -> None:
     # Backoff must not balloon past the cap even across the long ingest budget.
     from lilbee.providers.fleet.client import _BUSY_BACKOFF_MAX_S, _EMBED_BUSY_RETRIES

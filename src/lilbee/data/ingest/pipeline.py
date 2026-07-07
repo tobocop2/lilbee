@@ -78,17 +78,21 @@ def _max_concurrent() -> int:
 
     ``cpu_quota()`` (cpu_count // 2) keeps worker storms from starving the TUI's asyncio
     main thread, and is the cap for text/code ingest. Vision OCR is different: every file
-    in compute holds a continuous-batching slot on a vision server, which returns 429 when
-    oversubscribed, so an OCR run is bounded by the vision slot capacity (replicas x
-    per-server pages) -- a single vision server included. Otherwise a many-core box fans
-    ``cpu_quota()`` requests (dozens) at one server's few slots and 429-drops files, while a
-    few-core box with several GPUs would starve the extra cards.
+    in compute holds a continuous-batching slot on a vision server, so an OCR run is bounded
+    by the vision slot capacity. Once the fleet is up that capacity is the servers' real
+    fitted ``--parallel`` slots (a memory-constrained card fits fewer than requested); until
+    then it is estimated from ``replicas x per-server pages``. Sizing to real capacity keeps
+    the OCR queue shallow instead of piling pages behind the dispatcher with their deadlines
+    ticking, and still keeps every slot fed.
     """
     from lilbee.providers.fleet.replicas import gpu_device_count, resolve_replica_count
     from lilbee.providers.roles import WorkerRole
 
     config = active_config()
     if config.vision_model:
+        fitted = get_services().provider.vision_slot_capacity()
+        if fitted is not None:
+            return fitted
         replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
         return max(1, replicas * config.vision_ocr_concurrency)
     embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())

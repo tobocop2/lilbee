@@ -312,24 +312,35 @@ class ChatDeadlineError(ProviderError):
     """
 
 
-def retry_on_busy(call: Callable[[], _T], *, retries: int = _BUSY_RETRIES) -> _T:
+def retry_on_busy(
+    call: Callable[[], _T], *, retries: int = _BUSY_RETRIES, deadline: float | None = None
+) -> _T:
     """Run *call*, retrying a transient server-busy (RATE_LIMIT) with capped backoff.
 
     A cold replica fleet 429s the first fan-out until its slots load; backing
-    off and retrying turns those drops into successes. *retries* bounds the
-    attempts -- interactive callers fail fast, bulk ingest waits out a cold
-    start. Non-RATE_LIMIT errors (and a final still-busy response) propagate.
+    off and retrying turns those drops into successes. With a *deadline*
+    (``time.monotonic`` epoch) the retry waits out a busy server until that
+    deadline -- a page on a deep OCR queue keeps waiting for a genuinely free
+    slot instead of dropping after a fixed budget. Without one, *retries* bounds
+    the attempts. Non-RATE_LIMIT errors (and the final still-busy response)
+    propagate.
     """
     delay = _BUSY_BACKOFF_BASE_S
-    for _ in range(retries - 1):
+    attempt = 0
+    while True:
         try:
             return call()
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.RATE_LIMIT:
                 raise
+            attempt += 1
+            exhausted = (
+                time.monotonic() + delay >= deadline if deadline is not None else attempt >= retries
+            )
+            if exhausted:
+                raise
             time.sleep(delay)
             delay = min(delay * 2, _BUSY_BACKOFF_MAX_S)
-    return call()
 
 
 class LlamaServerClient:

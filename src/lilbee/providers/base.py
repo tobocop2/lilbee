@@ -324,6 +324,17 @@ class LLMProvider(Protocol):
         """OCR one page image; ``timeout`` seconds, ``None``/``0`` = no cap."""
         ...
 
+    def vision_slot_capacity(self) -> int | None:
+        """Fitted concurrent-OCR slots if the vision fleet is running, else None.
+
+        The ingest fan-out uses this to size itself to the servers' real
+        continuous-batching capacity rather than the requested concurrency,
+        which a memory-constrained card cannot always fit. ``None`` means the
+        capacity isn't known yet (no local vision backend, or the fleet hasn't
+        started); the caller falls back to its own estimate.
+        """
+        ...
+
     def list_models(self) -> list[str]:
         """List available model identifiers."""
         ...

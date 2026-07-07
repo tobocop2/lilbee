@@ -121,7 +121,7 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
     return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(config.ocr_language))
 
 
-def _forced_ocr_thresholds() -> "OcrQualityThresholds | None":
+def _forced_ocr_thresholds() -> OcrQualityThresholds | None:
     """OCR-forcing thresholds when LILBEE_OCR_FORCE=1, else None (xberg defaults).
 
     Some scans carry a garbage text layer (whitespace-only or invisible text

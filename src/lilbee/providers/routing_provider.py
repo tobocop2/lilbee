@@ -176,6 +176,10 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(model)
         return self._pick_backend(ref).vision_ocr(png_bytes, model, prompt, timeout=timeout)
 
+    def vision_slot_capacity(self) -> int | None:
+        """Delegate to the local fleet, but never build it just to size the fan-out."""
+        return self._local.vision_slot_capacity() if self._local is not None else None
+
     def list_models(self) -> list[str]:
         """Return the union of native and SDK-visible models.
 
