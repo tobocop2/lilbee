@@ -135,11 +135,19 @@ def _render_stats(
     labels: dict[int, str],
     roles: dict[int, str],
     theme: dict[str, str],
+    *,
+    probed: bool,
 ) -> str:
-    """Build the unified GPU table (one row per GPU) from a stat snapshot."""
+    """Build the unified GPU table (one row per GPU) from a stat snapshot.
+
+    With no stats, ``probed`` picks the placeholder: the empty-GPUs text only
+    once the device probe has completed, else the probing placeholder so a cold
+    start never flashes '(no GPUs detected)' before the first device list lands.
+    """
     if not stats:
         muted = _theme_color(theme, "text-muted")
-        return f"[{muted}]  {msg.FLEET_NO_GPUS}[/]"
+        text = msg.FLEET_NO_GPUS if probed else msg.FLEET_GPU_PROBING
+        return f"[{muted}]  {text}[/]"
     return "\n".join(
         _render_row(stats[idx], labels.get(idx, f"GPU{idx}"), roles.get(idx, ""), theme)
         for idx in sorted(stats)
@@ -167,6 +175,9 @@ class GpuFleetPanel(Static):
         # slower than the tick interval skips ticks instead of stacking
         # threads (and their nvidia-smi subprocesses) without bound.
         self._probing = False
+        # False until the parent device probe reports its result via set_devices;
+        # gates the empty-GPUs text so a cold start holds the probing placeholder.
+        self._probed = False
 
     def set_devices(
         self,
@@ -183,6 +194,7 @@ class GpuFleetPanel(Static):
         self._devices = list(devices)
         self._labels = dict(labels)
         self._roles = dict(roles) if roles is not None else {}
+        self._probed = True
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(_TICK_INTERVAL_S, self._request_stats)
@@ -238,5 +250,5 @@ class GpuFleetPanel(Static):
     ) -> None:
         """Update the rendered content with fresh stat data (main thread)."""
         theme = self._resolve_theme()
-        markup = _render_stats(stats, labels, roles, theme)
+        markup = _render_stats(stats, labels, roles, theme, probed=self._probed)
         self.update(markup)

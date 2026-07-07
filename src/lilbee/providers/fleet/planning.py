@@ -7,7 +7,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -597,7 +597,7 @@ def _server_model_inputs(
     *,
     unified_budget: int | None = None,
     device_count: int = 0,
-) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int]:
+) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int, dict[WorkerRole, str]]:
     """Build placement inputs for the configured server roles.
 
     The search and vision roles are estimated first; chat is then sized against the
@@ -605,13 +605,15 @@ def _server_model_inputs(
     starve embed/rerank on a shared-memory host. ``device_count`` resolves an auto
     replica knob to one per GPU. When *roles* is given, only those are considered.
     Skips an unconfigured optional role, a vision model with no resolvable mmproj
-    projector, and a role whose model is not installed on disk.
+    projector, and a role whose model is not installed on disk (the last returned as
+    ``skipped_not_installed`` so a surface can say so).
     """
     from lilbee.core.config import cfg
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     inputs: dict[WorkerRole, ModelPlacementInput] = {}
     model_refs: dict[WorkerRole, str] = {}
+    skipped_not_installed: dict[WorkerRole, str] = {}
 
     def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
         if roles is not None and role not in roles:
@@ -649,6 +651,7 @@ def _server_model_inputs(
             # debugging toward the registry.
             if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
                 log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+                skipped_not_installed[role] = ref
             else:
                 log.warning(
                     "Skipping %s server: could not size model %r (%s).", role.value, ref, exc
@@ -667,7 +670,7 @@ def _server_model_inputs(
     consider(WorkerRole.CHAT, chat_reservation=reservation)
 
     ordered = [inputs[role] for role in ROLE_REGISTRY if role in inputs]
-    return ordered, model_refs, reservation
+    return ordered, model_refs, reservation, skipped_not_installed
 
 
 def _non_chat_reservation(
@@ -1042,6 +1045,10 @@ class ResolvedPlacement:
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
     model_refs: dict[WorkerRole, str]
+    # Roles configured but skipped because their model isn't installed (role -> ref).
+    # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
+    # "not downloaded" instead of an empty table on a fresh install.
+    skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
 
 
 def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement:
@@ -1054,7 +1061,9 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
     apply_cuda_runtime_env()
     devices = _read_device_cache.get(binary)
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, _ = _server_model_inputs(None, unified_budget=unified_budget)
+    inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
+        None, unified_budget=unified_budget
+    )
     resolved = _resolve_placement(
         placement, inputs, model_refs, devices, unified_budget=unified_budget
     )
@@ -1063,6 +1072,7 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         instances=resolved.instances,
         unplaceable_roles=resolved.unplaceable_roles,
         model_refs=model_refs,
+        skipped_not_installed=skipped_not_installed,
     )
 
 
@@ -1076,7 +1086,7 @@ def plan_launches(
     from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, reservation = _server_model_inputs(
+    inputs, model_refs, reservation, _ = _server_model_inputs(
         roles, unified_budget=unified_budget, device_count=len(devices)
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None

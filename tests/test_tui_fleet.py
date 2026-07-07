@@ -98,6 +98,61 @@ async def _step_until_generated(pilot, selector: str, app, predicate) -> None:  
     )  # pragma: no cover
 
 
+def _make_view_with_skipped():
+    from lilbee.app.placement import (
+        GpuInfo,
+        PlacementView,
+        RolePlacementView,
+        SkippedRole,
+    )
+    from lilbee.providers.roles import WorkerRole
+
+    return PlacementView(
+        gpus=(GpuInfo(0, "MTL", "MTL0", "Apple M3", 24 * GIB, 20 * GIB),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        skipped_not_installed=(SkippedRole(WorkerRole.CHAT, "Qwen/Qwen3-4B-GGUF/Q4.gguf"),),
+    )
+
+
+@pytest.mark.asyncio
+async def test_skipped_role_shows_not_downloaded_note(monkeypatch):
+    """A configured role skipped for a missing model shows a legible 'not downloaded'
+    line, not an unexplained empty table."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", _make_view_with_skipped)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        note = app.screen.query_one("#placement-skipped", Static)
+        assert note.display is True
+        rendered = str(note.render())
+        assert "chat" in rendered
+        assert "not downloaded" in rendered
+        assert "Qwen3-4B" in rendered
+
+
+@pytest.mark.asyncio
+async def test_no_skipped_note_when_all_models_installed(monkeypatch):
+    """With every configured model installed the note stays hidden."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#placement-skipped", Static).display is False
+
+
 @pytest.mark.asyncio
 async def test_fleet_view_shows_live_rows_with_role_badges(monkeypatch):
     """Fleet view mounts FleetBody, which pushes role badges into GpuFleetPanel."""

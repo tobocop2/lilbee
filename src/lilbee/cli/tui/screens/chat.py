@@ -122,6 +122,9 @@ _CRAWL_FLAG_RENDER = "--render"
 # event loop.
 _MODEL_SWAP_WORKER = "model_swap_reset"
 
+# Cadence for polling whether the chat model is still warming on a cold start.
+_WARM_POLL_INTERVAL_S = 0.3
+
 
 def _parse_add_paths(args: str) -> list[Path]:
     """Resolve ``/add`` arguments to filesystem paths.
@@ -181,6 +184,10 @@ class ChatScreen(Screen[None]):
     # True while a placement apply/clear reloads the fleet (from the Fleet drawer);
     # holds chat submissions so they don't race the reload into a 429.
     reloading_placement: reactive[bool] = reactive(False)
+    # True while the chat model is warming on a cold start. Disables the input and
+    # holds submits until the model can serve, so a prompt can't land on a not-yet-warm
+    # fleet and render an error inside a chat bubble; cleared on the ready transition.
+    chat_warming: reactive[bool] = reactive(False)
 
     HELP = (
         "# Chat\n\n"
@@ -317,6 +324,8 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         self._setup_check_worker()
+        self._poll_chat_warming()
+        self.set_interval(_WARM_POLL_INTERVAL_S, self._poll_chat_warming)
 
     @work(thread=True, name="chat_setup_check", exit_on_error=False)
     def _setup_check_worker(self) -> None:
@@ -539,6 +548,11 @@ class ChatScreen(Screen[None]):
             return True
         if self.reloading_placement:
             self.notify(msg.FLEET_RELOADING, severity="warning", timeout=3)
+            return True
+        if self.chat_warming:
+            # The model is still warming; hold the prompt (input keeps the typed text)
+            # rather than firing it into a not-warm fleet and erroring in a bubble.
+            self.notify(msg.CHAT_WARMING, severity="warning", timeout=3)
             return True
         if self.streaming:
             # Only one chat message may be in flight at a time; surface a toast
@@ -1571,7 +1585,7 @@ class ChatScreen(Screen[None]):
         because the unblock can fire (via ``call_from_thread`` or a bubbled
         message) after the user navigated away and the input is no longer mounted.
         """
-        busy = self.swapping_model or self.reloading_placement
+        busy = self.swapping_model or self.reloading_placement or self.chat_warming
         with contextlib.suppress(NoMatches):
             self._chat_input.disabled = busy
             if not busy and self._insert_mode:
@@ -1582,6 +1596,15 @@ class ChatScreen(Screen[None]):
 
     def watch_reloading_placement(self, reloading: bool) -> None:
         self._apply_input_busy_state()
+
+    def watch_chat_warming(self, warming: bool) -> None:
+        self._apply_input_busy_state()
+
+    def _poll_chat_warming(self) -> None:
+        """Track whether the chat model is still warming so input stays held until ready."""
+        from lilbee.app.placement import active_chat_warm_progress
+
+        self.chat_warming = active_chat_warm_progress() is not None
 
     def on_fleet_body_placement_reloading(self, event: FleetBody.PlacementReloading) -> None:
         """Hold chat submissions while the Fleet drawer reloads the fleet."""

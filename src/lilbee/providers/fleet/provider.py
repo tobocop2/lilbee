@@ -603,6 +603,7 @@ class FleetProvider:
                 token_cap=launch.token_cap,
                 timeout=_request_timeout_s(launch.weights_bytes),
                 rerank_mode=launch.rerank_mode,
+                inline_reasoning=role is WorkerRole.CHAT,
             )
             for launch in launches
         ]

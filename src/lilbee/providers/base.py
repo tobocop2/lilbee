@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 
 T_co = TypeVar("T_co", covariant=True)
 
+# The inline reasoning markers lilbee's pipeline speaks. A provider whose server
+# extracts reasoning into a separate field re-inlines it with these tags at the
+# client boundary, so every downstream consumer parses one format.
+THINK_OPEN_TAG = "<think>"
+THINK_CLOSE_TAG = "</think>"
+
 
 @runtime_checkable
 class ClosableIterator(Iterator[T_co], Protocol[T_co]):

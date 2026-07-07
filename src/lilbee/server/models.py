@@ -598,6 +598,13 @@ class RolePlacementResponse(BaseModel):
     replicas: int
 
 
+class SkippedRoleResponse(BaseModel):
+    """A configured role left unplaced because its model isn't downloaded."""
+
+    role: WorkerRole
+    model: str
+
+
 class PlacementResponse(BaseModel):
     """Response for placement read, preview, set, and clear routes."""
 
@@ -606,6 +613,7 @@ class PlacementResponse(BaseModel):
     unplaceable: list[str]
     manual: bool
     spec_json: str | None
+    skipped_not_installed: list[SkippedRoleResponse] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -625,6 +633,9 @@ class PlacementResponse(BaseModel):
             unplaceable=[r.value for r in view.unplaceable],
             manual=view.manual,
             spec_json=view.spec_json,
+            skipped_not_installed=[
+                SkippedRoleResponse(role=s.role, model=s.model) for s in view.skipped_not_installed
+            ],
         )
 
 

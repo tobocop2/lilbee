@@ -15,7 +15,7 @@ from lilbee.providers.fleet.planning import (
     resolve_placement_plan,
 )
 from lilbee.providers.roles import WorkerRole
-from lilbee.providers.warm_progress import WarmPhase
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
 _PLACEMENT_KEY = "placement"
 
@@ -55,6 +55,14 @@ class RolePlacementView:
 
 
 @dataclass(frozen=True)
+class SkippedRole:
+    """A configured role left unplaced because its model isn't downloaded."""
+
+    role: WorkerRole
+    model: str
+
+
+@dataclass(frozen=True)
 class PlacementView:
     """The full placement picture: GPUs, per-role placement, and whether manual."""
 
@@ -63,6 +71,9 @@ class PlacementView:
     unplaceable: tuple[WorkerRole, ...]
     manual: bool
     spec_json: str | None
+    # Configured roles absent from the plan because their model isn't installed,
+    # so a surface can show "not downloaded" instead of an unexplained empty table.
+    skipped_not_installed: tuple[SkippedRole, ...] = ()
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -102,6 +113,10 @@ def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -
         unplaceable=resolved.unplaceable_roles,
         manual=manual,
         spec_json=spec_json,
+        skipped_not_installed=tuple(
+            SkippedRole(role=role, model=ref)
+            for role, ref in resolved.skipped_not_installed.items()
+        ),
     )
 
 
@@ -187,3 +202,22 @@ def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
             return False
         time.sleep(_CHAT_READY_POLL_S)
     return False
+
+
+def active_chat_warm_progress() -> WarmProgress | None:
+    """The chat warm snapshot while a cold load is genuinely in flight, else None.
+
+    A surface gates interactive input on this: ``None`` covers ready, no fleet, a
+    missing model, and a finished or failed warm, so nothing traps the input in a
+    locked state. Non-``None`` carries the phase and byte progress to render.
+    """
+    services = peek_services()
+    if services is None:
+        return None
+    provider = services.provider
+    if provider.role_ready(WorkerRole.CHAT):
+        return None
+    snapshot = provider.warm_progress()
+    if snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES:
+        return snapshot
+    return None

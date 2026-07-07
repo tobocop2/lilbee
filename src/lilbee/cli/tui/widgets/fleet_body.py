@@ -63,6 +63,7 @@ def _clean_model_name(ref: str) -> str:
 _CSS_FILE = Path(__file__).parent / "fleet_body.tcss"
 
 _EDITOR_ID = "#placement-editor"
+_SKIPPED_ID = "#placement-skipped"
 _TITLE_ID = "#placement-title"
 _STATE_ID = "#placement-state"
 _COMMANDS_ID = "#placement-commands"
@@ -191,6 +192,7 @@ class FleetBody(Widget):
                 help_icon.tooltip = msg.FLEET_HELP_TOOLTIP
                 yield help_icon
             yield GpuFleetPanel()
+            yield Static("", id="placement-skipped")
             yield Vertical(id="placement-editor")
             with Horizontal(id="placement-commands"):
                 yield FleetPill(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-pill")
@@ -233,9 +235,23 @@ class FleetBody(Widget):
         self._build_editor()
         self._refresh_title(dirty=False)
         self._update_fleet_panel(view)
+        self._render_skipped(view)
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")
+
+    def _render_skipped(self, view: PlacementView) -> None:
+        """Show a 'not downloaded' line per role skipped for a missing model."""
+        widget = self.query_one(_SKIPPED_ID, Static)
+        widget.display = bool(view.skipped_not_installed)
+        widget.update(
+            "\n".join(
+                msg.FLEET_MODEL_NOT_DOWNLOADED.format(
+                    role=skipped.role.value, model=_clean_model_name(skipped.model)
+                )
+                for skipped in view.skipped_not_installed
+            )
+        )
 
     def _page_devices(self) -> tuple[int, ...]:
         """The GPU indices visible on the current page."""

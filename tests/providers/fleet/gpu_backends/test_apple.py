@@ -53,6 +53,22 @@ def test_sample_empty_when_ioreg_absent(monkeypatch: pytest.MonkeyPatch) -> None
     assert AppleBackend().sample(_INDICES) == {}
 
 
+def test_ioreg_command_roots_at_gpu_accelerator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe must root at the GPU accelerator, not a depth-capped key match.
+
+    Regression: '-d 1 -k PerformanceStatistics' never reaches the GPU node and read
+    0% under load; the query must class-match IOAccelerator so utilization is live.
+    """
+    seen: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        apple_mod, "run_smi", lambda tool, args, timeout: seen.update(tool=tool, args=args) or ""
+    )
+    apple_mod._ioreg_output()
+    assert seen["tool"] == "ioreg"
+    assert "-c" in seen["args"]
+    assert "IOAccelerator" in seen["args"]
+
+
 def test_backend_key_is_mtl() -> None:
     assert BACKEND_KEY == "MTL"
 
