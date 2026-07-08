@@ -279,60 +279,58 @@ def test_registry_maps_sycl_to_intel_backend() -> None:
 
 
 # ---------------------------------------------------------------------------
-# intel_util_hint (the "grant this to enable utilization" one-liner)
+# intel_gpu_top_grant_binary (the binary a CAP_PERFMON grant would unblock)
 # ---------------------------------------------------------------------------
 
 _PMU_DENIED = "Failed to initialize PMU! (Permission denied)\nCAP_PERFMON is required\n"
 
 
-def test_intel_util_hint_tool_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    intel_mod.intel_util_hint.cache_clear()
+def test_grant_binary_tool_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    intel_mod.intel_gpu_top_grant_binary.cache_clear()
     monkeypatch.setattr(intel_mod.shutil, "which", lambda _t: None)
-    assert intel_mod.intel_util_hint() is None
+    assert intel_mod.intel_gpu_top_grant_binary() is None
 
 
-def test_intel_util_hint_permission_denied_returns_setcap(monkeypatch: pytest.MonkeyPatch) -> None:
-    intel_mod.intel_util_hint.cache_clear()
+def test_grant_binary_permission_denied_returns_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    intel_mod.intel_gpu_top_grant_binary.cache_clear()
     monkeypatch.setattr(intel_mod.shutil, "which", lambda _t: "/usr/bin/intel_gpu_top")
 
     class _Proc:
         stderr = _PMU_DENIED
 
     monkeypatch.setattr(intel_mod.subprocess, "run", lambda *_a, **_k: _Proc())
-    hint = intel_mod.intel_util_hint()
-    assert hint is not None
-    assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in hint
+    assert intel_mod.intel_gpu_top_grant_binary() == "/usr/bin/intel_gpu_top"
 
 
-def test_intel_util_hint_usable_when_streaming(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A working PMU streams, so the probe times out and reports usable (no hint)."""
-    intel_mod.intel_util_hint.cache_clear()
+def test_grant_binary_none_when_streaming(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A working PMU streams, so the probe times out and reports usable (no grant)."""
+    intel_mod.intel_gpu_top_grant_binary.cache_clear()
     monkeypatch.setattr(intel_mod.shutil, "which", lambda _t: "/usr/bin/intel_gpu_top")
 
     def _raise(*_a: object, **_k: object) -> None:
         raise subprocess.TimeoutExpired(cmd="intel_gpu_top", timeout=1.0)
 
     monkeypatch.setattr(intel_mod.subprocess, "run", _raise)
-    assert intel_mod.intel_util_hint() is None
+    assert intel_mod.intel_gpu_top_grant_binary() is None
 
 
-def test_intel_util_hint_no_permission_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    intel_mod.intel_util_hint.cache_clear()
+def test_grant_binary_no_permission_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    intel_mod.intel_gpu_top_grant_binary.cache_clear()
     monkeypatch.setattr(intel_mod.shutil, "which", lambda _t: "/usr/bin/intel_gpu_top")
 
     class _Proc:
         stderr = "some unrelated diagnostic"
 
     monkeypatch.setattr(intel_mod.subprocess, "run", lambda *_a, **_k: _Proc())
-    assert intel_mod.intel_util_hint() is None
+    assert intel_mod.intel_gpu_top_grant_binary() is None
 
 
-def test_intel_util_hint_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    intel_mod.intel_util_hint.cache_clear()
+def test_grant_binary_os_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    intel_mod.intel_gpu_top_grant_binary.cache_clear()
     monkeypatch.setattr(intel_mod.shutil, "which", lambda _t: "/usr/bin/intel_gpu_top")
 
     def _raise(*_a: object, **_k: object) -> None:
         raise OSError("boom")
 
     monkeypatch.setattr(intel_mod.subprocess, "run", _raise)
-    assert intel_mod.intel_util_hint() is None
+    assert intel_mod.intel_gpu_top_grant_binary() is None

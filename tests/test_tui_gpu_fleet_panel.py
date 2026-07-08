@@ -161,24 +161,26 @@ async def test_panel_renders_card_label_and_vram(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_panel_shows_util_notice_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A pending util_notice (e.g. the Intel setcap hint) renders under the rows."""
+async def test_panel_shows_intel_grant_hint_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An Intel GPU needing the CAP_PERFMON grant renders the localized setcap line."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 
     stat = _make_stat(0, utilization_pct=None)
     monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
-    monkeypatch.setattr(panel_mod, "util_notice", lambda devices, stats: "grant me: setcap ...")
+    monkeypatch.setattr(
+        panel_mod, "intel_grant_binary", lambda devices, stats: "/usr/bin/intel_gpu_top"
+    )
 
     app = _PanelHost()
-    async with app.run_test(size=(80, 24)) as pilot:
+    async with app.run_test(size=(120, 24)) as pilot:
         await pilot.pause()
         panel = app.query_one(GpuFleetPanel)
         panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
         panel._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert "grant me: setcap" in str(panel.render())
+        assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in str(panel.render())
 
 
 @pytest.mark.asyncio

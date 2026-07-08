@@ -46,13 +46,9 @@ _IGT_CAPTURE_S = 0.6
 _I915 = "i915"
 
 # intel_gpu_top needs CAP_PERFMON to read the i915 PMU. When it is installed but
-# unprivileged, the util reads back empty; this hint tells the user the one-time
-# fix. A working PMU streams, so the check hits the timeout and reports usable.
+# unprivileged, the util reads back empty. A working PMU streams, so the check
+# hits the timeout and reports usable.
 _IGT_PERM_CHECK_S = 1.0
-_SETCAP_HINT = (
-    "Intel GPU utilization needs a one-time grant: "
-    "sudo setcap cap_perfmon+ep {binary}  (or Linux 6.2+ reads it with no setup)"
-)
 
 
 class IntelBackend:
@@ -218,21 +214,18 @@ def _single(indices: frozenset[int], util: int) -> dict[int, UtilSample]:
 
 
 @functools.cache
-def intel_util_hint() -> str | None:
-    """Actionable one-liner when Intel util is missing only for a fixable reason.
+def intel_gpu_top_grant_binary() -> str | None:
+    """The intel_gpu_top path a CAP_PERFMON grant would unblock, or None.
 
-    Returns the setcap command when intel_gpu_top is installed but the i915 PMU is
-    permission-blocked, so a surface shows it only when it will actually help;
-    None when the tool is absent or already usable. Cached: the permission state
-    does not change within a run (and the notice is gated on util being missing,
-    so it disappears on its own once a grant makes util read).
+    Returns the binary when it is installed but the i915 PMU is permission-blocked
+    (the caller turns this into a user-facing grant hint); None when the tool is
+    absent or already usable. Cached: the permission state does not change within
+    a run.
     """
     binary = shutil.which(_TOOL_IGT)
     if binary is None:
         return None
-    if _igt_permission_denied(binary):
-        return _SETCAP_HINT.format(binary=binary)
-    return None
+    return binary if _igt_permission_denied(binary) else None
 
 
 def _igt_permission_denied(binary: str) -> bool:
