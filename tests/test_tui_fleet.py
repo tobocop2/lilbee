@@ -711,6 +711,107 @@ async def test_clear_worker_error_notifies(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_apply_shows_rebuilding_status(monkeypatch):
+    """While an apply reloads the fleet the state segment shows 'Rebuilding fleet…'
+    instead of a silent, still-'edited' idle screen, and clears once it's ready."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui import messages as tui_msg
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import _STATE_ID
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    gate = threading.Event()
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await _toggle_device(pilot, "#dev-embed-3")  # a dirty draft: state is 'edited'
+        state = app.screen.query_one(_STATE_ID, Static)
+        assert state.has_class("-edited")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        # mid-rebuild: the stale 'edited' label is gone, a rebuilding status shows
+        assert state.has_class("-rebuilding")
+        assert not state.has_class("-edited")
+        assert tui_msg.FLEET_STATE_REBUILDING in str(state.render())
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert not state.has_class("-rebuilding")
+
+
+@pytest.mark.asyncio
+async def test_reset_shows_rebuilding_then_clears_draft(monkeypatch):
+    """Reset-to-auto drops the stale 'edited' draft immediately (rebuilding status),
+    then returns to the read-only auto view with a fresh draft."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import _STATE_ID, FleetBody
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    gate = threading.Event()
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: gate.wait())
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await _toggle_device(pilot, "#dev-embed-2")  # dirty draft: embed on {0, 2}
+        state = app.screen.query_one(_STATE_ID, Static)
+        assert state.has_class("-edited")
+        await pilot.press("ctrl+x")  # reset to auto
+        await pilot.pause()
+        assert state.has_class("-rebuilding")
+        assert not state.has_class("-edited")
+        gate.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert not state.has_class("-rebuilding")
+        assert not state.has_class("-edited")
+        # a fresh draft off the live auto view, not the stale {0, 2} edit
+        assert app.screen.query_one(FleetBody)._edits[WorkerRole.EMBED].devices == {0}
+
+
+@pytest.mark.asyncio
+async def test_failed_change_restores_live_view(monkeypatch):
+    """A failed apply doesn't strand the rejected draft: the view re-renders from the
+    live placement and drops the 'edited'/'rebuilding' state."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import _STATE_ID, FleetBody
+    from lilbee.providers.fleet.placement_spec import PlacementError
+    from lilbee.providers.roles import WorkerRole
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+
+    def _oom(spec):  # type: ignore[no-untyped-def]
+        raise PlacementError("oom")
+
+    monkeypatch.setattr(fbm, "set_placement", _oom)
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one(FleetBody)
+        monkeypatch.setattr(body, "notify", lambda msg, **k: notes.append(msg))
+        await _toggle_device(pilot, "#dev-embed-2")  # dirty draft
+        await pilot.press("ctrl+s")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        state = app.screen.query_one(_STATE_ID, Static)
+        assert not state.has_class("-edited")
+        assert not state.has_class("-rebuilding")
+        # the rejected draft is discarded; the editor reflects the live placement
+        assert body._edits[WorkerRole.EMBED].devices == {0}
+    assert any("oom" in n for n in notes)
+
+
+@pytest.mark.asyncio
 async def test_spec_from_editor_errors_on_empty_devices(monkeypatch):
     """_spec_from_editor raises PlacementError when a role is left with no GPUs."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
