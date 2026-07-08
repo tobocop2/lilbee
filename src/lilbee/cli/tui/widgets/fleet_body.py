@@ -177,11 +177,30 @@ class FleetBody(Widget):
         }
 
     def watch_applying(self, applying: bool) -> None:
-        """Disable the editor controls while an apply/clear is in flight and tell
+        """Disable the editor controls while an apply/clear is in flight, surface a
+        'Rebuilding fleet…' status so the reload isn't a silent idle screen, and tell
         the chat screen to hold submissions until the fleet finishes reloading."""
         self.post_message(self.PlacementReloading(applying))
         with contextlib.suppress(NoMatches):
             self.query_one(_EDITOR_ID, Vertical).disabled = applying
+        if applying:
+            self._show_rebuilding()
+
+    def _show_rebuilding(self) -> None:
+        """Hold a 'Rebuilding fleet…' status until the reloaded fleet reports ready.
+
+        The reload restarts a role and warms its model off-thread (tens of seconds
+        for a tensor-split giant); without a positive status the editor is just a
+        greyed, silent screen and the user cannot tell the apply took, or whether a
+        stale draft still stands. The re-render that ``_change_placement`` runs once
+        the fleet is ready (or the change failed) clears this back to the live state.
+        """
+        with contextlib.suppress(NoMatches):
+            state = self.query_one(_STATE_ID, Static)
+            state.update(msg.FLEET_STATE_REBUILDING)
+            state.set_class(False, "-edited")
+            state.set_class(False, "-manual")
+            state.set_class(True, "-rebuilding")
 
     def compose(self) -> ComposeResult:
         with Vertical(id="placement-layout"):
@@ -332,6 +351,7 @@ class FleetBody(Widget):
             state.update(msg.FLEET_STATE_MANUAL if self._view_manual else msg.FLEET_STATE_AUTO)
         state.set_class(dirty, "-edited")
         state.set_class(not dirty and self._view_manual, "-manual")
+        state.set_class(False, "-rebuilding")
 
     def _update_fleet_panel(self, view: PlacementView) -> None:
         """Push the current device list and roles into the fleet panel."""
@@ -462,19 +482,27 @@ class FleetBody(Widget):
         self._change_placement(lambda: set_placement(None))
 
     def _change_placement(self, change: Callable[[], PlacementView]) -> None:
-        """Apply a placement change off the UI thread, then wait out the chat warm.
+        """Apply a placement change off the UI thread, then re-render the live view.
 
         ``applying`` (and with it the chat screen's submit hold) stays up until the
         restarted chat role actually serves: releasing when the reload returns
         still leaves the model warming, and a prompt sent then errors with the
-        busy 429 instead of an answer.
+        busy 429 instead of an answer. The view is re-rendered from the live
+        placement whether the change applied or failed, so a rejected or failed
+        draft returns to the current read-only state instead of stranding the
+        stale 'edited'/won't-fit editor.
         """
+        error: str | None = None
         try:
             change()
             wait_chat_ready()
+        except Exception as exc:
+            error = str(exc)
+        try:
             view = get_placement()
             call_from_thread(self, self._render_view, view)
         except Exception as exc:
-            call_from_thread(self, self.notify, str(exc), severity="error")
-        finally:
-            call_from_thread(self, setattr, self, "applying", False)
+            error = error or str(exc)
+        if error is not None:
+            call_from_thread(self, self.notify, error, severity="error")
+        call_from_thread(self, setattr, self, "applying", False)
