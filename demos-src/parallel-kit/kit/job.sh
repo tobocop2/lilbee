@@ -61,6 +61,22 @@ quiesce() {
 # ---- boot ----
 bash "$KIT/bootstrap.sh" || { fail_reel "${REELS[0]}" "bootstrap failed"; terminate boot_fail; exit 1; }
 source "$KIT/env.sh"
+
+# GPU health check BEFORE the expensive materialize: cloud pods occasionally
+# ship a bad GPU (device enumerates but cudaSetDevice fails "busy or
+# unavailable"). A single-GPU model would never touch it, but a multi-GPU
+# take crashes at fleet boot after wasting the model pull. Test every visible
+# device individually; fail fast + self-terminate so the group is re-launched
+# on a fresh pod instead of burning materialize time on a dead card.
+# real-compute health check (matmul per device) — a bad card enumerates fine
+# but fails compute; catch it here before the 20-min materialize
+if ! /usr/bin/python3 "$KIT/gpu_health.py" > /root/gpuhealth.log 2>&1; then
+  cat /root/gpuhealth.log
+  fail_reel "${REELS[0]}" "bad GPU on this pod: $(grep FAIL /root/gpuhealth.log | tr '\n' ' ')"
+  terminate bad_gpu; exit 1
+fi
+log "GPU health: $(grep GPU_HEALTH_OK /root/gpuhealth.log)"
+
 # derive a generous hard cap from this pod's total workload — heavy multi-reel
 # groups legitimately run hours; the real idle guard is NO_JOB_GRACE (job gone)
 export HARD_DEADLINE_S=$(python3 "$KIT/deadline.py" "$@")

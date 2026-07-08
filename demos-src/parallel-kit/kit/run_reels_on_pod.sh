@@ -17,7 +17,7 @@ tar -czf /workspace/golden/kit.tar.gz -C /workspace kit
 echo REPACK_OK
 cat > /root/hardkill.sh <<EOF
 #!/bin/bash
-sleep 7200
+sleep 10800
 curl -s -X POST "https://api.runpod.io/graphql?api_key=\$(cat /root/.runpod_key)" -H "User-Agent: Mozilla/5.0" -H "Content-Type: application/json" -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"$POD_ID\\\"}) }\"}"
 EOF
 chmod +x /root/hardkill.sh

@@ -189,9 +189,9 @@ pod_groups:
   # group rides H100-class; models arrive per-pod via `lilbee model pull`
   # (transfer mode hf), the volume carries golden+KBs+reels-out only.
   # Group A stays THREE GPUs: reel2's walk is bound to the 3-GPU drawer layout.
-  A:      { gpus: ["NVIDIA H100 NVL x3", "NVIDIA H100 80GB HBM3 x3", "NVIDIA H200 x3"], min_vcpu: 24, disk_gb: 250 }
-  B:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x3", "NVIDIA H100 NVL x3", "NVIDIA H100 80GB HBM3 x4"], min_vcpu: 24, disk_gb: 250 }
-  C:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x3", "NVIDIA H100 NVL x3", "NVIDIA H100 80GB HBM3 x4"], min_vcpu: 24, disk_gb: 250 }
+  A:      { gpus: ["NVIDIA H100 80GB HBM3 x3", "NVIDIA H200 x3", "NVIDIA H100 NVL x3"], min_vcpu: 24, disk_gb: 250 }
+  B:      { gpus: ["NVIDIA H100 80GB HBM3 x3", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x4", "NVIDIA H100 NVL x2"], min_vcpu: 24, disk_gb: 250 }
+  C:      { gpus: ["NVIDIA H100 80GB HBM3 x3", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x4", "NVIDIA H100 NVL x2"], min_vcpu: 24, disk_gb: 250 }
   D:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
   E:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
   F:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }

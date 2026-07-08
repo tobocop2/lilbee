@@ -24,8 +24,15 @@ def calibrated_dims(cls_name: str, cls: dict, ss: int) -> tuple[int, int]:
     if cal_path.exists():
         cal = json.loads(cal_path.read_text())
         if cls_name in cal:
-            return cal[cls_name]["width"], cal[cls_name]["height"]
-    return cls["width"] * ss, cls["height"] * ss
+            w, h = cal[cls_name]["width"], cal[cls_name]["height"]
+        else:
+            w, h = cls["width"] * ss, cls["height"] * ss
+    else:
+        w, h = cls["width"] * ss, cls["height"] * ss
+    # H.264 requires EVEN width/height or ffmpeg emits "Conversion failed!" and
+    # a 0-byte mp4 (hit the drawer=3839 and mcp=2893 classes). A 1px trim never
+    # drops a column/row (cells are >=16px) so the geometry gate still holds.
+    return w - (w % 2), h - (h % 2)
 
 
 def build_header(manifest: dict, reel_name: str) -> list[str]:
