@@ -197,6 +197,24 @@ class TestSync:
         mock_extract_file.assert_called()
         assert any("test.txt" in str(call) for call in mock_extract_file.call_args_list)
 
+    async def test_adaptive_mode_ingests_and_stops_controller(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        (isolated_env / "adaptive.txt").write_text("Adaptive-mode content for ingest.")
+        from lilbee.data.ingest import pipeline, sync
+        from lilbee.data.ingest.adaptive import Signals
+
+        monkeypatch.setenv("LILBEE_INGEST_CONCURRENCY", "adaptive-conservative")
+        # A fake fleet + sampler so the adaptive path engages without real GPU probing.
+        monkeypatch.setattr(pipeline, "enumerate_fleet_devices", lambda: [object()])
+        monkeypatch.setattr(
+            pipeline,
+            "make_signal_sampler",
+            lambda _devices: (lambda t: Signals(t, 50.0, 60.0, 50.0, 0.5)),
+        )
+        result = await sync(quiet=True)
+        assert "adaptive.txt" in result.added
+
     async def test_quiet_mode_suppresses_progress(self, mock_extract_file, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")
         from lilbee.data.ingest import sync

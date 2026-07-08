@@ -52,6 +52,15 @@ def _max_workers() -> int:
     return (os.cpu_count() or 4) + 4
 
 
+def max_workers() -> int:
+    """The ingest pool's worker count -- its hard concurrency ceiling.
+
+    The adaptive-concurrency controller uses this as the upper bound on in-flight
+    documents, since each one needs a pool thread to run its blocking extraction.
+    """
+    return _max_workers()
+
+
 @functools.cache
 def _ingest_executor() -> ThreadPoolExecutor:
     """The shared ingest pool, created on first use (cache makes it a singleton)."""
