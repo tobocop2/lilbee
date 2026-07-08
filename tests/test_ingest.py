@@ -219,7 +219,7 @@ class TestSync:
         monkeypatch.setattr(
             pipeline,
             "make_signal_sampler",
-            lambda _devices: (lambda t: Signals(t, 50.0, 60.0, 50.0, 0.5)),
+            lambda _devices: lambda t: Signals(t, 50.0, 60.0, 50.0, 0.5),
         )
         result = await sync(quiet=True)
         assert "adaptive.txt" in result.added
