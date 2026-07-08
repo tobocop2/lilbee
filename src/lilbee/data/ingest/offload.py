@@ -11,18 +11,45 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import ParamSpec, TypeVar
 
+log = logging.getLogger(__name__)
+
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
+_MAX_WORKERS_ENV = "LILBEE_INGEST_MAX_WORKERS"
+
 
 def _max_workers() -> int:
-    """Mirror the default-executor sizing; the point is isolation, not tuning."""
-    return min(32, (os.cpu_count() or 4) + 4)
+    """Concurrent slots for ingest offload work; honors ``LILBEE_INGEST_MAX_WORKERS``.
+
+    Extraction rasterizes PDFs and drives OCR on this pool, so its width caps how
+    many documents feed the GPU OCR/embed slots at once. The old fixed ``32``
+    ceiling left most cores idle on a many-vCPU box and pinned full-corpus
+    throughput below the vision fleet's capacity, so the default now scales with
+    the vCPU count (``os.cpu_count() + 4``, the ``+4`` headroom for threads
+    parked on OCR/embed I/O). The override accepts a positive integer; non-positive
+    or unparseable values fall back to the default and a warning is logged.
+    """
+    override = os.environ.get(_MAX_WORKERS_ENV)
+    if override is not None:
+        try:
+            value = int(override)
+            if value > 0:
+                return value
+        except ValueError:
+            pass  # bad override falls through to the warning + default below
+        log.warning(
+            "Ignoring %s=%r: must be a positive integer; using default.",
+            _MAX_WORKERS_ENV,
+            override,
+        )
+    return (os.cpu_count() or 4) + 4
 
 
 @functools.cache
