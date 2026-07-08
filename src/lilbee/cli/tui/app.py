@@ -238,12 +238,16 @@ class LilbeeApp(App[None]):
             reason = canon.reason or msg.MODEL_REASON_DEFAULT
 
             if canon.original == canon.effective:
-                # Nothing to fall back to: keep the ref; the chat screen opens the wizard.
-                notice = msg.MODEL_UNUSABLE_OPENING_SETUP.format(
-                    label=label, original=canon.original, reason=reason
+                # Nothing to fall back to: keep the ref and let the chat screen's
+                # _needs_setup open the SetupWizard, which is the single voice for
+                # "pick a model." A toast here just duplicates the wizard (on first
+                # launch the default refs aren't downloaded yet), so log the reason
+                # as a breadcrumb but don't surface it.
+                log.warning(
+                    msg.MODEL_UNUSABLE_OPENING_SETUP.format(
+                        label=label, original=canon.original, reason=reason
+                    )
                 )
-                log.warning(notice)
-                self.notify(notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S)
                 continue
 
             # A rejected swap (validation or disk error) must not be fatal at startup.
