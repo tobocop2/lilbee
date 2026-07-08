@@ -16,7 +16,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from lilbee.providers.fleet.gpu_backends import UtilSample, resolve_backend
+from lilbee.providers.fleet.gpu_backends import (
+    UtilSample,
+    intel_gpu_top_grant_binary,
+    resolve_backend,
+    util_backend_name,
+)
 
 
 class DeviceLike(Protocol):
@@ -26,6 +31,8 @@ class DeviceLike(Protocol):
     def index(self) -> int: ...
     @property
     def backend(self) -> str: ...
+    @property
+    def name(self) -> str: ...
     @property
     def total_bytes(self) -> int: ...
     @property
@@ -69,9 +76,11 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
         d.index: GpuStat(d.index, None, d.free_bytes, d.total_bytes) for d in devices
     }
 
+    # Group by the util backend, not the raw inference backend: a Vulkan-exposed
+    # consumer GPU routes to its vendor's util source by name.
     by_backend: dict[str, list[DeviceLike]] = {}
     for d in devices:
-        by_backend.setdefault(d.backend, []).append(d)
+        by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
 
     for backend_name, group in by_backend.items():
         indices = frozenset(d.index for d in group)
@@ -79,8 +88,9 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
             if index not in stats:
                 continue
             base = stats[index]
-            # Keep structural VRAM when the backend returns 0/0 (amd-smi metric
-            # mode omits VRAM; xpu-smi populates it so it takes precedence).
+            # Keep structural VRAM when the backend returns the 0/0 sentinel
+            # (amd-smi metric mode and xpu-smi stats both omit total VRAM); a
+            # backend that does report memory takes precedence.
             free = sample.free_bytes if sample.free_bytes or sample.total_bytes else base.free_bytes
             total = sample.total_bytes if sample.total_bytes else base.total_bytes
             stats[index] = GpuStat(
@@ -92,3 +102,22 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
             )
 
     return {i: stats[i] for i in sorted(stats)}
+
+
+def intel_grant_binary(devices: Sequence[DeviceLike], stats: dict[int, GpuStat]) -> str | None:
+    """The intel_gpu_top path a grant would unblock when an Intel GPU's util is
+    missing only for that reason, else None.
+
+    A surface turns the binary into the localized grant hint. Modern kernels read
+    util with no grant, so this stays silent there, and the None-util gate clears
+    it once a grant makes util read.
+    """
+    for d in devices:
+        if util_backend_name(d.backend, d.name) != "SYCL":
+            continue
+        stat = stats.get(d.index)
+        if stat is not None and stat.utilization_pct is None:
+            binary = intel_gpu_top_grant_binary()
+            if binary is not None:
+                return binary
+    return None
