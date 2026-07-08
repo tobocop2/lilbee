@@ -175,17 +175,18 @@ bundle_agents() {
   # contained venv on the image's /usr/bin/python3.11) + /root/.hermes (data).
   # Installers/`--version` open a first-run wizard on an interactive stdin, so
   # every invocation gets </dev/null. Skip re-download when already present.
-  [ -x /root/.opencode/bin/opencode ] || curl -fsSL https://opencode.ai/install | bash </dev/null
+  [ -x /root/.opencode/bin/opencode ] || curl -fsSL https://opencode.ai/install | bash
   /root/.opencode/bin/opencode --version </dev/null
-  [ -x /usr/local/bin/hermes ] || curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash </dev/null
-  hermes --version </dev/null || true
-  # pre-run once feeding the default choice so ~/.hermes reaches setup-complete
-  # and the reel's `lilbee launch hermes` does not drop into the wizard on
-  # camera (dress-rehearsal still verifies this empirically)
-  printf '1\n\n\n' | timeout 60 hermes </dev/null >/dev/null 2>&1 || true
-  # captured with -C / (absolute FHS paths); bootstrap extracts with -C /
-  tar --zstd -cf /workspace/golden/agents.tar.zst -C / \
-    root/.opencode root/.hermes usr/local/bin/hermes usr/local/lib/hermes-agent
+  [ -x /usr/local/bin/hermes ] || curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive
+  # do NOT run hermes here — its first-run wizard blocks headless and choice-1
+  # needs OAuth. `lilbee launch hermes` writes config.yaml at reel time; the
+  # wizard is suppressed/handled in the hermes dress-rehearsal.
+  # capture whatever the installers produced (-C / absolute FHS paths)
+  hpaths=""
+  for d in root/.opencode root/.hermes usr/local/bin/hermes usr/local/lib/hermes-agent; do
+    [ -e "/$d" ] && hpaths="$hpaths $d"
+  done
+  tar --zstd -cf /workspace/golden/agents.tar.zst -C / $hpaths
 }
 
 resolve_pull_refs() {
