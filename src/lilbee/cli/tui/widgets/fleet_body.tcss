@@ -37,6 +37,10 @@ FleetBody {
         color: $warning;
     }
 
+    #placement-state.-rebuilding {
+        color: $accent;
+    }
+
     .single-gpu-note {
         height: 1;
         color: $text-muted;

@@ -39,6 +39,30 @@ def test_provider_block_shape():
     assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee", "max_tokens": 8192}
 
 
+def test_context_file_max_chars_sized_to_window():
+    """The context-file budget rises to the served window so a large project
+    context file (the repo's AGENTS.md is ~49k chars) loads without hermes cutting
+    it to its 20000-char default."""
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF], chat_ctx=65536
+    )
+    assert cfg_frag["context_file_max_chars"] == 65536
+
+
+def test_context_file_max_chars_floored_at_hermes_default():
+    """A small served window never lowers the budget below hermes's own default."""
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF], chat_ctx=4096
+    )
+    assert cfg_frag["context_file_max_chars"] == 20000
+
+
+def test_context_file_max_chars_omitted_without_window():
+    """Without a known served window the key is omitted, leaving hermes's default."""
+    cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF])
+    assert "context_file_max_chars" not in cfg_frag
+
+
 def test_mcp_block_url_with_bearer_header():
     cfg_frag = hermes_config(
         base_url="http://127.0.0.1:8080", api_key="${LILBEE_TOKEN}", model_refs=[_REF]
