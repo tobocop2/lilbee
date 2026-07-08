@@ -37,8 +37,38 @@ def resolve_backend(device_backend: str) -> UtilBackend | None:
     return _REGISTRY.get(device_backend)
 
 
+_VULKAN = "Vulkan"
+# Vulkan is vendor-agnostic, and a consumer GPU is often only exposed to the
+# engine via Vulkan. Map a Vulkan device to a vendor's util backend by the vendor
+# named in its device string so its utilization still reads.
+_VENDOR_KEYS: tuple[tuple[str, str], ...] = (
+    ("intel", "SYCL"),
+    ("nvidia", "CUDA"),
+    ("radeon", "ROCm"),
+    ("amd", "ROCm"),
+)
+
+
+def util_backend_name(backend: str, name: str) -> str:
+    """Registry key for a device's util backend.
+
+    A recognized inference backend already implies the vendor. Vulkan does not, so
+    a Vulkan device is mapped by the vendor named in *name*; anything unrecognized
+    is returned unchanged (and resolves to no backend, i.e. structural fallback).
+    """
+    if backend in _REGISTRY:
+        return backend
+    if backend == _VULKAN:
+        lowered = name.lower()
+        for hint, key in _VENDOR_KEYS:
+            if hint in lowered:
+                return key
+    return backend
+
+
 __all__ = [
     "UtilBackend",
     "UtilSample",
     "resolve_backend",
+    "util_backend_name",
 ]

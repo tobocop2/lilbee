@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from lilbee.providers.fleet.gpu_backends import UtilSample, resolve_backend
+from lilbee.providers.fleet.gpu_backends import UtilSample, resolve_backend, util_backend_name
 
 
 class DeviceLike(Protocol):
@@ -26,6 +26,8 @@ class DeviceLike(Protocol):
     def index(self) -> int: ...
     @property
     def backend(self) -> str: ...
+    @property
+    def name(self) -> str: ...
     @property
     def total_bytes(self) -> int: ...
     @property
@@ -69,9 +71,11 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
         d.index: GpuStat(d.index, None, d.free_bytes, d.total_bytes) for d in devices
     }
 
+    # Group by the util backend, not the raw inference backend: a Vulkan-exposed
+    # consumer GPU routes to its vendor's util source by name.
     by_backend: dict[str, list[DeviceLike]] = {}
     for d in devices:
-        by_backend.setdefault(d.backend, []).append(d)
+        by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
 
     for backend_name, group in by_backend.items():
         indices = frozenset(d.index for d in group)
