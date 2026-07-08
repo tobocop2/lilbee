@@ -176,6 +176,17 @@ def _make_empty_result():
     return result
 
 
+def test_reconcile_missing_flags_only_silent_drops():
+    from pathlib import Path
+
+    from lilbee.data.ingest.pipeline import _reconcile_missing
+
+    disk = {n: Path(n) for n in ("a.pdf", "b.pdf", "c.pdf", "d.pdf")}
+    # a indexed, b failed, c skipped, d dropped with no signal.
+    missing = _reconcile_missing(disk, [{"filename": "a.pdf"}], failed=["b.pdf"], skipped=["c.pdf"])
+    assert missing == ["d.pdf"]
+
+
 @mock.patch(
     "lilbee.data.xberg_extract.aextract_document",
     new_callable=mock.AsyncMock,
@@ -214,6 +225,40 @@ class TestSync:
         )
         result = await sync(quiet=True)
         assert "adaptive.txt" in result.added
+
+    async def test_spaced_filename_ingests_without_silent_drop(
+        self, mock_extract_file, isolated_env, caplog
+    ):
+        # Regression for the silent drop of files with spaces in their names.
+        (isolated_env / "Request No. 1.txt").write_text("Maintenance request approved, page one.")
+        import logging
+
+        from lilbee.data.ingest import sync
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            result = await sync(quiet=True)
+        assert "Request No. 1.txt" in result.added
+        assert not any("reconciliation" in r.getMessage().lower() for r in caplog.records)
+
+    async def test_reconciliation_warns_on_silent_drop(
+        self, mock_extract_file, isolated_env, monkeypatch, caplog
+    ):
+        # A file discovered but never indexed, failed, or skipped is a silent drop.
+        (isolated_env / "ghost.txt").write_text("This file gets dropped by a broken ingest stage.")
+        import logging
+
+        from lilbee.data.ingest import pipeline, sync
+
+        async def _noop_ingest(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(pipeline, "ingest_batch", _noop_ingest)
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            await sync(quiet=True)
+        assert any(
+            "reconciliation" in r.getMessage().lower() and "ghost.txt" in r.getMessage()
+            for r in caplog.records
+        )
 
     async def test_quiet_mode_suppresses_progress(self, mock_extract_file, isolated_env):
         (isolated_env / "quiet.txt").write_text("Quiet mode test content.")

@@ -379,6 +379,25 @@ def _force_rebuild_store(store: Any) -> None:
         store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
 
 
+def _reconcile_missing(
+    disk_files: dict[str, Path],
+    sources: list[SourceRecord],
+    failed: Iterable[str],
+    skipped: Iterable[str],
+) -> list[str]:
+    """On-disk document files absent from the store and not reported failed/skipped.
+
+    A file discovery found and classified that ended up in neither the sources table
+    nor the run's failed/skipped lists was dropped with no signal -- the silent
+    data-loss case (a scanned PDF that never made it into the index yet reported no
+    error). Everything legitimately not indexed is excluded: a failed extraction is in
+    ``failed``, a zero-text file is in ``skipped``, and an unsupported type was never
+    returned by discovery in the first place.
+    """
+    accounted = {s["filename"] for s in sources} | set(failed) | set(skipped)
+    return sorted(name for name in disk_files if name not in accounted)
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -473,6 +492,18 @@ async def sync(
         from lilbee.wiki.ingest import incremental_update
 
         await incremental_update(set(added) | set(updated) | set(removed))
+
+    # Reconciliation guard against silent data loss: any on-disk document file that
+    # ended up in neither the index nor the failed/skipped lists was dropped without
+    # a signal. Surface it loudly instead of letting a whole dataset vanish quietly.
+    missing = _reconcile_missing(disk_files, _store.get_sources(), failed, skipped)
+    if missing:
+        log.warning(
+            "Sync reconciliation: %d document file(s) on disk are absent from the index "
+            "with no failure reported (possible silent drop): %s",
+            len(missing),
+            ", ".join(missing[:20]),
+        )
 
     result = SyncResult(
         added=list(added),
