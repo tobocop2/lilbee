@@ -159,9 +159,10 @@ async def gpu_stats_stream(
 
     Devices are resolved by the caller before the stream starts so a ProviderError
     surfaces as a 503 at route time, not mid-stream. Each tick only runs the light
-    ``nvidia-smi`` query. The client keeps the stream open while visible;
-    ``max_ticks`` bounds it for tests. A heartbeat is emitted every
-    ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
+    per-vendor utilization probe (nvidia-smi, amd-smi, xpu-smi, or ioreg). The
+    client keeps the stream open while visible; ``max_ticks`` bounds it for tests.
+    A heartbeat is emitted every ``cfg.sse_heartbeat_interval`` seconds of idle so
+    clients don't time out.
     """
     from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
 
