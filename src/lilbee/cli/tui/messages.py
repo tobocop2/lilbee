@@ -402,6 +402,12 @@ FLEET_NO_GPUS = "(no GPUs detected)"
 # Shown for a role that has no placement because its model isn't downloaded, so the
 # empty slot reads as a fixable state instead of "GPU placement is broken".
 FLEET_MODEL_NOT_DOWNLOADED = "{role}: {model} not downloaded, pull it to place it"
+# Shown when an Intel GPU's utilization is unreadable only because intel_gpu_top
+# lacks the CAP_PERFMON grant, so the muted "--" reads as a fixable state.
+FLEET_INTEL_UTIL_GRANT = (
+    "Intel GPU utilization needs a one-time grant: "
+    "sudo setcap cap_perfmon+ep {binary}  (or Linux 6.2+ reads it with no setup)"
+)
 FLEET_CMD_PREVIEW = "Preview"
 FLEET_CMD_APPLY = "Apply"
 FLEET_CMD_AUTO = "Auto"
