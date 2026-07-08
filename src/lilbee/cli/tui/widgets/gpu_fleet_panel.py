@@ -18,7 +18,7 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats
+from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats, util_notice
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.gpu_stats import DeviceLike
@@ -251,4 +251,8 @@ class GpuFleetPanel(Static):
         """Update the rendered content with fresh stat data (main thread)."""
         theme = self._resolve_theme()
         markup = _render_stats(stats, labels, roles, theme, probed=self._probed)
+        notice = util_notice(self._devices, stats)
+        if notice:
+            muted = _theme_color(theme, "text-muted")
+            markup += f"\n[{muted}]  {notice}[/]"
         self.update(markup)

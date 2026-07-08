@@ -20,6 +20,7 @@ as the 0/0 structural sentinel since none of these report an iGPU's total memory
 
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 import subprocess
@@ -43,6 +44,15 @@ _IGT_CAPTURE_S = 0.6
 
 # The i915 DRM driver name, for the fdinfo reader.
 _I915 = "i915"
+
+# intel_gpu_top needs CAP_PERFMON to read the i915 PMU. When it is installed but
+# unprivileged, the util reads back empty; this hint tells the user the one-time
+# fix. A working PMU streams, so the check hits the timeout and reports usable.
+_IGT_PERM_CHECK_S = 1.0
+_SETCAP_HINT = (
+    "Intel GPU utilization needs a one-time grant: "
+    "sudo setcap cap_perfmon+ep {binary}  (or Linux 6.2+ reads it with no setup)"
+)
 
 
 class IntelBackend:
@@ -205,3 +215,38 @@ def _single(indices: frozenset[int], util: int) -> dict[int, UtilSample]:
     return {
         idx: UtilSample(idx, utilization_pct=util, temperature_c=None, free_bytes=0, total_bytes=0)
     }
+
+
+@functools.cache
+def intel_util_hint() -> str | None:
+    """Actionable one-liner when Intel util is missing only for a fixable reason.
+
+    Returns the setcap command when intel_gpu_top is installed but the i915 PMU is
+    permission-blocked, so a surface shows it only when it will actually help;
+    None when the tool is absent or already usable. Cached: the permission state
+    does not change within a run (and the notice is gated on util being missing,
+    so it disappears on its own once a grant makes util read).
+    """
+    binary = shutil.which(_TOOL_IGT)
+    if binary is None:
+        return None
+    if _igt_permission_denied(binary):
+        return _SETCAP_HINT.format(binary=binary)
+    return None
+
+
+def _igt_permission_denied(binary: str) -> bool:
+    """True when intel_gpu_top reports the i915 PMU is permission-blocked."""
+    try:
+        proc = subprocess.run(  # noqa: S603 - resolved binary, fixed args
+            [binary, "-J", "-s", str(_IGT_SAMPLE_MS)],
+            capture_output=True,
+            text=True,
+            timeout=_IGT_PERM_CHECK_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False  # it streamed rather than erroring out, so the PMU is usable
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "CAP_PERFMON" in proc.stderr or "Permission denied" in proc.stderr

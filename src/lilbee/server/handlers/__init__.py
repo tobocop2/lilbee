@@ -164,13 +164,16 @@ async def gpu_stats_stream(
     A heartbeat is emitted every ``cfg.sse_heartbeat_interval`` seconds of idle so
     clients don't time out.
     """
-    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
+    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats, util_notice
 
     last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
         stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
-        payload = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
+        payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
+        notice = util_notice(devices, stats)  # type: ignore[arg-type]
+        if notice:
+            payload["notice"] = notice
         yield sse_event(SseEvent.GPU_STATS, payload)
         tick += 1
         if max_ticks is None or tick < max_ticks:

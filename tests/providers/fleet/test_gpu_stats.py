@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from lilbee.providers.fleet import gpu_stats as stats_mod
 from lilbee.providers.fleet.devices import MIB, FleetDevice
 from lilbee.providers.fleet.gpu_backends import util_backend_name
 from lilbee.providers.fleet.gpu_backends.base import UtilSample
-from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats
+from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats, util_notice
 
 _CUDA = (
     FleetDevice("CUDA", 0, "NVIDIA A40", 48 * 1024 * MIB, 47 * 1024 * MIB),
@@ -233,3 +235,48 @@ def test_util_backend_name_vulkan_unknown_vendor_unchanged() -> None:
 
 def test_util_backend_name_unknown_backend_unchanged() -> None:
     assert util_backend_name("OpenCL", "whatever") == "OpenCL"
+
+
+# ---------------------------------------------------------------------------
+# util_notice (actionable hint when Intel util is missing but fixable)
+# ---------------------------------------------------------------------------
+
+
+def _hint(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    monkeypatch.setattr(stats_mod, "intel_util_hint", lambda: value)
+
+
+def test_util_notice_intel_missing_util_returns_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, "GRANT ME")
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert util_notice([dev], {0: GpuStat(0, None, 0, 0)}) == "GRANT ME"
+
+
+def test_util_notice_vulkan_intel_routes_to_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, "GRANT ME")
+    dev = FleetDevice("Vulkan", 0, "Intel(R) UHD Graphics", 0, 0)
+    assert util_notice([dev], {0: GpuStat(0, None, 0, 0)}) == "GRANT ME"
+
+
+def test_util_notice_silent_when_util_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, "GRANT ME")
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert util_notice([dev], {0: GpuStat(0, 50, 0, 0)}) is None
+
+
+def test_util_notice_silent_for_non_intel(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, "GRANT ME")
+    dev = FleetDevice("CUDA", 0, "NVIDIA A40", 0, 0)
+    assert util_notice([dev], {0: GpuStat(0, None, 0, 0)}) is None
+
+
+def test_util_notice_silent_when_no_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, None)
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert util_notice([dev], {0: GpuStat(0, None, 0, 0)}) is None
+
+
+def test_util_notice_skips_index_absent_from_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, "GRANT ME")
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert util_notice([dev], {}) is None
