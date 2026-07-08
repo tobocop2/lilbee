@@ -11,6 +11,10 @@ _MCP_SUFFIX = "/mcp"
 # hermes's custom provider defaults max_tokens to the full window, leaving ~no
 # room for input. Pin a sane output cap so the system prompt + history fit.
 _MAX_OUTPUT_TOKENS = 8192
+# hermes truncates a project context file (AGENTS.md and the like) to this many
+# chars by default, printing a visible TRUNCATED warning. Raised to the served
+# window below so large context files load intact.
+_HERMES_DEFAULT_CONTEXT_FILE_MAX_CHARS = 20000
 
 
 def hermes_config(
@@ -38,6 +42,11 @@ def hermes_config(
     if chat_ctx is not None:
         provider["context_length"] = chat_ctx
     config: dict[str, Any] = {"providers": {LILBEE_PROVIDER_KEY: provider}}
+    if chat_ctx is not None:
+        # Size hermes's context-file budget to the served window so a large project
+        # context file loads instead of being cut to the 20k default. chat_ctx is
+        # tokens; used as a char budget it stays within the model window.
+        config["context_file_max_chars"] = max(_HERMES_DEFAULT_CONTEXT_FILE_MAX_CHARS, chat_ctx)
     if include_mcp:
         # An `url` (no `transport` key) is hermes's HTTP MCP shape; `headers`
         # carries the bearer with ${VAR} env resolution. A `transport` string
