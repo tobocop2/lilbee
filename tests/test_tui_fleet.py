@@ -812,6 +812,38 @@ async def test_failed_change_restores_live_view(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reload_read_error_after_change_notifies(monkeypatch):
+    """If re-reading the live placement after an applied change fails, the error
+    surfaces and the editor doesn't hang in the applying state."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+    monkeypatch.setattr(fbm, "set_placement", lambda spec: _make_view(manual=True))
+    reads = {"n": 0}
+
+    def _get():
+        reads["n"] += 1
+        if reads["n"] == 1:
+            return _make_view()  # initial load populates the editor
+        raise RuntimeError("probe failed on reload")
+
+    monkeypatch.setattr(fbm, "get_placement", _get)
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()  # finish the initial load
+        body = app.screen.query_one(FleetBody)
+        monkeypatch.setattr(body, "notify", lambda msg, **k: notes.append(msg))
+        await pilot.press("ctrl+s")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert body.applying is False
+    assert any("probe failed on reload" in n for n in notes)
+
+
+@pytest.mark.asyncio
 async def test_spec_from_editor_errors_on_empty_devices(monkeypatch):
     """_spec_from_editor raises PlacementError when a role is left with no GPUs."""
     from lilbee.cli.tui.widgets import fleet_body as fbm
