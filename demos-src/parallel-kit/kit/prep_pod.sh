@@ -178,7 +178,11 @@ bundle_agents() {
   [ -x /root/.opencode/bin/opencode ] || curl -fsSL https://opencode.ai/install | bash </dev/null
   /root/.opencode/bin/opencode --version </dev/null
   [ -x /usr/local/bin/hermes ] || curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash </dev/null
-  hermes --version </dev/null
+  hermes --version </dev/null || true
+  # pre-run once feeding the default choice so ~/.hermes reaches setup-complete
+  # and the reel's `lilbee launch hermes` does not drop into the wizard on
+  # camera (dress-rehearsal still verifies this empirically)
+  printf '1\n\n\n' | timeout 60 hermes </dev/null >/dev/null 2>&1 || true
   # captured with -C / (absolute FHS paths); bootstrap extracts with -C /
   tar --zstd -cf /workspace/golden/agents.tar.zst -C / \
     root/.opencode root/.hermes usr/local/bin/hermes usr/local/lib/hermes-agent

@@ -16,6 +16,7 @@ Usage:
   scatter.py reels.yaml prep-pod | gather [dest.tar]
   scatter.py reels.yaml watch                # deadline-enforced babysitter
   scatter.py reels.yaml sweep                # terminate every ledger pod still alive
+  scatter.py reels.yaml abort [reason]       # KILL SWITCH: terminate ALL ledger pods now
 """
 
 import json
@@ -174,14 +175,41 @@ def pod_ssh(pod_id: str) -> tuple[str, int] | None:
 
 
 def terminate_pod(pod_id: str, reason: str) -> None:
-    try:
-        gql("""mutation($id: String!) { podTerminate(input: {podId: $id}) }""", {"id": pod_id})
-    except Exception as exc:
-        print(f"{pod_id}: podTerminate failed ({exc}) — retry via sweep")
+    """Terminate and VERIFY gone — retry through Cloudflare 403 / transient
+    errors until a status query confirms the pod is TERMINATED/gone, so a
+    single failed call can never leave a pod billing."""
+    for attempt in range(8):
+        try:
+            gql("""mutation($id: String!) { podTerminate(input: {podId: $id}) }""", {"id": pod_id})
+        except Exception as exc:
+            print(f"{pod_id}: podTerminate attempt {attempt} failed ({str(exc)[:80]})")
+        time.sleep(4)
+        try:
+            data = gql("""query($id: String!) { pod(input: {podId: $id}) { desiredStatus } }""", {"id": pod_id})
+            pod = data.get("pod")
+            if not pod or pod.get("desiredStatus") in ("TERMINATED", "EXITED"):
+                break
+        except Exception:
+            pass
+    else:
+        print(f"{pod_id}: WARNING could not confirm termination after 8 tries — SWEEP/console needed")
     ledger = load_ledger()
     if pod_id in ledger:
         ledger[pod_id]["status"] = f"terminated:{reason}"
         save_ledger(ledger)
+
+
+def abort_all(reason: str = "abort") -> None:
+    """USER-REQUESTED KILL SWITCH: terminate EVERY pod in the ledger that is
+    still alive, immediately. Called on a systemic pre-flight failure or on
+    demand (`scatter.py reels.yaml abort`)."""
+    ledger = load_ledger()
+    live = [p for p, e in ledger.items() if e.get("status") not in ("done",)
+            and not str(e.get("status", "")).startswith("terminated")]
+    print(f"ABORT ({reason}): terminating {len(live)} ledger pod(s)")
+    for pod_id in live:
+        terminate_pod(pod_id, f"abort:{reason}")
+    print("ABORT complete — verify with: scatter.py reels.yaml sweep")
 
 
 def ssh(pod_id: str, cmd: str, timeout: int = 120, stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -241,45 +269,59 @@ def create_first_available(manifest: dict, group: str) -> str | None:
 
 
 def launch(manifest: dict, groups: list[str]) -> None:
+    """Two-phase parallel launch: create ALL pods first (grab capacity fast),
+    then start each job as its pod becomes ssh-ready — interleaved, so one
+    slow pod never blocks the others."""
     vram = HERE / "vram_table.json"
     if not vram.exists() or not json.loads(vram.read_text()):
         sys.exit("vram_table.json missing/empty: run the gguf-parser pass on the prep pod first")
+    # Phase 1: create pods
+    pending: dict[str, str] = {}
     for group in groups:
         pod_id = create_first_available(manifest, group)
-        if not pod_id:
-            print(f"SKIP {group}: no candidate has capacity in the volume DC; regroup or retry")
-            continue
-        reels = [k for k, r in manifest["reels"].items() if r.get("pod_group") == group]
-        for _ in range(90):   # cold image pulls can push past 10 min
-            time.sleep(10)
-            if pod_ssh(pod_id):
-                break
+        if pod_id:
+            pending[group] = pod_id
         else:
-            print(f"{pod_id}: ssh never came up — terminating")
-            terminate_pod(pod_id, "ssh_timeout")
-            continue
-        steps = [
-            ("push key", "umask 077 && cat > /root/.runpod_key"),
-            ("extract kit", "tar -xzf /workspace/golden/kit.tar.gz -C /root && test -f /root/kit/job.sh"),
-            ("start job", f"RUNPOD_POD_ID={pod_id} nohup bash /root/kit/job.sh {group} {' '.join(reels)} "
-                          f"> /root/job-nohup.log 2>&1 & sleep 2 && pgrep -f '[j]ob.sh' >/dev/null && echo started"),
-        ]
-        failed = False
-        for label, cmd in steps:
-            r = ssh(pod_id, cmd, stdin=api_key() if label == "push key" else None)
-            if r.returncode != 0 or (label == "start job" and "started" not in r.stdout):
-                print(f"{pod_id}: {label} failed ({r.stderr.strip()[:200]}) — terminating")
-                terminate_pod(pod_id, f"{label}_failed")
-                failed = True
-                break
-        if failed:
-            continue
-        ledger = load_ledger()
-        ledger[pod_id]["status"] = "running"
-        ledger[pod_id]["reels"] = reels
-        save_ledger(ledger)
-        print(f"{pod_id}: job started for {reels}")
-
+            print(f"SKIP {group}: no candidate has capacity in the volume DC")
+    if not pending:
+        print("no pods created — nothing to launch")
+        return
+    print(f"created {len(pending)} pod(s): {list(pending)}")
+    # Phase 2: start jobs as ssh comes up (interleaved, 25 min budget)
+    deadline = time.time() + 1500
+    started = 0
+    while pending and time.time() < deadline:
+        for group, pod_id in list(pending.items()):
+            if not pod_ssh(pod_id):
+                continue
+            reels = [k for k, r in manifest["reels"].items() if r.get("pod_group") == group]
+            steps = [
+                ("push key", "umask 077 && cat > /root/.runpod_key"),
+                ("extract kit", "tar -xzf /workspace/golden/kit.tar.gz -C /root && test -f /root/kit/job.sh"),
+                ("start job", f"RUNPOD_POD_ID={pod_id} nohup bash /root/kit/job.sh {group} {' '.join(reels)} "
+                              f"> /root/job-nohup.log 2>&1 & sleep 2 && pgrep -f '[j]ob.sh' >/dev/null && echo started"),
+            ]
+            ok = True
+            for label, cmd in steps:
+                try:
+                    r = ssh(pod_id, cmd, stdin=api_key() if label == "push key" else None)
+                except Exception as exc:
+                    print(f"{pod_id}: {label} ssh error ({str(exc)[:80]})"); ok = False; break
+                if r.returncode != 0 or (label == "start job" and "started" not in r.stdout):
+                    print(f"{pod_id}: {label} failed ({r.stderr.strip()[:160]})"); ok = False; break
+            del pending[group]
+            if ok:
+                led = load_ledger(); led[pod_id]["status"] = "running"; led[pod_id]["reels"] = reels; save_ledger(led)
+                print(f"{pod_id} ({group}): job started for {reels}")
+                started += 1
+            else:
+                terminate_pod(pod_id, "launch_failed")
+        if pending:
+            time.sleep(15)
+    for group, pod_id in pending.items():
+        print(f"{pod_id} ({group}): ssh never came up — terminating")
+        terminate_pod(pod_id, "ssh_timeout")
+    print(f"launch done: {started} job(s) started")
 
 def watch(manifest: dict, deadline_min: int = 150) -> None:
     """Deadline-enforced babysitter: a ledger pod alive past its deadline is
@@ -388,6 +430,8 @@ def main() -> None:
         watch(manifest)
     elif cmd == "sweep":
         sweep(manifest)
+    elif cmd == "abort":
+        abort_all(sys.argv[3] if len(sys.argv) > 3 else "manual")
     else:
         sys.exit(f"unknown command {cmd}")
 

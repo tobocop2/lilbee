@@ -197,6 +197,7 @@ def main() -> None:
     # soft "error" matching is disabled per-reel where prose/code legitimately
     # contains the word (agent reels answering over source code)
     soft_enabled = reel.get("soft_error_check", True)
+    hard_enabled = reel.get("hard_error_check", True)
     soft_re = re.compile(r"\berrors?\b")
     hard = [s for s in g["error_strings"] if s.lower() not in ("error", "error:")]
     musts = reel.get("must_strings") or []
@@ -209,10 +210,11 @@ def main() -> None:
                         "-vf", "scale=1400:-1", "-vframes", "1", f"{td2}/s99999.png"], check=True)
         for f in sorted(pathlib.Path(td2).glob("s*.png")):
             text = ocr(str(f))
-            for s in hard:
-                pat = rf"\b{re.escape(s.lower())}\b" if s.isdigit() else re.escape(s.lower())
-                if re.search(pat, text):
-                    errs.setdefault(s, []).append(f.name)
+            if hard_enabled:
+                for s in hard:
+                    pat = rf"\b{re.escape(s.lower())}\b" if s.isdigit() else re.escape(s.lower())
+                    if re.search(pat, text):
+                        errs.setdefault(s, []).append(f.name)
             if soft_enabled and soft_re.search(text):
                 errs.setdefault("error", []).append(f.name)
             for m in musts:

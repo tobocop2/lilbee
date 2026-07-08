@@ -19,7 +19,7 @@ cp "$V2"/reels.yaml "$OUT/"
 cp "$V2"/tapes/generated/*.tape "$OUT/tapes/"
 cp "$V2"/probes/*.tape "$OUT/probes/"
 
-REQUIRED="bootstrap.sh qualgate.sh pretake.sh stage.py materialize.py autoqa.py check_probes.py env.sh job.sh idle_watchdog.sh canary_grade.sh reels.yaml geometry_cal.json"
+REQUIRED="bootstrap.sh qualgate.sh warm.sh stage.py materialize.py autoqa.py check_probes.py env.sh job.sh idle_watchdog.sh canary_grade.sh reels.yaml geometry_cal.json"
 # pull_refs.json is required for FAN-OUT packs (prep resolves it before final pack)
 [ -f "$OUT/pull_refs.json" ] || echo "PACK_KIT_NOTE: pull_refs.json absent (ok only for the pre-resolve temp pack)"
 for f in $REQUIRED; do

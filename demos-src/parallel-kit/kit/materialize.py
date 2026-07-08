@@ -69,7 +69,7 @@ def main() -> None:
            f"cp {kb_root}/kb-manual-docs/cv-manual.pdf /root/opencode-manual/")
     # godot launcher demos run from small project dirs (AGENTS.md steers the
     # agent to lilbee search / bare codesearch); result file must not pre-exist
-    if any(k.startswith("godot-") for k in reels):
+    if any(k.startswith("godot-") or k.endswith("-godot") for k in reels):
         sh(f"rm -rf /root/godot-project /root/godot-project-bare && "
            f"cp -r {GOLDEN}/godot-project /root/godot-project && "
            f"cp -r {GOLDEN}/godot-project-bare /root/godot-project-bare && "

@@ -23,3 +23,4 @@ Sleep 1200ms
 Enter
 Sleep 75s
 Sleep 3s
+Screenshot agent-hermes.png

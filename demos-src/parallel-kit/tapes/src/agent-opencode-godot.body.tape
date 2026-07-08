@@ -13,7 +13,7 @@ Env TERM "xterm-256color"
 Output agent-opencode-godot.mp4
 Output agent-opencode-godot.gif
 Hide
-Type "source /workspace/kit/k5_env.sh && export PATH=$HOME/.opencode/bin:$PATH && cd /workspace/godot && lilbee launch opencode --yes"
+Type "source /workspace/kit/k5_env.sh && export PATH=$HOME/.opencode/bin:$PATH && cd /root/godot-project && lilbee launch opencode --yes"
 Enter
 Sleep 95s
 Show
@@ -23,3 +23,4 @@ Sleep 1200ms
 Enter
 Sleep 75s
 Sleep 3s
+Screenshot agent-opencode-godot.png

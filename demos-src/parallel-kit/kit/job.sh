@@ -40,19 +40,30 @@ fail_reel() { # <reel> <reason> — upload failure bundle
   cp /root/qa-"$reel".json "$OUT_BASE/$reel/" 2>/dev/null || true
 }
 
-quiesce() {
-  tmux kill-session -t take 2>/dev/null; tmux kill-session -t fleet 2>/dev/null
-  tmux kill-session -t dryrun 2>/dev/null
-  pkill -9 -x llama-swap 2>/dev/null; pkill -9 -x llama-server 2>/dev/null
-  pkill -9 -f '[l]ilbee serve' 2>/dev/null
+quiesce_render() {
+  # kill only the RENDER pipeline (between take attempts) — leaves the warm
+  # fleet (llama-swap/llama-server) running so the next take is not cold
+  tmux kill-session -t take 2>/dev/null
   pkill -9 -x vhs 2>/dev/null; pkill -9 -x ttyd 2>/dev/null
   pkill -9 -f '[c]hrome.*--headless' 2>/dev/null
+  sleep 2
+}
+
+quiesce() {
+  # full reset at reel boundaries — also kills the fleet
+  quiesce_render
+  tmux kill-session -t fleet 2>/dev/null; tmux kill-session -t warm 2>/dev/null
+  pkill -9 -x llama-swap 2>/dev/null; pkill -9 -x llama-server 2>/dev/null
+  pkill -9 -f '[l]ilbee serve' 2>/dev/null
   sleep 3
 }
 
 # ---- boot ----
 bash "$KIT/bootstrap.sh" || { fail_reel "${REELS[0]}" "bootstrap failed"; terminate boot_fail; exit 1; }
 source "$KIT/env.sh"
+# derive a generous hard cap from this pod's total workload — heavy multi-reel
+# groups legitimately run hours; the real idle guard is NO_JOB_GRACE (job gone)
+export HARD_DEADLINE_S=$(python3 "$KIT/deadline.py" "$@")
 nohup bash "$KIT/idle_watchdog.sh" > /root/watchdog.log 2>&1 &
 
 POD_CLASSES=$(python3 -c "
@@ -87,33 +98,40 @@ print(int(w.get('boot', 120)) + 3 * int(d.get('max', 300)) + 600)
 PY
 )
   [ -n "$take_budget" ] || take_budget=3600
-  pre=$(python3 -c "import yaml; r=yaml.safe_load(open('/root/kit/reels.yaml'))['reels']['$reel']; print(r.get('pre_roll',''))")
-  for attempt in 1 2; do
-    log "reel $reel attempt $attempt (budget ${take_budget}s)"
+  : > /root/gate.log
+  : > /root/take.log
+
+  # --- one-time reset + stage + WARM the fleet (gate, NOT a take attempt) ---
+  quiesce
+  if ! python3 "$KIT/stage.py" "$KIT/reels.yaml" "$reel" >> /root/gate.log 2>&1; then
+    fail_reel "$reel" "stage failed"; overall=fail; continue
+  fi
+  # warm.sh runs the render/disk/font checks, boots the fleet, verifies
+  # identity + a live 200, and LEAVES the fleet running. Retried up to 3x
+  # because the FIRST cold boot of a heavy model races startup; a warm/gate
+  # failure never consumes a take attempt. Once warm, every take is fast.
+  warmed=""
+  for w in 1 2 3; do
+    if bash "$KIT/warm.sh" "$reel" >> /root/gate.log 2>&1; then warmed=1; break; fi
+    log "warm attempt $w failed for $reel; retrying"
     quiesce
-    : > /root/gate.log
-    : > /root/take.log
-    python3 "$KIT/stage.py" "$KIT/reels.yaml" "$reel" >> /root/gate.log 2>&1 \
-      || { log "stage failed (attempt $attempt)"; continue; }
+    python3 "$KIT/stage.py" "$KIT/reels.yaml" "$reel" >> /root/gate.log 2>&1 || true
+  done
+  if [ -z "$warmed" ]; then
+    fail_reel "$reel" "fleet never warmed after 3 tries (see gate.log)"; overall=fail; continue
+  fi
+
+  # --- take attempts against the WARM fleet (fleet stays up between them) ---
+  for attempt in 1 2 3; do
+    log "reel $reel take attempt $attempt (budget ${take_budget}s)"
+    quiesce_render
     rm -f /root/takes/"$reel".mp4 /root/takes/"$reel".png /root/TAKE_EXIT
-
-    if [ -n "$pre" ]; then
-      # the dry-run boots and proves the fleet itself; no separate pretake boot
-      bash "$KIT/${pre}.sh" >> /root/gate.log 2>&1 || { log "pre_roll $pre failed (attempt $attempt)"; continue; }
-      quiesce
-      python3 "$KIT/stage.py" "$KIT/reels.yaml" "$reel" >> /root/gate.log 2>&1 \
-        || { log "post-dryrun stage failed (attempt $attempt)"; continue; }
-    fi
-    bash "$KIT/pretake.sh" "$reel" >> /root/gate.log 2>&1 \
-      || { log "pretake gate failed (attempt $attempt)"; continue; }
-
+    : > /root/take.log
     tmux new-session -d -s take "cd /root/takes && vhs $KIT/tapes/$reel.tape >> /root/take.log 2>&1; echo \$? > /root/TAKE_EXIT"
     waited=0
     while [ ! -f /root/TAKE_EXIT ] && [ "$waited" -lt "$take_budget" ]; do sleep 10; waited=$((waited+10)); done
     if [ ! -f /root/TAKE_EXIT ]; then
-      log "take timed out after ${take_budget}s (attempt $attempt)"
-      tmux kill-session -t take 2>/dev/null
-      continue
+      log "take timed out after ${take_budget}s (attempt $attempt)"; tmux kill-session -t take 2>/dev/null; continue
     fi
     rc=$(cat /root/TAKE_EXIT); rm -f /root/TAKE_EXIT
     { [ "$rc" = 0 ] && [ -s /root/takes/"$reel".mp4 ]; } || { log "take rc=$rc (attempt $attempt)"; continue; }
@@ -125,14 +143,13 @@ PY
       a=$(sha256sum /root/takes/"$reel".mp4 | cut -d' ' -f1)
       b=$(sha256sum "$OUT_BASE/$reel/$reel.mp4" | cut -d' ' -f1)
       [ "$a" = "$b" ] || { fail_reel "$reel" "volume read-back sha mismatch"; overall=fail; break; }
-      log "PASS $reel"
-      passed=1
-      break
+      log "PASS $reel"; passed=1; break
     fi
     log "autoqa fail $reel attempt $attempt"
   done
+  quiesce   # kill the warm fleet before the next reel
   if [ -z "$passed" ]; then
-    [ -f "$OUT_BASE/$reel/FAILED.txt" ] || fail_reel "$reel" "no passing take after 2 attempts (see take.log tail)"
+    [ -f "$OUT_BASE/$reel/FAILED.txt" ] || fail_reel "$reel" "no passing take after 3 attempts"
     overall=fail
   fi
 done

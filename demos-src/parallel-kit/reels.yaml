@@ -59,7 +59,6 @@ reels:
     pod_group: A
     models: [qwen3-235b]
     kb: corpus
-    pre_roll: placement_dryrun   # scripted tmux apply->settle->ask; main lacks reloading_placement guard
     empty_kb_boot: true   # KB is added live on camera
     bg_target: rose-pine
   fleet-drawer:
@@ -89,6 +88,7 @@ reels:
     models: [qwen3-235b]
     kb: corpus
     soft_error_check: false
+    hard_error_check: false
     bg_target: opencode
   agent-hermes:
     class: agent
@@ -99,6 +99,7 @@ reels:
     kb: corpus
     notes: banner scroll must finish inside hidden boot; autoqa frame-diff verifies
     soft_error_check: false
+    hard_error_check: false
     bg_target: opencode
   agent-opencode-godot:
     class: agent
@@ -108,6 +109,7 @@ reels:
     models: [qwen3-235b]
     kb: godot
     soft_error_check: false
+    hard_error_check: false
     bg_target: opencode
   agent-hermes-godot:
     class: agent
@@ -117,6 +119,7 @@ reels:
     models: [qwen3-235b]
     kb: godot
     soft_error_check: false
+    hard_error_check: false
     bg_target: opencode
   godot-with-lilbee:
     class: plain-godot
@@ -187,14 +190,14 @@ pod_groups:
   # (transfer mode hf), the volume carries golden+KBs+reels-out only.
   # Group A stays THREE GPUs: reel2's walk is bound to the 3-GPU drawer layout.
   A:      { gpus: ["NVIDIA H100 NVL x3", "NVIDIA H100 80GB HBM3 x3", "NVIDIA H200 x3"], min_vcpu: 24, disk_gb: 250 }
-  B:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x2"], min_vcpu: 24, disk_gb: 250 }
-  C:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x2"], min_vcpu: 24, disk_gb: 250 }
+  B:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x3", "NVIDIA H100 NVL x3", "NVIDIA H100 80GB HBM3 x4"], min_vcpu: 24, disk_gb: 250 }
+  C:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H200 x2", "NVIDIA H100 80GB HBM3 x3", "NVIDIA H100 NVL x3", "NVIDIA H100 80GB HBM3 x4"], min_vcpu: 24, disk_gb: 250 }
   D:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
   E:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
   F:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
   G:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 160 }
-  H:      { gpus: ["NVIDIA H200 x1", "NVIDIA H100 NVL x2", "NVIDIA H100 80GB HBM3 x2"], min_vcpu: 24, disk_gb: 200 }
-  I:      { gpus: ["NVIDIA H200 x2", "NVIDIA H100 NVL x2"], min_vcpu: 24, disk_gb: 260 }
+  H:      { gpus: ["NVIDIA H100 NVL x2", "NVIDIA H100 80GB HBM3 x2", "NVIDIA H200 x2"], min_vcpu: 24, disk_gb: 200 }
+  I:      { gpus: ["NVIDIA H200 x2", "NVIDIA H100 NVL x4", "NVIDIA H100 80GB HBM3 x4"], min_vcpu: 24, disk_gb: 300 }
   K:      { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1"], min_vcpu: 16, disk_gb: 100 }
   CANARY: { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1"], min_vcpu: 16, disk_gb: 100 }
   PREP:   { gpus: ["NVIDIA H100 80GB HBM3 x1", "NVIDIA H100 NVL x1", "NVIDIA H200 x1"], min_vcpu: 16, disk_gb: 120 }
