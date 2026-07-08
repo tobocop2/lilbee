@@ -1167,9 +1167,7 @@ def _parse_sse_stream_items(
             yield usage
         return
     delta = choices[0].get("delta") or {}
-    text = inliner.feed(
-        str(delta.get("reasoning_content") or ""), str(delta.get("content") or "")
-    )
+    text = inliner.feed(str(delta.get("reasoning_content") or ""), str(delta.get("content") or ""))
     if text:
         yield text
     raw_calls = delta.get("tool_calls") or []
