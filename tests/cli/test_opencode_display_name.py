@@ -13,11 +13,14 @@ from lilbee.cli.agent_configs.opencode import opencode_config
 
 
 def _entry_name(ref: str) -> str:
+    from lilbee.catalog import agent_model_id
+
     cfg = opencode_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[ref])
     models = cfg["provider"]["lilbee"]["models"]
-    # The entry key is the routing ref; its "name" is the picker label.
-    assert ref in models
-    return models[ref]["name"]
+    # The entry key is the clean agent id (the routing id); its "name" is the label.
+    key = agent_model_id(ref)
+    assert key in models
+    return models[key]["name"]
 
 
 @pytest.mark.parametrize(

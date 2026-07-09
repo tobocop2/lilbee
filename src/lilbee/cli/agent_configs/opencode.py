@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from lilbee.catalog import display_label_for_ref
+from lilbee.catalog import agent_model_id, display_label_for_ref
 
 _OUTPUT_TOKEN_LIMIT = 8192
 """Per-response output cap reported to opencode (it reserves this from the context)."""
@@ -65,7 +65,11 @@ def opencode_config(
                     "baseURL": f"{base_url}/v1",
                     "apiKey": api_key,
                 },
-                "models": {ref: _model_entry(ref, chat_ctx) for ref in sorted(model_refs)},
+                # Key by the clean agent id (not the full ref) so opencode routes
+                # and shows a friendly id; lilbee's /v1 resolves it back to the ref.
+                "models": {
+                    agent_model_id(ref): _model_entry(ref, chat_ctx) for ref in sorted(model_refs)
+                },
             }
         },
     }
@@ -80,5 +84,5 @@ def opencode_config(
             }
         }
     if default_ref is not None:
-        config["model"] = f"lilbee/{default_ref}"
+        config["model"] = f"lilbee/{agent_model_id(default_ref)}"
     return config
