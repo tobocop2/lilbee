@@ -138,40 +138,78 @@ while IFS= read -r -d '' lib; do
 done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o -path '*vulkan-shaders-gen-prefix*' \) -prune -o \
   \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
 
-# A CUDA build links the CUDA 12 runtime dynamically, and those libraries live in
-# the toolkit, never in the build output copied above. Linux finds them at runtime
-# from the nvidia-*-cu12 wheels (fleet.cuda_runtime puts them on LD_LIBRARY_PATH);
-# Windows has no equivalent hook, so the toolkit's redistributables must sit beside
-# llama-server.exe, which is the first directory Windows searches for a process's
-# imports. Without them the server dies before binding its port, with a "cudart64_12.dll
-# was not found" dialog and no healthy replica for lilbee to route to.
+# A CUDA build links the CUDA 12 runtime dynamically, and those libraries live in the
+# toolkit, never in the build output copied above. Only libcuda / nvcuda comes from the
+# driver; cudart, cublas and cublasLt do not, so they ship beside the binary like every
+# other lib here. The baked $ORIGIN runpath resolves them on Linux, and on Windows the
+# executable's own directory is the first place the loader looks.
+#
+# Both platforms broke without this, in different ways. On Windows cudart is a hard
+# import of the process, so llama-server.exe died before binding its port with a
+# "cudart64_12.dll was not found" dialog. On Linux ggml dlopens libggml-cuda.so and
+# tolerates the failure, so the GPU silently disappeared and work fell back to CPU.
 case "${backend}_$(uname -s)" in
-  cu12*_MINGW* | cu12*_MSYS* | cu12*_CYGWIN*)
-    cuda_bin="$(cygpath -u "${CUDA_PATH:?CUDA_PATH must be set for a Windows CUDA build}")/bin"
-    shopt -s nullglob
-    # nvrtc only matters for runtime kernel compilation and the CI toolkit install
-    # omits it; copy it when present. The other three are hard requirements.
-    cuda_libs=(
-      "${cuda_bin}"/cudart64_*.dll
-      "${cuda_bin}"/cublas64_*.dll
-      "${cuda_bin}"/cublasLt64_*.dll
-      "${cuda_bin}"/nvrtc64_*.dll
-    )
-    shopt -u nullglob
-    for lib in ${cuda_libs[@]+"${cuda_libs[@]}"}; do
-      cp "${lib}" "${pkg_bin_dir}/"
-    done
-    # The bundle is unverifiable by exec here (a driverless build host loads no CUDA
-    # backend at all, so the server would start clean with or without these), so gate
-    # on the copy itself: every required redistributable must have landed.
-    for required in cudart64 cublas64 cublasLt64; do
-      compgen -G "${pkg_bin_dir}/${required}_*.dll" >/dev/null || {
-        echo "no ${required}_*.dll under ${cuda_bin}: the Windows CUDA bundle is incomplete" >&2
-        exit 1
-      }
-    done
-    ;;
+  cu12*_MINGW* | cu12*_MSYS* | cu12*_CYGWIN*) cuda_platform="windows" ;;
+  cu12*_Linux)                                cuda_platform="linux" ;;
+  *)                                          cuda_platform="" ;;
 esac
+
+if [ -n "${cuda_platform}" ]; then
+  # nvrtc is optional: nothing in the current ggml links it (readelf shows no
+  # DT_NEEDED for it), and the Windows toolkit install omits the sub-package.
+  # Copy it when the toolkit provides it; the other three are hard requirements.
+  case "${cuda_platform}" in
+    windows)
+      cuda_lib_dir="$(cygpath -u "${CUDA_PATH:?CUDA_PATH must be set for a Windows CUDA build}")/bin"
+      required_libs=(cudart64 cublas64 cublasLt64)
+      shopt -s nullglob
+      cuda_libs=(
+        "${cuda_lib_dir}"/cudart64_*.dll
+        "${cuda_lib_dir}"/cublas64_*.dll
+        "${cuda_lib_dir}"/cublasLt64_*.dll
+        "${cuda_lib_dir}"/nvrtc64_*.dll
+      )
+      shopt -u nullglob
+      ;;
+    linux)
+      # install_gpu_toolkit.sh exports CUDA_HOME; fall back to the versionless symlink.
+      cuda_lib_dir="${CUDA_HOME:-/usr/local/cuda}/lib64"
+      [ -d "${cuda_lib_dir}" ] || cuda_lib_dir="${CUDA_HOME:-/usr/local/cuda}/targets/x86_64-linux/lib"
+      required_libs=(libcudart.so.12 libcublas.so.12 libcublasLt.so.12)
+      # Copy the SONAME names the binary loads by. These are symlinks to the versioned
+      # files in the toolkit; cp dereferences each into a real file under the loadable
+      # name, as the ggml libs above are handled.
+      shopt -s nullglob
+      cuda_libs=(
+        "${cuda_lib_dir}"/libcudart.so.12
+        "${cuda_lib_dir}"/libcublas.so.12
+        "${cuda_lib_dir}"/libcublasLt.so.12
+        "${cuda_lib_dir}"/libnvrtc.so.12
+      )
+      shopt -u nullglob
+      ;;
+  esac
+
+  [ -d "${cuda_lib_dir}" ] || { echo "CUDA library dir ${cuda_lib_dir} does not exist" >&2; exit 1; }
+  for lib in ${cuda_libs[@]+"${cuda_libs[@]}"}; do
+    cp -L "${lib}" "${pkg_bin_dir}/"
+  done
+
+  # The bundle can't be verified by exec here: a driverless build host has no
+  # libcuda/nvcuda, so the CUDA backend never loads and the server starts clean
+  # whether or not these are present. Gate on the copy instead, and fail the build
+  # rather than ship a bundle that only breaks on a user's machine.
+  for required in "${required_libs[@]}"; do
+    case "${cuda_platform}" in
+      windows) pattern="${pkg_bin_dir}/${required}_*.dll" ;;
+      linux)   pattern="${pkg_bin_dir}/${required}" ;;
+    esac
+    compgen -G "${pattern}" >/dev/null || {
+      echo "no ${required} under ${cuda_lib_dir}: the ${cuda_platform} CUDA bundle is incomplete" >&2
+      exit 1
+    }
+  done
+fi
 
 # The copied closure must actually resolve: exec the bundled binary from the
 # bundle dir. A missing bundled lib fails here, at build time, instead of on a
