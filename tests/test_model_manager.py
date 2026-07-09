@@ -1286,6 +1286,29 @@ class TestKnownModelCache:
         # No colon, so the bare-name auto-prefix path doesn't engage either.
         assert cache.resolve("foo") is None
 
+    def test_resolve_accepts_clean_agent_id(self, monkeypatch) -> None:
+        """The clean agent-facing id resolves back to its full GGUF ref."""
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        ref = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+        self._stub_compose(monkeypatch, native=[ref])
+        cache = KnownModelCache()
+        assert cache.resolve("Qwen3-0.6B") == ref
+
+    def test_resolve_clean_agent_id_ambiguous_is_none(self, monkeypatch) -> None:
+        """A clean id shared by two installed quants stays unresolved, never guessing."""
+        from lilbee.modelhub.model_manager.discovery import KnownModelCache
+
+        self._stub_compose(
+            monkeypatch,
+            native=[
+                "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf",
+                "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf",
+            ],
+        )
+        cache = KnownModelCache()
+        assert cache.resolve("Qwen3-0.6B") is None
+
     def test_invalidate_during_refresh_does_not_extend_expiry(self, monkeypatch) -> None:
         """If ``invalidate()`` lands while a refresh is mid-flight (between the
         I/O and the lock-reacquire), the stored set updates but the expiry
