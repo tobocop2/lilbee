@@ -1,10 +1,12 @@
 """VRAM-aware placement planner for the multi-GPU llama-server fleet.
 
 Estimates each role-model's VRAM footprint from GGUF metadata and bin-packs
-instances across GPUs (first-fit-decreasing): a model that fits one GPU runs as a
-single pinned instance, small models co-locate on a GPU with spare VRAM, and a
-model too big for any single GPU is tensor-split across enough GPUs to fit. A role
-that fits nowhere gets no server (its calls error). See docs/architecture.md.
+instances across GPUs in ``placement_rank`` order, largest-first within a rank: a
+model that fits one GPU runs as a single pinned instance, small models co-locate
+on a GPU with spare VRAM, and a model too big for any single GPU is tensor-split
+across enough GPUs to fit. Chat and vision share a swap group when only one of
+them fits; a role that fits nowhere gets no server (its calls error). See
+docs/architecture.md.
 """
 
 from __future__ import annotations
@@ -83,9 +85,12 @@ def plan_placement(
 ) -> Placement:
     """Bin-pack *models* onto *devices* (``[(index, vram_bytes), ...]``).
 
-    First-fit-decreasing by footprint with a 90% headroom per GPU. A model that
-    fits one GPU takes a single instance; one too big for any single GPU is
-    tensor-split; a model that fits nowhere is an unplaceable role.
+    Roles are charged in ``placement_rank`` order, largest-first within a rank, with
+    a 90% headroom per GPU. A model that fits one GPU takes a single instance; one
+    too big for any single GPU is tensor-split. Chat is charged last: when it fits
+    only if vision's VRAM is refunded, the two become ``co_tenants`` of one swap
+    group instead of either becoming unplaceable. A model that fits nowhere, even
+    alone beside the pinned tier, is an unplaceable role.
 
     A chat split widens past the fewest fitting cards when ``chat_ctx_fit`` shows a
     tighter shard would starve its served context below ``chat_ctx_target``; the

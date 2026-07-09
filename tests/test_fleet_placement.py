@@ -622,3 +622,18 @@ class TestSharedMemoryCoTenancy:
 
         assert plan.unplaceable_roles == ()
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+
+    def test_co_tenant_vision_drops_to_one_replica_in_shared_memory(self) -> None:
+        # The elastic vision replicas are refunded with the rest of vision's pool;
+        # a swap:true group would evict them anyway.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 18 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 2 * _GB, replicas=3),
+        ]
+        plan = plan_placement(models, [], estimate_peak=_never, unified_budget=22 * _GB)
+
+        visions = [i for i in plan.instances if i.role is WorkerRole.VISION]
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert [i.replica for i in visions] == [0]
+        assert WorkerRole.CHAT in {i.role for i in plan.instances}

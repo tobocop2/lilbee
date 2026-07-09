@@ -98,10 +98,14 @@ def _check_placement() -> None:
     """
     from lilbee.providers.fleet.planning import plan_all_launches
 
-    launches = plan_all_launches()
+    plan = plan_all_launches()
+    launches = plan.launches
     _require(bool(launches), "planner produced no servers (every role unplaceable)")
     roles = {launch.role for launch in launches}
     print(f"[2] planned {len(launches)} server(s) across roles {sorted(r.value for r in roles)}")
+    if plan.co_tenants:
+        shared = ", ".join(sorted(role.value for role in plan.co_tenants))
+        print(f"      {shared} share a swap group (one resident at a time)")
     for launch in launches:
         env = launch.env_overrides
         pinned = env.get("CUDA_VISIBLE_DEVICES") or env.get("ROCR_VISIBLE_DEVICES") or "(host)"

@@ -674,20 +674,23 @@ def _server_model_inputs(
 
 
 def _non_chat_reservation(
-    instances: Sequence[InstancePlan], inputs: Sequence[ModelPlacementInput]
+    instances: Sequence[InstancePlan],
+    inputs: Sequence[ModelPlacementInput],
+    co_tenants: frozenset[WorkerRole] = frozenset(),
 ) -> dict[int, int]:
     """Per-device VRAM the non-chat role servers occupy, keyed by device index.
 
     A tensor-split chat shard must size its KV against the headroom left after the
     embed/rerank/vision servers on the same card, not the card's raw free VRAM, or
-    it over-commits and OOMs at launch. Chat is excluded because it sizes
-    its own weights; non-chat roles are single-device, so each charges its full
-    footprint (once per replica) to its card.
+    it over-commits and OOMs at launch. Chat is excluded because it sizes its own
+    weights, and so are chat's co-tenants: they are evicted while chat is resident,
+    so their VRAM is chat's to use. Non-chat roles are single-device, so each
+    charges its full footprint (once per replica) to its card.
     """
     charge_by_role = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved: dict[int, int] = {}
     for inst in instances:
-        if inst.role is WorkerRole.CHAT:
+        if inst.role is WorkerRole.CHAT or inst.role in co_tenants:
             continue
         charge = charge_by_role[inst.role]
         for device in inst.devices:
@@ -1111,7 +1114,7 @@ def plan_launches(
             "%s share GPU memory and load on demand; only one is resident at a time.",
             ", ".join(sorted(role.value for role in placement.co_tenants)),
         )
-    reserved_by_device = _non_chat_reservation(placement.instances, inputs)
+    reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     return FleetPlan(
         launches=tuple(
             _launch_for(
