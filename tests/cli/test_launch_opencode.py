@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from lilbee.catalog import agent_model_id
 from lilbee.catalog.types import ModelTask
 from lilbee.cli import app
 from lilbee.core.config import cfg
@@ -122,7 +123,7 @@ def test_launch_opencode_with_running_server_writes_provider_into_config(tmp_pat
     assert options["baseURL"] == f"http://127.0.0.1:{_PORT}/v1"
     assert options["apiKey"] == "{env:LILBEE_TOKEN}"  # reference, not the literal
     assert _TOKEN not in json.dumps(payload)  # no literal token on disk
-    assert _CHAT_REF in payload["provider"]["lilbee"]["models"]
+    assert agent_model_id(_CHAT_REF) in payload["provider"]["lilbee"]["models"]
     mcp_entry = payload["mcp"]["lilbee"]
     assert mcp_entry["type"] == "remote"
     assert mcp_entry["enabled"] is True
@@ -130,7 +131,7 @@ def test_launch_opencode_with_running_server_writes_provider_into_config(tmp_pat
     assert mcp_entry["headers"]["Authorization"] == "Bearer {env:LILBEE_TOKEN}"
     # Startup pin: without the top-level model key opencode boots on its own
     # default provider instead of the lilbee-served chat model.
-    assert payload["model"] == f"lilbee/{cfg.chat_model}"
+    assert payload["model"] == f"lilbee/{agent_model_id(cfg.chat_model)}"
 
 
 @pytest.mark.no_health_default
@@ -311,7 +312,7 @@ def test_opencode_config_sets_limit_context_when_known():
     block = opencode_config(
         base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=32768
     )
-    entry = block["provider"]["lilbee"]["models"]["a/M/m.gguf"]
+    entry = block["provider"]["lilbee"]["models"]["M"]
     # Both keys required: opencode rejects a limit with only context (bb-c4t).
     assert entry["limit"] == {"context": 32768, "output": 8192}
 
@@ -322,7 +323,7 @@ def test_opencode_config_omits_limit_when_ctx_unknown():
     block = opencode_config(
         base_url="http://127.0.0.1:9", api_key="k", model_refs=["a/M/m.gguf"], chat_ctx=None
     )
-    assert "limit" not in block["provider"]["lilbee"]["models"]["a/M/m.gguf"]
+    assert "limit" not in block["provider"]["lilbee"]["models"]["M"]
 
 
 def test_opencode_config_pins_default_model_when_ref_given():
@@ -334,7 +335,7 @@ def test_opencode_config_pins_default_model_when_ref_given():
         model_refs=["a/M/m.gguf"],
         default_ref="a/M/m.gguf",
     )
-    assert block["model"] == "lilbee/a/M/m.gguf"
+    assert block["model"] == "lilbee/M"
 
 
 def test_opencode_config_includes_mcp_by_default():
