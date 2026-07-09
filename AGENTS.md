@@ -442,6 +442,13 @@ closure. These rules exist because each one shipped a broken artifact once.
   nondeterministic. SONAME symlinks (`libllama.0.dylib`) are copied as real
   files under the names the binary loads. The script execs the bundled binary
   at build time so a missing lib fails on the builder, not the user.
+- **A CUDA build bundles its CUDA runtime too.** `cudart`, `cublas` and `cublasLt`
+  live in the toolkit, not the build tree, and only `libcuda` / `nvcuda` comes from
+  the driver, so `build_llama_server.sh` copies them beside the binary on Linux and
+  Windows and fails the build when one is missing. The exec gate above proves nothing
+  here — a driverless runner never loads the CUDA backend — so read the artifact
+  instead: `tools/qa/assert_cuda_bundle.py` checks the wheel in the build cells and
+  again in `verify-release`, which also asserts every CUDA asset reached the release.
 - **Every release channel has a real-inference gate.** `tools/qa/artifact_smoke.sh`
   runs `self-check` (real chat + embedding), ingest, search, a RAG ask, and an
   http crawl, sourcing models from the `ci-models` mirror (no HuggingFace).
