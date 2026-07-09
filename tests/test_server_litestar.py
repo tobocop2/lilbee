@@ -1458,6 +1458,18 @@ class TestLifespan:
             pass
         mock_get_svc.assert_called()
 
+    @mock.patch("lilbee.server.app.peek_services")
+    @mock.patch("lilbee.server.app.get_services")
+    async def test_shuts_down_worker_pool_on_exit(self, mock_get_svc, mock_peek):
+        mock_get_svc.return_value = mock.MagicMock()
+        svc = mock.MagicMock()
+        mock_peek.return_value = svc
+        from lilbee.server.app import _lifespan
+
+        async with _lifespan(mock.MagicMock()):
+            svc.provider.shutdown.assert_not_called()
+        svc.provider.shutdown.assert_called_once()
+
 
 class TestSessionManagerPersistence:
     """Cover SessionManager.load_or_generate token-reuse semantics."""
