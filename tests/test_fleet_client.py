@@ -301,8 +301,13 @@ def test_llm_rerank_score_only_yes_present() -> None:
     assert _llm_rerank_score([{"token": "yes", "logprob": -0.5}]) > 0.0
 
 
-def test_llm_rerank_score_neither_present_is_zero() -> None:
-    assert _llm_rerank_score([{"token": "maybe", "logprob": -0.1}]) == 0.0
+def test_llm_rerank_score_only_no_present_is_zero() -> None:
+    assert _llm_rerank_score([{"token": "no", "logprob": -0.5}]) == 0.0
+
+
+def test_llm_rerank_score_neither_present_is_none() -> None:
+    assert _llm_rerank_score([{"token": "maybe", "logprob": -0.1}]) is None
+    assert _llm_rerank_score([]) is None
 
 
 def test_first_token_top_logprobs_empty_on_missing_fields() -> None:
@@ -314,6 +319,22 @@ def test_first_token_top_logprobs_empty_on_missing_fields() -> None:
 def _llm_rerank_client(handler) -> LlamaServerClient:
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
     return LlamaServerClient("http://gpu0", "rerank-0", http=http, rerank_mode=RerankMode.LLM)
+
+
+def _think_token_response() -> httpx.Response:
+    """What a thinking-capable chat template yields: the verdict is not token 0."""
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "logprobs": {
+                        "content": [{"top_logprobs": [{"token": "<think>", "logprob": -0.01}]}]
+                    }
+                }
+            ]
+        },
+    )
 
 
 def _chat_logprobs_response(yes_lp: float, no_lp: float) -> httpx.Response:
@@ -354,6 +375,37 @@ def test_llm_rerank_routes_to_chat_and_ranks_relevant_higher() -> None:
     scores = _llm_rerank_client(handler).rerank("q", ["relevant doc", "off-topic"])
     assert seen_paths == ["/v1/chat/completions", "/v1/chat/completions"]
     assert scores[0] > scores[1]
+
+
+def test_llm_rerank_request_disables_template_thinking() -> None:
+    captured: list[object] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content)["chat_template_kwargs"])
+        return _chat_logprobs_response(0.0, -1.0)
+
+    _llm_rerank_client(handler).rerank("q", ["doc"])
+    assert captured == [{"enable_thinking": False}]
+
+
+def test_llm_rerank_raises_when_no_candidate_yields_a_verdict() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _think_token_response()
+
+    with pytest.raises(ProviderError, match=r"yes.*no"):
+        _llm_rerank_client(handler).rerank("q", ["one", "two"])
+
+
+def test_llm_rerank_scores_a_verdictless_candidate_zero_without_raising() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "answered" in body["messages"][0]["content"]:
+            return _chat_logprobs_response(0.0, -4.0)
+        return _think_token_response()
+
+    scores = _llm_rerank_client(handler).rerank("q", ["answered", "silent"])
+    assert scores[0] > 0.5
+    assert scores[1] == 0.0
 
 
 def test_llm_rerank_uses_prompt_override(monkeypatch) -> None:
