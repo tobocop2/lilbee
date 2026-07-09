@@ -390,7 +390,9 @@ class LLMProvider(Protocol):
         Returns: list of floats in input order, higher = more relevant.
         Empty ``candidates`` returns ``[]``.
         Raises :class:`ProviderError` when the backend does not support
-        reranking or ``cfg.reranker_model`` is empty.
+        reranking, ``cfg.reranker_model`` is empty, or the model scored no
+        candidate. A backend must raise rather than return uniform scores,
+        which would silently preserve the caller's input order.
         """
         ...
 
