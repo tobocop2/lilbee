@@ -138,6 +138,41 @@ while IFS= read -r -d '' lib; do
 done < <(find "${src}/server-build" \( -name CMakeFiles -o -name CMakeScratch -o -path '*vulkan-shaders-gen-prefix*' \) -prune -o \
   \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) -print0)
 
+# A CUDA build links the CUDA 12 runtime dynamically, and those libraries live in
+# the toolkit, never in the build output copied above. Linux finds them at runtime
+# from the nvidia-*-cu12 wheels (fleet.cuda_runtime puts them on LD_LIBRARY_PATH);
+# Windows has no equivalent hook, so the toolkit's redistributables must sit beside
+# llama-server.exe, which is the first directory Windows searches for a process's
+# imports. Without them the server dies before binding its port, with a "cudart64_12.dll
+# was not found" dialog and no healthy replica for lilbee to route to.
+case "${backend}_$(uname -s)" in
+  cu12*_MINGW* | cu12*_MSYS* | cu12*_CYGWIN*)
+    cuda_bin="$(cygpath -u "${CUDA_PATH:?CUDA_PATH must be set for a Windows CUDA build}")/bin"
+    shopt -s nullglob
+    # nvrtc only matters for runtime kernel compilation and the CI toolkit install
+    # omits it; copy it when present. The other three are hard requirements.
+    cuda_libs=(
+      "${cuda_bin}"/cudart64_*.dll
+      "${cuda_bin}"/cublas64_*.dll
+      "${cuda_bin}"/cublasLt64_*.dll
+      "${cuda_bin}"/nvrtc64_*.dll
+    )
+    shopt -u nullglob
+    for lib in ${cuda_libs[@]+"${cuda_libs[@]}"}; do
+      cp "${lib}" "${pkg_bin_dir}/"
+    done
+    # The bundle is unverifiable by exec here (a driverless build host loads no CUDA
+    # backend at all, so the server would start clean with or without these), so gate
+    # on the copy itself: every required redistributable must have landed.
+    for required in cudart64 cublas64 cublasLt64; do
+      compgen -G "${pkg_bin_dir}/${required}_*.dll" >/dev/null || {
+        echo "no ${required}_*.dll under ${cuda_bin}: the Windows CUDA bundle is incomplete" >&2
+        exit 1
+      }
+    done
+    ;;
+esac
+
 # The copied closure must actually resolve: exec the bundled binary from the
 # bundle dir. A missing bundled lib fails here, at build time, instead of on a
 # user's machine. Skipped when cross-compiling (the host can't exec the target)
