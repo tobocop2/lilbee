@@ -53,7 +53,9 @@ jobs:
   # otherwise leaves the release quietly missing an artifact and still reports green.
   verify-cuda-bundles:
     needs: [resolve]
-    timeout-minutes: 20
+    # The eleven engine wheels are several GB together, most of it the CUDA fatbins
+    # and cublasLt; the download dominates this job.
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
