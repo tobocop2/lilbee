@@ -86,6 +86,91 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
 
+### Ingest concurrency: keeping the GPUs fed
+
+A full-corpus OCR ingest is a producer/consumer pipeline: CPU-side work (rasterizing
+PDF pages) feeds GPU-side work (vision OCR). Admit too few documents at once and the
+GPUs sit idle waiting for pages; admit too many and the CPU thrashes while RAM and GPU
+temperature climb. The right number is not a constant — it depends on the machine, the
+corpus, and how many GPUs are present.
+
+lilbee bounds how many documents are in their compute phase at once with an **admission
+gate**, and `LILBEE_INGEST_CONCURRENCY` chooses how that gate is sized:
+
+| Mode | Gate | What it does |
+|------|------|--------------|
+| `static` *(default)* | fixed semaphore | A constant limit derived from the fleet's slot capacity. Proven, predictable, and the always-safe fallback. Nothing changes for anyone who does not opt in. |
+| `adaptive-conservative` | resizable, cautious | A background controller tunes the limit toward this box's actual throughput knee, climbing slowly and backing off at the first sign of pressure. |
+| `adaptive-aggressive` | resizable, faster | Same control law and the *same* safety limits, but larger steps and a shorter interval, so it finds the knee faster on short runs. |
+
+Adaptive mode engages only when a GPU fleet is present (a GPU-less host always runs
+`static`), and the controller is best-effort: if a measurement ever fails it is logged
+and skipped, so the tuner can never crash the ingest it is only advising.
+
+#### How adaptive sizing works
+
+Instead of chasing a hardcoded target like "90% GPU utilization," the controller finds
+the **throughput knee** — the point where adding more in-flight documents stops adding
+throughput and only inflates latency. This is a safety-gated hill-climb on smoothed
+per-page throughput, drawn from proven congestion-control and thread-pool autotuning
+practice (AIMD, TCP BBR / Kleinrock's operating point, the .NET CLR ThreadPool
+hill-climber, the Universal Scalability Law).
+
+Every interval it samples the signals and decides one small change:
+
+```mermaid
+flowchart TD
+    S["Sample every interval:<br/>pages/s, GPU util and temp, CPU %, free RAM"]
+    S --> C{"CPU, RAM, or GPU temp<br/>past a critical limit?"}
+    C -->|yes| BK["Halve the limit,<br/>start a cool-down"]
+    C -->|no| SAT{"GPUs saturated<br/>and throughput slipping?"}
+    SAT -->|yes| DN["Step the limit down"]
+    SAT -->|no| V{"Soft pressure, or latency<br/>inflating past its baseline?"}
+    V -->|yes| HOLD["Hold"]
+    V -->|no| G{"Is throughput<br/>still improving?"}
+    G -->|yes| UP["Step the limit up"]
+    G -->|no| KNEE["Hold — at the knee"]
+
+    BK --> GATE["Resize the admission gate"]
+    DN --> GATE
+    UP --> GATE
+    HOLD --> GATE
+    KNEE --> GATE
+    GATE -.->|"more or fewer documents admitted"| DOCS["Extract + GPU OCR"]
+    DOCS -.->|"changes the next sample"| S
+```
+
+Two ideas make it both fast and safe:
+
+- **Latency leads the knee (TCP Vegas / Netflix Gradient2).** Waiting for throughput to
+  visibly flatten is too late — you have already overshot. So the controller estimates
+  per-page residence time with Little's Law (`in-flight ÷ throughput`), tracks its
+  unloaded minimum, and stops climbing the moment that estimate inflates, before
+  throughput rolls over.
+- **Safety is never traded for speed.** Critical CPU, RAM, or GPU-temperature signals
+  force an immediate multiplicative back-off and a cool-down. The two adaptive profiles
+  differ only in how quickly they climb — never in these limits. Throughput is measured
+  in OCR pages, not documents, so a 500-page scan counts as 500 units of work and does
+  not read as a throughput collapse.
+
+#### Parameters
+
+Safety limits are identical across both adaptive profiles; only the climb speed differs.
+
+| | `conservative` | `aggressive` | Safety (both) |
+|---|---|---|---|
+| sample interval | 5 s | 2 s | — |
+| smoothing (EWMA γ) | 0.3 | 0.5 | — |
+| climb step | +1 | +1 + ⌊√limit ÷ 4⌋ | — |
+| dead band | 5% | 3% | — |
+| latency veto | 1.5× baseline | 2.0× baseline | — |
+| cool-down | 3 intervals | 2 intervals | — |
+| back-off on danger | — | — | ×0.5 |
+| GPU-saturation veto | — | — | 97% util |
+| CPU soft / critical | — | — | 90% / 97% |
+| free RAM soft / min | — | — | 20% / 10% |
+| GPU temp warn / critical | — | — | 80°C / 85°C |
+
 ---
 
 ## Provider Abstraction
