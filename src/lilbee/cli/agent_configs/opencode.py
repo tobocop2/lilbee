@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-_GGUF_SUFFIX = ".gguf"
-_NATIVE_REF_PARTS = 3
-"""Number of slash-separated segments in a native GGUF ref: ``<org>/<repo>/<file>``."""
+from lilbee.catalog import display_label_for_ref
 
 _OUTPUT_TOKEN_LIMIT = 8192
 """Per-response output cap reported to opencode (it reserves this from the context)."""
@@ -15,32 +12,6 @@ _OUTPUT_TOKEN_LIMIT = 8192
 _MCP_TIMEOUT_MS = 120_000
 """Remote-MCP request timeout. opencode defaults to 5000 ms, which the first
 ``lilbee_search`` can exceed while the embedding model cold-loads."""
-
-_QUANT_TRAILER = re.compile(
-    r"[-.](?P<quant>I?Q\d+(?:_[A-Z0-9]+)*|F16|F32|BF16)$",
-    re.IGNORECASE,
-)
-
-
-def display_name(ref: str) -> str:
-    """Render a chat-model ref as a short label for opencode's model picker.
-
-    A native GGUF ref has the shape ``<org>/<repo>/<filename>.gguf``. The
-    picker showing the full path is noisy because the filename and repo
-    name are largely redundant. This helper extracts the filename, strips
-    the ``.gguf`` extension, and turns ``Model-Q4_K_M`` (or
-    ``Model.Q8_0``) into ``Model Q4_K_M``. Non-native refs (Ollama, hosted
-    providers) and unrecognised filename shapes pass through unchanged so
-    the picker still shows a meaningful identifier.
-    """
-    parts = ref.split("/")
-    if len(parts) != _NATIVE_REF_PARTS or not parts[2].endswith(_GGUF_SUFFIX):
-        return ref
-    stem = parts[2].removesuffix(_GGUF_SUFFIX)
-    match = _QUANT_TRAILER.search(stem)
-    if match is None:
-        return stem
-    return f"{stem[: match.start()]} {match.group('quant')}"
 
 
 def _model_entry(ref: str, chat_ctx: int | None) -> dict[str, Any]:
@@ -50,7 +21,7 @@ def _model_entry(ref: str, chat_ctx: int | None) -> dict[str, Any]:
     ``limit`` is present, so when the window is known emit both -- a limit with only
     ``context`` makes opencode reject the whole config and fail to start.
     """
-    entry: dict[str, Any] = {"name": display_name(ref)}
+    entry: dict[str, Any] = {"name": display_label_for_ref(ref)}
     if chat_ctx is not None:
         entry["limit"] = {
             "context": chat_ctx,
