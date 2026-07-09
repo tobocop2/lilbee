@@ -1203,7 +1203,7 @@ class TestBuildFleetWiring:
         )
         sentinel = MagicMock()
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
-        assert planning_mod.plan_all_launches() == [sentinel]
+        assert planning_mod.plan_all_launches() == planning_mod.FleetPlan((sentinel,))
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))

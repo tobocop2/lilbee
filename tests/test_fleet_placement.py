@@ -225,26 +225,23 @@ class TestPerDeviceSplit:
         assert plan.instances[0].devices == (0, 1, 2)
 
     def test_charges_each_card_its_own_share(self) -> None:
-        # Chat splits with an uneven per-device charge (10 GiB, 5 GiB). A following
-        # single role that fits only the less-charged card proves the debit is
-        # per-device, not the proportional/summed charge the old planner applied.
-        # Vision (a non-search single) is placed after chat, so it exercises the
-        # post-chat fit; a search role would be placed first (bb-7jg1.6).
+        # Chat splits with an uneven per-device charge (20 GiB, 2 GiB). The elastic
+        # vision replica, placed after chat, fits only the less-charged card. A summed
+        # charge (22 GiB on both) would leave it nowhere to go.
         chat = ModelPlacementInput(WorkerRole.CHAT, 30 * _GB)
-        vision = ModelPlacementInput(WorkerRole.VISION, 12 * _GB)
+        vision = ModelPlacementInput(WorkerRole.VISION, 6 * _GB, replicas=2)
 
         def peak(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
-            return (10 * _GB, 5 * _GB)
+            return (20 * _GB, 2 * _GB)
 
         plan = plan_placement(
             [chat, vision],
             [(0, 24 * _GB), (1, 24 * _GB)],
             estimate_peak=peak,
         )
-        vision_inst = next(i for i in plan.instances if i.role is WorkerRole.VISION)
-        assert vision_inst.devices == (
-            1,
-        )  # card 1 (charged 5) has room; card 0 (charged 10) does not
+        elastic = next(i for i in plan.instances if i.role is WorkerRole.VISION and i.replica == 1)
+        assert elastic.devices == (0,)  # card 0 (charged 2) has room; card 1 (charged 20) does not
+        assert plan.co_tenants == frozenset()
 
     def test_unplaceable_when_per_device_never_fits(self) -> None:
         model = ModelPlacementInput(WorkerRole.CHAT, 40 * _GB)
@@ -525,3 +522,103 @@ class TestPersistentSingleElasticSplit:
         embeds = self._embeds(plan)
         assert len(embeds) == 1
         assert embeds[0].replica == 0
+
+
+class TestChatVisionCoTenancy:
+    """A chat model that crowds out vision makes the pair swap tenants, not unplaceable."""
+
+    def _search(self) -> list[ModelPlacementInput]:
+        return [
+            ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+        ]
+
+    def _roles(self, plan: Placement) -> set[WorkerRole]:
+        return {i.role for i in plan.instances}
+
+    def test_chat_giant_makes_vision_a_co_tenant_instead_of_unplaceable(self) -> None:
+        # One 24GB card (21.6 usable): embed+rerank pin 2GB, vision needs 4, chat 18.
+        # Chat alone leaves no room for vision, so the pair share a swap group.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 18 * _GB),
+            *self._search(),
+            ModelPlacementInput(WorkerRole.VISION, 4 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 24 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == ()
+        assert self._roles(plan) == {
+            WorkerRole.CHAT,
+            WorkerRole.EMBED,
+            WorkerRole.RERANK,
+            WorkerRole.VISION,
+        }
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+
+    def test_chat_and_vision_that_both_fit_stay_pinned(self) -> None:
+        # An 80GB card holds everything at once: no swap group, no eviction.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 18 * _GB),
+            *self._search(),
+            ModelPlacementInput(WorkerRole.VISION, 4 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 80 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == ()
+        assert plan.co_tenants == frozenset()
+
+    def test_vision_too_big_for_the_search_tier_is_still_unplaceable(self) -> None:
+        # Vision does not fit even before chat is charged: a real "use a smaller model".
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+            *self._search(),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 8 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == (WorkerRole.VISION,)
+        assert plan.co_tenants == frozenset()
+
+    def test_co_tenant_vision_runs_a_single_replica(self) -> None:
+        # swap:true evicts same-group siblings, so a second vision replica in the
+        # co-tenant group would evict the first. The planner must not emit one.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 18 * _GB),
+            *self._search(),
+            ModelPlacementInput(WorkerRole.VISION, 4 * _GB, replicas=2),
+        ]
+        plan = plan_placement(models, [(0, 24 * _GB)], estimate_peak=_never)
+
+        visions = [i for i in plan.instances if i.role is WorkerRole.VISION]
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert len(visions) == 1
+        assert visions[0].replica == 0
+
+    def test_chat_that_fits_nowhere_is_unplaceable_and_vision_stays_pinned(self) -> None:
+        # Refunding vision still does not make room: chat is the genuinely oversize one.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 200 * _GB),
+            *self._search(),
+            ModelPlacementInput(WorkerRole.VISION, 4 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 24 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == (WorkerRole.CHAT,)
+        assert plan.co_tenants == frozenset()
+        assert WorkerRole.VISION in self._roles(plan)
+
+
+class TestSharedMemoryCoTenancy:
+    """The unified-memory path reaches the same verdict as the discrete-GPU path."""
+
+    def test_chat_giant_co_tenants_with_vision_in_shared_memory(self) -> None:
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 18 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 1 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 4 * _GB),
+        ]
+        plan = plan_placement(models, [], estimate_peak=_never, unified_budget=22 * _GB)
+
+        assert plan.unplaceable_roles == ()
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})

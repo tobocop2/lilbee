@@ -1076,12 +1076,20 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
     )
 
 
+@dataclass(frozen=True)
+class FleetPlan:
+    """The servers to start, and the roles that share one swap group."""
+
+    launches: tuple[InstanceLaunch, ...]
+    co_tenants: frozenset[WorkerRole] = frozenset()
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
-) -> list[InstanceLaunch]:
+) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
     from lilbee.core.config import cfg
 
@@ -1098,22 +1106,30 @@ def plan_launches(
             role.value,
             model_refs[role],
         )
-    reserved_by_device = _non_chat_reservation(placement.instances, inputs)
-    return [
-        _launch_for(
-            plan,
-            model_refs[plan.role],
-            binary,
-            by_index,
-            unified_budget=unified_budget,
-            chat_reservation=reservation,
-            reserved_by_device=reserved_by_device,
+    if placement.co_tenants:
+        log.info(
+            "%s share GPU memory and load on demand; only one is resident at a time.",
+            ", ".join(sorted(role.value for role in placement.co_tenants)),
         )
-        for plan in placement.instances
-    ]
+    reserved_by_device = _non_chat_reservation(placement.instances, inputs)
+    return FleetPlan(
+        launches=tuple(
+            _launch_for(
+                plan,
+                model_refs[plan.role],
+                binary,
+                by_index,
+                unified_budget=unified_budget,
+                chat_reservation=reservation,
+                reserved_by_device=reserved_by_device,
+            )
+            for plan in placement.instances
+        ),
+        co_tenants=placement.co_tenants,
+    )
 
 
-def plan_all_launches() -> list[InstanceLaunch]:
+def plan_all_launches() -> FleetPlan:
     """Apply GPU env, probe devices, and plan launches for every configured role.
 
     Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any

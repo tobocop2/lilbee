@@ -16,11 +16,6 @@ from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec,
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 
-# Search-critical roles reserved ahead of the elastic chat model in a shared pool,
-# so a large chat can never crowd embed/rerank out (which would 503 every search).
-# The pooled search roles (embed/cross-encoder rerank), derived from the registry.
-_SEARCH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.pooled)
-
 # (role, per-device tensor-split ratio) -> the instance's per-device VRAM footprint
 # vector aligned to that ratio. A split is accepted only when every card's entry
 # fits its own headroom, and each card is charged its own entry, not the sum.
@@ -63,14 +58,17 @@ class InstancePlan:
 
 @dataclass(frozen=True)
 class Placement:
-    """Planner output: server instances plus roles that fit on no device.
+    """Planner output: server instances, swap tenants, and roles that fit on no device.
 
     ``unplaceable_roles`` get no server, so a call to them surfaces a
-    ``ProviderError`` (there is no in-process fallback).
+    ``ProviderError`` (there is no in-process fallback). ``co_tenants`` share one
+    llama-swap group and evict each other on demand, so only one is resident at a
+    time; each runs a single instance.
     """
 
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
+    co_tenants: frozenset[WorkerRole] = frozenset()
 
 
 def plan_placement(
@@ -102,34 +100,23 @@ def plan_placement(
     host; ``None`` keeps the legacy ungated behavior.
     """
     if not devices:
-        if unified_budget is None:
-            return Placement(
-                instances=tuple(
-                    InstancePlan(role=m.role, devices=(), replica=r)
-                    for m in models
-                    for r in range(m.replicas)
-                ),
-                unplaceable_roles=(),
-            )
-        return _place_shared_memory(models, unified_budget)
+        return (
+            _place_ungated(models)
+            if unified_budget is None
+            else _place_shared_memory(models, unified_budget)
+        )
     remaining: dict[int, float] = {idx: vram * USABLE_VRAM_FRACTION for idx, vram in devices}
-    instances: list[InstancePlan] = []
-    unplaceable: list[WorkerRole] = []
 
-    # Reserve the persistent query fleet first, then fill residual VRAM with the
-    # elastic ingest pool. The persistent singles are: every replicas<=1 role plus
-    # replica 0 of each replicated role (the query embedder / vision that a search
-    # issued during ingest must always reach). Within the singles, place the
-    # search-critical roles (embed/rerank) before chat: chat tensor-splits across
-    # cards and, placed first, can claim them all and leave an essential search role
-    # unplaceable. Search-first here mirrors the shared-memory path's reservation.
-    # The extra replicas (1..N-1) are placed only into what VRAM remains, so a chat
-    # issued during ingest always fits and the query embedder always exists.
-    singles = [m for m in models if m.replicas <= 1]
+    # The persistent singles are every replicas<=1 role plus replica 0 of each
+    # replicated role. They are charged before the elastic replicas, and the chat
+    # model is charged last of all (``placement_rank``).
     replicated = [m for m in models if m.replicas > 1]
-    persistent_singles = singles + [_persistent_single(m) for m in replicated]
-    for model in sorted(persistent_singles, key=_shared_pool_order):
-        plan = _place_single(
+    persistent_singles = [m for m in models if m.replicas <= 1] + [
+        _persistent_single(m) for m in replicated
+    ]
+
+    def place(model: ModelPlacementInput) -> _Placed | None:
+        return _place_single(
             model,
             remaining,
             estimate_peak,
@@ -137,22 +124,134 @@ def plan_placement(
             chat_ctx_target=chat_ctx_target,
             free_headroom=free_headroom,
         )
-        if plan is None:
+
+    instances, unplaceable, charges = _place_pinned(persistent_singles, place)
+    co_tenants = _place_chat_last(
+        _chat_of(persistent_singles), place, remaining, charges, instances, unplaceable
+    )
+    instances.extend(_place_elastic(replicated, instances, remaining, co_tenants))
+
+    return Placement(
+        instances=tuple(instances),
+        unplaceable_roles=tuple(unplaceable),
+        co_tenants=co_tenants,
+    )
+
+
+def _place_ungated(models: list[ModelPlacementInput]) -> Placement:
+    """Every role as a single un-pinned instance: no GPU and no measured RAM budget."""
+    return Placement(
+        instances=tuple(
+            InstancePlan(role=m.role, devices=(), replica=r)
+            for m in models
+            for r in range(m.replicas)
+        ),
+        unplaceable_roles=(),
+    )
+
+
+def _place_pinned(
+    persistent_singles: list[ModelPlacementInput],
+    place: Callable[[ModelPlacementInput], _Placed | None],
+) -> tuple[list[InstancePlan], list[WorkerRole], dict[WorkerRole, dict[int, float]]]:
+    """Charge every persistent single except chat, in ``placement_rank`` order."""
+    instances: list[InstancePlan] = []
+    unplaceable: list[WorkerRole] = []
+    charges: dict[WorkerRole, dict[int, float]] = {}
+    for model in sorted(_pinned(persistent_singles), key=_shared_pool_order):
+        placed = place(model)
+        if placed is None:
             unplaceable.append(model.role)
         else:
-            instances.append(plan)
-    placed_roles = {plan.role for plan in instances}
-    for model in replicated:
-        if model.role not in placed_roles:
-            continue  # the persistent single did not fit -> already unplaceable
-        instances.extend(_place_replicas(model, remaining, start=1))
+            instances.append(placed.plan)
+            charges[model.role] = placed.charges
+    return instances, unplaceable, charges
 
-    return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+
+def _place_chat_last(
+    chat: ModelPlacementInput | None,
+    place: Callable[[ModelPlacementInput], _Placed | None],
+    remaining: dict[int, float],
+    charges: dict[WorkerRole, dict[int, float]],
+    instances: list[InstancePlan],
+    unplaceable: list[WorkerRole],
+) -> frozenset[WorkerRole]:
+    """Charge chat against what the pinned tier left, co-tenanting with vision if needed."""
+    if chat is None:
+        return frozenset()
+    placed = place(chat)
+    co_tenants: frozenset[WorkerRole] = frozenset()
+    if placed is None:
+        placed, co_tenants = _chat_beside_vision(chat, place, remaining, charges)
+    if placed is None:
+        unplaceable.append(chat.role)
+    else:
+        instances.append(placed.plan)
+    return co_tenants
+
+
+def _place_elastic(
+    replicated: list[ModelPlacementInput],
+    instances: list[InstancePlan],
+    remaining: dict[int, float],
+    co_tenants: frozenset[WorkerRole],
+) -> list[InstancePlan]:
+    """Fill the residual VRAM with replicas 1..N-1 of each placed, non-co-tenant role."""
+    placed_roles = {plan.role for plan in instances}
+    elastic: list[InstancePlan] = []
+    for model in replicated:
+        if model.role not in placed_roles or model.role in co_tenants:
+            continue  # unplaceable, or a co-tenant capped to its single instance
+        elastic.extend(_place_replicas(model, remaining, start=1))
+    return elastic
+
+
+def _pinned(models: list[ModelPlacementInput]) -> list[ModelPlacementInput]:
+    """The persistent singles that are charged before chat."""
+    return [m for m in models if m.role is not WorkerRole.CHAT]
+
+
+def _chat_of(models: list[ModelPlacementInput]) -> ModelPlacementInput | None:
+    """The chat model among *models*, or None when chat is unconfigured."""
+    return next((m for m in models if m.role is WorkerRole.CHAT), None)
+
+
+def _chat_beside_vision(
+    chat: ModelPlacementInput,
+    place: Callable[[ModelPlacementInput], _Placed | None],
+    remaining: dict[int, float],
+    charges: dict[WorkerRole, dict[int, float]],
+) -> tuple[_Placed | None, frozenset[WorkerRole]]:
+    """Retry a chat model that did not fit, with vision's VRAM refunded.
+
+    On success the pair are swap tenants: only one is resident, so the group is
+    charged the chat model's footprint alone. On failure vision keeps its VRAM and
+    chat is the genuinely oversize role.
+    """
+    refund = charges.get(WorkerRole.VISION)
+    if refund is None:
+        return None, frozenset()
+    for idx, charged in refund.items():
+        remaining[idx] += charged
+    placed = place(chat)
+    if placed is not None:
+        return placed, frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+    for idx, charged in refund.items():
+        remaining[idx] -= charged
+    return None, frozenset()
 
 
 def _persistent_single(model: ModelPlacementInput) -> ModelPlacementInput:
     """The replica-0 persistent instance of a replicated role, sized as one server."""
     return ModelPlacementInput(role=model.role, est_vram_bytes=model.est_vram_bytes, replicas=1)
+
+
+@dataclass(frozen=True)
+class _Placed:
+    """One placed instance and the per-device VRAM it was charged."""
+
+    plan: InstancePlan
+    charges: dict[int, float]
 
 
 def _place_single(
@@ -163,12 +262,15 @@ def _place_single(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
-) -> InstancePlan | None:
+) -> _Placed | None:
     """Place one instance: a single GPU when it fits, else a tensor-split, else None."""
     single = _best_single_device(model.est_vram_bytes, remaining)
     if single is not None:
         remaining[single] -= model.est_vram_bytes
-        return InstancePlan(role=model.role, devices=(single,))
+        return _Placed(
+            plan=InstancePlan(role=model.role, devices=(single,)),
+            charges={single: float(model.est_vram_bytes)},
+        )
     return _place_split(
         model,
         remaining,
@@ -187,7 +289,7 @@ def _place_split(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
-) -> InstancePlan | None:
+) -> _Placed | None:
     """Tensor-split across the most-free GPUs whose per-device share each fits.
 
     Charges each chosen card its own entry from *estimate_peak*'s vector, so the
@@ -226,11 +328,14 @@ def _charge_split(
     ratio: tuple[int, ...],
     per_device: tuple[int, ...],
     remaining: dict[int, float],
-) -> InstancePlan:
+) -> _Placed:
     """Debit each chosen card its own per-device share and return the split plan."""
     for idx, peak in zip(chosen, per_device, strict=True):
         remaining[idx] -= peak
-    return InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio)
+    return _Placed(
+        plan=InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio),
+        charges={idx: float(peak) for idx, peak in zip(chosen, per_device, strict=True)},
+    )
 
 
 def _place_replicas(
@@ -263,15 +368,17 @@ def _place_replicas(
 def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Placement:
     """Fit un-pinned roles into one shared RAM *budget*.
 
-    Search-critical roles (embed/rerank) are reserved first so the elastic chat
-    model can never crowd them out; the rest pack largest-first. Replicas run as N
-    co-resident processes against the shared pool (no per-GPU spread without GPUs).
-    A role with no instance placed is unplaceable (gets no server, its calls error).
+    Roles pack in ``placement_rank`` order, so the elastic chat model is charged
+    last and can never crowd out search or vision. Replicas run as N co-resident
+    processes against the shared pool (no per-GPU spread without GPUs). A chat
+    model that fits only without vision makes the pair swap tenants; a role with no
+    instance placed is unplaceable (gets no server, its calls error).
     """
     remaining = budget
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
-    for model in sorted(models, key=_shared_pool_order):
+    charged: dict[WorkerRole, int] = {}
+    for model in sorted(_pinned(models), key=_shared_pool_order):
         placed = 0
         for _ in range(model.replicas):
             if model.est_vram_bytes > remaining:
@@ -281,13 +388,48 @@ def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Plac
             placed += 1
         if placed == 0:
             unplaceable.append(model.role)
-    return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+        else:
+            charged[model.role] = placed * model.est_vram_bytes
+
+    chat = _chat_of(models)
+    co_tenants: frozenset[WorkerRole] = frozenset()
+    if chat is not None:
+        co_tenants = _place_shared_chat(chat, instances, unplaceable, remaining, charged)
+    return Placement(
+        instances=tuple(instances),
+        unplaceable_roles=tuple(unplaceable),
+        co_tenants=co_tenants,
+    )
+
+
+def _place_shared_chat(
+    chat: ModelPlacementInput,
+    instances: list[InstancePlan],
+    unplaceable: list[WorkerRole],
+    remaining: int,
+    charged: dict[WorkerRole, int],
+) -> frozenset[WorkerRole]:
+    """Charge chat last against the shared pool, refunding vision if that is what it takes.
+
+    Refunding vision makes the pair swap tenants, so only chat's footprint is held
+    and vision drops to its single instance.
+    """
+    if chat.est_vram_bytes <= remaining:
+        instances.append(InstancePlan(role=chat.role, devices=()))
+        return frozenset()
+    vision_bytes = charged.get(WorkerRole.VISION)
+    if vision_bytes is None or chat.est_vram_bytes > remaining + vision_bytes:
+        unplaceable.append(chat.role)
+        return frozenset()
+    instances[:] = [plan for plan in instances if plan.role is not WorkerRole.VISION]
+    instances.append(InstancePlan(role=WorkerRole.VISION, devices=(), replica=0))
+    instances.append(InstancePlan(role=chat.role, devices=()))
+    return frozenset({WorkerRole.CHAT, WorkerRole.VISION})
 
 
 def _shared_pool_order(model: ModelPlacementInput) -> tuple[int, int]:
-    """Sort key: search roles first, then everything else largest-first."""
-    is_search = 0 if model.role in _SEARCH_ROLES else 1
-    return (is_search, -model.est_vram_bytes)
+    """Sort key: by the role's placement rank, then largest-first within a rank."""
+    return (ROLE_REGISTRY[model.role].placement_rank, -model.est_vram_bytes)
 
 
 def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:

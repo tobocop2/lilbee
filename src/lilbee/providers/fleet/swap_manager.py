@@ -25,6 +25,7 @@ import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import resolve_llama_swap
+from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 
@@ -128,12 +129,12 @@ class SwapManager:
     or model change) never touches another group's loaded servers.
     """
 
-    def __init__(self, data_dir: Path, group: str) -> None:
+    def __init__(self, data_dir: Path, group: SwapGroup) -> None:
         self._data_dir = data_dir
         self._group = group
-        self._config_path = data_dir / _CONFIG_FILENAME_TEMPLATE.format(group=group)
-        self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group)
-        self._state_path = data_dir / _state_filename(os.getpid(), group)
+        self._config_path = data_dir / _CONFIG_FILENAME_TEMPLATE.format(group=group.value)
+        self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
+        self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
         self._port: int | None = None
@@ -159,7 +160,9 @@ class SwapManager:
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(build_swap_config(launches, member_ports))
+        self._config_path.write_text(
+            build_swap_config(launches, member_ports, swap=self._group.swaps)
+        )
         self._port = ports[0]
         # Capture llama-swap's stdout/stderr to a file so its access log never
         # reaches an inherited terminal (a TUI/CLI parent) and garbles the screen.
