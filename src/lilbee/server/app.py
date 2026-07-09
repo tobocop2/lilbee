@@ -11,7 +11,7 @@ from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
-from lilbee.app.services import get_services
+from lilbee.app.services import get_services, peek_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
@@ -115,6 +115,11 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         yield
     finally:
         session_manager.cleanup()
+        # Terminate the provider's worker/fleet subprocesses so they don't
+        # outlive the server (e.g. on parent-death shutdown in managed mode).
+        svc = peek_services()
+        if svc is not None:
+            svc.provider.shutdown()
 
 
 def create_app() -> Litestar:
