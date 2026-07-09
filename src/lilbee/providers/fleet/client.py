@@ -54,6 +54,12 @@ _LLM_RERANK_PROMPT = (
 _LLM_RERANK_TOP_LOGPROBS = 20
 _YES_LABEL = "yes"
 _NO_LABEL = "no"
+_LLM_RERANK_NO_VERDICT_ERROR = (
+    "The reranker model never answered 'yes' or 'no', so its relevance scores are "
+    "unusable. Its chat template does not fit the relevance prompt. Choose a GGUF "
+    "built for reranking, set reranker_type to cross_encoder, or adapt "
+    "reranker_prompt to the model's expected format."
+)
 # Max sequences per /v1/embeddings request. Like the in-process backstop, a
 # batch is bounded by BOTH the token budget (the server's n_batch, == token_cap)
 # and this sequence count: a corpus of many tiny chunks would otherwise pack one
@@ -830,13 +836,19 @@ class LlamaServerClient:
         return scores
 
     def _rerank_llm(self, query: str, candidates: list[str]) -> list[float]:
-        """Score each candidate by an LLM's yes/no first-token logprob."""
+        """Score each candidate by an LLM's yes/no first-token logprob.
+
+        Raises ``ProviderError`` when no candidate yields a verdict.
+        """
         template = cfg.reranker_prompt or _LLM_RERANK_PROMPT
         workers = min(LLM_RERANK_CONCURRENCY, len(candidates))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(lambda c: self._llm_rerank_one(template, query, c), candidates))
+            scores = list(pool.map(lambda c: self._llm_rerank_one(template, query, c), candidates))
+        if all(score is None for score in scores):
+            raise ProviderError(_LLM_RERANK_NO_VERDICT_ERROR, provider=_PROVIDER_NAME)
+        return [0.0 if score is None else score for score in scores]
 
-    def _llm_rerank_one(self, template: str, query: str, candidate: str) -> float:
+    def _llm_rerank_one(self, template: str, query: str, candidate: str) -> float | None:
         """One chat request scoring a single candidate's relevance to the query."""
         content = template.format(query=query, document=candidate)
         payload = {
@@ -847,6 +859,9 @@ class LlamaServerClient:
             "logprobs": True,
             "top_logprobs": _LLM_RERANK_TOP_LOGPROBS,
             "stream": False,
+            # Scoring reads the first generated token; a thinking template would
+            # spend it opening a <think> block instead of answering.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
 
         def _call() -> dict[str, Any]:
@@ -1008,8 +1023,11 @@ def _first_token_top_logprobs(response: dict[str, Any]) -> list[dict[str, Any]]:
     return list(content[0].get("top_logprobs") or [])
 
 
-def _llm_rerank_score(top_logprobs: list[dict[str, Any]]) -> float:
-    """Softmax of the yes vs no logprobs in a token's top_logprobs (case/space-insensitive)."""
+def _llm_rerank_score(top_logprobs: list[dict[str, Any]]) -> float | None:
+    """Softmax of the yes vs no logprobs in a token's top_logprobs (case/space-insensitive).
+
+    ``None`` when neither verdict appears, distinct from the 0.0 of a confident "no".
+    """
     yes_lp: float | None = None
     no_lp: float | None = None
     for entry in top_logprobs:
@@ -1020,7 +1038,7 @@ def _llm_rerank_score(top_logprobs: list[dict[str, Any]]) -> float:
         elif token == _NO_LABEL and (no_lp is None or logprob > no_lp):
             no_lp = logprob
     if yes_lp is None:
-        return 0.0
+        return None if no_lp is None else 0.0
     if no_lp is None:
         return math.exp(yes_lp)
     yes_e, no_e = math.exp(yes_lp), math.exp(no_lp)
