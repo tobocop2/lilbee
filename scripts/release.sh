@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Cut a beta release: bump the trailing bNNN, commit, tag, and push from main.
+# Cut a beta release: bump the trailing counter (the .devNNN when the version has
+# one, else the bNNN), commit, tag, and push from main.
 # release-candidate.yml builds the artifacts, publishes to PyPI, and creates the
 # pre-release with generated notes. Once that pipeline is green run
 # `make release-promote` to rewrite the notes as headings and mark it latest.
@@ -19,7 +20,13 @@ case "$cur" in
   *b[0-9]*) ;;
   *) echo "release: version '$cur' has no beta (bNNN) segment to bump" >&2; exit 1;;
 esac
-next="${cur%b*}b$(( ${cur##*b} + 1 ))"
+# Bump the last numeric segment: the dev counter when the version carries one
+# (0.6.90b420.dev710 -> .dev711), otherwise the beta counter (0.6.66b507 -> b508).
+# 10# keeps a zero-padded counter out of bash's octal interpretation.
+case "$cur" in
+  *.dev[0-9]*) next="${cur%.dev*}.dev$(( 10#${cur##*.dev} + 1 ))" ;;
+  *)           next="${cur%b*}b$(( 10#${cur##*b} + 1 ))" ;;
+esac
 tag="v${next}"
 echo "release: $cur -> $next ($tag)"
 
