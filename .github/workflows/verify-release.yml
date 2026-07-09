@@ -45,6 +45,53 @@ jobs:
           TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
         run: echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+  # The CUDA artifacts can't be exercised here: a driverless runner has no
+  # libcuda/nvcuda, so the engine never loads its CUDA backend and a run proves
+  # nothing. Check them structurally instead. Every CUDA engine wheel must carry the
+  # cudart/cublas/cublasLt it links, and every CUDA asset the matrices build must be
+  # on the release: those build cells are continue-on-error, so a dropped cell
+  # otherwise leaves the release quietly missing an artifact and still reports green.
+  verify-cuda-bundles:
+    needs: [resolve]
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download every engine wheel from the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'lilbee_engine-*.whl' --dir engine/
+      - name: Every CUDA engine wheel carries the runtime it links
+        shell: bash
+        run: python3 tools/qa/assert_cuda_bundle.py engine/*.whl
+      - name: Every CUDA asset the matrices build is on the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' > assets.txt
+          missing=0
+          while read -r expected; do
+            [ -n "${expected}" ] || continue
+            # -x: an exact line. A substring match would let lilbee-linux-x86_64-cu125.snap
+            # satisfy the check for the lilbee-linux-x86_64-cu125 binary.
+            grep -qxF "${expected}" assets.txt || { echo "missing from the release: ${expected}"; missing=1; }
+          done <<'EOF'
+          lilbee-linux-x86_64-cu121
+          lilbee-linux-x86_64-cu124
+          lilbee-linux-x86_64-cu125
+          lilbee-compat-linux-x86_64-cu124
+          lilbee-windows-x86_64-cu124.exe
+          lilbee-windows-x86_64-cu125.exe
+          EOF
+          [ "${missing}" -eq 0 ] || { echo "a continue-on-error CUDA build cell dropped its artifact"; exit 1; }
+          echo "every expected CUDA asset is present"
+
   verify-executables:
     needs: [resolve]
     timeout-minutes: 45
