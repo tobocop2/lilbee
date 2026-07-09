@@ -68,8 +68,10 @@ litellm = ["litellm>=1.84.0,<1.92"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.9.0"]
 # The CUDA 12 runtime the bundled llama-server links, from NVIDIA's official PyPI
-# wheels. Markers keep it a no-op off Linux x86_64 (no wheel exists elsewhere);
-# fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH.
+# wheels; fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH.
+# Linux x86_64 only: macOS and aarch64 have no CUDA build to feed, and the Windows
+# engine wheel ships the toolkit's redistributable DLLs beside llama-server.exe
+# (build_llama_server.sh), which is where Windows looks for a process's imports.
 cuda12 = [
     "nvidia-cuda-runtime-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
     "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
