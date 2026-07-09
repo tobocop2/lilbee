@@ -67,7 +67,7 @@ def test_opencode_config_prints_provider_with_real_port_and_token():
     assert options["apiKey"] == "test-token-abc"
     assert set(payload["provider"]["lilbee"]["models"].keys()) == {_CHAT_REF_A}
     # opencode picker shows a cleaned label rather than the full /-/-/.gguf ref.
-    assert payload["provider"]["lilbee"]["models"][_CHAT_REF_A] == {"name": "Qwen3-0.6B Q4_K_M"}
+    assert payload["provider"]["lilbee"]["models"][_CHAT_REF_A] == {"name": "Qwen3 0.6B"}
     mcp_block = payload["mcp"]["lilbee"]
     assert mcp_block["type"] == "remote"
     assert mcp_block["url"] == "http://127.0.0.1:8765/mcp"
