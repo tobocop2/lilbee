@@ -23,10 +23,18 @@ from rich.progress import (
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config
+from lilbee.data.ingest.adaptive import (
+    AdaptiveController,
+    ResizableGate,
+    enumerate_fleet_devices,
+    make_signal_sampler,
+    profile_for,
+    resolve_mode,
+)
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
-from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.ingest.offload import max_workers, to_ingest_thread
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
@@ -370,6 +378,25 @@ def _force_rebuild_store(store: Any) -> None:
         store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
 
 
+def _reconcile_missing(
+    disk_files: dict[str, Path],
+    sources: list[SourceRecord],
+    failed: Iterable[str],
+    skipped: Iterable[str],
+) -> list[str]:
+    """On-disk document files absent from the store and not reported failed/skipped.
+
+    A file discovery found and classified that ended up in neither the sources table
+    nor the run's failed/skipped lists was dropped with no signal -- the silent
+    data-loss case (a scanned PDF that never made it into the index yet reported no
+    error). Everything legitimately not indexed is excluded: a failed extraction is in
+    ``failed``, a zero-text file is in ``skipped``, and an unsupported type was never
+    returned by discovery in the first place.
+    """
+    accounted = {s["filename"] for s in sources} | set(failed) | set(skipped)
+    return sorted(name for name in disk_files if name not in accounted)
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -465,6 +492,18 @@ async def sync(
 
         await incremental_update(set(added) | set(updated) | set(removed))
 
+    # Reconciliation guard against silent data loss: any on-disk document file that
+    # ended up in neither the index nor the failed/skipped lists was dropped without
+    # a signal. Surface it loudly instead of letting a whole dataset vanish quietly.
+    missing = _reconcile_missing(disk_files, _store.get_sources(), failed, skipped)
+    if missing:
+        log.warning(
+            "Sync reconciliation: %d document file(s) on disk are absent from the index "
+            "with no failure reported (possible silent drop): %s",
+            len(missing),
+            ", ".join(missing[:20]),
+        )
+
     result = SyncResult(
         added=list(added),
         updated=list(updated),
@@ -517,6 +556,37 @@ def _phase_progress_callback(
 _TASK_WINDOW_MULTIPLIER = 2
 
 
+def _build_admission(
+    baseline: int, pages_done: list[int]
+) -> tuple[asyncio.Semaphore | ResizableGate, int, asyncio.Task[None] | None]:
+    """The batch's admission control, plus its task-window size and controller task.
+
+    Static mode (the default) returns a fixed semaphore and no controller. Adaptive
+    mode, when a GPU fleet is present to feed, returns a resizable gate and a running
+    :class:`AdaptiveController` that tunes it toward this box's throughput knee; with
+    no fleet it falls back to the static path so a GPU-less host is never affected.
+    """
+    profile = profile_for(resolve_mode())
+    devices = enumerate_fleet_devices() if profile is not None else []
+    if profile is None or not devices:
+        return asyncio.Semaphore(baseline), baseline * _TASK_WINDOW_MULTIPLIER, None
+    permit_max = max_workers()
+    gate = ResizableGate(min(baseline, permit_max))
+    controller = AdaptiveController(
+        gate,
+        profile,
+        make_signal_sampler(devices),
+        lambda: pages_done[0],
+        permit_min=1,
+        permit_max=permit_max,
+    )
+    task = asyncio.ensure_future(controller.run())
+    log.info(
+        "Adaptive ingest concurrency (%s): start %d, max %d", profile.name, gate.limit, permit_max
+    )
+    return gate, permit_max * _TASK_WINDOW_MULTIPLIER, task
+
+
 async def ingest_batch(
     files_to_process: list[FileToProcess],
     added: dict[str, None],
@@ -535,13 +605,16 @@ async def ingest_batch(
     ingesting new ones so the two operations are atomic per file.
     When *cancel* is set, pending files raise CancelledError before starting.
     """
-    semaphore = asyncio.Semaphore(_max_concurrent())
-    window = _max_concurrent() * _TASK_WINDOW_MULTIPLIER
+    # Throughput is measured in OCR pages, not documents: a document's cost scales
+    # with its page count (a 500-page scan is 500x a memo), so pages are the unbiased
+    # unit of GPU-feeding work for the adaptive controller to hill-climb on.
+    pages_done = [0]
+    admission, window, controller_task = _build_admission(_max_concurrent(), pages_done)
     total_files = len(files_to_process)
 
     async def _process_one(entry: FileToProcess, file_index: int) -> _IngestResult:
         name = entry.name
-        async with semaphore:
+        async with admission:
             if cancel and cancel.is_set():
                 raise asyncio.CancelledError
 
@@ -572,6 +645,7 @@ async def ingest_batch(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="ok", chunks=len(records)),
                 )
+                pages_done[0] += max(1, len(page_texts))  # OCR pages cleared: the throughput signal
                 return _IngestResult(
                     name,
                     entry.path,
@@ -607,38 +681,12 @@ async def ingest_batch(
                         EventType.FILE_DONE,
                         FileDoneEvent(file=name, status="error", chunks=0),
                     )
+                pages_done[0] += 1  # cleared the gate (as a failure); still a throughput tick
                 return _IngestResult(name, entry.path, 0, error=exc)
 
     pending = (_process_one(entry, idx) for idx, entry in enumerate(files_to_process, 1))
-    if quiet:
-        await _collect_results(
-            pending,
-            total_files,
-            added,
-            updated,
-            failed,
-            skipped,
-            window=window,
-            on_progress=on_progress,
-            flush_failed=flush_failed,
-            reasons=reasons,
-        )
-    else:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            transient=True,
-        ) as progress:
-            ptask = progress.add_task("Ingesting documents...", total=total_files)
-            # The bar advances once per file (in _collect_results), so a single
-            # multi-page scanned PDF would freeze at "0/1" through its whole
-            # OCR + embed phase. Drive the spinner's description off the same
-            # EXTRACT (OCR page i/N) and EMBED (chunk i/N) events the TUI uses
-            # so the row visibly moves while one file is being worked.
-            phase_progress = _phase_progress_callback(progress, ptask, on_progress)
+    try:
+        if quiet:
             await _collect_results(
                 pending,
                 total_files,
@@ -647,12 +695,47 @@ async def ingest_batch(
                 failed,
                 skipped,
                 window=window,
-                on_progress=phase_progress,
-                progress=progress,
-                ptask=ptask,
+                on_progress=on_progress,
                 flush_failed=flush_failed,
                 reasons=reasons,
             )
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                transient=True,
+            ) as progress:
+                ptask = progress.add_task("Ingesting documents...", total=total_files)
+                # The bar advances once per file (in _collect_results), so a single
+                # multi-page scanned PDF would freeze at "0/1" through its whole
+                # OCR + embed phase. Drive the spinner's description off the same
+                # EXTRACT (OCR page i/N) and EMBED (chunk i/N) events the TUI uses
+                # so the row visibly moves while one file is being worked.
+                phase_progress = _phase_progress_callback(progress, ptask, on_progress)
+                await _collect_results(
+                    pending,
+                    total_files,
+                    added,
+                    updated,
+                    failed,
+                    skipped,
+                    window=window,
+                    on_progress=phase_progress,
+                    progress=progress,
+                    ptask=ptask,
+                    flush_failed=flush_failed,
+                    reasons=reasons,
+                )
+    finally:
+        # Stop the adaptive controller (if any) before returning: its background
+        # loop must not outlive the batch it was tuning.
+        if controller_task is not None:
+            controller_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await controller_task
 
 
 # Accumulate roughly this many chunks across documents before one batched
