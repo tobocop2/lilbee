@@ -83,6 +83,17 @@ def display_label_for_ref(ref: str) -> str:
     return ref
 
 
+def agent_model_id(ref: str) -> str:
+    """A clean, routable model id for agent configs, e.g. ``Qwen3-235B-A22B``.
+
+    The display label with spaces folded to hyphens so it is a single token an
+    agent can pin and send back as the ``model`` field. ``known_models.resolve``
+    maps it back to the ref when it is unambiguous, so the agent shows and routes
+    this id instead of the full GGUF path.
+    """
+    return display_label_for_ref(ref).replace(" ", "-")
+
+
 def extract_quant(filename: str) -> str:
     """Extract the GGUF quantization label (e.g. ``Q4_K_M``) from a filename."""
     m = re.search(r"(Q\d[A-Z0-9_]*)", filename, re.IGNORECASE)

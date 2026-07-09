@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lilbee.catalog import agent_model_id
 from lilbee.cli.agent_configs.merge import LILBEE_PROVIDER_KEY
 
 _V1_SUFFIX = "/v1"
@@ -32,13 +33,17 @@ def hermes_config(
     ``${LILBEE_TOKEN}`` reference for the launcher (hermes expands it from the env
     at load, so the on-disk file never holds the literal token)."""
     pin = default_ref or (model_refs[0] if model_refs else None)
+    # hermes shows the model id it is pinned to and has no separate display field,
+    # so pin the clean agent id (e.g. "Qwen3-235B-A22B") instead of the full GGUF
+    # path. lilbee's /v1 resolves it back to the ref, so routing is unchanged.
+    pin_id = agent_model_id(pin) if pin is not None else None
     provider: dict[str, Any] = {
         "api": f"{base_url}{_V1_SUFFIX}",
         "api_key": api_key,
         "max_tokens": _MAX_OUTPUT_TOKENS,
     }
-    if pin is not None:
-        provider["default_model"] = pin
+    if pin_id is not None:
+        provider["default_model"] = pin_id
     if chat_ctx is not None:
         provider["context_length"] = chat_ctx
     config: dict[str, Any] = {"providers": {LILBEE_PROVIDER_KEY: provider}}
@@ -57,14 +62,14 @@ def hermes_config(
                 "headers": {"Authorization": f"Bearer {api_key}"},
             }
         }
-    if pin is not None:
+    if pin_id is not None:
         # Dict form binds the active model to the lilbee provider explicitly, so the
         # pin is unambiguous even when another provider could serve the same ref.
         # `model.max_tokens` is hermes's documented winning output cap: without it
         # hermes requests the full window as output, so input+output overflows and
         # it misreads the error as "prompt too long" and compresses to nothing.
         config["model"] = {
-            "default": pin,
+            "default": pin_id,
             "provider": LILBEE_PROVIDER_KEY,
             "max_tokens": _MAX_OUTPUT_TOKENS,
         }

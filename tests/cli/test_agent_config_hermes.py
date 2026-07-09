@@ -34,9 +34,11 @@ def test_provider_block_shape():
     assert prov["api"] == "http://127.0.0.1:8080/v1"
     assert prov["api_key"] == "${LILBEE_TOKEN}"
     assert prov["max_tokens"] == 8192  # output cap so input fits the window
-    assert prov["default_model"] == _REF
+    # hermes shows the pinned id, so pin the clean agent id; lilbee's /v1 resolves
+    # it back to the full ref for routing.
+    assert prov["default_model"] == "Qwen3-0.6B"
     assert prov["context_length"] == 8192
-    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee", "max_tokens": 8192}
+    assert cfg_frag["model"] == {"default": "Qwen3-0.6B", "provider": "lilbee", "max_tokens": 8192}
 
 
 def test_context_file_max_chars_sized_to_window():
@@ -94,8 +96,19 @@ def test_literal_api_key_inline_for_paste():
 
 def test_default_falls_back_to_first_model_ref():
     cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF])
-    assert cfg_frag["model"] == {"default": _REF, "provider": "lilbee", "max_tokens": 8192}
-    assert cfg_frag["providers"]["lilbee"]["default_model"] == _REF
+    assert cfg_frag["model"] == {"default": "Qwen3-0.6B", "provider": "lilbee", "max_tokens": 8192}
+    assert cfg_frag["providers"]["lilbee"]["default_model"] == "Qwen3-0.6B"
+
+
+def test_pins_clean_agent_id_for_subdir_quant_giant():
+    """A four-segment subdir-quant giant ref pins the clean id, not the GGUF path."""
+    giant = (
+        "unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/"
+        "Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf"
+    )
+    cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[giant])
+    assert cfg_frag["providers"]["lilbee"]["default_model"] == "Qwen3-235B-A22B"
+    assert cfg_frag["model"]["default"] == "Qwen3-235B-A22B"
 
 
 @pytest.fixture(autouse=True)
