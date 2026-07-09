@@ -8,10 +8,13 @@ import threading
 from collections.abc import Iterator
 from unittest import mock
 
+import psutil
 import pytest
 
 from lilbee.parent_monitor import (
     PARENT_PID_ENV,
+    _parent_start_time,
+    _same_process,
     parse_parent_pid,
     watch_parent_async,
     watch_parent_thread,
@@ -63,6 +66,53 @@ class TestParseParentPid:
             os.environ.pop(PARENT_PID_ENV, None)
 
 
+class TestParentIdentity:
+    def test_start_time_returns_create_time(self):
+        proc = mock.MagicMock()
+        proc.create_time.return_value = 100.0
+        with mock.patch("lilbee.parent_monitor.psutil.Process", return_value=proc):
+            assert _parent_start_time(123) == 100.0
+
+    def test_start_time_none_when_process_gone(self):
+        with mock.patch(
+            "lilbee.parent_monitor.psutil.Process", side_effect=psutil.NoSuchProcess(123)
+        ):
+            assert _parent_start_time(123) is None
+
+    def test_start_time_none_when_access_denied(self):
+        with mock.patch(
+            "lilbee.parent_monitor.psutil.Process", side_effect=psutil.AccessDenied(123)
+        ):
+            assert _parent_start_time(123) is None
+
+    def test_same_process_true_when_identity_unknown(self):
+        assert _same_process(123, None) is True
+
+    def test_same_process_true_when_create_time_matches(self):
+        proc = mock.MagicMock()
+        proc.create_time.return_value = 100.0
+        with mock.patch("lilbee.parent_monitor.psutil.Process", return_value=proc):
+            assert _same_process(123, 100.0) is True
+
+    def test_same_process_false_when_pid_recycled(self):
+        proc = mock.MagicMock()
+        proc.create_time.return_value = 200.0
+        with mock.patch("lilbee.parent_monitor.psutil.Process", return_value=proc):
+            assert _same_process(123, 100.0) is False
+
+    def test_same_process_false_when_process_vanished(self):
+        with mock.patch(
+            "lilbee.parent_monitor.psutil.Process", side_effect=psutil.NoSuchProcess(123)
+        ):
+            assert _same_process(123, 100.0) is False
+
+    def test_same_process_false_when_access_denied(self):
+        with mock.patch(
+            "lilbee.parent_monitor.psutil.Process", side_effect=psutil.AccessDenied(123)
+        ):
+            assert _same_process(123, 100.0) is False
+
+
 class TestWatchParentAsync:
     async def test_invokes_callback_when_pid_disappears(self):
         events = [True, True, False]
@@ -90,6 +140,18 @@ class TestWatchParentAsync:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+    async def test_fires_when_pid_is_recycled(self):
+        # PID stays alive, but create-time changes: a different process took it.
+        proc = mock.MagicMock()
+        proc.create_time.side_effect = [100.0, 100.0, 200.0]
+        called: list[bool] = []
+        with (
+            mock.patch("lilbee.parent_monitor.psutil.pid_exists", return_value=True),
+            mock.patch("lilbee.parent_monitor.psutil.Process", return_value=proc),
+        ):
+            await watch_parent_async(123, lambda: called.append(True), poll_interval_secs=0)
+        assert called == [True]
 
 
 class TestWatchParentThread:
