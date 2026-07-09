@@ -28,13 +28,16 @@ _MAX_WORKERS_ENV = "LILBEE_INGEST_MAX_WORKERS"
 def _max_workers() -> int:
     """Concurrent slots for ingest offload work; honors ``LILBEE_INGEST_MAX_WORKERS``.
 
-    Extraction rasterizes PDFs and drives OCR on this pool, so its width caps how
-    many documents feed the GPU OCR/embed slots at once. The old fixed ``32``
-    ceiling left most cores idle on a many-vCPU box and pinned full-corpus
-    throughput below the vision fleet's capacity, so the default now scales with
-    the vCPU count (``os.cpu_count() + 4``, the ``+4`` headroom for threads
-    parked on OCR/embed I/O). The override accepts a positive integer; non-positive
-    or unparseable values fall back to the default and a warning is logged.
+    Extraction rasterizes PDFs and drives OCR on this pool. The default caps at
+    ``min(32, cpu_count + 4)``: a worker-count sweep on forced-OCR multi-page PDFs
+    (4x H100) held throughput flat from 16 to 32 workers and *declining* past it,
+    with the GPUs already ~85-90% busy the whole time. OCR ingest is GPU-bound, not
+    extraction-bound, so extra threads only rasterize ahead into a buffer the GPUs
+    cannot drain any faster while oversubscribing the box. The ``+4`` keeps headroom
+    for threads parked on OCR/embed I/O; small hosts scale below the cap. The
+    override lifts the ceiling for genuinely CPU-bound work (e.g. bulk text
+    extraction) that can use more threads; non-positive or unparseable values warn
+    and fall back to the default.
     """
     override = os.environ.get(_MAX_WORKERS_ENV)
     if override is not None:
@@ -49,7 +52,7 @@ def _max_workers() -> int:
             _MAX_WORKERS_ENV,
             override,
         )
-    return (os.cpu_count() or 4) + 4
+    return min(32, (os.cpu_count() or 4) + 4)
 
 
 def max_workers() -> int:
