@@ -65,9 +65,10 @@ def test_opencode_config_prints_provider_with_real_port_and_token():
     options = payload["provider"]["lilbee"]["options"]
     assert options["baseURL"] == "http://127.0.0.1:8765/v1"
     assert options["apiKey"] == "test-token-abc"
-    assert set(payload["provider"]["lilbee"]["models"].keys()) == {_CHAT_REF_A}
-    # opencode picker shows a cleaned label rather than the full /-/-/.gguf ref.
-    assert payload["provider"]["lilbee"]["models"][_CHAT_REF_A] == {"name": "Qwen3 0.6B"}
+    # Keyed and routed by the clean agent id (not the full ref); lilbee's /v1
+    # resolves it back, so no surface leaks the shard path.
+    assert set(payload["provider"]["lilbee"]["models"].keys()) == {"Qwen3-0.6B"}
+    assert payload["provider"]["lilbee"]["models"]["Qwen3-0.6B"] == {"name": "Qwen3 0.6B"}
     mcp_block = payload["mcp"]["lilbee"]
     assert mcp_block["type"] == "remote"
     assert mcp_block["url"] == "http://127.0.0.1:8765/mcp"
@@ -89,8 +90,9 @@ def test_opencode_config_lists_all_chat_models_sorted():
 
     assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
+    # Keys are the clean agent ids, in the same (ref-sorted) order the entries emit.
     model_keys = list(payload["provider"]["lilbee"]["models"].keys())
-    assert model_keys == sorted([_CHAT_REF_A, _CHAT_REF_B])
+    assert model_keys == ["Qwen3-0.6B", "SmolLM-135M"]
 
 
 def test_opencode_config_without_running_server_exits_1():
