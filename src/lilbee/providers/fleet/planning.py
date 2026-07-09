@@ -1048,6 +1048,7 @@ class ResolvedPlacement:
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
     model_refs: dict[WorkerRole, str]
+    co_tenants: frozenset[WorkerRole] = frozenset()
     # Roles configured but skipped because their model isn't installed (role -> ref).
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
@@ -1075,6 +1076,7 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         instances=resolved.instances,
         unplaceable_roles=resolved.unplaceable_roles,
         model_refs=model_refs,
+        co_tenants=resolved.co_tenants,
         skipped_not_installed=skipped_not_installed,
     )
 
