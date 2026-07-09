@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
-# One llama-swap per role group: the group name lands in the config filename so
+# One llama-swap per swap group: the group name lands in the config filename so
 # each group's processes are identified (and stopped) by their own config path,
 # and a placement change can restart one group without touching the others.
 _CONFIG_FILENAME_TEMPLATE = "llama-swap-{group}.json"

@@ -309,7 +309,9 @@ flowchart LR
   weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
   ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
   of the budget and 503-ing every search.
-- **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
+- **Placement** (`placement.py`): bin-packed in `placement_rank` order (search roles,
+  then vision, then the elastic chat model), largest-first within a rank, with 90%
+  headroom.
   A model that fits one GPU is a single pinned instance; small models co-locate; a
   model too big for one GPU is tensor-split across enough cards that each card's
   per-device footprint fits, charged against each card's total VRAM capacity (so a
@@ -481,7 +483,7 @@ touching the running fleet.
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per role group
+  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
   member servers' ports, plus the owner's pid and create time; before the next build
