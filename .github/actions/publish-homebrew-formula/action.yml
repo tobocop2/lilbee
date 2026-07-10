@@ -30,6 +30,20 @@ runs:
         git config --global user.name "lilbee-bot"
         git config --global user.email "lilbee-bot@users.noreply.github.com"
         git clone "https://x-access-token:${TAP_TOKEN}@github.com/tobocop2/homebrew-lilbee.git" /tmp/tap
+        # render_formula.py rewrites a formula in place, so a channel whose formula was
+        # never created in the tap can never publish its first release: lilbee-compat
+        # failed this way on every run. Seed it from the copy this repo keeps, which is
+        # also where the formula stays reviewable.
+        if [ ! -f "/tmp/tap/${FORMULA_PATH}" ]; then
+          seed="packaging/homebrew/$(basename "${FORMULA_PATH}")"
+          [ -f "${seed}" ] || {
+            echo "${FORMULA_PATH} is not in the tap and there is no seed at ${seed}" >&2
+            exit 1
+          }
+          mkdir -p "$(dirname "/tmp/tap/${FORMULA_PATH}")"
+          cp "${seed}" "/tmp/tap/${FORMULA_PATH}"
+          echo "seeded ${FORMULA_PATH} from ${seed}"
+        fi
         # shellcheck disable=SC2086
         python3 packaging/tools/render_formula.py "/tmp/tap/${FORMULA_PATH}" ${RENDER_ARGS}
         cd /tmp/tap
