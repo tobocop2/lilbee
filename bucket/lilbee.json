@@ -1,5 +1,5 @@
 {
-    "version": "0.6.90b420.dev711",
+    "version": "0.6.90b420.dev712",
     "description": "Run and manage local AI models, then search your files, code, and crawled web pages, with answers that cite the source. One program, no server to run.",
     "homepage": "https://lilbee.sh/",
     "license": {
@@ -8,8 +8,8 @@
     },
     "architecture": {
         "64bit": {
-            "url": "https://github.com/tobocop2/lilbee/releases/download/v0.6.90b420.dev711/lilbee-windows-x86_64.exe#/lilbee.exe",
-            "hash": "e23ad0a5b7c6ffb4ce7b6a85d183b307602507757a5b5e9920988a4d29056198"
+            "url": "https://github.com/tobocop2/lilbee/releases/download/v0.6.90b420.dev712/lilbee-windows-x86_64.exe#/lilbee.exe",
+            "hash": "0c9e10e4e64fe9c7f5be8fc43613cbc11170982e7680766a6b8ee801fdf8b198"
         }
     },
     "bin": "lilbee.exe",
@@ -25,7 +25,7 @@
         "    }",
         "}",
         "if ($useCuda) {",
-        "    $cudaHash = '223b478fe5b7717b35399788e891c399aa4320f4f39565a5b02017a17b52798a'",
+        "    $cudaHash = '69516475c8d36816d3da6e446b8c47bf51c9853ed5760dd7eb96e01c266e3eeb'",
         "    $url = \"https://github.com/tobocop2/lilbee/releases/download/v$version/lilbee-windows-x86_64-cu125.exe\"",
         "    $exe = Join-Path $dir 'lilbee.exe'",
         "    Write-Host 'lilbee: NVIDIA CUDA 12.5+ detected, installing the cu125 build'",
