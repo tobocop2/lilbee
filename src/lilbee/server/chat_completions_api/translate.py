@@ -50,6 +50,7 @@ from lilbee.server.chat_dispatch.canonical import (
     ToolUseBlock,
     ToolUseDelta,
 )
+from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
 from lilbee.server.chat_dispatch.tool_args import parse_tool_arguments
 
 _TOOL_CHOICE_MODES: dict[ToolChoiceMode, Literal["auto", "any", "none"]] = {
@@ -103,8 +104,10 @@ def canonical_to_completions_response(
     """Translate a canonical chat response to the OpenAI ``chat.completion`` model."""
     text_parts = [b.text for b in resp.content if isinstance(b, TextBlock)]
     tool_calls = [_response_tool_call(b) for b in resp.content if isinstance(b, ToolUseBlock)]
-    joined = "".join(text_parts)
-    content: str | None = joined if joined or not tool_calls else None
+    # lilbee carries a reasoning model's thinking inline as <think>...</think>; the
+    # OpenAI surface reports it in its own field so agents render a clean answer.
+    reasoning, answer = split_reasoning("".join(text_parts))
+    content: str | None = answer if answer or not tool_calls else None
 
     total = resp.usage.input_tokens + resp.usage.output_tokens
     return CompletionsResponse(
@@ -116,6 +119,7 @@ def canonical_to_completions_response(
                 index=0,
                 message=CompletionsResponseMessage(
                     content=content,
+                    reasoning_content=reasoning or None,
                     tool_calls=tool_calls or None,
                 ),
                 finish_reason=_STOP_REASON_TO_FINISH[resp.stop_reason],
@@ -136,6 +140,9 @@ class _StreamMapper:
         self._role_emitted = False
         self._tool_index_for_block: dict[int, int] = {}
         self._next_tool_index = 0
+        # Splits lilbee's inline <think> text into its own delta field. Stateful
+        # because a tag can arrive split across deltas.
+        self._reasoning = TagParser(show=True)
 
     def block_start(self, event: ContentBlockStart) -> CompletionsStreamDelta | None:
         # The first delta must carry role:assistant for OpenAI-SDK accumulation,
@@ -158,13 +165,29 @@ class _StreamMapper:
 
     def block_delta(self, event: ContentBlockDelta) -> CompletionsStreamDelta | None:
         if isinstance(event.delta, TextDelta):
-            return CompletionsStreamDelta(content=event.delta.text)
+            return self._text_delta(self._reasoning.feed(event.delta.text))
         if isinstance(event.delta, ToolUseDelta):
             tool_index = self._tool_index_for_block[event.index]
             return CompletionsStreamDelta(
                 tool_calls=[_tool_call_args(tool_index, event.delta.partial_json)],
             )
         return None
+
+    def block_stop(self) -> CompletionsStreamDelta | None:
+        """Emit whatever the reasoning splitter still holds (a partial or unclosed tag)."""
+        remaining = self._reasoning.flush()
+        return self._text_delta([remaining] if remaining else [])
+
+    def _text_delta(self, tokens: list[StreamToken]) -> CompletionsStreamDelta | None:
+        """One delta carrying the reasoning and answer text split out of *tokens*."""
+        reasoning = "".join(t.content for t in tokens if t.is_reasoning)
+        answer = "".join(t.content for t in tokens if not t.is_reasoning)
+        if not reasoning and not answer:
+            return None
+        return CompletionsStreamDelta(
+            content=answer or None,
+            reasoning_content=reasoning or None,
+        )
 
 
 def _tool_call_open(index: int, call_id: str, name: str) -> CompletionsStreamToolCall:
@@ -224,12 +247,17 @@ async def canonical_stream_to_completions_chunks(
                 # hang because the provider streamed no usage frame.
                 usage = event.usage or CanonicalUsage(input_tokens=0, output_tokens=0)
                 yield _usage_chunk(model, response_id, usage)
-        elif isinstance(event, MessageStart | ContentBlockStop | MessageStop):
+        elif isinstance(event, ContentBlockStop):
+            # Closing a text block flushes any text the reasoning splitter still
+            # buffers (an unclosed <think>, or a tag that never completed).
+            delta = mapper.block_stop()
+            if delta is not None:
+                yield _chunk(model, response_id, delta)
+        elif isinstance(event, MessageStart | MessageStop):
             # OpenAI's wire format has no equivalent for these canonical events:
             # MessageStart carries metadata we already encoded in the chunk header,
-            # ContentBlockStop is implicit (the next block opens), and MessageStop
-            # is replaced by the final chunk's finish_reason. Explicit branch so
-            # a new event type added later forces a translation decision.
+            # and MessageStop is replaced by the final chunk's finish_reason.
+            # Explicit branch so a new event type added later forces a decision.
             continue
 
 
