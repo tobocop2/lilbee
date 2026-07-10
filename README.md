@@ -92,6 +92,39 @@ Defaults are sane for chatting with code, documentation, crawled sites, and long
 
 CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless runs, and custom integrations. See the [usage guide](docs/usage.md).
 
+## Startup and the engine lifecycle
+
+The first thing you should know before launching lilbee: the engine is a real
+llama.cpp server that loads your model into memory, and by default it lives and
+dies with lilbee. Launch starts it, quit frees everything. That on-demand default
+is deliberate, no VRAM or RAM is held while lilbee is closed, but it means every
+launch pays the engine load before chat opens. You will watch a progress bar, not
+a frozen screen, and chat stays out of reach until the model can actually answer.
+
+Measured on real builds with a small chat model (Qwen3 0.6B):
+
+| Launch | Apple Silicon Mac | Linux + CUDA |
+|---|---|---|
+| Very first run (one-time unpack + engine load) | ~22s | ~33s |
+| Later launches (engine load only) | ~15s | ~20s |
+| `lilbee --version` and other quick commands | ~1s | ~2s |
+
+Bigger models load longer; the bar shows real progress while weights are read.
+
+If you relaunch lilbee often, opt into a persistent engine in Settings:
+
+- **Keep engine warm** leaves the engine running when you quit, and the next
+  launch connects to it in about two seconds instead of reloading the model.
+- **Engine idle ttl minutes** bounds how long idle weights stay in memory. `0`
+  keeps them loaded until you turn the setting off; any other value frees the
+  memory after that many idle minutes (a small proxy process stays behind, a few
+  tens of MB and no VRAM).
+
+Turning the setting off returns to the on-demand default and stops the engine at
+the next opportunity. Both knobs live in the TUI Settings screen, `lilbee set`,
+MCP `lilbee_settings_set`, the HTTP config API, and `config.toml`. The first
+launch after a reboot is always a cold one.
+
 ## Highlights
 
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.

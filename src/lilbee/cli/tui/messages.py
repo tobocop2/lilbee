@@ -129,6 +129,8 @@ STARTUP_READING_WEIGHTS = "Reading {name} weights"
 STARTUP_LOADING_ENGINE = "Loading engine"
 STARTUP_FAILED = "The chat model failed to load: {error}"
 STARTUP_FAILED_HINT = "Open Catalog or Settings to pick a different model."
+# Shown while a cold engine load runs and keep_engine_warm is off.
+STARTUP_WARM_TIP = "Tip: Settings > Keep engine warm makes the next launch fast"
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"

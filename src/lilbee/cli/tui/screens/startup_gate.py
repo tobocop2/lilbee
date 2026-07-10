@@ -45,6 +45,10 @@ class StartupGate(Screen[None]):
             yield Static(_LOGO, id="gate-logo")
             yield ProgressBar(total=None, show_eta=False, show_percentage=False, id="gate-bar")
             yield Static(msg.STARTUP_PREPARING, id="gate-status")
+            yield Static(
+                msg.STARTUP_WARM_TIP if not cfg.keep_engine_warm else "",
+                id="gate-tip",
+            )
 
     def start_boot(self) -> None:
         """Reveal chat at once when a prompt can already be served, else warm off-thread.

@@ -45,3 +45,9 @@ StartupGate {
     margin: 1 0 0 0;
     color: $text-muted;
 }
+
+#gate-tip {
+    width: auto;
+    margin: 1 0 0 0;
+    color: #875f00;
+}

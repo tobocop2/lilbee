@@ -546,3 +546,35 @@ async def test_ready_fleet_defers_the_handover_off_on_mount(monkeypatch):
 
     assert released == [], "the handover must not run inside on_mount"
     assert deferred == [gate._release]
+
+
+async def test_gate_tip_points_at_the_warm_setting_only_when_off(monkeypatch):
+    """The tip renders during a cold load and disappears once warm is enabled."""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+
+    class _Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Static("host")
+
+        def on_mount(self) -> None:
+            self.push_screen(StartupGate())
+
+    monkeypatch.setattr(cfg, "keep_engine_warm", False)
+    app = _Host()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        tip = app.screen.query_one("#gate-tip", Static)
+        assert msg.STARTUP_WARM_TIP in str(tip.render())
+
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    app = _Host()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        tip = app.screen.query_one("#gate-tip", Static)
+        assert msg.STARTUP_WARM_TIP not in str(tip.render())
