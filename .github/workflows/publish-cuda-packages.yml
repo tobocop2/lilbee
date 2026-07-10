@@ -155,6 +155,10 @@ jobs:
 
   flatpak:
     needs: resolve
+    # Serialized against the regular and compat flatpak jobs; see publish-packages.yml.
+    concurrency:
+      group: flatpak-lilbee-repo
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
