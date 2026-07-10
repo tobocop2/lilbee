@@ -998,6 +998,27 @@ class TestBuildFleetWiring:
         )
         assert reserved == {0: 3 * _GB}
 
+    def test_non_chat_reservation_charges_a_co_tenant_group_without_chat(self) -> None:
+        # A vision/rerank swap group that excludes chat runs behind its own process
+        # and can be resident beside a chat shard, so its members are charged (not
+        # treated as chat's to reclaim); only chat itself is excluded.
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            InstancePlan(role=WorkerRole.RERANK, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 2 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(
+            instances, inputs, frozenset({WorkerRole.VISION, WorkerRole.RERANK})
+        )
+        assert reserved == {0: (6 + 2 + 3) * _GB}
+
     def test_launch_for_pinned_multi_card_chat_runs_one_slot(self, tmp_path, monkeypatch) -> None:
         # A cfg.num_ctx pin skips the fit, but a multi-card chat still serves one slot
         # so --ctx-size matches the single-sequence footprint the planner reserved.
