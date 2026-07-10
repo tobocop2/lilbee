@@ -66,7 +66,7 @@ def _isolated_cfg(tmp_path):
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     cfg.chunk_size = 512
-    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # Simulate "already-initialized" state so needs_setup()
     # doesn't push the SetupWizard during tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
@@ -99,7 +99,7 @@ def _patch_chat_setup():
     from lilbee.cli.tui.widgets.model_bar import ModelBar
 
     with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -3457,10 +3457,16 @@ async def test_chat_vim_j_k_skips_in_insert_mode():
 
 
 async def test_chat_needs_setup_false_when_models_exist():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False):
-            assert not app.screen._needs_setup()
+    """Resolvable models must leave the chat screen up, with no setup wizard."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False):
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ChatScreen)
+            assert not isinstance(app.screen, SetupWizard)
 
 
 async def test_chat_refresh_model_bar():
@@ -6060,7 +6066,7 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
 
 
 async def test_chat_needs_setup_true_pushes_wizard():
-    """Verify _needs_setup=True pushes SetupWizard on mount."""
+    """Verify needs_setup() returning True pushes SetupWizard on mount."""
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -6074,7 +6080,7 @@ async def test_chat_needs_setup_true_pushes_wizard():
             self.push_screen(ChatScreen())
 
     app = SetupTestApp()
-    with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=True):
+    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=True):
         async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()
             assert isinstance(app.screen, SetupWizard)

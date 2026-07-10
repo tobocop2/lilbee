@@ -43,7 +43,7 @@ def _warming_services():
     services.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.READING_WEIGHTS)
     set_services(services)
     with (
-        mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        mock.patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
         mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True),
     ):
         yield services

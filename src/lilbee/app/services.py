@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import signal
+import sys
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -42,6 +44,9 @@ if TYPE_CHECKING:
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+
+_SIGNAL_EXIT_BASE = 128
 
 
 @dataclass
@@ -318,6 +323,49 @@ def reset_store() -> None:
         searcher=searcher,
     )
     old_store.close()
+
+
+class _EngineLifecycle:
+    """Owns the hard-exit hooks that stop the engine fleet."""
+
+    def __init__(self) -> None:
+        self._installed = False
+
+    @staticmethod
+    def _hard_exit_signals() -> tuple[signal.Signals, ...]:
+        """Signals whose default disposition kills us without running atexit."""
+        if sys.platform == "win32":  # pragma: no cover - Windows has no SIGHUP
+            return (signal.SIGTERM,)
+        return (signal.SIGTERM, signal.SIGHUP)
+
+    def install(self) -> None:
+        """Route hard-exit signals through teardown. Idempotent; no-op off the main thread."""
+        if self._installed:
+            return
+        try:
+            for sig in self._hard_exit_signals():
+                signal.signal(sig, self._on_hard_exit)
+        except ValueError:
+            return
+        self._installed = True
+
+    def reset(self) -> None:
+        """Forget that handlers were installed."""
+        self._installed = False
+
+    def _on_hard_exit(self, signum: int, frame: object) -> None:
+        """Stop the fleet, then exit with the conventional signal status."""
+        del frame
+        reset_services()
+        raise SystemExit(_SIGNAL_EXIT_BASE + signum)
+
+
+_lifecycle = _EngineLifecycle()
+
+
+def install_engine_lifecycle_hooks() -> None:
+    """Make a terminal close or ``kill`` stop the engine fleet instead of orphaning it."""
+    _lifecycle.install()
 
 
 atexit.register(reset_services)

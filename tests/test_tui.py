@@ -17,6 +17,14 @@ from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import ready_services as _ready_services
+
+
+@pytest.fixture(autouse=True)
+def _gate_releases_at_once():
+    """Bind a ready chat role so the startup gate hands over on mount."""
+    with _ready_services():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +43,7 @@ def _isolated_cfg(tmp_path):
 def _patch_chat_setup():
     """Patch out embedding model checks and model scanning so ChatScreen mounts cleanly."""
     with (
-        mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        mock.patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
         mock.patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,

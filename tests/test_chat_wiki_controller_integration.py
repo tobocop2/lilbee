@@ -17,6 +17,14 @@ from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+from tests._lilbee_app_test_host import await_chat, ready_services
+
+
+@pytest.fixture(autouse=True)
+def _gate_releases_at_once():
+    """Bind a ready chat role so the startup gate hands over on mount."""
+    with ready_services():
+        yield
 
 
 def _fake_model() -> CatalogModel:
@@ -82,14 +90,13 @@ async def test_queue_unsubscribe_removes_callback() -> None:
 @pytest.mark.asyncio
 async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
     """_do_add copies files, reports indeterminate progress, and runs sync."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
 
         reporter = MagicMock(spec=ProgressReporter)
@@ -130,14 +137,13 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
     """After overwrite-confirm ``_do_add`` must pass ``force=True`` through."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
 
         reporter = MagicMock(spec=ProgressReporter)
@@ -183,14 +189,13 @@ async def test_do_add_force_propagates_to_copy_files(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_do_add_passes_skipped_files_through_copy_result(tmp_path: Path) -> None:
     """_do_add observes copy_files' skipped list and keeps running."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
 
         reporter = MagicMock(spec=ProgressReporter)
@@ -554,12 +559,11 @@ def test_do_sync_translates_cancellation() -> None:
 @pytest.mark.asyncio
 async def test_cmd_add_missing_path_notifies(tmp_path: Path) -> None:
     """_cmd_add on a non-existent path shows an error."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
         notified: list[str] = []
         screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
@@ -570,14 +574,13 @@ async def test_cmd_add_missing_path_notifies(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_cmd_add_submits_task_to_controller(tmp_path: Path) -> None:
     """_cmd_add routes real work through TaskBarController.start_task."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
         with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
             screen._cmd_add(str(src))
@@ -589,7 +592,6 @@ async def test_cmd_add_submits_task_to_controller(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) -> None:
     """A duplicate in documents_dir opens ConfirmDialog; confirm spawns the task."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.core.config import cfg as _cfg
 
     # Seed a copy already in documents_dir so _cmd_add detects a duplicate.
@@ -602,7 +604,7 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
 
         captured_callbacks: list[object] = []
@@ -630,7 +632,6 @@ async def test_cmd_add_prompts_before_overwriting_existing_file(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_cmd_add_overwrite_rejected_keeps_existing_copy(tmp_path: Path) -> None:
     """When the user answers No to the overwrite dialog, no task is spawned."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.core.config import cfg as _cfg
 
     _cfg.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -642,7 +643,7 @@ async def test_cmd_add_overwrite_rejected_keeps_existing_copy(tmp_path: Path) ->
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
 
         captured_callbacks: list[object] = []
@@ -671,14 +672,13 @@ async def test_cmd_add_overwrite_rejected_keeps_existing_copy(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_cmd_add_rejects_when_sync_active(tmp_path: Path) -> None:
     """_cmd_add refuses when another sync is already running."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
         screen._sync_active = True
         notified: list[str] = []
@@ -696,12 +696,11 @@ async def test_start_crawl_submits_task_to_controller() -> None:
     ensure_chromium short-circuits and the subsequent start_task call
     lands with the CRAWL type.
     """
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
         with (
             patch(
@@ -718,12 +717,11 @@ async def test_start_crawl_submits_task_to_controller() -> None:
 @pytest.mark.asyncio
 async def test_run_sync_submits_task_to_controller() -> None:
     """_run_sync routes through TaskBarController.start_task with SYNC type."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
         with patch.object(app.task_bar, "start_task", return_value="tid") as mock_start:
             screen._run_sync()
@@ -734,12 +732,11 @@ async def test_run_sync_submits_task_to_controller() -> None:
 @pytest.mark.asyncio
 async def test_run_sync_rejects_when_already_active() -> None:
     """_run_sync refuses when another sync is already running."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
         screen._sync_active = True
         notified: list[str] = []
@@ -1043,12 +1040,11 @@ def test_do_add_raises_on_skipped(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_cmd_crawl_with_valid_url_routes_to_start_crawl() -> None:
     """/crawl with a valid URL (explicit https) triggers _start_crawl."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        screen = await await_chat(app, pilot)
         assert screen is not None
         with (
             patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),

@@ -38,7 +38,7 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # Simulate "already-initialized" state so needs_setup()
     # doesn't push the SetupWizard during tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
@@ -64,7 +64,7 @@ def _mock_services():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(

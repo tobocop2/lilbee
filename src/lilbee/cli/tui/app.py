@@ -174,6 +174,14 @@ class LilbeeApp(App[None]):
     async def on_mount(self) -> None:
         if self._test_skip_auto_init:
             return
+        # Paint the gate before any awaiting work so the terminal is never blank
+        # between the splash handing over and the first screen appearing.
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        gate = StartupGate()
+        # Awaited: the gate's boot worker treats an unmounted gate as "torn down",
+        # so it must be mounted before start_boot can hand over.
+        await self.push_screen(gate)
         await self._canonicalize_persisted_models()
         self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
@@ -189,7 +197,11 @@ class LilbeeApp(App[None]):
 
         chat = ChatScreen()
         self.install_screen(chat, name=_CHAT_SCREEN_NAME)
-        self.push_screen(_CHAT_SCREEN_NAME)
+        gate.start_boot()
+
+    def reveal_chat(self) -> None:
+        """Swap the startup gate for the chat screen once the engine has settled."""
+        self.switch_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
         # Cheap detection only: filesystem walk + hash compare. The user
@@ -239,7 +251,7 @@ class LilbeeApp(App[None]):
 
             if canon.original == canon.effective:
                 # Nothing to fall back to: keep the ref and let the chat screen's
-                # _needs_setup open the SetupWizard, which is the single voice for
+                # needs_setup open the SetupWizard, which is the single voice for
                 # "pick a model." A toast here just duplicates the wizard (on first
                 # launch the default refs aren't downloaded yet), so log the reason
                 # as a breadcrumb but don't surface it.

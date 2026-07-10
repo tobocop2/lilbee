@@ -311,7 +311,7 @@ async def test_normal_tab_focuses_drawer_and_enter_toggles(monkeypatch) -> None:
     try:
         cs = "lilbee.cli.tui.screens.chat.ChatScreen"
         with (
-            mock.patch(f"{cs}._needs_setup", return_value=False),
+            mock.patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
             mock.patch(f"{cs}._embedding_ready", return_value=True),
         ):
             app = LilbeeApp()

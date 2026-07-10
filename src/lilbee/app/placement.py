@@ -26,7 +26,7 @@ _PLACEMENT_KEY = "placement"
 _CHAT_READY_TIMEOUT_S = 1800.0
 _CHAT_READY_POLL_S = 0.5
 _CHAT_READY_GRACE_S = 3.0
-_ACTIVE_WARM_PHASES = frozenset(
+ACTIVE_WARM_PHASES = frozenset(
     {WarmPhase.STARTING, WarmPhase.READING_WEIGHTS, WarmPhase.LOADING_ENGINE}
 )
 
@@ -197,11 +197,24 @@ def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
         if provider.role_ready(WorkerRole.CHAT):
             return True
         snapshot = provider.warm_progress()
-        warm_in_flight = snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES
+        warm_in_flight = snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES
         if not warm_in_flight and time.monotonic() > grace_deadline:
             return False
         time.sleep(_CHAT_READY_POLL_S)
     return False
+
+
+def chat_engine_ready() -> bool:
+    """Whether a chat prompt can be served right now.
+
+    Positive readiness, not absence-of-warm: before the services container is
+    built nothing is loading yet and nothing can answer, which a warm snapshot
+    cannot distinguish from a finished load.
+    """
+    services = peek_services()
+    if services is None:
+        return False
+    return services.provider.role_ready(WorkerRole.CHAT)
 
 
 def active_chat_warm_progress() -> WarmProgress | None:
@@ -218,6 +231,6 @@ def active_chat_warm_progress() -> WarmProgress | None:
     if provider.role_ready(WorkerRole.CHAT):
         return None
     snapshot = provider.warm_progress()
-    if snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES:
+    if snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES:
         return snapshot
     return None

@@ -356,7 +356,7 @@ def test_protocol_defaults_for_drop_and_role_ready():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(

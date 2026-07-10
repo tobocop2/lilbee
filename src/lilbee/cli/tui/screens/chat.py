@@ -32,6 +32,7 @@ from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.settings_map import SETTINGS_MAP
+from lilbee.app.setup_state import needs_setup
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
@@ -65,7 +66,6 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
-from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
@@ -329,8 +329,8 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True, name="chat_setup_check", exit_on_error=False)
     def _setup_check_worker(self) -> None:
-        """Run ``_needs_setup`` off the UI thread; push the wizard if needed."""
-        if not self._needs_setup():
+        """Run ``needs_setup`` off the UI thread; push the wizard if needed."""
+        if not needs_setup():
             return
         call_from_thread(self, self._push_setup_wizard)
 
@@ -358,34 +358,6 @@ class ChatScreen(Screen[None]):
                 self._enter_insert_mode()
             else:
                 self._chat_log.focus()
-
-    def _needs_setup(self) -> bool:
-        """True when the setup wizard should run: fresh data dir or unresolved models.
-
-        Remote-prefixed refs (ollama/lm_studio/API) are validated against
-        current state instead of probed on disk: an ``ollama/`` ref whose
-        litellm extra is missing or whose server is down is unusable and
-        must route the user to setup, not be assumed live.
-        """
-        if not cfg.lancedb_dir.is_dir():
-            log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
-            return True
-        from lilbee.modelhub.model_manager import ValidationResult, validate_persisted_model
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.engine_params import resolve_model_path
-
-        for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
-            if parse_model_ref(model).is_remote:
-                if validate_persisted_model(model) != ValidationResult.OK:
-                    log.debug("_needs_setup: remote %s model %r not usable", label, model)
-                    return True
-                continue
-            try:
-                resolve_model_path(model)
-            except (ProviderError, KeyError, ValueError) as exc:
-                log.debug("_needs_setup: %s model %r unresolved: %s", label, model, exc)
-                return True
-        return False
 
     def _embedding_ready(self) -> bool:
         """Quick check if the embedding model resolves (no network calls)."""

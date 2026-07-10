@@ -1,4 +1,4 @@
-"""Standalone splash animation process: zero lilbee imports, stdlib only.
+"""Standalone splash animation process: stdlib plus the shared wordmark.
 
 Launched as a subprocess by ``splash.start()``. Reads a pipe fd from argv
 and animates until the pipe signals EOF (parent closed its write end, or
@@ -14,14 +14,23 @@ import signal
 import sys
 import time
 
+from lilbee.runtime.bee_logo import (
+    AMBER_BRIGHT_XTERM,
+    AMBER_DIM_XTERM,
+    AMBER_MID_XTERM,
+    BEE_LINES,
+    LOGO_WIDTH,
+    xterm_fg,
+)
+
 HIDE_CURSOR = "\033[?25l"
 SHOW_CURSOR = "\033[?25h"
 CLEAR_LINE = "\033[2K"
 MOVE_UP = "\033[A"
 
-AMBER_BRIGHT = "\033[38;5;214m"
-AMBER_MID = "\033[38;5;172m"
-AMBER_DIM = "\033[38;5;94m"
+AMBER_BRIGHT = xterm_fg(AMBER_BRIGHT_XTERM)
+AMBER_MID = xterm_fg(AMBER_MID_XTERM)
+AMBER_DIM = xterm_fg(AMBER_DIM_XTERM)
 RESET = "\033[0m"
 
 FRAME_INTERVAL = 0.15
@@ -34,23 +43,6 @@ _BAR_FALLOFF_LIGHT = 2
 
 # Subprocess entry point expects exactly ``python -m ... <pipe_fd>`` (script name + 1 arg).
 _EXPECTED_ARGV_LEN = 2
-
-BEE_LINES = [
-    "                                                       ",
-    "@@@       @@@  @@@       @@@@@@@   @@@@@@@@  @@@@@@@@  ",
-    "@@@       @@@  @@@       @@@@@@@@  @@@@@@@@  @@@@@@@@  ",
-    "@@@       @@@  @@@       @@!  @@@  @@!       @@!       ",
-    "@!       !@!  !@!       !@   @!@  !@!       !@!       ",
-    "@!!       !!@  @!!       @!@!@!@   @!!!:!    @!!!:!    ",
-    "!!!       !!!  !!!       !!!@!!!!  !!!!!:    !!!!!:    ",
-    "!!:       !!:  !!:       !!:  !!!  !!:       !!:       ",
-    " :!:      :!:   :!:      :!:  !:!  :!:       :!:       ",
-    " :: ::::   ::   :: ::::   :: ::::   :: ::::   :: ::::  ",
-    ": :: : :  :    : :: : :  :: : ::   : :: ::   : :: ::   ",
-    "                                                       ",
-]
-
-LOGO_WIDTH = len(BEE_LINES[1])
 
 COLOR_SEQUENCE = [AMBER_BRIGHT, AMBER_MID, AMBER_DIM, AMBER_MID]
 

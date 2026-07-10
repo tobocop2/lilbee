@@ -25,6 +25,14 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import ready_services as _ready_services
+
+
+@pytest.fixture(autouse=True)
+def _gate_releases_at_once():
+    """Bind a ready chat role so the startup gate hands over on mount."""
+    with _ready_services():
+        yield
 
 
 @pytest.fixture(autouse=True)

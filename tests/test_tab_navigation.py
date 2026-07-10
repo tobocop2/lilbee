@@ -64,7 +64,7 @@ def _mock_services() -> Any:
 def _patch_chat_setup() -> Any:
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(

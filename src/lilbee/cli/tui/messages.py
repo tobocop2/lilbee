@@ -123,6 +123,12 @@ MODEL_SWAP_FAILED = "Could not switch model: {error}"
 # Shown when the user tries to send a prompt while the new chat model is still loading.
 CHAT_MODEL_SWITCHING = "Still switching model. One moment, then send your prompt."
 FLEET_RELOADING = "Applying placement, reloading the fleet. One moment, then send your prompt."
+# Startup gate: shown from the moment the TUI paints until the chat engine answers.
+STARTUP_PREPARING = "Preparing lilbee"
+STARTUP_READING_WEIGHTS = "Reading {name} weights"
+STARTUP_LOADING_ENGINE = "Loading engine"
+STARTUP_FAILED = "The chat model failed to load: {error}"
+STARTUP_FAILED_HINT = "Open Catalog or Settings to pick a different model."
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"

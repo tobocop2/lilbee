@@ -1,0 +1,29 @@
+StartupGate {
+    align: center middle;
+}
+
+#gate-body {
+    width: auto;
+    height: auto;
+    align: center middle;
+}
+
+/* Bright amber, xterm-256 index 214 (AMBER_BRIGHT_XTERM in runtime/bee_logo.py).
+   The wordmark warms from the bootstrap's dim amber to this once the TUI owns
+   the screen. tests/test_startup_gate.py pins the two together. */
+#gate-logo {
+    width: auto;
+    color: #ffaf00;
+    text-style: bold;
+}
+
+#gate-bar {
+    width: 55;
+    margin: 1 0 0 0;
+}
+
+#gate-status {
+    width: auto;
+    margin: 1 0 0 0;
+    color: $text-muted;
+}

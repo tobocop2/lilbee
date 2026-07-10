@@ -622,7 +622,7 @@ class TestAppCanonicalizeFallbackNotice:
 
         This is the first-launch case: the default refs aren't downloaded
         yet and there's nothing to fall back to. The chat screen's
-        ``_needs_setup`` keys off the same unresolved state and opens the
+        ``needs_setup`` keys off the same unresolved state and opens the
         SetupWizard, which is the single voice for "pick a model." A toast
         here just duplicates the wizard (its text literally says "Opening
         setup"), so it's suppressed; the WARNING log stays as a breadcrumb.

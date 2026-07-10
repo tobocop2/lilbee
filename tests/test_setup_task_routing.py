@@ -8,6 +8,8 @@ the download to the app-level controller.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from unittest.mock import patch
 
 import pytest
@@ -57,15 +59,18 @@ class _PlainApp(LilbeeAppHost):
         self.push_screen(SetupWizard())
 
 
-# Generous ceiling: slow Windows CI runners need many pauses before the wizard's
-# model cards finish mounting; waiting for the screen alone races the cards.
-_WIZARD_WAIT_PAUSES = 60
+# Generous ceiling: the startup gate decides on a real thread before chat mounts and
+# pushes the wizard, and slow CI runners need time before its model cards exist.
+_WIZARD_WAIT_TIMEOUT_S = 20.0
+_WIZARD_POLL_S = 0.02
 
 
 async def _wait_for_wizard_cards(app: LilbeeApp, pilot) -> SetupWizard:
     """Wait until the SetupWizard is the active screen and its model cards exist."""
-    for _ in range(_WIZARD_WAIT_PAUSES):
+    deadline = time.monotonic() + _WIZARD_WAIT_TIMEOUT_S
+    while time.monotonic() < deadline:
         await pilot.pause()
+        await asyncio.sleep(_WIZARD_POLL_S)
         screen = app.screen
         if isinstance(screen, SetupWizard) and list(screen.query(ModelCard)):
             return screen

@@ -1,0 +1,195 @@
+--- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-09 21:37:40
++++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-09 21:37:40
+@@ -446,6 +446,137 @@
+ 
+ #if _NUITKA_ONEFILE_TEMP_BOOL
+ static bool payload_created = false;
++#endif
++
++// lilbee: cold-start feedback and a warm-start fast path.
++//
++// The onefile cache is keyed on {VERSION}, so a populated payload directory whose
++// stamp records this payload's size was written by this exact binary. Trusting it
++// skips the per-file CRC32 of the whole payload, which otherwise costs seconds of
++// pure CPU on every launch. Cold starts still verify normally.
++#if !defined(_WIN32) && !defined(__MSYS__)
++#include <unistd.h>
++
++#define LILBEE_STAMP_NAME ".lilbee-bootstrap-stamp"
++#define LILBEE_BAR_CELLS 40
++#define LILBEE_AMBER_DIM "\033[38;5;94m"
++#define LILBEE_RESET "\033[0m"
++
++static char const *lilbee_logo_lines[] = {
++    "@@@       @@@  @@@       @@@@@@@   @@@@@@@@  @@@@@@@@  ",
++    "@@@       @@@  @@@       @@@@@@@@  @@@@@@@@  @@@@@@@@  ",
++    "@@@       @@@  @@@       @@!  @@@  @@!       @@!       ",
++    "@!       !@!  !@!       !@   @!@  !@!       !@!       ",
++    "@!!       !!@  @!!       @!@!@!@   @!!!:!    @!!!:!    ",
++    "!!!       !!!  !!!       !!!@!!!!  !!!!!:    !!!!!:    ",
++    "!!:       !!:  !!:       !!:  !!!  !!:       !!:       ",
++    " :!:      :!:   :!:      :!:  !:!  :!:       :!:       ",
++    " :: ::::   ::   :: ::::   :: ::::   :: ::::   :: ::::  ",
++    ": :: : :  :    : :: : :  :: : ::   : :: ::   : :: ::   ",
++    NULL,
++};
++
++static bool lilbee_progress_on = false;
++static int lilbee_last_percent = -1;
++
++static void lilbee_stamp_path(filename_char_t *buffer, size_t size) {
++    buffer[0] = 0;
++    appendStringSafeFilename(buffer, payload_path, size);
++    appendCharSafeFilename(buffer, FILENAME_SEP_CHAR, size);
++    appendStringSafeFilename(buffer, LILBEE_STAMP_NAME, size);
++}
++
++// True when the stamp records this payload's size; fills first_filename from it.
++static bool lilbee_stamp_matches(filename_char_t *first_filename, size_t size) {
++    static filename_char_t stamp[4096];
++    lilbee_stamp_path(stamp, sizeof(stamp) / sizeof(filename_char_t));
++
++    FILE *handle = fopen(stamp, "rb");
++    if (handle == NULL) {
++        return false;
++    }
++
++    unsigned long long stamped_size = 0;
++    static char stamped_main[4096];
++    stamped_main[0] = 0;
++
++    bool ok = fscanf(handle, "%llu\n", &stamped_size) == 1 &&
++              fgets(stamped_main, sizeof(stamped_main), handle) != NULL;
++    fclose(handle);
++
++    if (!ok || stamped_size != (unsigned long long)_NUITKA_ONEFILE_PAYLOAD_SIZE_INT) {
++        return false;
++    }
++
++    size_t length = strlen(stamped_main);
++    while (length > 0 && (stamped_main[length - 1] == '\n' || stamped_main[length - 1] == '\r')) {
++        stamped_main[--length] = 0;
++    }
++    if (length == 0 || access(stamped_main, X_OK) != 0) {
++        return false;
++    }
++
++    first_filename[0] = 0;
++    appendStringSafeFilename(first_filename, stamped_main, size);
++    return true;
++}
++
++static void lilbee_stamp_write(filename_char_t const *first_filename) {
++    static filename_char_t stamp[4096];
++    lilbee_stamp_path(stamp, sizeof(stamp) / sizeof(filename_char_t));
++
++    FILE *handle = fopen(stamp, "wb");
++    if (handle == NULL) {
++        return;
++    }
++    fprintf(handle, "%llu\n%s\n", (unsigned long long)_NUITKA_ONEFILE_PAYLOAD_SIZE_INT, first_filename);
++    fclose(handle);
++}
++
++static void lilbee_progress_begin(void) {
++    lilbee_progress_on = isatty(STDERR_FILENO) != 0;
++    if (!lilbee_progress_on) {
++        return;
++    }
++    fputs(LILBEE_AMBER_DIM, stderr);
++    for (int i = 0; lilbee_logo_lines[i] != NULL; i += 1) {
++        fputs(lilbee_logo_lines[i], stderr);
++        fputc('\n', stderr);
++    }
++    fputs(LILBEE_RESET "\n", stderr);
++}
++
++static void lilbee_progress_update(unsigned long long done, unsigned long long total) {
++    if (!lilbee_progress_on || total == 0) {
++        return;
++    }
++    int percent = (int)((done * 100ULL) / total);
++    if (percent == lilbee_last_percent) {
++        return;
++    }
++    lilbee_last_percent = percent;
++
++    int filled = (percent * LILBEE_BAR_CELLS) / 100;
++    fputs("\r  " LILBEE_AMBER_DIM "bootstrapping " LILBEE_RESET "[", stderr);
++    for (int i = 0; i < LILBEE_BAR_CELLS; i += 1) {
++        fputc(i < filled ? '=' : ' ', stderr);
++    }
++    fprintf(stderr, "] %3d%%", percent);
++    fflush(stderr);
++}
++
++static void lilbee_progress_end(void) {
++    if (!lilbee_progress_on) {
++        return;
++    }
++    // Erase the frame so the Python splash draws onto a clean terminal.
++    fputs("\r\033[2K", stderr);
++    for (int i = 0; lilbee_logo_lines[i] != NULL; i += 1) {
++        fputs("\033[A\033[2K", stderr);
++    }
++    fputs("\033[A\033[2K", stderr);
++    fflush(stderr);
++}
+ #endif
+ 
+ #define MAX_CREATED_DIRS 1024
+@@ -1151,6 +1282,13 @@
+     wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
+ #endif
+ 
++#if !defined(_WIN32) && !defined(__MSYS__)
++    bool const lilbee_warm_start =
++        lilbee_stamp_matches(first_filename, sizeof(first_filename) / sizeof(filename_char_t));
++#else
++    bool const lilbee_warm_start = false;
++#endif
++
+     if (process_role == NULL) {
+ #if defined(_WIN32)
+         bool_res = SetConsoleCtrlHandler(ourConsoleCtrlHandler, true);
+@@ -1169,6 +1307,7 @@
+ #endif
+ 
+ #if _NUITKA_ONEFILE_HAS_PAYLOAD_BOOL == 1
++    if (!lilbee_warm_start) {
+     NUITKA_PRINT_TIMING("ONEFILE: Checking header for compression.");
+ 
+     char header[3];
+@@ -1202,6 +1341,11 @@
+ 
+     NUITKA_PRINT_TIMING("ONEFILE: Entering decompression.");
+ 
++#if !defined(_WIN32) && !defined(__MSYS__)
++    unsigned char const *lilbee_payload_start = payload_current;
++    lilbee_progress_begin();
++#endif
++
+ #if _NUITKA_ONEFILE_TEMP_BOOL
+     payload_created = true;
+ #endif
+@@ -1336,10 +1480,20 @@
+                 fatalErrorTempFiles();
+             }
+         }
++
++#if !defined(_WIN32) && !defined(__MSYS__)
++        lilbee_progress_update((unsigned long long)(payload_current - lilbee_payload_start), payload_size);
++#endif
+     }
+ 
+     NUITKA_PRINT_TIMING("ONEFILE: Finishing decompression, cleanup payload.");
+ 
++#if !defined(_WIN32) && !defined(__MSYS__)
++    lilbee_progress_end();
++    lilbee_stamp_write(first_filename);
++#endif
++    }
++
+     closePayloadData();
+ #endif
+ 
