@@ -435,9 +435,12 @@ touching the running fleet.
   there; nothing is unloaded when an ingest finishes. If llama-swap is restarted or
   found dead, the fleet re-probes once and rebuilds its model config before
   reporting a failure.
-- **Swap tenancy**: the planner matches the old in-process pool, where a role's
-  worker spawned lazily on first call, so ingest (embed + vision OCR) and a query
-  (embed + rerank + chat) never held each other's models in VRAM. Roles that share
+- **Swap tenancy**: the planner matches the old in-process pool (last shipped in
+  v0.6.66b507; see its
+  [Inference Worker Pool](https://github.com/tobocop2/lilbee/blob/v0.6.66b507/docs/architecture.md#inference-worker-pool)
+  section), where a role's worker spawned lazily on first call, so ingest
+  (embed + vision OCR) and a query (embed + rerank + chat) never held each
+  other's models in VRAM. Roles that share
   no run **phase** (`RoleInfo.phases`) are never resident together, so when they
   cannot all co-reside a role that does not fit **refunds** the already-charged
   phase-disjoint roles and retries; the roles that let it in become co-tenants of a
