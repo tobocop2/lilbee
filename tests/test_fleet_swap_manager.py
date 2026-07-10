@@ -1336,3 +1336,34 @@ class TestStateFilePersistenceKeys:
         assert state.proxy_port is None
         assert state.lilbee_version is None
         assert state.detached is False
+
+
+class TestReapSparesDetached:
+    def _write_detached_state(self, tmp_path: Path, *, detached: bool) -> Path:
+        path = tmp_path / sm._state_filename(999_999, _GROUP.value)
+        path.write_text(
+            json.dumps(
+                {
+                    "pid": 999_998,
+                    "owner_pid": 999_999,
+                    "member_ports": [4000],
+                    "detached": detached,
+                }
+            )
+        )
+        return path
+
+    def test_detached_is_spared_while_warm_is_on(self, tmp_path: Path) -> None:
+        path = self._write_detached_state(tmp_path, detached=True)
+        sm.reap_stale(tmp_path, keep_detached=True)
+        assert path.exists()
+
+    def test_detached_is_reaped_once_warm_is_off(self, tmp_path: Path) -> None:
+        path = self._write_detached_state(tmp_path, detached=True)
+        sm.reap_stale(tmp_path, keep_detached=False)
+        assert not path.exists()
+
+    def test_dead_owner_without_marker_is_reaped_regardless(self, tmp_path: Path) -> None:
+        path = self._write_detached_state(tmp_path, detached=False)
+        sm.reap_stale(tmp_path, keep_detached=True)
+        assert not path.exists()

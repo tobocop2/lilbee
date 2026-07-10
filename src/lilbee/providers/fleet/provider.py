@@ -574,7 +574,7 @@ class FleetProvider:
             # A dead owner's surviving llama-swap holds VRAM; reap it before the
             # snapshot so the cards are actually free for this fleet (and the
             # context sizer reads true clean-box memory).
-            reap_stale(cfg.data_dir)
+            reap_stale(cfg.data_dir, keep_detached=cfg.keep_engine_warm)
             try:
                 # Snapshot the clean box; this plan and every later reload size
                 # ctx, slots, and budgets against it (a live probe under a loaded
@@ -1519,7 +1519,7 @@ class FleetProvider:
                 running = set(self._swaps)
                 old = dict(self._launches)
             # Reap dead owners' swaps before re-planning, same as the first build.
-            reap_stale(cfg.data_dir)
+            reap_stale(cfg.data_dir, keep_detached=cfg.keep_engine_warm)
             if not running:
                 # Nothing loaded (a resurrect after a failed pass): the box is
                 # clean, so refresh the plan snapshot like a first build would.

@@ -195,9 +195,9 @@ class SwapManager:
         self._write_state()
         self._await_health()
 
-    def reap_stale(self) -> None:
+    def reap_stale(self, *, keep_detached: bool = False) -> None:
         """Kill every dead owner's surviving llama-swap; see :func:`reap_stale`."""
-        reap_stale(self._data_dir)
+        reap_stale(self._data_dir, keep_detached=keep_detached)
 
     def _write_state(self, *, detached: bool = False) -> None:
         """Record the swap's pid/pgid/create time, member ports, and our identity.
@@ -418,7 +418,7 @@ def _live_sibling_swap_pids(data_dir: Path) -> set[int]:
     return protected
 
 
-def reap_stale(data_dir: Path) -> None:
+def reap_stale(data_dir: Path, *, keep_detached: bool = False) -> None:
     """Kill every dead owner's surviving llama-swap at *data_dir*.
 
     An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
@@ -445,6 +445,9 @@ def reap_stale(data_dir: Path) -> None:
         if state is None:
             continue
         if _owner_alive(state.owner_pid, state.owner_created_at):
+            continue
+        if state.detached and keep_detached:
+            # A deliberately-left warm fleet; the next launch adopts or replaces it.
             continue
         if _is_live_llama_swap(state):
             _stop_stale_swap(state)
