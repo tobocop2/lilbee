@@ -685,8 +685,16 @@ class Searcher:
         ``max_context_sources`` caps by count; this caps by tokens so a
         retrieval-heavy query degrades gracefully instead of erroring with
         CONTEXT_OVERFLOW. The top-ranked source is always kept.
+
+        The ceiling is the engine's ACTUAL per-slot window when known: the
+        configured value is a target the dynamic picker aims for, and the
+        server can come up smaller (the fleet divides context across slots).
+        Budgeting against the target let a routed whole document overflow
+        the real window and hard-fail the request with an HTTP 400.
         """
-        ctx = self._config.num_ctx or self._config.chat_n_ctx_target
+        configured = self._config.num_ctx or self._config.chat_n_ctx_target
+        served = self._provider.served_chat_ctx()
+        ctx = min(configured, served) if served else configured
         reserve = (
             estimate_text_tokens(system)
             + estimate_text_tokens(question)

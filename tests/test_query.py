@@ -1581,6 +1581,42 @@ class TestKnownItemRoute:
         assert rag is not None
         mock_svc.store.get_chunks_by_source.assert_called_once_with("harbor-survey-2010.pdf")
 
+    def test_routed_document_fits_the_served_context_window(self, mock_svc):
+        """The campaign's overflow failure: the route pulls a whole document,
+        and the budget must trim to the engine's ACTUAL serving window, not
+        the configured target, or /api/ask hard-fails with a 400."""
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        # A document far larger than the serving window: 200 chunks x ~400 tokens.
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk="word " * 400, chunk_index=i)
+            for i in range(200)
+        ]
+        mock_svc.provider.served_chat_ctx.return_value = 8192
+        cfg.num_ctx = None
+        rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        assert rag is not None
+        results, messages = rag
+        prompt_tokens = sum(len(m["content"]) // 4 for m in messages)
+        assert prompt_tokens <= 8192
+        # Document order preserved after trimming: the head survives.
+        assert [r.chunk_index for r in results] == list(range(len(results)))
+
+    def test_budget_falls_back_to_config_when_served_ctx_unknown(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk="word " * 400, chunk_index=i)
+            for i in range(200)
+        ]
+        mock_svc.provider.served_chat_ctx.return_value = None
+        cfg.num_ctx = 4096
+        try:
+            rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        finally:
+            cfg.num_ctx = None
+        assert rag is not None
+        _, messages = rag
+        assert sum(len(m["content"]) // 4 for m in messages) <= 4096
+
     def test_docket_reference_resolves_by_content_concentration(self, mock_svc):
         """A reference that appears in a document's text but not its filename
         (a docket number) resolves when BM25 hits concentrate in one source."""
