@@ -267,11 +267,7 @@ class SwapManager:
             return False
         if self._port is None:
             return False
-        try:
-            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
-        except (OSError, httpx.HTTPError):
-            return False
-        return resp.status_code < httpx.codes.BAD_REQUEST
+        return self._proxy_answers()
 
     @property
     def running(self) -> bool:
