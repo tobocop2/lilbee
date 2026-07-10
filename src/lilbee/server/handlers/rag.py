@@ -248,24 +248,18 @@ async def _stream_rag_response(
         yield sse_event(SseEvent.SOURCES, [])
         yield sse_done({})
         return
-    if searcher.skip_retrieval():
-        # Chat mode with an embedder present: answer ungrounded, mirroring ask_raw.
-        results: list[SearchChunk] = []
-        messages = searcher.direct_messages(question, history)
-    else:
-        try:
-            rag = searcher.build_rag_context(
-                question, top_k=top_k, history=history, chunk_type=chunk_type
-            )
-        except EmbeddingModelMismatchError as mismatch:
-            # detail carries the index's embedder so the client can offer to adopt it.
-            detail = mismatch.persisted_model if mismatch.dims_match else None
-            yield sse_error(str(mismatch), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
-            return
-        if rag is None:
-            yield sse_error("No relevant documents found.")
-            return
-        results, messages = rag
+    results, messages, preempt = _resolve_stream_context(
+        searcher,
+        question,
+        history,
+        top_k,
+        chunk_type,
+        retrieval_off=searcher.skip_retrieval(),
+    )
+    for frame in preempt:
+        yield frame
+    if messages is None:
+        return
 
     opts = _resolve_generation_options(options) or cfg.generation_options()
 
@@ -336,6 +330,11 @@ async def chat(
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # message ask returns instead of silently answering off-corpus.
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
+    if not _retrieval_off(searcher, top_k):
+        # Count-shaped questions get the exact-scan answer, mirroring ask_raw.
+        direct = searcher.route_direct_answer(question)
+        if direct is not None:
+            return AskResponse(answer=direct, sources=[], cited_sources=[])
     sources, messages = _build_chat_messages(question, history, top_k, chunk_type)
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
@@ -389,25 +388,18 @@ async def _stream_chat_response(
         yield sse_event(SseEvent.SOURCES, [])
         yield sse_done({})
         return
-    if _retrieval_off(searcher, top_k):
-        # Chat-only mode, no embedder, or an explicit top_k:0 pure-LLM call:
-        # answer directly with no RAG context.
-        sources: list[SearchChunk] = []
-        messages = searcher.direct_messages(question, history)
-    else:
-        try:
-            rag = searcher.build_rag_context(
-                question, top_k=top_k or 0, history=history, chunk_type=chunk_type
-            )
-        except EmbeddingModelMismatchError as exc:
-            # detail carries the index's embedder so the client can offer to adopt it.
-            detail = exc.persisted_model if exc.dims_match else None
-            yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
-            return
-        if rag is None:
-            yield sse_error("No relevant documents found.")
-            return
-        sources, messages = rag
+    sources, messages, preempt = _resolve_stream_context(
+        searcher,
+        question,
+        history,
+        top_k,
+        chunk_type,
+        retrieval_off=_retrieval_off(searcher, top_k),
+    )
+    for frame in preempt:
+        yield frame
+    if messages is None:
+        return
 
     req = _build_canonical_request(messages, options)
     answer_parts: list[str] = []
@@ -548,6 +540,48 @@ def _retrieval_off(searcher: Searcher, top_k: int | None) -> bool:
     normally. Chat-only mode or a missing embedder also bypass.
     """
     return top_k == 0 or searcher.skip_retrieval()
+
+
+def _resolve_stream_context(
+    searcher: Searcher,
+    question: str,
+    history: list[ChatMessage] | None,
+    top_k: int | None,
+    chunk_type: ChunkType | None,
+    *,
+    retrieval_off: bool,
+) -> tuple[list[SearchChunk], list[ChatMessage] | None, list[str]]:
+    """Resolve retrieval for a streaming handler: (sources, messages, preempt).
+
+    Non-empty ``preempt`` frames are emitted verbatim; ``messages`` of ``None``
+    means the stream ends after them (a direct exact-scan answer or an error).
+    Shared by the ask and chat streams so the two paths cannot drift: both
+    route count questions to the exact scan, surface an embedder mismatch as
+    a coded SSE error, and report empty retrieval the same way.
+    """
+    if retrieval_off:
+        return [], searcher.direct_messages(question, history), []
+    direct = searcher.route_direct_answer(question)
+    if direct is not None:
+        frames = [
+            sse_event(SseEvent.TOKEN, {"token": direct}),
+            sse_event(SseEvent.SOURCES, []),
+            sse_done({}),
+        ]
+        return [], None, frames
+    try:
+        rag = searcher.build_rag_context(
+            question, top_k=top_k or 0, history=history, chunk_type=chunk_type
+        )
+    except EmbeddingModelMismatchError as mismatch:
+        # detail carries the index's embedder so the client can offer to adopt it.
+        detail = mismatch.persisted_model if mismatch.dims_match else None
+        frame = sse_error(str(mismatch), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
+        return [], None, [frame]
+    if rag is None:
+        return [], None, [sse_error("No relevant documents found.")]
+    results, messages = rag
+    return results, messages, []
 
 
 def _build_chat_messages(

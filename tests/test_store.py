@@ -598,7 +598,9 @@ class TestHybridSearch:
         query_vec = [0.5] * test_config.embedding_dim
         results = store.search(query_vec, top_k=3, query_text="chunk number")
         assert len(results) > 0
-        assert results[0].relevance_score is not None
+        assert all(r.score is not None for r in results)
+        scores = [r.score for r in results]
+        assert all(0.0 <= s <= 1.0 for s in scores)
 
     def test_fallback_to_vector_when_no_query_text(self, store, test_config):
         records = _make_records()
@@ -618,15 +620,20 @@ class TestHybridSearch:
         assert len(results) > 0
         assert results[0].distance is not None
 
-    def test_hybrid_fallback_on_exception(self, store, test_config):
+    def test_hybrid_fallback_on_exception(self, store, test_config, caplog):
         records = _make_records()
         store.add_chunks(records)
         store.ensure_fts_index()
         query_vec = [0.5] * test_config.embedding_dim
-        with mock.patch("lilbee.data.store.core._hybrid_search", side_effect=RuntimeError("boom")):
+        with (
+            mock.patch.object(store, "_hybrid_search", side_effect=RuntimeError("boom")),
+            caplog.at_level("WARNING", logger="lilbee.data.store.core"),
+        ):
             results = store.search(query_vec, top_k=3, query_text="chunk")
         assert len(results) > 0
         assert results[0].distance is not None
+        # The downgrade changes recall for the query; it must be visible.
+        assert any("falling back to vector-only" in r.message for r in caplog.records)
 
     def test_vector_only_applies_mmr(self, store, test_config):
         """Vector-only path (no query_text) applies MMR when results > top_k."""
@@ -635,6 +642,72 @@ class TestHybridSearch:
         query_vec = [0.5] * test_config.embedding_dim
         results = store.search(query_vec, top_k=2)
         assert len(results) == 2
+
+    def test_vector_only_results_carry_canonical_score(self, store, test_config):
+        records = _make_records()
+        store.add_chunks(records)
+        query_vec = [0.5] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=3)
+        assert all(r.score is not None for r in results)
+        # Higher similarity (lower distance) must mean higher canonical score.
+        pairs = [(r.distance, r.score) for r in results]
+        assert sorted(pairs, key=lambda p: p[0]) == sorted(pairs, key=lambda p: p[1], reverse=True)
+
+    def test_lexical_only_match_survives_hybrid(self, store, test_config):
+        """A chunk only BM25 can find (its vector points away from the query)
+        must appear in hybrid results: the identifier-query case."""
+        records = _make_records(n=30)
+        outlier_vec = [-1.0] * test_config.embedding_dim
+        records.append(
+            {
+                "source": "parts_catalog_214.pdf",
+                "content_type": "pdf",
+                "chunk_type": "raw",
+                "page_start": 1,
+                "page_end": 1,
+                "line_start": 0,
+                "line_end": 0,
+                "chunk": "part number PX4471 shipped from fresno",
+                "chunk_index": 0,
+                "vector": outlier_vec,
+            }
+        )
+        store.add_chunks(records)
+        store.ensure_fts_index()
+        query_vec = [0.5] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=5, query_text="part number PX4471")
+        assert any(r.source == "parts_catalog_214.pdf" for r in results)
+
+    def test_hybrid_overfetch_floor(self, store, test_config):
+        """Each arm is fetched at least fusion_overfetch_floor deep."""
+        records = _make_records(n=3)
+        store.add_chunks(records)
+        store.ensure_fts_index()
+        query_vec = [0.5] * test_config.embedding_dim
+        with (
+            mock.patch.object(store, "_vector_arm", return_value=[]) as vec_arm,
+            mock.patch.object(store, "_fts_arm", return_value=[]) as fts_arm,
+        ):
+            store.search(query_vec, top_k=3, query_text="chunk")
+        assert vec_arm.call_args[0][2] == test_config.fusion_overfetch_floor
+        assert fts_arm.call_args[0][2] == test_config.fusion_overfetch_floor
+
+    def test_hybrid_vector_arm_applies_ann_recovery(self, store, test_config):
+        """With a vector index present, the hybrid vector arm probes extra
+        partitions and refines against full vectors."""
+        chain = mock.MagicMock()
+        chain.to_list.return_value = []
+        table = mock.MagicMock()
+        table.search.return_value = chain
+        table.count_rows.return_value = 1_000_000
+        chain.metric.return_value = chain
+        chain.limit.return_value = chain
+        chain.nprobes.return_value = chain
+        chain.refine_factor.return_value = chain
+        with mock.patch("lilbee.data.store.core._has_vector_index", return_value=True):
+            store._vector_arm(table, [0.5] * test_config.embedding_dim, 50, None)
+        chain.nprobes.assert_called_once()
+        chain.refine_factor.assert_called_once()
 
     def test_auto_ensures_fts_index_when_query_text(self, store, test_config):
         records = _make_records()

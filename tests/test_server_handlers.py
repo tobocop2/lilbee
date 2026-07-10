@@ -73,6 +73,8 @@ def mock_svc():
     # Default to the grounded retrieval path; mode/embedder tests flip these.
     searcher.skip_retrieval.return_value = False
     searcher.search_unavailable.return_value = False
+    # No direct (count-scan) answer unless a test routes one explicitly.
+    searcher.route_direct_answer.return_value = None
     services = make_mock_services(searcher=searcher)
     # chat_dispatch validates cfg.chat_model against the registry.
     chat_manifest = MagicMock()
@@ -371,6 +373,17 @@ class TestAskStream:
         parsed = json.loads(non_empty[0].split("data: ")[1].strip())
         assert "No relevant documents found" in parsed["message"]
 
+    async def test_direct_answer_streams_before_retrieval(self, mock_svc):
+        """Count questions stream the exact-scan answer, mirroring
+        Searcher.ask_stream, instead of hedging through top-k RAG."""
+        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        events = [e async for e in handlers.ask_stream("how many documents mention x?")]
+        non_empty = [e for e in events if e]
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert "Exact scan: 3 documents." in token_event
+        assert any(e.startswith("event: done") for e in non_empty)
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_yields_token_sources_done(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter(["answer"])
@@ -612,6 +625,15 @@ def _canonical_text_stream(texts):
 
 
 class TestChat:
+    async def test_direct_answer_routes_before_retrieval(self, mock_svc):
+        """A count question answered by the exact scan must short-circuit the
+        HTTP chat path exactly as it does ask_raw: same router, no LLM."""
+        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        result = await handlers.chat("how many documents mention kerosene?", [])
+        assert result.answer == "Exact scan: 3 documents."
+        assert result.sources == []
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_passes_history(self, mock_svc, monkeypatch):
         from lilbee.server.chat_dispatch.canonical import (
             CanonicalResponse,
@@ -825,6 +847,14 @@ class TestChatStream:
         events = [e async for e in handlers.chat_stream("test", [])]
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
+
+    async def test_direct_answer_streams_before_retrieval(self, mock_svc):
+        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        events = [e async for e in handlers.chat_stream("how many documents mention x?", [])]
+        non_empty = [e for e in events if e]
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert "Exact scan: 3 documents." in token_event
+        mock_svc.searcher.build_rag_context.assert_not_called()
 
     async def test_yields_events_with_history(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()

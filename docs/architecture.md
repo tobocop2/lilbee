@@ -534,55 +534,77 @@ rather than a 500 from the server.
 
 ## Search Pipeline
 
-This is the core of lilbee's retrieval quality. The pipeline applies techniques progressively: expensive operations are skipped when simpler ones produce confident results.
+This is the core of lilbee's retrieval quality. Questions are routed by shape before retrieval runs, every result carries one canonical relevance score, and expensive operations are skipped when simpler ones produce confident results.
 
 ```mermaid
 flowchart TD
-    Q[User Query] --> SM{Structured Mode?}
+    Q[User Query] --> HR{Chat history?}
+    HR -->|Yes| COND[Condense follow-up into standalone query]
+    HR -->|No| ROUTE
+    COND --> ROUTE{Intent}
+    ROUTE -->|count-shaped| SCAN[Exact full-corpus scan → direct answer]
+    ROUTE -->|names one document| DOC[Document's own chunks, in order]
+    ROUTE -->|topical| SM{Structured Mode?}
     SM -->|term: prefix| BM25[BM25 Keyword Search]
     SM -->|vec: prefix| VEC[Vector Search]
     SM -->|hyde: prefix| HYDE_M[HyDE → Embed → Search]
-    SM -->|No prefix| STD[Standard Pipeline]
+    SM -->|No prefix| PROBE[BM25 Confidence Probe]
 
-    STD --> TF{Temporal Keywords?}
-    TF -->|Yes| TPARSE[Parse Date Range]
-    TF -->|No| PROBE
-
-    TPARSE --> PROBE[BM25 Confidence Probe]
-    PROBE --> CONF{Score ≥ 0.8 AND gap ≥ 0.15?}
-    CONF -->|Yes| HYBRID[Hybrid Search Only]
+    PROBE --> CONF{Confident AND separated?}
+    CONF -->|Yes| DUAL[Dual-Arm Retrieval]
     CONF -->|No| EXPAND[LLM Query Expansion]
 
     EXPAND --> GEXP[+ Graph Expansion]
     GEXP --> GUARD[Guardrails: embedding cosine similarity]
     GUARD --> MULTI[Multi-Query Search + Merge]
-    MULTI --> HYBRID
+    MULTI --> DUAL
 
-    HYBRID --> CBOOST[Concept Boost]
-    CBOOST --> ADAPT[Adaptive Distance Filter]
-    ADAPT --> MMR[MMR Diversity]
-    MMR --> RERANK{Reranker Model?}
+    DUAL --> FUSE[Score Fusion → canonical score]
+    FUSE --> MMR[MMR Diversity on canonical score]
+    MMR --> CBOOST[Concept Boost]
+    CBOOST --> GSORT[Global re-sort by score]
+    GSORT --> ABST{All below min_relevance_score?}
+    ABST -->|Yes| REFUSE[Grounded refusal]
+    ABST -->|No| RERANK{Reranker Model?}
     RERANK -->|Yes| XENC[Cross-Encoder Rerank]
     RERANK -->|No| DIV
     XENC --> DIV[Source Diversity Cap]
     DIV --> TFILTER{Temporal Filter?}
-    TFILTER -->|Yes| TFILT[Filter by Date + Recency Sort]
+    TFILTER -->|Yes| TFILT[Filter by Date]
     TFILTER -->|No| CTX
     TFILT --> CTX[Adaptive Context Selection]
-    CTX --> BUILD[Build Context → LLM Generation]
+    CTX --> BUILD[Context with provenance headers → LLM Generation]
 ```
 
 ### Technique Reference
 
-#### Hybrid Search (BM25 + Vector + RRF)
-**Always on.** Combines keyword matching (BM25 via LanceDB FTS) with semantic similarity (vector cosine distance), fused via Reciprocal Rank Fusion.
+#### Intent Routing
+**On by default** (`LILBEE_INTENT_ROUTING`). Three question shapes reach retrieval, and only one of them is a similarity problem, so questions are routed before top-k search runs. Detection is deterministic and conservative: anything unrecognized takes the topical path unchanged.
 
-- **Paper**: Cormack, Clarke & Büttcher 2009, "[Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://dl.acm.org/doi/10.1145/1571941.1572114)"
-- **Tradeoff**: ~5ms overhead vs vector-only search. Worth it because BM25 catches exact keyword matches that vectors miss (e.g. searching for "NavigationServer2D" needs exact string matching, not semantic similarity).
-- **When it helps**: queries with specific terms, function names, error messages, exact phrases.
+- **Known-item**: a question naming a document (a filename, a quoted title, "document 482") resolves the reference against source metadata; a reference matching exactly one source returns that document's chunks in document order at full confidence. Similarity search retrieves neighbors of the question's *wording*, which for "summarize survey_482.pdf" is mostly noise.
+- **Aggregate**: "how many documents mention X" runs an exact scan over every chunk (streamed Arrow batches, flat memory) and answers with real numbers, no LLM involved. A count is a corpus property; the top 20 of half a million chunks structurally cannot count anything, and the model's only honest move was to hedge. Counts that need typed records the store does not hold are declined with a precise statement of what is countable.
+- Every answering surface consults the same router (`Searcher.route_direct_answer`): CLI and TUI via ask, and each HTTP handler directly.
+
+#### History Condensation
+**On by default** (`LILBEE_HISTORY_REWRITE`). A follow-up question is condensed into a standalone retrieval query using the recent chat history (one small LLM call, skipped when there is no history). Retrieval sees only the query text: without this, "what about his brother?" is embedded and BM25-matched with its pronouns. The user's original wording still reaches the answering prompt.
+
+#### Hybrid Search (Dual-Arm Score Fusion)
+**Always on.** Retrieves the BM25 arm (LanceDB FTS) and the vector arm independently, each overfetched well past `top_k` (`candidate_multiplier × top_k`, floored at `fusion_overfetch_floor`, default 50 rows per arm), then fuses by convex combination into one canonical [0, 1] score:
+
+```
+score = fusion_alpha × vector_similarity + (1 - fusion_alpha) × normalized_bm25
+```
+
+Vector similarity is clamped `1 - cosine_distance` (an absolute signal); BM25 is normalized against the top score of its list. `fusion_alpha` defaults to 0.6.
+
+- **Why score fusion and not rank fusion**: Reciprocal Rank Fusion (the previous mechanism) discards score magnitude by construction, so it cannot tell an arm that was certain from an arm that was guessing. One strong lexical hit for an identifier query drowned under mediocre dense neighbors, fetched from a fusion pool that was only `top_k` deep per arm. Score-aware fusion keeps the certainty, and the overfetch makes rows ranked just past `top_k` in both arms visible to fusion at all. (On the rank-vs-score question, see Bruch et al. 2024, "[An Analysis of Fusion Functions for Hybrid Retrieval](https://dl.acm.org/doi/10.1145/3596512)".)
+- **Canonical score**: every search path sets `SearchChunk.score`, and every downstream stage (sorting, filtering, MMR, greedy set cover, concept boost, reranker blending) compares only that field. `distance`, `bm25_score`, and the legacy RRF `relevance_score` remain as provenance.
+- **Abstention**: because the canonical score is [0, 1] with real meaning, `min_relevance_score` is a usable floor: when every retrieved chunk falls below it, ask refuses instead of feeding noise as context. RRF magnitudes (~0.016-0.033 total range) made any threshold meaningless.
+- **max_distance** applies to rows whose *only* signal is a far vector match; a row the BM25 arm also matched keeps its standing regardless of distance, since dropping it would re-bury exactly the identifier hits fusion exists to preserve.
+- **When it helps**: queries with specific terms, function names, error messages, exact phrases, document identifiers.
 
 #### MMR Diversity
-**Always on.** Maximal Marginal Relevance prevents near-duplicate chunks from filling all result slots.
+**Always on.** Maximal Marginal Relevance prevents near-duplicate chunks from filling all result slots. Runs on the fused candidate pool, with the canonical score as the relevance term, so diversity selection cannot re-demote a lexically-certain hit whose vector similarity happens to be weak.
 
 - **Paper**: Carbonell & Goldstein 1998, "[The Use of MMR, Diversity-Based Reranking](https://dl.acm.org/doi/10.1145/290941.291025)"
 - **Default**: λ=0.5 (equal weight to relevance and diversity). This is the standard default from the original paper.
@@ -593,7 +615,7 @@ flowchart TD
 **Always on.** Caps results per source document so one large file doesn't dominate all top-k slots.
 
 - **Paper**: Zhai 2008, "[Towards a Game-Theoretic Framework for Information Retrieval](https://dl.acm.org/doi/10.1007/978-3-540-78646-7_13)"
-- **Default**: 3 chunks per source. Ensures at least 2 different documents appear in top-5 results.
+- **Default**: 5 chunks per source (`LILBEE_DIVERSITY_MAX_PER_SOURCE`).
 - **Tradeoff**: lower cap = more diverse sources but may miss relevant sections from a single comprehensive document.
 
 #### Query Expansion
@@ -605,14 +627,14 @@ flowchart TD
 - **When it helps**: queries using different terminology than the indexed documents. E.g. user asks "how to deploy" but the docs say "installation steps".
 
 #### Confidence-Based Expansion Skip
-**On by default.** Before running the expensive LLM expansion call, does a quick BM25 probe. If the top BM25 result is highly confident, expansion is skipped entirely.
+**On by default.** Before running the expensive LLM expansion call, does a quick BM25 probe. If the top BM25 result is highly confident and clearly separated from the runner-up, expansion is skipped entirely.
 
 - **Technique**: early termination based on BM25 score distribution
-- **Default threshold**: 0.80 (90th percentile of sigmoid-normalized BM25 scores)
-- **Default gap**: 0.15 (top-1 must be clearly separated from top-2)
-- **Threshold derivation**: BM25 scores are normalized via sigmoid centered at ~0.5. Scores above 0.8 represent strong keyword matches. The gap ensures the match isn't ambiguous.
+- **Default threshold**: 0.80 in saturating confidence space `s / (s + 5)`, which corresponds to a raw BM25 score of 20
+- **Default gap**: 0.15 as the *relative* raw-score gap, `(top - second) / top`
+- **Why not a sigmoid**: a plain sigmoid saturates at ~0.99 for any raw score above 5, so the gap between two strong scores compressed to under 0.01 and the skip condition was unsatisfiable exactly when the lexical arm was most certain. The saturating ratio keeps strong scores distinguishable and the relative gap compares where the information actually is, in raw score space.
 - **Tradeoff**: higher threshold = expansion runs more often (better recall, more latency). Lower = expansion skipped more (faster, may miss some results).
-- **Caveat**: these are starting defaults. Calibrate for your library using RAGAS evaluation metrics.
+- **Caveat**: these are starting defaults; calibrate for your corpus.
 
 #### Expansion Guardrails
 **On by default.** Validates LLM-generated query variants to prevent drift.
@@ -623,11 +645,11 @@ flowchart TD
 - **Tradeoff**: guardrails may filter out creative but valid variants. Disable via `LILBEE_EXPANSION_GUARDRAILS=false` if recall is more important than precision.
 
 #### HyDE (Hypothetical Document Embeddings)
-**Off by default.** Generates a hypothetical excerpt (50-100 words) that reads like a real document answering the query, embeds it, and searches with it alongside the original query vector.
+**Off by default.** Generates a hypothetical excerpt (50-100 words) that reads like a real document answering the query, embeds it, and searches with it alongside the original query vector. Reasoning-model output is stripped before embedding, so a think-block never stands in for the passage.
 
 - **Paper**: Gao et al. 2022, "[Precise Zero-Shot Dense Retrieval without Relevance Labels](https://arxiv.org/abs/2212.10496)"
 - **Cost**: 1 additional LLM call + 1 embedding (~500ms total)
-- **Default weight**: 0.7x (hypothetical results are discounted because they're fabricated: they approximate the answer space but aren't based on real content)
+- **Default weight**: 0.7, applied multiplicatively to the canonical score (hypothetical results are discounted because they're fabricated: they approximate the answer space but aren't based on real content; 1.0 trusts them as much as direct hits)
 - **When it helps**: vague or short queries where the user's terminology doesn't match the indexed documents. E.g. "how does the thing work" where the "thing" is described with specific technical vocabulary in the docs.
 - **When to skip**: factual lookups, keyword-heavy queries, or when latency matters.
 
@@ -635,7 +657,7 @@ flowchart TD
 **On by default.** At index time, extracts noun phrases from each chunk via spaCy, builds a co-occurrence graph weighted by Positive Pointwise Mutual Information (PPMI), and clusters concepts with the Leiden algorithm. Zero LLM calls at index or query time.
 
 Two query-time effects:
-- **Concept boost**: for each search result, counts concept overlap between the query's noun phrases and the chunk's concepts. Score adjusted by `overlap_ratio × concept_boost_weight` (default 0.3). Only promotes, never demotes.
+- **Concept boost**: for each search result, counts concept overlap between the query's noun phrases and the chunk's concepts. The canonical score is raised by `overlap_ratio × concept_boost_weight` (default 0.3, clamped at 1.0), so the boost weight is directly comparable to a fusion arm's weight. Only promotes, never demotes.
 - **Graph expansion**: traverses the co-occurrence graph (1 hop BFS) to find concepts related to the query. These supplement LLM-generated expansion variants and go through the same drift guardrails.
 
 - **Inspiration**: Microsoft Research 2024-2025, "[LazyGraphRAG](https://www.microsoft.com/en-us/research/blog/lazygraphrag-setting-a-new-standard-for-quality-and-cost/)". NLP concept extraction at index time, defer reasoning to query time.
@@ -667,12 +689,15 @@ Two query-time effects:
 - **When it helps**: novel queries or small indexes where strict distance thresholds would return empty results.
 
 #### Adaptive Context Selection
-**On by default.** After search results are ranked, selects which chunks to include as LLM context based on query term coverage rather than just taking the top-k. When cross-encoder reranking is active, the reranked order is the more precise signal and replaces this pass.
+**On by default.** After search results are ranked, selects which chunks to include as LLM context based on query term coverage rather than just taking the top-k, with each chunk's IDF gain weighted by its canonical score. When cross-encoder reranking is active, the reranked order is the more precise signal and replaces this pass.
 
 - **Technique**: greedy set-cover approximation
-- **Algorithm**: tokenize query into terms, greedily select chunks that add the most uncovered terms, stop when coverage reaches 100% or marginal gain drops below 5%
-- **Default max sources**: 5 chunks
+- **Algorithm**: tokenize query into terms, greedily select chunks that add the most uncovered term weight, scaled by canonical relevance
+- **Default max sources**: 8 chunks (`LILBEE_MAX_CONTEXT_SOURCES`)
 - **When it helps**: multi-faceted queries like "compare X and Y" where top-k might only cover X but context selection ensures Y is also represented.
+
+#### Context Provenance Headers
+**Always on.** Each context block opens with a one-line header naming its source and page or line span (`[3] (survey_report.pdf, pages 3-4)`), so the answering model can attribute claims to a named document, notice two chunks share a source, and confirm it is reading the document the user asked about. Citation markers in answers are parsed as `[1]`, `[1, 2]`, and bounded ranges like `[1-3]`.
 
 #### Temporal Filtering
 **On by default, activates only when temporal keywords are detected in the query.**

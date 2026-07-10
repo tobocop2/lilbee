@@ -1,5 +1,6 @@
 """Tests for the RAG query pipeline (mocked: no live server needed)."""
 
+from typing import ClassVar
 from unittest import mock
 
 import pytest
@@ -82,6 +83,10 @@ def mock_svc():
     set_services(None)
 
 
+# Sentinel: derive the canonical score from distance unless overridden.
+_AUTO_SCORE = object()
+
+
 def _make_result(
     source="test.pdf",
     content_type="pdf",
@@ -97,7 +102,12 @@ def _make_result(
     bm25_score=None,
     rerank_score=None,
     vector=None,
+    score=_AUTO_SCORE,
 ) -> SearchChunk:
+    if score is _AUTO_SCORE:
+        # Mirror the store contract: every search path sets the canonical
+        # score. Pass score=None explicitly to build a legacy (pre-score) row.
+        score = max(0.0, min(1.0, 1.0 - distance)) if distance is not None else None
     return SearchChunk(
         source=source,
         content_type=content_type,
@@ -113,6 +123,7 @@ def _make_result(
         bm25_score=bm25_score,
         rerank_score=rerank_score,
         vector=vector or [0.1],
+        score=score,
     )
 
 
@@ -240,16 +251,31 @@ class TestSortByRelevance:
         assert sorted_results[0].source == "has_dist.pdf"
         assert sorted_results[1].source == "no_dist.pdf"
 
-    def test_sorts_by_relevance_score_when_present(self):
+    def test_sorts_by_canonical_score_first(self):
         results = [
-            _make_result(source="low.pdf", relevance_score=0.2),
-            _make_result(source="high.pdf", relevance_score=0.9),
-            _make_result(source="mid.pdf", relevance_score=0.5),
+            _make_result(source="low.pdf", score=0.2),
+            _make_result(source="high.pdf", score=0.9),
+            _make_result(source="mid.pdf", score=0.5),
         ]
         sorted_results = sort_by_relevance(results)
-        assert sorted_results[0].source == "high.pdf"
-        assert sorted_results[1].source == "mid.pdf"
-        assert sorted_results[2].source == "low.pdf"
+        assert [r.source for r in sorted_results] == ["high.pdf", "mid.pdf", "low.pdf"]
+
+    def test_sorts_legacy_rows_by_relevance_score(self):
+        results = [
+            _make_result(source="low.pdf", distance=None, score=None, relevance_score=0.2),
+            _make_result(source="high.pdf", distance=None, score=None, relevance_score=0.9),
+            _make_result(source="mid.pdf", distance=None, score=None, relevance_score=0.5),
+        ]
+        sorted_results = sort_by_relevance(results)
+        assert [r.source for r in sorted_results] == ["high.pdf", "mid.pdf", "low.pdf"]
+
+    def test_sorts_legacy_rows_by_distance(self):
+        results = [
+            _make_result(source="far.pdf", distance=0.9, score=None),
+            _make_result(source="near.pdf", distance=0.1, score=None),
+        ]
+        sorted_results = sort_by_relevance(results)
+        assert [r.source for r in sorted_results] == ["near.pdf", "far.pdf"]
 
 
 class TestDiversifySources:
@@ -324,6 +350,59 @@ class TestBuildContext:
         assert "[2]" in ctx
         assert "chunk one" in ctx
 
+    def test_header_names_the_source_document(self):
+        """The answering model must see which document a block came from."""
+        results = [
+            _make_result(
+                source="survey_report.pdf", chunk="core sample B17", page_start=3, page_end=4
+            )
+        ]
+        ctx = build_context(results)
+        assert "[1] (survey_report.pdf, pages 3-4)" in ctx
+        assert "core sample B17" in ctx
+
+    def test_header_shows_lines_for_code(self):
+        results = [
+            _make_result(
+                source="app.py", content_type="code", chunk="def x():", line_start=10, line_end=20
+            )
+        ]
+        ctx = build_context(results)
+        assert "(app.py, lines 10-20)" in ctx
+
+    def test_header_plain_for_text(self):
+        results = [_make_result(source="notes.md", content_type="text", chunk="hello")]
+        ctx = build_context(results)
+        assert "[1] (notes.md)\nhello" in ctx
+
+
+class TestCitedIndexExtraction:
+    def test_single_brackets(self):
+        from lilbee.retrieval.query.formatting import _extract_cited_indices
+
+        assert _extract_cited_indices("see [1] and [3]") == {1, 3}
+
+    def test_comma_groups(self):
+        from lilbee.retrieval.query.formatting import _extract_cited_indices
+
+        assert _extract_cited_indices("as shown [1, 2] and [4,5]") == {1, 2, 4, 5}
+
+    def test_ranges(self):
+        from lilbee.retrieval.query.formatting import _extract_cited_indices
+
+        assert _extract_cited_indices("documented across [1-3]") == {1, 2, 3}
+
+    def test_mixed_group(self):
+        from lilbee.retrieval.query.formatting import _extract_cited_indices
+
+        assert _extract_cited_indices("per [1, 3-5]") == {1, 3, 4, 5}
+
+    def test_absurd_range_ignored(self):
+        from lilbee.retrieval.query.formatting import _extract_cited_indices
+
+        # A page-span artifact like [1-500] must not fan out into 500 cites.
+        assert _extract_cited_indices("[1-500]") == set()
+
 
 @pytest.mark.usefixtures("wiki_enabled")
 class TestSearchContext:
@@ -391,6 +470,25 @@ class TestExpandQuery:
             "explain how kubernetes pods schedule", self._QUESTION_VEC
         )
         assert len(variants) == 3
+
+    def test_strips_reasoning_from_expansion_output(self, mock_svc):
+        """A reasoning chat model's think block must not become variants that
+        get embedded and searched."""
+        mock_svc.provider.chat.return_value = _text_result(
+            "<think>the user wants alternatives, let me consider</think>\n"
+            "how do pods get scheduled\nkubernetes pod scheduling"
+        )
+        variants = get_services().searcher._llm_expand("explain pod scheduling", 3)
+        assert variants == ["how do pods get scheduled", "kubernetes pod scheduling"]
+
+    def test_strips_list_markers_from_variants(self, mock_svc):
+        """Models number their output despite the prompt; '1.' must not reach
+        the BM25 arm of the variant search."""
+        mock_svc.provider.chat.return_value = _text_result(
+            "1. first phrasing\n2) second phrasing\n- third phrasing"
+        )
+        variants = get_services().searcher._llm_expand("anything at all", 3)
+        assert variants == ["first phrasing", "second phrasing", "third phrasing"]
 
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("no provider")
@@ -1048,37 +1146,48 @@ class TestSelectContext:
 
 
 class TestShouldSkipExpansion:
-    """bm25_probe rows carry a raw, unbounded BM25 score in ``bm25_score`` (LanceDB
-    FTS _score); the probe values here use those realistic magnitudes, not
-    pre-normalized [0, 1] numbers, since _should_skip_expansion sigmoid-squashes
-    them before comparing to the [0, 1] thresholds (default 0.8 / gap 0.15)."""
+    """bm25_probe rows carry a raw, unbounded BM25 score in ``bm25_score``
+    (LanceDB FTS _score); the probe values here use those realistic
+    magnitudes. Confidence is the saturating s/(s+5) (0.8 = raw 20), and the
+    gap condition is the RELATIVE raw gap (top - second) / top >= 0.15: a
+    sigmoid squash compressed any two strong scores to within 0.01, so the
+    old gap test could never fire when the lexical arm was most certain."""
 
     def test_skips_when_confident(self, mock_svc):
-        # sigmoid(5.0)=0.993 >= 0.8; gap to sigmoid(1.0)=0.731 is 0.262 >= 0.15.
+        # confidence(30) = 30/35 = 0.857 >= 0.8; relative gap (30-10)/30 = 0.67.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(bm25_score=5.0),
-            _make_result(bm25_score=1.0),
+            _make_result(bm25_score=30.0),
+            _make_result(bm25_score=10.0),
+        ]
+        assert get_services().searcher._should_skip_expansion("test query") is True
+
+    def test_skips_on_strong_scores_with_real_gap(self, mock_svc):
+        """The saturation regression case: two strong raw scores with a real
+        relative gap must skip; the sigmoid made this branch unreachable."""
+        mock_svc.store.bm25_probe.return_value = [
+            _make_result(bm25_score=40.0),
+            _make_result(bm25_score=25.0),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is True
 
     def test_does_not_skip_when_low_score(self, mock_svc):
-        # sigmoid(0.5)=0.622 < 0.8: a weak top BM25 hit still expands.
+        # confidence(2) = 2/7 = 0.29 < 0.8: a weak top BM25 hit still expands.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(bm25_score=0.5),
-            _make_result(bm25_score=0.4),
+            _make_result(bm25_score=2.0),
+            _make_result(bm25_score=1.0),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is False
 
     def test_does_not_skip_when_close_gap(self, mock_svc):
-        # sigmoid(5.0)=0.993 and sigmoid(4.0)=0.982: gap 0.011 < 0.15.
+        # Strong but undifferentiated: relative gap (30-28)/30 = 0.07 < 0.15.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(bm25_score=5.0),
-            _make_result(bm25_score=4.0),
+            _make_result(bm25_score=30.0),
+            _make_result(bm25_score=28.0),
         ]
         assert get_services().searcher._should_skip_expansion("test query") is False
 
     def test_skips_with_single_confident_result(self, mock_svc):
-        mock_svc.store.bm25_probe.return_value = [_make_result(bm25_score=5.0)]
+        mock_svc.store.bm25_probe.return_value = [_make_result(bm25_score=30.0)]
         assert get_services().searcher._should_skip_expansion("test") is True
 
     def test_does_not_skip_when_empty(self, mock_svc):
@@ -1132,9 +1241,11 @@ class TestBm25Confidence:
         assert _bm25_confidence(None) == 0.0
         assert _bm25_confidence(0.0) == 0.0
         assert _bm25_confidence(-2.0) == 0.0
-        # Positive raw BM25 scores squash monotonically into (0.5, 1).
-        assert 0.5 < _bm25_confidence(1.0) < 1.0
+        # Positive raw BM25 scores squash monotonically into (0, 1) without
+        # saturating: strong scores stay distinguishable from each other.
+        assert 0.0 < _bm25_confidence(1.0) < 1.0
         assert _bm25_confidence(5.0) > _bm25_confidence(1.0)
+        assert _bm25_confidence(40.0) - _bm25_confidence(20.0) > 0.05
 
 
 class TestParseStructuredQuery:
@@ -1191,6 +1302,20 @@ class TestHydeSearch:
 
     def test_returns_empty_on_blank(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("   ")
+        assert get_services().searcher._hyde_search("test", top_k=5) == []
+
+    def test_strips_reasoning_before_embedding(self, mock_svc):
+        """A reasoning model's deliberation must not be embedded as the
+        hypothetical passage."""
+        mock_svc.provider.chat.return_value = _text_result(
+            "<think>what would a real document say here</think>the actual passage"
+        )
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        mock_svc.embedder.embed_query.assert_called_once_with("the actual passage")
+
+    def test_returns_empty_when_output_is_all_reasoning(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result("<think>only deliberation</think>")
         assert get_services().searcher._hyde_search("test", top_k=5) == []
 
 
@@ -1336,11 +1461,11 @@ class TestSearchContextIntegration:
 
     def test_skips_expansion_when_confident(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        # Raw BM25 magnitudes (sigmoid(5.0)=0.993, sigmoid(1.0)=0.731): confident
-        # top with a wide gap, so expansion is skipped.
+        # Raw BM25 magnitudes: confidence(30) = 0.857 >= 0.8 with a wide
+        # relative gap ((30-10)/30 = 0.67), so expansion is skipped.
         mock_svc.store.bm25_probe.return_value = [
-            _make_result(bm25_score=5.0),
-            _make_result(bm25_score=1.0),
+            _make_result(bm25_score=30.0),
+            _make_result(bm25_score=10.0),
         ]
         results = get_services().searcher.search("exact match query")
         # Provider.chat should NOT be called for expansion
@@ -1380,8 +1505,9 @@ class TestSearchContextIntegration:
         finally:
             cfg.hyde, cfg.concept_graph, cfg.query_expansion_count = old_hyde, old_cg, old_qe
 
-    def test_hyde_adds_unique_results_with_distance_adjustment(self, mock_svc):
-        """HyDE results not seen in normal search are added with adjusted distance."""
+    def test_hyde_adds_unique_results_downweighted_in_score_space(self, mock_svc):
+        """HyDE results not seen in normal search are added with their canonical
+        score discounted by hyde_weight; distance provenance stays untouched."""
         normal_result = _make_result(source="normal.md", chunk_index=0)
         hyde_only_result = _make_result(source="hyde.md", chunk_index=0, distance=0.8)
         mock_svc.store.search.side_effect = [
@@ -1400,11 +1526,243 @@ class TestSearchContextIntegration:
             assert "normal.md" in sources
             assert "hyde.md" in sources
             hyde_r = next(r for r in results if r.source == "hyde.md")
-            assert hyde_r.distance == pytest.approx(0.8 / 0.5)
+            assert hyde_r.score == pytest.approx((1.0 - 0.8) * 0.5)
+            assert hyde_r.distance == pytest.approx(0.8)
         finally:
             cfg.query_expansion_count = 3
             cfg.hyde = False
             cfg.hyde_weight = 0.7
+
+
+class TestKnownItemRoute:
+    def _source(self, filename):
+        return {"filename": filename, "file_hash": "h", "ingested_at": "", "chunk_count": 2}
+
+    def test_named_document_bypasses_similarity_search(self, mock_svc):
+        """A question naming one resolvable document gets that document's
+        chunks in document order, not a similarity ranking."""
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk="second", chunk_index=1),
+            _make_result(source="survey_report.pdf", chunk="first", chunk_index=0),
+        ]
+        rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        assert rag is not None
+        results, _ = rag
+        assert [r.chunk for r in results] == ["first", "second"]
+        assert all(r.score == 1.0 for r in results)
+        mock_svc.store.search.assert_not_called()
+
+    def test_numeric_reference_resolves_against_zero_padded_ids(self, mock_svc):
+        """The private-corpus failure shape: a bare number must resolve to the
+        one zero-padded id that token-matches it, not fall back to topical
+        because substring search also hit a longer number."""
+        mock_svc.store.get_sources.return_value = [
+            self._source("ARC-REC-00000482.pdf"),
+            self._source("ARC-REC-00010482.pdf"),
+        ]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="ARC-REC-00000482.pdf", chunk="body", chunk_index=0)
+        ]
+        rag = get_services().searcher.build_rag_context("summarize document 482")
+        assert rag is not None
+        mock_svc.store.get_chunks_by_source.assert_called_once_with("ARC-REC-00000482.pdf")
+        mock_svc.store.search.assert_not_called()
+
+    def test_quoted_title_resolves_via_unique_substring_match(self, mock_svc):
+        """A quoted multi-word title never token-matches a hyphenated
+        filename; when substring search finds exactly one source, that
+        uniqueness still routes."""
+        mock_svc.store.get_sources.return_value = [self._source("harbor-survey-2010.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="harbor-survey-2010.pdf", chunk="body", chunk_index=0)
+        ]
+        rag = get_services().searcher.build_rag_context('summarize "harbor survey 2010"')
+        assert rag is not None
+        mock_svc.store.get_chunks_by_source.assert_called_once_with("harbor-survey-2010.pdf")
+
+    def test_numeric_ref_with_only_substring_hit_stays_topical(self, mock_svc):
+        """ "12" inside "notes-2012" is a false match; a numeric reference that
+        token-matches nothing must not route via the substring fallback."""
+        mock_svc.store.get_sources.return_value = [self._source("notes-2012.pdf")]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize document 12")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
+    def test_ambiguous_reference_falls_back_to_topical(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            self._source("report_12a.pdf"),
+            self._source("report_12b.pdf"),
+        ]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize document 12")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.search.assert_called_once()
+
+    def test_disabled_by_config(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.intent_routing = False
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        finally:
+            cfg.intent_routing = True
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_sources.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
+    def test_resolved_source_with_no_chunks_falls_back(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = []
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.search.assert_called_once()
+
+
+class TestAggregateRoute:
+    def test_term_count_answers_without_llm(self, mock_svc):
+        """A count question gets an exact scan answer; no model is called, so
+        no model can hedge or invent the number."""
+        mock_svc.store.count_term_mentions.return_value = (412, 57)
+        result = get_services().searcher.ask_raw("how many documents mention the observatory?")
+        assert "57 documents" in result.answer
+        assert "412 passages" in result.answer
+        mock_svc.provider.chat.assert_not_called()
+        mock_svc.store.search.assert_not_called()
+
+    def test_total_count(self, mock_svc):
+        mock_svc.store.count_sources.return_value = 369
+        mock_svc.store.count_chunks.return_value = 123456
+        result = get_services().searcher.ask_raw("how many documents are there?")
+        assert "369" in result.answer
+        assert "123456" in result.answer
+
+    def test_typed_count_declines_precisely(self, mock_svc):
+        result = get_services().searcher.ask_raw(
+            "how many shipments is each part number associated with?"
+        )
+        assert "aren't extracted" in result.answer
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_stream_path_routes_aggregates_too(self, mock_svc):
+        mock_svc.store.count_term_mentions.return_value = (10, 3)
+        tokens = list(get_services().searcher.ask_stream("how many documents mention kerosene?"))
+        text = "".join(t.content for t in tokens)
+        assert "3 documents" in text
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_topical_question_unaffected(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.provider.chat.return_value = _text_result("an answer [1]")
+        cfg.query_expansion_count = 0
+        try:
+            result = get_services().searcher.ask_raw("what did the keeper record in October?")
+        finally:
+            cfg.query_expansion_count = 3
+        assert result.sources
+        mock_svc.store.count_term_mentions.assert_not_called()
+
+    def test_disabled_by_config_goes_topical(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.provider.chat.return_value = _text_result("an answer [1]")
+        cfg.intent_routing = False
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.ask_raw("how many documents mention the observatory?")
+        finally:
+            cfg.intent_routing = True
+            cfg.query_expansion_count = 3
+        mock_svc.store.count_term_mentions.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
+
+class TestHistoryCondensation:
+    _HISTORY: ClassVar[list[dict[str, str]]] = [
+        {"role": "user", "content": "who kept the lighthouse journal at Split Rock"},
+        {"role": "assistant", "content": "It was kept by E. Larsen [1]."},
+    ]
+
+    def test_follow_up_is_rewritten_for_retrieval(self, mock_svc):
+        """Retrieval must see the standalone rewrite, not the pronouns; the
+        answering prompt keeps the user's original wording."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        _, messages = rag
+        assert mock_svc.store.search.call_args[1]["query_text"] == rewritten
+        assert "and when was it written?" in messages[-1]["content"]
+        assert rewritten not in messages[-1]["content"]
+
+    def test_no_history_means_no_rewrite_call(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("standalone question")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_falls_back_to_original_on_provider_error(self, mock_svc):
+        mock_svc.provider.chat.side_effect = RuntimeError("no provider")
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            rag = get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        assert rag is not None
+        assert mock_svc.store.search.call_args[1]["query_text"] == "and when was it written?"
+
+    def test_disabled_by_config(self, mock_svc):
+        cfg.history_rewrite = False
+        cfg.query_expansion_count = 0
+        mock_svc.store.search.return_value = [_make_result()]
+        try:
+            get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.history_rewrite = True
+            cfg.query_expansion_count = 3
+        mock_svc.provider.chat.assert_not_called()
+        assert mock_svc.store.search.call_args[1]["query_text"] == "and when was it written?"
+
+    def test_reasoning_stripped_from_rewrite(self, mock_svc):
+        mock_svc.provider.chat.return_value = _text_result(
+            "<think>the user means the journal</think>when was the Split Rock journal written"
+        )
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context(
+                "and when was it written?", history=list(self._HISTORY)
+            )
+        finally:
+            cfg.query_expansion_count = 3
+        expected = "when was the Split Rock journal written"
+        assert mock_svc.store.search.call_args[1]["query_text"] == expected
 
 
 class TestAskRawWithReranker:
@@ -2016,6 +2374,14 @@ class TestFilterResults:
         assert len(filtered) == 1
         assert filtered[0].source == "close.pdf"
 
+    def test_drops_high_distance_legacy_rows(self):
+        results = [
+            _make_result(source="close.pdf", distance=0.3, score=None),
+            _make_result(source="far.pdf", distance=0.95, score=None, chunk_index=1),
+        ]
+        filtered = filter_results(results, max_distance=0.9)
+        assert [r.source for r in filtered] == ["close.pdf"]
+
     def test_drops_low_relevance_score(self):
         results = [
             _make_result(source="good.pdf", distance=None, relevance_score=0.8),
@@ -2034,6 +2400,26 @@ class TestFilterResults:
         results = [_make_result(distance=2.0)]
         filtered = filter_results(results, max_distance=0, min_relevance_score=0)
         assert len(filtered) == 1
+
+    def test_canonical_score_gates_on_min_relevance(self):
+        """min_relevance_score is a real abstention threshold against the
+        canonical [0,1] score; with every row below it, retrieval comes back
+        empty and ask() can refuse instead of feeding noise as context."""
+        results = [
+            _make_result(source="noise1.pdf", score=0.04),
+            _make_result(source="noise2.pdf", score=0.02, chunk_index=1),
+        ]
+        assert filter_results(results, max_distance=0.9, min_relevance_score=0.1) == []
+
+    def test_lexically_supported_row_survives_far_distance(self):
+        """A row the BM25 arm matched keeps its standing regardless of vector
+        distance; only unsupported far rows are dropped."""
+        results = [
+            _make_result(source="identifier.pdf", distance=1.4, score=0.35, bm25_score=30.0),
+            _make_result(source="drift.pdf", distance=1.4, score=0.1, chunk_index=1),
+        ]
+        filtered = filter_results(results, max_distance=0.9)
+        assert [r.source for r in filtered] == ["identifier.pdf"]
 
     def test_keeps_results_at_threshold(self):
         r = _make_result(distance=0.9)
@@ -2054,9 +2440,17 @@ class TestRelevanceWeight:
         r = _make_result(distance=None, relevance_score=None)
         assert _relevance_weight(r) == pytest.approx(0.5)
 
-    def test_relevance_score_takes_priority(self):
-        r = _make_result(distance=0.3, relevance_score=0.9)
+    def test_canonical_score_takes_priority(self):
+        r = _make_result(distance=0.3, relevance_score=0.9, score=0.6)
+        assert _relevance_weight(r) == pytest.approx(0.6)
+
+    def test_legacy_relevance_score_beats_distance(self):
+        r = _make_result(distance=0.3, relevance_score=0.9, score=None)
         assert _relevance_weight(r) == pytest.approx(0.9)
+
+    def test_legacy_distance_inverts_when_only_signal(self):
+        r = _make_result(distance=0.3, relevance_score=None, score=None)
+        assert _relevance_weight(r) == pytest.approx(0.7)
 
     def test_clamps_high_relevance(self):
         r = _make_result(distance=None, relevance_score=1.5)
@@ -2065,6 +2459,45 @@ class TestRelevanceWeight:
     def test_clamps_negative_distance(self):
         r = _make_result(distance=1.5, relevance_score=None)
         assert _relevance_weight(r) == pytest.approx(0.0)
+
+
+class TestCitedSubsetByName:
+    def test_name_mention_counts_as_citation(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [
+            _make_result(source="ARC-REC-00000482.pdf", chunk_index=0),
+            _make_result(source="survey_report.pdf", chunk_index=1),
+        ]
+        answer = "According to ARC-REC-00000482.pdf, the request was approved."
+        assert [c.source for c in cited_subset(answer, sources)] == ["ARC-REC-00000482.pdf"]
+
+    def test_stem_mention_counts_when_identifier_shaped(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="ARC-REC-00000482.pdf", chunk_index=0)]
+        answer = "The memo in ARC-REC-00000482 approves the request."
+        assert len(cited_subset(answer, sources)) == 1
+
+    def test_prose_word_stem_does_not_false_positive(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="notes.md", chunk_index=0)]
+        answer = "The witness notes that the repair happened in March."
+        assert cited_subset(answer, sources) == []
+
+    def test_marker_and_name_citations_combine(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [
+            _make_result(source="alpha_report.pdf", chunk_index=0),
+            _make_result(source="beta_summary.pdf", chunk_index=1),
+        ]
+        answer = "Per [2], and as alpha_report.pdf notes, both agree."
+        assert {c.source for c in cited_subset(answer, sources)} == {
+            "alpha_report.pdf",
+            "beta_summary.pdf",
+        }
 
 
 class TestStripLlmCitations:

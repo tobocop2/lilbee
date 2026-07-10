@@ -793,6 +793,30 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
     ),
+    "fusion_alpha": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Vector-arm weight in hybrid fusion (1.0 = pure vector, 0.0 = pure lexical)",
+    ),
+    "fusion_overfetch_floor": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Minimum rows fetched per retrieval arm before fusion",
+    ),
+    "history_rewrite": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Rewrite follow-ups into standalone retrieval queries using chat history",
+    ),
+    "intent_routing": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Route document-name lookups to exact retrieval, count questions to a scan",
+    ),
     "ann_index_threshold": SettingDef(
         int,
         nullable=False,

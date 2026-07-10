@@ -16,10 +16,13 @@ _NEUTRAL_SCORE = 0.5
 def _relevance_weight(result: SearchChunk) -> float:
     """Return a [0, 1] relevance weight for distance-aware selection.
 
-    Hybrid results (relevance_score set): use directly.
-    Vector results (distance set): invert cosine distance.
-    Neither: neutral default.
+    The canonical ``score`` is authoritative when present. Legacy rows fall
+    back to their arm-specific signal: RRF ``relevance_score`` (whose tiny
+    magnitude made hybrid rows weigh ~0.03 against ~0.4 for vector rows,
+    inverting the ranking inside greedy set cover) or inverted distance.
     """
+    if result.score is not None:
+        return min(1.0, max(0.0, result.score))
     if result.relevance_score is not None:
         return min(1.0, max(0.0, result.relevance_score))
     if result.distance is not None:
@@ -40,12 +43,14 @@ def normalize_scores(scores: list[float]) -> list[float]:
 def _fusion_signal(result: SearchChunk) -> float:
     """A chunk's retrieval confidence as a "higher = better" raw signal.
 
-    Hybrid rows carry an RRF ``relevance_score`` (small positive magnitude);
-    vector-only rows carry a cosine ``distance`` (0.0 = identical, lower = better).
-    ``is None`` rather than truthiness is deliberate: a perfect vector match has
-    ``distance == 0.0`` -- the strongest possible hit -- which falsy ``or`` would
-    misread as the neutral default.
+    The canonical ``score`` wins when present. Legacy rows: RRF
+    ``relevance_score`` (small positive magnitude) or cosine ``distance``
+    (0.0 = identical, lower = better). ``is None`` rather than truthiness is
+    deliberate: a perfect vector match has ``distance == 0.0`` -- the
+    strongest possible hit -- which falsy ``or`` would misread as neutral.
     """
+    if result.score is not None:
+        return result.score
     if result.relevance_score is not None:
         return result.relevance_score
     if result.distance is not None:
@@ -56,16 +61,17 @@ def _fusion_signal(result: SearchChunk) -> float:
 def fusion_norms(results: list[SearchChunk]) -> list[float]:
     """Normalize each chunk's fusion signal to [0, 1] WITHIN its scoring family.
 
-    Hybrid rows carry an RRF ``relevance_score`` (tiny magnitude); the rest
-    (vector-only / HyDE recalls) carry a cosine ``distance``. The two scales are
-    not comparable, so normalizing them together would let one family dominate
-    purely as a scale artifact. Each family is scaled independently; a row with
-    neither signal sits in the non-RRF family at the neutral score.
+    Rows carrying the canonical ``score`` are one family (already mutually
+    comparable). Legacy rows split as before: RRF ``relevance_score`` (tiny
+    magnitude) versus cosine ``distance``; those scales are not comparable,
+    so normalizing them together would let one family dominate purely as a
+    scale artifact. A row with no signal at all sits at the neutral score.
     """
-    rrf = [i for i, r in enumerate(results) if r.relevance_score is not None]
-    non_rrf = [i for i, r in enumerate(results) if r.relevance_score is None]
+    canonical = [i for i, r in enumerate(results) if r.score is not None]
+    rrf = [i for i, r in enumerate(results) if r.score is None and r.relevance_score is not None]
+    legacy = [i for i, r in enumerate(results) if r.score is None and r.relevance_score is None]
     norms = [_NEUTRAL_SCORE] * len(results)
-    for cohort in (rrf, non_rrf):
+    for cohort in (canonical, rrf, legacy):
         if not cohort:
             continue
         scaled = normalize_scores([_fusion_signal(results[i]) for i in cohort])
@@ -76,8 +82,9 @@ def fusion_norms(results: list[SearchChunk]) -> list[float]:
 
 def order_by_fusion(results: list[SearchChunk]) -> list[SearchChunk]:
     """Sort results best-first by fusion signal, normalized within each scoring
-    family so RRF (hybrid) and cosine-distance (vector/HyDE) rows are comparable
-    and one scale can't dominate the order as an artifact of its magnitude.
+    family so rows carrying different signals (canonical score, legacy RRF,
+    cosine distance) stay comparable and one scale can't dominate the order as
+    an artifact of its magnitude.
     """
     norms = fusion_norms(results)
     order = sorted(range(len(results)), key=lambda i: norms[i], reverse=True)
@@ -131,20 +138,30 @@ def filter_results(
     max_distance: float,
     min_relevance_score: float = 0.0,
 ) -> list[SearchChunk]:
-    """Drop results above max_distance or below min_relevance_score.
+    """Drop results below min_relevance_score or above max_distance.
 
-    Hybrid results (relevance_score set) are checked against min_relevance_score.
-    Vector results (distance set) are checked against max_distance.
-    Results with neither score pass through. When both scores are present,
-    relevance_score takes priority (hybrid results use RRF scoring, not
-    cosine distance). Pass max_distance=0 to disable distance filtering.
+    Rows carrying the canonical ``score`` are gated on ``min_relevance_score``,
+    which is what makes an abstention threshold possible: the score is [0, 1]
+    with real meaning, unlike RRF magnitudes. ``max_distance`` additionally
+    drops rows whose only signal is a far vector match (a row with lexical
+    support keeps its standing regardless of distance). Legacy rows keep the
+    old per-family checks. Pass max_distance=0 to disable distance filtering.
     """
     if max_distance <= 0 and min_relevance_score <= 0:
         return results
     filtered: list[SearchChunk] = []
     for r in results:
-        # Hybrid results: check relevance_score (takes priority over distance)
-        if r.relevance_score is not None:
+        if r.score is not None:
+            if min_relevance_score > 0 and r.score < min_relevance_score:
+                continue
+            if (
+                max_distance > 0
+                and r.bm25_score is None
+                and r.distance is not None
+                and r.distance > max_distance
+            ):
+                continue
+        elif r.relevance_score is not None:
             if min_relevance_score > 0 and r.relevance_score < min_relevance_score:
                 continue
         elif r.distance is not None and max_distance > 0 and r.distance > max_distance:
@@ -173,7 +190,15 @@ def deduplicate_sources(
 
 
 def _sort_key(r: SearchChunk) -> float:
-    """Sort key: lower = more relevant."""
+    """Sort key: lower = more relevant.
+
+    Canonical ``score`` first. The legacy branches are ordered so that
+    comparing a leftover RRF row (key ~ -0.03) with a distance row (key >= 0)
+    keeps the old bias only among rows the store did not score; scored rows
+    never hit them.
+    """
+    if r.score is not None:
+        return -r.score
     if r.relevance_score is not None:
         return -r.relevance_score
     if r.distance is not None:

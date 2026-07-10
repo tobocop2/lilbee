@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import math
+import re
 from collections.abc import Generator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -32,7 +32,13 @@ from lilbee.retrieval.query.dedup import (
     order_by_fusion,
     prepare_results,
 )
-from lilbee.retrieval.query.expansion import EXPANSION_MAX_TOKENS, EXPANSION_PROMPT
+from lilbee.retrieval.query.expansion import (
+    CONDENSE_HISTORY_TURNS,
+    CONDENSE_MAX_TOKENS,
+    CONDENSE_PROMPT,
+    EXPANSION_MAX_TOKENS,
+    EXPANSION_PROMPT,
+)
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
     build_context,
@@ -40,6 +46,13 @@ from lilbee.retrieval.query.formatting import (
     strip_llm_citations,
 )
 from lilbee.retrieval.query.history_window import estimate_text_tokens
+from lilbee.retrieval.query.intent import (
+    AggregateKind,
+    AggregateQuery,
+    document_references,
+    matches_reference,
+    parse_aggregate,
+)
 from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
@@ -60,21 +73,43 @@ log = logging.getLogger(__name__)
 # scores for the expansion-skip heuristic.
 _MIN_BM25_PROBE_RESULTS = 2
 
+# Substring candidates fetched per document reference before token-exact
+# disambiguation picks the unique winner.
+_KNOWN_ITEM_CANDIDATES = 50
+
 # Structured-query mode names (the ``mode:`` prefix shortcut). Single source for
 # both the prefix parser and the dispatch in ``_search_structured``. "term"/"vec"/
 # "hyde" pick a retrieval strategy; "wiki"/"raw" are ChunkType scope shortcuts.
 _STRUCTURED_QUERY_MODES = ("term", "vec", "hyde", ChunkType.WIKI.value, ChunkType.RAW.value)
 
+# Leading list markers models prepend to expansion output despite the prompt:
+# "1.", "2)", "-", "*", "•".
+_LIST_MARKER_RE = re.compile(r"^\s*(?:\d+[.)]\s*|[-*•]\s+)")
+
+
+def _strip_list_marker(line: str) -> str:
+    """Drop a leading list marker from an expansion variant line."""
+    return _LIST_MARKER_RE.sub("", line).strip()
+
+
+# Half-saturation constant for BM25 confidence: a raw score of 5 reads as 0.5,
+# 20 as 0.8, 45 as 0.9. A plain sigmoid saturated at ~0.99 for any raw score
+# above 5, which made the top-vs-runner-up gap condition unsatisfiable exactly
+# when BM25 was most certain, so the skip never fired.
+_BM25_HALF_SATURATION = 5.0
+
 
 def _bm25_confidence(score: float | None) -> float:
-    """Squash a raw, unbounded BM25 score into the (0, 1) confidence that the
-    expansion-skip thresholds are calibrated for (the config calls this the
-    "sigmoid-normalized BM25 score"). Absent or non-positive scores read as 0,
-    so a missing FTS signal never trips the skip.
+    """Squash a raw, unbounded BM25 score into (0, 1) without saturating.
+
+    ``s / (s + k)`` keeps strong scores distinguishable (unlike a sigmoid,
+    which flattens everything past ~5 to within 0.01 of 1.0). Absent or
+    non-positive scores read as 0, so a missing FTS signal never trips the
+    expansion skip.
     """
     if score is None or score <= 0.0:
         return 0.0
-    return 1.0 / (1.0 + math.exp(-score))
+    return score / (score + _BM25_HALF_SATURATION)
 
 
 # RAG mode answer when retrieval finds no usable sources: a grounded refusal
@@ -94,8 +129,9 @@ SEARCH_NEEDS_EMBEDDER = (
 _ANSWER_RESERVE_TOKENS = 1024
 # Approximate token cost of the Context/Question template wrapper.
 _CONTEXT_TEMPLATE_TOKENS = 16
-# Approximate per-source overhead: the "[i] " marker plus blank-line separator.
-_PER_SOURCE_TOKENS = 8
+# Approximate per-source overhead: the "[i] " marker, the provenance header
+# (source path plus page/line span), and the blank-line separator.
+_PER_SOURCE_TOKENS = 24
 
 
 class ChatMessage(TypedDict):
@@ -189,15 +225,22 @@ class Searcher:
             return []
 
     def _llm_expand(self, question: str, count: int) -> list[str]:
-        """Call the LLM to produce ``count`` alternative phrasings."""
+        """Call the LLM to produce ``count`` alternative phrasings.
+
+        Reasoning is stripped before the line split: a reasoning chat model
+        otherwise contributes its deliberation as "variants" that get embedded
+        and searched. List numbering is stripped per line since models add it
+        despite the prompt, and "1." pollutes the BM25 arm of every variant
+        search.
+        """
         prompt = EXPANSION_PROMPT.format(count=count, question=question)
         messages = [{"role": "user", "content": prompt}]
         response = self._provider.chat(
             messages, stream=False, options={"num_predict": EXPANSION_MAX_TOKENS}
         )
-        text = response.text.strip()
-        variants = [line.strip() for line in text.split("\n") if line.strip()]
-        return variants[:count]
+        text = strip_reasoning(response.text).strip()
+        variants = [_strip_list_marker(line.strip()) for line in text.split("\n") if line.strip()]
+        return [v for v in variants if v][:count]
 
     def _expand_query(
         self, question: str, question_vec: list[float]
@@ -246,13 +289,17 @@ class Searcher:
         )
         if not results:
             return False
-        top_score = _bm25_confidence(results[0].bm25_score)
-        if top_score < self._config.expansion_skip_threshold:
+        top_raw = results[0].bm25_score or 0.0
+        if _bm25_confidence(top_raw) < self._config.expansion_skip_threshold:
             return False
         if len(results) < _MIN_BM25_PROBE_RESULTS:
             return True
-        second_score = _bm25_confidence(results[1].bm25_score)
-        return (top_score - second_score) >= self._config.expansion_skip_gap
+        # Relative gap in raw score space: any squash compresses the spread
+        # between two strong scores toward zero, so a squashed-space gap test
+        # can never fire exactly when the lexical arm is most certain.
+        second_raw = results[1].bm25_score or 0.0
+        relative_gap = (top_raw - second_raw) / top_raw if top_raw > 0 else 0.0
+        return relative_gap >= self._config.expansion_skip_gap
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
         if not self._config.concept_graph or not results:
@@ -294,7 +341,9 @@ class Searcher:
                 stream=False,
                 options={"num_predict": EXPANSION_MAX_TOKENS},
             )
-            text = response.text.strip()
+            # Reasoning models front-load deliberation; embedding it instead
+            # of the passage would search for the model's thought process.
+            text = strip_reasoning(response.text).strip()
             if not text:
                 return []
             hyde_vec = self._embedder.embed_query(text)
@@ -413,13 +462,15 @@ class Searcher:
         top_k: int,
         chunk_type: ChunkType | None = None,
     ) -> None:
-        """Append unseen HyDE hits to ``results`` (in place), reweighted by ``hyde_weight``."""
+        """Append unseen HyDE hits to ``results`` (in place), down-weighted by
+        ``hyde_weight`` in canonical score space (a weight of 1.0 trusts HyDE
+        hits as much as direct hits; lower discounts them proportionally)."""
         for r in self._hyde_search(question, top_k, chunk_type=chunk_type):
             key = (r.source, r.chunk_index)
             if key in seen:
                 continue
-            if r.distance is not None and self._config.hyde_weight > 0:
-                r = r.model_copy(update={"distance": r.distance / self._config.hyde_weight})
+            if r.score is not None:
+                r = r.model_copy(update={"score": r.score * self._config.hyde_weight})
             results.append(r)
             seen.add(key)
 
@@ -472,10 +523,76 @@ class Searcher:
             if self._config.hyde:
                 self._merge_hyde_results(question, results, seen, top_k, chunk_type)
         results = self._apply_concept_boost(results, question)
+        # Merged variant/HyDE hits arrive appended, not ranked; every consumer
+        # of this method (bare search surfaces included) gets one global order
+        # over the canonical score rather than insertion order.
+        results = order_by_fusion(results)
         # Apply the date-range filter here so the bare search() path (e.g. /api/search)
         # honors a "recent"/"today" query, matching the chat/ask path.
         results = self._apply_temporal_filter(results, question)
         return results[: top_k * 2]
+
+    def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
+        """Rewrite a follow-up into a standalone retrieval query.
+
+        Retrieval sees only the query text; without this, "what about his
+        brother?" is embedded and BM25-matched with its pronouns. The
+        rewritten form drives retrieval only; the user's original wording
+        still reaches the answering prompt. Falls back to the original
+        question on any failure or empty rewrite.
+        """
+        recent = history[-CONDENSE_HISTORY_TURNS:]
+        transcript = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
+        prompt = CONDENSE_PROMPT.format(history=transcript, question=question)
+        try:
+            response = self._provider.chat(
+                [{"role": "user", "content": prompt}],
+                stream=False,
+                options={"num_predict": CONDENSE_MAX_TOKENS},
+            )
+            rewritten = strip_reasoning(response.text).strip().splitlines()
+            first_line = rewritten[0].strip() if rewritten else ""
+            if first_line:
+                log.debug("Condensed follow-up %r -> %r", question, first_line)
+                return first_line
+        except Exception:
+            log.debug("History condensation failed; using the raw question", exc_info=True)
+        return question
+
+    def _known_item_results(self, question: str) -> list[SearchChunk]:
+        """Resolve a document named in *question* to its own chunks.
+
+        A question that names a document wants that document, not a ranking:
+        similarity search retrieves neighbors of the question's wording,
+        which for "summarize survey_214.pdf" is mostly noise. Resolution is
+        conservative: only a reference matching exactly one source routes;
+        anything ambiguous falls back to topical retrieval. Chunks come back
+        in document order with full canonical confidence, since their
+        relevance is established by the name match, not by similarity.
+        """
+        for ref in document_references(question):
+            candidates = self._store.get_sources(search=ref, limit=_KNOWN_ITEM_CANDIDATES)
+            # Substring search over-matches (a bare "482" hits every
+            # zero-padded id containing it); token-exact matching does the
+            # disambiguation, and only a unique winner routes.
+            matches = [s for s in candidates if matches_reference(ref, s["filename"])]
+            if len(matches) != 1:
+                # A unique substring hit still routes for word refs (quoted
+                # titles never token-match hyphenated filenames), but not for
+                # numeric ones: "12" inside "notes-2012" is the exact false
+                # match token comparison exists to reject.
+                if len(candidates) == 1 and not ref.strip().isdigit():
+                    matches = candidates
+                else:
+                    continue
+            filename = matches[0]["filename"]
+            chunks = self._store.get_chunks_by_source(filename)
+            if not chunks:
+                continue
+            chunks.sort(key=lambda c: c.chunk_index)
+            log.info("Known-item route: %r resolved to %s", ref, filename)
+            return [c.model_copy(update={"score": 1.0}) for c in chunks]
+        return []
 
     def build_rag_context(
         self,
@@ -490,17 +607,29 @@ class Searcher:
         ``chunk_type`` restricts the pool to ``"raw"`` or ``"wiki"`` rows;
         ``None`` (default) searches the mixed pool.
         """
-        results = self.search(question, top_k=top_k, chunk_type=chunk_type)
-        results = filter_results(
-            results, self._config.max_distance, self._config.min_relevance_score
+        retrieval_query = question
+        if history and self._config.history_rewrite:
+            retrieval_query = self._condense_question(question, history)
+        known_item = (
+            self._known_item_results(retrieval_query) if self._config.intent_routing else []
         )
-        if not results:
-            return None
-        results = prepare_results(results)
-        if self._config.reranker_model:
-            results = self._reranker.rerank(question, results)
-        # Temporal filtering already ran inside search(); no need to repeat it here.
-        results = self.select_context(results, question)
+        if known_item:
+            # The named document IS the context; ranking and reranking would
+            # only reorder or drop parts of it. The budget fit below still
+            # trims to the context window, keeping the document's head.
+            results = known_item
+        else:
+            results = self.search(retrieval_query, top_k=top_k, chunk_type=chunk_type)
+            results = filter_results(
+                results, self._config.max_distance, self._config.min_relevance_score
+            )
+            if not results:
+                return None
+            results = prepare_results(results)
+            if self._config.reranker_model:
+                results = self._reranker.rerank(retrieval_query, results)
+            # Temporal filtering already ran inside search(); no need to repeat it here.
+            results = self.select_context(results, retrieval_query)
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         results = self._fit_context_budget(results, system, question, history)
         context = build_context(results)
@@ -580,6 +709,50 @@ class Searcher:
             )
         return format_memory_block(preferences, facts, self._config.memory_token_budget)
 
+    def _answer_aggregate(self, aggregate: AggregateQuery) -> str:
+        """Answer a count-shaped question with an exact full-corpus scan.
+
+        Top-k retrieval sees a handful of chunks out of the whole corpus, so
+        it structurally cannot count; the faithful-but-useless outcome is a
+        model hedging that "the context does not provide precise counts".
+        Counting is a scan, and a scan needs no language model: the numbers
+        below are exact, not generated.
+        """
+        if aggregate.kind is AggregateKind.TOTAL_SOURCES:
+            sources = self._store.count_sources()
+            chunks = self._store.count_chunks()
+            return f"The index holds {sources} documents split into {chunks} searchable passages."
+        if aggregate.kind is AggregateKind.TERM_MENTIONS:
+            chunk_hits, source_hits = self._store.count_term_mentions(aggregate.term)
+            return (
+                f"Exact scan of the whole index: {source_hits} documents mention "
+                f"{aggregate.term!r}, across {chunk_hits} passages. This counts literal "
+                f"mentions of the phrase, not paraphrases."
+            )
+        return (
+            "Answering that count needs structured records (dates, identifiers, or "
+            "entities) that aren't extracted from this corpus yet. I can count "
+            "documents or passages that mention a specific term, or you can ask for "
+            "the passages themselves and count from those."
+        )
+
+    def route_direct_answer(self, question: str) -> str | None:
+        """The exact-scan answer for a count-shaped question, else ``None``.
+
+        Every retrieval entry point must consult this before building RAG
+        context: ask_raw/ask_stream do (covering CLI and TUI), and the HTTP
+        handlers call it themselves because they assemble their own prompts
+        from build_rag_context. An entry point that skips it hedges at the
+        count questions every other surface answers exactly.
+        """
+        if not self._config.intent_routing:
+            return None
+        aggregate = parse_aggregate(question)
+        if aggregate is None:
+            return None
+        log.info("Aggregate route: %s for %r", aggregate.kind.value, question)
+        return self._answer_aggregate(aggregate)
+
     def skip_retrieval(self) -> bool:
         """Whether this turn should bypass RAG: chat-only mode or no embedder."""
         return (
@@ -647,6 +820,9 @@ class Searcher:
             return AskResult(answer=SEARCH_NEEDS_EMBEDDER, sources=[])
         if self.skip_retrieval():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
+        aggregate_answer = self.route_direct_answer(question)
+        if aggregate_answer is not None:
+            return AskResult(answer=aggregate_answer, sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
             return AskResult(answer=_GROUNDED_REFUSAL, sources=[])
@@ -716,6 +892,10 @@ class Searcher:
             return
         if self.skip_retrieval():
             yield from self._stream_direct(question, history, options)
+            return
+        aggregate_answer = self.route_direct_answer(question)
+        if aggregate_answer is not None:
+            yield StreamToken(content=aggregate_answer, is_reasoning=False)
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)

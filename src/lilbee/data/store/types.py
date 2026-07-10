@@ -114,9 +114,11 @@ def scope_to_chunk_type(scope: SearchScope | str | None) -> ChunkType | None:
 
 class SearchChunk(BaseModel):
     """A search result from LanceDB.
-    Hybrid results have ``relevance_score`` set (higher = better).
-    Vector-only results have ``distance`` set (lower = better).
-    Reranked results have ``rerank_score`` set (higher = better).
+    Every store search path sets ``score``: canonical [0, 1] relevance,
+    higher = better. Ranking, filtering, and selection compare only this
+    field; the arm-specific fields below it are provenance.
+    Vector-arm rows carry ``distance``; FTS-arm rows carry ``bm25_score``;
+    reranked rows additionally carry ``rerank_score`` (higher = better).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -139,14 +141,20 @@ class SearchChunk(BaseModel):
     chunk_index: int
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
-    # Hybrid rows carry an RRF ``_relevance_score`` (small fusion-scale magnitude,
-    # higher = better) that filtering and ranking compare across results.
+    # Legacy RRF ``_relevance_score`` (small fusion-scale magnitude, higher =
+    # better). Current store paths no longer populate it; it survives for rows
+    # produced by older code and external LanceDB rerankers.
     relevance_score: float | None = Field(None, validation_alias="_relevance_score")
     # FTS/BM25-only rows carry a raw, unbounded ``_score``. It lives in its own
     # field so it never contaminates the fusion-scale ``relevance_score``; only the
     # confidence-based expansion-skip reads it (sigmoid-squashed to [0, 1]).
     bm25_score: float | None = Field(None, validation_alias="_score")
     rerank_score: float | None = None
+    # Canonical relevance in [0, 1], set by the store on every search path:
+    # convex fusion of vector similarity and normalized BM25 on the hybrid
+    # path, clamped cosine similarity on vector-only, list-normalized BM25 on
+    # FTS-only probes.
+    score: float | None = None
 
 
 class SourceRecord(TypedDict):

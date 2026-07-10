@@ -26,6 +26,7 @@ from lilbee.core.config import (
 from lilbee.core.security import validate_path_within
 from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
+from .fusion import fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
     _chunk_type_predicate,
     _has_fts_index,
@@ -73,32 +74,22 @@ log = logging.getLogger(__name__)
 BATCH_LOCK_TIMEOUT = 120.0
 
 
-def _hybrid_search(
-    table: lancedb.table.Table,
-    query_text: str,
-    query_vector: list[float],
-    top_k: int,
-    chunk_type: ChunkType | None = None,
+def _drop_unsupported_far_rows(
+    results: list[SearchChunk], max_distance: float
 ) -> list[SearchChunk]:
-    """Run hybrid (vector + FTS) search with RRF reranking.
+    """Apply ``max_distance`` to rows whose only signal is the vector arm.
 
-    When ``chunk_type`` is set, the predicate is pushed into the query so
-    the limit applies *after* the type filter. Post-filtering would
-    silently starve wiki-only queries whose matches live past the top-K
-    hybrid window.
+    A row the BM25 arm also matched keeps lexical support regardless of its
+    vector distance; dropping it on distance alone would re-bury exactly the
+    identifier hits score fusion exists to preserve.
     """
-    from lancedb.rerankers import RRFReranker
-
-    query = (
-        table.search(query_type="hybrid")
-        .vector(query_vector)
-        .text(query_text)
-        .rerank(RRFReranker())
-    )
-    if chunk_type:
-        query = query.where(_chunk_type_predicate(chunk_type))
-    rows = query.limit(top_k).to_list()
-    return [SearchChunk(**r) for r in rows]
+    if max_distance <= 0:
+        return results
+    return [
+        r
+        for r in results
+        if r.bm25_score is not None or r.distance is None or r.distance <= max_distance
+    ]
 
 
 _MAX_THRESHOLD = 1.0
@@ -130,6 +121,10 @@ _PER_SOURCE_TABLES = (
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
 _SOURCE_STAT_BATCH_ROWS = 2000
+
+# Rows per Arrow batch when the aggregate scan walks the whole chunks table;
+# bounds the decoded-text working set while the scan stays columnar.
+_TERM_SCAN_BATCH_ROWS = 20_000
 
 
 def _ann_nprobes(row_count: int) -> int:
@@ -495,7 +490,11 @@ class Store:
             if chunk_type:
                 query = query.where(_chunk_type_predicate(chunk_type))
             rows = query.limit(top_k).to_list()
-            return [SearchChunk(**r) for r in rows]
+            results = [SearchChunk(**r) for r in rows]
+            norms = normalized_bm25([r.bm25_score or 0.0 for r in results])
+            return [
+                r.model_copy(update={"score": norm}) for r, norm in zip(results, norms, strict=True)
+            ]
         except Exception:
             log.debug("BM25 probe failed", exc_info=True)
             return []
@@ -533,20 +532,17 @@ class Store:
 
         if query_text and self._fts_ready:
             try:
-                return _hybrid_search(table, query_text, query_vector, top_k, chunk_type)
+                return self._hybrid_search(
+                    table, query_text, query_vector, top_k, max_distance, chunk_type
+                )
             except Exception:
-                log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
+                # Falling back changes recall characteristics for the query;
+                # a corpus-wide FTS breakage must not present as silence.
+                log.warning("Hybrid search failed, falling back to vector-only", exc_info=True)
 
-        candidate_k = top_k * self._config.candidate_multiplier
-        query = table.search(query_vector).metric(_VECTOR_METRIC).limit(candidate_k)
-        if _has_vector_index(table):
-            # IVF_PQ is lossy; probe more partitions and refine against full
-            # vectors so recall stays close to the exact flat scan.
-            nprobes = _ann_nprobes(table.count_rows())
-            query = query.nprobes(nprobes).refine_factor(_ANN_REFINE_FACTOR)
-        if chunk_type:
-            query = query.where(_chunk_type_predicate(chunk_type))
-        rows = query.to_list()
+        rows = self._vector_arm(
+            table, query_vector, top_k * self._config.candidate_multiplier, chunk_type
+        )
         log.debug(
             "Vector search: query=%r, candidates=%d, max_distance=%.2f",
             query_text or "vector-only",
@@ -554,12 +550,86 @@ class Store:
             max_distance,
         )
         if rows:
-            # LanceDB names the similarity column "_distance"; "distance" would
-            # always miss and log 0.
-            distances = [r.get("_distance", 0) for r in rows[:5]]
-            log.debug("Top 5 distances: %s", distances)
-        results = [SearchChunk(**r) for r in rows]
-        return self._filter_and_rerank(results, query_vector, top_k, max_distance)
+            log.debug("Top 5 distances: %s", [r.distance for r in rows[:5]])
+        results = self._filter_and_rerank(rows, query_vector, top_k, max_distance)
+        return [
+            r.model_copy(
+                update={"score": vector_similarity(r.distance) if r.distance is not None else 0.0}
+            )
+            for r in results
+        ]
+
+    def _vector_arm(
+        self,
+        table: lancedb.table.Table,
+        query_vector: list[float],
+        limit: int,
+        chunk_type: ChunkType | None,
+    ) -> list[SearchChunk]:
+        """Vector-arm candidates with the ANN recall recovery applied.
+
+        When ``chunk_type`` is set, the predicate is pushed into the query so
+        the limit applies *after* the type filter; post-filtering would
+        silently starve wiki-only queries whose matches live past the window.
+        """
+        query = table.search(query_vector).metric(_VECTOR_METRIC).limit(limit)
+        if _has_vector_index(table):
+            # IVF_PQ is lossy; probe more partitions and refine against full
+            # vectors so recall stays close to the exact flat scan.
+            query = query.nprobes(_ann_nprobes(table.count_rows()))
+            query = query.refine_factor(_ANN_REFINE_FACTOR)
+        if chunk_type:
+            query = query.where(_chunk_type_predicate(chunk_type))
+        return [SearchChunk(**r) for r in query.to_list()]
+
+    def _fts_arm(
+        self,
+        table: lancedb.table.Table,
+        query_text: str,
+        limit: int,
+        chunk_type: ChunkType | None,
+    ) -> list[SearchChunk]:
+        """BM25-arm candidates."""
+        query = table.search(query_text, query_type="fts").limit(limit)
+        if chunk_type:
+            query = query.where(_chunk_type_predicate(chunk_type))
+        return [SearchChunk(**r) for r in query.to_list()]
+
+    def _hybrid_search(
+        self,
+        table: lancedb.table.Table,
+        query_text: str,
+        query_vector: list[float],
+        top_k: int,
+        max_distance: float,
+        chunk_type: ChunkType | None = None,
+    ) -> list[SearchChunk]:
+        """Dual-arm retrieval fused by score, then MMR-selected down to top_k.
+
+        Each arm is overfetched well past ``top_k`` so fusion sees rows ranked
+        just outside the final window in both arms; the previous rank-fused
+        path capped each arm at ``top_k``, hiding those rows entirely. MMR
+        runs on the canonical fused score, so lexical-only hits keep the
+        standing fusion gave them.
+        """
+        overfetch = max(
+            top_k * self._config.candidate_multiplier, self._config.fusion_overfetch_floor
+        )
+        fused = fuse_arms(
+            self._vector_arm(table, query_vector, overfetch, chunk_type),
+            self._fts_arm(table, query_text, overfetch, chunk_type),
+            self._config.fusion_alpha,
+        )
+        fused = _drop_unsupported_far_rows(fused, max_distance)
+        if len(fused) > top_k:
+            fused = mmr_rerank(
+                query_vector,
+                fused,
+                top_k,
+                self._config.mmr_lambda,
+                relevance_scores=[r.score or 0.0 for r in fused],
+            )
+        return fused[:top_k]
 
     def _filter_and_rerank(
         self,
@@ -619,6 +689,36 @@ class Store:
     def _fixed_filter(self, results: list[SearchChunk], threshold: float) -> list[SearchChunk]:
         """Simple fixed threshold filter - keep only results within distance threshold."""
         return [r for r in results if _get_distance(r) <= threshold]
+
+    def count_term_mentions(self, term: str) -> tuple[int, int]:
+        """(matching chunks, distinct matching sources) for a case-insensitive
+        substring scan of the WHOLE chunks table.
+
+        This is deliberately a full scan, not a top-k search: a count is a
+        corpus property, and any retrieval shortcut undercounts it. Streaming
+        Arrow batches keeps the working set to one batch of text at a time,
+        so cost is linear in corpus size and memory stays flat.
+        """
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return 0, 0
+        needle = term.lower()
+        chunk_hits = 0
+        sources: set[str] = set()
+        arrow = table.to_arrow().select(["source", "chunk"])
+        for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
+            texts = batch.column("chunk").to_pylist()
+            names = batch.column("source").to_pylist()
+            for name, text in zip(names, texts, strict=True):
+                if text and needle in text.lower():
+                    chunk_hits += 1
+                    sources.add(name)
+        return chunk_hits, len(sources)
+
+    def count_chunks(self) -> int:
+        """Total chunks in the store."""
+        table = self.open_table(CHUNKS_TABLE)
+        return table.count_rows() if table is not None else 0
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
         """Return every chunk whose ``source`` equals *source*."""
