@@ -161,7 +161,9 @@ class SwapManager:
         self._member_ports = sorted(member_ports.values())
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._config_path.write_text(
-            build_swap_config(launches, member_ports, swap=self._group.swaps, ttl_seconds=ttl_seconds)
+            build_swap_config(
+                launches, member_ports, swap=self._group.swaps, ttl_seconds=ttl_seconds
+            )
         )
         self._port = ports[0]
         # Capture llama-swap's stdout/stderr to a file so its access log never
@@ -246,11 +248,6 @@ class SwapManager:
         except (OSError, httpx.HTTPError):
             return False
         return resp.status_code < httpx.codes.BAD_REQUEST
-
-    def reload(self, launches: list[InstanceLaunch]) -> None:
-        """Apply a changed model set by restarting llama-swap with a fresh config."""
-        self.shutdown()
-        self.start(launches)
 
     @property
     def running(self) -> bool:

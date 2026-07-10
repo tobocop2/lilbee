@@ -238,20 +238,6 @@ class TestLifecycle:
         with pytest.raises(ProviderError):
             mgr.endpoint()  # port cleared after shutdown
 
-    def test_reload_restarts_with_new_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        starts: list[int] = []
-        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
-        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
-        monkeypatch.setattr(
-            SwapManager, "start", lambda self, launches: starts.append(len(launches))
-        )
-        mgr.reload([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
-        assert starts == [2]  # restarted with the new launch set
-
 
 class _FakeChild:
     """A stand-in psutil.Process that records the signals it receives."""
