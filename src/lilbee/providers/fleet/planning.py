@@ -674,20 +674,23 @@ def _server_model_inputs(
 
 
 def _non_chat_reservation(
-    instances: Sequence[InstancePlan], inputs: Sequence[ModelPlacementInput]
+    instances: Sequence[InstancePlan],
+    inputs: Sequence[ModelPlacementInput],
+    co_tenants: frozenset[WorkerRole] = frozenset(),
 ) -> dict[int, int]:
     """Per-device VRAM the non-chat role servers occupy, keyed by device index.
 
     A tensor-split chat shard must size its KV against the headroom left after the
     embed/rerank/vision servers on the same card, not the card's raw free VRAM, or
-    it over-commits and OOMs at launch. Chat is excluded because it sizes
-    its own weights; non-chat roles are single-device, so each charges its full
-    footprint (once per replica) to its card.
+    it over-commits and OOMs at launch. Chat is excluded because it sizes its own
+    weights, and so are chat's co-tenants: they are evicted while chat is resident,
+    so their VRAM is chat's to use. Non-chat roles are single-device, so each
+    charges its full footprint (once per replica) to its card.
     """
     charge_by_role = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved: dict[int, int] = {}
     for inst in instances:
-        if inst.role is WorkerRole.CHAT:
+        if inst.role is WorkerRole.CHAT or inst.role in co_tenants:
             continue
         charge = charge_by_role[inst.role]
         for device in inst.devices:
@@ -1045,6 +1048,7 @@ class ResolvedPlacement:
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
     model_refs: dict[WorkerRole, str]
+    co_tenants: frozenset[WorkerRole] = frozenset()
     # Roles configured but skipped because their model isn't installed (role -> ref).
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
@@ -1072,8 +1076,17 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         instances=resolved.instances,
         unplaceable_roles=resolved.unplaceable_roles,
         model_refs=model_refs,
+        co_tenants=resolved.co_tenants,
         skipped_not_installed=skipped_not_installed,
     )
+
+
+@dataclass(frozen=True)
+class FleetPlan:
+    """The servers to start, and the roles that share one swap group."""
+
+    launches: tuple[InstanceLaunch, ...]
+    co_tenants: frozenset[WorkerRole] = frozenset()
 
 
 def plan_launches(
@@ -1081,7 +1094,7 @@ def plan_launches(
     binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
-) -> list[InstanceLaunch]:
+) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
     from lilbee.core.config import cfg
 
@@ -1098,22 +1111,30 @@ def plan_launches(
             role.value,
             model_refs[role],
         )
-    reserved_by_device = _non_chat_reservation(placement.instances, inputs)
-    return [
-        _launch_for(
-            plan,
-            model_refs[plan.role],
-            binary,
-            by_index,
-            unified_budget=unified_budget,
-            chat_reservation=reservation,
-            reserved_by_device=reserved_by_device,
+    if placement.co_tenants:
+        log.info(
+            "%s share GPU memory and load on demand; only one is resident at a time.",
+            ", ".join(sorted(role.value for role in placement.co_tenants)),
         )
-        for plan in placement.instances
-    ]
+    reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
+    return FleetPlan(
+        launches=tuple(
+            _launch_for(
+                plan,
+                model_refs[plan.role],
+                binary,
+                by_index,
+                unified_budget=unified_budget,
+                chat_reservation=reservation,
+                reserved_by_device=reserved_by_device,
+            )
+            for plan in placement.instances
+        ),
+        co_tenants=placement.co_tenants,
+    )
 
 
-def plan_all_launches() -> list[InstanceLaunch]:
+def plan_all_launches() -> FleetPlan:
     """Apply GPU env, probe devices, and plan launches for every configured role.
 
     Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any

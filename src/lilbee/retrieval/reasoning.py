@@ -285,6 +285,21 @@ def strip_reasoning(text: str) -> str:
     return _THINK_BLOCK_RE.sub("", text)
 
 
+def split_reasoning(text: str) -> tuple[str, str]:
+    """Split a complete string into its reasoning and its answer.
+
+    An unterminated ``<think>`` block means the model never reached an answer, so
+    everything after the tag is reasoning. Surfaces that must not leak lilbee's
+    inline ``<think>`` convention (the OpenAI-compatible API) use this to report
+    reasoning in its own field.
+    """
+    blocks = [
+        match.group(0).strip().removeprefix(THINK_OPEN_TAG).removesuffix(THINK_CLOSE_TAG).strip()
+        for match in _THINK_BLOCK_RE.finditer(text)
+    ]
+    return "".join(blocks), strip_reasoning(text)
+
+
 def _could_be_partial(tag: str, buf: str) -> bool:
     """Check if the end of buf could be the start of the given tag."""
     return any(buf.endswith(tag[:length]) for length in range(1, len(tag)))

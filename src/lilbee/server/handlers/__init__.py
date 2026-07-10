@@ -97,8 +97,9 @@ def _chat_status(provider: LLMProvider) -> Literal["ready", "loading", "not_star
     """Classify the chat engine's readiness for /api/health.
 
     ``ready`` once the role serves; ``error`` when warm-up failed; ``loading``
-    while a warm is in flight; ``not_started`` when nothing is warming and the
-    role isn't up (no chat model planned, so the fleet won't come up on its own).
+    while a warm is in flight; ``not_started`` when nothing is warming and the role
+    isn't up (no chat model planned, or chat is swapped out for its co-tenant; the
+    next chat request loads it).
     """
     if provider.role_ready(WorkerRole.CHAT):
         return "ready"

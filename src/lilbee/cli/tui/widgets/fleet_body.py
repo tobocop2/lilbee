@@ -255,6 +255,9 @@ class FleetBody(Widget):
         self._refresh_title(dirty=False)
         self._update_fleet_panel(view)
         self._render_skipped(view)
+        if view.co_tenants:
+            names = ", ".join(role.value for role in view.co_tenants)
+            self.notify(f"Sharing memory, one loaded at a time: {names}", severity="information")
         if view.unplaceable:
             names = ", ".join(role.value for role in view.unplaceable)
             self.notify(f"Does not fit: {names}", severity="warning")

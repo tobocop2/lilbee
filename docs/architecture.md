@@ -263,7 +263,7 @@ flowchart LR
         provider["FleetProvider"]
         planner -->|"1: measure each GGUF"| gguf
     end
-    subgraph swaps ["llama-swap, one per role"]
+    subgraph swaps ["llama-swap, one per swap group"]
         sc["swap: chat<br/>own config, log, state"]
         se["swap: embed<br/>own config, log, state"]
     end
@@ -309,7 +309,9 @@ flowchart LR
   weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
   ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
   of the budget and 503-ing every search.
-- **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
+- **Placement** (`placement.py`): bin-packed in `placement_rank` order (search roles,
+  then vision, then the elastic chat model), largest-first within a rank, with 90%
+  headroom.
   A model that fits one GPU is a single pinned instance; small models co-locate; a
   model too big for one GPU is tensor-split across enough cards that each card's
   per-device footprint fits, charged against each card's total VRAM capacity (so a
@@ -343,8 +345,9 @@ flowchart LR
   (`--parallel`) steps down the same way before refusing.
 
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
-  `provider._reload_pass`): each role runs behind its own llama-swap process, and
-  a reload re-plans the whole fleet but restarts **only the roles whose launches
+  `provider._reload_pass`): each swap group runs behind its own llama-swap process
+  (one per role, except co-tenant chat and vision which share one), and a reload
+  re-plans the whole fleet but restarts **only the groups whose launches
   changed**. That diff is sound because launches are a pure function of config,
   hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
   and free system RAM are captured once per boot (right after stale-server
@@ -364,7 +367,7 @@ flowchart TB
     PLAN --> DIFF{per-role launch diff}
     DIFF -->|unchanged| KEEP[role keeps serving, model stays resident]
     DIFF -->|changed| RESTART[stop role's llama-swap, start with new argv]
-    subgraph fleet [one llama-swap per role]
+    subgraph fleet [one llama-swap per swap group]
         CHAT[chat group]
         EMBED[embed group xN]
         RERANK[rerank group]
@@ -421,18 +424,27 @@ what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
 
-- **Resident tiers and the elastic ingest pool**: placement reserves a persistent
-  query fleet first: chat, one embed server (`embed-0`), rerank, and one vision
-  server (`vision-0`). These stay resident so a chat request issued during ingest
-  always has capacity. This reservation applies to discrete-GPU placement; the
-  shared-memory path on a unified-memory or CPU host packs the same pool
-  differently and does not hold back the elastic replicas. Extra embed and vision
-  replicas (`embed-1..N`, additional
-  vision) are placed only into the VRAM that remains after the query fleet is
-  committed. When an ingest finishes, each extra replica is unloaded individually
-  via llama-swap's `POST /api/models/unload`, freeing its VRAM without disturbing
-  the resident servers. If llama-swap is restarted or found dead, the fleet
-  re-probes once and rebuilds its model config before reporting a failure.
+- **Resident tiers and the elastic ingest pool**: placement charges roles in the
+  registry's `placement_rank` order. The pinned tier goes first: one embed server
+  (`embed-0`), rerank, and one vision server (`vision-0`). Chat is charged last,
+  against what the pinned tier leaves, because chat's KV cache is the one footprint
+  that can shrink. Search therefore never loses its servers to a large chat model,
+  and vision is placeable whenever it fits beside the search tier, no matter how
+  large the chat model is. Extra embed and vision replicas (`embed-1..N`,
+  additional vision) are placed only into the VRAM that remains, and stay resident
+  there; nothing is unloaded when an ingest finishes. If llama-swap is restarted or
+  found dead, the fleet re-probes once and rebuilds its model config before
+  reporting a failure.
+- **Swap tenancy**: when the chat model fits only if vision gives up its VRAM, the
+  two are not made unplaceable. They become co-tenants of a single llama-swap
+  group with `swap: true`, sharing one llama-swap process, and llama-swap evicts
+  one to load the other on demand. Only one is resident at a time, so the group is
+  charged the chat model's footprint alone, and a co-tenant role runs a single
+  instance (a `swap: true` group evicts same-group siblings, so a second vision
+  replica inside it would evict the first). Interleaving a chat turn with an ingest
+  costs a model reload each way. Everything else pins as before: with the VRAM to
+  hold both, chat and vision get their own groups and never evict. A role is
+  unplaceable only when it does not fit even alone beside the pinned search tier.
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
   vision roles can run as N independent servers, fanning embedding and OCR across
   the box during ingest. Setting either value to `0` (the default) means auto: one
@@ -461,17 +473,17 @@ touching the running fleet.
   setting deliberately not forwarded: it selects a single card by global index, which
   is meaningless once a server is pinned to a subset, and placement owns card choice
   in fleet mode.
-- **Lifecycle** (`swap_manager.py` / `provider.py`): each role runs behind its own llama-swap process
-  with its own config file, so restarting one role's group (a placement or
-  per-role model change) never touches another role's loaded servers. A reload
-  re-plans the whole fleet and diffs the fresh plan per role against the
-  running launches, restarting only the roles whose launches changed; an
+- **Lifecycle** (`swap_manager.py` / `provider.py`): each swap group runs behind its own
+  llama-swap process with its own config file, so restarting one group (a placement or
+  per-role model change) never touches another group's loaded servers. A reload
+  re-plans the whole fleet and diffs the fresh plan per group against the
+  running launches, restarting only the groups whose launches changed; an
   untouched 100GB chat model stays resident while the embedder moves. Each
   server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per role group
+  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
   member servers' ports, plus the owner's pid and create time; before the next build

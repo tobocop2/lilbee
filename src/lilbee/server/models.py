@@ -614,6 +614,7 @@ class PlacementResponse(BaseModel):
     manual: bool
     spec_json: str | None
     skipped_not_installed: list[SkippedRoleResponse] = []
+    co_tenants: list[str] = []
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -636,6 +637,7 @@ class PlacementResponse(BaseModel):
             skipped_not_installed=[
                 SkippedRoleResponse(role=s.role, model=s.model) for s in view.skipped_not_installed
             ],
+            co_tenants=[r.value for r in view.co_tenants],
         )
 
 

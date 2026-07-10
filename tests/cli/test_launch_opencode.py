@@ -66,7 +66,7 @@ def _warm_by_default(request, monkeypatch):
     monkeypatch.setattr("lilbee.cli.launchers.launcher.wait_for_chat_warm", lambda _port: True)
     # opencode's prepare() reads the served window over HTTP; default it to
     # unknown so tests do not hit the network. The limit.context test overrides.
-    monkeypatch.setattr("lilbee.cli.launchers.opencode.served_chat_ctx", lambda _port: None)
+    monkeypatch.setattr("lilbee.cli.launchers.opencode.client_chat_ctx", lambda _port: None)
 
 
 @pytest.fixture(autouse=True)

@@ -143,7 +143,7 @@ def _write_server_session() -> None:
 
 def test_agent_config_hermes_prints_yaml_block(monkeypatch):
     _write_server_session()
-    monkeypatch.setattr("lilbee.cli.commands.agent_config.served_chat_ctx", lambda _p: None)
+    monkeypatch.setattr("lilbee.cli.commands.agent_config.client_chat_ctx", lambda _p: None)
     result = runner.invoke(app, ["agent-config", "hermes"])
     assert result.exit_code == 0
     block = yaml.safe_load(result.stdout)
@@ -157,7 +157,7 @@ def test_agent_config_hermes_notes_mcp_extra(monkeypatch):
     # Entry-point parity with `lilbee launch hermes`: the paste path can't install
     # hermes's `mcp` extra, so it must at least tell the user it's needed.
     _write_server_session()
-    monkeypatch.setattr("lilbee.cli.commands.agent_config.served_chat_ctx", lambda _p: None)
+    monkeypatch.setattr("lilbee.cli.commands.agent_config.client_chat_ctx", lambda _p: None)
     result = runner.invoke(app, ["agent-config", "hermes"])
     assert result.exit_code == 0
     assert "hermes-agent[mcp]" in result.stderr
@@ -168,3 +168,14 @@ def test_agent_config_hermes_requires_running_server():
     result = runner.invoke(app, ["agent-config", "hermes"])
     assert result.exit_code == 1
     assert "lilbee serve" in result.stderr
+
+
+def test_agent_config_hermes_carries_the_advertised_context_window(monkeypatch):
+    # Entry-point parity with `lilbee launch hermes`: the pasted block must carry the
+    # window a launcher would advertise, not omit it.
+    _write_server_session()
+    monkeypatch.setattr("lilbee.cli.commands.agent_config.client_chat_ctx", lambda _p: 40960)
+    result = runner.invoke(app, ["agent-config", "hermes"])
+    assert result.exit_code == 0
+    block = yaml.safe_load(result.stdout)
+    assert block["providers"]["lilbee"]["context_length"] == 40960

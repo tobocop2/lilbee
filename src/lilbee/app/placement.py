@@ -74,6 +74,9 @@ class PlacementView:
     # Configured roles absent from the plan because their model isn't installed,
     # so a surface can show "not downloaded" instead of an unexplained empty table.
     skipped_not_installed: tuple[SkippedRole, ...] = ()
+    # Roles sharing one swap group: each is placed, but only one is resident at a
+    # time, so their footprints do not sum against the card they name.
+    co_tenants: tuple[WorkerRole, ...] = ()
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -117,6 +120,7 @@ def _view(resolved: ResolvedPlacement, *, manual: bool, spec_json: str | None) -
             SkippedRole(role=role, model=ref)
             for role, ref in resolved.skipped_not_installed.items()
         ),
+        co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
     )
 
 
