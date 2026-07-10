@@ -121,7 +121,7 @@ If you relaunch lilbee often, opt into a persistent engine in Settings:
   tens of MB and no VRAM).
 
 Turning the setting off returns to the on-demand default and stops the engine at
-the next opportunity. Both knobs live in the TUI Settings screen, `lilbee set`,
+the next opportunity. Both knobs live in the TUI Settings screen,
 MCP `lilbee_settings_set`, the HTTP config API, and `config.toml`. The first
 launch after a reboot is always a cold one.
 
