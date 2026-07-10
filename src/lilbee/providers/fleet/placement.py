@@ -204,13 +204,37 @@ def _place_beside_disjoint(
             remaining[idx] += held
     placed = place(model)
     if placed is not None:
+        slot = _group_slot(placed.charges, refunds, remaining)
         for role in refunds:
             del charges[role]
-        return placed, frozenset(refunds) | {model.role}
+        return _Placed(plan=placed.plan, charges=slot), frozenset(refunds) | {model.role}
     for charged in refunds.values():
         for idx, held in charged.items():
             remaining[idx] -= held
     return None, frozenset()
+
+
+def _group_slot(
+    trigger: dict[int, float],
+    refunds: dict[WorkerRole, dict[int, float]],
+    remaining: dict[int, float],
+) -> dict[int, float]:
+    """Charge each device the swap group's largest member, not just the trigger.
+
+    Only one member is resident at a time, but every evicted member must be able to
+    swap back in, so the group's per-device slot is the max across members. The
+    shortfall beyond the trigger's own charge is deducted from *remaining* here so
+    the elastic replica tier cannot claim VRAM an evicted member needs to return to.
+    The returned slot is recorded as the trigger's charge, so a later trigger that
+    refunds this group reclaims the whole slot.
+    """
+    slot = dict(trigger)
+    for charged in refunds.values():
+        for idx, held in charged.items():
+            need = max(slot.get(idx, 0.0), held)
+            remaining[idx] -= need - slot.get(idx, 0.0)
+            slot[idx] = need
+    return slot
 
 
 def _phase_disjoint(a: WorkerRole, b: WorkerRole) -> bool:
@@ -371,6 +395,9 @@ def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Plac
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
     charged: dict[WorkerRole, int] = {}
+    # A charged role's swap-back need: its single-instance footprint, or, for the
+    # role holding a swap group's budget, the whole group slot.
+    swap_need = {m.role: m.est_vram_bytes for m in models}
     co_tenants: set[WorkerRole] = set()
     for model in sorted(models, key=_shared_pool_order):
         placed = 0
@@ -383,10 +410,9 @@ def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Plac
         if placed:
             charged[model.role] = placed * model.est_vram_bytes
             continue
-        remaining, group = _shared_beside_disjoint(model, remaining, charged, instances)
+        remaining, group = _shared_beside_disjoint(model, remaining, charged, swap_need, instances)
         if group:
             instances.append(InstancePlan(role=model.role, devices=()))
-            charged[model.role] = model.est_vram_bytes
             co_tenants |= group
         else:
             unplaceable.append(model.role)
@@ -401,29 +427,44 @@ def _shared_beside_disjoint(
     model: ModelPlacementInput,
     remaining: int,
     charged: dict[WorkerRole, int],
+    swap_need: dict[WorkerRole, int],
     instances: list[InstancePlan],
 ) -> tuple[int, frozenset[WorkerRole]]:
     """Refund the shared-pool roles phase-disjoint from *model* and cap them to one instance.
 
-    The refunded roles and *model* become one swap group: only one is resident, so
-    each keeps a single instance and only *model*'s footprint is charged. Returns the
-    budget after reclaiming their VRAM and charging *model*, plus the group; on a
-    genuinely oversize *model* the budget is unchanged and the group empty.
+    The refunded roles and *model* become one swap group: only one member is resident
+    at a time, but every member must be able to swap back in, so the group is charged
+    its largest member's footprint (the slot), recorded under *model*'s role so a
+    later trigger reclaims the whole slot. Returns the budget after reclaiming the
+    refunded VRAM and charging the slot, plus the group; when even the slot does not
+    fit the reclaimed budget the group is empty and the budget unchanged.
     """
     refunds = [r for r in list(charged) if _phase_disjoint(r, model.role)]
+    if not refunds:
+        return remaining, frozenset()
     reclaim = sum(charged[r] for r in refunds)
-    if not refunds or model.est_vram_bytes > remaining + reclaim:
+    slot = max(model.est_vram_bytes, *(swap_need[r] for r in refunds))
+    if slot > remaining + reclaim:
         return remaining, frozenset()
     for role in refunds:
         del charged[role]
         instances[:] = [plan for plan in instances if plan.role is not role]
         instances.append(InstancePlan(role=role, devices=(), replica=0))
-    return remaining + reclaim - model.est_vram_bytes, frozenset(refunds) | {model.role}
+    charged[model.role] = slot
+    swap_need[model.role] = slot
+    return remaining + reclaim - slot, frozenset(refunds) | {model.role}
 
 
-def _shared_pool_order(model: ModelPlacementInput) -> tuple[int, int]:
-    """Sort key: by the role's placement rank, then largest-first within a rank."""
-    return (ROLE_REGISTRY[model.role].placement_rank, -model.est_vram_bytes)
+def _shared_pool_order(model: ModelPlacementInput) -> tuple[int, int, int]:
+    """Sort key: placement rank, then most-phases-first, then largest-first.
+
+    A role in more phases is co-resident with more of the fleet and can never make
+    room by swapping (nothing is phase-disjoint from it), so it charges before a
+    same-rank single-phase sibling: a large LLM reranker must not crowd out the
+    embedder that both ingest and query need.
+    """
+    info = ROLE_REGISTRY[model.role]
+    return (info.placement_rank, -len(info.phases), -model.est_vram_bytes)
 
 
 def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:

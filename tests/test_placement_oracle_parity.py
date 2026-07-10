@@ -98,6 +98,20 @@ _STACK = {
     WorkerRole.RERANK: _gb(0.6),
 }
 _BIG_VISION = {**_STACK, WorkerRole.VISION: _gb(7.0)}
+# An LLM reranker larger than the embedder: must never crowd embed out of the plan.
+_LLM_RERANK = {
+    WorkerRole.CHAT: _gb(3.0),
+    WorkerRole.VISION: _gb(2.0),
+    WorkerRole.EMBED: _gb(0.6),
+    WorkerRole.RERANK: _gb(5.0),
+}
+# Chat smaller than vision: the swap group must be charged at vision's footprint.
+_SMALL_CHAT = {
+    WorkerRole.CHAT: _gb(3.0),
+    WorkerRole.VISION: _gb(5.0),
+    WorkerRole.EMBED: _gb(0.4),
+    WorkerRole.RERANK: _gb(0.6),
+}
 
 SCENARIOS = [
     Scenario("gpu-24gb-roomy", dict(_STACK), devices=[(0, _gb(24))]),
@@ -105,10 +119,14 @@ SCENARIOS = [
     Scenario("gpu-8gb-one-big-at-a-time", dict(_STACK), devices=[(0, _gb(8))]),
     Scenario("gpu-6gb-embed-rerank-vision-overflow", dict(_STACK), devices=[(0, _gb(6))]),
     Scenario("gpu-8gb-big-vision", dict(_BIG_VISION), devices=[(0, _gb(8))]),
+    Scenario("gpu-6gb-llm-rerank", dict(_LLM_RERANK), devices=[(0, _gb(6))]),
+    Scenario("gpu-6gb-small-chat-big-vision", dict(_SMALL_CHAT), devices=[(0, _gb(6))]),
+    Scenario("unified-6gb-llm-rerank", dict(_LLM_RERANK), unified_budget=_gb(6)),
     Scenario("unified-6gb-embed-rerank-vision-overflow", dict(_STACK), unified_budget=_gb(6)),
     Scenario("unified-8gb", dict(_STACK), unified_budget=_gb(8)),
     Scenario("unified-12gb", dict(_STACK), unified_budget=_gb(12)),
     Scenario("unified-8gb-big-vision", dict(_BIG_VISION), unified_budget=_gb(8)),
+    Scenario("unified-6gb-big-vision", dict(_BIG_VISION), unified_budget=_gb(6)),
 ]
 
 
