@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
+from importlib.metadata import version as _pkg_version
+
 import httpx
 import psutil
 
@@ -63,6 +65,9 @@ _STATE_KEY_OWNER_PID = "owner_pid"
 _STATE_KEY_OWNER_CREATED_AT = "owner_created_at"
 _STATE_KEY_NAME = "name"
 _STATE_KEY_MEMBER_PORTS = "member_ports"
+_STATE_KEY_PROXY_PORT = "proxy_port"
+_STATE_KEY_LILBEE_VERSION = "lilbee_version"
+_STATE_KEY_DETACHED = "detached"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -120,6 +125,9 @@ class _SwapState:
     owner_created_at: float | None
     created_at: float | None = None
     member_ports: tuple[int, ...] = ()
+    proxy_port: int | None = None
+    lilbee_version: str | None = None
+    detached: bool = False
 
 
 class SwapManager:
@@ -191,7 +199,7 @@ class SwapManager:
         """Kill every dead owner's surviving llama-swap; see :func:`reap_stale`."""
         reap_stale(self._data_dir)
 
-    def _write_state(self) -> None:
+    def _write_state(self, *, detached: bool = False) -> None:
         """Record the swap's pid/pgid/create time, member ports, and our identity.
 
         The write is atomic (tmp file then ``os.replace``) so a sibling's reap
@@ -215,6 +223,9 @@ class SwapManager:
             _STATE_KEY_OWNER_CREATED_AT: psutil.Process().create_time(),
             _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
             _STATE_KEY_MEMBER_PORTS: self._member_ports,
+            _STATE_KEY_PROXY_PORT: self._port,
+            _STATE_KEY_LILBEE_VERSION: _pkg_version("lilbee"),
+            _STATE_KEY_DETACHED: detached,
         }
         tmp_path = self._state_path.with_name(
             f"{_STATE_TMP_PREFIX}{self._state_path.name}{_STATE_TMP_SUFFIX}"
@@ -519,6 +530,7 @@ def _load_state(path: Path) -> _SwapState | None:
         raw_owner_created = payload.get(_STATE_KEY_OWNER_CREATED_AT)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
+        raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
         return _SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
@@ -526,6 +538,9 @@ def _load_state(path: Path) -> _SwapState | None:
             owner_created_at=float(raw_owner_created) if raw_owner_created is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
             member_ports=tuple(int(port) for port in raw_ports),
+            proxy_port=int(raw_proxy) if raw_proxy is not None else None,
+            lilbee_version=payload.get(_STATE_KEY_LILBEE_VERSION),
+            detached=bool(payload.get(_STATE_KEY_DETACHED, False)),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

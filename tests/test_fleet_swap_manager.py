@@ -1301,3 +1301,38 @@ class TestSweepOwned:
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: swept.append(cfg))
         sm.sweep_owned(tmp_path)
         assert swept == []
+
+
+class TestStateFilePersistenceKeys:
+    def test_round_trips_proxy_port_version_and_detached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr._write_state(detached=True)
+        state = sm._load_state(mgr._state_path)
+        assert state is not None
+        assert state.proxy_port == mgr._port
+        assert state.lilbee_version
+        assert state.detached is True
+
+    def test_start_writes_an_owned_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.detached is False
+
+    def test_old_format_files_parse_with_defaults(self, tmp_path: Path) -> None:
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text(json.dumps({"pid": 123, "member_ports": [4000]}))
+        state = sm._load_state(legacy)
+        assert state is not None
+        assert state.proxy_port is None
+        assert state.lilbee_version is None
+        assert state.detached is False
