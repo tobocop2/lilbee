@@ -435,16 +435,24 @@ touching the running fleet.
   there; nothing is unloaded when an ingest finishes. If llama-swap is restarted or
   found dead, the fleet re-probes once and rebuilds its model config before
   reporting a failure.
-- **Swap tenancy**: when the chat model fits only if vision gives up its VRAM, the
-  two are not made unplaceable. They become co-tenants of a single llama-swap
-  group with `swap: true`, sharing one llama-swap process, and llama-swap evicts
-  one to load the other on demand. Only one is resident at a time, so the group is
-  charged the chat model's footprint alone, and a co-tenant role runs a single
-  instance (a `swap: true` group evicts same-group siblings, so a second vision
-  replica inside it would evict the first). Interleaving a chat turn with an ingest
-  costs a model reload each way. Everything else pins as before: with the VRAM to
-  hold both, chat and vision get their own groups and never evict. A role is
-  unplaceable only when it does not fit even alone beside the pinned search tier.
+- **Swap tenancy**: the planner matches the old in-process pool (last shipped in
+  v0.6.66b507; see its
+  [Inference Worker Pool](https://github.com/tobocop2/lilbee/blob/v0.6.66b507/docs/architecture.md#inference-worker-pool)
+  section), where a role's worker spawned lazily on first call, so ingest
+  (embed + vision OCR) and a query (embed + rerank + chat) never held each
+  other's models in VRAM. Roles that share
+  no run **phase** (`RoleInfo.phases`) are never resident together, so when they
+  cannot all co-reside a role that does not fit **refunds** the already-charged
+  phase-disjoint roles and retries; the roles that let it in become co-tenants of a
+  single `swap: true` llama-swap group. On a tight card this pulls the query-only
+  rerank and chat into vision's swap group, so ingest's embed + vision fits exactly
+  as it did in-process. Only one member is resident at a time, so the group is
+  charged its largest member and each co-tenant runs a single instance (a
+  `swap: true` group evicts same-group siblings, so a second replica inside it would
+  evict the first). Interleaving a query with an ingest costs a model reload each
+  way. With the VRAM to hold everything at once, no swap group forms and every role
+  pins to its own group. A role is unplaceable only when it does not fit even beside
+  the one embedder its own phase needs (a genuine "use a smaller model").
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
   vision roles can run as N independent servers, fanning embedding and OCR across
   the box during ingest. Setting either value to `0` (the default) means auto: one

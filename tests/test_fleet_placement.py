@@ -582,8 +582,25 @@ class TestChatVisionCoTenancy:
         assert plan.unplaceable_roles == ()
         assert plan.co_tenants == frozenset()
 
-    def test_vision_too_big_for_the_search_tier_is_still_unplaceable(self) -> None:
-        # Vision does not fit even before chat is charged: a real "use a smaller model".
+    def test_vision_too_big_even_for_ingest_alone_is_unplaceable(self) -> None:
+        # Vision does not fit even beside the embedder alone (its ingest working set):
+        # a real "use a smaller model", not a co-residency conflict. 8GB card is 7.2
+        # usable; embed 1 + vision 8 overflows even with rerank and chat refunded.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+            *self._search(),
+            ModelPlacementInput(WorkerRole.VISION, 8 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 8 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == (WorkerRole.VISION,)
+        assert plan.co_tenants == frozenset()
+
+    def test_vision_that_fits_ingest_pulls_rerank_into_the_swap_group(self) -> None:
+        # 8GB card (7.2 usable): embed 1 + rerank 1 + vision 6 = 8 overflows, but the
+        # ingest working set embed 1 + vision 6 = 7 fits. The in-process pool served
+        # this ingest (chat/rerank never loaded), so the planner must not refuse
+        # vision: rerank (query-only) and chat join vision's swap group.
         models = [
             ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
             *self._search(),
@@ -591,8 +608,59 @@ class TestChatVisionCoTenancy:
         ]
         plan = plan_placement(models, [(0, 8 * _GB)], estimate_peak=_never)
 
-        assert plan.unplaceable_roles == (WorkerRole.VISION,)
-        assert plan.co_tenants == frozenset()
+        assert plan.unplaceable_roles == ()
+        assert self._roles(plan) == {
+            WorkerRole.CHAT,
+            WorkerRole.EMBED,
+            WorkerRole.RERANK,
+            WorkerRole.VISION,
+        }
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
+
+    def test_swap_group_slot_holds_vram_for_its_largest_member(self) -> None:
+        # 6GB card (5.4 usable): embed 0.4 (2 replicas), vision 5.0 fits exactly,
+        # chat 3.0 joins by refunding vision. The group must stay charged at vision's
+        # 5.0 (its largest member), not chat's 3.0, or the elastic embed replica
+        # claims the difference and vision OOMs when it swaps back in.
+        models = [
+            ModelPlacementInput(WorkerRole.EMBED, int(0.4 * _GB), replicas=2),
+            ModelPlacementInput(WorkerRole.VISION, 5 * _GB),
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 6 * _GB)], estimate_peak=_never)
+
+        embeds = [i for i in plan.instances if i.role is WorkerRole.EMBED]
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert len(embeds) == 1
+
+    def test_large_llm_reranker_cannot_crowd_out_the_embedder(self) -> None:
+        # The embedder runs in every phase, so nothing can swap with it; it charges
+        # before same-rank single-phase roles. A 5GB LLM reranker on a 6GB card is
+        # the genuinely unservable role (query needs embed+rerank co-resident);
+        # embed, vision, and chat all still get servers.
+        models = [
+            ModelPlacementInput(WorkerRole.EMBED, int(0.6 * _GB)),
+            ModelPlacementInput(WorkerRole.RERANK, 5 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 2 * _GB),
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 6 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == (WorkerRole.RERANK,)
+        assert self._roles(plan) == {WorkerRole.EMBED, WorkerRole.VISION, WorkerRole.CHAT}
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+
+    def test_vision_swap_group_forms_without_chat_when_chat_is_disabled(self) -> None:
+        # No chat model configured: on a tight card vision still cannot sit beside the
+        # full search tier, so it co-tenants with the query-only rerank alone.
+        models = [
+            *self._search(),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 8 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == ()
+        assert plan.co_tenants == frozenset({WorkerRole.RERANK, WorkerRole.VISION})
 
     def test_co_tenant_vision_runs_a_single_replica(self) -> None:
         # swap:true evicts same-group siblings, so a second vision replica in the
@@ -637,6 +705,24 @@ class TestSharedMemoryCoTenancy:
 
         assert plan.unplaceable_roles == ()
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+
+    def test_shared_swap_group_is_charged_at_its_largest_member(self) -> None:
+        # 6GB budget: a 5GB LLM reranker is refunded by a 2GB vision trigger. The
+        # group must hold the reranker's 5GB slot, which forces the 3GB chat to join
+        # the group as well instead of pinning persistently in VRAM the evicted
+        # reranker needs to swap back into.
+        models = [
+            ModelPlacementInput(WorkerRole.EMBED, int(0.6 * _GB)),
+            ModelPlacementInput(WorkerRole.RERANK, 5 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 2 * _GB),
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+        ]
+        plan = plan_placement(models, [], estimate_peak=_never, unified_budget=6 * _GB)
+
+        assert plan.unplaceable_roles == ()
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
+        persistent = [i.role for i in plan.instances if i.role not in plan.co_tenants]
+        assert persistent == [WorkerRole.EMBED]
 
     def test_co_tenant_vision_drops_to_one_replica_in_shared_memory(self) -> None:
         # The elastic vision replicas are refunded with the rest of vision's pool;
