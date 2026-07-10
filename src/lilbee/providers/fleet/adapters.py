@@ -46,7 +46,11 @@ ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
         # reasoning dialect (<think>, gpt-oss harmony, ...) into reasoning_content;
         # the chat client re-inlines it as <think> so downstream parsing stays
         # format-agnostic and control tokens never leak into answers.
-        extra_args=("--jinja", "--reasoning-format", "deepseek"),
+        # --no-prefill-assistant keeps a trailing assistant message a finished turn:
+        # by default the server continues its text instead of answering, and rejects
+        # two trailing assistant messages with a 400. Agents compacting their history
+        # send both shapes, and OpenAI's API accepts them.
+        extra_args=("--jinja", "--reasoning-format", "deepseek", "--no-prefill-assistant"),
         server_capable=True,
     ),
     WorkerRole.EMBED: RoleServerSpec(

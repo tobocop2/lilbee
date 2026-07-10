@@ -1413,6 +1413,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--cont-batching",
     "--jinja",
     "--no-mmap",
+    "--no-prefill-assistant",
     "--reasoning-format",
     "--embeddings",
     "--pooling",
