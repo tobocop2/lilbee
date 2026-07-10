@@ -519,6 +519,9 @@ class FleetProvider:
         # Granular cold-load progress for the chat role, streamed to a launcher so
         # the user sees real read/engine-load progress instead of a frozen spinner.
         self._warm_tracker = WarmProgressTracker()
+        # The engine's own reason a role's model failed to warm, so the launcher and
+        # the TUI report the real cause instead of a generic "did not load".
+        self._warm_errors: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -1263,14 +1266,30 @@ class FleetProvider:
                 future.result()
 
     def _warm_role_clients(self, role: WorkerRole, clients: list[LlamaServerClient]) -> bool:
-        """Warm every replica of *role*; return whether at least one loaded."""
+        """Warm every replica of *role*; return whether at least one loaded.
+
+        A replica that fails to load is reported at warning level with the engine's
+        own message (an unsupported architecture, a corrupt file). Warm-up stays
+        best-effort, but the failure must not be silent: the role then serves
+        nothing, and a caller that never reaches it would otherwise see only an
+        unexplained empty answer.
+        """
         warmed = False
+        self._warm_errors.pop(role, None)
         for client in clients:
             try:
                 _warm_role(role, client)
                 warmed = True
-            except Exception:
-                log.debug("Warm-up request for %s failed.", role.value, exc_info=True)
+            except Exception as exc:
+                self._warm_errors[role] = str(exc)
+                log.warning(
+                    "The %s model failed to load: %s",
+                    role.value,
+                    exc,
+                    exc_info=log.isEnabledFor(logging.DEBUG),
+                )
+        if warmed:
+            self._warm_errors.pop(role, None)
         return warmed
 
     def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
@@ -1291,7 +1310,14 @@ class FleetProvider:
             if warmed:
                 self._warm_tracker.ready()
             else:
-                self._warm_tracker.fail("The chat model did not finish loading.")
+                self._warm_tracker.fail(self._chat_load_failure())
+
+    def _chat_load_failure(self) -> str:
+        """The engine's own reason the chat model did not load, when it gave one."""
+        reason = self._warm_errors.get(WorkerRole.CHAT)
+        if not reason:
+            return "The chat model did not finish loading."
+        return f"The chat model did not load: {reason}"
 
     def _prewarm_chat_weights(self) -> None:
         """Page the chat model's GGUF shards into the OS cache, reporting byte progress.
