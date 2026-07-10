@@ -4474,6 +4474,25 @@ class TestPlacementHandlers:
         assert resp.gpus == []
         assert resp.roles == []
 
+    async def test_placement_surfaces_co_tenant_roles(self):
+        # Co-tenants are placed but not co-resident; a surface that omits them
+        # reads as an over-committed card.
+        from lilbee.app.placement import PlacementView
+        from lilbee.providers.roles import WorkerRole
+
+        view = PlacementView(
+            gpus=(),
+            roles=(),
+            unplaceable=(),
+            manual=False,
+            spec_json=None,
+            co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+        )
+        with patch("lilbee.app.placement.get_placement", return_value=view):
+            resp = await handlers.placement()
+        assert resp.co_tenants == ["chat", "vision"]
+        assert resp.unplaceable == []
+
     async def test_placement_preview_without_spec(self):
         view = _stub_placement_view()
         with patch("lilbee.app.placement.preview_placement", return_value=view):

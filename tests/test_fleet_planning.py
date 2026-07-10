@@ -980,6 +980,24 @@ class TestBuildFleetWiring:
         # Chat is excluded (it sizes its own weights); two embed replicas stack on card 0.
         assert reserved == {0: 6 * _GB, 1: 2 * _GB}
 
+    def test_non_chat_reservation_excludes_chats_co_tenants(self) -> None:
+        # A co-tenant vision is evicted while chat is resident, so its VRAM must not
+        # be held back from the chat shard's KV; only the pinned embed is reserved.
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(
+            instances, inputs, frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        )
+        assert reserved == {0: 3 * _GB}
+
     def test_launch_for_pinned_multi_card_chat_runs_one_slot(self, tmp_path, monkeypatch) -> None:
         # A cfg.num_ctx pin skips the fit, but a multi-card chat still serves one slot
         # so --ctx-size matches the single-sequence footprint the planner reserved.
@@ -1203,7 +1221,7 @@ class TestBuildFleetWiring:
         )
         sentinel = MagicMock()
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
-        assert planning_mod.plan_all_launches() == [sentinel]
+        assert planning_mod.plan_all_launches() == planning_mod.FleetPlan((sentinel,))
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
