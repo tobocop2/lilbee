@@ -22,6 +22,18 @@ class WorkerRole(StrEnum):
     VISION = "vision"
 
 
+class Phase(StrEnum):
+    """A run phase whose roles are loaded together on demand.
+
+    Ingest OCRs and embeds (vision + embed); a query embeds, reranks, and generates
+    (embed + rerank + chat). Roles sharing no phase are never co-resident, so on a
+    tight host they may share one swap group instead of both reserving VRAM.
+    """
+
+    INGEST = "ingest"
+    QUERY = "query"
+
+
 class RerankMode(StrEnum):
     """Resolved reranker serving mode for one RERANK server.
 
@@ -49,6 +61,7 @@ class RoleInfo:
     flash_attn: bool  # runs with flash attention (chat/vision)
     pooled: bool  # pooled single-slot search role (embed/cross-encoder rerank)
     placement_rank: int  # placement order; the elastic chat model is charged last
+    phases: frozenset[Phase]  # run phases that load this role (co-residency model)
 
 
 ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
@@ -61,6 +74,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         flash_attn=True,
         pooled=False,
         placement_rank=2,
+        phases=frozenset({Phase.QUERY}),
     ),
     WorkerRole.EMBED: RoleInfo(
         role=WorkerRole.EMBED,
@@ -71,6 +85,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         flash_attn=False,
         pooled=True,
         placement_rank=0,
+        phases=frozenset({Phase.INGEST, Phase.QUERY}),
     ),
     WorkerRole.RERANK: RoleInfo(
         role=WorkerRole.RERANK,
@@ -81,6 +96,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         flash_attn=False,
         pooled=True,
         placement_rank=0,
+        phases=frozenset({Phase.QUERY}),
     ),
     WorkerRole.VISION: RoleInfo(
         role=WorkerRole.VISION,
@@ -91,6 +107,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         flash_attn=True,
         pooled=False,
         placement_rank=1,
+        phases=frozenset({Phase.INGEST}),
     ),
 }
 """Single source of truth for per-role fleet configuration, ordered chat/embed/rerank/vision."""
