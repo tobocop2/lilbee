@@ -980,6 +980,24 @@ class TestBuildFleetWiring:
         # Chat is excluded (it sizes its own weights); two embed replicas stack on card 0.
         assert reserved == {0: 6 * _GB, 1: 2 * _GB}
 
+    def test_non_chat_reservation_excludes_chats_co_tenants(self) -> None:
+        # A co-tenant vision is evicted while chat is resident, so its VRAM must not
+        # be held back from the chat shard's KV; only the pinned embed is reserved.
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(
+            instances, inputs, frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        )
+        assert reserved == {0: 3 * _GB}
+
     def test_launch_for_pinned_multi_card_chat_runs_one_slot(self, tmp_path, monkeypatch) -> None:
         # A cfg.num_ctx pin skips the fit, but a multi-card chat still serves one slot
         # so --ctx-size matches the single-sequence footprint the planner reserved.
@@ -1203,7 +1221,43 @@ class TestBuildFleetWiring:
         )
         sentinel = MagicMock()
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
-        assert planning_mod.plan_all_launches() == [sentinel]
+        assert planning_mod.plan_all_launches() == planning_mod.FleetPlan((sentinel,))
+
+    def test_plan_launches_reports_co_tenant_roles(self, monkeypatch, caplog) -> None:
+        # Co-tenancy changes how the box behaves (one model resident at a time), so it
+        # is stated in the log rather than being inferred from a silent plan.
+        import logging
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "ref", WorkerRole.VISION: "vref"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),),
+                unplaceable_roles=(),
+                co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+            ),
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
+
+        with caplog.at_level(logging.INFO):
+            plan = planning_mod.plan_all_launches()
+
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert "chat, vision" in caplog.text
+        assert "only one is resident" in caplog.text
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))

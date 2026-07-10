@@ -166,6 +166,24 @@ def test_show_unplaceable_role(monkeypatch: object) -> None:
     assert "embed" in result.stdout
 
 
+def test_show_reports_co_tenant_roles(monkeypatch: object) -> None:
+    """Co-tenants are placed but never co-resident, so the card they name is not
+    over-committed; show says so instead of listing two roles on one GPU."""
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "A100", 80 * _GIB, 72 * _GIB),),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+    )
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: view)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "chat, vision" in result.stdout
+    assert "one loaded at a time" in result.stdout
+
+
 def test_preview_with_spec_file(tmp_path: object, monkeypatch: object) -> None:
     """preview --spec FILE parses the JSON and passes PlacementSpec to preview_placement."""
     seen: dict[str, object] = {}

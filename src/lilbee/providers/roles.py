@@ -48,6 +48,7 @@ class RoleInfo:
     offload_all_layers: bool  # loader offloads every layer, ignoring cfg.n_gpu_layers
     flash_attn: bool  # runs with flash attention (chat/vision)
     pooled: bool  # pooled single-slot search role (embed/cross-encoder rerank)
+    placement_rank: int  # placement order; the elastic chat model is charged last
 
 
 ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
@@ -59,6 +60,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         offload_all_layers=False,
         flash_attn=True,
         pooled=False,
+        placement_rank=2,
     ),
     WorkerRole.EMBED: RoleInfo(
         role=WorkerRole.EMBED,
@@ -68,6 +70,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         offload_all_layers=True,
         flash_attn=False,
         pooled=True,
+        placement_rank=0,
     ),
     WorkerRole.RERANK: RoleInfo(
         role=WorkerRole.RERANK,
@@ -77,6 +80,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         offload_all_layers=True,
         flash_attn=False,
         pooled=True,
+        placement_rank=0,
     ),
     WorkerRole.VISION: RoleInfo(
         role=WorkerRole.VISION,
@@ -86,6 +90,7 @@ ROLE_REGISTRY: dict[WorkerRole, RoleInfo] = {
         offload_all_layers=True,
         flash_attn=True,
         pooled=False,
+        placement_rank=1,
     ),
 }
 """Single source of truth for per-role fleet configuration, ordered chat/embed/rerank/vision."""

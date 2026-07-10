@@ -139,6 +139,7 @@ def _self_check_server(
         resolve_llama_server,
     )
     from lilbee.providers.fleet.client import LlamaServerClient
+    from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.fleet.swap_manager import SwapManager
     from lilbee.providers.gguf_meta import read_gguf_metadata
@@ -173,7 +174,7 @@ def _self_check_server(
         model=str(model_path),
         token_cap=ctx if is_embed else None,
     )
-    swap = SwapManager(work_dir, role.value)
+    swap = SwapManager(work_dir, SwapGroup(role.value))
     try:
         swap.start([launch])
     except BaseException:
