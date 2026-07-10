@@ -129,6 +129,7 @@ async def test_gate_release_reveals_chat():
 
     gate = StartupGate()
     app = mock.MagicMock()
+    app.screen = gate
     with (
         mock.patch.object(StartupGate, "query_one"),
         mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
@@ -154,6 +155,7 @@ async def test_gate_releases_when_nothing_is_warming(monkeypatch):
     try:
         gate = StartupGate()
         app = mock.MagicMock()
+        app.screen = gate
         with (
             mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
             mock.patch.object(gate_mod, "needs_setup", return_value=False),
@@ -173,6 +175,7 @@ async def test_gate_failure_surfaces_the_error_and_still_reveals_chat():
 
     gate = StartupGate()
     app = mock.MagicMock()
+    app.screen = gate
     status = mock.MagicMock()
     with (
         mock.patch.object(StartupGate, "query_one", return_value=status),
@@ -196,6 +199,7 @@ def _gate_with_app():
     gate = StartupGate()
     app = mock.MagicMock()
     app.call_from_thread.side_effect = lambda fn, *a: fn(*a)
+    app.screen = gate  # the gate owns the screen, as it does in production
     return gate, app
 
 
@@ -477,3 +481,68 @@ async def test_gate_composes_and_styles_its_widgets(monkeypatch):
         assert msg.STARTUP_PREPARING in str(status.render())
         assert logo.styles.color.hex.lower() == _xterm_to_hex(AMBER_BRIGHT_XTERM)
         assert gate_mod._LOGO.splitlines()[1].strip().startswith("@@@")
+
+
+async def test_gate_does_not_steal_a_screen_pushed_over_it(monkeypatch):
+    """Regression: reveal_chat switches the *current* screen, whichever it is.
+
+    A slow warm let another screen open above the gate; when the warm finished the
+    gate replaced that screen instead of itself, throwing the user out of it.
+    """
+    from textual.app import ComposeResult
+    from textual.screen import Screen
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    class _Other(Screen[None]):
+        def compose(self) -> ComposeResult:
+            yield Static("other")
+
+    gate = StartupGate()
+    app = mock.MagicMock()
+    app.screen = _Other()  # something else owns the screen now
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+        mock.patch.object(StartupGate, "query_one"),
+    ):
+        gate._release()
+    app.reveal_chat.assert_not_called()
+
+
+async def test_gate_hands_over_when_it_still_owns_the_screen():
+    """The ordinary path: the gate is on top, so it reveals chat."""
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate = StartupGate()
+    app = mock.MagicMock()
+    app.screen = gate
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+        mock.patch.object(StartupGate, "query_one"),
+    ):
+        gate._release()
+    app.reveal_chat.assert_called_once_with()
+
+
+async def test_ready_fleet_defers_the_handover_off_on_mount(monkeypatch):
+    """Regression: switching screens inside on_mount stalled Textual.
+
+    start_boot runs at the tail of LilbeeApp.on_mount. Calling reveal_chat straight
+    from there switches screens mid-mount; defer it a frame instead.
+    """
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate = StartupGate()
+    monkeypatch.setattr(gate_mod, "chat_engine_ready", lambda: True)
+
+    deferred: list = []
+    released: list = []
+    monkeypatch.setattr(gate, "call_after_refresh", deferred.append, raising=False)
+    monkeypatch.setattr(gate, "_release", lambda: released.append(True), raising=False)
+
+    gate.start_boot()
+
+    assert released == [], "the handover must not run inside on_mount"
+    assert deferred == [gate._release]

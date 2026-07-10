@@ -50,10 +50,12 @@ class StartupGate(Screen[None]):
         """Reveal chat at once when a prompt can already be served, else warm off-thread.
 
         A fleet that is already up (a second TUI against a live engine) has nothing
-        to wait for, so painting a loading screen would be a lie.
+        to wait for, so painting a loading screen would be a lie. The handover is
+        deferred a frame because start_boot runs at the tail of the app's on_mount,
+        and switching screens from inside on_mount stalls Textual.
         """
         if chat_engine_ready():
-            self._release()
+            self.call_after_refresh(self._release)
             return
         self._boot_worker()
 
@@ -139,11 +141,15 @@ class StartupGate(Screen[None]):
         self._release()
 
     def _release(self) -> None:
-        """Reveal the chat screen.
+        """Hand the screen to chat, unless something else has taken it.
 
-        No widget lookup here: the gate can resolve before compose has mounted its
-        children, and a missed query would strand the user on the loading screen.
+        reveal_chat switches whatever screen is on top, so a gate that resolved
+        after another screen opened above it would replace that screen instead of
+        itself. No widget lookup here either: the gate can resolve before compose
+        has mounted its children, and a missed query would strand the user.
         """
+        if self.app.screen is not self:
+            return
         self.app.reveal_chat()
 
 
