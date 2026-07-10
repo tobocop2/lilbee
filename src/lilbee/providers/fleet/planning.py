@@ -683,14 +683,18 @@ def _non_chat_reservation(
     A tensor-split chat shard must size its KV against the headroom left after the
     embed/rerank/vision servers on the same card, not the card's raw free VRAM, or
     it over-commits and OOMs at launch. Chat is excluded because it sizes its own
-    weights, and so are chat's co-tenants: they are evicted while chat is resident,
-    so their VRAM is chat's to use. Non-chat roles are single-device, so each
-    charges its full footprint (once per replica) to its card.
+    weights. Chat's own swap-group siblings are excluded too: they are evicted while
+    chat is resident, so their VRAM is chat's to use. That only holds when chat is
+    itself a co-tenant; a co-tenant group that does not include chat runs behind its
+    own swap process and can be resident beside chat, so it is charged normally.
+    Non-chat roles are single-device, so each charges its full footprint (once per
+    replica) to its card.
     """
+    chat_siblings = co_tenants if WorkerRole.CHAT in co_tenants else frozenset()
     charge_by_role = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved: dict[int, int] = {}
     for inst in instances:
-        if inst.role is WorkerRole.CHAT or inst.role in co_tenants:
+        if inst.role is WorkerRole.CHAT or inst.role in chat_siblings:
             continue
         charge = charge_by_role[inst.role]
         for device in inst.devices:
