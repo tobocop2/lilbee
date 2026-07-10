@@ -2701,3 +2701,14 @@ class TestChatLoadFailureMessage:
 
     def test_failure_message_falls_back_when_the_engine_said_nothing(self) -> None:
         assert "did not finish loading" in FleetProvider()._chat_load_failure()
+
+
+class TestWarmErrorsClearedOnTeardown:
+    def test_dropping_the_fleet_forgets_its_load_failures(self) -> None:
+        # The errors describe servers that no longer exist; a rebuilt fleet must not
+        # inherit them.
+        p = FleetProvider()
+        p._warm_errors[WorkerRole.CHAT] = "unknown model architecture: qwen35moe"
+        p._drop_swap_refs()
+        assert p._warm_errors == {}
+        assert "did not finish loading" in p._chat_load_failure()

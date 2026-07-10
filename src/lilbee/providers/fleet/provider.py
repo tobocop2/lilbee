@@ -799,6 +799,9 @@ class FleetProvider:
             self._retiring_clients = []
             self._chat_slots = 1
             self._chat_ctx = None
+            # A torn-down fleet's load failures describe servers that no longer
+            # exist; the next warm records its own.
+            self._warm_errors = {}
         # Full teardown: the next build starts from a clean box, so it must
         # re-snapshot memory rather than plan against this boot's probe.
         planning.clear_plan_probe()
