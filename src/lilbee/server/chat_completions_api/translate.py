@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Literal, assert_never
 
 from lilbee.retrieval.reasoning import StreamToken, TagParser, split_reasoning
 from lilbee.server.chat_completions_api.models import (
@@ -256,10 +256,9 @@ def _chunks_for_event(
     if isinstance(event, MessageStart | MessageStop):
         # OpenAI's wire format has no equivalent: MessageStart carries metadata
         # already encoded in the chunk header, and MessageStop is replaced by the
-        # final chunk's finish_reason. Explicit branch so a new event type added
-        # later forces a translation decision.
+        # final chunk's finish_reason.
         return []
-    return []
+    assert_never(event)  # a new canonical event must choose its translation
 
 
 def _message_delta_chunks(
