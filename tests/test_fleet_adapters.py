@@ -209,6 +209,29 @@ def test_chat_server_spec_extracts_reasoning_server_side() -> None:
     assert extra_args[idx + 1] == "deepseek"
 
 
+def test_chat_server_spec_disables_assistant_prefill() -> None:
+    from lilbee.providers.fleet.adapters import ROLE_SPECS
+    from lilbee.providers.roles import WorkerRole
+
+    # With prefill on, the server treats a trailing assistant message as text to
+    # continue, and rejects two of them outright. Agents send both shapes, so the
+    # chat server must read a trailing assistant message as a finished turn.
+    assert "--no-prefill-assistant" in ROLE_SPECS[WorkerRole.CHAT].extra_args
+
+
+def test_build_argv_chat_launches_without_assistant_prefill() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+    )
+    assert "--no-prefill-assistant" in argv
+
+
 @pytest.mark.parametrize(
     ("reranker_type", "arch", "expected"),
     [
