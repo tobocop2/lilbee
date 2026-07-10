@@ -508,6 +508,9 @@ lilbee ask "Explain this" --model qwen3
 | `lilbee sync` | Re-index changed files |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
+| `lilbee entities induce` | Propose a typed entity schema from the indexed chunks (writes a reviewable `entity_schema.json`) |
+| `lilbee entities backfill` | Extract typed entities from every stored chunk under the reviewed schema (no re-ingest) |
+| `lilbee entities status` | Show the entity schema, extracted row count, and whether sync-time extraction is on |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
 | `lilbee reset` | Factory reset. Deletes all documents and data |
 

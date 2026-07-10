@@ -131,7 +131,7 @@ def _extract_spacy(types: list[EntityType], text: str, nlp: Any) -> list[tuple[E
     wanted = {t.pattern.upper(): t for t in types}
     doc = nlp(text)
     found: list[tuple[EntityType, str]] = []
-    for ent in getattr(doc, "ents", []):
+    for ent in doc.ents:
         entity_type = wanted.get(ent.label_)
         if entity_type is not None:
             found.append((entity_type, ent.text))

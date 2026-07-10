@@ -1053,6 +1053,9 @@ class Searcher:
             yield StreamToken(content=_GROUNDED_REFUSAL, is_reasoning=False)
             return
         results, messages = rag
+        # No overflow retry here: a stream cannot be rebuilt once tokens have
+        # been yielded, so the conservative budget in _fit_context_budget is
+        # the streaming path's protection.
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         answer_parts: list[str] = []

@@ -18,14 +18,13 @@ from lilbee.cli.app import apply_overrides, console, data_dir_option, global_opt
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import CHUNKS_TABLE, cfg
 
-# Stratified induction sample: chunks are read evenly across the table so a
-# corpus with several document families contributes all of them.
-_INDUCTION_SAMPLE = 40
 # Chunks per extraction batch during backfill; bounds the working set.
 _BACKFILL_BATCH = 2000
 
 
 def _sample_chunks(limit: int) -> list[str]:
+    """Stratified sample: chunks read evenly across the table so a corpus with
+    several document families contributes all of them."""
     store = get_services().store
     table = store.open_table(CHUNKS_TABLE)
     if table is None:
@@ -70,8 +69,9 @@ def entities(
 
 def _induce() -> None:
     from lilbee.retrieval.entities import induce_schema, save_schema
+    from lilbee.retrieval.entities.extractor import INDUCTION_SAMPLE_SIZE
 
-    texts = _sample_chunks(_INDUCTION_SAMPLE)
+    texts = _sample_chunks(INDUCTION_SAMPLE_SIZE)
     if not texts:
         console.print("Nothing indexed yet; sync documents before inducing a schema.")
         raise SystemExit(1)

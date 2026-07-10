@@ -123,9 +123,7 @@ async def _rebuild_concept_clusters() -> None:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
 
-async def _build_entity_records(
-    records: list[ChunkRecord], source_name: str
-) -> list[dict] | None:
+async def _build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
     """Extract typed entities for ingested chunks. None when the mode is off.
 
     Gated twice: the ``entity_extraction`` config flag, and the presence of a
