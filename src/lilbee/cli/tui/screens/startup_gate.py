@@ -43,7 +43,7 @@ class StartupGate(Screen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="gate-body"):
             yield Static(_LOGO, id="gate-logo")
-            yield ProgressBar(total=None, show_eta=False, id="gate-bar")
+            yield ProgressBar(total=None, show_eta=False, show_percentage=False, id="gate-bar")
             yield Static(msg.STARTUP_PREPARING, id="gate-status")
 
     def start_boot(self) -> None:
@@ -118,10 +118,13 @@ class StartupGate(Screen[None]):
         bar = self.query_one("#gate-bar", ProgressBar)
         status = self.query_one("#gate-status", Static)
         if snapshot.phase is WarmPhase.READING_WEIGHTS and snapshot.bytes_total:
+            bar.show_percentage = True
             bar.update(total=snapshot.bytes_total, progress=snapshot.bytes_done)
             status.update(msg.STARTUP_READING_WEIGHTS.format(name=_model_label(snapshot)))
             return
-        # No byte signal outside the read phase, so the bar stays indeterminate.
+        # No byte signal outside the read phase, so the bar stays indeterminate and
+        # shows no percentage rather than a placeholder.
+        bar.show_percentage = False
         bar.update(total=None)
         status.update(
             msg.STARTUP_LOADING_ENGINE

@@ -91,3 +91,22 @@ def test_patch_is_posix_guarded(added_lines):
     """Windows keeps Nuitka's stock bootstrap, which has its own splash support."""
     body = "\n".join(added_lines)
     assert "#if !defined(_WIN32) && !defined(__MSYS__)" in body
+
+
+def test_bootstrap_frame_matches_the_splash_frame_geometry(added_lines):
+    """The splash repaints the bootstrap's frame in place, so the row counts must agree.
+
+    The splash writes len(BEE_LINES) wordmark rows, a separator, and the bar. The
+    bootstrap parks the cursor that many rows above the bar. A mismatch would draw
+    the splash over the wrong lines.
+    """
+    body = "\n".join(added_lines)
+    expected = len(BEE_LINES) + 1
+    assert f"#define LILBEE_FRAME_ROWS_ABOVE_BAR {expected}" in body
+
+
+def test_interactive_launch_keeps_the_wordmark_on_screen(added_lines):
+    """Erasing the frame before exec left the terminal blank until the splash started."""
+    body = "\n".join(added_lines)
+    assert "lilbee_progress_end(argc == 1)" in body
+    assert "keep_logo ? " in body

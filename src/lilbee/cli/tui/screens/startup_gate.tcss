@@ -17,9 +17,30 @@ StartupGate {
     text-style: bold;
 }
 
+/* The bar carries the same amber ramp as the bootstrap's blocks: bright fill,
+   mid-amber sweep while indeterminate, dim remainder. Textual's default accent
+   is the theme's pink, which fights the wordmark. */
 #gate-bar {
     width: 55;
     margin: 1 0 0 0;
+}
+
+#gate-bar Bar > .bar--bar {
+    color: #ffaf00;
+    background: #5f3f00;
+}
+
+#gate-bar Bar > .bar--indeterminate {
+    color: #d78700;
+    background: #5f3f00;
+}
+
+#gate-bar PercentageStatus {
+    color: #d78700;
+}
+
+#gate-bar ETAStatus {
+    display: none;
 }
 
 #gate-status {

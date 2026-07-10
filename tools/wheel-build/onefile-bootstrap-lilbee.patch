@@ -1,6 +1,6 @@
---- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-10 02:44:52
-+++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-10 02:44:52
-@@ -447,7 +447,155 @@
+--- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-10 05:02:20
++++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-10 05:02:20
+@@ -447,7 +447,165 @@
  #if _NUITKA_ONEFILE_TEMP_BOOL
  static bool payload_created = false;
  #endif
@@ -24,7 +24,7 @@
 +#define LILBEE_CELL_FULL "\u2593"
 +#define LILBEE_CELL_EDGE "\u2592"
 +#define LILBEE_CELL_EMPTY "\u2591"
-+
+ 
 +static char const *lilbee_logo_lines[] = {
 +    "@@@       @@@  @@@       @@@@@@@   @@@@@@@@  @@@@@@@@  ",
 +    "@@@       @@@  @@@       @@@@@@@@  @@@@@@@@  @@@@@@@@  ",
@@ -38,7 +38,7 @@
 +    ": :: : :  :    : :: : :  :: : ::   : :: ::   : :: ::   ",
 +    NULL,
 +};
- 
++
 +static bool lilbee_progress_on = false;
 +static int lilbee_last_percent = -1;
 +
@@ -96,17 +96,25 @@
 +    fclose(handle);
 +}
 +
++// The frame occupies exactly the rows the Python splash redraws: a blank row, the
++// ten wordmark rows, a blank row, a separator, and the bar. Matching that geometry
++// lets the splash repaint over this frame in place instead of below it.
++#define LILBEE_FRAME_ROWS_ABOVE_BAR 13
++
 +static void lilbee_progress_begin(void) {
 +    lilbee_progress_on = isatty(STDERR_FILENO) != 0;
 +    if (!lilbee_progress_on) {
 +        return;
 +    }
++    fputc('\n', stderr);
 +    fputs(LILBEE_AMBER_DIM, stderr);
 +    for (int i = 0; lilbee_logo_lines[i] != NULL; i += 1) {
 +        fputs(lilbee_logo_lines[i], stderr);
 +        fputc('\n', stderr);
 +    }
-+    fputs(LILBEE_RESET "\n", stderr);
++    fputs(LILBEE_RESET, stderr);
++    fputc('\n', stderr);
++    fputc('\n', stderr);
 +}
 +
 +static void lilbee_progress_update(unsigned long long done, unsigned long long total) {
@@ -139,16 +147,18 @@
 +    fflush(stderr);
 +}
 +
-+static void lilbee_progress_end(void) {
++// keep_logo: park the cursor on the wordmark instead of erasing it, so an
++// interactive launch never shows a blank terminal between this frame and the
++// Python splash. A launch with arguments prints its own output, so erase.
++static void lilbee_progress_end(bool keep_logo) {
 +    if (!lilbee_progress_on) {
 +        return;
 +    }
-+    // Erase the frame so the Python splash draws onto a clean terminal.
 +    fputs("\r\033[2K", stderr);
-+    for (int i = 0; lilbee_logo_lines[i] != NULL; i += 1) {
-+        fputs("\033[A\033[2K", stderr);
++    for (int i = 0; i < LILBEE_FRAME_ROWS_ABOVE_BAR; i += 1) {
++        fputs(keep_logo ? "\033[A" : "\033[A\033[2K", stderr);
 +    }
-+    fputs("\033[A\033[2K", stderr);
++    fputc('\r', stderr);
 +    fflush(stderr);
 +}
 +#endif
@@ -156,21 +166,21 @@
  #define MAX_CREATED_DIRS 1024
  static filename_char_t *created_dir_paths[MAX_CREATED_DIRS];
  int created_dir_count = 0;
-@@ -1149,6 +1297,13 @@
- 
- #if defined(_NUITKA_EXPERIMENTAL_DEBUG_ONEFILE_HANDLING)
+@@ -1151,6 +1309,13 @@
      wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
-+#endif
-+
+ #endif
+ 
 +#if !defined(_WIN32) && !defined(__MSYS__)
 +    bool const lilbee_warm_start =
 +        lilbee_stamp_matches(first_filename, sizeof(first_filename) / sizeof(filename_char_t));
 +#else
 +    bool const lilbee_warm_start = false;
- #endif
- 
++#endif
++
      if (process_role == NULL) {
-@@ -1169,6 +1324,7 @@
+ #if defined(_WIN32)
+         bool_res = SetConsoleCtrlHandler(ourConsoleCtrlHandler, true);
+@@ -1169,6 +1334,7 @@
  #endif
  
  #if _NUITKA_ONEFILE_HAS_PAYLOAD_BOOL == 1
@@ -178,19 +188,19 @@
      NUITKA_PRINT_TIMING("ONEFILE: Checking header for compression.");
  
      char header[3];
-@@ -1201,6 +1357,11 @@
- #endif
+@@ -1202,6 +1368,11 @@
  
      NUITKA_PRINT_TIMING("ONEFILE: Entering decompression.");
-+
+ 
 +#if !defined(_WIN32) && !defined(__MSYS__)
 +    unsigned char const *lilbee_payload_start = payload_current;
 +    lilbee_progress_begin();
 +#endif
- 
++
  #if _NUITKA_ONEFILE_TEMP_BOOL
      payload_created = true;
-@@ -1336,10 +1497,20 @@
+ #endif
+@@ -1336,10 +1507,22 @@
                  fatalErrorTempFiles();
              }
          }
@@ -203,7 +213,9 @@
      NUITKA_PRINT_TIMING("ONEFILE: Finishing decompression, cleanup payload.");
  
 +#if !defined(_WIN32) && !defined(__MSYS__)
-+    lilbee_progress_end();
++    // argc == 1 means no user arguments: the child launches the TUI, whose splash
++    // repaints this wordmark in place.
++    lilbee_progress_end(argc == 1);
 +    lilbee_stamp_write(first_filename);
 +#endif
 +    }
