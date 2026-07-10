@@ -15,12 +15,13 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import swap_manager as sm
+from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import WorkerRole
 
 # All lifecycle tests run one manager for the chat group unless stated otherwise.
-_GROUP = "chat"
+_GROUP = SwapGroup.CHAT
 
 
 class _FakeProc:
@@ -1274,8 +1275,8 @@ class TestPerGroupNaming:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        chat = SwapManager(tmp_path, "chat")
-        embed = SwapManager(tmp_path, "embed")
+        chat = SwapManager(tmp_path, SwapGroup.CHAT)
+        embed = SwapManager(tmp_path, SwapGroup.EMBED)
         chat.start([_launch(WorkerRole.CHAT)])
         embed.start([_launch(WorkerRole.EMBED)])
         # Each group runs against its own config, so stopping one group's fleet

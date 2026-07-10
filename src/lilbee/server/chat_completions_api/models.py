@@ -140,6 +140,8 @@ class CompletionsResponseToolCall(BaseModel):
 class CompletionsResponseMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str | None = None
+    # A reasoning model's thinking, reported separately so ``content`` stays clean.
+    reasoning_content: str | None = None
     tool_calls: list[CompletionsResponseToolCall] | None = None
 
 
@@ -181,6 +183,7 @@ class CompletionsStreamToolCall(BaseModel):
 class CompletionsStreamDelta(BaseModel):
     role: Literal["assistant"] | None = None
     content: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[CompletionsStreamToolCall] | None = None
 
 
