@@ -60,15 +60,32 @@ def _xterm_to_hex(index: int) -> str:
     return f"#{red:02x}{green:02x}{blue:02x}"
 
 
-def test_gate_logo_colour_matches_the_shared_bright_amber():
-    """The stylesheet's hex must stay in step with the palette the splash uses."""
+def _gate_stylesheet() -> str:
     import pathlib
 
-    from lilbee.runtime.bee_logo import AMBER_BRIGHT_XTERM
+    return (
+        pathlib.Path(__file__).resolve().parents[1] / "src/lilbee/cli/tui/screens/startup_gate.tcss"
+    ).read_text()
 
-    tcss = pathlib.Path("src/lilbee/cli/tui/screens/startup_gate.tcss")
-    stylesheet = (pathlib.Path(__file__).resolve().parents[1] / tcss).read_text()
-    assert _xterm_to_hex(AMBER_BRIGHT_XTERM) in stylesheet
+
+def test_gate_colours_match_the_shared_amber_palette():
+    """Every hex in the stylesheet must be an xterm index from runtime/bee_logo."""
+    from lilbee.runtime.bee_logo import AMBER_BRIGHT_XTERM, AMBER_DIM_XTERM, AMBER_MID_XTERM
+
+    stylesheet = _gate_stylesheet()
+    for index in (AMBER_BRIGHT_XTERM, AMBER_MID_XTERM, AMBER_DIM_XTERM):
+        assert _xterm_to_hex(index) in stylesheet, f"xterm {index} missing from the gate CSS"
+
+
+def test_gate_stylesheet_has_no_colour_outside_the_palette():
+    """A hand-picked hex would drift from the bootstrap and the splash."""
+    import re
+
+    from lilbee.runtime.bee_logo import AMBER_BRIGHT_XTERM, AMBER_DIM_XTERM, AMBER_MID_XTERM
+
+    allowed = {_xterm_to_hex(i) for i in (AMBER_BRIGHT_XTERM, AMBER_MID_XTERM, AMBER_DIM_XTERM)}
+    found = set(re.findall(r"#[0-9a-fA-F]{6}", _gate_stylesheet()))
+    assert found <= allowed, f"colours outside the palette: {sorted(found - allowed)}"
 
 
 def _snapshot(phase: WarmPhase, **kwargs) -> WarmProgress:
@@ -422,3 +439,41 @@ async def test_gate_releases_when_no_warm_is_pending_and_none_reported(monkeypat
     finally:
         set_services(None)
     app.reveal_chat.assert_called_once_with()
+
+
+async def test_gate_composes_and_styles_its_widgets(monkeypatch):
+    """Render the gate for real: a bad CSS selector must fail here, not at launch.
+
+    Every other gate test stubs query_one, so nothing else parses the stylesheet
+    or mounts the ProgressBar's component classes.
+    """
+    from textual.app import App, ComposeResult
+    from textual.widgets import ProgressBar, Static
+
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+    from lilbee.runtime.bee_logo import AMBER_BRIGHT_XTERM
+
+    monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
+
+    class _Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Static("host")
+
+        def on_mount(self) -> None:
+            self.push_screen(StartupGate())
+
+    app = _Host()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        gate = app.screen
+        assert isinstance(gate, StartupGate)
+
+        bar = gate.query_one("#gate-bar", ProgressBar)
+        status = gate.query_one("#gate-status", Static)
+        logo = gate.query_one("#gate-logo", Static)
+
+        assert bar.show_percentage is False  # no placeholder before a byte signal
+        assert msg.STARTUP_PREPARING in str(status.render())
+        assert logo.styles.color.hex.lower() == _xterm_to_hex(AMBER_BRIGHT_XTERM)
+        assert gate_mod._LOGO.splitlines()[1].strip().startswith("@@@")

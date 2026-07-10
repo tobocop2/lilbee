@@ -26,7 +26,7 @@ _PLACEMENT_KEY = "placement"
 _CHAT_READY_TIMEOUT_S = 1800.0
 _CHAT_READY_POLL_S = 0.5
 _CHAT_READY_GRACE_S = 3.0
-ACTIVE_WARM_PHASES = frozenset(
+_ACTIVE_WARM_PHASES = frozenset(
     {WarmPhase.STARTING, WarmPhase.READING_WEIGHTS, WarmPhase.LOADING_ENGINE}
 )
 
@@ -175,6 +175,11 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
 
 
+def warm_is_reporting(snapshot: WarmProgress | None) -> bool:
+    """Whether *snapshot* is a warm that is actively loading, rather than idle or done."""
+    return snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES
+
+
 def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
     """Block while a chat warm is in flight after a placement change; True when ready.
 
@@ -197,10 +202,9 @@ def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
         if provider.role_ready(WorkerRole.CHAT):
             return True
         snapshot = provider.warm_progress()
-        reporting = snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES
         # A requested warm counts as in flight before it stamps a phase: the fleet
         # spawns and health-checks llama-swap first, which takes seconds.
-        if reporting or provider.warm_pending():
+        if warm_is_reporting(snapshot) or provider.warm_pending():
             grace_deadline = time.monotonic() + _CHAT_READY_GRACE_S
         elif time.monotonic() > grace_deadline:
             return False
@@ -235,6 +239,4 @@ def active_chat_warm_progress() -> WarmProgress | None:
     if provider.role_ready(WorkerRole.CHAT):
         return None
     snapshot = provider.warm_progress()
-    if snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES:
-        return snapshot
-    return None
+    return snapshot if warm_is_reporting(snapshot) else None

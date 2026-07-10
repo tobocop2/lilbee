@@ -13,7 +13,7 @@ from textual.screen import Screen
 from textual.widgets import ProgressBar, Static
 from textual.worker import get_current_worker
 
-from lilbee.app.placement import ACTIVE_WARM_PHASES, chat_engine_ready
+from lilbee.app.placement import chat_engine_ready, warm_is_reporting
 from lilbee.app.services import get_services
 from lilbee.app.setup_state import needs_setup
 from lilbee.catalog.formatting import display_label_for_ref
@@ -92,7 +92,7 @@ class StartupGate(Screen[None]):
             if snapshot is not None and snapshot.phase is WarmPhase.ERROR:
                 self._marshal(self._fail, snapshot.error or "")
                 return
-            if snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES:
+            if warm_is_reporting(snapshot):
                 self._marshal(self._apply_snapshot, snapshot)
             elif provider.warm_pending():
                 grace_deadline = time.monotonic() + _WARM_START_GRACE_S
