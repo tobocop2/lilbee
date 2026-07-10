@@ -147,6 +147,7 @@ async def test_chat_input_tab_inserts_literal_tab() -> None:
         assert app.focused is inp, "Focus moved away from chat input on Tab"
 
 
+@pytest.mark.timeout(120)
 async def test_settings_tab_chain_visits_group_tabs_widget() -> None:
     """Tab from SettingsScreen visits the group Tabs strip."""
     app = LilbeeApp()

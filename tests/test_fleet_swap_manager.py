@@ -1367,3 +1367,56 @@ class TestReapSparesDetached:
         path = self._write_detached_state(tmp_path, detached=False)
         sm.reap_stale(tmp_path, keep_detached=True)
         assert not path.exists()
+
+
+class TestDetachAdoptUnits:
+    def test_detach_marks_state_and_keeps_the_process(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = _FakeProc(poll_result=None)
+        _patch_spawn(monkeypatch, proc)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.detach([{"role": "chat"}])
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.detached is True
+        assert state.launches == ({"role": "chat"},)
+        assert proc.terminated is False and proc.killed is False  # never signaled
+
+    def test_adopt_rejects_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._SwapState(pid=1, pgid=None, owner_pid=None, owner_created_at=None)
+        assert mgr.adopt(state, tmp_path / "x.json") is False
+
+    def test_adopt_probes_the_real_proxy_endpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._SwapState(
+            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4321
+        )
+        old = tmp_path / "old-state.json"
+        old.write_text("{}")
+        assert mgr.adopt(state, old) is True
+        assert not old.exists()
+
+    def test_adopt_unbinds_when_the_proxy_is_dead(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _refuse(_url, **_kw):
+            raise OSError("refused")
+
+        monkeypatch.setattr(sm.httpx, "get", _refuse)
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._SwapState(
+            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4321
+        )
+        assert mgr.adopt(state, tmp_path / "x.json") is False
+        assert mgr._port is None
+
+    def test_find_detached_state_skips_owned_files(self, tmp_path: Path) -> None:
+        owned = tmp_path / sm._state_filename(1, _GROUP.value)
+        owned.write_text(json.dumps({"pid": 2, "detached": False}))
+        assert sm.find_detached_state(tmp_path, _GROUP) is None

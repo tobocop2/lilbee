@@ -16,7 +16,9 @@ from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.groups import SwapGroup
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
+from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _GB = 1024**3
@@ -2729,7 +2731,7 @@ class TestWarmDetachOnShutdown:
         provider, fakes = self._provider_with_fake_swaps()
         provider.shutdown()
         for fake in fakes:
-            fake.detach.assert_called_once_with()
+            fake.detach.assert_called_once()
             fake.shutdown.assert_not_called()
 
     def test_warm_shutdown_still_latches(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2755,3 +2757,163 @@ class TestWarmDetachOnShutdown:
         for fake in fakes:
             fake.shutdown.assert_called_once_with()
             fake.detach.assert_not_called()
+
+
+class TestAdoptDetachedFleet:
+    """Adoption binds to a warm fleet only when version, health, and models match."""
+
+    def _detached_fleet(self, tmp_path, **chat_kwargs):
+        """Detached chat + embed groups matching the configured models."""
+        self._detached_state(tmp_path, **chat_kwargs)
+        self._detached_state(
+            tmp_path,
+            group=SwapGroup.EMBED,
+            proxy_port=4199,
+            launches=[
+                InstanceLaunch(
+                    role=WorkerRole.EMBED,
+                    argv=["/bin/llama-server"],
+                    env_overrides={},
+                    model=cfg.embedding_model,
+                ).to_state()
+            ],
+        )
+
+    def _detached_state(
+        self, tmp_path, *, version=None, launches=None, group=SwapGroup.CHAT, proxy_port=4099
+    ):
+        import json as _json
+        from importlib.metadata import version as _pkg_version
+
+        from lilbee.providers.fleet import swap_manager as sm
+
+        payload = {
+            "pid": 999_998,
+            "owner_pid": 999_999,
+            "member_ports": [proxy_port + 1],
+            "proxy_port": proxy_port,
+            "lilbee_version": version or _pkg_version("lilbee"),
+            "detached": True,
+            "launches": launches
+            if launches is not None
+            else [
+                InstanceLaunch(
+                    role=WorkerRole.CHAT,
+                    argv=["/bin/llama-server"],
+                    env_overrides={},
+                    model=cfg.chat_model,
+                    slots=4,
+                    ctx=8192,
+                ).to_state()
+            ],
+        }
+        path = tmp_path / sm._state_filename(999_999, group.value)
+        path.write_text(_json.dumps(payload))
+        return path
+
+    def _adopting_provider(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        monkeypatch.setattr(cfg, "data_dir", tmp_path)
+        # chat + embed configured (embed can never be empty); optional roles off.
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        provider = FleetProvider()
+        monkeypatch.setattr(SwapManager, "_proxy_answers", lambda self: True)
+        return provider
+
+    def test_adopts_a_matching_fleet_without_planning(self, monkeypatch, tmp_path) -> None:
+        self._detached_fleet(tmp_path)
+        provider = self._adopting_provider(monkeypatch, tmp_path)
+        planned = MagicMock()
+        monkeypatch.setattr(prov_mod.planning, "plan_all_launches", planned)
+        assert provider._ensure_fleet() is True
+        planned.assert_not_called()
+        assert provider.role_ready is not None  # fleet bound
+        assert provider._chat_slots == 4
+        assert provider._chat_ctx == 8192
+
+    def test_version_drift_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
+        path = self._detached_state(tmp_path, version="0.0.0+stale")  # stale chat
+        provider = self._adopting_provider(monkeypatch, tmp_path)
+        assert provider._try_adopt_detached(tmp_path) is False
+        assert not path.exists()
+
+    def test_model_mismatch_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
+        launches = [
+            InstanceLaunch(
+                role=WorkerRole.CHAT,
+                argv=["/bin/llama-server"],
+                env_overrides={},
+                model="somebody/else-GGUF/else.gguf",
+            ).to_state()
+        ]
+        path = self._detached_state(tmp_path, launches=launches)
+        provider = self._adopting_provider(monkeypatch, tmp_path)
+        assert provider._try_adopt_detached(tmp_path) is False
+        assert not path.exists()
+
+    def test_dead_proxy_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
+        path = self._detached_state(tmp_path)
+        self._detached_fleet(tmp_path)
+        provider = self._adopting_provider(monkeypatch, tmp_path)
+        monkeypatch.setattr(SwapManager, "_proxy_answers", lambda self: False)
+        assert provider._try_adopt_detached(tmp_path) is False
+        assert not path.exists()
+
+    def test_missing_configured_role_aborts(self, monkeypatch, tmp_path) -> None:
+        self._detached_state(tmp_path)  # serves CHAT only, but embed is configured
+        provider = self._adopting_provider(monkeypatch, tmp_path)
+        assert provider._try_adopt_detached(tmp_path) is False
+
+
+class TestLaunchStateRoundTrip:
+    def test_round_trips_every_field(self) -> None:
+        launch = InstanceLaunch(
+            role=WorkerRole.RERANK,
+            argv=["/bin/llama-server", "--flag"],
+            env_overrides={"CUDA_VISIBLE_DEVICES": "1"},
+            model="o/r-GGUF/r.gguf",
+            token_cap=512,
+            weights_bytes=123,
+            slots=2,
+            ctx=4096,
+            replica=1,
+            rerank_mode=RerankMode.LLM,
+        )
+        rebuilt = InstanceLaunch.from_state(launch.to_state())
+        assert rebuilt == launch
+
+
+class TestAdoptableLaunchGuards:
+    def test_undecodable_launch_record_is_rejected(self, monkeypatch) -> None:
+        from importlib.metadata import version as _pkg_version
+
+        from lilbee.providers.fleet import swap_manager as sm
+
+        state = sm._SwapState(
+            pid=1,
+            pgid=None,
+            owner_pid=None,
+            owner_created_at=None,
+            lilbee_version=_pkg_version("lilbee"),
+            launches=({"garbage": True},),
+        )
+        assert prov_mod._adoptable_launches(state) is None
+
+    def test_empty_launch_record_is_rejected(self) -> None:
+        from importlib.metadata import version as _pkg_version
+
+        from lilbee.providers.fleet import swap_manager as sm
+
+        state = sm._SwapState(
+            pid=1,
+            pgid=None,
+            owner_pid=None,
+            owner_created_at=None,
+            lilbee_version=_pkg_version("lilbee"),
+            launches=(),
+        )
+        assert prov_mod._adoptable_launches(state) is None
+
+    def test_no_detached_states_means_no_adoption(self, tmp_path) -> None:
+        assert FleetProvider()._try_adopt_detached(tmp_path) is False
