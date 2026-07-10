@@ -1223,6 +1223,42 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
         assert planning_mod.plan_all_launches() == planning_mod.FleetPlan((sentinel,))
 
+    def test_plan_launches_reports_co_tenant_roles(self, monkeypatch, caplog) -> None:
+        # Co-tenancy changes how the box behaves (one model resident at a time), so it
+        # is stated in the log rather than being inferred from a silent plan.
+        import logging
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "ref", WorkerRole.VISION: "vref"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),),
+                unplaceable_roles=(),
+                co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+            ),
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
+
+        with caplog.at_level(logging.INFO):
+            plan = planning_mod.plan_all_launches()
+
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert "chat, vision" in caplog.text
+        assert "only one is resident" in caplog.text
+
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])  # can't enumerate

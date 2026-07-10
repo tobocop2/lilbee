@@ -171,6 +171,21 @@ class TestPlanPlacement:
         assert plan.instances == ()
         assert plan.unplaceable_roles == (WorkerRole.CHAT,)
 
+    def test_unified_budget_marks_an_oversize_pinned_role_unplaceable(self) -> None:
+        # Chat is charged last through its own path, so the pinned tier needs its own
+        # oversize case: an embedder larger than free RAM gets no server either.
+        plan = plan_placement(
+            [
+                ModelPlacementInput(WorkerRole.CHAT, 2 * _GB),
+                ModelPlacementInput(WorkerRole.EMBED, 20 * _GB),
+            ],
+            [],
+            estimate_peak=_never,
+            unified_budget=11 * _GB,
+        )
+        assert plan.unplaceable_roles == (WorkerRole.EMBED,)
+        assert {i.role for i in plan.instances} == {WorkerRole.CHAT}
+
     def test_shared_pool_reserves_search_roles_before_chat(self) -> None:
         # Search-first: embed is reserved before the elastic chat, so a chat that
         # would consume the whole 12 GB pool is dropped instead of starving search

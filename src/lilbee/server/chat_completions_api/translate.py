@@ -258,7 +258,9 @@ def _chunks_for_event(
         # already encoded in the chunk header, and MessageStop is replaced by the
         # final chunk's finish_reason.
         return []
-    assert_never(event)  # a new canonical event must choose its translation
+    # Unreachable: the branches above exhaust CanonicalStreamEvent. This makes a new
+    # event type a type error rather than a silently dropped frame.
+    assert_never(event)  # pragma: no cover
 
 
 def _message_delta_chunks(
