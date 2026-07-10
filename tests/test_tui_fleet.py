@@ -17,7 +17,9 @@ from tests._lilbee_app_test_host import LilbeeAppHost
 GIB = 1024**3
 
 
-def _make_view(*, manual: bool = False, unplaceable: tuple = (), spec_json=None):  # type: ignore[type-arg]
+def _make_view(  # type: ignore[type-arg]
+    *, manual: bool = False, unplaceable: tuple = (), spec_json=None, co_tenants: tuple = ()
+):
     from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
     from lilbee.providers.roles import WorkerRole
 
@@ -32,6 +34,7 @@ def _make_view(*, manual: bool = False, unplaceable: tuple = (), spec_json=None)
         unplaceable=unplaceable,
         manual=manual,
         spec_json=spec_json,
+        co_tenants=co_tenants,
     )
 
 
@@ -449,6 +452,29 @@ async def test_unplaceable_warns(monkeypatch):
         await pilot.pause()
 
     assert any("vision" in n.lower() for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_co_tenant_roles_are_surfaced(monkeypatch):
+    """Co-tenants are placed but share memory, so the drawer says so rather than
+    letting two roles on one card read as an over-committed plan."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    view = _make_view(co_tenants=(WorkerRole.CHAT, WorkerRole.VISION))
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    notes: list[str] = []
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        body = app.screen.query_one("FleetBody")
+        body.notify = lambda msg, **k: notes.append(msg)  # type: ignore[method-assign]
+        body._load_worker()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert any("one loaded at a time" in n for n in notes)
+    assert any("chat, vision" in n for n in notes)
 
 
 @pytest.mark.asyncio

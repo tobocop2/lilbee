@@ -11,6 +11,7 @@ from lilbee.server.chat_completions_api.models import (
     CompletionsRequest,
     CompletionsResponse,
     CompletionsStreamChunk,
+    CompletionsStreamDelta,
 )
 from lilbee.server.chat_completions_api.translate import (
     canonical_stream_to_completions_chunks,
@@ -697,6 +698,84 @@ async def _drain(
 async def _async_iter(items: list[CanonicalStreamEvent]) -> AsyncIterator[CanonicalStreamEvent]:
     for item in items:
         yield item
+
+
+class TestReasoningLeavesContentClean:
+    """Reasoning models wrap thinking in <think>; agents on /v1 must never see it."""
+
+    def _resp(self, text: str) -> CanonicalResponse:
+        return CanonicalResponse(
+            id="msg_abc",
+            model="m",
+            content=[TextBlock(text=text)],
+            stop_reason=StopReason.END_TURN,
+            usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+        )
+
+    def test_think_block_moves_to_reasoning_content(self) -> None:
+        body = canonical_to_completions_response(
+            self._resp("<think>weighing options</think>The answer is 4."),
+            response_id=_RESPONSE_ID,
+        )
+        message = body.choices[0].message
+        assert message.content == "The answer is 4."
+        assert message.reasoning_content == "weighing options"
+
+    def test_plain_answer_has_no_reasoning_content(self) -> None:
+        body = canonical_to_completions_response(
+            self._resp("just an answer"), response_id=_RESPONSE_ID
+        )
+        message = body.choices[0].message
+        assert message.content == "just an answer"
+        assert message.reasoning_content is None
+
+    def test_unterminated_think_block_is_all_reasoning(self) -> None:
+        # A model that spends its whole budget thinking must not dump the raw tag.
+        body = canonical_to_completions_response(
+            self._resp("<think>still thinking"), response_id=_RESPONSE_ID
+        )
+        message = body.choices[0].message
+        assert message.reasoning_content == "still thinking"
+        assert not message.content
+
+
+class TestReasoningStreamSplitsDeltas:
+    async def _deltas(self, texts: list[str]) -> list[CompletionsStreamDelta]:
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockStart(index=0, block=TextBlock(text="")),
+            *[ContentBlockDelta(index=0, delta=TextDelta(text=t)) for t in texts],
+            ContentBlockStop(index=0),
+            MessageDelta(stop_reason=StopReason.END_TURN),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        return [c.choices[0].delta for c in chunks if c.choices]
+
+    async def test_streamed_think_tokens_go_to_reasoning_content(self) -> None:
+        deltas = await self._deltas(["<think>", "why", "</think>", "hi"])
+        content = "".join(d.content or "" for d in deltas)
+        reasoning = "".join(d.reasoning_content or "" for d in deltas)
+        assert content == "hi"
+        assert reasoning == "why"
+
+    async def test_think_tag_split_across_deltas_is_not_leaked(self) -> None:
+        # The open tag arrives in pieces; a naive per-delta check would emit "<thi".
+        deltas = await self._deltas(["<thi", "nk>", "hm", "</th", "ink>", "done"])
+        content = "".join(d.content or "" for d in deltas)
+        reasoning = "".join(d.reasoning_content or "" for d in deltas)
+        assert content == "done"
+        assert reasoning == "hm"
+        assert "<think" not in content
+
+    async def test_stream_without_reasoning_is_unchanged(self) -> None:
+        deltas = await self._deltas(["he", "llo"])
+        assert "".join(d.content or "" for d in deltas) == "hello"
+        assert all(d.reasoning_content is None for d in deltas)
 
 
 class TestCanonicalStreamToCompletionsChunks:

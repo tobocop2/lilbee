@@ -92,6 +92,22 @@ class TestBuildSwapConfig:
             _mid(WorkerRole.RERANK),
         }
 
+    def test_co_tenant_group_evicts_between_its_members(self) -> None:
+        # swap=True is what makes llama-swap unload chat to load vision, and back.
+        cfg = json.loads(
+            build_swap_config(
+                [
+                    _launch(WorkerRole.CHAT, ["/bin/llama-server"]),
+                    _launch(WorkerRole.VISION, ["/bin/llama-server"]),
+                ],
+                {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.VISION): 2},
+                swap=True,
+            )
+        )
+        (group,) = cfg["groups"].values()
+        assert group["swap"] is True
+        assert set(group["members"]) == {_mid(WorkerRole.CHAT), _mid(WorkerRole.VISION)}
+
     def test_command_carries_explicit_port_and_role_argv(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server", "--jinja"])])
         cmd = cfg["models"][_mid(WorkerRole.CHAT)]["cmd"]
