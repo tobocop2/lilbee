@@ -74,8 +74,7 @@ def _oracle_servable(sc: Scenario) -> set[WorkerRole]:
 
 def _planner_servable(sc: Scenario) -> tuple[set[WorkerRole], frozenset[WorkerRole]]:
     models = [
-        ModelPlacementInput(role=role, est_vram_bytes=vram)
-        for role, vram in sc.footprints.items()
+        ModelPlacementInput(role=role, est_vram_bytes=vram) for role, vram in sc.footprints.items()
     ]
     placement = plan_placement(
         models,
@@ -183,8 +182,10 @@ def _print_diff_table() -> int:
             hw = f"unified {sc.unified_budget // GB}GB"
         print(f"[{'BUG' if refused else 'OK '}] {sc.name}  ({hw})")
         print(f"        oracle  : {sorted(r.value for r in oracle)}")
-        print(f"        planner : {sorted(r.value for r in servable)}"
-              f"  swap-group={sorted(r.value for r in co)}")
+        print(
+            f"        planner : {sorted(r.value for r in servable)}"
+            f"  swap-group={sorted(r.value for r in co)}"
+        )
         if refused:
             print(f"        >>> REGRESSION: planner refuses {refused}")
     print(f"\n=== {regressions} scenario(s) regress vs the in-process oracle ===")

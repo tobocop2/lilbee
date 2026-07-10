@@ -615,9 +615,7 @@ class TestChatVisionCoTenancy:
             WorkerRole.RERANK,
             WorkerRole.VISION,
         }
-        assert plan.co_tenants == frozenset(
-            {WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION}
-        )
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
 
     def test_swap_group_slot_holds_vram_for_its_largest_member(self) -> None:
         # 6GB card (5.4 usable): embed 0.4 (2 replicas), vision 5.0 fits exactly,
@@ -722,9 +720,7 @@ class TestSharedMemoryCoTenancy:
         plan = plan_placement(models, [], estimate_peak=_never, unified_budget=6 * _GB)
 
         assert plan.unplaceable_roles == ()
-        assert plan.co_tenants == frozenset(
-            {WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION}
-        )
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
         persistent = [i.role for i in plan.instances if i.role not in plan.co_tenants]
         assert persistent == [WorkerRole.EMBED]
 
