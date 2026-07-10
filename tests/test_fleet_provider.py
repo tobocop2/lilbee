@@ -2712,3 +2712,46 @@ class TestWarmErrorsClearedOnTeardown:
         p._drop_swap_refs()
         assert p._warm_errors == {}
         assert "did not finish loading" in p._chat_load_failure()
+
+
+class TestWarmDetachOnShutdown:
+    def _provider_with_fake_swaps(self, count: int = 2):
+        provider = FleetProvider()
+        fakes = []
+        for group in list(SwapGroup)[:count]:
+            fake = MagicMock()
+            provider._swaps[group] = fake
+            fakes.append(fake)
+        return provider, fakes
+
+    def test_warm_shutdown_detaches_and_never_kills(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        provider, fakes = self._provider_with_fake_swaps()
+        provider.shutdown()
+        for fake in fakes:
+            fake.detach.assert_called_once_with()
+            fake.shutdown.assert_not_called()
+
+    def test_warm_shutdown_still_latches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        provider, _ = self._provider_with_fake_swaps()
+        provider.shutdown()
+        assert provider._shut_down is True
+
+    def test_default_shutdown_kills_exactly_as_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        provider, fakes = self._provider_with_fake_swaps()
+        provider.shutdown()
+        for fake in fakes:
+            fake.shutdown.assert_called_once_with()
+            fake.detach.assert_not_called()
+
+    def test_cache_drop_kills_even_when_warm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        provider, fakes = self._provider_with_fake_swaps()
+        provider._shutdown_swap(latch=False)
+        for fake in fakes:
+            fake.shutdown.assert_called_once_with()
+            fake.detach.assert_not_called()

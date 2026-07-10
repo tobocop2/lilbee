@@ -265,6 +265,12 @@ class SwapManager:
         """Whether this manager currently has a spawned llama-swap process."""
         return self._proc is not None
 
+    def detach(self) -> None:
+        """Leave llama-swap running for the next launch to adopt; mark the state file."""
+        self._write_state(detached=True)
+        self._close_log()
+        self._proc = None
+
     def shutdown(self) -> None:
         """Stop every llama-swap this lilbee owns at our config and reap servers.
 

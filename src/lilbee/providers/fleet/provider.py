@@ -803,6 +803,21 @@ class FleetProvider:
 
                 sweep_owned(cfg.data_dir)
 
+    def _detach_swap(self) -> None:
+        """Terminal shutdown with keep_engine_warm on: mark and leave the fleet running.
+
+        Latches like ``_shutdown_swap`` so a discarded provider's in-flight warm
+        cannot spawn an orphan, but the running swaps are handed to the next
+        launch instead of being stopped, and no ownership sweep runs.
+        """
+        with self._build_lock:
+            with self._lock:
+                swaps = dict(self._swaps)
+                self._shut_down = True
+            self._drop_swap_refs()
+            for swap in swaps.values():
+                swap.detach()
+
     def _drop_swap_refs(self) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""
         with self._lock:
@@ -1579,4 +1594,7 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
+        if cfg.keep_engine_warm:
+            self._detach_swap()
+            return
         self._shutdown_swap()
