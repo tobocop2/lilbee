@@ -15,7 +15,7 @@ from lilbee.cli.agent_configs import config_file
 from lilbee.cli.agent_configs.merge import deep_merge, prune_lilbee
 from lilbee.cli.agent_configs.opencode import opencode_config
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
-from lilbee.cli.launchers.server import LOOPBACK, served_chat_ctx
+from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
@@ -133,7 +133,7 @@ class OpencodeLauncher:
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=_TOKEN_REF,
             model_refs=model_refs,
-            chat_ctx=served_chat_ctx(port),
+            chat_ctx=client_chat_ctx(port),
             default_ref=str(cfg.chat_model),
             include_mcp=self._include_mcp,
         )
