@@ -1399,6 +1399,12 @@ class TestScopeChip:
             await pilot.pause()
             chip = app.query_one(ScopeChip)
             both = chip.query_one("#scope-pill-both", Static)
+            # The initial paint is deferred a frame (on_mount cannot query the
+            # pills it composes); give the scheduled refresh time to land.
+            for _ in range(20):
+                if "-active" in both.classes:
+                    break
+                await pilot.pause()
             wiki = chip.query_one("#scope-pill-wiki", Static)
             raw = chip.query_one("#scope-pill-raw", Static)
             assert "-active" in both.classes
