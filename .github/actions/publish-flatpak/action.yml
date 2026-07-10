@@ -141,6 +141,10 @@ runs:
           exit 0
         fi
         git commit -m "lilbee ${VERSION} (flatpak)"
+        # Deliberately a plain push, not tools/ci/git_push_retry.sh: build-update-repo
+        # regenerates this repo's summary and static deltas wholesale, so rebasing onto
+        # a sibling's commit would drop the app it just published. The flatpak jobs
+        # serialize on a shared `concurrency` group instead, so there is no race to retry.
         git push
 
     - name: Attach the bundle to the release
