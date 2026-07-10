@@ -54,7 +54,7 @@ class _FakeSwap:
     def reap_stale(self) -> None:
         self.reaps += 1
 
-    def start(self, launches: list) -> None:
+    def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
         self.started.append(launches)
         self.running = True
 
@@ -1099,7 +1099,7 @@ def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
     started = {"swaps": 0}
 
     class _CountingSwap(_FakeSwap):
-        def start(self, launches: list) -> None:
+        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
             started["swaps"] += 1
             super().start(launches)
 
@@ -1204,7 +1204,7 @@ def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     starts = {"n": 0}
 
     class _SlowSwap(_FakeSwap):
-        def start(self, launches: list) -> None:
+        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
             starts["n"] += 1
             time.sleep(0.05)  # widen the race window
             super().start(launches)
@@ -1303,7 +1303,7 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
     release = threading.Event()
 
     class _SlowSwap(_FakeSwap):
-        def start(self, launches: list) -> None:
+        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
             started.set()
             release.wait(timeout=5.0)
             super().start(launches)
@@ -1323,7 +1323,7 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
     release = threading.Event()
 
     class _GatedSwap(_FakeSwap):
-        def start(self, launches: list) -> None:
+        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
             starts["n"] += 1
             in_start.set()
             release.wait(timeout=5.0)
@@ -2136,7 +2136,7 @@ class TestReloadSingleFlight:
 
     def test_reload_pass_failure_clears_guards_and_propagates(self, monkeypatch) -> None:
         class _ExplodingSwap(_FakeSwap):
-            def start(self, launches: list) -> None:
+            def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
                 raise RuntimeError("respawn failed")
 
         plans: list[int] = []
@@ -2163,7 +2163,7 @@ class TestReloadSingleFlight:
         built: list[_FakeSwap] = []
 
         class _FlakyFirstSwap(_FakeSwap):
-            def start(self, launches: list) -> None:
+            def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
                 if len(built) == 1:  # only the first fresh manager fails its spawn
                     raise RuntimeError("first pass failed")
                 super().start(launches)
@@ -2194,7 +2194,7 @@ class TestReloadSingleFlight:
 
     def test_final_pass_failure_drops_the_dead_swap(self, monkeypatch) -> None:
         class _ExplodingSwap(_FakeSwap):
-            def start(self, launches: list) -> None:
+            def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
                 self.running = False  # the failed restart tore the process down
                 raise RuntimeError("respawn failed")
 
@@ -2560,7 +2560,7 @@ def test_ensure_fleet_partial_failure_tears_down_started_groups(monkeypatch) -> 
     built: list[_FakeSwap] = []
 
     class _SecondExplodes(_FakeSwap):
-        def start(self, launches: list) -> None:
+        def start(self, launches: list, *, ttl_seconds: int = 0) -> None:
             if len(built) > 1:
                 raise RuntimeError("second group failed")
             super().start(launches)

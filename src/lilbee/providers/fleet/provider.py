@@ -468,6 +468,13 @@ def _ocr_deadline(per_page_timeout_s: float | None) -> float | None:
     return None if budget is None else time.monotonic() + budget
 
 
+def _warm_ttl_seconds() -> int:
+    """llama-swap idle-unload timer: the user's warm ttl, or 0 when warm is off."""
+    if not cfg.keep_engine_warm:
+        return 0
+    return cfg.engine_idle_ttl_minutes * 60
+
+
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
@@ -586,7 +593,7 @@ class FleetProvider:
             try:
                 for group, group_launches in by_group.items():
                     swap = SwapManager(cfg.data_dir, group)
-                    swap.start(list(group_launches))
+                    swap.start(list(group_launches), ttl_seconds=_warm_ttl_seconds())
                     started[group] = swap
             except BaseException:
                 for swap in started.values():
@@ -1524,7 +1531,7 @@ class FleetProvider:
             for group in sorted(changed & set(new), key=lambda g: g.value):
                 group_launches = list(new[group])
                 swap = SwapManager(cfg.data_dir, group)
-                swap.start(group_launches)
+                swap.start(group_launches, ttl_seconds=_warm_ttl_seconds())
                 with self._lock:
                     self._adopt_group(group, swap, group_launches)
                 restarted.extend(_by_role(group_launches))

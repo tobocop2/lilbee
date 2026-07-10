@@ -140,7 +140,7 @@ class SwapManager:
         self._port: int | None = None
         self._member_ports: list[int] = []
 
-    def start(self, launches: list[InstanceLaunch]) -> None:
+    def start(self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
         The proxy and every member get a freshly allocated free port; a fixed
@@ -161,7 +161,7 @@ class SwapManager:
         self._member_ports = sorted(member_ports.values())
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._config_path.write_text(
-            build_swap_config(launches, member_ports, swap=self._group.swaps)
+            build_swap_config(launches, member_ports, swap=self._group.swaps, ttl_seconds=ttl_seconds)
         )
         self._port = ports[0]
         # Capture llama-swap's stdout/stderr to a file so its access log never
