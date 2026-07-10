@@ -15,16 +15,21 @@ from lilbee.app.services import (
     set_services,
 )
 
+# The exact signals production installs: (SIGTERM, SIGHUP) on POSIX, SIGTERM alone
+# on Windows, which has no SIGHUP. Deriving from the helper keeps this file
+# collectable on every platform and pins the test set to what install() really does.
 _HARD_EXIT_SIGNALS = [
-    pytest.param(signal.SIGTERM, id="sigterm"),
-    pytest.param(signal.SIGHUP, id="sighup-terminal-close"),
+    pytest.param(sig, id=sig.name.lower())
+    for sig in services_mod._EngineLifecycle._hard_exit_signals()
 ]
 
 
 @pytest.fixture(autouse=True)
 def _restore_handlers():
     """Snapshot and restore the real signal table around every test."""
-    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    saved = {
+        sig: signal.getsignal(sig) for sig in services_mod._EngineLifecycle._hard_exit_signals()
+    }
     services_mod._lifecycle.reset()
     yield
     for sig, handler in saved.items():
@@ -87,7 +92,7 @@ def test_signal_without_services_still_exits():
     """A hard exit before any container was built must not raise."""
     install_engine_lifecycle_hooks()
     with pytest.raises(SystemExit):
-        signal.getsignal(signal.SIGHUP)(signal.SIGHUP, None)
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
 
 def test_cli_entry_point_installs_the_hooks():

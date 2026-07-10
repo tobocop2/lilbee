@@ -332,9 +332,9 @@ class _EngineLifecycle:
         self._installed = False
 
     @staticmethod
-    def _hard_exit_signals() -> tuple[signal.Signals, ...]:
+    def _hard_exit_signals() -> tuple[signal.Signals, ...]:  # pragma: no cover - platform split
         """Signals whose default disposition kills us without running atexit."""
-        if sys.platform == "win32":  # pragma: no cover - Windows has no SIGHUP
+        if sys.platform == "win32":  # Windows has no SIGHUP
             return (signal.SIGTERM,)
         return (signal.SIGTERM, signal.SIGHUP)
 
