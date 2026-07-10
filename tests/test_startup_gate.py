@@ -130,6 +130,7 @@ async def test_gate_releases_when_nothing_is_warming(monkeypatch):
     provider = mock.MagicMock()
     provider.role_ready.return_value = False
     provider.warm_progress.return_value = None
+    provider.warm_pending.return_value = False
     services = mock.MagicMock()
     services.provider = provider
     set_services(services)
@@ -347,3 +348,77 @@ async def test_first_run_hands_over_when_setup_is_required(tmp_path, monkeypatch
             await asyncio.sleep(0.02)
 
     revealed.assert_called_once_with()
+
+
+async def test_gate_holds_while_a_warm_is_pending_but_unreported(monkeypatch):
+    """Regression: the fleet spawns for seconds before the tracker stamps a phase.
+
+    Releasing on "warm_progress() is None" dropped the user into chat while
+    llama-server had not been launched, which is the bug this screen exists for.
+    """
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+    from lilbee.core.config import cfg
+
+    gate, app = _gate_with_app()
+    monkeypatch.setattr(gate_mod, "needs_setup", lambda: False)
+    monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+    monkeypatch.setattr(gate_mod, "_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(gate_mod, "_WARM_START_GRACE_S", 0.0)
+
+    provider = mock.MagicMock()
+    provider.warm_progress.return_value = None
+    # Pending for the first polls, then the role comes up ready.
+    provider.warm_pending.side_effect = [True] * 5 + [False]
+    provider.role_ready.side_effect = [False] * 5 + [True]
+
+    services = mock.MagicMock()
+    services.provider = provider
+    monkeypatch.setattr(gate_mod, "get_services", lambda: services)
+    set_services(services)
+    try:
+        with (
+            mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+            mock.patch.object(StartupGate, "query_one"),
+            mock.patch.object(StartupGate, "_stopping", return_value=False),
+        ):
+            StartupGate._boot_worker.__wrapped__(gate)
+    finally:
+        set_services(None)
+
+    # A zero grace would have released on the first poll had warm_pending been ignored.
+    assert provider.warm_pending.call_count >= 5
+    app.reveal_chat.assert_called_once_with()
+
+
+async def test_gate_releases_when_no_warm_is_pending_and_none_reported(monkeypatch):
+    """A remote or uninstalled chat model never warms, so the gate must step aside."""
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+    from lilbee.core.config import cfg
+
+    gate, app = _gate_with_app()
+    monkeypatch.setattr(gate_mod, "needs_setup", lambda: False)
+    monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+    monkeypatch.setattr(gate_mod, "_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(gate_mod, "_WARM_START_GRACE_S", 0.0)
+
+    provider = mock.MagicMock()
+    provider.warm_progress.return_value = None
+    provider.warm_pending.return_value = False
+    provider.role_ready.return_value = False
+
+    services = mock.MagicMock()
+    services.provider = provider
+    monkeypatch.setattr(gate_mod, "get_services", lambda: services)
+    set_services(services)
+    try:
+        with (
+            mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+            mock.patch.object(StartupGate, "query_one"),
+            mock.patch.object(StartupGate, "_stopping", return_value=False),
+        ):
+            StartupGate._boot_worker.__wrapped__(gate)
+    finally:
+        set_services(None)
+    app.reveal_chat.assert_called_once_with()

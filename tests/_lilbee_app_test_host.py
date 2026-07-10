@@ -18,11 +18,12 @@ _GATE_POLL_S = 0.02
 
 
 async def await_chat(app, pilot) -> object:
-    """Wait for the startup gate to hand the screen over to chat, and return it.
+    """Wait for the startup gate to hand over a fully composed chat screen, and return it.
 
     Production pushes a blocking StartupGate before the chat screen exists, and its
     boot worker runs on a real thread, so a bare ``pilot.pause()`` no longer lands
-    on chat.
+    on chat. Waiting for the screen alone races its children: a caller that queries
+    a widget the instant the screen appears can miss it on a slow runner.
     """
     import asyncio
     import time
@@ -32,11 +33,11 @@ async def await_chat(app, pilot) -> object:
     deadline = time.monotonic() + _GATE_HANDOVER_TIMEOUT_S
     while time.monotonic() < deadline:
         chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
-        if chat is not None:
+        if chat is not None and chat.is_mounted and chat.query("#chat-input"):
             return chat
         await pilot.pause()
         await asyncio.sleep(_GATE_POLL_S)
-    raise AssertionError("the startup gate never revealed the chat screen")
+    raise AssertionError("the startup gate never revealed a composed chat screen")
 
 
 @contextmanager

@@ -6,7 +6,12 @@ import pathlib
 
 import pytest
 
-from lilbee.runtime.bee_logo import AMBER_DIM_XTERM, BEE_LINES
+from lilbee.runtime.bee_logo import (
+    AMBER_BRIGHT_XTERM,
+    AMBER_DIM_XTERM,
+    AMBER_MID_XTERM,
+    BEE_LINES,
+)
 
 _PATCH = (
     pathlib.Path(__file__).resolve().parents[1] / "tools/wheel-build/onefile-bootstrap-lilbee.patch"
@@ -48,10 +53,19 @@ def test_c_logo_has_no_extra_rows(added_lines):
     assert literals == expected
 
 
-def test_bootstrap_uses_the_shared_dim_amber(added_lines):
-    """The bootstrap paints the dim-amber stage of the wordmark."""
+def test_bootstrap_uses_the_shared_amber_ramp(added_lines):
+    """The bootstrap paints the wordmark and bar from the shared palette."""
     body = "\n".join(added_lines)
-    assert f"38;5;{AMBER_DIM_XTERM}m" in body
+    for index in (AMBER_DIM_XTERM, AMBER_MID_XTERM, AMBER_BRIGHT_XTERM):
+        assert f"38;5;{index}m" in body, f"xterm index {index} missing from the C bootstrap"
+
+
+def test_bootstrap_bar_uses_the_splash_block_glyphs(added_lines):
+    """The bar reads as the same surface as the splash, not an ASCII fallback."""
+    body = "\n".join(added_lines)
+    for glyph in ("\\u2593", "\\u2592", "\\u2591"):
+        assert glyph in body, f"block glyph {glyph} missing from the bootstrap bar"
+    assert "'='" not in body, "the bar should not fall back to ASCII"
 
 
 def test_progress_is_suppressed_off_a_terminal(added_lines):

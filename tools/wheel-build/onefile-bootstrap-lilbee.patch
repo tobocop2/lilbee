@@ -1,10 +1,9 @@
---- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-09 21:37:40
-+++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-09 21:37:40
-@@ -446,6 +446,137 @@
- 
+--- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-10 02:44:52
++++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-10 02:44:52
+@@ -447,7 +447,155 @@
  #if _NUITKA_ONEFILE_TEMP_BOOL
  static bool payload_created = false;
-+#endif
+ #endif
 +
 +// lilbee: cold-start feedback and a warm-start fast path.
 +//
@@ -17,8 +16,14 @@
 +
 +#define LILBEE_STAMP_NAME ".lilbee-bootstrap-stamp"
 +#define LILBEE_BAR_CELLS 40
++#define LILBEE_AMBER_BRIGHT "\033[38;5;214m"
++#define LILBEE_AMBER_MID "\033[38;5;172m"
 +#define LILBEE_AMBER_DIM "\033[38;5;94m"
 +#define LILBEE_RESET "\033[0m"
++// Same block glyphs the Python splash bar uses, so the two read as one surface.
++#define LILBEE_CELL_FULL "\u2593"
++#define LILBEE_CELL_EDGE "\u2592"
++#define LILBEE_CELL_EMPTY "\u2591"
 +
 +static char const *lilbee_logo_lines[] = {
 +    "@@@       @@@  @@@       @@@@@@@   @@@@@@@@  @@@@@@@@  ",
@@ -33,7 +38,7 @@
 +    ": :: : :  :    : :: : :  :: : ::   : :: ::   : :: ::   ",
 +    NULL,
 +};
-+
+ 
 +static bool lilbee_progress_on = false;
 +static int lilbee_last_percent = -1;
 +
@@ -115,11 +120,22 @@
 +    lilbee_last_percent = percent;
 +
 +    int filled = (percent * LILBEE_BAR_CELLS) / 100;
-+    fputs("\r  " LILBEE_AMBER_DIM "bootstrapping " LILBEE_RESET "[", stderr);
-+    for (int i = 0; i < LILBEE_BAR_CELLS; i += 1) {
-+        fputc(i < filled ? '=' : ' ', stderr);
++
++    // Indent to sit under the wordmark, which is LILBEE_LOGO_WIDTH columns wide.
++    fputs("\r  " LILBEE_AMBER_DIM "bootstrapping" LILBEE_RESET "  ", stderr);
++
++    fputs(LILBEE_AMBER_BRIGHT, stderr);
++    for (int i = 0; i < filled; i += 1) {
++        fputs(LILBEE_CELL_FULL, stderr);
 +    }
-+    fprintf(stderr, "] %3d%%", percent);
++    if (filled < LILBEE_BAR_CELLS) {
++        fputs(LILBEE_AMBER_MID LILBEE_CELL_EDGE, stderr);
++        fputs(LILBEE_AMBER_DIM, stderr);
++        for (int i = filled + 1; i < LILBEE_BAR_CELLS; i += 1) {
++            fputs(LILBEE_CELL_EMPTY, stderr);
++        }
++    }
++    fprintf(stderr, LILBEE_RESET "  " LILBEE_AMBER_MID "%3d%%" LILBEE_RESET, percent);
 +    fflush(stderr);
 +}
 +
@@ -135,24 +151,26 @@
 +    fputs("\033[A\033[2K", stderr);
 +    fflush(stderr);
 +}
- #endif
- 
++#endif
++
  #define MAX_CREATED_DIRS 1024
-@@ -1151,6 +1282,13 @@
-     wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
- #endif
+ static filename_char_t *created_dir_paths[MAX_CREATED_DIRS];
+ int created_dir_count = 0;
+@@ -1149,6 +1297,13 @@
  
+ #if defined(_NUITKA_EXPERIMENTAL_DEBUG_ONEFILE_HANDLING)
+     wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
++#endif
++
 +#if !defined(_WIN32) && !defined(__MSYS__)
 +    bool const lilbee_warm_start =
 +        lilbee_stamp_matches(first_filename, sizeof(first_filename) / sizeof(filename_char_t));
 +#else
 +    bool const lilbee_warm_start = false;
-+#endif
-+
+ #endif
+ 
      if (process_role == NULL) {
- #if defined(_WIN32)
-         bool_res = SetConsoleCtrlHandler(ourConsoleCtrlHandler, true);
-@@ -1169,6 +1307,7 @@
+@@ -1169,6 +1324,7 @@
  #endif
  
  #if _NUITKA_ONEFILE_HAS_PAYLOAD_BOOL == 1
@@ -160,19 +178,19 @@
      NUITKA_PRINT_TIMING("ONEFILE: Checking header for compression.");
  
      char header[3];
-@@ -1202,6 +1341,11 @@
+@@ -1201,6 +1357,11 @@
+ #endif
  
      NUITKA_PRINT_TIMING("ONEFILE: Entering decompression.");
- 
++
 +#if !defined(_WIN32) && !defined(__MSYS__)
 +    unsigned char const *lilbee_payload_start = payload_current;
 +    lilbee_progress_begin();
 +#endif
-+
+ 
  #if _NUITKA_ONEFILE_TEMP_BOOL
      payload_created = true;
- #endif
-@@ -1336,10 +1480,20 @@
+@@ -1336,10 +1497,20 @@
                  fatalErrorTempFiles();
              }
          }

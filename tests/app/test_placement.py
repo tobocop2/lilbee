@@ -273,11 +273,12 @@ def test_view_multi_replica_unions_devices():
 
 
 class _WaitProvider:
-    """Provider stub scripting role_ready / warm_progress across polls."""
+    """Provider stub scripting role_ready / warm_progress / warm_pending across polls."""
 
-    def __init__(self, ready_after: int, snapshots: list) -> None:
+    def __init__(self, ready_after: int, snapshots: list, *, pending: bool = False) -> None:
         self._ready_after = ready_after
         self._snapshots = snapshots
+        self._pending = pending
         self.polls = 0
 
     def role_ready(self, role: WorkerRole) -> bool:
@@ -287,6 +288,9 @@ class _WaitProvider:
     def warm_progress(self):
         idx = min(self.polls - 1, len(self._snapshots) - 1)
         return self._snapshots[idx] if self._snapshots else None
+
+    def warm_pending(self) -> bool:
+        return self._pending
 
 
 class _WaitServices:
@@ -322,6 +326,16 @@ def test_wait_chat_ready_stops_when_no_warm_in_flight(monkeypatch):
     monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.01)
     monkeypatch.setattr(app_placement, "_CHAT_READY_GRACE_S", 0.0)
     assert app_placement.wait_chat_ready(timeout_s=5) is False
+
+
+def test_wait_chat_ready_holds_while_a_warm_is_pending(monkeypatch):
+    """A requested warm has no phase yet while the fleet spawns; hold anyway."""
+    provider = _WaitProvider(ready_after=3, snapshots=[], pending=True)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.0)
+    monkeypatch.setattr(app_placement, "_CHAT_READY_GRACE_S", 0.0)
+    # A zero grace would give up on the first poll if pending were ignored.
+    assert app_placement.wait_chat_ready(timeout_s=5) is True
 
 
 def test_wait_chat_ready_stops_on_warm_error(monkeypatch):

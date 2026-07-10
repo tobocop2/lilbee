@@ -77,10 +77,13 @@ class StartupGate(Screen[None]):
             self._marshal(self._release)
             return
 
-        # The grace covers get_services kicking its warm on a separate thread. With
-        # no fleet, no warm, or a model that was never installed, nothing will ever
-        # stamp a phase, and holding the screen forever would be worse than the
-        # blank terminal this gate replaces.
+        # Hold while a warm is pending, which covers the seconds between requesting
+        # one and the tracker stamping its first phase (the fleet spawns llama-swap
+        # and waits on its health check before the chat role starts loading). The
+        # grace only applies once nothing is pending and nothing is reporting: a
+        # remote chat model, an uninstalled one, or a warm that already gave up.
+        # Holding the screen forever would be worse than the blank terminal this
+        # gate replaces.
         grace_deadline = time.monotonic() + _WARM_START_GRACE_S
         while not chat_engine_ready():
             if self._stopping():
@@ -89,9 +92,10 @@ class StartupGate(Screen[None]):
             if snapshot is not None and snapshot.phase is WarmPhase.ERROR:
                 self._marshal(self._fail, snapshot.error or "")
                 return
-            warm_in_flight = snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES
-            if warm_in_flight:
+            if snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES:
                 self._marshal(self._apply_snapshot, snapshot)
+            elif provider.warm_pending():
+                grace_deadline = time.monotonic() + _WARM_START_GRACE_S
             elif time.monotonic() > grace_deadline:
                 break
             time.sleep(_POLL_INTERVAL_S)

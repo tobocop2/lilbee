@@ -2940,7 +2940,15 @@ class TestCatalogAutoLoad:
 
 
 class TestCatalogGridFocus:
-    """Catalog grid Tab/G key behavior (bb-zp4o, bb-8kxf)."""
+    """Catalog grid Tab/G key behavior."""
+
+    @pytest.fixture(autouse=True)
+    def _gate_releases_at_once(self):
+        """Bind a ready chat role so the startup gate hands over on mount."""
+        from tests._lilbee_app_test_host import ready_services
+
+        with ready_services():
+            yield
 
     async def test_grid_focus_auto_highlights_first_card(self, _mock_resolve):
         """A focused ModelGrid must auto-highlight a card so users see Tab feedback."""

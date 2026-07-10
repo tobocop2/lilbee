@@ -1354,6 +1354,28 @@ class TestScopeChip:
             chip = app.query_one(ScopeChip)
             assert "-hidden" in chip.classes
 
+    async def test_mount_does_not_query_pills_before_they_exist(self) -> None:
+        """Regression: on_mount ran _refresh, which queries children that may not be mounted.
+
+        A slow runner mounted the chip before its pills, and the query raised
+        NoMatches. The refresh is deferred a frame instead.
+        """
+        import inspect
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        source = inspect.getsource(ScopeChip.on_mount)
+        assert "call_after_refresh(self._refresh)" in source
+        assert "self._refresh()" not in source
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert len(chip.query(".scope-pill")) == 3
+
     async def test_scope_property_defaults_to_both(self) -> None:
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.data.store import SearchScope

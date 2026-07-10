@@ -711,6 +711,16 @@ class FleetProvider:
         with self._lock:
             return self._chat_ctx if WorkerRole.CHAT in self._swaps else None
 
+    def warm_pending(self) -> bool:
+        """Whether a requested warm is still running.
+
+        The tracker only stamps a phase once the chat role starts loading, which is
+        seconds after the swap is spawned, so ``warm_progress`` alone cannot tell a
+        not-yet-started warm from no warm at all.
+        """
+        with self._lock:
+            return self._warming
+
     def warm_progress(self) -> WarmProgress | None:
         """Live cold-load progress for the chat role, or None before warm begins."""
         return self._warm_tracker.snapshot()

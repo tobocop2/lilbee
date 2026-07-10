@@ -197,8 +197,12 @@ def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
         if provider.role_ready(WorkerRole.CHAT):
             return True
         snapshot = provider.warm_progress()
-        warm_in_flight = snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES
-        if not warm_in_flight and time.monotonic() > grace_deadline:
+        reporting = snapshot is not None and snapshot.phase in ACTIVE_WARM_PHASES
+        # A requested warm counts as in flight before it stamps a phase: the fleet
+        # spawns and health-checks llama-swap first, which takes seconds.
+        if reporting or provider.warm_pending():
+            grace_deadline = time.monotonic() + _CHAT_READY_GRACE_S
+        elif time.monotonic() > grace_deadline:
             return False
         time.sleep(_CHAT_READY_POLL_S)
     return False
