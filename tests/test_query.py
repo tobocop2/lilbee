@@ -1581,6 +1581,56 @@ class TestKnownItemRoute:
         assert rag is not None
         mock_svc.store.get_chunks_by_source.assert_called_once_with("harbor-survey-2010.pdf")
 
+    def test_docket_reference_resolves_by_content_concentration(self, mock_svc):
+        """A reference that appears in a document's text but not its filename
+        (a docket number) resolves when BM25 hits concentrate in one source."""
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.bm25_probe.return_value = [
+            _make_result(source="scan_aa17.pdf", chunk_index=i, bm25_score=20.0 - i)
+            for i in range(6)
+        ]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="scan_aa17.pdf", chunk="body", chunk_index=0)
+        ]
+        rag = get_services().searcher.build_rag_context("summarize document 482")
+        assert rag is not None
+        mock_svc.store.get_chunks_by_source.assert_called_once_with("scan_aa17.pdf")
+        mock_svc.store.search.assert_not_called()
+
+    def test_multiple_token_owners_stay_topical_without_probing(self, mock_svc):
+        """Two files legitimately carrying the same reference token (a split
+        document) are true ambiguity: no route, and no content probe either,
+        since the filenames already prove the reference is shared."""
+        mock_svc.store.get_sources.return_value = [
+            self._source("ARC-482-part1.pdf"),
+            self._source("ARC-482-part2.pdf"),
+        ]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize document 482")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
+    def test_scattered_content_hits_stay_topical(self, mock_svc):
+        """A reference mentioned across many documents (a number cited in
+        related filings) must not route: concentration is the signal."""
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.bm25_probe.return_value = [
+            _make_result(source=f"scan_{i}.pdf", chunk_index=0, bm25_score=20.0 - i)
+            for i in range(6)
+        ]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("summarize document 482")
+        finally:
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
     def test_numeric_ref_with_only_substring_hit_stays_topical(self, mock_svc):
         """ "12" inside "notes-2012" is a false match; a numeric reference that
         token-matches nothing must not route via the substring fallback."""

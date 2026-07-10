@@ -77,6 +77,14 @@ _MIN_BM25_PROBE_RESULTS = 2
 # disambiguation picks the unique winner.
 _KNOWN_ITEM_CANDIDATES = 50
 
+# Content-based known-item resolution: BM25 hits probed for a reference, and
+# the fraction of them one source must own to count as that document. A
+# docket-style number lives in a document's text, not its filename, so
+# filename matching alone can never resolve it; concentration keeps the
+# fallback conservative, since a number cited across many filings spreads.
+_KNOWN_ITEM_PROBE_K = 6
+_KNOWN_ITEM_PROBE_MAJORITY = 0.75
+
 # Structured-query mode names (the ``mode:`` prefix shortcut). Single source for
 # both the prefix parser and the dispatch in ``_search_structured``. "term"/"vec"/
 # "hyde" pick a retrieval strategy; "wiki"/"raw" are ChunkType scope shortcuts.
@@ -571,21 +579,9 @@ class Searcher:
         relevance is established by the name match, not by similarity.
         """
         for ref in document_references(question):
-            candidates = self._store.get_sources(search=ref, limit=_KNOWN_ITEM_CANDIDATES)
-            # Substring search over-matches (a bare "482" hits every
-            # zero-padded id containing it); token-exact matching does the
-            # disambiguation, and only a unique winner routes.
-            matches = [s for s in candidates if matches_reference(ref, s["filename"])]
-            if len(matches) != 1:
-                # A unique substring hit still routes for word refs (quoted
-                # titles never token-match hyphenated filenames), but not for
-                # numeric ones: "12" inside "notes-2012" is the exact false
-                # match token comparison exists to reject.
-                if len(candidates) == 1 and not ref.strip().isdigit():
-                    matches = candidates
-                else:
-                    continue
-            filename = matches[0]["filename"]
+            filename = self._resolve_reference_filename(ref)
+            if filename is None:
+                continue
             chunks = self._store.get_chunks_by_source(filename)
             if not chunks:
                 continue
@@ -593,6 +589,43 @@ class Searcher:
             log.info("Known-item route: %r resolved to %s", ref, filename)
             return [c.model_copy(update={"score": 1.0}) for c in chunks]
         return []
+
+    def _resolve_reference_filename(self, ref: str) -> str | None:
+        """The one source *ref* names, or ``None`` when nothing resolves uniquely.
+
+        Filename resolution first: substring search over-matches (a bare
+        "482" hits every zero-padded id containing it), so token-exact
+        matching disambiguates and only a unique winner routes. A unique
+        substring hit still routes for word refs (quoted titles never
+        token-match hyphenated filenames) but not numeric ones: "12" inside
+        "notes-2012" is the false match token comparison exists to reject.
+
+        When no filename knows the reference, it may be a docket-style number
+        living in the document's own text; a BM25 probe resolves it when the
+        hits concentrate in a single source.
+        """
+        candidates = self._store.get_sources(search=ref, limit=_KNOWN_ITEM_CANDIDATES)
+        matches = [s for s in candidates if matches_reference(ref, s["filename"])]
+        if len(matches) == 1:
+            return str(matches[0]["filename"])
+        if not matches and len(candidates) == 1 and not ref.strip().isdigit():
+            return str(candidates[0]["filename"])
+        if matches:
+            return None  # several sources genuinely carry the reference
+        return self._resolve_reference_by_content(ref)
+
+    def _resolve_reference_by_content(self, ref: str) -> str | None:
+        """Resolve *ref* to the single source whose text owns it, if any."""
+        hits = self._store.bm25_probe(ref, top_k=_KNOWN_ITEM_PROBE_K)
+        if len(hits) < _KNOWN_ITEM_PROBE_K:
+            return None
+        counts: dict[str, int] = {}
+        for hit in hits:
+            counts[hit.source] = counts.get(hit.source, 0) + 1
+        top_source, owned = max(counts.items(), key=lambda kv: kv[1])
+        if owned / len(hits) >= _KNOWN_ITEM_PROBE_MAJORITY:
+            return top_source
+        return None
 
     def build_rag_context(
         self,
