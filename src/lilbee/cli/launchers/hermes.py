@@ -14,7 +14,7 @@ from lilbee.cli.agent_configs.hermes import hermes_config
 from lilbee.cli.agent_configs.merge import deep_merge, prune_lilbee
 from lilbee.cli.launchers.hermes_mcp import ensure_hermes_http_mcp
 from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
-from lilbee.cli.launchers.server import LOOPBACK, served_chat_ctx
+from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
 
@@ -24,6 +24,9 @@ _HERMES_INSTALL_HINT = (
 _TOKEN_REF = "${" + LILBEE_TOKEN_ENV_VAR + "}"
 _MCP_CONTAINER_KEY = "mcp_servers"
 _CONFIG_LABEL = "hermes config (config.yaml)"
+# hermes refuses to start against a model whose window is under this, so a smaller
+# one is worth naming here rather than leaving hermes to fail after the handoff.
+_HERMES_MIN_CTX = 64_000
 # hermes config keys gating its own auto-installs (security.allow_lazy_installs).
 _SECURITY_KEY = "security"
 _ALLOW_LAZY_INSTALLS_KEY = "allow_lazy_installs"
@@ -56,6 +59,19 @@ def _upsert_env_token(path: Path, token: str) -> None:
         path.chmod(0o600)
 
 
+def warn_if_below_hermes_minimum(chat_ctx: int | None) -> None:
+    """Tell the user up front when hermes will reject the window lilbee serves."""
+    if chat_ctx is None or chat_ctx >= _HERMES_MIN_CTX:
+        return
+    typer.secho(
+        f"Warning: hermes requires at least a {_HERMES_MIN_CTX:,}-token context and "
+        f"lilbee serves {chat_ctx:,}, so hermes will refuse to start. Chat with a "
+        "longer-context model, a smaller quantization, or a higher gpu_memory_fraction.",
+        err=True,
+        fg=typer.colors.YELLOW,
+    )
+
+
 class HermesLauncher:
     """``Launcher`` implementation for hermes-agent."""
 
@@ -79,12 +95,14 @@ class HermesLauncher:
             parse_error=yaml.YAMLError,
             label=_CONFIG_LABEL,
         )
+        chat_ctx = client_chat_ctx(port)
+        warn_if_below_hermes_minimum(chat_ctx)
         fragment = hermes_config(
             base_url=f"http://{LOOPBACK}:{port}",
             api_key=_TOKEN_REF,
             model_refs=model_refs,
             default_ref=str(cfg.chat_model),
-            chat_ctx=served_chat_ctx(port),
+            chat_ctx=chat_ctx,
             include_mcp=self._include_mcp,
         )
         deep_merge(config, fragment)

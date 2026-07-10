@@ -16,9 +16,9 @@ from lilbee.cli.launchers.hermes import _MCP_CONTAINER_KEY
 from lilbee.cli.launchers.hermes_mcp import MCP_EXTRA_HINT
 from lilbee.cli.launchers.server import (
     LOOPBACK,
+    client_chat_ctx,
     installed_chat_model_refs,
     running_server_session,
-    served_chat_ctx,
 )
 from lilbee.core.config import cfg
 from lilbee.providers.model_ref import with_configured_remote_chat
@@ -44,7 +44,7 @@ def _emit_block(builder: _JsonBuilder | _TextBuilder, **kwargs: Any) -> None:
         # context window, so the pasted config opens on a lilbee model and trims
         # history to the right limit.
         extra.setdefault("default_ref", str(cfg.chat_model))
-        extra.setdefault("chat_ctx", served_chat_ctx(port))
+        extra.setdefault("chat_ctx", client_chat_ctx(port))
     block = builder(
         base_url=f"http://{LOOPBACK}:{port}",
         api_key=token,
