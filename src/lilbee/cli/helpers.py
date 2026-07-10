@@ -47,10 +47,20 @@ def announce_cold_start(role: object, model: str) -> Console | None:
 
 
 def announce_ready(err: Console | None, role: object) -> None:
-    """Print the matching "<role> engine ready." stderr line, if cold-start announced."""
+    """Print the matching "<role> engine ready." stderr line, if cold-start announced.
+
+    Readiness is re-checked rather than inferred from output arriving: a grounded
+    refusal streams without the chat model, so a token is not evidence the engine
+    came up. A role that never loaded says so, and the engine log carries the
+    reason.
+    """
+    from lilbee.app.services import get_services
     from lilbee.providers.roles import WorkerRole
 
     if err is None or not isinstance(role, WorkerRole):
+        return
+    if not get_services().provider.role_ready(role):
+        err.print(f"[{theme.WARNING}]{role.value} engine did not load.[/{theme.WARNING}]")
         return
     err.print(f"[{theme.MUTED}]{role.value} engine ready.[/{theme.MUTED}]")
 

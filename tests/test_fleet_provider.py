@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -2571,3 +2572,37 @@ class TestPlanProbeLifecycle:
         monkeypatch.setattr(planning_mod, "clear_plan_probe", lambda: cleared.append(True))
         FleetProvider()._drop_swap_refs()
         assert cleared == [True]
+
+
+class TestWarmFailureIsSurfaced:
+    """A model that cannot load must not fail silently at debug level."""
+
+    def test_warm_failure_logs_the_underlying_error_at_warning(self, caplog) -> None:
+        p = FleetProvider()
+        client = _fake_client()
+        client.chat.side_effect = RuntimeError("unknown model architecture: qwen35moe")
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.provider"):
+            warmed = p._warm_role_clients(WorkerRole.CHAT, [client])
+
+        assert warmed is False
+        assert "unknown model architecture: qwen35moe" in caplog.text
+        assert "chat" in caplog.text
+
+    def test_successful_warm_logs_nothing(self, caplog) -> None:
+        p = FleetProvider()
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.provider"):
+            assert p._warm_role_clients(WorkerRole.EMBED, [_fake_client()]) is True
+        assert caplog.text == ""
+
+
+class TestChatLoadFailureMessage:
+    """The launcher and the TUI must see the engine's real reason, not a generic one."""
+
+    def test_failure_message_carries_the_engine_error(self) -> None:
+        p = FleetProvider()
+        p._warm_errors[WorkerRole.CHAT] = "unknown model architecture: qwen35moe"
+        assert "unknown model architecture: qwen35moe" in p._chat_load_failure()
+
+    def test_failure_message_falls_back_when_the_engine_said_nothing(self) -> None:
+        assert "did not finish loading" in FleetProvider()._chat_load_failure()
