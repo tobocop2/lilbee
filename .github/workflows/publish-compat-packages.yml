@@ -161,6 +161,10 @@ jobs:
 
   flatpak:
     needs: resolve
+    # Serialized against the regular and CUDA flatpak jobs; see publish-packages.yml.
+    concurrency:
+      group: flatpak-lilbee-repo
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -220,8 +224,5 @@ jobs:
             exit 0
           fi
           git commit -m "lilbee-compat ${VERSION} (scoop)"
-          for _ in 1 2 3; do
-            if git push origin main; then exit 0; fi
-            git pull --rebase origin main
-          done
-          echo "push failed after retries"; exit 1
+          # nix-flake commits to main from a sibling job; rebase-retry on a race.
+          bash tools/ci/git_push_retry.sh

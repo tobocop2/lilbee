@@ -117,6 +117,14 @@ jobs:
   flatpak:
     needs: resolve
     if: inputs.channels == 'all' || contains(inputs.channels, 'flatpak')
+    # One writer at a time for the shared OSTree pages repo. The regular, CUDA and
+    # compat fan-outs run concurrently and each regenerates the repo's summary and
+    # static deltas wholesale, so the rebase-retry the text-file channels use would
+    # drop whichever app a sibling had just published. Group name is shared across
+    # all three workflows on purpose.
+    concurrency:
+      group: flatpak-lilbee-repo
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -252,8 +260,4 @@ jobs:
           fi
           git commit -m "lilbee ${VERSION} (scoop)"
           # nix-flake commits to main from a sibling job; rebase-retry on a race.
-          for _ in 1 2 3; do
-            if git push origin main; then exit 0; fi
-            git pull --rebase origin main
-          done
-          echo "push failed after retries"; exit 1
+          bash tools/ci/git_push_retry.sh

@@ -39,4 +39,5 @@ runs:
           exit 0
         fi
         git commit -m "${COMMIT_MESSAGE}"
-        git push
+        # The CUDA and compat jobs push their own formula to this tap in parallel.
+        bash "${GITHUB_WORKSPACE}/tools/ci/git_push_retry.sh"
