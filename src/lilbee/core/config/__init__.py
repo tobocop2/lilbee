@@ -7,6 +7,7 @@ Uses pydantic-settings for automatic env var loading with TOML config file suppo
 # ruff: noqa: I001
 from .defaults import (
     CHUNK_CONCEPTS_TABLE as CHUNK_CONCEPTS_TABLE,
+    ENTITIES_TABLE as ENTITIES_TABLE,
     CHUNKS_TABLE as CHUNKS_TABLE,
     CITATIONS_TABLE as CITATIONS_TABLE,
     CONCEPT_EDGES_TABLE as CONCEPT_EDGES_TABLE,
@@ -47,6 +48,7 @@ __all__ = [
     "DEFAULT_HTTP_TIMEOUT",
     "DEFAULT_IGNORE_DIRS",
     "DEFAULT_NUM_CTX",
+    "ENTITIES_TABLE",
     "MEMORIES_TABLE",
     "META_TABLE",
     "PAGE_TEXTS_TABLE",

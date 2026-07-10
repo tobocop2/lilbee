@@ -75,10 +75,28 @@ class TestParseAggregate:
         assert agg is not None
         assert agg.kind is AggregateKind.TOTAL_SOURCES
 
-    def test_typed_count_is_unsupported_not_topical(self):
-        """Counts over records the store does not hold must be declined
-        precisely, not fed to retrieval that cannot count."""
+    def test_association_question_parses_both_nouns(self):
         agg = parse_aggregate("how many shipments is each part number associated with?")
+        assert agg is not None
+        assert agg.kind is AggregateKind.TYPE_ASSOCIATION
+        assert (agg.noun, agg.group_noun) == ("shipments", "part number")
+
+    def test_per_question_parses_both_nouns(self):
+        agg = parse_aggregate("how many deliveries per depot?")
+        assert agg is not None
+        assert agg.kind is AggregateKind.TYPE_ASSOCIATION
+        assert (agg.noun, agg.group_noun) == ("deliveries", "depot")
+
+    def test_distinct_question_parses_noun(self):
+        agg = parse_aggregate("how many distinct part numbers are recorded?")
+        assert agg is not None
+        assert agg.kind is AggregateKind.DISTINCT_TYPE
+        assert agg.noun == "part numbers"
+
+    def test_unmatched_typed_count_is_unsupported_not_topical(self):
+        """Counts the parser cannot shape must be declined precisely, not fed
+        to retrieval that cannot count."""
+        agg = parse_aggregate("how many of the entries were amended twice?")
         assert agg is not None
         assert agg.kind is AggregateKind.UNSUPPORTED
 

@@ -27,15 +27,25 @@ class AggregateKind(Enum):
 
     TOTAL_SOURCES = "total_sources"
     TERM_MENTIONS = "term_mentions"
+    DISTINCT_TYPE = "distinct_type"
+    TYPE_ASSOCIATION = "type_association"
     UNSUPPORTED = "unsupported"
 
 
 @dataclass(frozen=True)
 class AggregateQuery:
-    """A parsed aggregate question."""
+    """A parsed aggregate question.
+
+    ``noun`` carries the thing being counted for the typed kinds;
+    ``group_noun`` the per-group dimension of an association question. Both
+    are question words, resolved against the extraction schema by the caller
+    (the parser stays schema-free and purely syntactic).
+    """
 
     kind: AggregateKind
     term: str = ""
+    noun: str = ""
+    group_noun: str = ""
 
 
 # Filename-shaped tokens: a path-ish word with a known document extension.
@@ -70,6 +80,22 @@ _HOW_MANY_RE = re.compile(
 _TOTAL_RE = re.compile(
     r"how\s+many\s+(?:documents|sources|files|pages|chunks)\s*"
     r"(?:are\s+(?:there|indexed|in\s+the\s+index)|do(?:es)?\s+.*\b(?:index|corpus|vault)\b.*)?[?\s]*$",
+    re.IGNORECASE,
+)
+
+# "how many X is each Y associated with" / "how many X per Y": typed
+# association counts over extracted entities.
+_ASSOCIATION_RE = re.compile(
+    r"how\s+many\s+(.+?)\s+(?:is|are)\s+each\s+(.+?)\s+"
+    r"(?:associated\s+with|linked\s+to|recorded\s+(?:for|against))",
+    re.IGNORECASE,
+)
+_PER_RE = re.compile(r"how\s+many\s+(.+?)\s+per\s+(.+?)[?.\s]*$", re.IGNORECASE)
+
+# "how many distinct/unique X ...": typed distinct counts.
+_DISTINCT_RE = re.compile(
+    r"how\s+many\s+(?:distinct|unique|different)\s+(.+?)"
+    r"(?:\s+(?:are|were|is|exist)\b.*)?[?.\s]*$",
     re.IGNORECASE,
 )
 
@@ -145,6 +171,16 @@ def parse_aggregate(question: str) -> AggregateQuery | None:
     """
     if not _HOW_MANY_RE.search(question):
         return None
+    m = _ASSOCIATION_RE.search(question) or _PER_RE.search(question)
+    if m:
+        return AggregateQuery(
+            AggregateKind.TYPE_ASSOCIATION,
+            noun=m.group(1).strip(),
+            group_noun=m.group(2).strip(),
+        )
+    m = _DISTINCT_RE.search(question)
+    if m:
+        return AggregateQuery(AggregateKind.DISTINCT_TYPE, noun=m.group(1).strip())
     m = _TERM_MENTION_RE.search(question)
     if m:
         term = m.group(1).strip().strip("\"'")

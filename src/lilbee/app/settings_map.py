@@ -143,6 +143,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Run a sync before `lilbee ask` (disable on large static corpora)",
     ),
+    "entity_extraction": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Extract typed entities at ingest (needs a reviewed entity_schema.json)",
+    ),
     "semantic_chunking": SettingDef(
         bool,
         nullable=False,

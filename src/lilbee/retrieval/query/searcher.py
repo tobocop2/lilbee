@@ -22,7 +22,7 @@ from lilbee.data.store import (
     cosine_sim,
     human_recall_predicate,
 )
-from lilbee.providers.base import LLMProvider
+from lilbee.providers.base import LLMProvider, ProviderError, ProviderErrorKind
 from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
@@ -45,7 +45,6 @@ from lilbee.retrieval.query.formatting import (
     cited_subset,
     strip_llm_citations,
 )
-from lilbee.retrieval.query.history_window import estimate_text_tokens
 from lilbee.retrieval.query.intent import (
     AggregateKind,
     AggregateQuery,
@@ -135,6 +134,16 @@ SEARCH_NEEDS_EMBEDDER = (
 
 # Token reserve for the generated answer when budgeting RAG context to num_ctx.
 _ANSWER_RESERVE_TOKENS = 1024
+# Chars-per-token assumed when BUDGETING context. Deliberately harsher than
+# the display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars
+# per token, and budgeting at 4 let a document whose real cost exceeded the
+# window pass untrimmed, hard-failing the request.
+_BUDGET_CHARS_PER_TOKEN = 3
+# Association answers list at most this many groups before summarizing.
+_ASSOCIATION_LINES = 15
+# One retry after a provider context-overflow, refitting to this fraction of
+# the budget. The estimator is a heuristic; overflow must degrade, not fail.
+_OVERFLOW_RETRY_SCALE = 0.6
 # Approximate token cost of the Context/Question template wrapper.
 _CONTEXT_TEMPLATE_TOKENS = 16
 # Approximate per-source overhead: the "[i] " marker, the provenance header
@@ -663,8 +672,22 @@ class Searcher:
                 results = self._reranker.rerank(retrieval_query, results)
             # Temporal filtering already ran inside search(); no need to repeat it here.
             results = self.select_context(results, retrieval_query)
+        return self._finalize_context(results, question, history)
+
+    def _finalize_context(
+        self,
+        results: list[SearchChunk],
+        question: str,
+        history: list[ChatMessage] | None,
+        scale: float = 1.0,
+    ) -> tuple[list[SearchChunk], list[ChatMessage]]:
+        """Fit *results* to the context budget and assemble the prompt.
+
+        Split from build_rag_context so an overflow retry can refit the same
+        retrieved set tighter without re-running retrieval or condensation.
+        """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
-        results = self._fit_context_budget(results, system, question, history)
+        results = self._fit_context_budget(results, system, question, history, scale)
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
         messages: list[ChatMessage] = [{"role": "system", "content": system}]
@@ -673,12 +696,18 @@ class Searcher:
         messages.append({"role": "user", "content": prompt})
         return results, messages
 
+    @staticmethod
+    def _budget_tokens(text: str) -> int:
+        """Conservative token cost for budgeting (see _BUDGET_CHARS_PER_TOKEN)."""
+        return max(1, len(text) // _BUDGET_CHARS_PER_TOKEN)
+
     def _fit_context_budget(
         self,
         results: list[SearchChunk],
         system: str,
         question: str,
         history: list[ChatMessage] | None,
+        scale: float = 1.0,
     ) -> list[SearchChunk]:
         """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
 
@@ -696,17 +725,17 @@ class Searcher:
         served = self._provider.served_chat_ctx()
         ctx = min(configured, served) if served else configured
         reserve = (
-            estimate_text_tokens(system)
-            + estimate_text_tokens(question)
-            + sum(estimate_text_tokens(m["content"]) for m in history or [])
+            self._budget_tokens(system)
+            + self._budget_tokens(question)
+            + sum(self._budget_tokens(m["content"]) for m in history or [])
             + _ANSWER_RESERVE_TOKENS
             + _CONTEXT_TEMPLATE_TOKENS
         )
-        budget = ctx - reserve
+        budget = int((ctx - reserve) * scale)
         kept: list[SearchChunk] = []
         used = 0
         for r in results:
-            cost = estimate_text_tokens(r.chunk) + _PER_SOURCE_TOKENS
+            cost = self._budget_tokens(r.chunk) + _PER_SOURCE_TOKENS
             if kept and used + cost > budget:
                 break
             kept.append(r)
@@ -770,11 +799,76 @@ class Searcher:
                 f"{aggregate.term!r}, across {chunk_hits} passages. This counts literal "
                 f"mentions of the phrase, not paraphrases."
             )
+        if aggregate.kind in (AggregateKind.DISTINCT_TYPE, AggregateKind.TYPE_ASSOCIATION):
+            typed = self._answer_typed_aggregate(aggregate)
+            if typed is not None:
+                return typed
+        return self._decline_aggregate()
+
+    def _decline_aggregate(self) -> str:
+        """The honest no-capability answer, naming what IS countable."""
+        from lilbee.retrieval.entities import load_schema
+
+        schema = load_schema(self._config.data_dir)
+        if schema is not None and schema.types:
+            countable = ", ".join(sorted(t.name.replace("_", " ") for t in schema.types))
+            return (
+                "That count isn't answerable from the extracted records. Countable "
+                f"entity types in this index: {countable}. I can also count documents "
+                "or passages that mention a specific term."
+            )
         return (
             "Answering that count needs structured records (dates, identifiers, or "
             "entities) that aren't extracted from this corpus yet. I can count "
             "documents or passages that mention a specific term, or you can ask for "
             "the passages themselves and count from those."
+        )
+
+    def _answer_typed_aggregate(self, aggregate: AggregateQuery) -> str | None:
+        """Exact answers over extracted entities, or None when the question's
+        nouns don't resolve against the reviewed schema."""
+        from lilbee.retrieval.entities import load_schema
+
+        schema = load_schema(self._config.data_dir)
+        counted = schema.type_for_noun(aggregate.noun) if schema else None
+        if schema is None or counted is None:
+            return None
+        if aggregate.kind is AggregateKind.DISTINCT_TYPE:
+            return self._answer_distinct_count(counted.name)
+        grouped = schema.type_for_noun(aggregate.group_noun)
+        if grouped is None:
+            return None
+        return self._answer_association_count(counted.name, grouped.name)
+
+    def _answer_distinct_count(self, type_name: str) -> str:
+        pretty = type_name.replace("_", " ")
+        mentions, distinct = self._store.entity_value_counts(type_name)
+        if mentions == 0:
+            return (
+                f"No {pretty} entities are extracted yet; "
+                "run a sync with entity extraction enabled first."
+            )
+        return (
+            f"Exact scan of the extracted records: {distinct} distinct "
+            f"{pretty} values, across {mentions} mentions."
+        )
+
+    def _answer_association_count(self, counted: str, grouped: str) -> str:
+        counted_pretty = counted.replace("_", " ")
+        grouped_pretty = grouped.replace("_", " ")
+        counts = self._store.entity_association_counts(counted, grouped_by=grouped)
+        if not counts:
+            return (
+                f"No co-occurring {counted_pretty} and {grouped_pretty} entities are "
+                "extracted yet; run a sync with entity extraction enabled first."
+            )
+        shown = list(counts.items())[:_ASSOCIATION_LINES]
+        lines = "\n".join(f"  {value}: {n}" for value, n in shown)
+        more = len(counts) - len(shown)
+        suffix = f"\n  ... and {more} more" if more > 0 else ""
+        return (
+            f"Exact counts from the extracted records ({counted_pretty} "
+            f"per {grouped_pretty}, by shared passage):\n{lines}{suffix}"
         )
 
     def route_direct_answer(self, question: str) -> str | None:
@@ -868,9 +962,24 @@ class Searcher:
         if rag is None:
             return AskResult(answer=_GROUNDED_REFUSAL, sources=[])
         results, messages = rag
-        provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        result = self._provider.chat(provider_messages, options=opts or None)
+        try:
+            result = self._provider.chat(
+                self._messages_for_provider(messages), options=opts or None
+            )
+        except ProviderError as exc:
+            if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or not results:
+                raise
+            # The budget estimator is a heuristic; when the engine still
+            # reports overflow, refit the same retrieved set tighter and
+            # retry once instead of hard-failing the question.
+            log.warning("Context overflow despite budgeting; retrying with a tighter fit")
+            results, messages = self._finalize_context(
+                results, question, history, scale=_OVERFLOW_RETRY_SCALE
+            )
+            result = self._provider.chat(
+                self._messages_for_provider(messages), options=opts or None
+            )
         raw = result.text
         clean = raw if self._config.show_reasoning else strip_reasoning(raw)
         return AskResult(answer=clean, sources=results, cited_sources=cited_subset(clean, results))

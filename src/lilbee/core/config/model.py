@@ -136,6 +136,11 @@ class Config(BaseSettings):
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
+    # Opt-in typed entity extraction at ingest (an entities table for exact
+    # counting and cross-referencing). Needs a reviewed entity_schema.json in
+    # data_dir; without one, syncs skip extraction. Off by default: the
+    # corpus-scale pass costs real compute and most vaults never need it.
+    entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
     server_host: str = "127.0.0.1"

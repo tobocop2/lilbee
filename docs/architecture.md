@@ -696,6 +696,37 @@ Two query-time effects:
 - **Default max sources**: 8 chunks (`LILBEE_MAX_CONTEXT_SOURCES`)
 - **When it helps**: multi-faceted queries like "compare X and Y" where top-k might only cover X but context selection ensures Y is also represented.
 
+#### Typed Entity Extraction (opt-in ingest mode)
+**Off by default** (`LILBEE_ENTITY_EXTRACTION`). Extracts typed entities into a
+dedicated `entities` table so count and cross-reference questions get exact
+answers from a scan instead of a hedge from top-k retrieval. Additive: the new
+table changes no existing schema, requires no migration, and a store without
+it behaves as if nothing was extracted.
+
+Two phases, deliberately operator-driven:
+
+1. **Induction** (`lilbee entities induce`, cheap): an LLM reads a stratified
+   sample of the indexed chunks and proposes the corpus-specific type schema,
+   written to a reviewable `entity_schema.json`. A general NER tag set has no
+   notion of the identifier types a specific corpus carries; the schema is
+   the contract, and it is inspected (and edited) before anything expensive
+   runs.
+2. **Application** (`lilbee entities backfill` for the existing index, plus
+   sync-time extraction for new files once the flag is on): each type is
+   found by the cheapest extractor that serves it: compiled regex for
+   identifier-shaped types, spaCy labels for people/organizations/dates
+   (when the `graph` extra's model is available), and an LLM only for types
+   neither can catch. Cost is dominated by how many LLM-kind types the
+   reviewed schema keeps. Backfill reads chunk text from the store, so no
+   documents are re-ingested and no embeddings are recomputed.
+
+Query-time effects: "how many distinct X" answers with exact distinct counts,
+and "how many X per Y" groups by chunk co-occurrence, both computed by full
+scans over the entities table with no LLM in the loop. Count questions whose
+nouns don't resolve against the schema decline precisely, naming the types
+that are countable. Re-ingesting a source replaces its entity rows the same
+way it replaces its chunks.
+
 #### Context Provenance Headers
 **Always on.** Each context block opens with a one-line header naming its source and page or line span (`[3] (survey_report.pdf, pages 3-4)`), so the answering model can attribute claims to a named document, notice two chunks share a source, and confirm it is reading the document the user asked about. Citation markers in answers are parsed as `[1]`, `[1, 2]`, and bounded ranges like `[1-3]`.
 

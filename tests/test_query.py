@@ -1601,6 +1601,47 @@ class TestKnownItemRoute:
         # Document order preserved after trimming: the head survives.
         assert [r.chunk_index for r in results] == list(range(len(results)))
 
+    def test_dense_text_budgets_conservatively(self, mock_svc):
+        """The private-corpus overflow: text tokenizing at ~2.5 chars/token
+        passed a chars/4 budget untrimmed. Budgeting must assume dense text,
+        so the kept set stays well under the window even at 3 chars/token."""
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        # Numeric-dense chunks: ~6000 chars each, real cost ~2400 tokens each.
+        dense = ("4471 0482 9001 " * 400).strip()
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk=dense, chunk_index=i) for i in range(40)
+        ]
+        mock_svc.provider.served_chat_ctx.return_value = 24576
+        cfg.num_ctx = None
+        rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
+        assert rag is not None
+        _, messages = rag
+        # At 2.56 chars/token the real prompt cost must still fit the window.
+        real_tokens = sum(len(m["content"]) / 2.56 for m in messages)
+        assert real_tokens <= 24576 * 1.05
+
+    def test_overflow_from_provider_retries_once_with_tighter_fit(self, mock_svc):
+        """When the engine still reports overflow, ask refits and retries
+        instead of surfacing a hard failure."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk="word " * 400, chunk_index=i)
+            for i in range(40)
+        ]
+        mock_svc.provider.served_chat_ctx.return_value = 8192
+        mock_svc.provider.chat.side_effect = [
+            ProviderError("overflow", kind=ProviderErrorKind.CONTEXT_OVERFLOW),
+            _text_result("fits now [1]"),
+        ]
+        result = get_services().searcher.ask_raw("summarize survey_report.pdf")
+        assert result.answer.startswith("fits now")
+        assert mock_svc.provider.chat.call_count == 2
+        first = mock_svc.provider.chat.call_args_list[0][0][0][-1]["content"]
+        second = mock_svc.provider.chat.call_args_list[1][0][0][-1]["content"]
+        assert len(second) < len(first)
+
     def test_budget_falls_back_to_config_when_served_ctx_unknown(self, mock_svc):
         mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
         mock_svc.store.get_chunks_by_source.return_value = [
@@ -1735,10 +1776,15 @@ class TestAggregateRoute:
         assert "369" in result.answer
         assert "123456" in result.answer
 
-    def test_typed_count_declines_precisely(self, mock_svc):
-        result = get_services().searcher.ask_raw(
-            "how many shipments is each part number associated with?"
-        )
+    def test_typed_count_declines_precisely(self, mock_svc, tmp_path):
+        old_dir = cfg.data_dir
+        cfg.data_dir = tmp_path / "no_schema_here"
+        try:
+            result = get_services().searcher.ask_raw(
+                "how many shipments is each part number associated with?"
+            )
+        finally:
+            cfg.data_dir = old_dir
         assert "aren't extracted" in result.answer
         mock_svc.provider.chat.assert_not_called()
 
@@ -1772,6 +1818,75 @@ class TestAggregateRoute:
             cfg.query_expansion_count = 3
         mock_svc.store.count_term_mentions.assert_not_called()
         mock_svc.store.search.assert_called_once()
+
+
+class TestTypedAggregates:
+    @pytest.fixture()
+    def part_schema(self, tmp_path):
+        from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind, save_schema
+
+        schema = EntitySchema(
+            types=[
+                EntityType(
+                    name="part_number",
+                    kind=ExtractorKind.REGEX,
+                    pattern=r"PX\d{4}",
+                    synonyms=["part"],
+                ),
+                EntityType(name="depot", kind=ExtractorKind.SPACY, pattern="GPE"),
+            ]
+        )
+        old_dir = cfg.data_dir
+        cfg.data_dir = tmp_path
+        save_schema(schema, tmp_path)
+        yield schema
+        cfg.data_dir = old_dir
+
+    def test_distinct_count_answers_exactly(self, mock_svc, part_schema):
+        mock_svc.store.entity_value_counts.return_value = (57, 12)
+        result = get_services().searcher.ask_raw("how many distinct part numbers are recorded?")
+        assert "12 distinct part number values" in result.answer
+        assert "57 mentions" in result.answer
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_association_answers_grouped_counts(self, mock_svc, part_schema):
+        mock_svc.store.entity_association_counts.return_value = {"fresno": 3, "reno": 1}
+        result = get_services().searcher.ask_raw("how many parts is each depot associated with?")
+        assert "fresno: 3" in result.answer
+        assert "reno: 1" in result.answer
+        mock_svc.store.entity_association_counts.assert_called_once_with(
+            "part_number", grouped_by="depot"
+        )
+
+    def test_unresolvable_noun_declines_naming_types(self, mock_svc, part_schema):
+        result = get_services().searcher.ask_raw("how many distinct vessels are recorded?")
+        assert "Countable entity types" in result.answer
+        assert "part number" in result.answer
+
+    def test_empty_extraction_says_so(self, mock_svc, part_schema):
+        mock_svc.store.entity_value_counts.return_value = (0, 0)
+        result = get_services().searcher.ask_raw("how many distinct part numbers are there?")
+        assert "extracted yet" in result.answer
+
+    def test_association_with_unresolvable_group_noun_declines(self, mock_svc, part_schema):
+        result = get_services().searcher.ask_raw("how many parts is each vessel associated with?")
+        assert "Countable entity types" in result.answer
+
+    def test_association_with_no_extracted_rows_says_so(self, mock_svc, part_schema):
+        mock_svc.store.entity_association_counts.return_value = {}
+        result = get_services().searcher.ask_raw("how many parts is each depot associated with?")
+        assert "extracted yet" in result.answer
+
+    def test_without_schema_keeps_the_generic_decline(self, mock_svc, tmp_path):
+        old_dir = cfg.data_dir
+        cfg.data_dir = tmp_path / "no_schema_here"
+        try:
+            result = get_services().searcher.ask_raw(
+                "how many parts is each depot associated with?"
+            )
+        finally:
+            cfg.data_dir = old_dir
+        assert "aren't extracted from this corpus yet" in result.answer
 
 
 class TestHistoryCondensation:

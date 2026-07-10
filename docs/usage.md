@@ -784,6 +784,7 @@ reason the defaults are the defaults.
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
 | `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Per-arm retrieval depth as a multiple of top_k (hybrid overfetch; also the vector-only MMR pool) |
 | `LILBEE_FUSION_OVERFETCH_FLOOR` | `50` | Minimum rows fetched per retrieval arm before fusion, regardless of top_k |
+| `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities at ingest for exact count answers (needs a reviewed `entity_schema.json`; see `lilbee entities`) |
 | `LILBEE_FUSION_ALPHA` | `0.6` | Vector-arm weight in hybrid score fusion; the BM25 arm gets the complement |
 | `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
 | `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |

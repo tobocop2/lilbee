@@ -17,6 +17,7 @@ from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
     CHUNKS_TABLE,
     CITATIONS_TABLE,
+    ENTITIES_TABLE,
     MEMORIES_TABLE,
     META_TABLE,
     PAGE_TEXTS_TABLE,
@@ -115,6 +116,7 @@ _PER_SOURCE_TABLES = (
     (CHUNKS_TABLE, "source"),
     (PAGE_TEXTS_TABLE, "source"),
     (CHUNK_CONCEPTS_TABLE, "chunk_source"),
+    (ENTITIES_TABLE, "source"),
 )
 
 # Stat backfills replace this many source rows per locked write: the first
@@ -689,6 +691,74 @@ class Store:
     def _fixed_filter(self, results: list[SearchChunk], threshold: float) -> list[SearchChunk]:
         """Simple fixed threshold filter - keep only results within distance threshold."""
         return [r for r in results if _get_distance(r) <= threshold]
+
+    def add_entities(self, records: list[dict]) -> int:
+        """Append typed entity rows; creates the table on first write.
+
+        Additive to the store: existing tables and schemas are untouched, and
+        stores without this table behave as if nothing was ever extracted.
+        """
+        if not records:
+            return 0
+        from lilbee.retrieval.entities.schema import _entities_schema
+
+        with self._write_lock():
+            db = self.get_db()
+            table = ensure_table(db, ENTITIES_TABLE, _entities_schema())
+            table.add(records)
+            return len(records)
+
+    def entity_value_counts(self, entity_type: str) -> tuple[int, int]:
+        """(mentions, distinct normalized values) for one entity type.
+
+        Full scan by design: a count is a corpus property. Streaming batches
+        keep memory flat at any corpus size.
+        """
+        table = self.open_table(ENTITIES_TABLE)
+        if table is None:
+            return 0, 0
+        mentions = 0
+        values: set[str] = set()
+        arrow = table.to_arrow().select(["type", "normalized_value"])
+        for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
+            types = batch.column("type").to_pylist()
+            vals = batch.column("normalized_value").to_pylist()
+            for t_, v in zip(types, vals, strict=True):
+                if t_ == entity_type:
+                    mentions += 1
+                    values.add(v)
+        return mentions, len(values)
+
+    def entity_association_counts(self, counted: str, grouped_by: str) -> dict[str, int]:
+        """Distinct *counted*-type values co-occurring with each *grouped_by* value.
+
+        Co-occurrence is per chunk: two entities extracted from the same
+        ``(source, chunk_index)`` are associated. This is the GROUP BY that
+        answers "how many X is each Y associated with".
+        """
+        table = self.open_table(ENTITIES_TABLE)
+        if table is None:
+            return {}
+        per_chunk: dict[tuple[str, int], tuple[set[str], set[str]]] = {}
+        arrow = table.to_arrow().select(["type", "normalized_value", "source", "chunk_index"])
+        for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
+            rows = zip(
+                batch.column("type").to_pylist(),
+                batch.column("normalized_value").to_pylist(),
+                batch.column("source").to_pylist(),
+                batch.column("chunk_index").to_pylist(),
+                strict=True,
+            )
+            for t_, v, src, idx in rows:
+                if t_ not in (counted, grouped_by):
+                    continue
+                counted_vals, group_vals = per_chunk.setdefault((src, idx), (set(), set()))
+                (counted_vals if t_ == counted else group_vals).add(v)
+        associations: dict[str, set[str]] = {}
+        for counted_vals, group_vals in per_chunk.values():
+            for group_value in group_vals:
+                associations.setdefault(group_value, set()).update(counted_vals)
+        return {k: len(v) for k, v in sorted(associations.items())}
 
     def count_term_mentions(self, term: str) -> tuple[int, int]:
         """(matching chunks, distinct matching sources) for a case-insensitive
