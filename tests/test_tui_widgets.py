@@ -6795,3 +6795,38 @@ class TestPathExists:
 
         with mock.patch.object(autocomplete, "Path", side_effect=OSError("boom")):
             assert autocomplete._path_exists("~/whatever") is False
+
+
+class TestModelBarScanRaces:
+    """A scan worker can land while the bar or a row is still composing."""
+
+    def test_populate_skips_rows_whose_picker_is_not_mounted(self) -> None:
+        from unittest import mock
+
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelOption
+
+        bar = ModelBar.__new__(ModelBar)
+        bar._options_cache = {}
+        row = mock.MagicMock()
+        row.scope = "chat"
+        row.query_one.side_effect = NoMatches("not composed")
+        with (
+            mock.patch.object(ModelBar, "query", return_value=[row]),
+            mock.patch.object(ModelBar, "_refresh_cloud_warning") as refresh,
+        ):
+            bar._populate({"chat": [ModelOption(label="m", ref="a/b/c.gguf")]})
+        assert bar._options_cache == {}  # nothing cached; the next scan retries
+        refresh.assert_called_once()
+
+    def test_cloud_warning_refresh_survives_an_unmounted_bar(self) -> None:
+        from unittest import mock
+
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = ModelBar.__new__(ModelBar)
+        with mock.patch.object(ModelBar, "query_one", side_effect=NoMatches("no warning row")):
+            bar._refresh_cloud_warning()  # must not raise

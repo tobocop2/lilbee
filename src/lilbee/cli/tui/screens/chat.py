@@ -1300,6 +1300,11 @@ class ChatScreen(Screen[None]):
         """
         from lilbee.app.placement import chat_engine_ready, chat_warm_error, wait_chat_ready
 
+        # Build the container if nothing holds it (a settings change resets it);
+        # readiness is probed via peek_services, which never builds, so without
+        # this a prompt sent into the gap would report a dead engine instead of
+        # lazily rebuilding the way ask_stream always has.
+        get_services()
         if chat_engine_ready():
             return True
         self._show_warm_tip_once()

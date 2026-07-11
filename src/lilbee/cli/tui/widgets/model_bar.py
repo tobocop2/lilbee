@@ -565,13 +565,23 @@ class ModelBar(Widget, can_focus=False):
             opts = scope_to_options.get(row.scope, [])
             fingerprint = tuple((o.label, o.ref) for o in opts)
             if self._options_cache.get(row.scope) != fingerprint:
-                row.query_one(ModelPickerButton).set_options(opts)
+                try:
+                    row.query_one(ModelPickerButton).set_options(opts)
+                except NoMatches:
+                    # The scan can land while a row is still composing; the next
+                    # scan repopulates against the mounted picker.
+                    continue
                 self._options_cache[row.scope] = fingerprint
         self._refresh_cloud_warning()
 
     def _refresh_cloud_warning(self) -> None:
         """Show a warning if the active chat model routes to a cloud provider."""
-        warning = self.query_one(f"#{_CLOUD_WARNING_ID}", Static)
+        try:
+            warning = self.query_one(f"#{_CLOUD_WARNING_ID}", Static)
+        except NoMatches:
+            # A scan worker can finish before compose mounts the warning row;
+            # the next refresh runs against the mounted bar.
+            return
         label = _cloud_provider_label(cfg.chat_model)
         if label is None:
             warning.remove_class("-visible")

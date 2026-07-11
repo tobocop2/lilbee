@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -209,7 +210,15 @@ class LilbeeApp(App[None]):
         self.call_after_refresh(self._load_chat_screen, gate)
 
     def _load_chat_screen(self, gate: StartupGate) -> None:
-        """Import the chat stack off-thread after the first frame, then boot."""
+        """Install chat after the first frame, importing off-thread only when cold.
+
+        The worker exists for the cold-disk case where chat's module graph takes
+        seconds to read; once the modules are in sys.modules the import is free,
+        and the extra thread hop would only delay the handover.
+        """
+        if "lilbee.cli.tui.screens.chat" in sys.modules:
+            self._install_chat_screen(gate)
+            return
         self._chat_import_worker(gate)
 
     @work(thread=True, name="chat_import", exit_on_error=False)

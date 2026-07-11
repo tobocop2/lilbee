@@ -429,9 +429,16 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
     for proc in psutil.process_iter():
         try:
             cmdline = proc.cmdline()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
-            # OSError: macOS psutil can leak a raw PermissionError for
-            # entitlement-protected binaries instead of wrapping it.
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+            psutil.ZombieProcess,
+            OSError,
+            SystemError,
+        ):
+            # OSError/SystemError: macOS psutil mishandles entitlement-protected
+            # binaries (sysctl KERN_PROCARGS2), leaking a raw PermissionError or a
+            # C-extension SystemError instead of an AccessDenied.
             continue
         binary = Path(next(iter(cmdline), "")).name
         if _LLAMA_SWAP_PROCESS_NAME in binary and target in cmdline:

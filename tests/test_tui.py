@@ -17,6 +17,7 @@ from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 
@@ -215,6 +216,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             assert app.title.startswith("lilbee")
 
@@ -225,6 +227,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
@@ -237,6 +240,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             with mock.patch.object(app, "exit") as mock_exit:
                 await pilot.press("ctrl+q")
                 await pilot.pause()
@@ -249,6 +253,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             # Escape out of the chat Input so ? routes to the binding instead
             # of being typed as a character.
@@ -266,6 +271,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Catalog")
             await pilot.pause()
@@ -278,6 +284,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/help"
@@ -292,6 +299,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/badcommand"
@@ -314,6 +322,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             new_ref = "ollama/new-model:latest"
@@ -330,6 +339,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/set top_k 10"
@@ -344,6 +354,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/set nonexistent 42"
@@ -360,6 +371,7 @@ class TestChatScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = ""
@@ -378,6 +390,7 @@ class TestCatalogScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.push_screen(CatalogScreen())
             await pilot.pause()
@@ -393,6 +406,7 @@ class TestCatalogScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
@@ -416,6 +430,7 @@ class TestCatalogScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
@@ -445,6 +460,7 @@ class TestCatalogScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
@@ -469,6 +485,7 @@ class TestCatalogScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
@@ -498,6 +515,7 @@ class TestSettingsScreenAsync:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.push_screen(SettingsScreen())
             await pilot.pause()
@@ -522,6 +540,7 @@ class TestStatusScreenAsync:
         try:
             app = LilbeeApp()
             async with app.run_test() as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.push_screen(StatusScreen())
                 await pilot.pause()
@@ -585,6 +604,7 @@ class TestThemes:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             before = app.theme
             app.action_cycle_theme()
@@ -597,6 +617,7 @@ class TestThemes:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.set_theme("dracula")
             assert app.theme == "dracula"
@@ -614,6 +635,7 @@ class TestThemes:
         mock_catalog.return_value = _EMPTY_CATALOG
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with pytest.raises(SkipAction):
                 app.action_dismiss_help_if_open()
@@ -628,6 +650,7 @@ class TestThemes:
         mock_catalog.return_value = _EMPTY_CATALOG
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.action_show_help_panel()
             await pilot.pause()
@@ -649,6 +672,7 @@ class TestThemes:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             target = "dracula" if app.theme != "dracula" else "gruvbox"
             app.set_setting("theme", target)
@@ -667,6 +691,7 @@ class TestThemes:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_update,
@@ -687,6 +712,7 @@ class TestThemes:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_update:
                 app.set_setting("crawl_exclude_patterns", ["foo", "bar"])
@@ -701,6 +727,7 @@ class TestThemes:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             original = app.theme
             app.set_theme("nonexistent_theme_xyz")
@@ -753,6 +780,7 @@ class TestSetupWizard:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             await app.push_screen(SetupWizard())
             await pilot.pause()
@@ -776,6 +804,7 @@ class TestSetupWizard:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             wizard = SetupWizard()
             await app.push_screen(wizard)
@@ -866,6 +895,7 @@ class TestContextAwareQuit:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             task_bar = app.task_bar
             task_bar.add_task("Test download", "download")
@@ -883,6 +913,7 @@ class TestContextAwareQuit:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             screen = app.screen
             screen.streaming = True
@@ -899,6 +930,7 @@ class TestContextAwareQuit:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             await app.action_quit()
             await pilot.pause()
@@ -1079,6 +1111,7 @@ class TestLoginCommand:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             inp = app.screen.query_one("#chat-input")
             inp.value = "/login"
@@ -1100,6 +1133,7 @@ class TestAppSignals:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             assert hasattr(app, "settings_changed_signal")
 
@@ -1115,6 +1149,7 @@ class TestAppSignals:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             received: list[tuple[str, object]] = []
             app.settings_changed_signal.subscribe(app, lambda val: received.append(val))
@@ -1138,6 +1173,7 @@ class TestSyncHint:
         ):
             app = LilbeeApp()
             async with app.run_test() as pilot:
+                await await_chat(app, pilot)
                 # detect runs on a daemon thread; pause until the count lands.
                 for _ in range(50):
                     if app.task_bar.pending_sync_count == 3:
@@ -1156,6 +1192,7 @@ class TestSyncHint:
         with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
             app = LilbeeApp()
             async with app.run_test() as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 bar = app.screen.query_one(TaskBar)
                 bar._refresh_display()
@@ -1174,6 +1211,7 @@ class TestSyncHint:
         with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
             app = LilbeeApp()
             async with app.run_test() as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.task_bar.set_pending_sync(3)
                 bar = app.screen.query_one(TaskBar)
@@ -1201,6 +1239,7 @@ class TestSyncHint:
         ):
             app = LilbeeApp()
             async with app.run_test() as pilot:
+                await await_chat(app, pilot)
                 # Wait until detection has populated the count.
                 for _ in range(50):
                     if app.task_bar.pending_sync_count == 2:
@@ -1221,6 +1260,7 @@ class TestSyncHint:
         with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
             app = LilbeeApp()
             async with app.run_test() as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 with mock.patch.object(app.task_bar, "start_detect_pending") as start:
                     app.screen._on_setup_complete("done")
@@ -1248,11 +1288,14 @@ class TestSyncHint:
                         break
                     await pilot.pause()
                 assert app.active_view == "Catalog"
+                import asyncio
+                import time
+
                 app.action_run_sync()
-                for _ in range(50):
-                    if run_sync.called:
-                        break
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline and not run_sync.called:
                     await pilot.pause()
+                    await asyncio.sleep(0.02)
                 run_sync.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1293,6 +1336,7 @@ class TestSyncHint:
         ):
             app = LilbeeApp()
             async with app.run_test() as pilot:
+                await await_chat(app, pilot)
                 for _ in range(50):
                     if app.task_bar.pending_sync_count == 4:
                         break
@@ -1359,3 +1403,48 @@ class TestChatImportWorker:
         ):
             LilbeeApp._chat_import_worker.__wrapped__(app, gate)
         assert installed == [gate]
+
+
+class TestLoadChatScreen:
+    def test_already_imported_chat_installs_synchronously(self) -> None:
+        """With chat's modules warm the worker hop would only delay the handover."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp.__new__(LilbeeApp)
+        gate = mock.MagicMock()
+        with (
+            mock.patch.object(LilbeeApp, "_install_chat_screen") as install,
+            mock.patch.object(LilbeeApp, "_chat_import_worker") as worker,
+        ):
+            app._load_chat_screen(gate)
+        install.assert_called_once_with(gate)
+        worker.assert_not_called()
+
+    def test_cold_import_goes_through_the_worker(self, monkeypatch) -> None:
+        """A cold disk pays seconds for chat's module graph; keep it off the loop."""
+        import sys as real_sys
+
+        from lilbee.cli.tui import app as app_mod
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp.__new__(LilbeeApp)
+        gate = mock.MagicMock()
+        pruned = {k: v for k, v in real_sys.modules.items() if k != "lilbee.cli.tui.screens.chat"}
+        with (
+            mock.patch.object(app_mod.sys, "modules", pruned),
+            mock.patch.object(LilbeeApp, "_install_chat_screen") as install,
+            mock.patch.object(LilbeeApp, "_chat_import_worker") as worker,
+        ):
+            app._load_chat_screen(gate)
+        worker.assert_called_once_with(gate)
+        install.assert_not_called()
+
+
+def test_import_chat_stack_pulls_the_module_in() -> None:
+    """The seam the cold-start worker wraps really imports the chat module."""
+    import sys
+
+    from lilbee.cli.tui.app import _import_chat_stack
+
+    _import_chat_stack()
+    assert "lilbee.cli.tui.screens.chat" in sys.modules

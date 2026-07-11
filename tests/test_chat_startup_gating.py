@@ -213,3 +213,19 @@ def test_engine_status_text_reports_bytes_or_phase():
     assert _engine_status_text(WarmProgress(phase=WarmPhase.LOADING_ENGINE)) == msg.ENGINE_LOADING
     no_bytes = WarmProgress(phase=WarmPhase.READING_WEIGHTS)
     assert _engine_status_text(no_bytes) == msg.ENGINE_LOADING
+
+
+async def test_await_engine_builds_services_when_none_exist(_warming_services):
+    """A prompt right after a settings reset must rebuild the container rather
+    than reporting a dead engine; readiness probes never build on their own."""
+    app = _ChatHost()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        widget = mock.MagicMock()
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.get_services") as build,
+            mock.patch("lilbee.app.placement.chat_engine_ready", return_value=True),
+        ):
+            assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
+        build.assert_called_once()
