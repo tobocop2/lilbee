@@ -257,23 +257,6 @@
     </section>
 
     <section>
-      <h2 class="label">see it work</h2>
-      <div class="tutorial-watch"><a class="tutorial-cta" href="/tutorial/">&#9654;&nbsp; watch the full tutorial reel</a></div>
-      <div class="vs-reel">
-        <div class="tutorial-clip">
-          <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
-        </div>
-        <p class="tutorial-caption">Automatic placement: lilbee spreads the models across every GPU on its own, one big chat model tensor-split across all the cards and the embedder copied to each, then answers a grounded question while the per-card load bars move live.</p>
-      </div>
-      <div class="vs-reel">
-        <div class="tutorial-clip">
-          <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-manual.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
-        </div>
-        <p class="tutorial-caption">Manual placement: press <code>ctrl+g</code> for the drawer, pin each role to the cards you want, preview the fit, then chat against that exact fleet.</p>
-      </div>
-    </section>
-
-    <section>
       <h2 class="label">questions</h2>
       <div class="faq">
         <details><summary>Is lilbee an alternative to Ollama or LM Studio?</summary><p>Yes. lilbee is a complete model manager: it browses Hugging Face, downloads models, gives each a role, and runs them on Metal, Vulkan, or CUDA, so it can replace Ollama or LM Studio outright. It also does more, with a search engine over your own files, a web crawler, and an MCP server, and if you would rather keep your current setup it runs on top of Ollama or LM Studio instead.</p></details>
