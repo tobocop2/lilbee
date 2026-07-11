@@ -268,7 +268,9 @@ class Searcher:
         )
         text = strip_reasoning(response.text).strip()
         variants = [_strip_list_marker(line.strip()) for line in text.split("\n") if line.strip()]
-        return [v for v in variants if v][:count]
+        kept = [v for v in variants if v][:count]
+        log.info("Query expansion produced %d variants", len(kept))
+        return kept
 
     def _expand_query(
         self, question: str, question_vec: list[float]
@@ -327,7 +329,14 @@ class Searcher:
         # can never fire exactly when the lexical arm is most certain.
         second_raw = results[1].bm25_score or 0.0
         relative_gap = (top_raw - second_raw) / top_raw if top_raw > 0 else 0.0
-        return relative_gap >= self._config.expansion_skip_gap
+        skip = relative_gap >= self._config.expansion_skip_gap
+        if skip:
+            log.info(
+                "Query expansion skipped: BM25 confident (raw %.1f, gap %.0f%%)",
+                top_raw,
+                relative_gap * 100,
+            )
+        return skip
 
     def _apply_concept_boost(self, results: list[SearchChunk], question: str) -> list[SearchChunk]:
         if not self._config.concept_graph or not results:
