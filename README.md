@@ -158,12 +158,13 @@ Of the four, lilbee is the only one built around retrieval, and the only one tha
 
 | | macOS | Windows | Linux | What you get |
 |---|---|---|---|---|
-| **lilbee** | [273 MB](https://github.com/tobocop2/lilbee/releases) | 289 MB (604 MB CUDA) | 403 MB (1.15 GB CUDA) | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
-| [Ollama](https://github.com/ollama/ollama/releases) | 164 MB | ~1.4 GB | ~1.4 GB | a model runner, fetches its runtimes separately |
+| **lilbee** (Metal / Vulkan, default) | [273 MB](https://github.com/tobocop2/lilbee/releases) | 289 MB | 403 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
+| **lilbee** (CUDA, opt-in for NVIDIA) | n/a | [604 MB](https://github.com/tobocop2/lilbee/releases) | 1.15 GB | the same whole stack, with the faster CUDA runtime |
+| [Ollama](https://github.com/ollama/ollama/releases) | 164 MB | ~1.4 GB (CUDA bundled) | ~1.4 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
 | [LM Studio](https://lmstudio.ai/download) | ~570 MB | ~617 MB | ~1.1 GB | a desktop app (Electron) |
 | [vLLM](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) | n/a | n/a | multi-GB | a Python + CUDA serving engine |
 
-lilbee's default build runs on Metal / Vulkan; the CUDA build is opt-in for NVIDIA and still lands at or under Ollama's size.
+Even lilbee's CUDA build stays at or under Ollama's, and it's the whole stack, not just a model runner.
 
 </details>
 
