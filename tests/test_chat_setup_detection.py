@@ -9,6 +9,7 @@ import pytest
 from lilbee.app.setup_state import needs_setup
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import await_chat
 
 
 @pytest.fixture
@@ -172,6 +173,7 @@ async def test_chat_screen_cached_across_navigation(isolated_data_dir, mock_serv
     ):
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             chat = app.screen
             assert isinstance(chat, ChatScreen)

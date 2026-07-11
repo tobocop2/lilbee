@@ -24,7 +24,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 
@@ -3599,6 +3599,7 @@ class TestViewTabsWikiVisibility:
         cfg.wiki = True
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
             assert wiki_tab.display is True
@@ -3626,6 +3627,7 @@ class TestViewTabsWikiVisibility:
         cfg.wiki = False
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
             wiki_sep = app.screen.query_one("#view-tab-sep-wiki")
@@ -3767,6 +3769,7 @@ class TestViewTabs:
         app = LilbeeApp()
         switch_calls: list[str] = []
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             tabs = list(app.screen.query(ViewTab))
             assert len(tabs) >= 2
@@ -3803,6 +3806,7 @@ class LilbeeAppHostSettingWriter:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_set,
@@ -3821,6 +3825,7 @@ class LilbeeAppHostSettingWriter:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with mock.patch.object(app, "set_setting") as mock_set_setting:
                 apply_setting(app, "chat_mode", "chat")
@@ -3837,6 +3842,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
@@ -3853,6 +3859,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
@@ -3870,6 +3877,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
@@ -3892,6 +3900,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()

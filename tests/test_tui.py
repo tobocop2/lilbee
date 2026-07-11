@@ -1448,3 +1448,31 @@ def test_import_chat_stack_pulls_the_module_in() -> None:
 
     _import_chat_stack()
     assert "lilbee.cli.tui.screens.chat" in sys.modules
+
+
+class TestRunSyncRetry:
+    def test_run_sync_retries_until_the_switch_lands_and_gives_up_cleanly(self) -> None:
+        """The view switch is deferred; a single early check silently dropped
+        the sync. The retry keeps polling and stops after the budget."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp.__new__(LilbeeApp)
+        chat = mock.MagicMock()
+        timers: list = []
+        laters: list = []
+        with (
+            mock.patch.object(LilbeeApp, "screen", new=mock.PropertyMock(return_value=object())),
+            mock.patch.object(LilbeeApp, "get_screen", return_value=chat),
+            mock.patch.object(LilbeeApp, "switch_view"),
+            mock.patch.object(LilbeeApp, "call_later", side_effect=lambda fn: laters.append(fn)),
+            mock.patch.object(LilbeeApp, "set_timer", side_effect=lambda _d, fn: timers.append(fn)),
+        ):
+            app.action_run_sync()
+            start = laters[0]
+            start(attempts=2)  # screen never becomes chat: schedules a retry
+            assert len(timers) == 1
+            timers[0]()  # attempts=1: schedules once more
+            assert len(timers) == 2
+            timers[1]()  # attempts=0: gives up without scheduling
+            assert len(timers) == 2
+        chat._run_sync.assert_not_called()

@@ -59,9 +59,10 @@ class _PlainApp(LilbeeAppHost):
         self.push_screen(SetupWizard())
 
 
-# Generous ceiling: the startup gate decides on a real thread before chat mounts and
-# pushes the wizard, and slow CI runners need time before its model cards exist.
-_WIZARD_WAIT_TIMEOUT_S = 20.0
+# Generous ceiling: the gate paints, the chat screen installs after the first
+# frame, its setup worker runs real disk checks on a thread, and only then does
+# the wizard push and compose its cards; loaded CI runners take a while.
+_WIZARD_WAIT_TIMEOUT_S = 60.0
 _WIZARD_POLL_S = 0.02
 
 

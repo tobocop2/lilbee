@@ -12,6 +12,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.core.config import cfg
 from lilbee.providers.base import LLMProvider
+from tests._lilbee_app_test_host import await_chat
 
 
 class _RecordingProvider:
@@ -373,6 +374,7 @@ async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
     try:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             assert isinstance(app.screen, ChatScreen)
 
@@ -392,6 +394,7 @@ async def test_provider_availability_signal_fires_for_api_keys(_patch_chat_setup
     """Adding an API key republishes on provider_availability_changed_signal."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         received: list[tuple[str, object]] = []
         app.provider_availability_changed_signal.subscribe(app, received.append)
@@ -411,6 +414,7 @@ async def test_provider_availability_signal_fires_for_each_provider_key(_patch_c
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         received: list[tuple[str, object]] = []
         app.provider_availability_changed_signal.subscribe(app, received.append)

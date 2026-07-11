@@ -597,9 +597,14 @@ class LilbeeApp(App[None]):
             return
         self.switch_view("Chat")
 
-        def _start() -> None:
+        # The switch is guarded and lands over several message-pump slots; a
+        # single deferred check silently dropped the sync when it fired early.
+        def _start(attempts: int = 40) -> None:
             if isinstance(self.screen, ChatScreen):
                 chat._run_sync()
+                return
+            if attempts > 0:
+                self.set_timer(0.05, lambda: _start(attempts - 1))
 
         self.call_later(_start)
 

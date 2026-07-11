@@ -1431,19 +1431,19 @@ def test_owned_swap_scan_skips_processes_that_deny_inspection(monkeypatch, leak)
     """macOS psutil mishandles entitlement-protected binaries (sysctl
     KERN_PROCARGS2), leaking raw PermissionError or C-extension SystemError;
     one such process must not break the sweep."""
+    from pathlib import Path
     from unittest import mock
 
     import psutil
 
     from lilbee.providers.fleet import swap_manager
 
+    config_path = Path("/tmp/x.json")
     denied = mock.MagicMock()
     denied.cmdline.side_effect = leak
     visible = mock.MagicMock()
-    visible.cmdline.return_value = ["/opt/bin/llama-swap", "-config", "/tmp/x.json"]
+    visible.cmdline.return_value = ["/opt/bin/llama-swap", "-config", str(config_path)]
     monkeypatch.setattr(psutil, "process_iter", lambda: [denied, visible])
 
-    from pathlib import Path
-
-    swaps = swap_manager._swaps_for_config(Path("/tmp/x.json"))
+    swaps = swap_manager._swaps_for_config(config_path)
     assert swaps == [visible]
