@@ -114,6 +114,24 @@ class TestEntitiesCommand:
         assert result.exit_code == 0
         assert "1 entity rows" in result.output
 
+    def test_backfill_replace_clears_previous_rows(self, isolated):
+        """A repeated backfill after a pattern fix must not double-count."""
+        _index_chunks(isolated, ["part PX4471"])
+        save_schema(
+            EntitySchema(
+                types=[EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}")]
+            ),
+            cfg.data_dir,
+        )
+        _invoke("backfill", cfg.data_root)
+        _invoke("backfill", cfg.data_root)
+        assert isolated.entity_value_counts("part_number")[0] == 2  # appended: doubled
+        result = runner.invoke(
+            app, ["entities", "backfill", "--replace", "--data-dir", str(cfg.data_root)]
+        )
+        assert result.exit_code == 0
+        assert isolated.entity_value_counts("part_number") == (1, 1)
+
     def test_backfill_with_nothing_indexed(self, isolated):
         save_schema(
             EntitySchema(

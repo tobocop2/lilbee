@@ -46,6 +46,12 @@ def _sample_chunks(limit: int) -> list[str]:
 
 def entities(
     action: str = typer.Argument(help="induce | backfill | status"),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="backfill only: clear previously extracted rows first, so repeated "
+        "backfills (after a pattern fix) don't double-count",
+    ),
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
 ) -> None:
@@ -59,7 +65,7 @@ def entities(
     if action == "induce":
         _induce()
     elif action == "backfill":
-        _backfill()
+        _backfill(replace=replace)
     elif action == "status":
         _status()
     else:
@@ -89,7 +95,8 @@ def _induce() -> None:
     console.print("Then run: lilbee entities backfill")
 
 
-def _backfill() -> None:
+def _backfill(*, replace: bool = False) -> None:
+    from lilbee.core.config import ENTITIES_TABLE
     from lilbee.retrieval.concepts import concepts_available
     from lilbee.retrieval.entities import ExtractorKind, extract_entities, load_schema
 
@@ -102,6 +109,8 @@ def _backfill() -> None:
     if table is None:
         console.print("Nothing indexed yet; sync documents first.")
         raise SystemExit(1)
+    if replace:
+        store.clear_table(ENTITIES_TABLE, "entity IS NOT NULL")
     nlp = None
     if any(t.kind is ExtractorKind.SPACY for t in schema.types) and concepts_available():
         from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
