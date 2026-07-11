@@ -1,10 +1,13 @@
 """VRAM-aware placement planner for the multi-GPU llama-server fleet.
 
 Estimates each role-model's VRAM footprint from GGUF metadata and bin-packs
-instances across GPUs (first-fit-decreasing): a model that fits one GPU runs as a
-single pinned instance, small models co-locate on a GPU with spare VRAM, and a
-model too big for any single GPU is tensor-split across enough GPUs to fit. A role
-that fits nowhere gets no server (its calls error). See docs/architecture.md.
+instances across GPUs in ``placement_rank`` order, largest-first within a rank: a
+model that fits one GPU runs as a single pinned instance, small models co-locate
+on a GPU with spare VRAM, and a model too big for any single GPU is tensor-split
+across enough GPUs to fit. Roles that never run in the same phase (ingest OCR vs a
+query) share one swap group when they cannot all co-reside, so only the phase in
+use is charged; a role that fits nowhere gets no server (its calls error). See
+docs/architecture.md.
 """
 
 from __future__ import annotations
@@ -15,11 +18,6 @@ from dataclasses import dataclass
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
-
-# Search-critical roles reserved ahead of the elastic chat model in a shared pool,
-# so a large chat can never crowd embed/rerank out (which would 503 every search).
-# The pooled search roles (embed/cross-encoder rerank), derived from the registry.
-_SEARCH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.pooled)
 
 # (role, per-device tensor-split ratio) -> the instance's per-device VRAM footprint
 # vector aligned to that ratio. A split is accepted only when every card's entry
@@ -63,14 +61,17 @@ class InstancePlan:
 
 @dataclass(frozen=True)
 class Placement:
-    """Planner output: server instances plus roles that fit on no device.
+    """Planner output: server instances, swap tenants, and roles that fit on no device.
 
     ``unplaceable_roles`` get no server, so a call to them surfaces a
-    ``ProviderError`` (there is no in-process fallback).
+    ``ProviderError`` (there is no in-process fallback). ``co_tenants`` share one
+    llama-swap group and evict each other on demand, so only one is resident at a
+    time; each runs a single instance.
     """
 
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
+    co_tenants: frozenset[WorkerRole] = frozenset()
 
 
 def plan_placement(
@@ -85,9 +86,12 @@ def plan_placement(
 ) -> Placement:
     """Bin-pack *models* onto *devices* (``[(index, vram_bytes), ...]``).
 
-    First-fit-decreasing by footprint with a 90% headroom per GPU. A model that
-    fits one GPU takes a single instance; one too big for any single GPU is
-    tensor-split; a model that fits nowhere is an unplaceable role.
+    Roles are charged in ``placement_rank`` order, largest-first within a rank, with
+    a 90% headroom per GPU. A model that fits one GPU takes a single instance; one
+    too big for any single GPU is tensor-split. Chat is charged last: when it fits
+    only if vision's VRAM is refunded, the two become ``co_tenants`` of one swap
+    group instead of either becoming unplaceable. A model that fits nowhere, even
+    alone beside the pinned tier, is an unplaceable role.
 
     A chat split widens past the fewest fitting cards when ``chat_ctx_fit`` shows a
     tighter shard would starve its served context below ``chat_ctx_target``; the
@@ -102,34 +106,23 @@ def plan_placement(
     host; ``None`` keeps the legacy ungated behavior.
     """
     if not devices:
-        if unified_budget is None:
-            return Placement(
-                instances=tuple(
-                    InstancePlan(role=m.role, devices=(), replica=r)
-                    for m in models
-                    for r in range(m.replicas)
-                ),
-                unplaceable_roles=(),
-            )
-        return _place_shared_memory(models, unified_budget)
+        return (
+            _place_ungated(models)
+            if unified_budget is None
+            else _place_shared_memory(models, unified_budget)
+        )
     remaining: dict[int, float] = {idx: vram * USABLE_VRAM_FRACTION for idx, vram in devices}
-    instances: list[InstancePlan] = []
-    unplaceable: list[WorkerRole] = []
 
-    # Reserve the persistent query fleet first, then fill residual VRAM with the
-    # elastic ingest pool. The persistent singles are: every replicas<=1 role plus
-    # replica 0 of each replicated role (the query embedder / vision that a search
-    # issued during ingest must always reach). Within the singles, place the
-    # search-critical roles (embed/rerank) before chat: chat tensor-splits across
-    # cards and, placed first, can claim them all and leave an essential search role
-    # unplaceable. Search-first here mirrors the shared-memory path's reservation.
-    # The extra replicas (1..N-1) are placed only into what VRAM remains, so a chat
-    # issued during ingest always fits and the query embedder always exists.
-    singles = [m for m in models if m.replicas <= 1]
+    # The persistent singles are every replicas<=1 role plus replica 0 of each
+    # replicated role. They are charged before the elastic replicas, and the chat
+    # model is charged last of all (``placement_rank``).
     replicated = [m for m in models if m.replicas > 1]
-    persistent_singles = singles + [_persistent_single(m) for m in replicated]
-    for model in sorted(persistent_singles, key=_shared_pool_order):
-        plan = _place_single(
+    persistent_singles = [m for m in models if m.replicas <= 1] + [
+        _persistent_single(m) for m in replicated
+    ]
+
+    def place(model: ModelPlacementInput) -> _Placed | None:
+        return _place_single(
             model,
             remaining,
             estimate_peak,
@@ -137,22 +130,145 @@ def plan_placement(
             chat_ctx_target=chat_ctx_target,
             free_headroom=free_headroom,
         )
-        if plan is None:
+
+    instances, unplaceable, co_tenants = _place_persistent(persistent_singles, place, remaining)
+    instances.extend(_place_elastic(replicated, instances, remaining, co_tenants))
+
+    return Placement(
+        instances=tuple(instances),
+        unplaceable_roles=tuple(unplaceable),
+        co_tenants=co_tenants,
+    )
+
+
+def _place_ungated(models: list[ModelPlacementInput]) -> Placement:
+    """Every role as a single un-pinned instance: no GPU and no measured RAM budget."""
+    return Placement(
+        instances=tuple(
+            InstancePlan(role=m.role, devices=(), replica=r)
+            for m in models
+            for r in range(m.replicas)
+        ),
+        unplaceable_roles=(),
+    )
+
+
+def _place_persistent(
+    persistent_singles: list[ModelPlacementInput],
+    place: Callable[[ModelPlacementInput], _Placed | None],
+    remaining: dict[int, float],
+) -> tuple[list[InstancePlan], list[WorkerRole], frozenset[WorkerRole]]:
+    """Charge every persistent single in ``placement_rank`` order.
+
+    A role that does not fit refunds every already-charged role it is phase-disjoint
+    from (never co-resident with) and retries; the roles that let it in become one
+    swap group. This restores the in-process pool's behavior, where a role loaded
+    only when its phase ran, so ingest never paid for the query models or vice versa.
+    """
+    instances: list[InstancePlan] = []
+    unplaceable: list[WorkerRole] = []
+    charges: dict[WorkerRole, dict[int, float]] = {}
+    co_tenants: set[WorkerRole] = set()
+    for model in sorted(persistent_singles, key=_shared_pool_order):
+        placed = place(model)
+        if placed is None:
+            placed, group = _place_beside_disjoint(model, place, remaining, charges)
+            co_tenants |= group
+        if placed is None:
             unplaceable.append(model.role)
         else:
-            instances.append(plan)
-    placed_roles = {plan.role for plan in instances}
-    for model in replicated:
-        if model.role not in placed_roles:
-            continue  # the persistent single did not fit -> already unplaceable
-        instances.extend(_place_replicas(model, remaining, start=1))
+            instances.append(placed.plan)
+            charges[model.role] = placed.charges
+    return instances, unplaceable, frozenset(co_tenants)
 
-    return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+
+def _place_beside_disjoint(
+    model: ModelPlacementInput,
+    place: Callable[[ModelPlacementInput], _Placed | None],
+    remaining: dict[int, float],
+    charges: dict[WorkerRole, dict[int, float]],
+) -> tuple[_Placed | None, frozenset[WorkerRole]]:
+    """Retry *model* with every phase-disjoint charged role's VRAM refunded.
+
+    Phase-disjoint roles are never resident together, so they can share one swap
+    group: only the resident one is charged. On success *model* and the refunded
+    roles form the group and the refunded roles drop out of ``charges`` (their VRAM
+    is now the group's shared budget). On failure every refund is rolled back and
+    *model* is genuinely oversize.
+    """
+    refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, model.role)}
+    if not refunds:
+        return None, frozenset()
+    for charged in refunds.values():
+        for idx, held in charged.items():
+            remaining[idx] += held
+    placed = place(model)
+    if placed is not None:
+        slot = _group_slot(placed.charges, refunds, remaining)
+        for role in refunds:
+            del charges[role]
+        return _Placed(plan=placed.plan, charges=slot), frozenset(refunds) | {model.role}
+    for charged in refunds.values():
+        for idx, held in charged.items():
+            remaining[idx] -= held
+    return None, frozenset()
+
+
+def _group_slot(
+    trigger: dict[int, float],
+    refunds: dict[WorkerRole, dict[int, float]],
+    remaining: dict[int, float],
+) -> dict[int, float]:
+    """Charge each device the swap group's largest member, not just the trigger.
+
+    Only one member is resident at a time, but every evicted member must be able to
+    swap back in, so the group's per-device slot is the max across members. The
+    shortfall beyond the trigger's own charge is deducted from *remaining* here so
+    the elastic replica tier cannot claim VRAM an evicted member needs to return to.
+    The returned slot is recorded as the trigger's charge, so a later trigger that
+    refunds this group reclaims the whole slot.
+    """
+    slot = dict(trigger)
+    for charged in refunds.values():
+        for idx, held in charged.items():
+            need = max(slot.get(idx, 0.0), held)
+            remaining[idx] -= need - slot.get(idx, 0.0)
+            slot[idx] = need
+    return slot
+
+
+def _phase_disjoint(a: WorkerRole, b: WorkerRole) -> bool:
+    """True when *a* and *b* share no run phase, so they are never co-resident."""
+    return ROLE_REGISTRY[a].phases.isdisjoint(ROLE_REGISTRY[b].phases)
+
+
+def _place_elastic(
+    replicated: list[ModelPlacementInput],
+    instances: list[InstancePlan],
+    remaining: dict[int, float],
+    co_tenants: frozenset[WorkerRole],
+) -> list[InstancePlan]:
+    """Fill the residual VRAM with replicas 1..N-1 of each placed, non-co-tenant role."""
+    placed_roles = {plan.role for plan in instances}
+    elastic: list[InstancePlan] = []
+    for model in replicated:
+        if model.role not in placed_roles or model.role in co_tenants:
+            continue  # unplaceable, or a co-tenant capped to its single instance
+        elastic.extend(_place_replicas(model, remaining, start=1))
+    return elastic
 
 
 def _persistent_single(model: ModelPlacementInput) -> ModelPlacementInput:
     """The replica-0 persistent instance of a replicated role, sized as one server."""
     return ModelPlacementInput(role=model.role, est_vram_bytes=model.est_vram_bytes, replicas=1)
+
+
+@dataclass(frozen=True)
+class _Placed:
+    """One placed instance and the per-device VRAM it was charged."""
+
+    plan: InstancePlan
+    charges: dict[int, float]
 
 
 def _place_single(
@@ -163,12 +279,15 @@ def _place_single(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
-) -> InstancePlan | None:
+) -> _Placed | None:
     """Place one instance: a single GPU when it fits, else a tensor-split, else None."""
     single = _best_single_device(model.est_vram_bytes, remaining)
     if single is not None:
         remaining[single] -= model.est_vram_bytes
-        return InstancePlan(role=model.role, devices=(single,))
+        return _Placed(
+            plan=InstancePlan(role=model.role, devices=(single,)),
+            charges={single: float(model.est_vram_bytes)},
+        )
     return _place_split(
         model,
         remaining,
@@ -187,7 +306,7 @@ def _place_split(
     chat_ctx_fit: SplitCtxFitter | None = None,
     chat_ctx_target: int = 0,
     free_headroom: dict[int, int] | None = None,
-) -> InstancePlan | None:
+) -> _Placed | None:
     """Tensor-split across the most-free GPUs whose per-device share each fits.
 
     Charges each chosen card its own entry from *estimate_peak*'s vector, so the
@@ -226,11 +345,14 @@ def _charge_split(
     ratio: tuple[int, ...],
     per_device: tuple[int, ...],
     remaining: dict[int, float],
-) -> InstancePlan:
+) -> _Placed:
     """Debit each chosen card its own per-device share and return the split plan."""
     for idx, peak in zip(chosen, per_device, strict=True):
         remaining[idx] -= peak
-    return InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio)
+    return _Placed(
+        plan=InstancePlan(role=model.role, devices=tuple(chosen), tensor_split=ratio),
+        charges={idx: float(peak) for idx, peak in zip(chosen, per_device, strict=True)},
+    )
 
 
 def _place_replicas(
@@ -263,14 +385,20 @@ def _place_replicas(
 def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Placement:
     """Fit un-pinned roles into one shared RAM *budget*.
 
-    Search-critical roles (embed/rerank) are reserved first so the elastic chat
-    model can never crowd them out; the rest pack largest-first. Replicas run as N
-    co-resident processes against the shared pool (no per-GPU spread without GPUs).
-    A role with no instance placed is unplaceable (gets no server, its calls error).
+    Roles pack in ``placement_rank`` order (the elastic chat model last). Replicas
+    run as N co-resident processes against the shared pool (no per-GPU spread without
+    GPUs). A role that does not fit refunds every already-charged phase-disjoint role
+    (never resident with it), which caps those roles to a single instance and makes
+    the set one swap group; a role that still fits nowhere is unplaceable.
     """
     remaining = budget
     instances: list[InstancePlan] = []
     unplaceable: list[WorkerRole] = []
+    charged: dict[WorkerRole, int] = {}
+    # A charged role's swap-back need: its single-instance footprint, or, for the
+    # role holding a swap group's budget, the whole group slot.
+    swap_need = {m.role: m.est_vram_bytes for m in models}
+    co_tenants: set[WorkerRole] = set()
     for model in sorted(models, key=_shared_pool_order):
         placed = 0
         for _ in range(model.replicas):
@@ -279,15 +407,64 @@ def _place_shared_memory(models: list[ModelPlacementInput], budget: int) -> Plac
             remaining -= model.est_vram_bytes
             instances.append(InstancePlan(role=model.role, devices=(), replica=placed))
             placed += 1
-        if placed == 0:
+        if placed:
+            charged[model.role] = placed * model.est_vram_bytes
+            continue
+        remaining, group = _shared_beside_disjoint(model, remaining, charged, swap_need, instances)
+        if group:
+            instances.append(InstancePlan(role=model.role, devices=()))
+            co_tenants |= group
+        else:
             unplaceable.append(model.role)
-    return Placement(instances=tuple(instances), unplaceable_roles=tuple(unplaceable))
+    return Placement(
+        instances=tuple(instances),
+        unplaceable_roles=tuple(unplaceable),
+        co_tenants=frozenset(co_tenants),
+    )
 
 
-def _shared_pool_order(model: ModelPlacementInput) -> tuple[int, int]:
-    """Sort key: search roles first, then everything else largest-first."""
-    is_search = 0 if model.role in _SEARCH_ROLES else 1
-    return (is_search, -model.est_vram_bytes)
+def _shared_beside_disjoint(
+    model: ModelPlacementInput,
+    remaining: int,
+    charged: dict[WorkerRole, int],
+    swap_need: dict[WorkerRole, int],
+    instances: list[InstancePlan],
+) -> tuple[int, frozenset[WorkerRole]]:
+    """Refund the shared-pool roles phase-disjoint from *model* and cap them to one instance.
+
+    The refunded roles and *model* become one swap group: only one member is resident
+    at a time, but every member must be able to swap back in, so the group is charged
+    its largest member's footprint (the slot), recorded under *model*'s role so a
+    later trigger reclaims the whole slot. Returns the budget after reclaiming the
+    refunded VRAM and charging the slot, plus the group; when even the slot does not
+    fit the reclaimed budget the group is empty and the budget unchanged.
+    """
+    refunds = [r for r in list(charged) if _phase_disjoint(r, model.role)]
+    if not refunds:
+        return remaining, frozenset()
+    reclaim = sum(charged[r] for r in refunds)
+    slot = max(model.est_vram_bytes, *(swap_need[r] for r in refunds))
+    if slot > remaining + reclaim:
+        return remaining, frozenset()
+    for role in refunds:
+        del charged[role]
+        instances[:] = [plan for plan in instances if plan.role is not role]
+        instances.append(InstancePlan(role=role, devices=(), replica=0))
+    charged[model.role] = slot
+    swap_need[model.role] = slot
+    return remaining + reclaim - slot, frozenset(refunds) | {model.role}
+
+
+def _shared_pool_order(model: ModelPlacementInput) -> tuple[int, int, int]:
+    """Sort key: placement rank, then most-phases-first, then largest-first.
+
+    A role in more phases is co-resident with more of the fleet and can never make
+    room by swapping (nothing is phase-disjoint from it), so it charges before a
+    same-rank single-phase sibling: a large LLM reranker must not crowd out the
+    embedder that both ingest and query need.
+    """
+    info = ROLE_REGISTRY[model.role]
+    return (info.placement_rank, -len(info.phases), -model.est_vram_bytes)
 
 
 def _best_single_device(need: int, remaining: dict[int, float]) -> int | None:

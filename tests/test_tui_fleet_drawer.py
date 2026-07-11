@@ -6,7 +6,7 @@ import pytest
 from textual.app import ComposeResult
 from textual.widgets import Input
 
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
 GIB = 1024**3
 
@@ -311,11 +311,12 @@ async def test_normal_tab_focuses_drawer_and_enter_toggles(monkeypatch) -> None:
     try:
         cs = "lilbee.cli.tui.screens.chat.ChatScreen"
         with (
-            mock.patch(f"{cs}._needs_setup", return_value=False),
+            mock.patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
             mock.patch(f"{cs}._embedding_ready", return_value=True),
         ):
             app = LilbeeApp()
             async with app.run_test(size=(140, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 await pilot.press("ctrl+g")
                 await pilot.pause()

@@ -4474,6 +4474,25 @@ class TestPlacementHandlers:
         assert resp.gpus == []
         assert resp.roles == []
 
+    async def test_placement_surfaces_co_tenant_roles(self):
+        # Co-tenants are placed but not co-resident; a surface that omits them
+        # reads as an over-committed card.
+        from lilbee.app.placement import PlacementView
+        from lilbee.providers.roles import WorkerRole
+
+        view = PlacementView(
+            gpus=(),
+            roles=(),
+            unplaceable=(),
+            manual=False,
+            spec_json=None,
+            co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+        )
+        with patch("lilbee.app.placement.get_placement", return_value=view):
+            resp = await handlers.placement()
+        assert resp.co_tenants == ["chat", "vision"]
+        assert resp.unplaceable == []
+
     async def test_placement_preview_without_spec(self):
         view = _stub_placement_view()
         with patch("lilbee.app.placement.preview_placement", return_value=view):
@@ -4546,6 +4565,35 @@ class TestPlacementHandlers:
             ]
         }
         assert probe.call_count == 2
+
+    async def test_gpu_stats_stream_includes_intel_grant_notice(self):
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        stat = {0: GpuStat(0, None, 200, 200)}
+        with (
+            patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
+            patch(
+                "lilbee.providers.fleet.gpu_stats.intel_grant_binary",
+                return_value="/usr/bin/intel_gpu_top",
+            ),
+        ):
+            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
+        events = [
+            json.loads(line[len("data:") :].strip())
+            for chunk in chunks
+            for line in chunk.splitlines()
+            if line.startswith("data:")
+        ]
+        assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in events[0]["notice"]
 
     async def test_gpu_stats_stream_emits_heartbeat_when_interval_elapsed(self):
         """A heartbeat event is emitted when the configured interval elapses."""

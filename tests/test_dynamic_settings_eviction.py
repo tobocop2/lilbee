@@ -12,6 +12,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.core.config import cfg
 from lilbee.providers.base import LLMProvider
+from tests._lilbee_app_test_host import await_chat
 
 
 class _RecordingProvider:
@@ -40,6 +41,14 @@ class _RecordingProvider:
         self, image_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:
         return ""
+
+    def role_ready(self, role: object) -> bool:
+        # The bottom TaskBar polls chat readiness on every screen; report ready so
+        # this settings-eviction host isn't treated as mid-warm.
+        return True
+
+    def warm_progress(self) -> None:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -359,7 +368,7 @@ def test_protocol_defaults_for_drop_and_role_ready():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(
@@ -376,6 +385,7 @@ async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
     try:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             assert isinstance(app.screen, ChatScreen)
 
@@ -395,6 +405,7 @@ async def test_provider_availability_signal_fires_for_api_keys(_patch_chat_setup
     """Adding an API key republishes on provider_availability_changed_signal."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         received: list[tuple[str, object]] = []
         app.provider_availability_changed_signal.subscribe(app, received.append)
@@ -414,6 +425,7 @@ async def test_provider_availability_signal_fires_for_each_provider_key(_patch_c
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         received: list[tuple[str, object]] = []
         app.provider_availability_changed_signal.subscribe(app, received.append)

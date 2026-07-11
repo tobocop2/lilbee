@@ -197,17 +197,39 @@ def test_chat_server_spec_enables_jinja() -> None:
     assert "--jinja" in ROLE_SPECS[WorkerRole.CHAT].extra_args
 
 
-def test_chat_server_spec_keeps_reasoning_inline() -> None:
+def test_chat_server_spec_extracts_reasoning_server_side() -> None:
     from lilbee.providers.fleet.adapters import ROLE_SPECS
     from lilbee.providers.roles import WorkerRole
 
-    # Recent llama-server defaults to EXTRACTING reasoning into a separate
-    # reasoning_content field, which strips <think>...</think> out of content
-    # and leaves lilbee's <think>-based parser nothing to surface. Forcing
-    # --reasoning-format none keeps the tags inline so reasoning streams through.
+    # The server parses every model's native reasoning dialect (<think>, gpt-oss
+    # harmony) into reasoning_content; 'none' would leak raw dialect tokens into
+    # answers. The chat client re-inlines the extracted reasoning as <think>.
     extra_args = ROLE_SPECS[WorkerRole.CHAT].extra_args
     idx = extra_args.index("--reasoning-format")
-    assert extra_args[idx + 1] == "none"
+    assert extra_args[idx + 1] == "deepseek"
+
+
+def test_chat_server_spec_disables_assistant_prefill() -> None:
+    from lilbee.providers.fleet.adapters import ROLE_SPECS
+    from lilbee.providers.roles import WorkerRole
+
+    # With prefill on, the server treats a trailing assistant message as text to
+    # continue, and rejects two of them outright. Agents send both shapes, so the
+    # chat server must read a trailing assistant message as a finished turn.
+    assert "--no-prefill-assistant" in ROLE_SPECS[WorkerRole.CHAT].extra_args
+
+
+def test_build_argv_chat_launches_without_assistant_prefill() -> None:
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+    )
+    assert "--no-prefill-assistant" in argv
 
 
 @pytest.mark.parametrize(

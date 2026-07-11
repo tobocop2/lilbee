@@ -97,8 +97,20 @@ def _render_view(view: PlacementView) -> None:
             f" replicas={role_view.replicas}{split_info}  {role_view.model}"
         )
 
+    if view.co_tenants:
+        names = ", ".join(role.value for role in view.co_tenants)
+        console.print(
+            f"  [{theme.MUTED}]{names}: share memory, one loaded at a time[/{theme.MUTED}]"
+        )
+
     for role in view.unplaceable:
         console.print(f"  [{theme.ERROR}]{role.value}: does not fit, no server[/{theme.ERROR}]")
+
+    for skipped in view.skipped_not_installed:
+        console.print(
+            f"  [{theme.WARNING}]{skipped.role.value}: {skipped.model} not downloaded, "
+            f"pull it to place it[/{theme.WARNING}]"
+        )
 
 
 @placement_app.command("show")

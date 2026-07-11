@@ -60,7 +60,7 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
     monkeypatch.setattr(planning, "resolve_devices", counting)
     monkeypatch.setattr(
-        planning, "_server_model_inputs", lambda roles, *, unified_budget=None: ([], {}, 0)
+        planning, "_server_model_inputs", lambda roles, *, unified_budget=None: ([], {}, 0, {})
     )
     monkeypatch.setattr(
         planning,
@@ -91,7 +91,7 @@ def test_spec_branch_calls_placement_from_spec(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
-        lambda roles, *, unified_budget=None: ([], {WorkerRole.CHAT: "ref"}, 0),
+        lambda roles, *, unified_budget=None: ([], {WorkerRole.CHAT: "ref"}, 0, {}),
     )
     monkeypatch.setattr(planning, "_peak_estimator", lambda refs: lambda role, ratio: (GIB,))
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0,))})

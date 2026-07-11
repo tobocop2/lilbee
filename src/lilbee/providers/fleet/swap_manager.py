@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -25,6 +26,7 @@ import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import resolve_llama_swap
+from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
 
@@ -35,7 +37,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
-# One llama-swap per role group: the group name lands in the config filename so
+# One llama-swap per swap group: the group name lands in the config filename so
 # each group's processes are identified (and stopped) by their own config path,
 # and a placement change can restart one group without touching the others.
 _CONFIG_FILENAME_TEMPLATE = "llama-swap-{group}.json"
@@ -62,6 +64,10 @@ _STATE_KEY_OWNER_PID = "owner_pid"
 _STATE_KEY_OWNER_CREATED_AT = "owner_created_at"
 _STATE_KEY_NAME = "name"
 _STATE_KEY_MEMBER_PORTS = "member_ports"
+_STATE_KEY_PROXY_PORT = "proxy_port"
+_STATE_KEY_LILBEE_VERSION = "lilbee_version"
+_STATE_KEY_DETACHED = "detached"
+_STATE_KEY_LAUNCHES = "launches"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -119,6 +125,10 @@ class _SwapState:
     owner_created_at: float | None
     created_at: float | None = None
     member_ports: tuple[int, ...] = ()
+    proxy_port: int | None = None
+    lilbee_version: str | None = None
+    detached: bool = False
+    launches: tuple[dict, ...] = ()
 
 
 class SwapManager:
@@ -128,18 +138,19 @@ class SwapManager:
     or model change) never touches another group's loaded servers.
     """
 
-    def __init__(self, data_dir: Path, group: str) -> None:
+    def __init__(self, data_dir: Path, group: SwapGroup) -> None:
         self._data_dir = data_dir
         self._group = group
-        self._config_path = data_dir / _CONFIG_FILENAME_TEMPLATE.format(group=group)
-        self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group)
-        self._state_path = data_dir / _state_filename(os.getpid(), group)
+        self._config_path = data_dir / _CONFIG_FILENAME_TEMPLATE.format(group=group.value)
+        self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
+        self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
+        self._adopted: _SwapState | None = None
         self._log_file: BinaryIO | None = None
         self._port: int | None = None
         self._member_ports: list[int] = []
 
-    def start(self, launches: list[InstanceLaunch]) -> None:
+    def start(self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
         The proxy and every member get a freshly allocated free port; a fixed
@@ -159,7 +170,11 @@ class SwapManager:
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(build_swap_config(launches, member_ports))
+        self._config_path.write_text(
+            build_swap_config(
+                launches, member_ports, swap=self._group.swaps, ttl_seconds=ttl_seconds
+            )
+        )
         self._port = ports[0]
         # Capture llama-swap's stdout/stderr to a file so its access log never
         # reaches an inherited terminal (a TUI/CLI parent) and garbles the screen.
@@ -182,34 +197,48 @@ class SwapManager:
         self._write_state()
         self._await_health()
 
-    def reap_stale(self) -> None:
+    def reap_stale(self, *, keep_detached: bool = False) -> None:
         """Kill every dead owner's surviving llama-swap; see :func:`reap_stale`."""
-        reap_stale(self._data_dir)
+        reap_stale(self._data_dir, keep_detached=keep_detached)
 
-    def _write_state(self) -> None:
+    def _process_identity(self) -> tuple[int, int | None, float | None] | None:
+        """(pid, pgid, create time) of the swap this manager runs or adopted."""
+        if self._proc is not None:
+            pid = self._proc.pid
+            pgid: int | None = None
+            if sys.platform != "win32":
+                with contextlib.suppress(ProcessLookupError):
+                    pgid = os.getpgid(pid)
+            created_at: float | None = None
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                created_at = psutil.Process(pid).create_time()
+            return pid, pgid, created_at
+        if self._adopted is not None:
+            return self._adopted.pid, self._adopted.pgid, self._adopted.created_at
+        return None
+
+    def _write_state(self, *, detached: bool = False, launches: list[dict] | None = None) -> None:
         """Record the swap's pid/pgid/create time, member ports, and our identity.
 
         The write is atomic (tmp file then ``os.replace``) so a sibling's reap
         scan can never read a torn file and mistake this live record for junk.
         """
-        proc = self._proc
-        if proc is None:
+        identity = self._process_identity()
+        if identity is None:
             return
-        pgid: int | None = None
-        if sys.platform != "win32":
-            with contextlib.suppress(ProcessLookupError):
-                pgid = os.getpgid(proc.pid)
-        created_at: float | None = None
-        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            created_at = psutil.Process(proc.pid).create_time()
+        swap_pid, pgid, created_at = identity
         state = {
-            _STATE_KEY_PID: proc.pid,
+            _STATE_KEY_PID: swap_pid,
             _STATE_KEY_PGID: pgid,
             _STATE_KEY_CREATED_AT: created_at,
             _STATE_KEY_OWNER_PID: os.getpid(),
             _STATE_KEY_OWNER_CREATED_AT: psutil.Process().create_time(),
             _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
             _STATE_KEY_MEMBER_PORTS: self._member_ports,
+            _STATE_KEY_PROXY_PORT: self._port,
+            _STATE_KEY_LILBEE_VERSION: _pkg_version("lilbee"),
+            _STATE_KEY_DETACHED: detached,
+            _STATE_KEY_LAUNCHES: launches or [],
         }
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._state_path.with_name(
@@ -239,21 +268,46 @@ class SwapManager:
             return False
         if self._port is None:
             return False
-        try:
-            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
-        except (OSError, httpx.HTTPError):
-            return False
-        return resp.status_code < httpx.codes.BAD_REQUEST
-
-    def reload(self, launches: list[InstanceLaunch]) -> None:
-        """Apply a changed model set by restarting llama-swap with a fresh config."""
-        self.shutdown()
-        self.start(launches)
+        return self._proxy_answers()
 
     @property
     def running(self) -> bool:
         """Whether this manager currently has a spawned llama-swap process."""
         return self._proc is not None
+
+    def detach(self, launches: list[dict]) -> None:
+        """Leave llama-swap running for the next launch to adopt; mark the state file."""
+        self._write_state(detached=True, launches=launches)
+        self._close_log()
+        self._proc = None
+
+    def adopt(self, state: _SwapState, state_path: Path) -> bool:
+        """Bind to a detached fleet's running proxy; False leaves this manager unbound.
+
+        Success rewrites ownership under this process (its own state file) and
+        removes the detached record so the fleet cannot be adopted twice.
+        """
+        if state.proxy_port is None:
+            return False
+        self._port = state.proxy_port
+        self._member_ports = list(state.member_ports)
+        if not self._proxy_answers():
+            self._port = None
+            self._member_ports = []
+            return False
+        self._adopted = state
+        self._write_state()
+        if state_path != self._state_path:
+            state_path.unlink(missing_ok=True)
+        return True
+
+    def _proxy_answers(self) -> bool:
+        """Whether the bound proxy port serves llama-swap's running endpoint."""
+        try:
+            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
+        except (OSError, httpx.HTTPError):
+            return False
+        return resp.status_code < httpx.codes.BAD_REQUEST
 
     def shutdown(self) -> None:
         """Stop every llama-swap this lilbee owns at our config and reap servers.
@@ -376,7 +430,16 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
     for proc in psutil.process_iter():
         try:
             cmdline = proc.cmdline()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+            psutil.ZombieProcess,
+            OSError,
+            SystemError,
+        ):
+            # OSError/SystemError: macOS psutil mishandles entitlement-protected
+            # binaries (sysctl KERN_PROCARGS2), leaking a raw PermissionError or a
+            # C-extension SystemError instead of an AccessDenied.
             continue
         binary = Path(next(iter(cmdline), "")).name
         if _LLAMA_SWAP_PROCESS_NAME in binary and target in cmdline:
@@ -402,7 +465,21 @@ def _live_sibling_swap_pids(data_dir: Path) -> set[int]:
     return protected
 
 
-def reap_stale(data_dir: Path) -> None:
+def find_detached_state(data_dir: Path, group: SwapGroup) -> tuple[_SwapState, Path] | None:
+    """The newest detached state for *group*, or None when nothing was left warm."""
+    best: tuple[_SwapState, Path] | None = None
+    for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
+        if f".{group.value}." not in f".{state_path.name}":
+            continue
+        state = _load_state(state_path)
+        if state is None or not state.detached:
+            continue
+        if best is None or (state.created_at or 0) > (best[0].created_at or 0):
+            best = (state, state_path)
+    return best
+
+
+def reap_stale(data_dir: Path, *, keep_detached: bool = False) -> None:
     """Kill every dead owner's surviving llama-swap at *data_dir*.
 
     An OOM-killed lilbee leaves llama-swap (and its servers) holding VRAM,
@@ -429,6 +506,9 @@ def reap_stale(data_dir: Path) -> None:
         if state is None:
             continue
         if _owner_alive(state.owner_pid, state.owner_created_at):
+            continue
+        if state.detached and keep_detached:
+            # A deliberately-left warm fleet; the next launch adopts or replaces it.
             continue
         if _is_live_llama_swap(state):
             _stop_stale_swap(state)
@@ -520,6 +600,7 @@ def _load_state(path: Path) -> _SwapState | None:
         raw_owner_created = payload.get(_STATE_KEY_OWNER_CREATED_AT)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
+        raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
         return _SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
@@ -527,6 +608,10 @@ def _load_state(path: Path) -> _SwapState | None:
             owner_created_at=float(raw_owner_created) if raw_owner_created is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
             member_ports=tuple(int(port) for port in raw_ports),
+            proxy_port=int(raw_proxy) if raw_proxy is not None else None,
+            lilbee_version=payload.get(_STATE_KEY_LILBEE_VERSION),
+            detached=bool(payload.get(_STATE_KEY_DETACHED, False)),
+            launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

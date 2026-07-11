@@ -62,7 +62,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
-          EXPECTED_WHEELS: "10"   # build-default-wheels.yml matrix size; bump if it changes
         run: |
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
@@ -78,10 +77,14 @@ jobs:
           fi
           echo "release-candidate run = ${RC_ID}"
           ART=$(gh api "repos/${REPO}/actions/runs/${RC_ID}/artifacts?per_page=100")
-          N_WHEELS=$(echo "${ART}" | jq '[.artifacts[] | select(.name | startswith("wheel-default-"))] | length')
+          # lilbee is a pure-Python package: build-default-wheels produces one
+          # universal wheel artifact named `wheel-default` (plus the sdist). The
+          # per-backend engine wheels ship as `wheel-multigpu-*` and are not part
+          # of the PyPI publish.
+          N_WHEELS=$(echo "${ART}" | jq '[.artifacts[] | select(.name == "wheel-default")] | length')
           N_SDIST=$(echo "${ART}" | jq '[.artifacts[] | select(.name == "sdist")] | length')
-          echo "run ${RC_ID}: wheel-default-* = ${N_WHEELS}/${EXPECTED_WHEELS}, sdist = ${N_SDIST}/1"
-          if [ "${N_WHEELS}" -lt "${EXPECTED_WHEELS}" ] || [ "${N_SDIST}" -lt 1 ]; then
+          echo "run ${RC_ID}: wheel-default = ${N_WHEELS}/1, sdist = ${N_SDIST}/1"
+          if [ "${N_WHEELS}" -lt 1 ] || [ "${N_SDIST}" -lt 1 ]; then
             echo "run ${RC_ID} hasn't finished building the default wheels + sdist; wait, re-run release-candidate.yml, or use emergency-publish.yml if a cell failed and you're shipping intentionally" >&2
             exit 1
           fi
@@ -95,12 +98,11 @@ jobs:
     # it misreads GITHUB_ACTION_REPOSITORY and pulls the wrong image -- so the
     # download + upload steps live here directly, not in a wrapper action.
     steps:
-      - name: Download wheel artifacts from the release-candidate run
+      - name: Download the default wheel from the release-candidate run
         uses: actions/download-artifact@v8
         with:
-          pattern: wheel-default-*
+          name: wheel-default
           path: dist/
-          merge-multiple: true
           run-id: ${{ needs.guard.outputs.rc_run_id }}
           github-token: ${{ github.token }}
       - name: Download sdist from the release-candidate run

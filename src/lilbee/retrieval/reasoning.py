@@ -25,14 +25,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from lilbee.core.config import cfg
-from lilbee.providers.base import ClosableIterator
+from lilbee.providers.base import THINK_CLOSE_TAG, THINK_OPEN_TAG, ClosableIterator
 
 if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
 
-_OPEN_TAG = "<think>"
-_CLOSE_TAG = "</think>"
-_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>\s*|<think>[\s\S]*$")
+_THINK_BLOCK_RE = re.compile(
+    rf"{THINK_OPEN_TAG}[\s\S]*?{THINK_CLOSE_TAG}\s*|{THINK_OPEN_TAG}[\s\S]*$"
+)
 _PROGRESS_TICK_CHARS = 256
 """Coarseness of the progress callback: fire when reasoning grows by at least this many chars."""
 
@@ -101,9 +101,9 @@ class TagParser:
         return StreamToken(content=self.buf, is_reasoning=False)
 
     def _process_thinking(self) -> StreamToken | None:
-        close_idx = self.buf.find(_CLOSE_TAG)
+        close_idx = self.buf.find(THINK_CLOSE_TAG)
         if close_idx == -1:
-            if _could_be_partial(_CLOSE_TAG, self.buf):
+            if _could_be_partial(THINK_CLOSE_TAG, self.buf):
                 return None
             content = self.buf
             self.reasoning_chars += len(content)
@@ -115,22 +115,22 @@ class TagParser:
             )
         thinking_content = self.buf[:close_idx]
         self.reasoning_chars += len(thinking_content)
-        self.buf = self.buf[close_idx + len(_CLOSE_TAG) :]
+        self.buf = self.buf[close_idx + len(THINK_CLOSE_TAG) :]
         self.in_thinking = False
         if thinking_content and self.show:
             return StreamToken(content=thinking_content, is_reasoning=True)
         return StreamToken(content="", is_reasoning=True)
 
     def _process_normal(self) -> StreamToken | None:
-        open_idx = self.buf.find(_OPEN_TAG)
+        open_idx = self.buf.find(THINK_OPEN_TAG)
         if open_idx == -1:
-            if _could_be_partial(_OPEN_TAG, self.buf):
+            if _could_be_partial(THINK_OPEN_TAG, self.buf):
                 return None
             content = self.buf
             self.buf = ""
             return StreamToken(content=content, is_reasoning=False)
         before = self.buf[:open_idx]
-        self.buf = self.buf[open_idx + len(_OPEN_TAG) :]
+        self.buf = self.buf[open_idx + len(THINK_OPEN_TAG) :]
         self.in_thinking = True
         return StreamToken(content=before, is_reasoning=False)
 
@@ -283,6 +283,21 @@ def _close_iterator(tokens: Iterator[Any]) -> None:
 def strip_reasoning(text: str) -> str:
     """Remove ``<think>...</think>`` blocks from a complete (non-streaming) string."""
     return _THINK_BLOCK_RE.sub("", text)
+
+
+def split_reasoning(text: str) -> tuple[str, str]:
+    """Split a complete string into its reasoning and its answer.
+
+    An unterminated ``<think>`` block means the model never reached an answer, so
+    everything after the tag is reasoning. Surfaces that must not leak lilbee's
+    inline ``<think>`` convention (the OpenAI-compatible API) use this to report
+    reasoning in its own field.
+    """
+    blocks = [
+        match.group(0).strip().removeprefix(THINK_OPEN_TAG).removesuffix(THINK_CLOSE_TAG).strip()
+        for match in _THINK_BLOCK_RE.finditer(text)
+    ]
+    return "".join(blocks), strip_reasoning(text)
 
 
 def _could_be_partial(tag: str, buf: str) -> bool:

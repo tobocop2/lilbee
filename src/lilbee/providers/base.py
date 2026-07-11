@@ -16,6 +16,12 @@ if TYPE_CHECKING:
 
 T_co = TypeVar("T_co", covariant=True)
 
+# The inline reasoning markers lilbee's pipeline speaks. A provider whose server
+# extracts reasoning into a separate field re-inlines it with these tags at the
+# client boundary, so every downstream consumer parses one format.
+THINK_OPEN_TAG = "<think>"
+THINK_CLOSE_TAG = "</think>"
+
 
 @runtime_checkable
 class ClosableIterator(Iterator[T_co], Protocol[T_co]):
@@ -375,7 +381,9 @@ class LLMProvider(Protocol):
         Returns: list of floats in input order, higher = more relevant.
         Empty ``candidates`` returns ``[]``.
         Raises :class:`ProviderError` when the backend does not support
-        reranking or ``cfg.reranker_model`` is empty.
+        reranking, ``cfg.reranker_model`` is empty, or the model scored no
+        candidate. A backend must raise rather than return uniform scores,
+        which would silently preserve the caller's input order.
         """
         ...
 
@@ -476,6 +484,15 @@ class LLMProvider(Protocol):
         providers without a managed context (SDK wrappers) advertise nothing.
         """
         return None
+
+    def warm_pending(self) -> bool:
+        """Whether a warm has been requested and has not finished.
+
+        True from the moment ``warm_up_pool`` accepts a warm until its background
+        work ends, so a surface can hold before the first phase is stamped. Default
+        ``False``: providers without managed servers never warm.
+        """
+        return False
 
     def warm_progress(self) -> WarmProgress | None:
         """Snapshot of the chat model's cold-load progress, or None when idle.

@@ -86,6 +86,91 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Wiki generation (experimental).** If wiki is enabled, `lilbee wiki build` and the incremental `_incremental_wiki_update` hook inside `lilbee sync` issue one LLM call per source that jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
 
+### Ingest concurrency: keeping the GPUs fed
+
+A full-corpus OCR ingest is a producer/consumer pipeline: CPU-side work (rasterizing
+PDF pages) feeds GPU-side work (vision OCR). Admit too few documents at once and the
+GPUs sit idle waiting for pages; admit too many and the CPU thrashes while RAM and GPU
+temperature climb. The right number is not a constant — it depends on the machine, the
+corpus, and how many GPUs are present.
+
+lilbee bounds how many documents are in their compute phase at once with an **admission
+gate**, and `LILBEE_INGEST_CONCURRENCY` chooses how that gate is sized:
+
+| Mode | Gate | What it does |
+|------|------|--------------|
+| `static` *(default)* | fixed semaphore | A constant limit derived from the fleet's slot capacity. Proven, predictable, and the always-safe fallback. Nothing changes for anyone who does not opt in. |
+| `adaptive-conservative` | resizable, cautious | A background controller tunes the limit toward this box's actual throughput knee, climbing slowly and backing off at the first sign of pressure. |
+| `adaptive-aggressive` | resizable, faster | Same control law and the *same* safety limits, but larger steps and a shorter interval, so it finds the knee faster on short runs. |
+
+Adaptive mode engages only when a GPU fleet is present (a GPU-less host always runs
+`static`), and the controller is best-effort: if a measurement ever fails it is logged
+and skipped, so the tuner can never crash the ingest it is only advising.
+
+#### How adaptive sizing works
+
+Instead of chasing a hardcoded target like "90% GPU utilization," the controller finds
+the **throughput knee** — the point where adding more in-flight documents stops adding
+throughput and only inflates latency. This is a safety-gated hill-climb on smoothed
+per-page throughput, drawn from proven congestion-control and thread-pool autotuning
+practice (AIMD, TCP BBR / Kleinrock's operating point, the .NET CLR ThreadPool
+hill-climber, the Universal Scalability Law).
+
+Every interval it samples the signals and decides one small change:
+
+```mermaid
+flowchart TD
+    S["Sample every interval:<br/>pages/s, GPU util and temp, CPU %, free RAM"]
+    S --> C{"CPU, RAM, or GPU temp<br/>past a critical limit?"}
+    C -->|yes| BK["Halve the limit,<br/>start a cool-down"]
+    C -->|no| SAT{"GPUs saturated<br/>and throughput slipping?"}
+    SAT -->|yes| DN["Step the limit down"]
+    SAT -->|no| V{"Soft pressure, or latency<br/>inflating past its baseline?"}
+    V -->|yes| HOLD["Hold"]
+    V -->|no| G{"Is throughput<br/>still improving?"}
+    G -->|yes| UP["Step the limit up"]
+    G -->|no| KNEE["Hold — at the knee"]
+
+    BK --> GATE["Resize the admission gate"]
+    DN --> GATE
+    UP --> GATE
+    HOLD --> GATE
+    KNEE --> GATE
+    GATE -.->|"more or fewer documents admitted"| DOCS["Extract + GPU OCR"]
+    DOCS -.->|"changes the next sample"| S
+```
+
+Two ideas make it both fast and safe:
+
+- **Latency leads the knee (TCP Vegas / Netflix Gradient2).** Waiting for throughput to
+  visibly flatten is too late — you have already overshot. So the controller estimates
+  per-page residence time with Little's Law (`in-flight ÷ throughput`), tracks its
+  unloaded minimum, and stops climbing the moment that estimate inflates, before
+  throughput rolls over.
+- **Safety is never traded for speed.** Critical CPU, RAM, or GPU-temperature signals
+  force an immediate multiplicative back-off and a cool-down. The two adaptive profiles
+  differ only in how quickly they climb — never in these limits. Throughput is measured
+  in OCR pages, not documents, so a 500-page scan counts as 500 units of work and does
+  not read as a throughput collapse.
+
+#### Parameters
+
+Safety limits are identical across both adaptive profiles; only the climb speed differs.
+
+| | `conservative` | `aggressive` | Safety (both) |
+|---|---|---|---|
+| sample interval | 5 s | 2 s | — |
+| smoothing (EWMA γ) | 0.3 | 0.5 | — |
+| climb step | +1 | +1 + ⌊√limit ÷ 4⌋ | — |
+| dead band | 5% | 3% | — |
+| latency veto | 1.5× baseline | 2.0× baseline | — |
+| cool-down | 3 intervals | 2 intervals | — |
+| back-off on danger | — | — | ×0.5 |
+| GPU-saturation veto | — | — | 97% util |
+| CPU soft / critical | — | — | 90% / 97% |
+| free RAM soft / min | — | — | 20% / 10% |
+| GPU temp warn / critical | — | — | 80°C / 85°C |
+
 ---
 
 ## Provider Abstraction
@@ -178,7 +263,7 @@ flowchart LR
         provider["FleetProvider"]
         planner -->|"1: measure each GGUF"| gguf
     end
-    subgraph swaps ["llama-swap, one per role"]
+    subgraph swaps ["llama-swap, one per swap group"]
         sc["swap: chat<br/>own config, log, state"]
         se["swap: embed<br/>own config, log, state"]
     end
@@ -224,7 +309,9 @@ flowchart LR
   weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
   ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
   of the budget and 503-ing every search.
-- **Placement** (`placement.py`): first-fit-decreasing bin-pack with 90% headroom.
+- **Placement** (`placement.py`): bin-packed in `placement_rank` order (search roles,
+  then vision, then the elastic chat model), largest-first within a rank, with 90%
+  headroom.
   A model that fits one GPU is a single pinned instance; small models co-locate; a
   model too big for one GPU is tensor-split across enough cards that each card's
   per-device footprint fits, charged against each card's total VRAM capacity (so a
@@ -258,8 +345,9 @@ flowchart LR
   (`--parallel`) steps down the same way before refusing.
 
 - **Reload and the plan snapshot** (`planning.capture_plan_probe`,
-  `provider._reload_pass`): each role runs behind its own llama-swap process, and
-  a reload re-plans the whole fleet but restarts **only the roles whose launches
+  `provider._reload_pass`): each swap group runs behind its own llama-swap process
+  (one per role, except co-tenant chat and vision which share one), and a reload
+  re-plans the whole fleet but restarts **only the groups whose launches
   changed**. That diff is sound because launches are a pure function of config,
   hardware capacity, and a **clean-box memory snapshot**: devices, usable VRAM,
   and free system RAM are captured once per boot (right after stale-server
@@ -279,7 +367,7 @@ flowchart TB
     PLAN --> DIFF{per-role launch diff}
     DIFF -->|unchanged| KEEP[role keeps serving, model stays resident]
     DIFF -->|changed| RESTART[stop role's llama-swap, start with new argv]
-    subgraph fleet [one llama-swap per role]
+    subgraph fleet [one llama-swap per swap group]
         CHAT[chat group]
         EMBED[embed group xN]
         RERANK[rerank group]
@@ -336,18 +424,35 @@ what the auto planner would assign (or what a candidate spec would assign)
 including each card's backend+index label, name, and free/total VRAM, without
 touching the running fleet.
 
-- **Resident tiers and the elastic ingest pool**: placement reserves a persistent
-  query fleet first: chat, one embed server (`embed-0`), rerank, and one vision
-  server (`vision-0`). These stay resident so a chat request issued during ingest
-  always has capacity. This reservation applies to discrete-GPU placement; the
-  shared-memory path on a unified-memory or CPU host packs the same pool
-  differently and does not hold back the elastic replicas. Extra embed and vision
-  replicas (`embed-1..N`, additional
-  vision) are placed only into the VRAM that remains after the query fleet is
-  committed. When an ingest finishes, each extra replica is unloaded individually
-  via llama-swap's `POST /api/models/unload`, freeing its VRAM without disturbing
-  the resident servers. If llama-swap is restarted or found dead, the fleet
-  re-probes once and rebuilds its model config before reporting a failure.
+- **Resident tiers and the elastic ingest pool**: placement charges roles in the
+  registry's `placement_rank` order. The pinned tier goes first: one embed server
+  (`embed-0`), rerank, and one vision server (`vision-0`). Chat is charged last,
+  against what the pinned tier leaves, because chat's KV cache is the one footprint
+  that can shrink. Search therefore never loses its servers to a large chat model,
+  and vision is placeable whenever it fits beside the search tier, no matter how
+  large the chat model is. Extra embed and vision replicas (`embed-1..N`,
+  additional vision) are placed only into the VRAM that remains, and stay resident
+  there; nothing is unloaded when an ingest finishes. If llama-swap is restarted or
+  found dead, the fleet re-probes once and rebuilds its model config before
+  reporting a failure.
+- **Swap tenancy**: the planner matches the old in-process pool (last shipped in
+  v0.6.66b507; see its
+  [Inference Worker Pool](https://github.com/tobocop2/lilbee/blob/v0.6.66b507/docs/architecture.md#inference-worker-pool)
+  section), where a role's worker spawned lazily on first call, so ingest
+  (embed + vision OCR) and a query (embed + rerank + chat) never held each
+  other's models in VRAM. Roles that share
+  no run **phase** (`RoleInfo.phases`) are never resident together, so when they
+  cannot all co-reside a role that does not fit **refunds** the already-charged
+  phase-disjoint roles and retries; the roles that let it in become co-tenants of a
+  single `swap: true` llama-swap group. On a tight card this pulls the query-only
+  rerank and chat into vision's swap group, so ingest's embed + vision fits exactly
+  as it did in-process. Only one member is resident at a time, so the group is
+  charged its largest member and each co-tenant runs a single instance (a
+  `swap: true` group evicts same-group siblings, so a second replica inside it would
+  evict the first). Interleaving a query with an ingest costs a model reload each
+  way. With the VRAM to hold everything at once, no swap group forms and every role
+  pins to its own group. A role is unplaceable only when it does not fit even beside
+  the one embedder its own phase needs (a genuine "use a smaller model").
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
   vision roles can run as N independent servers, fanning embedding and OCR across
   the box during ingest. Setting either value to `0` (the default) means auto: one
@@ -376,17 +481,17 @@ touching the running fleet.
   setting deliberately not forwarded: it selects a single card by global index, which
   is meaningless once a server is pinned to a subset, and placement owns card choice
   in fleet mode.
-- **Lifecycle** (`swap_manager.py` / `provider.py`): each role runs behind its own llama-swap process
-  with its own config file, so restarting one role's group (a placement or
-  per-role model change) never touches another role's loaded servers. A reload
-  re-plans the whole fleet and diffs the fresh plan per role against the
-  running launches, restarting only the roles whose launches changed; an
+- **Lifecycle** (`swap_manager.py` / `provider.py`): each swap group runs behind its own
+  llama-swap process with its own config file, so restarting one group (a placement or
+  per-role model change) never touches another group's loaded servers. A reload
+  re-plans the whole fleet and diffs the fresh plan per group against the
+  running launches, restarting only the groups whose launches changed; an
   untouched 100GB chat model stays resident while the embedder moves. Each
   server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
   weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
-  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per role group
+  on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the
   member servers' ports, plus the owner's pid and create time; before the next build
@@ -421,6 +526,62 @@ touching the running fleet.
   local, single-box option.
 - **Hardware QA:** `tools/qa/multi_gpu_smoke.py` validates enumeration, placement,
   concurrency, restart, and orphan cleanup on a real multi-GPU host.
+
+### Startup sequence and engine lifecycle
+
+The TUI opens the way Ollama and LM Studio do: the app is usable within a
+couple of seconds and the model loads in the background. The launcher never
+blocks on the engine; the same amber wordmark carries every stage. The onefile
+bootstrap paints an unpack progress bar (one-time; later launches skip it via
+the extraction stamp), parks the wordmark for the Python start, and the startup
+gate (`cli/tui/screens/startup_gate.py`) holds only while the services
+container builds. Nothing slower than widget mounting runs on the mount path:
+model canonicalization (disk reads, server probes) lives in the gate's boot
+worker, off the event loop. A prompt sent before the engine is ready waits
+inside its own answer bubble, whose thinking row renders the live load phase
+(`wait_chat_ready(on_progress=...)` in `app/placement.py`), byte progress
+included; a failed load lands there with the model hint.
+
+```mermaid
+flowchart TD
+    A([launch]) --> C["unpack progress bar<br/><i>first run only; later runs skip in ~1s</i>"]
+    C --> D["bee splash<br/>while Python starts"]
+    D --> E(["chat opens, ~2s<br/>engine loads in the background"])
+    E --> F{"prompt sent before<br/>the engine is ready?"}
+    F -- yes --> G["answer bubble shows the load<br/>live weight-read percentage"]
+    G --> H([answer streams])
+    F -- no --> H
+```
+
+By default the engine lives and dies with lilbee. With `keep_engine_warm` on,
+terminal shutdown detaches instead: the fleet state file gains a `detached`
+marker (owner-PID state files in `providers/fleet/swap_manager.py`) and the
+next launch adopts the running fleet after a health, version, and model match,
+skipping planning and the load entirely. llama-swap's per-model `ttl`
+(`engine_idle_ttl_minutes`, default five minutes) frees idle GPU memory on its
+own; `lilbee engine stop` frees everything from any terminal. `reap_stale`
+spares detached fleets only while the setting is on, so toggling it off cleans
+up at the next start of any lilbee process.
+
+```mermaid
+flowchart TD
+    subgraph OFF ["default: on-demand"]
+        q1["quit, kill, or terminal close"] --> s1["engine stopped<br/>GPU memory freed"]
+    end
+    subgraph ON ["keep_engine_warm on"]
+        q2[quit] --> d["fleet keeps running,<br/>state file marked detached"]
+        d --> l2([next launch]) --> ok{"healthy, same lilbee<br/>version, same models?"}
+        ok -- yes --> a["adopt: bind to the running fleet<br/>first answer immediate"]
+        ok -- no --> r["reap it, start fresh"]
+        d --> i["idle past the ttl<br/>default five minutes"] --> u["weights unloaded<br/>GPU memory freed"]
+        t["setting turned off"] --> r
+        e["lilbee engine stop"] --> s2["everything freed now"]
+    end
+```
+
+There is no background daemon: the only processes that outlive a session are
+the engine's own, and only when the user opted in. A crashed or force-killed
+session's engine is reclaimed at the next launch.
 
 ### Chat context-window management
 

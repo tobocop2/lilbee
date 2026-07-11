@@ -96,7 +96,7 @@ jobs:
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
         uses: actions/download-artifact@v8
         with:
-          pattern: wheel-default-*
+          name: wheel-default
           path: ./_wheels
           run-id: ${{ inputs.wheel_run_id }}
           merge-multiple: true
@@ -241,7 +241,7 @@ jobs:
         if: matrix.lane == 'pypi' && inputs.wheel_run_id != ''
         uses: actions/download-artifact@v8
         with:
-          pattern: wheel-default-*
+          name: wheel-default
           path: ./_wheels
           run-id: ${{ inputs.wheel_run_id }}
           merge-multiple: true
@@ -349,7 +349,7 @@ jobs:
         if: inputs.wheel_run_id != ''
         uses: actions/download-artifact@v8
         with:
-          pattern: wheel-default-*
+          name: wheel-default
           path: ./_wheels
           run-id: ${{ inputs.wheel_run_id }}
           merge-multiple: true
@@ -429,7 +429,7 @@ jobs:
         if: inputs.wheel_run_id != ''
         uses: actions/download-artifact@v8
         with:
-          pattern: wheel-default-*
+          name: wheel-default
           path: ./_wheels
           run-id: ${{ inputs.wheel_run_id }}
           merge-multiple: true

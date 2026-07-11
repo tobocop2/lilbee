@@ -42,10 +42,15 @@ ROLE_SPECS: dict[WorkerRole, RoleServerSpec] = {
         endpoint_path="/v1/chat/completions",
         # --jinja renders the model's own chat template and parses native
         # tool-call syntax into structured message.tool_calls.
-        # --reasoning-format none keeps <think>...</think> inline in content;
-        # without it, recent llama-server extracts reasoning into a separate
-        # reasoning_content field and lilbee's <think>-based parser sees none.
-        extra_args=("--jinja", "--reasoning-format", "none"),
+        # --reasoning-format deepseek makes the server parse every model's native
+        # reasoning dialect (<think>, gpt-oss harmony, ...) into reasoning_content;
+        # the chat client re-inlines it as <think> so downstream parsing stays
+        # format-agnostic and control tokens never leak into answers.
+        # --no-prefill-assistant keeps a trailing assistant message a finished turn:
+        # by default the server continues its text instead of answering, and rejects
+        # two trailing assistant messages with a 400. Agents compacting their history
+        # send both shapes, and OpenAI's API accepts them.
+        extra_args=("--jinja", "--reasoning-format", "deepseek", "--no-prefill-assistant"),
         server_capable=True,
     ),
     WorkerRole.EMBED: RoleServerSpec(

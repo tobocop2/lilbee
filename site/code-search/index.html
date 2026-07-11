@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G8F65BKGRJ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-G8F65BKGRJ');
+</script>
+
+<title>Local code search: ask your codebase, cited to the line | lilbee</title>
+<meta name="description" content="lilbee is local AI code search: index a repo and ask in plain English. It chunks code with tree-sitter so functions stay whole, ranks the best matches, and cites the exact file and line. Runs offline on your machine.">
+<link rel="canonical" href="https://lilbee.sh/code-search/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lilbee">
+<meta property="og:title" content="Local code search: ask your codebase, cited to the line | lilbee">
+<meta property="og:description" content="Local AI code search: index a repo and ask in plain English. Code-aware chunking with tree-sitter, ranked matches, and citations to the exact file and line. Runs offline.">
+<meta property="og:url" content="https://lilbee.sh/code-search/">
+<meta property="og:image" content="https://lilbee.sh/social-card.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="lilbee answering a question about a codebase with a file and line citation">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Local code search: ask your codebase, cited to the line | lilbee">
+<meta name="twitter:description" content="Local AI code search: index a repo and ask in plain English. Code-aware chunking, ranked matches, and citations to the exact file and line. Runs offline.">
+<meta name="twitter:image" content="https://lilbee.sh/social-card.png">
+<meta name="twitter:image:alt" content="lilbee answering a question about a codebase with a file and line citation">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "lilbee", "item": "https://lilbee.sh/" },
+    { "@type": "ListItem", "position": 2, "name": "Code search", "item": "https://lilbee.sh/code-search/" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "How is this different from grep?", "acceptedAnswer": { "@type": "Answer", "text": "grep matches exact text. lilbee searches by meaning, ranks the results by how well they answer your question, and writes a reply that cites the file and line. You ask in plain English instead of guessing the right pattern." } },
+    { "@type": "Question", "name": "What languages does it handle?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee chunks code with tree-sitter using a broad language pack, so functions and definitions stay whole across many common languages instead of being split mid-body." } },
+    { "@type": "Question", "name": "Does my code leave my machine?", "acceptedAnswer": { "@type": "Answer", "text": "No. Indexing and search run locally. lilbee uses a cloud model only if you choose one; the code search itself stays on your machine." } },
+    { "@type": "Question", "name": "Can my coding agent use it?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. lilbee runs as an MCP server, so an MCP-aware coding agent can search your codebase through it and answer with file and line citations." } },
+    { "@type": "Question", "name": "Does it work offline?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. With local models in place, lilbee indexes and answers with no internet connection." } }
+  ]
+}
+</script>
+
+<link rel="stylesheet" href="../style.css?v=20260515a">
+<script src="../main.js?v=20260515a" defer></script>
+</head>
+<body>
+<div class="layout">
+  <main class="main">
+
+    <div class="topstrip">
+      <div><a class="badge" href="/">lilbee</a> <span>code search</span></div>
+      <div>
+        <span class="pill">tree-sitter</span>
+        <span class="pill">file:line</span>
+        <span class="pill">offline</span>
+      </div>
+    </div>
+
+    <p class="crumb"><a href="/">lilbee</a> / code search</p>
+
+    <section class="hero">
+<pre class="wordmark" aria-hidden="true">888 d8b 888 888
+888 Y8P 888 888
+888     888 888
+888 888 888 88888b.  .d88b.  .d88b.
+888 888 888 888 "88bd8P  Y8bd8P  Y8b
+888 888 888 888  88888888888888888888
+888 888 888 888 d88PY8b.    Y8b.
+888 888 888 88888P"  "Y8888  "Y8888</pre>
+      <h1 class="tagline">Ask questions about your <strong>codebase</strong>, answers cite the file and line. lilbee indexes a repo and searches it by meaning, all on your own machine.</h1>
+      <p class="sub">Local AI code search in one program. It chunks code so functions stay whole, ranks the matches that actually answer you, and points you at the exact line.</p>
+    </section>
+
+    <section>
+      <h2 class="label">search by meaning, not by pattern</h2>
+      <p class="lede">grep finds the text you typed. lilbee finds the code you meant. Ask in plain English, and it retrieves the functions and definitions that answer the question, ranks them by relevance, and replies with a citation back to the file and line. When nothing matches well, it says so rather than inventing an answer.</p>
+    </section>
+
+    <section>
+      <h2 class="label">code-aware from the ground up</h2>
+      <div class="caps">
+        <div class="cap">
+          <h3>chunked with tree-sitter</h3>
+          <p>Code is split along its real structure, so a function or class stays whole instead of being cut mid-body. Retrieval is only as good as the chunks underneath it.</p>
+        </div>
+        <div class="cap">
+          <h3>cited to the line</h3>
+          <p>Every answer links back to the file and line, so you can jump straight to the source and confirm it.</p>
+        </div>
+        <div class="cap">
+          <h3>a library per project</h3>
+          <p>Each repo gets its own scoped library, so one codebase never bleeds into another's results.</p>
+        </div>
+        <div class="cap">
+          <h3>reach it any way</h3>
+          <p>Use it as a terminal app, a command-line tool, or an MCP server your coding agent talks to.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">for you and for your agent</h2>
+      <p class="lede">Search your own codebase from the terminal, or hand the same retrieval to your coding agent over <a href="/mcp/">MCP</a> so it reads the real code before it answers. lilbee is also a complete <a href="/model-manager/">model manager</a> and runs the models itself on Metal, Vulkan, or CUDA, or works with your existing Ollama or LM Studio setup.</p>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>How is this different from grep?</summary><p>grep matches exact text. lilbee searches by meaning, ranks the results by how well they answer your question, and cites the file and line. You ask in plain English instead of guessing the right pattern.</p></details>
+        <details><summary>What languages does it handle?</summary><p>lilbee chunks code with tree-sitter using a broad language pack, so functions and definitions stay whole across many common languages.</p></details>
+        <details><summary>Does my code leave my machine?</summary><p>No. Indexing and search run locally. lilbee uses a cloud model only if you choose one; the code search itself stays on your machine.</p></details>
+        <details><summary>Can my coding agent use it?</summary><p>Yes. lilbee runs as an MCP server, so an MCP-aware coding agent can search your codebase through it and answer with file and line citations.</p></details>
+        <details><summary>Does it work offline?</summary><p>Yes. With local models in place, lilbee indexes and answers with no internet connection.</p></details>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">go deeper</h2>
+      <div class="links">
+        <a href="/"><span class="num">[1]</span><span>lilbee</span><span class="dots">·······································</span><span class="desc">home</span></a>
+        <a href="/mcp/"><span class="num">[2]</span><span>MCP server</span><span class="dots">·······································</span><span class="desc">for agents</span></a>
+        <a href="/local-rag/"><span class="num">[3]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs</span></a>
+        <a href="https://github.com/tobocop2/lilbee"><span class="num">[4]</span><span>GitHub</span><span class="dots">·······································</span><span class="desc">source</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[5]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">install</span></a>
+      </div>
+    </section>
+
+    <footer>
+      <div>
+<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|t|o|b|i|a|s|@|l|i|l|b|e|e|.|s|h|
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+</pre>
+      </div>
+      <div class="meta"><a href="https://github.com/tobocop2/lilbee">lilbee</a> &nbsp;.&nbsp; MIT License</div>
+    </footer>
+  </main>
+
+  <aside class="bee-art" aria-hidden="true"><pre>     %           %
+         %           %
+            %           %
+               %          %
+                 %          %
+                   %          %                   :::
+                    %          %                ::::::
+                 %%%%%%  %%%%%%%%%            ::::::::
+              %%%%%ZZZZ%%%%%%   %%%ZZZZ     ::::::::::         ::::::
+             %%%ZZZZZ%%%%%%%%%%%%%%ZZZZZZ  :::::::::::    :::::::::::::::::
+             ZZZ%ZZZ%%%%%%%%%%%%%%%ZZZZZZZ::::::::::***:::::::::::::::::::::
+          ZZZ%ZZZZZZ%%%%%%%%%%%%%%ZZZZZZZZZ::::::***:::::::::::::::::::::::
+        ZZZ%ZZZZZZZZZZ%%%%%%%%%%ZZZZZZ%ZZZZ:::***:::::::::::::::::::::::
+       ZZ%ZZZZZZZZZZZZZZZZZZZZZZZ%%%%% %ZZZ:**::::::::::::::::::::::
+      ZZ%ZZZZZZZZZZZZZZZZZZZ%%%%% | | %ZZZ *:::::::::::::::::::
+      Z%ZZZZZZZZZZZZZZZ%%%%%%%%%%%%%%%ZZZ::::::::::::::::::::::::::
+       ZZZZZZZZZZZ%%%%%ZZZZZZZZZZZZZZZZZ%%%%:::ZZZZ:::::::::::::::::
+         ZZZZ%%%%%ZZZZZZZZZZZZZZZZZZ%%%%%ZZZ%%ZZZ%ZZ%%*:::::::::::
+            ZZZZZZZZZZZZZZZZZZ%%%%%%%%%ZZZZZZZZZZ%ZZ%:::*:::::::
+            *:::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZZZZZZ%%%*::::*::::
+          *:::::::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZ%%      *:::Z
+         **:ZZZZ:::%%%%%%%%%%%%%%%%%%%%%%%%%%%ZZ      ZZZZZ
+        *:ZZZZZZZ       %%%%%%%%%%%%%%%%%%%%%ZZZZ    ZZZZZZZ
+       *::::ZZZZZZ         %%%%%%%%%%%%%%%ZZZZZZZ      ZZZ
+        *::ZZZZZZ           Z%%%%%%%%%%%ZZZZZZZ%%
+          ZZZZ              ZZZZZZZZZZZZZZZZ%%%%%
+                           %%%ZZZZZZZZZZZ%%%%%%%%
+                          Z%%%%%%%%%%%%%%%%%%%%%
+                          ZZ%%%%%%%%%%%%%%%%%%%
+                          %ZZZZZZZZZZZZZZZZZZZ
+                          %%ZZZZZZZZZZZZZZZZZ
+                           %%%%%%%%%%%%%%%%
+                            %%%%%%%%%%%%%
+                             %%%%%%%%%
+                              ZZZZ
+                              ZZZ
+                             ZZ
+                            Z</pre></aside>
+</div>
+</body>
+</html>

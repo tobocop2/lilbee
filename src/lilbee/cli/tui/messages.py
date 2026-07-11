@@ -123,6 +123,19 @@ MODEL_SWAP_FAILED = "Could not switch model: {error}"
 # Shown when the user tries to send a prompt while the new chat model is still loading.
 CHAT_MODEL_SWITCHING = "Still switching model. One moment, then send your prompt."
 FLEET_RELOADING = "Applying placement, reloading the fleet. One moment, then send your prompt."
+# Startup gate: shown from the moment the TUI paints until the app can serve.
+STARTUP_PREPARING = "Preparing lilbee"
+STARTUP_FAILED = "lilbee could not start: {error}"
+CHAT_STACK_FAILED = "lilbee could not load its chat screen: {error}"
+# Engine-load status painted into the pending answer while a prompt waits on a
+# cold engine, and the failure that wait can end in.
+ENGINE_READING_WEIGHTS = "Reading {name} weights"
+ENGINE_LOADING = "Loading engine"
+ENGINE_LOAD_FAILED = "The engine failed to load: {error}"
+ENGINE_FAILED_HINT = "Open Catalog or Settings to pick a different model."
+ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
+# Shown once when a prompt first waits on a cold engine and keep_engine_warm is off.
+ENGINE_WARM_TIP = "Tip: Settings > Keep engine warm makes the next launch fast"
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"
@@ -395,9 +408,19 @@ FLEET_TITLE = "Placement"
 FLEET_STATE_AUTO = "auto"
 FLEET_STATE_MANUAL = "manual"
 FLEET_STATE_EDITED = "edited · ctrl+s to apply"
+FLEET_STATE_REBUILDING = "rebuilding fleet…"
 FLEET_SINGLE_GPU_NOTE = "One graphics card: everything runs here."
 FLEET_GPU_PROBING = "probing GPUs…"
 FLEET_NO_GPUS = "(no GPUs detected)"
+# Shown for a role that has no placement because its model isn't downloaded, so the
+# empty slot reads as a fixable state instead of "GPU placement is broken".
+FLEET_MODEL_NOT_DOWNLOADED = "{role}: {model} not downloaded, pull it to place it"
+# Shown when an Intel GPU's utilization is unreadable only because intel_gpu_top
+# lacks the CAP_PERFMON grant, so the muted "--" reads as a fixable state.
+FLEET_INTEL_UTIL_GRANT = (
+    "Intel GPU utilization needs a one-time grant: "
+    "sudo setcap cap_perfmon+ep {binary}  (or Linux 6.2+ reads it with no setup)"
+)
 FLEET_CMD_PREVIEW = "Preview"
 FLEET_CMD_APPLY = "Apply"
 FLEET_CMD_AUTO = "Auto"
@@ -445,6 +468,12 @@ STATUS_DOCS_EMPTY = "(no documents yet)"
 STATUS_DOCS_TITLE = "Documents"
 TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
 TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
+# Cold-start chat warm line: phase (and byte % while paging weights) so the held
+# input reads as "loading", not "stuck".
+TASKBAR_WARM = "loading chat · {detail}"
+TASKBAR_WARM_STARTING = "starting"
+TASKBAR_WARM_READING = "reading weights {pct}%"
+TASKBAR_WARM_LOADING = "loading engine"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"

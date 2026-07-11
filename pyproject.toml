@@ -1,19 +1,19 @@
 [project]
 name = "lilbee"
-version = "0.6.90b420.dev710"
+version = "0.6.90b420.dev716"
 description = "Run and manage local AI models, then search your files, code, and the web pages you crawl, with answers that cite the source. Everything runs on your machine in one process: per-project libraries, semantic and hybrid search, vision OCR, an auto-built wiki, CLI, TUI, MCP server, REST API, and Python library. No model server, no database server. Works with your own Ollama or LM Studio models too."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "tobocop2", email = "5562156+tobocop2@users.noreply.github.com" }]
 requires-python = ">=3.11"
 keywords = [
-    "rag", "local-llm", "local-ai",
-    "mcp", "mcp-server",
+    "rag", "local-rag", "local-llm", "local-ai",
+    "mcp", "mcp-server", "model-context-protocol",
     "semantic-search", "vector-search", "retrieval",
     "embeddings", "knowledge-base", "knowledge-management",
     "huggingface", "ocr", "web-crawler",
-    "model-manager", "llama-cpp", "gguf", "ollama", "lm-studio",
-    "second-brain", "personal-ai", "self-hosted", "privacy", "cli", "tui",
+    "model-manager", "llama-cpp", "gguf", "multi-gpu", "ollama", "lm-studio",
+    "obsidian", "second-brain", "personal-ai", "self-hosted", "privacy", "cli", "tui",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -67,9 +67,11 @@ dependencies = [
 litellm = ["litellm>=1.84.0,<1.92"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 crawler = ["crawl4ai>=0.9.0"]
-# The CUDA 12 runtime the bundled llama-server links, from NVIDIA's official PyPI
-# wheels. Markers keep it a no-op off Linux x86_64 (no wheel exists elsewhere);
-# fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH.
+# A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
+# fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
+# wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows
+# (build_llama_server.sh), so this is only needed for an engine built elsewhere.
+# Linux x86_64 only: macOS and aarch64 have no CUDA build to feed.
 cuda12 = [
     "nvidia-cuda-runtime-cu12; platform_system=='Linux' and platform_machine=='x86_64'",
     "nvidia-cublas-cu12; platform_system=='Linux' and platform_machine=='x86_64'",

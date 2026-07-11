@@ -7,7 +7,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -587,7 +587,7 @@ def _server_model_inputs(
     *,
     unified_budget: int | None = None,
     device_count: int = 0,
-) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int]:
+) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int, dict[WorkerRole, str]]:
     """Build placement inputs for the configured server roles.
 
     The search and vision roles are estimated first; chat is then sized against the
@@ -595,13 +595,15 @@ def _server_model_inputs(
     starve embed/rerank on a shared-memory host. ``device_count`` resolves an auto
     replica knob to one per GPU. When *roles* is given, only those are considered.
     Skips an unconfigured optional role, a vision model with no resolvable mmproj
-    projector, and a role whose model is not installed on disk.
+    projector, and a role whose model is not installed on disk (the last returned as
+    ``skipped_not_installed`` so a surface can say so).
     """
     from lilbee.core.config import cfg
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     inputs: dict[WorkerRole, ModelPlacementInput] = {}
     model_refs: dict[WorkerRole, str] = {}
+    skipped_not_installed: dict[WorkerRole, str] = {}
 
     def consider(role: WorkerRole, *, chat_reservation: int = 0) -> None:
         if roles is not None and role not in roles:
@@ -639,6 +641,7 @@ def _server_model_inputs(
             # debugging toward the registry.
             if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
                 log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+                skipped_not_installed[role] = ref
             else:
                 log.warning(
                     "Skipping %s server: could not size model %r (%s).", role.value, ref, exc
@@ -657,24 +660,31 @@ def _server_model_inputs(
     consider(WorkerRole.CHAT, chat_reservation=reservation)
 
     ordered = [inputs[role] for role in ROLE_REGISTRY if role in inputs]
-    return ordered, model_refs, reservation
+    return ordered, model_refs, reservation, skipped_not_installed
 
 
 def _non_chat_reservation(
-    instances: Sequence[InstancePlan], inputs: Sequence[ModelPlacementInput]
+    instances: Sequence[InstancePlan],
+    inputs: Sequence[ModelPlacementInput],
+    co_tenants: frozenset[WorkerRole] = frozenset(),
 ) -> dict[int, int]:
     """Per-device VRAM the non-chat role servers occupy, keyed by device index.
 
     A tensor-split chat shard must size its KV against the headroom left after the
     embed/rerank/vision servers on the same card, not the card's raw free VRAM, or
-    it over-commits and OOMs at launch. Chat is excluded because it sizes
-    its own weights; non-chat roles are single-device, so each charges its full
-    footprint (once per replica) to its card.
+    it over-commits and OOMs at launch. Chat is excluded because it sizes its own
+    weights. Chat's own swap-group siblings are excluded too: they are evicted while
+    chat is resident, so their VRAM is chat's to use. That only holds when chat is
+    itself a co-tenant; a co-tenant group that does not include chat runs behind its
+    own swap process and can be resident beside chat, so it is charged normally.
+    Non-chat roles are single-device, so each charges its full footprint (once per
+    replica) to its card.
     """
+    chat_siblings = co_tenants if WorkerRole.CHAT in co_tenants else frozenset()
     charge_by_role = {inp.role: inp.est_vram_bytes for inp in inputs}
     reserved: dict[int, int] = {}
     for inst in instances:
-        if inst.role is WorkerRole.CHAT:
+        if inst.role is WorkerRole.CHAT or inst.role in chat_siblings:
             continue
         charge = charge_by_role[inst.role]
         for device in inst.devices:
@@ -1028,6 +1038,11 @@ class ResolvedPlacement:
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
     model_refs: dict[WorkerRole, str]
+    co_tenants: frozenset[WorkerRole] = frozenset()
+    # Roles configured but skipped because their model isn't installed (role -> ref).
+    # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
+    # "not downloaded" instead of an empty table on a fresh install.
+    skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
 
 
 def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement:
@@ -1040,7 +1055,9 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
     apply_cuda_runtime_env()
     devices = _read_device_cache.get(binary)
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, _ = _server_model_inputs(None, unified_budget=unified_budget)
+    inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
+        None, unified_budget=unified_budget
+    )
     resolved = _resolve_placement(
         placement, inputs, model_refs, devices, unified_budget=unified_budget
     )
@@ -1049,7 +1066,17 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         instances=resolved.instances,
         unplaceable_roles=resolved.unplaceable_roles,
         model_refs=model_refs,
+        co_tenants=resolved.co_tenants,
+        skipped_not_installed=skipped_not_installed,
     )
+
+
+@dataclass(frozen=True)
+class FleetPlan:
+    """The servers to start, and the roles that share one swap group."""
+
+    launches: tuple[InstanceLaunch, ...]
+    co_tenants: frozenset[WorkerRole] = frozenset()
 
 
 def plan_launches(
@@ -1057,11 +1084,11 @@ def plan_launches(
     binary: Path,
     by_index: dict[int, FleetDevice],
     devices: list[FleetDevice],
-) -> list[InstanceLaunch]:
+) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
 
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, reservation = _server_model_inputs(
+    inputs, model_refs, reservation, _ = _server_model_inputs(
         roles, unified_budget=unified_budget, device_count=len(devices)
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
@@ -1073,22 +1100,30 @@ def plan_launches(
             role.value,
             model_refs[role],
         )
-    reserved_by_device = _non_chat_reservation(placement.instances, inputs)
-    return [
-        _launch_for(
-            plan,
-            model_refs[plan.role],
-            binary,
-            by_index,
-            unified_budget=unified_budget,
-            chat_reservation=reservation,
-            reserved_by_device=reserved_by_device,
+    if placement.co_tenants:
+        log.info(
+            "%s share GPU memory and load on demand; only one is resident at a time.",
+            ", ".join(sorted(role.value for role in placement.co_tenants)),
         )
-        for plan in placement.instances
-    ]
+    reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
+    return FleetPlan(
+        launches=tuple(
+            _launch_for(
+                plan,
+                model_refs[plan.role],
+                binary,
+                by_index,
+                unified_budget=unified_budget,
+                chat_reservation=reservation,
+                reserved_by_device=reserved_by_device,
+            )
+            for plan in placement.instances
+        ),
+        co_tenants=placement.co_tenants,
+    )
 
 
-def plan_all_launches() -> list[InstanceLaunch]:
+def plan_all_launches() -> FleetPlan:
     """Apply GPU env, probe devices, and plan launches for every configured role.
 
     Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any

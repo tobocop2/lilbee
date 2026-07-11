@@ -177,6 +177,33 @@ jobs:
           CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
+      # The wheel gate can't cover the executable: Nuitka rebundles the engine, and on
+      # Linux it takes the .so files through --include-package-data rather than the
+      # verbatim --include-data-files path (build_lilbee_binary.sh skips *.so there).
+      # If it ever drops them the onefile ships a CUDA engine with no CUDA runtime, and
+      # a driverless runner can't tell by executing it. Assert against the standalone
+      # tree Nuitka leaves under dist/ before it is packed into the onefile.
+      - name: The CUDA executable bundles the runtime it links
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Nuitka names the standalone tree after the entry module (__main__.dist);
+          # find it by shape rather than by that name.
+          bin_dir=$(find dist -type d -path '*lilbee_engine/bin' | head -1)
+          [ -n "${bin_dir}" ] || { echo "no bundled engine found under dist/" >&2; exit 1; }
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            required="cudart64_*.dll cublas64_*.dll cublasLt64_*.dll"
+          else
+            required="libcudart.so.* libcublas.so.* libcublasLt.so.*"
+          fi
+          for pattern in ${required}; do
+            compgen -G "${bin_dir}/${pattern}" >/dev/null || {
+              echo "${pattern} missing from the engine Nuitka bundled into ${{ matrix.asset_name }}" >&2
+              exit 1
+            }
+          done
+          echo "the bundled engine carries its CUDA runtime"
+
       - name: Smoke test
         # CUDA cells run on GPU-less runners: the bundled server links the CUDA
         # driver (libcuda.so.1), so it cannot run inference here. The full

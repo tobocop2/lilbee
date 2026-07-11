@@ -36,6 +36,38 @@ def test_show_renders_cards(monkeypatch: object) -> None:
     assert "chat" in result.stdout
 
 
+def _view_with_skipped() -> PlacementView:
+    from lilbee.app.placement import SkippedRole
+
+    return PlacementView(
+        gpus=(GpuInfo(0, "MTL", "MTL0", "Apple M3", 24 * _GIB, 20 * _GIB),),
+        roles=(RolePlacementView(WorkerRole.EMBED, "org/embed.gguf", (0,), None, 1),),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        skipped_not_installed=(SkippedRole(WorkerRole.CHAT, "org/Qwen3-4B.gguf"),),
+    )
+
+
+def test_show_renders_not_downloaded_note(monkeypatch: object) -> None:
+    """A role skipped for a missing model prints a 'not downloaded' line."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_skipped)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "chat" in result.stdout
+    assert "not downloaded" in result.stdout
+
+
+def test_show_json_includes_skipped_not_installed(monkeypatch: object) -> None:
+    """The canonical JSON surfaces skipped-not-installed roles for HTTP/MCP/CLI parity."""
+    monkeypatch.setattr(cli_placement, "get_placement", _view_with_skipped)
+    monkeypatch.setattr(cfg, "json_mode", True)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["skipped_not_installed"] == [{"role": "chat", "model": "org/Qwen3-4B.gguf"}]
+
+
 def test_show_json_mode_emits_valid_json(monkeypatch: object) -> None:
     """--json (global flag -> cfg.json_mode) makes placement emit machine-readable
     JSON instead of a Rich table, so scripts can consume it."""
@@ -132,6 +164,24 @@ def test_show_unplaceable_role(monkeypatch: object) -> None:
     result = runner.invoke(placement_app, ["show"])
     assert result.exit_code == 0
     assert "embed" in result.stdout
+
+
+def test_show_reports_co_tenant_roles(monkeypatch: object) -> None:
+    """Co-tenants are placed but never co-resident, so the card they name is not
+    over-committed; show says so instead of listing two roles on one GPU."""
+    view = PlacementView(
+        gpus=(GpuInfo(0, "CUDA", "CUDA0", "A100", 80 * _GIB, 72 * _GIB),),
+        roles=(),
+        unplaceable=(),
+        manual=False,
+        spec_json=None,
+        co_tenants=(WorkerRole.CHAT, WorkerRole.VISION),
+    )
+    monkeypatch.setattr(cli_placement, "get_placement", lambda: view)
+    result = runner.invoke(placement_app, ["show"])
+    assert result.exit_code == 0
+    assert "chat, vision" in result.stdout
+    assert "one loaded at a time" in result.stdout
 
 
 def test_preview_with_spec_file(tmp_path: object, monkeypatch: object) -> None:

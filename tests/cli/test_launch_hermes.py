@@ -48,7 +48,7 @@ def _stub_registry():
 def _healthy_and_warm(monkeypatch):
     monkeypatch.setattr("lilbee.cli.launchers.server.health_ok", lambda _port: True)
     monkeypatch.setattr("lilbee.cli.launchers.launcher.wait_for_chat_warm", lambda _port: True)
-    monkeypatch.setattr("lilbee.cli.launchers.hermes.served_chat_ctx", lambda _port: None)
+    monkeypatch.setattr("lilbee.cli.launchers.hermes.client_chat_ctx", lambda _port: None)
 
 
 @pytest.fixture(autouse=True)

@@ -46,6 +46,37 @@ def test_render_frame():
     assert b"bar" in result
 
 
+def test_render_frame_centres_every_row_by_the_same_margin():
+    from lilbee.runtime._splash_runner import render_frame
+
+    lines = render_frame(["line1", "line2"], "bar", pad=4).decode().splitlines()
+    assert lines[0] == "    line1"
+    assert lines[1] == "    line2"
+    assert lines[-1] == "      bar"  # margin plus the bar's own two-space indent
+
+
+def test_left_pad_matches_the_bootstrap_formula(monkeypatch):
+    import os
+
+    from lilbee.runtime import _splash_runner
+    from lilbee.runtime.bee_logo import LOGO_WIDTH
+
+    monkeypatch.setattr(os, "get_terminal_size", lambda fd=1: os.terminal_size((121, 40)))
+    assert _splash_runner.left_pad() == (121 - LOGO_WIDTH) // 2
+
+
+def test_left_pad_is_zero_when_the_terminal_size_is_unknown(monkeypatch):
+    import os
+
+    from lilbee.runtime import _splash_runner
+
+    def _raise(fd=1):
+        raise OSError("not a tty")
+
+    monkeypatch.setattr(os, "get_terminal_size", _raise)
+    assert _splash_runner.left_pad() == 0
+
+
 def test_move_up_and_clear():
     from lilbee.runtime._splash_runner import move_up_and_clear
 

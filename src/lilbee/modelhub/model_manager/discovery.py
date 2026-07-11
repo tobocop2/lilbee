@@ -9,6 +9,7 @@ from threading import Lock
 import httpx
 
 from lilbee.app.services import get_services
+from lilbee.catalog.formatting import agent_model_id
 from lilbee.catalog.query import (
     EMBEDDING_NAME_PATTERNS,
     RERANKER_NAME_PATTERNS,
@@ -253,7 +254,14 @@ class KnownModelCache:
             return self._refs
 
     def resolve(self, model: str) -> str | None:
-        """Resolve *model* to its canonical ref, or None if unknown."""
+        """Resolve *model* to its canonical ref, or None if unknown.
+
+        Accepts the canonical ref, an Ollama ``name:tag`` shorthand, and the clean
+        agent-facing id (:func:`agent_model_id`) an agent config pins in place of
+        the full GGUF path. The clean id resolves only when exactly one known ref
+        produces it, so two same-labelled quants stay unresolved rather than
+        routing to the wrong file.
+        """
         refs = self.refs()
         if model in refs:
             return model
@@ -261,6 +269,9 @@ class KnownModelCache:
             prefixed = OLLAMA.qualify(model)
             if prefixed in refs:
                 return prefixed
+        aliased = [ref for ref in refs if agent_model_id(ref) == model]
+        if len(aliased) == 1:
+            return aliased[0]
         return None
 
     def invalidate(self) -> None:

@@ -1,14 +1,15 @@
 """Put the CUDA 12 runtime wheels on the engine's library search path.
 
-Driver-only GPU images (common on RunPod) ship ``libcuda.so`` from the kernel
-driver but not the CUDA 12 runtime that llama-server links (``libcudart.so.12``,
-``libcublas.so.12``, ``libnvrtc.so.12``); without them llama-server exits before
-binding its port. Installing lilbee with the ``cuda12`` extra pulls the
-``nvidia-cuda-runtime-cu12`` / ``nvidia-cublas-cu12`` / ``nvidia-cuda-nvrtc-cu12``
-wheels, which carry those libraries under ``site-packages/nvidia``.
-:func:`cuda_runtime_env` adds their ``lib`` directories to the spawned server's
-``LD_LIBRARY_PATH`` so GPU ingest works without a system CUDA toolkit -- the path
-can't be a baked rpath because the wheels' location is only known at install time.
+Driver-only GPU images (common on RunPod) ship ``libcuda.so`` from the kernel driver
+but not the CUDA 12 runtime that llama-server links (``libcudart.so.12``,
+``libcublas.so.12``, ``libnvrtc.so.12``). The bundled engine now carries those beside
+the binary and resolves them through its baked ``$ORIGIN`` rpath, so this module is
+the fallback for an engine built elsewhere: installing lilbee with the ``cuda12``
+extra pulls the ``nvidia-cuda-runtime-cu12`` / ``nvidia-cublas-cu12`` /
+``nvidia-cuda-nvrtc-cu12`` wheels, which carry those libraries under
+``site-packages/nvidia``. :func:`cuda_runtime_env` adds their ``lib`` directories to
+the spawned server's ``LD_LIBRARY_PATH`` -- the path can't be a baked rpath because
+the wheels' location is only known at install time.
 """
 
 from __future__ import annotations

@@ -47,12 +47,40 @@ def announce_cold_start(role: object, model: str) -> Console | None:
 
 
 def announce_ready(err: Console | None, role: object) -> None:
-    """Print the matching "<role> engine ready." stderr line, if cold-start announced."""
+    """Print the matching "<role> engine ready." stderr line, if cold-start announced.
+
+    A token arriving is not evidence the chat model came up: in RAG mode a grounded
+    refusal streams without it. When warm-up recorded a load failure, that reason is
+    printed instead of a readiness line.
+    """
     from lilbee.providers.roles import WorkerRole
 
     if err is None or not isinstance(role, WorkerRole):
         return
+    failure = _chat_warm_error(role)
+    if failure is not None:
+        err.print(f"[{theme.ERROR}]{failure}[/{theme.ERROR}]")
+        return
     err.print(f"[{theme.MUTED}]{role.value} engine ready.[/{theme.MUTED}]")
+
+
+def _chat_warm_error(role: object) -> str | None:
+    """The chat warm-up's recorded failure, or None when it did not fail.
+
+    Read from the warm tracker rather than re-probing readiness: llama-swap can
+    report a freshly loaded model as not-yet-running, which would turn a healthy
+    engine into a spurious failure line.
+    """
+    from lilbee.app.services import get_services
+    from lilbee.providers.roles import WorkerRole
+    from lilbee.providers.warm_progress import WarmPhase
+
+    if role is not WorkerRole.CHAT:
+        return None
+    snapshot = get_services().provider.warm_progress()
+    if snapshot is None or snapshot.phase is not WarmPhase.ERROR:
+        return None
+    return snapshot.error or "The chat model did not finish loading."
 
 
 def render_status_result(status: StatusResult) -> Generator[RenderableType, None, None]:

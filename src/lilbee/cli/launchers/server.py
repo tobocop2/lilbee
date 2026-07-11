@@ -127,6 +127,65 @@ def served_chat_ctx(port: int) -> int | None:
     return ctx if isinstance(ctx, int) and ctx > 0 else None
 
 
+def planned_chat_ctx() -> int | None:
+    """The per-slot window the fleet will serve the configured chat model, or None.
+
+    Mirrors the fleet's own single-GPU chat sizing, so it answers before the
+    engine is up: the same ``cfg.num_ctx`` short-circuit, then the same
+    :func:`resolve_chat_ctx` against the same memory read the fleet's plan
+    snapshot holds (both scale total VRAM by ``cfg.gpu_memory_fraction``, so
+    neither moves with what is currently resident).
+
+    A tensor-split chat is sized by the fleet against per-device headroom
+    instead, so this can over-report there; it is only a fallback for a chat
+    engine that is not up yet, and the served window wins once it is. A
+    remote-served chat model has no local window to compute.
+    """
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.engine_params import resolve_chat_ctx, resolve_model_path
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+    from lilbee.providers.model_ref import parse_model_ref
+
+    ref = str(cfg.chat_model)
+    if not parse_model_ref(ref).is_local:
+        return None
+    if cfg.num_ctx is not None:
+        return cfg.num_ctx
+    try:
+        path = resolve_model_path(ref)
+        return resolve_chat_ctx(path, read_gguf_metadata(path))
+    except (ProviderError, OSError, ValueError):
+        # Sizing needs the model file and its GGUF header; an absent or unreadable
+        # one leaves the window unknown rather than failing the launch.
+        log.debug("planned_chat_ctx failed for %s", ref, exc_info=True)
+        return None
+
+
+def client_chat_ctx(port: int) -> int | None:
+    """The chat window to advertise to a launched client, warning when it is small.
+
+    The chat role builds lazily, so a launcher that hands off before the engine
+    is warm gets nothing from ``/api/health``; fall back to the window the fleet
+    plans to serve rather than leaving the client with no window at all. A window
+    below ``cfg.chat_n_ctx_target`` means the host could not back what was asked
+    for, which changes how much history an agent can keep, so say so.
+    """
+    ctx = served_chat_ctx(port)
+    if ctx is None:
+        ctx = planned_chat_ctx()
+    if ctx is not None and ctx < cfg.chat_n_ctx_target:
+        typer.secho(
+            f"Warning: the chat model is served with a {ctx:,}-token context, below the "
+            f"configured chat_n_ctx_target of {cfg.chat_n_ctx_target:,}. Either the model "
+            "was trained on a smaller window, or its weights leave too little of the "
+            "memory budget for the KV cache. A longer-context model, a smaller "
+            "quantization, or a higher gpu_memory_fraction raises it.",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+    return ctx
+
+
 def chat_warm_budget_s() -> float:
     """Warm wait scaled to the chat model's on-disk weights at the engine's cold-load rate."""
     try:

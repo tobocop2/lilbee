@@ -9,6 +9,7 @@ from typing import Any
 import typer
 from rich.console import Console
 
+from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.core.config import cfg, config_load_error
@@ -172,6 +173,10 @@ def _default(
     from lilbee.data.store import install_lancedb_thread_error_suppressor
 
     install_lancedb_thread_error_suppressor()
+
+    # A terminal close or `kill` otherwise leaves the engine fleet running and its
+    # VRAM pinned, because the default disposition skips the atexit teardown.
+    install_engine_lifecycle_hooks()
 
     cfg.json_mode = json_output
     # Typer binds options placed before the subcommand name to this callback;

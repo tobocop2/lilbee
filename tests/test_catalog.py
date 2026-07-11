@@ -2258,6 +2258,28 @@ class TestDisplayLabelForRef:
         assert display_label_for_ref("qwen3:0.6b") == "qwen3:0.6b"
 
 
+class TestAgentModelId:
+    def test_folds_spaces_to_hyphens_for_a_routable_token(self) -> None:
+        from lilbee.catalog import agent_model_id
+
+        ref = "Qwen/Qwen2.5-7B-Instruct-GGUF/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+        assert agent_model_id(ref) == "Qwen2.5-7B"
+
+    def test_subdir_quant_giant_ref_yields_clean_id(self) -> None:
+        from lilbee.catalog import agent_model_id
+
+        ref = (
+            "unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/"
+            "Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf"
+        )
+        assert agent_model_id(ref) == "Qwen3-235B-A22B"
+
+    def test_empty_ref_is_empty(self) -> None:
+        from lilbee.catalog import agent_model_id
+
+        assert agent_model_id("") == ""
+
+
 class TestQuantTier:
     def test_all_quant_types_mapped(self) -> None:
         for quant_name, expected_tier in QUANT_TIERS.items():

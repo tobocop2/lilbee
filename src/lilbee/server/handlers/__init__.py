@@ -97,8 +97,9 @@ def _chat_status(provider: LLMProvider) -> Literal["ready", "loading", "not_star
     """Classify the chat engine's readiness for /api/health.
 
     ``ready`` once the role serves; ``error`` when warm-up failed; ``loading``
-    while a warm is in flight; ``not_started`` when nothing is warming and the
-    role isn't up (no chat model planned, so the fleet won't come up on its own).
+    while a warm is in flight; ``not_started`` when nothing is warming and the role
+    isn't up (no chat model planned, or chat is swapped out for its co-tenant; the
+    next chat request loads it).
     """
     if provider.role_ready(WorkerRole.CHAT):
         return "ready"
@@ -159,17 +160,22 @@ async def gpu_stats_stream(
 
     Devices are resolved by the caller before the stream starts so a ProviderError
     surfaces as a 503 at route time, not mid-stream. Each tick only runs the light
-    ``nvidia-smi`` query. The client keeps the stream open while visible;
-    ``max_ticks`` bounds it for tests. A heartbeat is emitted every
-    ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
+    per-vendor utilization probe (nvidia-smi, amd-smi, xpu-smi, or ioreg). The
+    client keeps the stream open while visible; ``max_ticks`` bounds it for tests.
+    A heartbeat is emitted every ``cfg.sse_heartbeat_interval`` seconds of idle so
+    clients don't time out.
     """
-    from lilbee.providers.fleet.gpu_stats import probe_gpu_stats
+    from lilbee.cli.tui import messages as msg
+    from lilbee.providers.fleet.gpu_stats import intel_grant_binary, probe_gpu_stats
 
     last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
         stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
-        payload = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
+        payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
+        binary = intel_grant_binary(devices, stats)  # type: ignore[arg-type]
+        if binary:
+            payload["notice"] = msg.FLEET_INTEL_UTIL_GRANT.format(binary=binary)
         yield sse_event(SseEvent.GPU_STATS, payload)
         tick += 1
         if max_ticks is None or tick < max_ticks:
