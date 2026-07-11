@@ -50,6 +50,9 @@ class TestStreamResponseDispatch:
         screen._history_lock.__exit__ = MagicMock(return_value=False)
         screen._on_embedding_mismatch = MagicMock()  # type: ignore[method-assign]
         screen._finalize_stream = MagicMock()  # type: ignore[method-assign]
+        # The engine wait is its own unit (test_chat_startup_gating); here the
+        # engine is ready so the dispatch under test runs unconditionally.
+        screen._await_chat_engine = MagicMock(return_value=True)  # type: ignore[method-assign]
         return screen
 
     def test_mismatch_routes_to_adopt_prompt(self):
@@ -67,6 +70,22 @@ class TestStreamResponseDispatch:
             screen._do_stream_response("q", widget, None)
         screen._on_embedding_mismatch.assert_called_once()
         widget.append_content.assert_not_called()
+
+    def test_failed_engine_wait_skips_the_ask_and_still_finalizes(self):
+        screen = self._screen()
+        screen._await_chat_engine = MagicMock(return_value=False)  # type: ignore[method-assign]
+        widget = MagicMock()
+        services = MagicMock()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            screen._do_stream_response("q", widget, None)
+        services.searcher.ask_stream.assert_not_called()
+        screen._finalize_stream.assert_called_once()
 
     def test_other_error_shows_stream_error(self):
         screen = self._screen()

@@ -32,7 +32,6 @@ _PROXY_URL_TEMPLATE = "http://127.0.0.1:{port}"
 # Shared with the swap manager, whose orphan-server sweep matches this flag's
 # value in survivor cmdlines.
 PORT_FLAG = "--port"
-_TTL_KEEP = 0  # no idle timeout; a member leaves memory only when a sibling evicts it
 
 # llama-swap config keys.
 _KEY_HEALTH_TIMEOUT = "healthCheckTimeout"
@@ -50,7 +49,11 @@ _KEY_MEMBERS = "members"
 
 
 def build_swap_config(
-    launches: list[InstanceLaunch], member_ports: Mapping[str, int], *, swap: bool = False
+    launches: list[InstanceLaunch],
+    member_ports: Mapping[str, int],
+    *,
+    swap: bool = False,
+    ttl_seconds: int = 0,
 ) -> str:
     """Render a llama-swap config (JSON, which is valid YAML) for *launches*.
 
@@ -58,7 +61,8 @@ def build_swap_config(
     command is the llama-server argv plus the explicit port from *member_ports*;
     one group holds them behind this group's proxy endpoint. ``swap`` makes the
     members evict each other on load, so only one is resident at a time; the
-    default keeps them co-resident. Ports are allocated fresh per start (never
+    default keeps them co-resident. ``ttl_seconds`` is llama-swap's idle unload
+    timer per member; 0 keeps weights loaded forever. Ports are allocated fresh per start (never
     llama-swap's fixed ``startPort`` range) so a previous instance's lingering
     server can't collide with the new fleet's bind.
     """
@@ -68,7 +72,7 @@ def build_swap_config(
         entry: dict[str, object] = {
             _KEY_CMD: _command_line(launch.argv, port),
             _KEY_PROXY: _PROXY_URL_TEMPLATE.format(port=port),
-            _KEY_TTL: _TTL_KEEP,
+            _KEY_TTL: ttl_seconds,
         }
         if launch.env_overrides:
             entry[_KEY_ENV] = [f"{key}={value}" for key, value in launch.env_overrides.items()]

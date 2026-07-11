@@ -1,4 +1,4 @@
-"""Standalone splash animation process: zero lilbee imports, stdlib only.
+"""Standalone splash animation process: stdlib plus the shared wordmark.
 
 Launched as a subprocess by ``splash.start()``. Reads a pipe fd from argv
 and animates until the pipe signals EOF (parent closed its write end, or
@@ -14,14 +14,23 @@ import signal
 import sys
 import time
 
+from lilbee.runtime.bee_logo import (
+    AMBER_BRIGHT_XTERM,
+    AMBER_DIM_XTERM,
+    AMBER_MID_XTERM,
+    BEE_LINES,
+    LOGO_WIDTH,
+    xterm_fg,
+)
+
 HIDE_CURSOR = "\033[?25l"
 SHOW_CURSOR = "\033[?25h"
 CLEAR_LINE = "\033[2K"
 MOVE_UP = "\033[A"
 
-AMBER_BRIGHT = "\033[38;5;214m"
-AMBER_MID = "\033[38;5;172m"
-AMBER_DIM = "\033[38;5;94m"
+AMBER_BRIGHT = xterm_fg(AMBER_BRIGHT_XTERM)
+AMBER_MID = xterm_fg(AMBER_MID_XTERM)
+AMBER_DIM = xterm_fg(AMBER_DIM_XTERM)
 RESET = "\033[0m"
 
 FRAME_INTERVAL = 0.15
@@ -34,23 +43,6 @@ _BAR_FALLOFF_LIGHT = 2
 
 # Subprocess entry point expects exactly ``python -m ... <pipe_fd>`` (script name + 1 arg).
 _EXPECTED_ARGV_LEN = 2
-
-BEE_LINES = [
-    "                                                       ",
-    "@@@       @@@  @@@       @@@@@@@   @@@@@@@@  @@@@@@@@  ",
-    "@@@       @@@  @@@       @@@@@@@@  @@@@@@@@  @@@@@@@@  ",
-    "@@@       @@@  @@@       @@!  @@@  @@!       @@!       ",
-    "@!       !@!  !@!       !@   @!@  !@!       !@!       ",
-    "@!!       !!@  @!!       @!@!@!@   @!!!:!    @!!!:!    ",
-    "!!!       !!!  !!!       !!!@!!!!  !!!!!:    !!!!!:    ",
-    "!!:       !!:  !!:       !!:  !!!  !!:       !!:       ",
-    " :!:      :!:   :!:      :!:  !:!  :!:       :!:       ",
-    " :: ::::   ::   :: ::::   :: ::::   :: ::::   :: ::::  ",
-    ": :: : :  :    : :: : :  :: : ::   : :: ::   : :: ::   ",
-    "                                                       ",
-]
-
-LOGO_WIDTH = len(BEE_LINES[1])
 
 COLOR_SEQUENCE = [AMBER_BRIGHT, AMBER_MID, AMBER_DIM, AMBER_MID]
 
@@ -92,9 +84,25 @@ def build_knight_rider_frames() -> list[str]:
     return frames
 
 
-def render_frame(logo_lines: list[str], loading_bar: str) -> bytes:
+def left_pad() -> int:
+    """Columns needed to centre the wordmark, matching the C bootstrap's formula.
+
+    The bootstrap frame this animation repaints in place is centred with
+    ``(columns - LILBEE_LOGO_WIDTH) / 2``; diverging here would draw the two
+    stages at different offsets and break the one-continuous-logo illusion.
+    """
+    try:
+        columns = os.get_terminal_size(2).columns
+    except OSError:
+        return 0
+    return max((columns - LOGO_WIDTH) // 2, 0)
+
+
+def render_frame(logo_lines: list[str], loading_bar: str, pad: int = 0) -> bytes:
     """Build a single frame as raw bytes for os.write()."""
-    all_lines = [*logo_lines, "", f"  {loading_bar}"]
+    margin = " " * pad
+    all_lines = [margin + line for line in logo_lines]
+    all_lines += ["", f"{margin}  {loading_bar}"]
     return ("\n".join(all_lines) + "\n").encode()
 
 
@@ -165,6 +173,7 @@ def animation_loop(pipe_fd: int) -> None:
 
     logo_frames = build_logo_frames()
     knight_frames = build_knight_rider_frames()
+    pad = left_pad()
     frame_height = len(BEE_LINES) + 2
 
     got_signal = False
@@ -190,7 +199,7 @@ def animation_loop(pipe_fd: int) -> None:
         while not got_signal and not pipe_closed(pipe_fd):
             logo = logo_frames[frame_idx % len(logo_frames)]
             knight = knight_frames[knight_idx % len(knight_frames)]
-            rendered = render_frame(logo, knight)
+            rendered = render_frame(logo, knight, pad)
             os.write(fd, rendered)
 
             for _ in range(int(FRAME_INTERVAL / POLL_INTERVAL)):

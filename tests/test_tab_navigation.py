@@ -24,6 +24,15 @@ import pytest
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import ready_services as _ready_services
+
+
+@pytest.fixture(autouse=True)
+def _gate_releases_at_once():
+    """Bind a ready chat role so the startup gate hands over on mount."""
+    with _ready_services():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +73,7 @@ def _mock_services() -> Any:
 def _patch_chat_setup() -> Any:
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(
@@ -109,10 +118,15 @@ async def test_chat_tab_chain_includes_view_tabs() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
-        await pilot.pause(0.2)
+        await await_chat(app, pilot)
         view_tabs = app.screen.query_one(ViewTabs)
-        view_tabs.query_one("#view-tab-chat").focus()
-        await pilot.pause()
+        # Chat's auto-focus lands on the input around the handover; pin the
+        # walk's starting point or Tab becomes a literal character immediately.
+        for _ in range(20):
+            view_tabs.query_one("#view-tab-chat").focus()
+            await pilot.pause()
+            if app.focused is not None and app.focused.id == "view-tab-chat":
+                break
         chain = await _walk_tab_chain(app, pilot, max_presses=40)
         for view in ("view-tab-chat", "view-tab-catalog", "view-tab-settings"):
             assert view in chain, f"Tab walk missed {view}: {chain}"
@@ -128,6 +142,7 @@ async def test_chat_input_tab_inserts_literal_tab() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause(0.2)
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.focus()
@@ -139,10 +154,12 @@ async def test_chat_input_tab_inserts_literal_tab() -> None:
         assert app.focused is inp, "Focus moved away from chat input on Tab"
 
 
+@pytest.mark.timeout(120)
 async def test_settings_tab_chain_visits_group_tabs_widget() -> None:
     """Tab from SettingsScreen visits the group Tabs strip."""
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause(0.2)
@@ -160,6 +177,7 @@ async def test_settings_tab_rolls_over_to_next_pane() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause(0.2)
@@ -196,6 +214,7 @@ async def test_settings_tab_advances_within_pane() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause(0.2)
@@ -232,6 +251,7 @@ async def test_catalog_tab_chain_visits_search() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(160, 48)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Catalog")
         await pilot.pause(0.3)

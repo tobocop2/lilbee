@@ -273,11 +273,12 @@ def test_view_multi_replica_unions_devices():
 
 
 class _WaitProvider:
-    """Provider stub scripting role_ready / warm_progress across polls."""
+    """Provider stub scripting role_ready / warm_progress / warm_pending across polls."""
 
-    def __init__(self, ready_after: int, snapshots: list) -> None:
+    def __init__(self, ready_after: int, snapshots: list, *, pending: bool = False) -> None:
         self._ready_after = ready_after
         self._snapshots = snapshots
+        self._pending = pending
         self.polls = 0
 
     def role_ready(self, role: WorkerRole) -> bool:
@@ -287,6 +288,9 @@ class _WaitProvider:
     def warm_progress(self):
         idx = min(self.polls - 1, len(self._snapshots) - 1)
         return self._snapshots[idx] if self._snapshots else None
+
+    def warm_pending(self) -> bool:
+        return self._pending
 
 
 class _WaitServices:
@@ -324,6 +328,16 @@ def test_wait_chat_ready_stops_when_no_warm_in_flight(monkeypatch):
     assert app_placement.wait_chat_ready(timeout_s=5) is False
 
 
+def test_wait_chat_ready_holds_while_a_warm_is_pending(monkeypatch):
+    """A requested warm has no phase yet while the fleet spawns; hold anyway."""
+    provider = _WaitProvider(ready_after=3, snapshots=[], pending=True)
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.0)
+    monkeypatch.setattr(app_placement, "_CHAT_READY_GRACE_S", 0.0)
+    # A zero grace would give up on the first poll if pending were ignored.
+    assert app_placement.wait_chat_ready(timeout_s=5) is True
+
+
 def test_wait_chat_ready_stops_on_warm_error(monkeypatch):
     from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 
@@ -348,3 +362,64 @@ def test_wait_chat_ready_times_out_while_warm_never_finishes(monkeypatch):
     monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
     monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.005)
     assert app_placement.wait_chat_ready(timeout_s=0.02) is False
+
+
+def test_wait_chat_ready_reports_progress_to_the_caller(monkeypatch):
+    """Each actively-loading snapshot reaches on_progress, so a caller can render it."""
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    loading = WarmProgress(phase=WarmPhase.LOADING_ENGINE)
+    provider = _WaitProvider(ready_after=2, snapshots=[loading, loading])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.0)
+    seen: list = []
+    assert app_placement.wait_chat_ready(timeout_s=5, on_progress=seen.append) is True
+    assert seen == [loading, loading]
+
+
+def test_wait_chat_ready_aborts_when_asked(monkeypatch):
+    """should_abort ends the wait at once, before any grace or timeout."""
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    loading = WarmProgress(phase=WarmPhase.LOADING_ENGINE)
+    provider = _WaitProvider(ready_after=10_000, snapshots=[loading])
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    monkeypatch.setattr(app_placement, "_CHAT_READY_POLL_S", 0.0)
+    assert app_placement.wait_chat_ready(timeout_s=5, should_abort=lambda: True) is False
+    assert provider.polls == 1  # one readiness check, then straight out
+
+
+def test_chat_warm_error_reports_the_failure(monkeypatch):
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    failed = WarmProgress(phase=WarmPhase.ERROR, error="boom")
+    provider = _WaitProvider(ready_after=10_000, snapshots=[failed])
+    provider.polls = 1  # warm_progress indexes off the poll count
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    assert app_placement.chat_warm_error() == "boom"
+
+
+def test_chat_warm_error_none_without_a_failure(monkeypatch):
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    loading = WarmProgress(phase=WarmPhase.LOADING_ENGINE)
+    provider = _WaitProvider(ready_after=10_000, snapshots=[loading])
+    provider.polls = 1
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    assert app_placement.chat_warm_error() is None
+
+
+def test_chat_warm_error_none_without_services(monkeypatch):
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    assert app_placement.chat_warm_error() is None
+
+
+def test_chat_warm_error_empty_string_when_error_text_is_missing(monkeypatch):
+    """An ERROR phase with no message still reads as a failure, not as None."""
+    from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+    failed = WarmProgress(phase=WarmPhase.ERROR)
+    provider = _WaitProvider(ready_after=10_000, snapshots=[failed])
+    provider.polls = 1
+    monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
+    assert app_placement.chat_warm_error() == ""

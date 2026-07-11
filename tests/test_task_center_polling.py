@@ -12,15 +12,15 @@ from unittest.mock import patch
 
 import pytest
 
-from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.task_center import TaskCenter
 from lilbee.cli.tui.task_queue import TaskType
 from lilbee.cli.tui.widgets.task_row import TaskRow
+from tests._lilbee_app_test_host import LilbeeAppHost
 
 
 @pytest.mark.asyncio
 async def test_poll_mounts_new_row_for_enqueued_task() -> None:
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -40,7 +40,7 @@ async def test_poll_mounts_new_row_for_enqueued_task() -> None:
 
 @pytest.mark.asyncio
 async def test_poll_updates_existing_row() -> None:
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -64,7 +64,7 @@ async def test_poll_updates_existing_row() -> None:
 
 @pytest.mark.asyncio
 async def test_poll_removes_rows_for_removed_tasks() -> None:
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -87,7 +87,7 @@ async def test_poll_removes_rows_for_removed_tasks() -> None:
 
 @pytest.mark.asyncio
 async def test_poll_updates_counts_strip() -> None:
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -112,7 +112,7 @@ async def test_poll_updates_counts_strip() -> None:
 @pytest.mark.asyncio
 async def test_poll_counts_strip_has_no_spinner_when_idle() -> None:
     """bb-18y3: spinner only shows while tasks are active, not when idle."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -130,7 +130,7 @@ async def test_poll_counts_strip_has_no_spinner_when_idle() -> None:
 @pytest.mark.asyncio
 async def test_action_cancel_hits_active_when_no_focus() -> None:
     """``c`` with no row focused cancels the first active task."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -148,7 +148,7 @@ async def test_action_cancel_hits_active_when_no_focus() -> None:
 @pytest.mark.asyncio
 async def test_clear_history_action_drops_finished_rows() -> None:
     """Shift+C clears DONE/FAILED/CANCELLED rows and leaves active ones alone."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -177,7 +177,7 @@ async def test_empty_state_visibility_follows_queue() -> None:
     """
     from textual.containers import VerticalScroll
 
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -204,7 +204,7 @@ async def test_empty_state_visibility_follows_queue() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_action_is_safe_on_empty_queue() -> None:
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -216,7 +216,7 @@ async def test_refresh_action_is_safe_on_empty_queue() -> None:
 
 @pytest.mark.asyncio
 async def test_cursor_actions_move_focus() -> None:
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -230,25 +230,38 @@ async def test_cursor_actions_move_focus() -> None:
 
 @pytest.mark.asyncio
 async def test_go_back_switches_to_chat_on_lilbee_app() -> None:
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.push_screen(TaskCenter())
-        await pilot.pause()
-        screen = app.screen
-        assert isinstance(screen, TaskCenter)
-        screen.action_go_back()
-        for _ in range(5):
+    """go-back returns to chat, so this one needs the real app with a chat screen.
+
+    ready_services + needs_setup=False make the startup gate hand over to chat
+    deterministically, without the setup wizard racing the pushed TaskCenter.
+    """
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from tests._lilbee_app_test_host import await_chat, ready_services
+
+    with (
+        ready_services(),
+        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
+    ):
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            app.push_screen(TaskCenter())
             await pilot.pause()
-            if not isinstance(app.screen, TaskCenter):
-                break
-        assert not isinstance(app.screen, TaskCenter)
+            screen = app.screen
+            assert isinstance(screen, TaskCenter)
+            screen.action_go_back()
+            for _ in range(5):
+                await pilot.pause()
+                if isinstance(app.screen, ChatScreen):
+                    break
+            assert isinstance(app.screen, ChatScreen)
 
 
 @pytest.mark.asyncio
 async def test_action_cancel_task_uses_focused_task_row() -> None:
     """``c`` with a TaskRow focused cancels that specific task."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -274,7 +287,7 @@ async def test_action_cancel_task_uses_focused_task_row() -> None:
 async def test_initial_focus_lands_on_first_active_row() -> None:
     """entering Task Center focuses the first active/queued row,
     not whatever DONE row happens to be at position 0."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         done_id = app.task_bar.queue.enqueue(lambda: None, "old", TaskType.SYNC.value)
@@ -303,7 +316,7 @@ async def test_initial_focus_lands_on_first_active_row() -> None:
 async def test_initial_focus_prefers_queued_when_no_active() -> None:
     """if the only live row is QUEUED, focus lands there instead
     of on a DONE history row."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         done_id = app.task_bar.queue.enqueue(lambda: None, "old", TaskType.SYNC.value)
@@ -327,7 +340,7 @@ async def test_initial_focus_prefers_queued_when_no_active() -> None:
 async def test_initial_focus_noop_when_no_tasks() -> None:
     """with an empty queue there is no row to focus -- the
     on_mount focus step must not raise."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())
@@ -343,7 +356,7 @@ async def test_initial_focus_falls_back_when_only_history_present() -> None:
     """no active/queued work means _focus_initial_row is a no-op
     and AUTO_FOCUS's row-1 landing (a history row) still holds. The
     cancel action is a no-op on that focused terminal row."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         done_id = app.task_bar.queue.enqueue(lambda: None, "old", TaskType.SYNC.value)
@@ -369,7 +382,7 @@ async def test_initial_focus_falls_back_when_only_history_present() -> None:
 @pytest.mark.asyncio
 async def test_poll_swallows_row_remove_exception() -> None:
     """If a row's ``remove`` raises during reconciliation, the poll survives."""
-    app = LilbeeApp()
+    app = LilbeeAppHost()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app.push_screen(TaskCenter())

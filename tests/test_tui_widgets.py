@@ -24,7 +24,15 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
+from tests._lilbee_app_test_host import ready_services as _ready_services
+
+
+@pytest.fixture(autouse=True)
+def _gate_releases_at_once():
+    """Bind a ready chat role so the startup gate hands over on mount."""
+    with _ready_services():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -106,6 +114,23 @@ class TestAssistantMessageAsync:
             assert am._thinking_header is not None
             assert isinstance(am._thinking_header, ThinkingHeader)
             assert am._thinking_header.is_mounted
+
+    async def test_thinking_status_renders_beside_the_scanner(self) -> None:
+        """set_thinking_status reaches the header and lands in the next frame."""
+        from lilbee.cli.tui.widgets.thinking_header import _frame_content
+
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.set_thinking_status("Loading engine")
+            header = am._thinking_header
+            assert header is not None
+            header._tick()
+            assert "Loading engine" in str(_frame_content(header._frame, header._detail))
+            # A dismissed header makes the setter a no-op, not a crash.
+            am._dismiss_thinking_header()
+            am.set_thinking_status("gone")
 
     async def test_first_reasoning_token_mounts_streaming_collapsible(self) -> None:
         """The Collapsible appears only when the first reasoning token arrives,
@@ -1346,6 +1371,28 @@ class TestScopeChip:
             chip = app.query_one(ScopeChip)
             assert "-hidden" in chip.classes
 
+    async def test_mount_does_not_query_pills_before_they_exist(self) -> None:
+        """Regression: on_mount ran _refresh, which queries children that may not be mounted.
+
+        A slow runner mounted the chip before its pills, and the query raised
+        NoMatches. The refresh is deferred a frame instead.
+        """
+        import inspect
+
+        from lilbee.cli.tui.widgets.scope_chip import ScopeChip
+
+        source = inspect.getsource(ScopeChip.on_mount)
+        assert "call_after_refresh(self._refresh)" in source
+        assert "self._refresh()" not in source
+
+        cfg.chat_mode = "search"
+        cfg.wiki = True
+        app = _ScopeChipApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chip = app.query_one(ScopeChip)
+            assert len(chip.query(".scope-pill")) == 3
+
     async def test_scope_property_defaults_to_both(self) -> None:
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
         from lilbee.data.store import SearchScope
@@ -1369,6 +1416,12 @@ class TestScopeChip:
             await pilot.pause()
             chip = app.query_one(ScopeChip)
             both = chip.query_one("#scope-pill-both", Static)
+            # The initial paint is deferred a frame (on_mount cannot query the
+            # pills it composes); give the scheduled refresh time to land.
+            for _ in range(20):
+                if "-active" in both.classes:
+                    break
+                await pilot.pause()
             wiki = chip.query_one("#scope-pill-wiki", Static)
             raw = chip.query_one("#scope-pill-raw", Static)
             assert "-active" in both.classes
@@ -3546,6 +3599,7 @@ class TestViewTabsWikiVisibility:
         cfg.wiki = True
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
             assert wiki_tab.display is True
@@ -3573,6 +3627,7 @@ class TestViewTabsWikiVisibility:
         cfg.wiki = False
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             wiki_tab = app.screen.query_one("#view-tab-wiki", ViewTab)
             wiki_sep = app.screen.query_one("#view-tab-sep-wiki")
@@ -3714,6 +3769,7 @@ class TestViewTabs:
         app = LilbeeApp()
         switch_calls: list[str] = []
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             tabs = list(app.screen.query(ViewTab))
             assert len(tabs) >= 2
@@ -3750,6 +3806,7 @@ class LilbeeAppHostSettingWriter:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with (
                 mock.patch("lilbee.app.settings.persistent_settings.update_values") as mock_set,
@@ -3768,6 +3825,7 @@ class LilbeeAppHostSettingWriter:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with mock.patch.object(app, "set_setting") as mock_set_setting:
                 apply_setting(app, "chat_mode", "chat")
@@ -3784,6 +3842,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
@@ -3800,6 +3859,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
@@ -3817,6 +3877,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
@@ -3839,6 +3900,7 @@ class LilbeeAppHostViewTabs:
 
         app = LilbeeApp()
         async with app.run_test() as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             while not isinstance(app.screen, ChatScreen):
                 app.pop_screen()
@@ -6742,3 +6804,38 @@ class TestPathExists:
 
         with mock.patch.object(autocomplete, "Path", side_effect=OSError("boom")):
             assert autocomplete._path_exists("~/whatever") is False
+
+
+class TestModelBarScanRaces:
+    """A scan worker can land while the bar or a row is still composing."""
+
+    def test_populate_skips_rows_whose_picker_is_not_mounted(self) -> None:
+        from unittest import mock
+
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar, ModelOption
+
+        bar = ModelBar.__new__(ModelBar)
+        bar._options_cache = {}
+        row = mock.MagicMock()
+        row.scope = "chat"
+        row.query_one.side_effect = NoMatches("not composed")
+        with (
+            mock.patch.object(ModelBar, "query", return_value=[row]),
+            mock.patch.object(ModelBar, "_refresh_cloud_warning") as refresh,
+        ):
+            bar._populate({"chat": [ModelOption(label="m", ref="a/b/c.gguf")]})
+        assert bar._options_cache == {}  # nothing cached; the next scan retries
+        refresh.assert_called_once()
+
+    def test_cloud_warning_refresh_survives_an_unmounted_bar(self) -> None:
+        from unittest import mock
+
+        from textual.css.query import NoMatches
+
+        from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+        bar = ModelBar.__new__(ModelBar)
+        with mock.patch.object(ModelBar, "query_one", side_effect=NoMatches("no warning row")):
+            bar._refresh_cloud_warning()  # must not raise
