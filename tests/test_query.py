@@ -1994,6 +1994,50 @@ class TestAskRawWithReranker:
             cfg.reranker_model = old
 
 
+class TestRerankerPoolDepth:
+    def test_reranker_configured_retrieves_candidate_depth(self, mock_svc):
+        """With a cross-encoder re-scoring the pool, retrieval must fetch
+        rerank_candidates deep so the reranker sees its configured count."""
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.reranker.rerank.return_value = [_make_result()]
+        old = cfg.reranker_model
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("harbor light logistics")
+        finally:
+            cfg.reranker_model = old
+            cfg.query_expansion_count = 3
+        assert mock_svc.store.search.call_args[1]["top_k"] == cfg.rerank_candidates
+
+    def test_no_reranker_retrieves_exactly_top_k(self, mock_svc):
+        """Without a reranker the fused order is final; the pool stays at
+        top_k so deep rank fusion cannot bury single-arm certainty."""
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context("harbor light logistics")
+        finally:
+            cfg.query_expansion_count = 3
+        assert mock_svc.store.search.call_args[1]["top_k"] == cfg.top_k
+
+    def test_explicit_top_k_above_candidates_wins(self, mock_svc):
+        """A caller asking for more rows than rerank_candidates keeps them."""
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.reranker.rerank.return_value = [_make_result()]
+        old = cfg.reranker_model
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF/bge-Q4_K_M.gguf"
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.build_rag_context(
+                "harbor light logistics", top_k=cfg.rerank_candidates + 40
+            )
+        finally:
+            cfg.reranker_model = old
+            cfg.query_expansion_count = 3
+        assert mock_svc.store.search.call_args[1]["top_k"] == cfg.rerank_candidates + 40
+
+
 class TestAskStreamWithReranker:
     def test_reranker_called_when_configured(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]

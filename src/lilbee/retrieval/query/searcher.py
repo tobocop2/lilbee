@@ -681,7 +681,15 @@ class Searcher:
             # trims to the context window, keeping the document's head.
             results = known_item
         else:
-            results = self.search(retrieval_query, top_k=top_k, chunk_type=chunk_type)
+            retrieve_k = top_k or self._config.top_k
+            if self._config.reranker_model:
+                # A cross-encoder re-scores the pool, so fused order is only
+                # candidate generation here: retrieve deep enough that the
+                # reranker actually sees its configured candidate count.
+                # Without a reranker the fused order is final and stays at
+                # top_k, since deep rank-fused pools bury single-arm certainty.
+                retrieve_k = max(retrieve_k, self._config.rerank_candidates)
+            results = self.search(retrieval_query, top_k=retrieve_k, chunk_type=chunk_type)
             results = filter_results(
                 results, self._config.max_distance, self._config.min_relevance_score
             )
