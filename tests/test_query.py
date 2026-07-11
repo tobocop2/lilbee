@@ -1538,6 +1538,54 @@ class TestKnownItemRoute:
     def _source(self, filename):
         return {"filename": filename, "file_hash": "h", "ingested_at": "", "chunk_count": 2}
 
+    def test_bare_search_routes_named_document(self, mock_svc):
+        """The route covers every retrieval surface: bare search() (HTTP
+        /api/search, MCP) resolves a document-naming query to that document
+        instead of similarity neighbors of its wording."""
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk="second", chunk_index=1),
+            _make_result(source="survey_report.pdf", chunk="first", chunk_index=0),
+        ]
+        results = get_services().searcher.search("summarize survey_report.pdf")
+        assert [r.chunk for r in results] == ["first", "second"]
+        assert all(r.score == 1.0 for r in results)
+        mock_svc.store.search.assert_not_called()
+        mock_svc.embedder.embed_query.assert_not_called()
+
+    def test_bare_search_route_caps_at_return_budget(self, mock_svc):
+        """A huge named document fills the standard search return budget
+        (top_k*2) with its head, not the whole document."""
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk=f"c{i}", chunk_index=i)
+            for i in range(100)
+        ]
+        results = get_services().searcher.search("summarize survey_report.pdf", top_k=5)
+        assert len(results) == 10
+        assert [r.chunk_index for r in results] == list(range(10))
+
+    def test_bare_search_skips_route_when_intent_routing_off(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.search.return_value = [_make_result()]
+        cfg.intent_routing = False
+        cfg.query_expansion_count = 0
+        try:
+            get_services().searcher.search("summarize survey_report.pdf")
+        finally:
+            cfg.intent_routing = True
+            cfg.query_expansion_count = 3
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+        mock_svc.store.search.assert_called_once()
+
+    def test_structured_mode_prefix_bypasses_route(self, mock_svc):
+        """An explicit mode: prefix is the user forcing a strategy; the
+        known-item route must not override it."""
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.bm25_probe.return_value = []
+        get_services().searcher.search("term: survey_report.pdf")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
     def test_named_document_bypasses_similarity_search(self, mock_svc):
         """A question naming one resolvable document gets that document's
         chunks in document order, not a similarity ranking."""

@@ -544,6 +544,15 @@ class Searcher:
         if mode is not None:
             structured = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
             return self._apply_temporal_filter(structured, clean_query)
+        if self._config.intent_routing:
+            # A query naming one document wants that document on every
+            # retrieval surface, not just ask: without this, bare search
+            # (HTTP /api/search, MCP) returns similarity neighbors of the
+            # question's wording. The document's head, in document order,
+            # fills the standard return budget.
+            known_item = self._known_item_results(question)
+            if known_item:
+                return known_item[: top_k * 2]
         query_vec = self._embedder.embed_query(question)
         results = self._store.search(
             query_vec,
