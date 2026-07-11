@@ -45,7 +45,7 @@
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
 </p>
 
-A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line.
+A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line. It is local RAG, done for you: the retrieval and the model both run on your own machine.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
@@ -60,8 +60,6 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 > lilbee is in **active beta** development. Every release on PyPI is a pre-release; you must use `--pre` (or uv's `--prerelease=allow`) when installing. Interfaces, command names, and on-disk formats may shift between betas. Feedback, bug reports, and issues are very welcome; that's the whole point of the beta.
 >
 > Latest pre-release (always): [lilbee on PyPI →](https://pypi.org/project/lilbee/)
->
-> The multi-GPU and agent-integration features highlighted in this README are brand new: they live on `main` only for now, and they'll land in a formal release once they've been vetted.
 
 ---
 
@@ -157,48 +155,78 @@ launch after a reboot is always a cold one.
 - **Splits it into pieces that stand on their own.** [Prose and code are chunked differently](#documents-code-and-scanned-images), so each piece keeps its meaning instead of getting cut mid-thought. A search engine is only as good as the chunks underneath it, and this is where most of the quality lives.
 - **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It ranks every result by how well it answers you, so the best match comes back first. 50+ knobs to [tune from the Settings screen](docs/usage.md#settings-screen) or hand to your agent, with sane defaults if you'd rather not.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
+- **A model too big for one card runs across all of them.** lilbee sizes each role with gguf-parser and tensor-splits your chat model across the fewest GPUs that fit, placing the embedder, reranker, and vision models alongside it behind a load-balancing router. It happens automatically, or you can pin each role to the cards you choose. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
 - **Already on Ollama or LM Studio? Keep them.** Managing models for you is the default, but lilbee also works with both, so you never have to switch model managers. Their models show up in the same catalog and role pickers, alongside lilbee's own.
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up.
-- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, terminal UI, Python, and llama.cpp) in 250-365 MB, or 600 MB+ with CUDA. No Docker, no vector database, no model server, nothing to keep running; it loads on demand. Comparable desktop AI apps (often Electron) ship hundreds of MB to several GB and do less.
+- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, terminal UI, Python, and llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA. No Docker, no vector database, no model server, nothing to keep running; it loads on demand. Comparable desktop AI apps (often Electron) ship hundreds of MB to several GB and do less.
 - **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code, with citations, instead of guessing. It can even adjust its own search as it works.
 
 ## Why lilbee
 
 A small local model is fun, but limited on its own. Give it properly processed documents and a search engine over them, and it becomes genuinely powerful. Without those, it never gets past novelty.
 
-lilbee does all of it in one install: it runs the models, processes your [documents](#built-on), crawls the web pages you point it at, and searches the lot with a real engine. Use it in the terminal, or connect it to your coding agent so it answers from your files with citations instead of guessing.
+lilbee does all of it in one install: it runs the models, processes your [documents](#built-on), crawls the web pages you point it at, and searches the lot with a real engine. The same engine works two ways:
 
-> **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets and no provider to depend on; the cloud's there only when you want it. The same engine works two ways. It's an [Encarta 99](https://en.wikipedia.org/wiki/Encarta) you build over your files and saved web pages, that you read and ask questions of. And it's a reference layer for code: point it at your project, dependencies, and API docs, and your coding agent answers from what's there instead of guessing function names. Read it yourself, or have your agent read it for you.
+- **An [Encarta 99](https://en.wikipedia.org/wiki/Encarta) over your own files.** Build a library from your documents and saved web pages, then read it and ask questions of it in the terminal.
+- **A reference layer for code.** Point it at your project, dependencies, and API docs, and your coding agent answers from what's actually there, with file:line citations, instead of guessing function names.
+
+> **The long-term goal:** make local AI genuinely useful on hardware you already own, with no token budgets and no provider to depend on; the cloud's there only when you want it.
 
 ## How lilbee compares
 
-lilbee is built for consumer hardware and for people who don't want to babysit infrastructure. One install gives you a model manager, a search engine over your files, a web crawler, and an MCP server for coding agents (with native [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) support), all in a single executable. The goal is to make local AI something anyone can use to get the most out of the hardware they already own, not a setup reserved for people who enjoy wiring tools together.
+lilbee is built for consumer hardware and for people who don't want to babysit infrastructure. It isn't another model server you point an app at; it's a local search engine with the model runner built in. One install gives you the whole stack in a single executable:
 
-It isn't another model server you point an app at. It's a local search engine with the model runner built in, so it sits between two worlds: the desktop runners that get a model chatting on your machine, and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across every GPU in the machine, from one small file.
+- **A search engine over your files**, with answers that cite the source line, not just a model to chat with.
+- **A managed fleet**, chat, embedding, vision, and reranking, spread across every GPU in the machine behind a load-balancing router, not one model loaded at a time.
+- **Everything bundled**: model manager, search engine, web crawler, MCP server for coding agents (native [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent)), HTTP server, TUI, and Python, in one file.
+
+It sits between two worlds: the desktop runners that get a model chatting on your machine ([Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai)), and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across every GPU in the machine, from one small file.
 
 <details>
-<summary><b>Full comparison table</b></summary>
+<summary><b>Full comparison table: lilbee vs Ollama, LM Studio, and vLLM. Click to expand.</b></summary>
+
+### Full comparison table
 
 | | lilbee | [LM Studio](https://lmstudio.ai/) | [Ollama](https://ollama.com/) | [vLLM](https://github.com/vllm-project/vllm) |
 |---|---|---|---|---|
-| **Primary focus** | search engine over your files | desktop app to run and chat with models | local model runner with a growing ecosystem | high-throughput GPU serving |
+| **Primary focus** | local search, chat, and serving across your GPUs | desktop app to run and chat with models | local model runner with a growing ecosystem | high-throughput GPU serving |
 | Runs local models | ✓ | ✓ | ✓ | ✓ |
-| Search your own files, with citations | ✓ full RAG pipeline | per-session doc attachment (RAG, no citations) | — | — |
-| Chat, embedding, vision, rerank as one managed fleet | ✓ | — | — | — |
-| Multi-GPU model placement | ✓ VRAM-aware tensor-split | ✓ GPU selection + tensor parallelism (CUDA) | ✓ auto layer-split | ✓ tensor + pipeline parallel |
-| Scales the whole stack, not just one model | ✓ per-GPU replicas + load-balancing router | — | — | one model per server |
-| Built for many-user throughput at scale | single-user focus | — | limited | ✓ this is its job |
-| Web crawler built in | ✓ | — | — | — |
-| Long-term memory (opt-in) | ✓ | — | — | — |
-| Single-file footprint, GPU build (excludes models) | ✓ ~675 MB, whole stack | desktop app + llama.cpp/MLX runtimes | ~1.3 GB, runner only | multi-GB Python + CUDA stack |
-| Interfaces | TUI, CLI, MCP, REST, Python, Obsidian GUI | desktop GUI, lms CLI, Python + TS SDKs, REST API, MCP client | desktop GUI, CLI, REST API, Python/JS libs | API server |
-| Use your existing Ollama / LM Studio / cloud as a backend | ✓ | — | — | — |
+| Search your own files, with citations | ✓ [full RAG pipeline](docs/architecture.md#search-pipeline), inline per-line citations | per-session doc attachment ([RAG, document-level citation](https://lmstudio.ai/docs/app/basics/rag)) | — | — |
+| Chat, embedding, vision, rerank as one managed fleet | ✓ [all four, coordinated](docs/architecture.md#local-inference-engine) | chat, embed, vision (no rerank), [loaded individually](https://lmstudio.ai/docs/developer/core/server) | chat, embed, vision (no rerank), [loaded individually](https://docs.ollama.com/faq) | each supported, but [one model per server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/) |
+| Multi-GPU model placement | ✓ [VRAM-aware tensor-split](docs/architecture.md#local-inference-engine) | ✓ GPU selection + [tensor parallelism (CUDA)](https://lmstudio.ai/changelog/lmstudio-v0.4.15) | ✓ [auto multi-GPU offload](https://docs.ollama.com/faq) | ✓ [tensor + pipeline parallel](https://docs.vllm.ai/en/latest/serving/parallelism_scaling.html) |
+| Scales the whole stack, not just one model | ✓ per-GPU replicas + [load-balancing router](docs/architecture.md#local-inference-engine) | — | — | one model per server |
+| Built for many-user throughput at scale | ✓ [a data-parallel replica per GPU, requests load-balanced](docs/architecture.md#local-inference-engine) | — | [limited](https://docs.ollama.com/faq) | ✓ [this is its job](https://github.com/vllm-project/vllm) |
+| Web crawler built in | ✓ [built in](#offline-copies-of-websites) | — | — | — |
+| Long-term memory (opt-in) | ✓ [opt-in](docs/usage.md#memory) | — | — | — |
+| Interfaces | [TUI, CLI, MCP, REST, Python](docs/architecture.md#interfaces), Obsidian GUI | [desktop GUI, lms CLI, Python + TS SDKs, REST API, MCP client](https://lmstudio.ai/docs) | [desktop GUI, CLI, REST API, Python/JS libs](https://docs.ollama.com/) | [API server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/) |
+| Use your existing Ollama / LM Studio / cloud as a backend | ✓ [how](#already-running-ollama-or-lm-studio-keep-them) | — | — | — |
 
 </details>
 
-Ollama and LM Studio are great at running a model and chatting with it; vLLM is what you reach for to serve one model to many users at maximum throughput. lilbee is the only one of the four built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router. On a CUDA box that entire stack is a single ~675 MB binary, smaller than Ollama's ~1.3 GB runner-only build and a fraction of a vLLM and PyTorch environment. Already on Ollama or LM Studio? lilbee runs on top of them. Prefer a GUI to the terminal? The [Obsidian plugin](https://obsidian.lilbee.sh/) maps lilbee's model manager and search to a visual interface inside your vault.
+Of the four, lilbee is the only one built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router.
+
+<details>
+<summary><b>Install size by platform: one file that undercuts the others while doing more. Click to expand.</b></summary>
+
+### Install size (single-file download, models excluded)
+
+Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's own release artifacts, linked.
+
+| | macOS | Windows | Linux | What you get |
+|---|---|---|---|---|
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 286 MB | 303 MB | 422 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 633 MB | 1.20 GB | the same whole stack, with the faster CUDA runtime |
+| [Ollama](https://github.com/ollama/ollama/releases) | 164 MB | 1.43 GB (CUDA bundled) | 1.44 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
+| [LM Studio](https://lmstudio.ai/download) | 569 MB | 617 MB | 1.10 GB | a desktop app (Electron) |
+| [vLLM](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) | n/a | n/a | multi-GB | a Python + CUDA serving engine |
+
+Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.
+
+</details>
+
+Already on Ollama or LM Studio? lilbee runs on top of them. Prefer a GUI to the terminal? The [Obsidian plugin](https://obsidian.lilbee.sh/) maps lilbee's model manager and search to a visual interface inside your vault.
 
 ## What you can do with it
 
@@ -214,11 +242,17 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 If you've already got an MCP-aware coding agent running, it can do the setup: browse the catalog, pull picks, assign them to the embedding / reranker / vision roles, and tune retrieval. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs are obvious to them. See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the workflow and example prompts.
 
-### Coding agents: opencode and hermes
+### Launch your coding agent on local models
 
-lilbee launches straight into [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) with your local fleet wired in, so a coding agent runs entirely on your machine. It calls lilbee's tools to search your library, swap models, and tune retrieval, and answers from your own files with file:line citations. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) lists the verified models and how the QA harness measures them.
+`lilbee launch opencode` and `lilbee launch hermes` set up lilbee's local models in your agent in one command. lilbee registers itself as a provider and an MCP server in the agent's own config, leaves your existing setup intact, warms a model, and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
 
-![opencode running a local model against lilbee's tools](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.gif)
+These reels show each agent, launched on a local model, doing real work on lilbee's own source. opencode adds a `lilbee launch status` subcommand, runs it, and writes a test that passes; hermes does the same with `lilbee launch list`.
+
+![opencode, launched on a local lilbee model, adds a launch-status subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.gif)
+
+![hermes, launched on a local lilbee model, adds a launch-list subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
+
+It tunes itself, too. Give a small local model a thin first result and tell it to widen lilbee's search, and the second pass returns full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
 
 ![hermes running a local model against lilbee's tools](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
 
@@ -264,11 +298,11 @@ Chat, embedding, vision, and reranking models are installed and switched from in
 
 > **Watch it:** [Ollama as the model manager](https://lilbee.sh/tutorial/#ollama) and [LM Studio as the model manager](https://lilbee.sh/tutorial/#lm-studio). Point lilbee at a running manager, index a PDF on camera, and get a cited answer back.
 
-**lilbee works with [Ollama](https://ollama.com/) and [LM Studio](https://lmstudio.ai/).** Finding and running models for you is the default and the simplest path: lilbee pulls them, runs them on Metal / Vulkan / CUDA, and you never stand up a server. But you don't have to adopt a new model manager to use lilbee.
+**lilbee works with [Ollama](https://ollama.com/) and [LM Studio](https://lmstudio.ai/).** Finding and running models for you is the default and simplest path (lilbee pulls them and runs them on Metal / Vulkan / CUDA, no server to stand up), but you don't have to adopt a new model manager to use lilbee.
 
-If your models already live in Ollama or LM Studio, point lilbee at the running endpoint and they appear in the same catalog and role pickers (chat, embedding, vision, rerank), labeled by where they run, alongside lilbee's own and any cloud models. They're read-only: lilbee lists and runs them but never pulls or deletes them, so their lifecycle stays in the app you already use. Mix freely.
-
-On a `pip` or `uv` install, talking to Ollama or LM Studio needs the `[litellm]` extra (`pip install --pre 'lilbee[litellm]'`); the Homebrew, AUR, Nix, Docker, Flatpak, and Snap builds already include it. See [Install](#install).
+- **Point it at a running manager.** Your models in Ollama or LM Studio show up in the same catalog and role pickers (chat, embedding, vision, rerank), labeled by where they run, alongside lilbee's own and any cloud models. Mix freely.
+- **They stay read-only.** lilbee lists and runs them but never pulls or deletes them, so their lifecycle stays in the app you already use.
+- **On `pip` / `uv`,** this needs the `[litellm]` extra (`pip install --pre 'lilbee[litellm]'`); the Homebrew, AUR, Nix, Docker, Flatpak, and Snap builds already include it. See [Install](#install).
 
 ### See when a model won't load before you download it
 
@@ -434,7 +468,7 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 Drop the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and any MCP-aware coding agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
 
-**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** Local-model opencode and hermes integration works across many GGUF families: see [Coding agents: opencode and hermes](#coding-agents-opencode-and-hermes) above.
+**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** To run the agent itself on a local model instead, see [Launch your coding agent on local models](#launch-your-coding-agent-on-local-models) above.
 
 Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your _local_ files.
 
@@ -528,6 +562,20 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 - [Nuitka] compiles the whole thing into the standalone single-file binary, bundling its own Python runtime so there is nothing to install and nothing to compile.
+
+## FAQ
+
+**What is lilbee, in one line?** A local AI search engine: it runs the models and searches your files, code, and the web, with answers that cite the source.
+
+**Is it really one program?** Yes. The model runtime (llama.cpp) and the index (LanceDB) run inside lilbee. No separate model server, no vector database, no container.
+
+**Is lilbee a model manager?** Yes, a complete one. It browses Hugging Face, downloads models, assigns roles, runs them on Metal, Vulkan, or CUDA, and places large models across multiple GPUs, so you do not need a separate model runner. Already use Ollama or LM Studio? Point lilbee at them instead.
+
+**Does my data leave my machine?** No. Your files stay on disk and search runs locally. A cloud model is used only when you pick one.
+
+**Will a model fit my GPU?** lilbee reads the GGUF file and your devices and estimates fit before you download, and splits large models across multiple GPUs. More at [lilbee.sh/gpu](https://lilbee.sh/gpu/).
+
+**Can my coding agent use it?** Yes, over MCP. The agent reads your real code and docs before answering, cited to the file and line. More at [lilbee.sh/mcp](https://lilbee.sh/mcp/).
 
 ## Support
 

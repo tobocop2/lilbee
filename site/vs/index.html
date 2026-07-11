@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G8F65BKGRJ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-G8F65BKGRJ');
+</script>
+
+<title>lilbee vs Ollama, LM Studio, and vLLM | lilbee</title>
+<meta name="description" content="See how lilbee compares to Ollama, LM Studio, and vLLM. lilbee is a local search engine with the model runner built in: it runs a whole model fleet across your GPUs to answer from your own files, and works with Ollama or LM Studio as a backend too.">
+<link rel="canonical" href="https://lilbee.sh/vs/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lilbee">
+<meta property="og:title" content="lilbee vs Ollama, LM Studio, and vLLM">
+<meta property="og:description" content="Where each one fits, and what you actually get for a comparable-size install. A local search engine with the model runner built in, next to Ollama, LM Studio, and vLLM. Every claim links to its source.">
+<meta property="og:url" content="https://lilbee.sh/vs/">
+<meta property="og:image" content="https://lilbee.sh/social-card.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="lilbee compared to Ollama, LM Studio, and vLLM in a feature table, shown in the terminal UI">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="lilbee vs Ollama, LM Studio, and vLLM">
+<meta name="twitter:description" content="Where each one fits, and what you get for a comparable-size install. A local search engine with the model runner built in. Every claim links to its source.">
+<meta name="twitter:image" content="https://lilbee.sh/social-card.png">
+<meta name="twitter:image:alt" content="lilbee compared to Ollama, LM Studio, and vLLM in a feature table">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "lilbee", "item": "https://lilbee.sh/" },
+    { "@type": "ListItem", "position": 2, "name": "How lilbee compares", "item": "https://lilbee.sh/vs/" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Is lilbee an alternative to Ollama or LM Studio?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. lilbee is a complete model manager: it browses Hugging Face, downloads models, gives each a role, and runs them on Metal, Vulkan, or CUDA, so it can replace Ollama or LM Studio outright. It also does more, with a search engine over your own files, a web crawler, and an MCP server, and if you would rather keep your current setup it runs on top of Ollama or LM Studio instead." } },
+    { "@type": "Question", "name": "How is lilbee different from vLLM?", "acceptedAnswer": { "@type": "Answer", "text": "vLLM serves one model to many users at high throughput. lilbee runs a whole local fleet, chat, embedding, vision, and reranking, on your own machine to answer questions from your files, with retrieval and citations built in." } },
+    { "@type": "Question", "name": "Is lilbee bigger to install than Ollama?", "acceptedAnswer": { "@type": "Answer", "text": "No. lilbee's CUDA build is about the same size as Ollama's, roughly 1.1 GB on Linux and 0.6 GB on Windows, next to Ollama's 1.4 GB GPU download. The difference is that lilbee bundles a search engine, a web crawler, servers, and a terminal UI, not just a model runner." } },
+    { "@type": "Question", "name": "Can I use my existing Ollama or LM Studio models?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Point lilbee at a running Ollama or LM Studio and its models appear in the same catalog and role pickers alongside lilbee's own, read-only, so their lifecycle stays in the app you already use." } },
+    { "@type": "Question", "name": "Does lilbee support multiple GPUs?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. It sizes each model with gguf-parser and tensor-splits a chat model across the fewest GPUs that fit, with the embedder, reranker, and vision models placed alongside it behind a load-balancing router." } }
+  ]
+}
+</script>
+
+<link rel="stylesheet" href="../style.css?v=20260515a">
+<script src="../main.js?v=20260515a" defer></script>
+</head>
+<body>
+<div class="layout">
+  <main class="main">
+
+    <div class="topstrip">
+      <div><a class="badge" href="/">lilbee</a> <span>how it compares</span></div>
+      <div>
+        <span class="pill">local-first</span>
+        <span class="pill">one program</span>
+        <span class="pill">sourced</span>
+      </div>
+    </div>
+
+    <p class="crumb"><a href="/">lilbee</a> / how it compares</p>
+
+    <section class="hero">
+<pre class="wordmark" aria-hidden="true">888 d8b 888 888
+888 Y8P 888 888
+888     888 888
+888 888 888 88888b.  .d88b.  .d88b.
+888 888 888 888 "88bd8P  Y8bd8P  Y8b
+888 888 888 888  88888888888888888888
+888 888 888 888 d88PY8b.    Y8b.
+888 888 888 88888P"  "Y8888  "Y8888</pre>
+      <h1 class="tagline"><strong>lilbee vs Ollama, LM Studio, and vLLM.</strong> Where each one fits, and what you actually get for a comparable-size install.</h1>
+      <p class="sub">lilbee is a full alternative to a model runner: it finds, runs, and manages the models itself, with a search engine over your own files on top, and it scales that whole stack across every GPU in the machine. Already on Ollama or LM Studio? It also runs on top of them.</p>
+    </section>
+
+    <section>
+      <h2 class="label">the short version</h2>
+      <p class="lede">Of the four, lilbee is the only one built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router.</p>
+    </section>
+
+    <section>
+      <h2 class="label">full comparison</h2>
+      <p class="cmp-hint">Every claim below links to its source: the other projects' own docs, and lilbee's.</p>
+      <div class="cmp-wrap">
+        <table class="cmp">
+          <thead>
+            <tr><th></th><th class="lb">lilbee</th><th>LM Studio</th><th>Ollama</th><th>vLLM</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Primary focus</th>
+              <td class="lb">local search, chat, and serving across your GPUs</td>
+              <td>desktop app to run and chat with models</td>
+              <td>local model runner with a growing ecosystem</td>
+              <td>high-throughput GPU serving</td>
+            </tr>
+            <tr>
+              <th>Runs local models</th>
+              <td class="lb"><span class="yes">&#10003;</span></td>
+              <td><span class="yes">&#10003;</span></td>
+              <td><span class="yes">&#10003;</span></td>
+              <td><span class="yes">&#10003;</span></td>
+            </tr>
+            <tr>
+              <th>Search your own files, with citations</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#search-pipeline">full RAG pipeline</a>, inline per-line citations</td>
+              <td>per-session doc attachment (<a href="https://lmstudio.ai/docs/app/basics/rag">RAG, document-level citation</a>)</td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+            </tr>
+            <tr>
+              <th>Chat, embedding, vision, rerank as one managed fleet</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#local-inference-engine">all four, coordinated</a></td>
+              <td>chat, embed, vision (no rerank), <a href="https://lmstudio.ai/docs/developer/core/server">loaded individually</a></td>
+              <td>chat, embed, vision (no rerank), <a href="https://docs.ollama.com/faq">loaded individually</a></td>
+              <td>each supported, but <a href="https://docs.vllm.ai/en/stable/serving/openai_compatible_server/">one model per server</a></td>
+            </tr>
+            <tr>
+              <th>Multi-GPU model placement</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#local-inference-engine">VRAM-aware tensor-split</a></td>
+              <td><span class="yes">&#10003;</span> GPU selection + <a href="https://lmstudio.ai/changelog/lmstudio-v0.4.15">tensor parallelism (CUDA)</a></td>
+              <td><span class="yes">&#10003;</span> <a href="https://docs.ollama.com/faq">auto multi-GPU offload</a></td>
+              <td><span class="yes">&#10003;</span> <a href="https://docs.vllm.ai/en/latest/serving/parallelism_scaling.html">tensor + pipeline parallel</a></td>
+            </tr>
+            <tr>
+              <th>Scales the whole stack, not just one model</th>
+              <td class="lb"><span class="yes">&#10003;</span> per-GPU replicas + <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#local-inference-engine">load-balancing router</a></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+              <td>one model per server</td>
+            </tr>
+            <tr>
+              <th>Built for many-user throughput at scale</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#local-inference-engine">a data-parallel replica per GPU, requests load-balanced</a></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><a href="https://docs.ollama.com/faq">limited</a></td>
+              <td><span class="yes">&#10003;</span> <a href="https://github.com/vllm-project/vllm">this is its job</a></td>
+            </tr>
+            <tr>
+              <th>Web crawler built in</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md#web-crawling">built in</a></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+            </tr>
+            <tr>
+              <th>Long-term memory (opt-in)</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md#memory">opt-in</a></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+            </tr>
+            <tr>
+              <th>Interfaces</th>
+              <td class="lb"><a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#interfaces">TUI, CLI, MCP, REST, Python</a>, Obsidian GUI</td>
+              <td><a href="https://lmstudio.ai/docs">desktop GUI, lms CLI, Python + TS SDKs, REST, MCP client</a></td>
+              <td><a href="https://docs.ollama.com/">desktop GUI, CLI, REST, Python/JS libs</a></td>
+              <td><a href="https://docs.vllm.ai/en/stable/serving/openai_compatible_server/">API server</a></td>
+            </tr>
+            <tr>
+              <th>Use your existing Ollama / LM Studio / cloud as a backend</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#provider-abstraction">how</a></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+              <td><span class="no">&#8212;</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">install size</h2>
+      <p class="cmp-hint">Download sizes in decimal GB/MB, measured from each project's own release artifacts.</p>
+      <div class="cmp-wrap">
+        <table class="cmp">
+          <thead>
+            <tr><th></th><th>macOS</th><th>Windows</th><th>Linux</th><th>What you get</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th class="lb"><a href="https://github.com/tobocop2/lilbee/releases">lilbee</a> (Metal / Vulkan)</th>
+              <td class="lb">286 MB</td>
+              <td class="lb">303 MB</td>
+              <td class="lb">422 MB</td>
+              <td class="lb">the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager</td>
+            </tr>
+            <tr>
+              <th class="lb"><a href="https://github.com/tobocop2/lilbee/releases">lilbee</a> (CUDA, NVIDIA)</th>
+              <td class="lb">n/a</td>
+              <td class="lb">633 MB</td>
+              <td class="lb">1.20 GB</td>
+              <td class="lb">the same, with the faster CUDA runtime</td>
+            </tr>
+            <tr>
+              <th><a href="https://github.com/ollama/ollama/releases">Ollama</a></th>
+              <td>164 MB</td>
+              <td>1.43 GB</td>
+              <td>1.44 GB</td>
+              <td>a model runner, fetches its runtimes separately</td>
+            </tr>
+            <tr>
+              <th><a href="https://lmstudio.ai/download">LM Studio</a></th>
+              <td>569 MB</td>
+              <td>617 MB</td>
+              <td>1.10 GB</td>
+              <td>a desktop app (Electron)</td>
+            </tr>
+            <tr>
+              <th><a href="https://docs.vllm.ai/en/stable/getting_started/installation/gpu/">vLLM</a></th>
+              <td>n/a</td>
+              <td>n/a</td>
+              <td>multi-GB</td>
+              <td>a Python + CUDA serving engine</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.</p>
+    </section>
+
+    <section>
+      <h2 class="label">where each one fits</h2>
+      <div class="caps">
+        <div class="cap">
+          <h3>lilbee</h3>
+          <p>A local search engine with the model runner built in. It runs a whole fleet, chat, embedding, vision, and reranking, across your GPUs to answer from your own files, with citations back to the source line.</p>
+        </div>
+        <div class="cap">
+          <h3>LM Studio</h3>
+          <p>A polished desktop app for running and chatting with a model, with per-session document attachment and a growing developer SDK surface.</p>
+        </div>
+        <div class="cap">
+          <h3>Ollama</h3>
+          <p>A local model runner with a strong model library and a simple pull-and-run flow. It serves chat, embedding, and vision models, one request at a time.</p>
+        </div>
+        <div class="cap">
+          <h3>vLLM</h3>
+          <p>A serving engine built to push one model to many users at maximum throughput, with tensor and pipeline parallelism across a cluster.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>Is lilbee an alternative to Ollama or LM Studio?</summary><p>Yes. lilbee is a complete model manager: it browses Hugging Face, downloads models, gives each a role, and runs them on Metal, Vulkan, or CUDA, so it can replace Ollama or LM Studio outright. It also does more, with a search engine over your own files, a web crawler, and an MCP server, and if you would rather keep your current setup it runs on top of Ollama or LM Studio instead.</p></details>
+        <details><summary>How is lilbee different from vLLM?</summary><p>vLLM serves one model to many users at high throughput. lilbee runs a whole local fleet, chat, embedding, vision, and reranking, on your own machine to answer questions from your files, with retrieval and citations built in.</p></details>
+        <details><summary>Is lilbee bigger to install than Ollama?</summary><p>No. lilbee's CUDA build is about the same size as Ollama's, roughly 1.1 GB on Linux and 0.6 GB on Windows, next to Ollama's 1.4 GB GPU download. The difference is that lilbee bundles a search engine, a web crawler, servers, and a terminal UI, not just a model runner.</p></details>
+        <details><summary>Can I use my existing Ollama or LM Studio models?</summary><p>Yes. Point lilbee at a running Ollama or LM Studio and its models appear in the same catalog and role pickers alongside lilbee's own, read-only, so their lifecycle stays in the app you already use.</p></details>
+        <details><summary>Does lilbee support multiple GPUs?</summary><p>Yes. It sizes each model with gguf-parser and tensor-splits a chat model across the fewest GPUs that fit, with the embedder, reranker, and vision models placed alongside it behind a load-balancing router.</p></details>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">go deeper</h2>
+      <div class="links">
+        <a href="/"><span class="num">[1]</span><span>lilbee</span><span class="dots">·······································</span><span class="desc">home</span></a>
+        <a href="/local-rag/"><span class="num">[2]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs, cited</span></a>
+        <a href="/model-manager/"><span class="num">[3]</span><span>Model manager</span><span class="dots">·······································</span><span class="desc">run models</span></a>
+        <a href="/gpu/"><span class="num">[4]</span><span>Will it fit your GPU</span><span class="dots">·······································</span><span class="desc">vram, multi-gpu</span></a>
+        <a href="/mcp/"><span class="num">[5]</span><span>MCP server</span><span class="dots">·······································</span><span class="desc">for agents</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[6]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">install</span></a>
+      </div>
+    </section>
+
+    <footer>
+      <div>
+<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|t|o|b|i|a|s|@|l|i|l|b|e|e|.|s|h|
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+</pre>
+      </div>
+      <div class="meta"><a href="https://github.com/tobocop2/lilbee">lilbee</a> &nbsp;.&nbsp; MIT License</div>
+    </footer>
+  </main>
+
+  <aside class="bee-art" aria-hidden="true"><pre>     %           %
+         %           %
+            %           %
+               %          %
+                 %          %
+                   %          %                   :::
+                    %          %                ::::::
+                 %%%%%%  %%%%%%%%%            ::::::::
+              %%%%%ZZZZ%%%%%%   %%%ZZZZ     ::::::::::         ::::::
+             %%%ZZZZZ%%%%%%%%%%%%%%ZZZZZZ  :::::::::::    :::::::::::::::::
+             ZZZ%ZZZ%%%%%%%%%%%%%%%ZZZZZZZ::::::::::***:::::::::::::::::::::
+          ZZZ%ZZZZZZ%%%%%%%%%%%%%%ZZZZZZZZZ::::::***:::::::::::::::::::::::
+        ZZZ%ZZZZZZZZZZ%%%%%%%%%%ZZZZZZ%ZZZZ:::***:::::::::::::::::::::::
+       ZZ%ZZZZZZZZZZZZZZZZZZZZZZZ%%%%% %ZZZ:**::::::::::::::::::::::
+      ZZ%ZZZZZZZZZZZZZZZZZZZ%%%%% | | %ZZZ *:::::::::::::::::::
+      Z%ZZZZZZZZZZZZZZZ%%%%%%%%%%%%%%%ZZZ::::::::::::::::::::::::::
+       ZZZZZZZZZZZ%%%%%ZZZZZZZZZZZZZZZZZ%%%%:::ZZZZ:::::::::::::::::
+         ZZZZ%%%%%ZZZZZZZZZZZZZZZZZZ%%%%%ZZZ%%ZZZ%ZZ%%*:::::::::::
+            ZZZZZZZZZZZZZZZZZZ%%%%%%%%%ZZZZZZZZZZ%ZZ%:::*:::::::
+            *:::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZZZZZZ%%%*::::*::::
+          *:::::::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZ%%      *:::Z
+         **:ZZZZ:::%%%%%%%%%%%%%%%%%%%%%%%%%%%ZZ      ZZZZZ
+        *:ZZZZZZZ       %%%%%%%%%%%%%%%%%%%%%ZZZZ    ZZZZZZZ
+       *::::ZZZZZZ         %%%%%%%%%%%%%%%ZZZZZZZ      ZZZ
+        *::ZZZZZZ           Z%%%%%%%%%%%ZZZZZZZ%%
+          ZZZZ              ZZZZZZZZZZZZZZZZ%%%%%
+                           %%%ZZZZZZZZZZZ%%%%%%%%
+                          Z%%%%%%%%%%%%%%%%%%%%%
+                          ZZ%%%%%%%%%%%%%%%%%%%
+                          %ZZZZZZZZZZZZZZZZZZZ
+                          %%ZZZZZZZZZZZZZZZZZ
+                           %%%%%%%%%%%%%%%%
+                            %%%%%%%%%%%%%
+                             %%%%%%%%%
+                              ZZZZ
+                              ZZZ
+                             ZZ
+                            Z</pre></aside>
+</div>
+</body>
+</html>
