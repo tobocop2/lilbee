@@ -275,16 +275,25 @@ def peek_services() -> Services | None:
     return _state.singleton
 
 
+# Serializes the singleton swap in reset_services: the hard-exit teardown
+# thread and the atexit hook can race, and both tearing down the same container
+# would double-close the store.
+_reset_swap_lock = threading.Lock()
+
+
 def reset_services() -> None:
     """Shut down and discard all cached instances.
 
     Swap the module reference to ``None`` *before* tearing the old instances
-    down, so a new caller never observes a half-closed container. On the shared
-    HTTP daemon every entry point that would call this mid-flight is refused, so
-    it only ever runs single-client (CLI, TUI, stdio MCP).
+    down, so a new caller never observes a half-closed container. The swap is
+    locked so concurrent callers (the hard-exit teardown thread plus atexit)
+    tear the container down exactly once. On the shared HTTP daemon every entry
+    point that would call this mid-flight is refused, so it only ever runs
+    single-client (CLI, TUI, stdio MCP).
     """
-    old = _state.singleton
-    _state.singleton = None
+    with _reset_swap_lock:
+        old = _state.singleton
+        _state.singleton = None
     if old is not None:
         old.provider.shutdown()
         old.store.close()
@@ -354,9 +363,18 @@ class _EngineLifecycle:
         self._installed = False
 
     def _on_hard_exit(self, signum: int, frame: object) -> None:
-        """Stop the fleet, then exit with the conventional signal status."""
+        """Stop the fleet on its own thread, then exit with the signal status.
+
+        Signal handlers all run on the main thread, and a second signal can
+        interrupt this one mid-teardown: the kernel pairs SIGCONT with SIGHUP
+        for an orphaned process group, and Textual's SIGCONT handler raises
+        once the event loop is gone, which aborted the reap half-done and
+        orphaned a loaded fleet. A dedicated non-daemon thread cannot be
+        interrupted by signals, and the interpreter waits for it even as the
+        SystemExit unwinds the main thread.
+        """
         del frame
-        reset_services()
+        threading.Thread(target=reset_services, name="hard-exit-teardown").start()
         raise SystemExit(_SIGNAL_EXIT_BASE + signum)
 
 

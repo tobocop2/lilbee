@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import signal
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -38,6 +39,13 @@ def _restore_handlers():
     reset_services()
 
 
+def _join_teardown() -> None:
+    """Wait out the handler's teardown thread so assertions don't race it."""
+    for thread in threading.enumerate():
+        if thread.name == "hard-exit-teardown":
+            thread.join(timeout=5)
+
+
 def _install_stub_services() -> MagicMock:
     """Bind a mock container whose provider records shutdown()."""
     provider = MagicMock()
@@ -58,6 +66,7 @@ def test_hard_exit_signal_shuts_down_the_provider(sig):
 
     with pytest.raises(SystemExit):
         handler(sig, None)
+    _join_teardown()
 
     provider.shutdown.assert_called_once()
     assert peek_services() is None
@@ -73,6 +82,7 @@ def test_install_is_idempotent():
 
     with pytest.raises(SystemExit):
         first(signal.SIGTERM, None)
+    _join_teardown()
     provider.shutdown.assert_called_once()
 
 
@@ -83,9 +93,27 @@ def test_teardown_runs_once_when_signal_and_atexit_both_fire():
 
     with pytest.raises(SystemExit):
         signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    _join_teardown()
     reset_services()
 
     provider.shutdown.assert_called_once()
+
+
+def test_teardown_runs_off_the_main_thread():
+    """Regression: a second signal (the kernel pairs SIGCONT with SIGHUP for an
+    orphaned process group) interrupts the main thread mid-handler; a teardown
+    running there was aborted half-done, orphaning a loaded fleet. The reap
+    must run on its own thread, out of any signal handler's reach."""
+    provider = _install_stub_services()
+    teardown_threads: list[str] = []
+    provider.shutdown.side_effect = lambda: teardown_threads.append(threading.current_thread().name)
+    install_engine_lifecycle_hooks()
+
+    with pytest.raises(SystemExit):
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    _join_teardown()
+
+    assert teardown_threads == ["hard-exit-teardown"]
 
 
 def test_signal_without_services_still_exits():
