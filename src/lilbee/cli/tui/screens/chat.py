@@ -1309,6 +1309,11 @@ class ChatScreen(Screen[None]):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, _engine_status_text(snapshot))
 
+        # Label the wait before the chat warm stamps its first phase: another
+        # role loading first (embed on a cold start) leaves the tracker silent
+        # for many seconds, and a bare scanner reads as a hang.
+        with contextlib.suppress(Exception):
+            call_from_thread(self, widget.set_thinking_status, msg.ENGINE_LOADING)
         if wait_chat_ready(on_progress=_paint, should_abort=lambda: worker.is_cancelled):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")

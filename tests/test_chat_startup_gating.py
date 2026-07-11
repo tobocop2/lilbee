@@ -116,6 +116,7 @@ async def test_await_engine_paints_progress_then_proceeds(_warming_services):
         ):
             assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
         painted = [c.args[0] for c in widget.set_thinking_status.call_args_list]
+        assert painted[0] == msg.ENGINE_LOADING  # labelled before the first snapshot
         assert _engine_status_text(snapshot) in painted
         assert painted[-1] == ""  # the status clears once the engine is ready
 
