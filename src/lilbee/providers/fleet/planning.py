@@ -1114,7 +1114,8 @@ def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, s
             "load or runs slowly, free up GPU memory or use a smaller model.",
             role.value,
             model_refs[role],
-            shortfall / 1024**3,
+            # A sub-0.05 GiB shortfall would render as "0.0 GiB more".
+            max(shortfall / 1024**3, 0.1),
         )
     if placement.co_tenants:
         log.info(

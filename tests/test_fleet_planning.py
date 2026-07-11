@@ -1702,3 +1702,16 @@ class TestPlacementFindingsLog:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
             planning_mod._log_placement_findings(placement, {WorkerRole.CHAT: "org/chat.gguf"})
         assert "will not be served" in caplog.text
+
+    def test_tiny_shortfall_never_reads_as_zero(self, caplog) -> None:
+        import logging
+
+        placement = Placement(
+            instances=(InstancePlan(role=WorkerRole.VISION, devices=(0,)),),
+            unplaceable_roles=(),
+            tight_roles={WorkerRole.VISION: 10 * 1024 * 1024},
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
+        assert "0.0 GiB" not in caplog.text
+        assert "0.1 GiB" in caplog.text
