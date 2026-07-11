@@ -166,13 +166,6 @@
               <td><span class="no">&#8212;</span></td>
             </tr>
             <tr>
-              <th>Single-file footprint (excludes models)</th>
-              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/releases">273 MB macOS / 289 MB Windows / 403 MB Linux</a>, whole stack (~0.6-1.1 GB with optional CUDA)</td>
-              <td><a href="https://lmstudio.ai/download">~570 MB macOS / 617 MB Windows / 1.1 GB Linux</a>, Electron app</td>
-              <td><a href="https://github.com/ollama/ollama/releases">164 MB macOS / ~1.4 GB Windows &amp; Linux</a>, runner only</td>
-              <td><a href="https://docs.vllm.ai/en/stable/getting_started/installation/gpu/">multi-GB Python + CUDA stack</a></td>
-            </tr>
-            <tr>
               <th>Interfaces</th>
               <td class="lb"><a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#interfaces">TUI, CLI, MCP, REST, Python</a>, Obsidian GUI</td>
               <td><a href="https://lmstudio.ai/docs">desktop GUI, lms CLI, Python + TS SDKs, REST, MCP client</a></td>
@@ -192,8 +185,53 @@
     </section>
 
     <section>
-      <h2 class="label">on size</h2>
-      <p class="note">lilbee ships as one self-contained file that bundles the whole stack (search engine, crawler, servers, TUI, model runner, and fleet manager): 273 MB on macOS, 289 MB on Windows, 403 MB on Linux. That undercuts LM Studio's Electron app on every platform (~570 MB macOS, ~617 MB Windows, ~1.1 GB Linux), and on Windows and Linux it's a fraction of Ollama's GPU-bundled download (~1.4 GB). Ollama's macOS app is leaner at 164 MB, but it's a model runner that fetches its runtimes separately, where lilbee's one file already is the search engine and the servers. Only NVIDIA users who want the faster CUDA build reach for the larger artifact (~604 MB Windows, ~1.15 GB Linux), and even that stays at or under Ollama's.</p>
+      <h2 class="label">install size</h2>
+      <p class="cmp-hint">Download sizes in decimal GB/MB, measured from each project's own release artifacts.</p>
+      <div class="cmp-wrap">
+        <table class="cmp">
+          <thead>
+            <tr><th></th><th>macOS</th><th>Windows</th><th>Linux</th><th>What you get</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th class="lb"><a href="https://github.com/tobocop2/lilbee/releases">lilbee</a> (Metal / Vulkan)</th>
+              <td class="lb">286 MB</td>
+              <td class="lb">303 MB</td>
+              <td class="lb">422 MB</td>
+              <td class="lb">the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager</td>
+            </tr>
+            <tr>
+              <th class="lb"><a href="https://github.com/tobocop2/lilbee/releases">lilbee</a> (CUDA, NVIDIA)</th>
+              <td class="lb">n/a</td>
+              <td class="lb">633 MB</td>
+              <td class="lb">1.20 GB</td>
+              <td class="lb">the same, with the faster CUDA runtime</td>
+            </tr>
+            <tr>
+              <th><a href="https://github.com/ollama/ollama/releases">Ollama</a></th>
+              <td>164 MB</td>
+              <td>1.43 GB</td>
+              <td>1.44 GB</td>
+              <td>a model runner, fetches its runtimes separately</td>
+            </tr>
+            <tr>
+              <th><a href="https://lmstudio.ai/download">LM Studio</a></th>
+              <td>569 MB</td>
+              <td>617 MB</td>
+              <td>1.10 GB</td>
+              <td>a desktop app (Electron)</td>
+            </tr>
+            <tr>
+              <th><a href="https://docs.vllm.ai/en/stable/getting_started/installation/gpu/">vLLM</a></th>
+              <td>n/a</td>
+              <td>n/a</td>
+              <td>multi-GB</td>
+              <td>a Python + CUDA serving engine</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.</p>
     </section>
 
     <section>
