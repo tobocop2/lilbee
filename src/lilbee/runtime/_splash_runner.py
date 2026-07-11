@@ -84,9 +84,25 @@ def build_knight_rider_frames() -> list[str]:
     return frames
 
 
-def render_frame(logo_lines: list[str], loading_bar: str) -> bytes:
+def left_pad() -> int:
+    """Columns needed to centre the wordmark, matching the C bootstrap's formula.
+
+    The bootstrap frame this animation repaints in place is centred with
+    ``(columns - LILBEE_LOGO_WIDTH) / 2``; diverging here would draw the two
+    stages at different offsets and break the one-continuous-logo illusion.
+    """
+    try:
+        columns = os.get_terminal_size(2).columns
+    except OSError:
+        return 0
+    return max((columns - LOGO_WIDTH) // 2, 0)
+
+
+def render_frame(logo_lines: list[str], loading_bar: str, pad: int = 0) -> bytes:
     """Build a single frame as raw bytes for os.write()."""
-    all_lines = [*logo_lines, "", f"  {loading_bar}"]
+    margin = " " * pad
+    all_lines = [margin + line for line in logo_lines]
+    all_lines += ["", f"{margin}  {loading_bar}"]
     return ("\n".join(all_lines) + "\n").encode()
 
 
@@ -157,6 +173,7 @@ def animation_loop(pipe_fd: int) -> None:
 
     logo_frames = build_logo_frames()
     knight_frames = build_knight_rider_frames()
+    pad = left_pad()
     frame_height = len(BEE_LINES) + 2
 
     got_signal = False
@@ -182,7 +199,7 @@ def animation_loop(pipe_fd: int) -> None:
         while not got_signal and not pipe_closed(pipe_fd):
             logo = logo_frames[frame_idx % len(logo_frames)]
             knight = knight_frames[knight_idx % len(knight_frames)]
-            rendered = render_frame(logo, knight)
+            rendered = render_frame(logo, knight, pad)
             os.write(fd, rendered)
 
             for _ in range(int(FRAME_INTERVAL / POLL_INTERVAL)):

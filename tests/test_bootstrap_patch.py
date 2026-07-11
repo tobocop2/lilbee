@@ -110,3 +110,12 @@ def test_interactive_launch_keeps_the_wordmark_on_screen(added_lines):
     body = "\n".join(added_lines)
     assert "lilbee_progress_end(argc == 1)" in body
     assert "keep_logo ? " in body
+
+
+def test_bootstrap_centres_on_the_python_wordmark_width(added_lines):
+    """Both stages centre with (columns - width) / 2; a drifting width constant
+    would draw the bootstrap and the splash at different offsets."""
+    from lilbee.runtime.bee_logo import LOGO_WIDTH
+
+    assert f"#define LILBEE_LOGO_WIDTH {LOGO_WIDTH}" in added_lines
+    assert any("TIOCGWINSZ" in line for line in added_lines)

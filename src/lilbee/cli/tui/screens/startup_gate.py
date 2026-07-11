@@ -42,6 +42,27 @@ class StartupGate(Screen[None]):
             yield ProgressBar(total=None, show_eta=False, show_percentage=False, id="gate-bar")
             yield Static(msg.STARTUP_PREPARING, id="gate-status")
 
+    def on_mount(self) -> None:
+        """Retire the launcher's splash now that Textual is painting.
+
+        The splash animates over the blank alt-screen right up to this moment,
+        so the wordmark never leaves the terminal. Dismissal waits on the
+        subprocess, so it runs off-thread; the refresh afterwards repaints
+        anything a final splash frame may have touched.
+        """
+        self._retire_splash()
+
+    @work(thread=True, name="splash_retire", exit_on_error=False)
+    def _retire_splash(self) -> None:
+        from lilbee.runtime.splash import dismiss
+
+        dismiss()
+        self._marshal(self._repaint)
+
+    def _repaint(self) -> None:
+        """Repaint anything a final splash frame may have scribbled over."""
+        self.refresh()
+
     def start_boot(self) -> None:
         """Reveal chat at once when services already exist, else build them off-thread.
 

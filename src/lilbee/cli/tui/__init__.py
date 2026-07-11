@@ -99,17 +99,12 @@ def run_tui(*, initial_view: str | None = None) -> None:
     # cold-start on bare runners); only needed at TUI shutdown. (bb-oae5)
     from lilbee.cli.sync import shutdown_executor
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.runtime.splash import dismiss
 
     log_path = setup_tui_log_file()
     _silence_stderr_log_handlers()
     stderr_redirect = _redirect_native_stderr_to(log_path)
 
     app = LilbeeApp(initial_view=initial_view)
-    # The launcher's splash animates until here, covering this module's own
-    # heavy imports; it must be gone before Textual claims the terminal, or
-    # its frames would land on the alt-screen.
-    dismiss()
     try:
         app.run()
     except KeyboardInterrupt:

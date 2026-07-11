@@ -428,3 +428,20 @@ async def test_boot_worker_surfaces_a_canonicalization_failure(monkeypatch):
     notified = [c.args[0] for c in app.notify.call_args_list if c.args]
     assert msg.STARTUP_FAILED.format(error="registry unreadable") in notified
     app.reveal_chat.assert_called_once_with()
+
+
+async def test_gate_mount_retires_the_splash_then_repaints(monkeypatch):
+    """The splash animates over the blank alt-screen until the gate paints;
+    the dismissal then repaints anything a final frame touched."""
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate, app = _gate_with_app()
+    order: list[str] = []
+    monkeypatch.setattr("lilbee.runtime.splash.dismiss", lambda: order.append("dismiss"))
+    monkeypatch.setattr(gate, "_repaint", lambda: order.append("refresh"), raising=False)
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+        mock.patch.object(StartupGate, "_stopping", return_value=False),
+    ):
+        StartupGate._retire_splash.__wrapped__(gate)
+    assert order == ["dismiss", "refresh"]
