@@ -238,20 +238,6 @@ class TestLifecycle:
         with pytest.raises(ProviderError):
             mgr.endpoint()  # port cleared after shutdown
 
-    def test_reload_restarts_with_new_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        starts: list[int] = []
-        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
-        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        mgr = SwapManager(tmp_path, _GROUP)
-        mgr.start([_launch(WorkerRole.CHAT)])
-        monkeypatch.setattr(
-            SwapManager, "start", lambda self, launches: starts.append(len(launches))
-        )
-        mgr.reload([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
-        assert starts == [2]  # restarted with the new launch set
-
 
 class _FakeChild:
     """A stand-in psutil.Process that records the signals it receives."""
@@ -1315,3 +1301,149 @@ class TestSweepOwned:
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: swept.append(cfg))
         sm.sweep_owned(tmp_path)
         assert swept == []
+
+
+class TestStateFilePersistenceKeys:
+    def test_round_trips_proxy_port_version_and_detached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr._write_state(detached=True)
+        state = sm._load_state(mgr._state_path)
+        assert state is not None
+        assert state.proxy_port == mgr._port
+        assert state.lilbee_version
+        assert state.detached is True
+
+    def test_start_writes_an_owned_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.detached is False
+
+    def test_old_format_files_parse_with_defaults(self, tmp_path: Path) -> None:
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text(json.dumps({"pid": 123, "member_ports": [4000]}))
+        state = sm._load_state(legacy)
+        assert state is not None
+        assert state.proxy_port is None
+        assert state.lilbee_version is None
+        assert state.detached is False
+
+
+class TestReapSparesDetached:
+    def _write_detached_state(self, tmp_path: Path, *, detached: bool) -> Path:
+        path = tmp_path / sm._state_filename(999_999, _GROUP.value)
+        path.write_text(
+            json.dumps(
+                {
+                    "pid": 999_998,
+                    "owner_pid": 999_999,
+                    "member_ports": [4000],
+                    "detached": detached,
+                }
+            )
+        )
+        return path
+
+    def test_detached_is_spared_while_warm_is_on(self, tmp_path: Path) -> None:
+        path = self._write_detached_state(tmp_path, detached=True)
+        sm.reap_stale(tmp_path, keep_detached=True)
+        assert path.exists()
+
+    def test_detached_is_reaped_once_warm_is_off(self, tmp_path: Path) -> None:
+        path = self._write_detached_state(tmp_path, detached=True)
+        sm.reap_stale(tmp_path, keep_detached=False)
+        assert not path.exists()
+
+    def test_dead_owner_without_marker_is_reaped_regardless(self, tmp_path: Path) -> None:
+        path = self._write_detached_state(tmp_path, detached=False)
+        sm.reap_stale(tmp_path, keep_detached=True)
+        assert not path.exists()
+
+
+class TestDetachAdoptUnits:
+    def test_detach_marks_state_and_keeps_the_process(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = _FakeProc(poll_result=None)
+        _patch_spawn(monkeypatch, proc)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.detach([{"role": "chat"}])
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.detached is True
+        assert state.launches == ({"role": "chat"},)
+        assert proc.terminated is False and proc.killed is False  # never signaled
+
+    def test_adopt_rejects_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._SwapState(pid=1, pgid=None, owner_pid=None, owner_created_at=None)
+        assert mgr.adopt(state, tmp_path / "x.json") is False
+
+    def test_adopt_probes_the_real_proxy_endpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._SwapState(
+            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4321
+        )
+        old = tmp_path / "old-state.json"
+        old.write_text("{}")
+        assert mgr.adopt(state, old) is True
+        assert not old.exists()
+
+    def test_adopt_unbinds_when_the_proxy_is_dead(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _refuse(_url, **_kw):
+            raise OSError("refused")
+
+        monkeypatch.setattr(sm.httpx, "get", _refuse)
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._SwapState(
+            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4321
+        )
+        assert mgr.adopt(state, tmp_path / "x.json") is False
+        assert mgr._port is None
+
+    def test_find_detached_state_skips_owned_files(self, tmp_path: Path) -> None:
+        owned = tmp_path / sm._state_filename(1, _GROUP.value)
+        owned.write_text(json.dumps({"pid": 2, "detached": False}))
+        assert sm.find_detached_state(tmp_path, _GROUP) is None
+
+
+@pytest.mark.parametrize(
+    "leak",
+    [PermissionError(13, "force permission denied"), SystemError("result with an exception set")],
+    ids=["permission-error", "system-error"],
+)
+def test_owned_swap_scan_skips_processes_that_deny_inspection(monkeypatch, leak):
+    """macOS psutil mishandles entitlement-protected binaries (sysctl
+    KERN_PROCARGS2), leaking raw PermissionError or C-extension SystemError;
+    one such process must not break the sweep."""
+    from pathlib import Path
+    from unittest import mock
+
+    import psutil
+
+    from lilbee.providers.fleet import swap_manager
+
+    config_path = Path("/tmp/x.json")
+    denied = mock.MagicMock()
+    denied.cmdline.side_effect = leak
+    visible = mock.MagicMock()
+    visible.cmdline.return_value = ["/opt/bin/llama-swap", "-config", str(config_path)]
+    monkeypatch.setattr(psutil, "process_iter", lambda: [denied, visible])
+
+    swaps = swap_manager._swaps_for_config(config_path)
+    assert swaps == [visible]

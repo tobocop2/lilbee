@@ -90,6 +90,62 @@ Defaults are sane for chatting with code, documentation, crawled sites, and long
 
 CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless runs, and custom integrations. See the [usage guide](docs/usage.md).
 
+## First start
+
+The very first launch does one-time work: the executable unpacks itself behind
+a progress bar, and the model loads before your first answer, shown live inside
+the answer bubble. Every launch after that opens straight to chat in a couple
+of seconds.
+
+<table>
+  <tr>
+    <th align="center">Very first launch</th>
+    <th align="center">Every launch after</th>
+  </tr>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="420"></td>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="420"></td>
+  </tr>
+</table>
+
+Measured with a small chat model (Qwen3 0.6B):
+
+| | Very first launch | Every launch after |
+|---|---|---|
+| Chat on screen | 15 to 20s, one-time unpack | 2 to 3s |
+| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
+| Answers after that | model speed | model speed |
+
+Bigger models load longer; the bubble shows real progress while weights are read.
+
+## The engine lifecycle
+
+lilbee loads the model lazily, the way Ollama and LM Studio do: the TUI never
+waits for the engine, a real llama.cpp server that starts loading in the
+background the moment the app opens. Ask something before it's ready and the
+answer bubble carries the load until your answer streams. Nothing freezes and
+nothing is silently queued.
+
+By default the engine lives and dies with lilbee: launch starts it, quit frees
+all of its memory. That on-demand default is deliberate, no VRAM or RAM is held
+while lilbee is closed, but it means the first answer of a session waits out the
+engine load. If you relaunch lilbee often, opt into a persistent engine in
+Settings:
+
+- **Keep engine warm** leaves the engine running when you quit, and the next
+  session's first answer skips the load entirely.
+- **Engine idle ttl minutes** bounds how long idle weights stay in memory,
+  five minutes by default (the same idea as Ollama's keep_alive). The memory
+  frees itself after that many idle minutes; a small proxy process stays behind,
+  a few tens of MB and no VRAM. `0` keeps weights loaded until you stop them.
+- **`lilbee engine stop`** frees everything immediately from any terminal, no
+  TUI needed.
+
+Turning the setting off returns to the on-demand default and stops the engine at
+the next opportunity. Both knobs live in the TUI Settings screen,
+MCP `lilbee_settings_set`, the HTTP config API, and `config.toml`. The first
+launch after a reboot is always a cold one.
+
 ## Highlights
 
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line. When the answer isn't in your library, lilbee says so instead of inventing one.

@@ -20,6 +20,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 
@@ -34,10 +35,17 @@ from lilbee.providers.fleet.client import (
     retry_on_busy,
 )
 from lilbee.providers.fleet.groups import SwapGroup, group_for
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
-from lilbee.providers.fleet.swap_manager import SwapManager, reap_stale, sweep_owned
+from lilbee.providers.fleet.swap_manager import (
+    SwapManager,
+    _SwapState,
+    find_detached_state,
+    reap_stale,
+    sweep_owned,
+)
 from lilbee.providers.fleet.windowing import window_messages
-from lilbee.providers.roles import WorkerRole, configured_model_message
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
 from lilbee.providers.warm_progress import WarmProgress, WarmProgressTracker
 
 log = logging.getLogger(__name__)
@@ -54,7 +62,6 @@ if TYPE_CHECKING:
         OcrBackend,
         PageText,
     )
-    from lilbee.providers.fleet.launch import InstanceLaunch
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
@@ -468,6 +475,37 @@ def _ocr_deadline(per_page_timeout_s: float | None) -> float | None:
     return None if budget is None else time.monotonic() + budget
 
 
+_ROLE_TO_MODEL_FIELD = {role: field for field, role in MODEL_FIELD_TO_ROLE.items()}
+
+
+def _configured_model_for(role: WorkerRole) -> str:
+    """The cfg model ref for *role*, empty when the role is unset."""
+    field = _ROLE_TO_MODEL_FIELD.get(role)
+    return getattr(cfg, field) or "" if field else ""
+
+
+def _adoptable_launches(state: _SwapState) -> list[InstanceLaunch] | None:
+    """Decode a detached fleet's launches when it matches this build and config."""
+    if state.lilbee_version != _pkg_version("lilbee"):
+        return None
+    try:
+        launches = [InstanceLaunch.from_state(item) for item in state.launches]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not launches:
+        return None
+    if any(launch.model != _configured_model_for(launch.role) for launch in launches):
+        return None
+    return launches
+
+
+def _warm_ttl_seconds() -> int:
+    """llama-swap idle-unload timer: the user's warm ttl, or 0 when warm is off."""
+    if not cfg.keep_engine_warm:
+        return 0
+    return cfg.engine_idle_ttl_minutes * 60
+
+
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
@@ -567,35 +605,92 @@ class FleetProvider:
             # A dead owner's surviving llama-swap holds VRAM; reap it before the
             # snapshot so the cards are actually free for this fleet (and the
             # context sizer reads true clean-box memory).
-            reap_stale(cfg.data_dir)
-            try:
-                # Snapshot the clean box; this plan and every later reload size
-                # ctx, slots, and budgets against it (a live probe under a loaded
-                # fleet would report our own residency as unavailable). Inside the
-                # try: capturing resolves the engine binary, and a binary-less
-                # host must serve nothing, not raise.
-                planning.capture_plan_probe()
-                plan = planning.plan_all_launches()
-            except ProviderError:
-                log.debug("Engine binary unavailable; no swap started")
+            if self._reap_and_maybe_adopt(cfg.data_dir):
+                return True
+            return self._plan_and_spawn(cfg.data_dir)
+
+    def _plan_and_spawn(self, data_dir: Path) -> bool:
+        """Plan placement against the clean box and start one swap per group.
+
+        Caller holds the build lock. False when the engine binary is missing or
+        nothing is installed/configured, so the provider serves nothing.
+        """
+        try:
+            # Snapshot the clean box; this plan and every later reload size
+            # ctx, slots, and budgets against it (a live probe under a loaded
+            # fleet would report our own residency as unavailable). Inside the
+            # try: capturing resolves the engine binary, and a binary-less
+            # host must serve nothing, not raise.
+            planning.capture_plan_probe()
+            plan = planning.plan_all_launches()
+        except ProviderError:
+            log.debug("Engine binary unavailable; no swap started")
+            plan = None
+        if plan is None or not plan.launches:
+            # No engine binary, or no installed/configured model: serve nothing.
+            return False
+        by_group = _launches_by_group(plan)
+        started: dict[SwapGroup, SwapManager] = {}
+        try:
+            for group, group_launches in by_group.items():
+                swap = SwapManager(data_dir, group)
+                swap.start(list(group_launches), ttl_seconds=_warm_ttl_seconds())
+                started[group] = swap
+        except BaseException:
+            for swap in started.values():
+                swap.shutdown()
+            raise
+        with self._lock:
+            for group, swap in started.items():
+                self._adopt_group(group, swap, list(by_group[group]))
+        return True
+
+    def _reap_and_maybe_adopt(self, data_dir: Path) -> bool:
+        """Reap dead fleets (sparing warm ones), then adopt a matching warm fleet."""
+        reap_stale(data_dir, keep_detached=cfg.keep_engine_warm)
+        return cfg.keep_engine_warm and self._try_adopt_detached(data_dir)
+
+    def _try_adopt_detached(self, data_dir: Path) -> bool:
+        """Bind to a warm detached fleet when it matches this version and config.
+
+        All or nothing: any unhealthy group, version drift, undecodable launch
+        record, or a configured role the detached fleet does not serve reaps the
+        leftovers and falls back to a fresh spawn. Caller holds the build lock.
+        """
+        found = [
+            (group, *hit)
+            for group in SwapGroup
+            if (hit := find_detached_state(data_dir, group)) is not None
+        ]
+        if not found:
+            return False
+        adopted: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]] = {}
+        for group, state, state_path in found:
+            launches = _adoptable_launches(state)
+            swap = SwapManager(data_dir, group)
+            if launches is None or not swap.adopt(state, state_path):
+                self._abandon_adoption(adopted, data_dir)
                 return False
-            if not plan.launches:
-                return False  # no installed/configured model -> serve nothing, spawn nothing
-            by_group = _launches_by_group(plan)
-            started: dict[SwapGroup, SwapManager] = {}
-            try:
-                for group, group_launches in by_group.items():
-                    swap = SwapManager(cfg.data_dir, group)
-                    swap.start(list(group_launches))
-                    started[group] = swap
-            except BaseException:
-                for swap in started.values():
-                    swap.shutdown()
-                raise
-            with self._lock:
-                for group, swap in started.items():
-                    self._adopt_group(group, swap, list(by_group[group]))
-            return True
+            adopted[group] = (swap, launches)
+        served = {launch.role for _, launches in adopted.values() for launch in launches}
+        configured = {role for role in WorkerRole if _configured_model_for(role)}
+        if not configured <= served:
+            self._abandon_adoption(adopted, data_dir)
+            return False
+        with self._lock:
+            for group, (swap, launches) in adopted.items():
+                self._adopt_group(group, swap, launches)
+        log.info("Adopted the warm engine fleet left by a previous session")
+        return True
+
+    @staticmethod
+    def _abandon_adoption(
+        adopted: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]], data_dir: Path
+    ) -> None:
+        """Stop half-adopted swaps and reap every remaining detached fleet."""
+        for swap, _launches in adopted.values():
+            swap.shutdown()
+        reap_stale(data_dir)
 
     def _adopt_group(
         self, group: SwapGroup, swap: SwapManager, launches: list[InstanceLaunch]
@@ -753,6 +848,16 @@ class FleetProvider:
         with self._lock:
             return self._chat_ctx if WorkerRole.CHAT in self._role_group else None
 
+    def warm_pending(self) -> bool:
+        """Whether a requested warm is still running.
+
+        The tracker only stamps a phase once the chat role starts loading, which is
+        seconds after the swap is spawned, so ``warm_progress`` alone cannot tell a
+        not-yet-started warm from no warm at all.
+        """
+        with self._lock:
+            return self._warming
+
     def warm_progress(self) -> WarmProgress | None:
         """Live cold-load progress for the chat role, or None before warm begins."""
         return self._warm_tracker.snapshot()
@@ -785,6 +890,23 @@ class FleetProvider:
                 from lilbee.core.config import cfg
 
                 sweep_owned(cfg.data_dir)
+
+    def _detach_swap(self) -> None:
+        """Terminal shutdown with keep_engine_warm on: mark and leave the fleet running.
+
+        Latches like ``_shutdown_swap`` so a discarded provider's in-flight warm
+        cannot spawn an orphan, but the running swaps are handed to the next
+        launch instead of being stopped, and no ownership sweep runs.
+        """
+        with self._build_lock:
+            with self._lock:
+                swaps = dict(self._swaps)
+                launches = dict(self._launches)
+                self._shut_down = True
+            self._drop_swap_refs()
+            for group, swap in swaps.items():
+                payload = [launch.to_state() for launch in launches.get(group, ())]
+                swap.detach(payload)
 
     def _drop_swap_refs(self) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""
@@ -1487,7 +1609,7 @@ class FleetProvider:
                 running = set(self._swaps)
                 old = dict(self._launches)
             # Reap dead owners' swaps before re-planning, same as the first build.
-            reap_stale(cfg.data_dir)
+            reap_stale(cfg.data_dir, keep_detached=cfg.keep_engine_warm)
             if not running:
                 # Nothing loaded (a resurrect after a failed pass): the box is
                 # clean, so refresh the plan snapshot like a first build would.
@@ -1514,7 +1636,7 @@ class FleetProvider:
             for group in sorted(changed & set(new), key=lambda g: g.value):
                 group_launches = list(new[group])
                 swap = SwapManager(cfg.data_dir, group)
-                swap.start(group_launches)
+                swap.start(group_launches, ttl_seconds=_warm_ttl_seconds())
                 with self._lock:
                     self._adopt_group(group, swap, group_launches)
                 restarted.extend(_by_role(group_launches))
@@ -1562,4 +1684,7 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
+        if cfg.keep_engine_warm:
+            self._detach_swap()
+            return
         self._shutdown_swap()

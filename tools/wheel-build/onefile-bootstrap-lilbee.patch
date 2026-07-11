@@ -1,0 +1,235 @@
+--- a/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
++++ b/nuitka/build/static_src/OnefileBootstrap.c	2026-07-11 00:33:34
+@@ -446,6 +446,175 @@
+ 
+ #if _NUITKA_ONEFILE_TEMP_BOOL
+ static bool payload_created = false;
++#endif
++
++// lilbee: cold-start feedback and a warm-start fast path.
++//
++// The onefile cache is keyed on {VERSION}, so a populated payload directory whose
++// stamp records this payload's size was written by this exact binary. Trusting it
++// skips the per-file CRC32 of the whole payload, which otherwise costs seconds of
++// pure CPU on every launch. Cold starts still verify normally.
++#if !defined(_WIN32) && !defined(__MSYS__)
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++#define LILBEE_STAMP_NAME ".lilbee-bootstrap-stamp"
++// Mirrors bee_logo.LOGO_WIDTH so this frame and the Python splash centre on the
++// same column and the splash can repaint over it in place.
++#define LILBEE_LOGO_WIDTH 55
++#define LILBEE_BAR_CELLS 40
++#define LILBEE_AMBER_BRIGHT "\033[38;5;214m"
++#define LILBEE_AMBER_MID "\033[38;5;172m"
++#define LILBEE_AMBER_DIM "\033[38;5;94m"
++#define LILBEE_RESET "\033[0m"
++// Same block glyphs the Python splash bar uses, so the two read as one surface.
++#define LILBEE_CELL_FULL "\u2593"
++#define LILBEE_CELL_EDGE "\u2592"
++#define LILBEE_CELL_EMPTY "\u2591"
++
++static char const *lilbee_logo_lines[] = {
++    "@@@       @@@  @@@       @@@@@@@   @@@@@@@@  @@@@@@@@  ",
++    "@@@       @@@  @@@       @@@@@@@@  @@@@@@@@  @@@@@@@@  ",
++    "@@@       @@@  @@@       @@!  @@@  @@!       @@!       ",
++    "@!       !@!  !@!       !@   @!@  !@!       !@!       ",
++    "@!!       !!@  @!!       @!@!@!@   @!!!:!    @!!!:!    ",
++    "!!!       !!!  !!!       !!!@!!!!  !!!!!:    !!!!!:    ",
++    "!!:       !!:  !!:       !!:  !!!  !!:       !!:       ",
++    " :!:      :!:   :!:      :!:  !:!  :!:       :!:       ",
++    " :: ::::   ::   :: ::::   :: ::::   :: ::::   :: ::::  ",
++    ": :: : :  :    : :: : :  :: : ::   : :: ::   : :: ::   ",
++    NULL,
++};
++
++static bool lilbee_progress_on = false;
++static int lilbee_last_percent = -1;
++static int lilbee_pad = 0;
++
++static void lilbee_stamp_path(filename_char_t *buffer, size_t size) {
++    buffer[0] = 0;
++    appendStringSafeFilename(buffer, payload_path, size);
++    appendCharSafeFilename(buffer, FILENAME_SEP_CHAR, size);
++    appendStringSafeFilename(buffer, LILBEE_STAMP_NAME, size);
++}
++
++// True when the stamp records this payload's size; fills first_filename from it.
++static bool lilbee_stamp_matches(filename_char_t *first_filename, size_t size) {
++    static filename_char_t stamp[4096];
++    lilbee_stamp_path(stamp, sizeof(stamp) / sizeof(filename_char_t));
++
++    FILE *handle = fopen(stamp, "rb");
++    if (handle == NULL) {
++        return false;
++    }
++
++    unsigned long long stamped_size = 0;
++    static char stamped_main[4096];
++    stamped_main[0] = 0;
++
++    bool ok = fscanf(handle, "%llu\n", &stamped_size) == 1 &&
++              fgets(stamped_main, sizeof(stamped_main), handle) != NULL;
++    fclose(handle);
++
++    if (!ok || stamped_size != (unsigned long long)_NUITKA_ONEFILE_PAYLOAD_SIZE_INT) {
++        return false;
++    }
++
++    size_t length = strlen(stamped_main);
++    while (length > 0 && (stamped_main[length - 1] == '\n' || stamped_main[length - 1] == '\r')) {
++        stamped_main[--length] = 0;
++    }
++    if (length == 0 || access(stamped_main, X_OK) != 0) {
++        return false;
++    }
++
++    first_filename[0] = 0;
++    appendStringSafeFilename(first_filename, stamped_main, size);
++    return true;
++}
++
++static void lilbee_stamp_write(filename_char_t const *first_filename) {
++    static filename_char_t stamp[4096];
++    lilbee_stamp_path(stamp, sizeof(stamp) / sizeof(filename_char_t));
++
++    FILE *handle = fopen(stamp, "wb");
++    if (handle == NULL) {
++        return;
++    }
++    fprintf(handle, "%llu\n%s\n", (unsigned long long)_NUITKA_ONEFILE_PAYLOAD_SIZE_INT, first_filename);
++    fclose(handle);
++}
++
++// The frame occupies exactly the rows the Python splash redraws: a blank row, the
++// ten wordmark rows, a blank row, a separator, and the bar. Matching that geometry
++// lets the splash repaint over this frame in place instead of below it.
++#define LILBEE_FRAME_ROWS_ABOVE_BAR 13
++
++static void lilbee_progress_begin(void) {
++    lilbee_progress_on = isatty(STDERR_FILENO) != 0;
++    if (!lilbee_progress_on) {
++        return;
++    }
++    struct winsize lilbee_ws;
++    if (ioctl(STDERR_FILENO, TIOCGWINSZ, &lilbee_ws) == 0 && lilbee_ws.ws_col > LILBEE_LOGO_WIDTH) {
++        lilbee_pad = (lilbee_ws.ws_col - LILBEE_LOGO_WIDTH) / 2;
++    }
++    fputc('\n', stderr);
++    fputs(LILBEE_AMBER_DIM, stderr);
++    for (int i = 0; lilbee_logo_lines[i] != NULL; i += 1) {
++        fprintf(stderr, "%*s", lilbee_pad, "");
++        fputs(lilbee_logo_lines[i], stderr);
++        fputc('\n', stderr);
++    }
++    fputs(LILBEE_RESET, stderr);
++    fputc('\n', stderr);
++    fputc('\n', stderr);
++}
++
++static void lilbee_progress_update(unsigned long long done, unsigned long long total) {
++    if (!lilbee_progress_on || total == 0) {
++        return;
++    }
++    int percent = (int)((done * 100ULL) / total);
++    if (percent == lilbee_last_percent) {
++        return;
++    }
++    lilbee_last_percent = percent;
++
++    int filled = (percent * LILBEE_BAR_CELLS) / 100;
++
++    // Sit under the centred wordmark.
++    fprintf(stderr, "\r%*s", lilbee_pad, "");
++    fputs("  " LILBEE_AMBER_DIM "bootstrapping" LILBEE_RESET "  ", stderr);
++
++    fputs(LILBEE_AMBER_BRIGHT, stderr);
++    for (int i = 0; i < filled; i += 1) {
++        fputs(LILBEE_CELL_FULL, stderr);
++    }
++    if (filled < LILBEE_BAR_CELLS) {
++        fputs(LILBEE_AMBER_MID LILBEE_CELL_EDGE, stderr);
++        fputs(LILBEE_AMBER_DIM, stderr);
++        for (int i = filled + 1; i < LILBEE_BAR_CELLS; i += 1) {
++            fputs(LILBEE_CELL_EMPTY, stderr);
++        }
++    }
++    fprintf(stderr, LILBEE_RESET "  " LILBEE_AMBER_MID "%3d%%" LILBEE_RESET, percent);
++    fflush(stderr);
++}
++
++// keep_logo: park the cursor on the wordmark instead of erasing it, so an
++// interactive launch never shows a blank terminal between this frame and the
++// Python splash. A launch with arguments prints its own output, so erase.
++static void lilbee_progress_end(bool keep_logo) {
++    if (!lilbee_progress_on) {
++        return;
++    }
++    fputs("\r\033[2K", stderr);
++    for (int i = 0; i < LILBEE_FRAME_ROWS_ABOVE_BAR; i += 1) {
++        fputs(keep_logo ? "\033[A" : "\033[A\033[2K", stderr);
++    }
++    fputc('\r', stderr);
++    fflush(stderr);
++}
+ #endif
+ 
+ #define MAX_CREATED_DIRS 1024
+@@ -1151,6 +1320,13 @@
+     wprintf(L"payload path: '" FILENAME_FORMAT_STR "'\n", payload_path);
+ #endif
+ 
++#if !defined(_WIN32) && !defined(__MSYS__)
++    bool const lilbee_warm_start =
++        lilbee_stamp_matches(first_filename, sizeof(first_filename) / sizeof(filename_char_t));
++#else
++    bool const lilbee_warm_start = false;
++#endif
++
+     if (process_role == NULL) {
+ #if defined(_WIN32)
+         bool_res = SetConsoleCtrlHandler(ourConsoleCtrlHandler, true);
+@@ -1169,6 +1345,7 @@
+ #endif
+ 
+ #if _NUITKA_ONEFILE_HAS_PAYLOAD_BOOL == 1
++    if (!lilbee_warm_start) {
+     NUITKA_PRINT_TIMING("ONEFILE: Checking header for compression.");
+ 
+     char header[3];
+@@ -1202,6 +1379,11 @@
+ 
+     NUITKA_PRINT_TIMING("ONEFILE: Entering decompression.");
+ 
++#if !defined(_WIN32) && !defined(__MSYS__)
++    unsigned char const *lilbee_payload_start = payload_current;
++    lilbee_progress_begin();
++#endif
++
+ #if _NUITKA_ONEFILE_TEMP_BOOL
+     payload_created = true;
+ #endif
+@@ -1336,10 +1518,22 @@
+                 fatalErrorTempFiles();
+             }
+         }
++
++#if !defined(_WIN32) && !defined(__MSYS__)
++        lilbee_progress_update((unsigned long long)(payload_current - lilbee_payload_start), payload_size);
++#endif
+     }
+ 
+     NUITKA_PRINT_TIMING("ONEFILE: Finishing decompression, cleanup payload.");
+ 
++#if !defined(_WIN32) && !defined(__MSYS__)
++    // argc == 1 means no user arguments: the child launches the TUI, whose splash
++    // repaints this wordmark in place.
++    lilbee_progress_end(argc == 1);
++    lilbee_stamp_write(first_filename);
++#endif
++    }
++
+     closePayloadData();
+ #endif
+ 

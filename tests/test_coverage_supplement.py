@@ -510,8 +510,10 @@ class TestStatusFetchSourcesDistinguishesFailureFromEmpty:
 
 
 class TestAppCanonicalizeFallbackNotice:
-    """`LilbeeApp._canonicalize_persisted_models` setattrs a fallback
-    when canonicalize returns a different effective ref."""
+    """`LilbeeApp.canonicalize_persisted_models` setattrs a fallback
+    when canonicalize returns a different effective ref. It runs on the gate's
+    boot worker thread, so UI updates route through call_from_thread (run
+    inline here)."""
 
     async def test_fallback_writes_cfg_persists_and_toasts_the_reason(self, caplog) -> None:
         """Fallback writes cfg, persists via settings, logs WARNING, and toasts why.
@@ -557,11 +559,15 @@ class TestAppCanonicalizeFallbackNotice:
                     app, "notify", side_effect=lambda *a, **kw: notifications.append(a)
                 ),
                 mock.patch(
+                    "lilbee.cli.tui.app.call_from_thread",
+                    side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+                ),
+                mock.patch(
                     "lilbee.app.settings.persistent_settings.update_values"
                 ) as mock_update_values,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                await app._canonicalize_persisted_models()
+                app.canonicalize_persisted_models()
                 mock_update_values.assert_called_once()
                 persisted_args = mock_update_values.call_args.args
                 assert persisted_args[0] == cfg.data_root
@@ -608,10 +614,11 @@ class TestAppCanonicalizeFallbackNotice:
                 "lilbee.cli.tui.app.apply_settings_update",
                 side_effect=ValueError("is a chat model, not embedding"),
             ),
+            mock.patch("lilbee.cli.tui.app.call_from_thread"),
             caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
         ):
             # Must not raise.
-            await app._canonicalize_persisted_models()
+            app.canonicalize_persisted_models()
         assert any("ollama/nomic-embed-text" in r.getMessage() for r in caplog.records), (
             "a rejected swap must be logged at WARNING"
         )
@@ -622,7 +629,7 @@ class TestAppCanonicalizeFallbackNotice:
 
         This is the first-launch case: the default refs aren't downloaded
         yet and there's nothing to fall back to. The chat screen's
-        ``_needs_setup`` keys off the same unresolved state and opens the
+        ``needs_setup`` keys off the same unresolved state and opens the
         SetupWizard, which is the single voice for "pick a model." A toast
         here just duplicates the wizard (its text literally says "Opening
         setup"), so it's suppressed; the WARNING log stays as a breadcrumb.
@@ -656,10 +663,14 @@ class TestAppCanonicalizeFallbackNotice:
                 mock.patch.object(
                     app, "notify", side_effect=lambda *a, **kw: notifications.append(a)
                 ),
+                mock.patch(
+                    "lilbee.cli.tui.app.call_from_thread",
+                    side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+                ),
                 mock.patch("lilbee.cli.tui.app.apply_settings_update") as mock_apply,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
-                await app._canonicalize_persisted_models()
+                app.canonicalize_persisted_models()
                 mock_apply.assert_not_called()
             assert cfg.embedding_model == snapshot_embed, "an un-fallbackable ref is left intact"
             assert not notifications, "no toast: the SetupWizard is the single voice"

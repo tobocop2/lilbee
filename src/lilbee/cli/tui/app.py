@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
+import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
@@ -22,10 +23,14 @@ from lilbee.app.settings import apply_settings_update
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +92,11 @@ _VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
     "Wiki": _make_wiki,
     "Fleet": _make_fleet,
 }
+
+
+def _import_chat_stack() -> None:
+    """Pull in the chat screen's module graph, the TUI's heaviest import."""
+    import lilbee.cli.tui.screens.chat  # noqa: F401 - imported for its side effect
 
 
 def get_views() -> dict[str, Callable[[], Screen]]:
@@ -174,7 +184,17 @@ class LilbeeApp(App[None]):
     async def on_mount(self) -> None:
         if self._test_skip_auto_init:
             return
-        await self._canonicalize_persisted_models()
+        # Paint the gate before any other work so the terminal is never blank
+        # between the splash handing over and the first screen appearing. Nothing
+        # slower than widget mounting may run before the first frame: model
+        # canonicalization does disk and network probes, so it lives in the
+        # gate's boot worker, off this thread.
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+        gate = StartupGate()
+        # Awaited: the gate's boot worker treats an unmounted gate as "torn down",
+        # so it must be mounted before start_boot can hand over.
+        await self.push_screen(gate)
         self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the default.
@@ -184,12 +204,50 @@ class LilbeeApp(App[None]):
 
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         self._wire_worker_pool_notifications()
+        # Chat's import graph is the TUI's heaviest; loading it here would hold
+        # the first frame back for seconds on a cold disk, leaving the terminal
+        # blank exactly where the gate should be. Paint first, then load.
+        self.call_after_refresh(self._load_chat_screen, gate)
 
+    def _load_chat_screen(self, gate: StartupGate) -> None:
+        """Install chat after the first frame, importing off-thread only when cold.
+
+        The worker exists for the cold-disk case where chat's module graph takes
+        seconds to read; once the modules are in sys.modules the import is free,
+        and the extra thread hop would only delay the handover.
+        """
+        if "lilbee.cli.tui.screens.chat" in sys.modules:
+            self._install_chat_screen(gate)
+            return
+        self._chat_import_worker(gate)
+
+    @work(thread=True, name="chat_import", exit_on_error=False)
+    def _chat_import_worker(self, gate: StartupGate) -> None:
+        try:
+            _import_chat_stack()
+        except Exception as exc:
+            # Without chat the app has no home screen; exit loudly like the old
+            # inline import did rather than stranding the user on the gate.
+            log.exception("the chat screen failed to import")
+            call_from_thread(self, self._exit_on_chat_import_failure, str(exc))
+            return
+        call_from_thread(self, self._install_chat_screen, gate)
+
+    def _exit_on_chat_import_failure(self, error: str) -> None:
+        """Leave the TUI with the import error where the user can read it."""
+        self.exit(return_code=1, message=msg.CHAT_STACK_FAILED.format(error=error))
+
+    def _install_chat_screen(self, gate: StartupGate) -> None:
+        """Install chat and start the gate's boot; runs once chat's modules exist."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         chat = ChatScreen()
         self.install_screen(chat, name=_CHAT_SCREEN_NAME)
-        self.push_screen(_CHAT_SCREEN_NAME)
+        gate.start_boot()
+
+    def reveal_chat(self) -> None:
+        """Swap the startup gate for the chat screen once the engine has settled."""
+        self.switch_screen(_CHAT_SCREEN_NAME)
         if self._initial_view and self._initial_view != msg.DEFAULT_VIEW:
             self.switch_view(self._initial_view)
         # Cheap detection only: filesystem walk + hash compare. The user
@@ -214,12 +272,14 @@ class LilbeeApp(App[None]):
 
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
-    async def _canonicalize_persisted_models(self) -> None:
+    def canonicalize_persisted_models(self) -> None:
         """Swap stale persisted refs to a working fallback, persist, and log once.
 
-        Canonicalization can probe local model servers over HTTP/DNS, so it runs
-        off the event loop to keep the TUI from freezing at mount. The probes
-        finish before the chat screen installs, so it still sees a settled ref.
+        Canonicalization reads model files and can probe local model servers
+        over HTTP/DNS, so the startup gate's boot worker calls this off the
+        event loop before the services container builds; anything slower than
+        widget mounting on the mount path delays the TUI's first frame. UI
+        updates marshal back to the main thread.
         """
         from lilbee.modelhub.model_manager import (
             ValidationResult,
@@ -227,8 +287,8 @@ class LilbeeApp(App[None]):
             canonicalize_embedding_model,
         )
 
-        chat_canon = await asyncio.to_thread(canonicalize_chat_model)
-        embedding_canon = await asyncio.to_thread(canonicalize_embedding_model)
+        chat_canon = canonicalize_chat_model()
+        embedding_canon = canonicalize_embedding_model()
         for canon, field, label in (
             (chat_canon, "chat_model", "Chat"),
             (embedding_canon, "embedding_model", "Embedding"),
@@ -239,7 +299,7 @@ class LilbeeApp(App[None]):
 
             if canon.original == canon.effective:
                 # Nothing to fall back to: keep the ref and let the chat screen's
-                # _needs_setup open the SetupWizard, which is the single voice for
+                # needs_setup open the SetupWizard, which is the single voice for
                 # "pick a model." A toast here just duplicates the wizard (on first
                 # launch the default refs aren't downloaded yet), so log the reason
                 # as a breadcrumb but don't surface it.
@@ -268,7 +328,14 @@ class LilbeeApp(App[None]):
                 label=label, original=canon.original, effective=canon.effective, reason=reason
             )
             log.warning(notice)
-            self.notify(notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S)
+            call_from_thread(
+                self, self.notify, notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S
+            )
+        call_from_thread(self, self._refresh_title)
+
+    def _refresh_title(self) -> None:
+        """Re-derive the window title after canonicalization may have swapped the ref."""
+        self.title = msg.app_title(cfg.chat_model)
 
     def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
         """Republish on provider_availability_changed_signal when an API key changes."""
@@ -528,11 +595,19 @@ class LilbeeApp(App[None]):
             chat = self.get_screen(_CHAT_SCREEN_NAME, ChatScreen)
         except KeyError:
             return
-        self.switch_view("Chat")
 
-        def _start() -> None:
+        # switch_view drops the request outright while its re-entrancy guard is
+        # held (an earlier switch still in flight), so the retry must re-attempt
+        # the switch itself, not just wait for one that may never have started.
+        def _start(attempts: int = 600) -> None:
+            if not self.screen_stack:
+                return  # the app is tearing down; nothing left to sync
             if isinstance(self.screen, ChatScreen):
                 chat._run_sync()
+                return
+            if attempts > 0:
+                self.switch_view("Chat")
+                self.set_timer(0.05, lambda: _start(attempts - 1))
 
         self.call_later(_start)
 

@@ -365,6 +365,16 @@ class Config(BaseSettings):
     # for headless / scripted use where the first call doesn't need to be fast.
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
 
+    # Leave the engine fleet running on quit so the next launch adopts it warm.
+    # Off is the on-demand default: the engine loads per launch and frees VRAM
+    # on close.
+    keep_engine_warm: bool = ConfigField(default=False, writable=True)
+
+    # Idle minutes before a warm fleet unloads its weights (llama-swap ttl), so
+    # a warm engine never holds VRAM past this window. 0 keeps weights loaded
+    # forever. Read only when keep_engine_warm is on.
+    engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
+
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
     # <16 GiB -> 8192, 16-32 -> 12288, 32-64 -> 16384, >=64 -> 24576.

@@ -54,7 +54,7 @@ def _mock_services():
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
     with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,

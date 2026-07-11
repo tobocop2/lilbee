@@ -133,6 +133,7 @@
             <div class="tutorialtabs-chips">
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-whatis"   aria-controls="tutorial-pane-whatis"   aria-selected="true"  tabindex="0">what is lilbee</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-setup"    aria-controls="tutorial-pane-setup"    aria-selected="false" tabindex="-1">first run</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-startup"  aria-controls="tutorial-pane-startup"  aria-selected="false" tabindex="-1">startup</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-tour"     aria-controls="tutorial-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-chat"     aria-controls="tutorial-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
@@ -177,6 +178,13 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">First run: a setup wizard pulls a chat model and an embedder, then drops you straight into chat.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-startup" aria-labelledby="tutorial-tab-startup" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/cold-start.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">A cold start, end to end: the one-time unpack behind the wordmark, chat on screen in seconds, and the first answer showing the engine load inside its own bubble.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-tour" aria-labelledby="tutorial-tab-tour" hidden>

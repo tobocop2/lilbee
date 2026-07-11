@@ -527,6 +527,62 @@ touching the running fleet.
 - **Hardware QA:** `tools/qa/multi_gpu_smoke.py` validates enumeration, placement,
   concurrency, restart, and orphan cleanup on a real multi-GPU host.
 
+### Startup sequence and engine lifecycle
+
+The TUI opens the way Ollama and LM Studio do: the app is usable within a
+couple of seconds and the model loads in the background. The launcher never
+blocks on the engine; the same amber wordmark carries every stage. The onefile
+bootstrap paints an unpack progress bar (one-time; later launches skip it via
+the extraction stamp), parks the wordmark for the Python start, and the startup
+gate (`cli/tui/screens/startup_gate.py`) holds only while the services
+container builds. Nothing slower than widget mounting runs on the mount path:
+model canonicalization (disk reads, server probes) lives in the gate's boot
+worker, off the event loop. A prompt sent before the engine is ready waits
+inside its own answer bubble, whose thinking row renders the live load phase
+(`wait_chat_ready(on_progress=...)` in `app/placement.py`), byte progress
+included; a failed load lands there with the model hint.
+
+```mermaid
+flowchart TD
+    A([launch]) --> C["unpack progress bar<br/><i>first run only; later runs skip in ~1s</i>"]
+    C --> D["bee splash<br/>while Python starts"]
+    D --> E(["chat opens, ~2s<br/>engine loads in the background"])
+    E --> F{"prompt sent before<br/>the engine is ready?"}
+    F -- yes --> G["answer bubble shows the load<br/>live weight-read percentage"]
+    G --> H([answer streams])
+    F -- no --> H
+```
+
+By default the engine lives and dies with lilbee. With `keep_engine_warm` on,
+terminal shutdown detaches instead: the fleet state file gains a `detached`
+marker (owner-PID state files in `providers/fleet/swap_manager.py`) and the
+next launch adopts the running fleet after a health, version, and model match,
+skipping planning and the load entirely. llama-swap's per-model `ttl`
+(`engine_idle_ttl_minutes`, default five minutes) frees idle GPU memory on its
+own; `lilbee engine stop` frees everything from any terminal. `reap_stale`
+spares detached fleets only while the setting is on, so toggling it off cleans
+up at the next start of any lilbee process.
+
+```mermaid
+flowchart TD
+    subgraph OFF ["default: on-demand"]
+        q1["quit, kill, or terminal close"] --> s1["engine stopped<br/>GPU memory freed"]
+    end
+    subgraph ON ["keep_engine_warm on"]
+        q2[quit] --> d["fleet keeps running,<br/>state file marked detached"]
+        d --> l2([next launch]) --> ok{"healthy, same lilbee<br/>version, same models?"}
+        ok -- yes --> a["adopt: bind to the running fleet<br/>first answer immediate"]
+        ok -- no --> r["reap it, start fresh"]
+        d --> i["idle past the ttl<br/>default five minutes"] --> u["weights unloaded<br/>GPU memory freed"]
+        t["setting turned off"] --> r
+        e["lilbee engine stop"] --> s2["everything freed now"]
+    end
+```
+
+There is no background daemon: the only processes that outlive a session are
+the engine's own, and only when the user opted in. A crashed or force-killed
+session's engine is reclaimed at the next launch.
+
 ### Chat context-window management
 
 The fleet provider windows the request messages to fit the served chat
