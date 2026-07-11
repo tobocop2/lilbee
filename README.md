@@ -104,7 +104,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up.
-- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, terminal UI, Python, and llama.cpp) in ~270-400 MB, or ~0.6-1.15 GB with CUDA. No Docker, no vector database, no model server, nothing to keep running; it loads on demand. Comparable desktop AI apps (often Electron) ship hundreds of MB to several GB and do less.
+- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, terminal UI, Python, and llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA. No Docker, no vector database, no model server, nothing to keep running; it loads on demand. Comparable desktop AI apps (often Electron) ship hundreds of MB to several GB and do less.
 - **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code, with citations, instead of guessing. It can even adjust its own search as it works.
 
 ## Why lilbee
@@ -128,6 +128,9 @@ lilbee is built for consumer hardware and for people who don't want to babysit i
 
 It sits between two worlds: the desktop runners that get a model chatting on your machine ([Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai)), and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across every GPU in the machine, from one small file.
 
+<details>
+<summary><b>Full comparison table: lilbee vs Ollama, LM Studio, and vLLM. Click to expand.</b></summary>
+
 ### Full comparison table
 
 | | lilbee | [LM Studio](https://lmstudio.ai/) | [Ollama](https://ollama.com/) | [vLLM](https://github.com/vllm-project/vllm) |
@@ -141,16 +144,31 @@ It sits between two worlds: the desktop runners that get a model chatting on you
 | Built for many-user throughput at scale | ✓ [a data-parallel replica per GPU, requests load-balanced](docs/architecture.md#local-inference-engine) | — | [limited](https://docs.ollama.com/faq) | ✓ [this is its job](https://github.com/vllm-project/vllm) |
 | Web crawler built in | ✓ [built in](#offline-copies-of-websites) | — | — | — |
 | Long-term memory (opt-in) | ✓ [opt-in](docs/usage.md#memory) | — | — | — |
-| Single-file footprint (excludes models) | ✓ [273 MB macOS / 289 MB Windows / 403 MB Linux](https://github.com/tobocop2/lilbee/releases), whole stack (~0.6-1.1 GB with optional CUDA) | [~570 MB macOS / 617 MB Windows / 1.1 GB Linux](https://lmstudio.ai/download), Electron app | [164 MB macOS / ~1.4 GB Windows & Linux](https://github.com/ollama/ollama/releases), runner only | [multi-GB Python + CUDA stack](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) |
 | Interfaces | [TUI, CLI, MCP, REST, Python](docs/architecture.md#interfaces), Obsidian GUI | [desktop GUI, lms CLI, Python + TS SDKs, REST API, MCP client](https://lmstudio.ai/docs) | [desktop GUI, CLI, REST API, Python/JS libs](https://docs.ollama.com/) | [API server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/) |
 | Use your existing Ollama / LM Studio / cloud as a backend | ✓ [how](#already-running-ollama-or-lm-studio-keep-them) | — | — | — |
 
-<details>
-<summary><b>Everything you can do with lilbee, and more on how it compares. Click to expand.</b></summary>
+</details>
 
 Of the four, lilbee is the only one built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router.
 
-**On size:** lilbee ships as one self-contained file that bundles the whole stack (search engine, crawler, servers, TUI, model runner, and fleet manager): 273 MB on macOS, 289 MB on Windows, 403 MB on Linux. That undercuts LM Studio's Electron app on every platform (~570 MB macOS, ~617 MB Windows, ~1.1 GB Linux), and on Windows and Linux it's a fraction of Ollama's GPU-bundled [~1.4 GB download](https://github.com/ollama/ollama/releases). Ollama's macOS app is leaner at 164 MB, but it's a model runner that fetches its runtimes separately, where lilbee's one file already is the search engine and the servers. Only NVIDIA users who want the faster CUDA build reach for the larger artifact (~604 MB Windows, ~1.15 GB Linux), and even that stays at or under Ollama's.
+<details>
+<summary><b>Install size by platform: one file that undercuts the others while doing more. Click to expand.</b></summary>
+
+### Install size (single-file download, models excluded)
+
+Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's own release artifacts, linked.
+
+| | macOS | Windows | Linux | What you get |
+|---|---|---|---|---|
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 286 MB | 303 MB | 422 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 633 MB | 1.20 GB | the same whole stack, with the faster CUDA runtime |
+| [Ollama](https://github.com/ollama/ollama/releases) | 164 MB | 1.43 GB (CUDA bundled) | 1.44 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
+| [LM Studio](https://lmstudio.ai/download) | 569 MB | 617 MB | 1.10 GB | a desktop app (Electron) |
+| [vLLM](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) | n/a | n/a | multi-GB | a Python + CUDA serving engine |
+
+Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.
+
+</details>
 
 Already on Ollama or LM Studio? lilbee runs on top of them. Prefer a GUI to the terminal? The [Obsidian plugin](https://obsidian.lilbee.sh/) maps lilbee's model manager and search to a visual interface inside your vault.
 
@@ -238,8 +256,6 @@ lilbee runs entirely on your machine by default. Two ways to use a cloud model w
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
 Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
-
-</details>
 
 ## Run a model bigger than one card
 
