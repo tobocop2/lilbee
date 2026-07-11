@@ -60,8 +60,6 @@ Models are no different: lilbee has its own model manager and multi-GPU fleet, b
 > lilbee is in **active beta** development. Every release on PyPI is a pre-release; you must use `--pre` (or uv's `--prerelease=allow`) when installing. Interfaces, command names, and on-disk formats may shift between betas. Feedback, bug reports, and issues are very welcome; that's the whole point of the beta.
 >
 > Latest pre-release (always): [lilbee on PyPI →](https://pypi.org/project/lilbee/)
->
-> The multi-GPU and agent-integration features highlighted in this README are brand new: they live on `main` only for now, and they'll land in a formal release once they've been vetted.
 
 ---
 
@@ -147,6 +145,9 @@ It sits between two worlds: the desktop runners that get a model chatting on you
 | Interfaces | [TUI, CLI, MCP, REST, Python](docs/architecture.md#interfaces), Obsidian GUI | [desktop GUI, lms CLI, Python + TS SDKs, REST API, MCP client](https://lmstudio.ai/docs) | [desktop GUI, CLI, REST API, Python/JS libs](https://docs.ollama.com/) | [API server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/) |
 | Use your existing Ollama / LM Studio / cloud as a backend | ✓ [how](#already-running-ollama-or-lm-studio-keep-them) | — | — | — |
 
+<details>
+<summary><b>Everything you can do with lilbee, and more on how it compares. Click to expand.</b></summary>
+
 Ollama and LM Studio are great at running a model and chatting with it; vLLM is what you reach for to serve one model to many users at maximum throughput. lilbee is the only one of the four built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router.
 
 **On size:** lilbee ships as one self-contained file that bundles the whole stack (search engine, crawler, servers, TUI, model runner, and fleet manager): 273 MB on macOS, 289 MB on Windows, 403 MB on Linux. That undercuts LM Studio's Electron app on every platform (~570 MB macOS, ~617 MB Windows, ~1.1 GB Linux), and on Windows and Linux it's a fraction of Ollama's GPU-bundled [~1.4 GB download](https://github.com/ollama/ollama/releases). Ollama's macOS app is leaner at 164 MB, but it's a model runner that fetches its runtimes separately, where lilbee's one file already is the search engine and the servers. Only NVIDIA users who want the faster CUDA build reach for the larger artifact (~604 MB Windows, ~1.15 GB Linux), and even that stays at or under Ollama's.
@@ -169,7 +170,7 @@ If you've already got an MCP-aware coding agent running, it can do the setup: br
 
 ### Coding agents: opencode and hermes
 
-lilbee launches straight into [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) with your local fleet wired in, so a coding agent runs entirely on your machine. It calls lilbee's tools to search your library, swap models, and tune retrieval, and answers from your own files with file:line citations. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) lists the verified models and how the QA harness measures them.
+lilbee launches straight into [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) with your local fleet configured, so a coding agent runs entirely on your machine. It calls lilbee's tools to search your library, swap models, and tune retrieval, and answers from your own files with file:line citations. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) lists the verified models and how the QA harness measures them.
 
 ![opencode running a local model against lilbee's tools](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.gif)
 
@@ -237,6 +238,8 @@ lilbee runs entirely on your machine by default. Two ways to use a cloud model w
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
 
 Either way, your files and the index stay on your computer. Only what you ask and the snippets needed to answer it get sent to the cloud model.
+
+</details>
 
 ## Run a model bigger than one card
 
