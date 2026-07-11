@@ -79,8 +79,12 @@ def stub_embedder(monkeypatch):
 
 
 def _mock_batch_provider(text: str) -> MagicMock:
+    from lilbee.providers.base import ChatResult, FinishReason
+
     provider = MagicMock()
-    provider.chat.return_value = text
+    provider.chat.return_value = ChatResult(
+        text=text, tool_calls=(), finish_reason=FinishReason.STOP
+    )
     provider.get_capabilities.return_value = []
     return provider
 
@@ -565,6 +569,39 @@ class TestBatchGeneration:
             extract_concepts=True,
             written_concept_slugs=written,
         )
+        drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
+        collision_files = list(drafts_dir.glob("brake-system-collision-*.md"))
+        assert len(collision_files) == 1
+        assert PENDING_MARKER_KEYWORD_COLLISION in collision_files[0].read_text()
+
+    def test_below_threshold_concept_collision_still_diverts(self, stub_embedder, monkeypatch):
+        """Two sources proposing the same concept slug that BOTH score below the
+        faithfulness threshold must still produce a collision marker, not silently
+        overwrite each other at drafts/<slug>.md (bb-ziks.68)."""
+        svc = MagicMock()
+        svc.embedder.embed_batch.return_value = [[0.0] * cfg.embedding_dim]
+        monkeypatch.setattr("lilbee.wiki.quality.get_services", lambda: svc)
+
+        def _batch_text(source: str) -> str:
+            return (
+                "## Brake System\n\n> Brake system details. [^src1]\n"
+                "\n\n---\n"
+                "<!-- citations (auto-generated from _citations table -- do not edit) -->\n"
+                f'[^src1]: {source}, excerpt: "Brake system details."\n'
+            )
+
+        written: dict[str, str] = {}
+        for src in ("s1.txt", "s2.txt"):
+            generate_source_batch(
+                source=src,
+                entities=[],
+                chunks=[_chunk(src, 0, "Brake system details.")],
+                provider=_mock_batch_provider(_batch_text(src)),
+                store=MagicMock(),
+                config=cfg,
+                extract_concepts=True,
+                written_concept_slugs=written,
+            )
         drafts_dir = cfg.data_root / cfg.wiki_dir / WikiSubdir.DRAFTS
         collision_files = list(drafts_dir.glob("brake-system-collision-*.md"))
         assert len(collision_files) == 1

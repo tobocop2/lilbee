@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.retrieval.embedder import MAX_BATCH_CHARS, Embedder
+from lilbee.data.chunk import CHARS_PER_TOKEN
+from lilbee.retrieval.embedder import EMBED_BATCH_TARGET_SEQUENCES, Embedder
 
 
 @pytest.fixture()
@@ -68,9 +69,10 @@ class TestEmbedBatch:
         mock_provider.embed.assert_called_once_with(["hello", "world"])
 
     def test_batches_large_input(self, embedder, mock_provider):
-        """Texts exceeding MAX_BATCH_CHARS split into multiple API calls."""
-        chunk_size = min(cfg.max_embed_chars, MAX_BATCH_CHARS // 2 + 1)
-        n_to_fill = MAX_BATCH_CHARS // chunk_size + 1
+        """Texts exceeding the batch char budget split into multiple API calls."""
+        budget = embedder.batch_char_budget
+        chunk_size = min(embedder.embed_char_budget, budget // 2 + 1)
+        n_to_fill = budget // chunk_size + 1
         texts = ["x" * chunk_size for _ in range(n_to_fill + 1)]
         mock_provider.embed.side_effect = [
             [[0.1] * 768 for _ in range(n_to_fill)],
@@ -79,6 +81,21 @@ class TestEmbedBatch:
         result = embedder.embed_batch(texts)
         assert len(result) == n_to_fill + 1
         assert mock_provider.embed.call_count == 2
+
+    def test_batch_char_budget_feeds_full_engine_batches(self, embedder):
+        """The app-layer cap allows a full packed batch of max-size chunks."""
+        assert (
+            embedder.batch_char_budget
+            == EMBED_BATCH_TARGET_SEQUENCES * cfg.chunk_size * CHARS_PER_TOKEN
+        )
+
+    def test_many_default_chunks_fit_one_request(self, embedder, mock_provider):
+        """A typical bulk-ingest batch of default-size chunks lands in one embed request."""
+        chunk_chars = cfg.chunk_size * CHARS_PER_TOKEN
+        texts = ["x" * (chunk_chars // 2) for _ in range(EMBED_BATCH_TARGET_SEQUENCES)]
+        mock_provider.embed.return_value = [[0.1] * 768 for _ in texts]
+        embedder.embed_batch(texts)
+        assert mock_provider.embed.call_count == 1
 
     def test_truncates_long_texts_in_batch(self, embedder, mock_provider):
         mock_provider.embed.return_value = [[0.0] * 768, [0.0] * 768]
@@ -172,8 +189,47 @@ class TestValidateModel:
         try:
             mock_provider.list_models.return_value = []
             embedder = Embedder(cfg, mock_provider)
-            with mock.patch("lilbee.providers.llama_cpp.provider.resolve_model_path") as resolve:
+            with mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve:
                 assert embedder.embedding_available() is False
                 resolve.assert_not_called()
         finally:
             cfg.embedding_model = old
+
+
+class TestAsymmetricEmbed:
+    """bb-7z8: query vs document embedding gets the configured embedder's instruction."""
+
+    def test_symmetric_model_applies_no_prefix(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "gpustack/bge-m3-GGUF/b.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_query("hello")
+        assert mock_provider.embed.call_args[0][0] == ["hello"]
+
+    def test_instruct_model_prefixes_query_not_document(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "Qwen/Qwen3-Embedding-8B-GGUF/q.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_query("astar grid")
+        sent = mock_provider.embed.call_args[0][0][0]
+        assert sent.startswith("Instruct:") and sent.endswith("astar grid")
+
+        mock_provider.reset_mock()
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed("a document")  # qwen3 doc_prefix is empty
+        assert mock_provider.embed.call_args[0][0] == ["a document"]
+
+    def test_e5_model_prefixes_both_sides(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "intfloat/e5-large-v2-GGUF/e.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_query("q")
+        assert mock_provider.embed.call_args[0][0] == ["query: q"]
+
+        mock_provider.reset_mock()
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim]
+        embedder.embed_batch(["d"])
+        assert mock_provider.embed.call_args[0][0] == ["passage: d"]
+
+    def test_embed_query_batch_prefixes_each(self, embedder, mock_provider, monkeypatch):
+        monkeypatch.setattr(cfg, "embedding_model", "intfloat/e5-large-v2-GGUF/e.gguf")
+        mock_provider.embed.return_value = [[0.0] * cfg.embedding_dim] * 2
+        embedder.embed_query_batch(["a", "b"])
+        assert mock_provider.embed.call_args[0][0] == ["query: a", "query: b"]

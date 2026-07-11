@@ -19,8 +19,11 @@ from lilbee.cli.app import (
 from lilbee.cli.helpers import json_output
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.security import PathTraversalError
 from lilbee.wiki.shared import (
+    INVALID_DRAFT_SLUG_ERROR,
     WikiSubdir,
+    total_wiki_pages,
 )
 
 if TYPE_CHECKING:
@@ -160,7 +163,8 @@ def wiki_status(
 
     from lilbee.wiki.lint import lint_all as _lint_all
 
-    report = _lint_all(get_services().store)
+    # Read-only status: lint for counts without appending to the audit log.
+    report = _lint_all(get_services().store, record_log=False)
 
     if cfg.json_mode:
         json_output(
@@ -168,14 +172,14 @@ def wiki_status(
                 "wiki_enabled": cfg.wiki,
                 WikiSubdir.SUMMARIES: summaries,
                 WikiSubdir.DRAFTS: drafts,
-                "pages": summaries + drafts,
+                "pages": total_wiki_pages(wiki_root),
                 "lint_errors": report.error_count,
                 "lint_warnings": report.warning_count,
             }
         )
         return
 
-    color = "green" if cfg.wiki else "red"
+    color = theme.SUCCESS if cfg.wiki else theme.ERROR
     label = "enabled" if cfg.wiki else "disabled"
     console.print(f"Wiki: [{color}]{label}[/{color}]")
     console.print(f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]")
@@ -438,6 +442,16 @@ def wiki_drafts_list(
     console.print(table)
 
 
+def _draft_slug_error() -> None:
+    """Report a rejected (traversal) draft slug generically, without leaking paths."""
+    message = INVALID_DRAFT_SLUG_ERROR
+    if cfg.json_mode:
+        json_output({"error": message})
+    else:
+        console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+    raise typer.Exit(1) from None
+
+
 @drafts_app.command(name="diff")
 def wiki_drafts_diff(
     slug: str = typer.Argument(..., help="Draft slug (e.g. chevrolet)."),
@@ -457,6 +471,8 @@ def wiki_drafts_diff(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
+    except PathTraversalError:
+        _draft_slug_error()
 
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_diff", "slug": slug, "diff": diff})
@@ -483,6 +499,8 @@ def wiki_drafts_accept(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
+    except PathTraversalError:
+        _draft_slug_error()
 
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_accept", **result.to_dict()})
@@ -512,6 +530,8 @@ def wiki_drafts_reject(
         else:
             console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
         raise typer.Exit(1) from None
+    except PathTraversalError:
+        _draft_slug_error()
 
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_reject", "slug": slug})

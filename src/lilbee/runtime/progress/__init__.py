@@ -4,7 +4,6 @@ from lilbee.runtime.progress.callbacks import (
     DetailedProgressCallback,
     ProgressEvent,
     noop_callback,
-    shared_progress,
 )
 from lilbee.runtime.progress.types import (
     CRAWL_TOTAL_UNKNOWN,
@@ -47,5 +46,4 @@ __all__ = [
     "SseEvent",
     "SyncDoneEvent",
     "noop_callback",
-    "shared_progress",
 ]

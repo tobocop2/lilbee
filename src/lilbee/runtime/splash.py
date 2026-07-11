@@ -37,6 +37,10 @@ _active_handle: SplashHandle | None = None
 
 def _should_skip() -> bool:
     """Return True when the splash animation should be suppressed."""
+    if sys.platform == "win32":
+        # The splash hands its child a pipe fd via pass_fds, which subprocess
+        # does not support on Windows.
+        return True
     if not os.isatty(2):
         return True
     return bool(os.environ.get("LILBEE_NO_SPLASH", ""))
@@ -57,9 +61,11 @@ def start() -> SplashHandle | None:
 
     # Trusted: sys.executable is this interpreter, module path is static,
     # the one runtime value (read_fd) is an int from os.pipe().
+    # pass_fds keeps only read_fd open in the child (close_fds=False would
+    # leak all open descriptors, including any held by libraries).
     proc = subprocess.Popen(  # noqa: S603
         [sys.executable, "-m", "lilbee.runtime._splash_runner", str(read_fd)],
-        close_fds=False,
+        pass_fds=(read_fd,),
         stderr=None,
         stdout=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,

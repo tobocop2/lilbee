@@ -48,7 +48,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v6   # also the implicit tag-exists check
+      - uses: actions/checkout@v7   # also the implicit tag-exists check
         with:
           ref: ${{ inputs.tag }}
 
@@ -95,9 +95,8 @@ jobs:
       - name: Download wheel artifacts from the release-candidate run
         uses: actions/download-artifact@v8
         with:
-          pattern: wheel-default-*
+          name: wheel-default
           path: dist/
-          merge-multiple: true
           run-id: ${{ needs.guard.outputs.rc_run_id }}
           github-token: ${{ github.token }}
       - name: Download sdist from the release-candidate run
@@ -118,7 +117,7 @@ jobs:
     needs: [publish-pypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/fanout-packaging
         with:
           tag: ${{ inputs.tag }}

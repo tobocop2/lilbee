@@ -9,11 +9,16 @@ from lilbee.core.config import Config
 from lilbee.data.chunk import CHARS_PER_TOKEN
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
+from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedding_profile
 from lilbee.runtime.progress import DetailedProgressCallback, EmbedEvent, EventType, noop_callback
 
 log = logging.getLogger(__name__)
 
-MAX_BATCH_CHARS = 6000
+# Sequences per embed request, matching the local engine's per-request packing
+# cap so app-level batches feed full server batches. The engine re-splits by
+# exact token counts anyway; for remote SDK providers the resulting char budget
+# (~chunk_size-dependent, ~128 KiB at defaults) stays a safe request-size cap.
+EMBED_BATCH_TARGET_SEQUENCES = 64
 
 
 def _name_base(ref: ProviderModelRef) -> str:
@@ -31,7 +36,7 @@ def _remote_sees_model(ref: ProviderModelRef, provider: LLMProvider) -> bool:
 
 
 def _native_has_model(model: str) -> bool:
-    from lilbee.providers.llama_cpp.provider import resolve_model_path
+    from lilbee.providers.engine_params import resolve_model_path
 
     try:
         resolve_model_path(model)
@@ -77,6 +82,11 @@ class Embedder:
         return max(self._config.max_embed_chars, self._config.chunk_size * CHARS_PER_TOKEN)
 
     @property
+    def batch_char_budget(self) -> int:
+        """Per-request char cap: a full packed batch of maximum-size chunks."""
+        return EMBED_BATCH_TARGET_SEQUENCES * self._config.chunk_size * CHARS_PER_TOKEN
+
+    @property
     def truncated_total(self) -> int:
         """Cumulative count of chunks truncated since process start (thread-safe read)."""
         with self._truncated_lock:
@@ -117,12 +127,17 @@ class Embedder:
         """
         return is_model_available(self._config.embedding_model, self._provider)
 
+    def _profile(self) -> EmbeddingProfile:
+        """Instruction profile for the configured embedder (symmetric if unrecognized)."""
+        return resolve_embedding_profile(self._config.embedding_model)
+
     def embed(self, text: str) -> list[float]:
-        """Embed a single text string, return vector."""
-        vectors = self._provider.embed([self.truncate(text)])
-        result: list[float] = vectors[0]
-        self.validate_vector(result)
-        return result
+        """Embed a single document string, return vector."""
+        return self._embed_with([text], self._profile().doc_prefix)[0]
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a single query string, applying the model's query instruction if any."""
+        return self._embed_with([text], self._profile().query_instruction)[0]
 
     def embed_batch(
         self,
@@ -131,7 +146,33 @@ class Embedder:
         source: str = "",
         on_progress: DetailedProgressCallback = noop_callback,
     ) -> list[list[float]]:
-        """Embed multiple texts with adaptive batching, return list of vectors.
+        """Embed document texts with adaptive batching, return list of vectors."""
+        return self._embed_with(
+            texts, self._profile().doc_prefix, source=source, on_progress=on_progress
+        )
+
+    def embed_query_batch(
+        self,
+        texts: list[str],
+        *,
+        source: str = "",
+        on_progress: DetailedProgressCallback = noop_callback,
+    ) -> list[list[float]]:
+        """Embed query texts (query instruction applied), adaptive batching."""
+        return self._embed_with(
+            texts, self._profile().query_instruction, source=source, on_progress=on_progress
+        )
+
+    def _embed_with(
+        self,
+        texts: list[str],
+        prefix: str,
+        *,
+        source: str = "",
+        on_progress: DetailedProgressCallback = noop_callback,
+    ) -> list[list[float]]:
+        """Adaptive-batched embed of *texts*, each prefixed (query/document instruction).
+
         Fires ``embed`` progress events per batch when *on_progress* is provided.
         """
         if not texts:
@@ -139,13 +180,14 @@ class Embedder:
             return []
         truncated_before = self.truncated_total
         total_chunks = len(texts)
+        max_batch_chars = self.batch_char_budget
         vectors: list[list[float]] = []
         batch: list[str] = []
         batch_chars = 0
         for text in texts:
-            truncated = self.truncate(text)
+            truncated = prefix + self.truncate(text)
             chunk_len = len(truncated)
-            if batch and batch_chars + chunk_len > MAX_BATCH_CHARS:
+            if batch and batch_chars + chunk_len > max_batch_chars:
                 vectors.extend(self._provider.embed(batch))
                 on_progress(
                     EventType.EMBED,

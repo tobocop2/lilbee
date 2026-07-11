@@ -3,6 +3,7 @@
 # Rich markup colors: used in [tag]...[/tag] strings
 ERROR = "red"
 ERROR_BOLD = "bold red"
+SUCCESS = "green"
 WARNING = "yellow"
 ACCENT = "cyan"
 MUTED = "dim"

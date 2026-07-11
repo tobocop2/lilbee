@@ -1,0 +1,403 @@
+"""QA scenarios: tier prompts, the tool-dispatch PASS gate, answer-settle wait."""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from events import count_session_idles, count_tool_dispatches, has_session_error, read_events
+from harness_config import (
+    _FAIL_FAST_MARKERS,
+    _MULTI_TOOL_TIMEOUT_S,
+    _OPENCODE_BOOT_SETTLE_S,
+    _PANE_EXCERPT_TAIL,
+    _PANE_IDLE_TIMEOUT_S,
+    _POLL_INTERVAL_S,
+    _RAW_MARKER_FORBIDDEN,
+    ScenarioStatus,
+)
+from opencode_driver import tmux_capture, tmux_send
+from serve import _count_ok_chat_completions
+
+_SEARCH_TOOL_SUBSTR = "lilbee_search"
+"""Tool-name fragment the event tap matches for the dispatch gate (opencode
+may namespace MCP tools with the server prefix, so substring, not equality)."""
+
+
+@dataclass(frozen=True)
+class Scenario:
+    """One QA cell: send *prompt*, wait for *expected* / *forbidden* in the pane."""
+
+    name: str
+    prompt: str
+    expected: tuple[str, ...]
+    forbidden: tuple[str, ...]
+    timeout_s: float
+
+
+_TOOL_DISPATCH_MARKER = "⚙ lilbee_search"
+"""Glyph opencode renders ONLY when it dispatches a parsed tool call.
+
+opencode draws U+2699 GEAR before the tool name once it has extracted a
+structured ``tool_calls`` payload from lilbee's response and is invoking the
+MCP tool. A model that emits raw ``{"name":"lilbee_search",...}`` JSON, a
+model that never loads, or a serve that 500s never reaches this render path,
+so the glyph cleanly separates real end-to-end dispatch from opencode chrome
+(autocomplete hints, the MCP status panel, the picker badge) that merely
+mentions the tool name. Cross-checked against the launcher-serve.log chat-
+completion count so a stale pane can't carry a prior cell's glyph.
+"""
+
+
+# Phrases that mark a final answer the search could not ground in the reference.
+# A fresh dispatch + chat completion is not a PASS when the settled answer says
+# the indexed reference had nothing: the tier prompts target content the
+# reference does contain (AStarGrid2D.get_id_path, Object.connect), so that is a
+# retrieval/answer failure, not a correct "absent" response. Kept narrow and
+# scanned only on the settled answer tail (see downgrade_if_ungrounded) so
+# transient mid-search reasoning or an incidental negative does not false-fail.
+_UNGROUNDED_ANSWER_MARKERS: tuple[str, ...] = (
+    "not found in the indexed",
+    "not found in the knowledge base",
+    "no documentation exists",
+)
+# Pane-tail window scanned for ungrounded markers: large enough for the settled
+# final answer, small enough to exclude earlier mid-search reasoning.
+_UNGROUNDED_SCAN_TAIL = 2000
+
+
+# Tier prompts run against the indexed Godot 4 class reference. One prompt per
+# tier (same yardstick across same-tier models). Natural phrasing -- the model
+# should discover the lilbee_search MCP tool itself; only Smalls get a "look up"
+# nudge. See tools/qa/opencode/README.md for the rationale.
+_TIER_PROMPTS: dict[str, str] = {
+    # Small models answer common Godot API from memory (Node._process etc.), so the
+    # small-tier prompt is explicit ("search the indexed reference") and targets an
+    # obscure class detail the model cannot fabricate, forcing a real lilbee_search.
+    "small": (
+        "Search the indexed Godot 4 class reference for the AStarGrid2D class. "
+        "Then, using only what the search returns, tell me what its get_id_path "
+        "method returns."
+    ),
+    # Mid models discover the tool on their own: natural phrasing, anchored to exact
+    # signatures and flag values they would have to verify against the reference.
+    "mid": (
+        "In Godot 4 I am connecting signals between nodes. What is the exact "
+        "signature of Object.connect, and what do the CONNECT_DEFERRED and "
+        "CONNECT_ONE_SHOT flags do? Include their integer values."
+    ),
+    # Giants get the published level-generator prompt verbatim, from the
+    # godot-level-generator RAG-vs-no-RAG benchmark (docs/benchmarks/
+    # godot-level-generator.md). It only "passes" cleanly when the generated
+    # GDScript uses real Godot 4 API (set_cell, AStarGrid2D.get_point_path, etc.),
+    # verified via lilbee_search rather than hallucinated.
+    "giant": (
+        "make a procedural level generator that places wall and floor tiles and "
+        "scatters collectibles using pathfinding"
+    ),
+}
+
+
+def scenario_for_tier(tier: str) -> Scenario:
+    """The single QA scenario for a model's tier (Godot-reference prompt)."""
+    return Scenario(
+        name=f"{tier} godot",
+        prompt=_TIER_PROMPTS.get(tier, _TIER_PROMPTS["small"]),
+        expected=(_TOOL_DISPATCH_MARKER,),
+        forbidden=_RAW_MARKER_FORBIDDEN,
+        timeout_s=_MULTI_TOOL_TIMEOUT_S,
+    )
+
+
+@dataclass
+class ScenarioResult:
+    name: str
+    status: ScenarioStatus
+    detail: str = ""
+    pane_excerpt: str = ""
+    elapsed_s: float = 0.0
+
+
+_TOOL_TURN_MIN_COMPLETIONS = 2
+"""Chat completions a genuine tool turn drives: the model's tool-call turn plus
+the follow-up answer turn after opencode feeds the tool result back in.
+
+A prose answer -- the model declining to call the tool and replying from
+context -- drives only one completion. The scenarios share one opencode
+session, so an earlier scenario's gear glyph stays visible in the pane; gating
+on the glyph plus a single new completion let a prose turn pass on that stale
+glyph. Requiring the per-scenario completion delta to reach two means the gear
+must be backed by an actual ``opencode -> lilbee -> tool -> answer`` round-trip
+in *this* scenario, not carried over from the previous one.
+"""
+
+
+def _poll_verdict(
+    scenario: Scenario,
+    workspace: Path,
+    pane: str,
+    *,
+    baseline_calls: int,
+    baseline_dispatches: int,
+    start: float,
+) -> ScenarioResult | None:
+    """One poll iteration's verdict, or ``None`` to keep waiting.
+
+    PASS gate: a fresh ``lilbee_search`` dispatch event past this scenario's
+    baseline AND a fresh successful chat completion on lilbee's own serve, else
+    (tap never loaded) the pane gear marker plus ``_TOOL_TURN_MIN_COMPLETIONS``
+    fresh completions; forbidden-marker checks always run on the rendered pane.
+
+    The chat-completion requirement closes the Zen-fallback hole: if opencode's
+    model pin fails to resolve, opencode silently serves the chat from its own
+    hosted provider while still calling lilbee's MCP search tool, so the dispatch
+    event fires but lilbee serves no chat completion. Counting lilbee's own
+    ``POST /v1/chat/completions`` 200s proves lilbee served the chat, not just the
+    search.
+    """
+
+    def result(status: ScenarioStatus, detail: str) -> ScenarioResult:
+        return ScenarioResult(
+            name=scenario.name,
+            status=status,
+            detail=detail,
+            pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
+            elapsed_s=time.time() - start,
+        )
+
+    pane_lower = pane.lower()
+    fail_fast = next((m for m in _FAIL_FAST_MARKERS if m.lower() in pane_lower), None)
+    if fail_fast is not None:
+        return result(ScenarioStatus.FAIL, f"fail-fast marker hit: {fail_fast!r}")
+    forbidden_hits = [s for s in scenario.forbidden if s.lower() in pane_lower]
+    if forbidden_hits:
+        return result(ScenarioStatus.FAIL, f"forbidden substring(s) appeared: {forbidden_hits}")
+    events = read_events(workspace)
+    if has_session_error(events):
+        return result(ScenarioStatus.FAIL, "session.error event from opencode")
+    fresh_dispatches = count_tool_dispatches(events, _SEARCH_TOOL_SUBSTR) - baseline_dispatches
+    fresh_call = _count_ok_chat_completions(workspace) - baseline_calls
+    missing = [s for s in scenario.expected if s.lower() not in pane_lower]
+    return _dispatch_verdict(
+        result, fresh_dispatches, fresh_call, has_events=bool(events), missing=missing
+    )
+
+
+def _dispatch_verdict(
+    result: Callable[[ScenarioStatus, str], ScenarioResult],
+    fresh_dispatches: int,
+    fresh_call: int,
+    *,
+    has_events: bool,
+    missing: list[str],
+) -> ScenarioResult | None:
+    """Resolve the tool-dispatch PASS gate (event tap first, then pane fallback).
+
+    A fresh dispatch without a fresh lilbee chat completion is the Zen-fallback
+    signature (the model pin fell back to opencode's own hosted provider, which
+    still calls the MCP search tool), so it FAILs rather than passing on the
+    search alone.
+    """
+    if fresh_dispatches >= 1:
+        if fresh_call < 1:
+            return result(
+                ScenarioStatus.FAIL,
+                f"{fresh_dispatches} {_SEARCH_TOOL_SUBSTR} dispatch(es) but lilbee "
+                "served no chat completion: the model pin fell back to opencode's "
+                "own hosted provider, so lilbee served the search tool, not the chat",
+            )
+        return result(
+            ScenarioStatus.PASS,
+            f"{fresh_dispatches} {_SEARCH_TOOL_SUBSTR} dispatch(es) + lilbee chat completion",
+        )
+    if not has_events and not missing and fresh_call >= _TOOL_TURN_MIN_COMPLETIONS:
+        return result(
+            ScenarioStatus.PASS, "gear dispatch + fresh chat completion (pane fallback; no tap)"
+        )
+    return None
+
+
+def run_scenario(session: str, scenario: Scenario, workspace: Path) -> ScenarioResult:
+    """Send the prompt and poll until a FRESH tool dispatch lands or idle/timeout.
+
+    Verdicts come from :func:`_poll_verdict` (event tap first, pane fallback);
+    this loop owns only the prompt send, the pane-idle fail-fast, and the
+    overall scenario timeout.
+    """
+    baseline_calls = _count_ok_chat_completions(workspace)
+    baseline_dispatches = count_tool_dispatches(read_events(workspace), _SEARCH_TOOL_SUBSTR)
+    tmux_send(session, scenario.prompt)
+    start = time.time()
+    deadline = start + scenario.timeout_s
+    last_pane = ""
+    last_change_at = start
+    prev_pane = ""
+    while time.time() < deadline:
+        pane = tmux_capture(session)
+        last_pane = pane
+        # Full-content compare: a spinner swapping one glyph keeps the pane
+        # LENGTH constant, which the old length check read as idle.
+        if pane != "" and pane != prev_pane:
+            prev_pane = pane
+            last_change_at = time.time()
+        verdict = _poll_verdict(
+            scenario,
+            workspace,
+            pane,
+            baseline_calls=baseline_calls,
+            baseline_dispatches=baseline_dispatches,
+            start=start,
+        )
+        if verdict is not None:
+            return verdict
+        idle_for = time.time() - last_change_at
+        if idle_for > _PANE_IDLE_TIMEOUT_S and time.time() - start > _OPENCODE_BOOT_SETTLE_S:
+            return ScenarioResult(
+                name=scenario.name,
+                status=ScenarioStatus.TIMEOUT,
+                detail=f"pane idle {idle_for:.0f}s without a {_SEARCH_TOOL_SUBSTR} dispatch",
+                pane_excerpt=pane[-_PANE_EXCERPT_TAIL:],
+                elapsed_s=time.time() - start,
+            )
+        time.sleep(_POLL_INTERVAL_S)
+    return ScenarioResult(
+        name=scenario.name,
+        status=ScenarioStatus.TIMEOUT,
+        detail=f"no {_SEARCH_TOOL_SUBSTR} dispatch within {scenario.timeout_s:.0f}s",
+        pane_excerpt=last_pane[-_PANE_EXCERPT_TAIL:],
+        elapsed_s=scenario.timeout_s,
+    )
+
+
+def downgrade_if_ungrounded(result: ScenarioResult, settled_pane: str) -> ScenarioResult:
+    """Downgrade a PASS to FAIL when the settled answer is ungrounded.
+
+    Must run on the SETTLED pane (after :func:`wait_for_answer_settle`): the
+    verdict trips at dispatch + completion, before opencode finishes streaming
+    the answer, so grounding can only be judged once the answer is rendered.
+    Scans the answer tail for a marker that the search returned nothing usable.
+    Non-PASS results and grounded answers pass through unchanged.
+    """
+    if result.status is not ScenarioStatus.PASS:
+        return result
+    tail = settled_pane.lower()[-_UNGROUNDED_SCAN_TAIL:]
+    ungrounded = next((m for m in _UNGROUNDED_ANSWER_MARKERS if m.lower() in tail), None)
+    if ungrounded is None:
+        return result
+    return replace(
+        result,
+        status=ScenarioStatus.FAIL,
+        detail=f"dispatched + completed but the answer is ungrounded "
+        f"(search found nothing in the reference): {ungrounded!r}",
+    )
+
+
+_ANSWER_SETTLE_TIMEOUT_S = 240.0
+_ANSWER_SETTLE_QUIET_POLLS = 3
+_ANSWER_SETTLE_INTERVAL_S = 4.0
+
+
+def wait_for_answer_settle(session: str, workspace: Path) -> None:
+    """Wait for opencode to finish rendering the post-tool answer before capture.
+
+    ``run_scenario`` returns the instant the dispatch gate passes, but opencode
+    is still streaming the answer turn then, so a pane captured immediately
+    shows the tool call and no answer. The event tap ends the wait exactly when
+    opencode reports the turn done (``session.idle`` as the latest event); the
+    pane-quiet poll remains as the no-tap fallback, capped by a timeout so a
+    model that streams forever cannot hang the sweep.
+    """
+    deadline = time.monotonic() + _ANSWER_SETTLE_TIMEOUT_S
+    idles_at_entry = count_session_idles(read_events(workspace))
+    prev_pane = tmux_capture(session)
+    prev_event_count = -1
+    quiet = 0
+    while time.monotonic() < deadline:
+        time.sleep(_ANSWER_SETTLE_INTERVAL_S)
+        events = read_events(workspace)
+        if events:
+            # A fresh session.idle means opencode finished the turn. Trailing
+            # bookkeeping events (session.status etc.) can follow it, so also
+            # treat a quiet event stream as settled rather than requiring idle
+            # to be the literal last record.
+            if count_session_idles(events) > idles_at_entry:
+                return
+            if len(events) == prev_event_count:
+                quiet += 1
+                if quiet >= _ANSWER_SETTLE_QUIET_POLLS:
+                    return
+            else:
+                quiet = 0
+                prev_event_count = len(events)
+            continue
+        cur = tmux_capture(session)
+        if cur == prev_pane:
+            quiet += 1
+            if quiet >= _ANSWER_SETTLE_QUIET_POLLS:
+                return
+        else:
+            quiet = 0
+            prev_pane = cur
+
+
+# Multi-turn tool sequence: each turn is its own user message naming a NEW class
+# detail no single search answers, so the model must call lilbee_search again on
+# every turn. Topics differ from the single-call prompts above so the shared
+# session can't let the model answer a later turn from an earlier search.
+_MULTI_TURN_PROMPTS: dict[str, tuple[str, ...]] = {
+    "small": (
+        "Now search the indexed Godot 4 reference for what the TileMap.set_cell "
+        "method does, and answer using only what that search returns.",
+        "Now search the reference for what Tween.tween_property does and the "
+        "parameters it takes, and answer using only that search.",
+    ),
+    "mid": (
+        "Now look up in the Godot 4 reference what AStarGrid2D.get_point_path "
+        "returns and the parameters it takes, citing only the reference.",
+        "Now look up what the Camera2D limit_left and limit_right properties do, "
+        "citing only the reference.",
+    ),
+    "giant": (
+        "Now look up in the Godot 4 reference how TileMap.set_cell is called and its parameters.",
+        "Now look up AStarGrid2D.get_point_path and how it is used for pathfinding, "
+        "citing only the reference.",
+    ),
+}
+
+
+def run_multi_turn_scenario(session: str, tier: str, workspace: Path) -> ScenarioResult:
+    """Drive a multi-turn conversation; PASS only if EVERY turn lands a fresh dispatch.
+
+    Each turn is its own user message that needs a lilbee_search to answer, sent
+    one after another in the same session. :func:`run_scenario` rebaselines the
+    dispatch count at the start of each call, so a turn passes only on a dispatch
+    beyond the prior turns -- proving sequential tool use, not one lucky call.
+    """
+    prompts = _MULTI_TURN_PROMPTS.get(tier, _MULTI_TURN_PROMPTS["small"])
+    start = time.time()
+    for index, prompt in enumerate(prompts, start=1):
+        turn = Scenario(
+            name=f"{tier} multi-turn t{index}",
+            prompt=prompt,
+            expected=(_TOOL_DISPATCH_MARKER,),
+            forbidden=_RAW_MARKER_FORBIDDEN,
+            timeout_s=_MULTI_TOOL_TIMEOUT_S,
+        )
+        outcome = run_scenario(session, turn, workspace)
+        if outcome.status is not ScenarioStatus.PASS:
+            return ScenarioResult(
+                name=f"{tier} multi-turn",
+                status=outcome.status,
+                detail=f"turn {index}/{len(prompts)} did not dispatch: {outcome.detail}",
+                pane_excerpt=outcome.pane_excerpt,
+                elapsed_s=time.time() - start,
+            )
+        wait_for_answer_settle(session, workspace)
+    return ScenarioResult(
+        name=f"{tier} multi-turn",
+        status=ScenarioStatus.PASS,
+        detail=f"{len(prompts)} sequential tool turns each dispatched",
+        elapsed_s=time.time() - start,
+    )

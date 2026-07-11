@@ -42,6 +42,52 @@ for f in "$SITE_PKG"/*__mypyc*.so; do
     MYPYC_FLAGS+=("--include-data-files=$f=$(basename "$f")")
 done
 
+# Bundle the local inference engine when its package is installed. The release
+# build installs packaging/engine-wheel after build_llama_server.sh fills its
+# bin/ with the self-contained llama-server (binary + ggml/llama/mtmd libs with a
+# baked rpath) plus the llama-swap and gguf-parser helpers, so
+# --include-package-data ships the whole engine inside the onefile and the runtime
+# resolver finds each via lilbee_engine.get_*_path(). Optional so a build without
+# the engine wheel still succeeds (resolver falls back to PATH).
+LLAMA_SERVER_FLAGS=()
+if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
+    # --include-package pulls the __init__.py and, on Linux, the .so libraries
+    # (Nuitka classifies a bare .so as an extension module and places it beside
+    # the binary). --include-package-data ships the executables (llama-server,
+    # llama-swap, gguf-parser) as data.
+    LLAMA_SERVER_FLAGS+=(--include-package=lilbee_engine)
+    LLAMA_SERVER_FLAGS+=(--include-package-data=lilbee_engine)
+    # Platform gap: --include-package-data keeps the extensionless executables on
+    # Linux/macOS but drops the macOS .dylib / Windows .dll closure AND the
+    # Windows .exe executables (Nuitka routes those through its DLL/program
+    # handling, discarding what nothing it scans references) -- shipping a server
+    # that cannot start or is not found. Force every engine file in verbatim with
+    # --include-data-files (rpath and exec bit preserved), EXCEPT Linux .so: those
+    # are Python extension modules Nuitka already includes via --include-package,
+    # and data-files-ing a .so FATALs with an extension/data conflict.
+    ENGINE_BIN=$(uv run --no-sync python -c "import lilbee_engine, pathlib; print(pathlib.Path(lilbee_engine.__file__).parent / 'bin')")
+    for _f in "${ENGINE_BIN}"/*; do
+        [ -f "${_f}" ] || continue
+        case "${_f}" in
+            *.so | *.so.* ) continue ;;
+        esac
+        LLAMA_SERVER_FLAGS+=(--include-data-files="${_f}=lilbee_engine/bin/$(basename "${_f}")")
+    done
+fi
+
+# chardet ships its detection models as .bin data files that crawl4ai loads on
+# every http fetch. Neither --include-package-data nor --include-data-dir keeps
+# .bin (Nuitka does not classify it as data), so the frozen crawl path dies with
+# a missing models.bin. Force each .bin in explicitly. The package's .py/.so
+# come from --include-package=chardet above, so only the .bin data is listed.
+CHARDET_FLAGS=()
+CHARDET_MODELS=$(uv run --no-sync python -c "import chardet, pathlib; d = pathlib.Path(chardet.__file__).parent / 'models'; print(d if d.is_dir() else '')" 2>/dev/null || true)
+if [ -n "${CHARDET_MODELS}" ]; then
+    for _f in "${CHARDET_MODELS}"/*.bin; do
+        [ -f "${_f}" ] || continue
+        CHARDET_FLAGS+=(--include-data-files="${_f}=chardet/models/$(basename "${_f}")")
+    done
+fi
 # Spawned via `python -m`, never statically imported, so Nuitka's import
 # following misses it; include it explicitly or the splash subprocess dies.
 SPLASH_FLAGS=(--include-module=lilbee.runtime._splash_runner)
@@ -60,7 +106,6 @@ uv run --no-sync python -m nuitka \
     --nofollow-import-to=*.tests.* \
     --nofollow-import-to=tkinter --nofollow-import-to=_tkinter \
     --include-package=lancedb            --include-package-data=lancedb \
-    --include-package=llama_cpp \
     --include-package=tree_sitter_language_pack --include-package-data=tree_sitter_language_pack \
     --include-package=tiktoken           --include-package-data=tiktoken \
     --include-package=tiktoken_ext       --include-package-data=tiktoken_ext \
@@ -69,6 +114,7 @@ uv run --no-sync python -m nuitka \
     --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
     --include-package=crawl4ai           --include-package-data=crawl4ai \
     --include-package=fake_useragent     --include-package-data=fake_useragent \
+    --include-package=chardet            --include-package-data=chardet \
     --include-package=playwright \
     --enable-plugin=spacy \
     --include-package=spacy              --include-package-data=spacy \
@@ -86,7 +132,10 @@ uv run --no-sync python -m nuitka \
     --include-distribution-metadata=en_core_web_sm \
     --include-distribution-metadata=catalogue \
     --include-data-dir=src/lilbee/cli/tui=lilbee/cli/tui \
+    --include-data-dir=src/lilbee/skills=lilbee/skills \
     --include-data-files=src/lilbee/featured_models.toml=lilbee/featured_models.toml \
     "${SPLASH_FLAGS[@]}" \
     "${MYPYC_FLAGS[@]}" \
+    "${CHARDET_FLAGS[@]}" \
+    "${LLAMA_SERVER_FLAGS[@]}" \
     src/lilbee/__main__.py

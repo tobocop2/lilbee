@@ -1,14 +1,14 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release release-promote docs docs-api docs-site site site-serve site-tar dns-setup
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint:
-	uv run ruff check src/ tests/ tools/qa/
+	uv run ruff check src/ tests/ tools/qa/ scripts/qa/
 	uv run python scripts/check_style_rules.py
 
 format:
-	uv run ruff format src/ tests/ tools/qa/
+	uv run ruff format src/ tests/ tools/qa/ scripts/qa/
 
 format-check:
-	uv run ruff format --check src/ tests/ tools/qa/
+	uv run ruff format --check src/ tests/ tools/qa/ scripts/qa/
 
 typecheck:
 	uv run mypy src/lilbee/
@@ -17,7 +17,7 @@ test:
 	uv run pytest --cov=lilbee --cov-report=term-missing -v -n logical --dist loadgroup
 
 test-ci:
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -n logical --dist loadgroup
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v -n logical --dist loadgroup
 
 test-ci-serial:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist
@@ -63,8 +63,15 @@ release:  ## Bump the beta version, tag, and push; CI builds + publishes
 release-promote:  ## Rewrite notes as headings and mark a release latest (TAG=... or newest); run after the PyPI publish is green
 	@tag="$(TAG)"; \
 	[ -n "$$tag" ] || tag=$$(gh release list --repo tobocop2/lilbee --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\")))"); \
+	verified=$$(gh run list --repo tobocop2/lilbee --workflow=verify-release.yml --limit 50 --json displayTitle,conclusion -q "[.[] | select(.displayTitle == \"Verify release $$tag\" and .conclusion == \"success\")] | length"); \
+	if [ "$$verified" = "0" ]; then \
+	  echo "REFUSING to promote $$tag: no green 'Verify release' run for it."; \
+	  echo "The verify-release workflow must pass against the release assets first:"; \
+	  echo "  gh workflow run verify-release.yml -f tag=$$tag"; \
+	  exit 1; \
+	fi; \
 	prev=$$(gh release list --repo tobocop2/lilbee --exclude-drafts --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\") and . != \"$$tag\"))"); \
-	echo "release-promote: $$tag (notes diff from $$prev)"; \
+	echo "release-promote: $$tag (verified; notes diff from $$prev)"; \
 	notes=$$(mktemp); \
 	bash scripts/release_notes.sh tobocop2/lilbee "$$tag" "$$prev" > "$$notes"; \
 	gh release edit "$$tag" --repo tobocop2/lilbee --notes-file "$$notes" --prerelease=false --latest; \
@@ -95,6 +102,29 @@ site-serve: site  ## Build + serve the site at http://localhost:8000
 site-tar: site  ## Build the site and pack it into site.tar.gz
 	tar -czf site.tar.gz -C site .
 	@echo "wrote site.tar.gz"
+
+# --- opencode QA pod (SkyPilot + RunPod) ------------------------------------
+# Provisioning is SkyPilot; it reads the RunPod key from ~/.runpod/config.toml.
+# One-time: pip install "skypilot[runpod]" && runpod config && sky check runpod.
+# See tools/qa/opencode/README.md.
+QA_SKY := tools/qa/opencode
+
+qa-pod-volume:  ## Create/adopt the reusable QA network volume (once)
+	sky volumes apply $(QA_SKY)/qa-volume.sky.yaml
+
+qa-pod-up:  ## Provision the QA pod, bootstrap, and run the matrix (MATRIX_ARGS=... to narrow)
+	# -i 30 --down: autostop after 30 min idle and tear the pod down when the matrix
+	# finishes, so a finished or hung run never bills idle. The volume keeps the
+	# engine, models, and results; reels just re-launch (a warm volume boots fast).
+	# HF_TOKEN (from your shell) is passed as a --secret so gated pulls work and
+	# the token stays redacted in sky logs; unset = ungated models only.
+	sky launch -c lilbee-qa $(QA_SKY)/qa-pod.sky.yaml -y -i 30 --down $(if $(HF_TOKEN),--secret HF_TOKEN="$(HF_TOKEN)",) $(if $(MATRIX_ARGS),--env MATRIX_ARGS="$(MATRIX_ARGS)",)
+
+qa-pod-logs:  ## Follow the QA pod's run log
+	sky logs lilbee-qa
+
+qa-pod-down:  ## Tear down the QA pod (the volume and its state survive)
+	sky down lilbee-qa -y
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache htmlcov .coverage dist/ openapi.json site/api site/coverage site.tar.gz

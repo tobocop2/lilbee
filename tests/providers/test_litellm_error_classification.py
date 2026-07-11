@@ -100,7 +100,7 @@ def test_provider_error_recognized_kind_drops_raw_blob(fake_litellm: types.Modul
     blob = 'b\'{"error": {"code": 429, ...huge JSON dump...}}\''
     err = _provider_error("Chat failed", fake_litellm.RateLimitError(blob), "gemini/gemini-3.1-pro")
     assert err.kind == ProviderErrorKind.RATE_LIMIT
-    assert err.provider == "litellm"
+    assert err.provider == "remote"
     assert "gemini-3.1-pro" in str(err)
     assert "quota" in str(err).lower() or "rate" in str(err).lower()
     assert "lilbee" in str(err).lower()

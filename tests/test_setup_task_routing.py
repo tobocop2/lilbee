@@ -29,7 +29,22 @@ def _patch_setup_scan(chat: list[str] | None = None, embed: list[str] | None = N
 
 
 def _patch_setup_ram(ram_gb: float = 16.0):
-    return patch("lilbee.modelhub.models.get_system_ram_gb", return_value=ram_gb)
+    # setup.py does `from lilbee.modelhub.models import get_system_ram_gb`, so the
+    # name must be patched where it's looked up, not at its definition module.
+    return patch("lilbee.cli.tui.screens.setup.get_system_ram_gb", return_value=ram_gb)
+
+
+def _no_api_fallback():
+    """Suppress startup canonicalization's cloud-model fallback.
+
+    Tests that boot ``LilbeeApp`` to assert the setup wizard appears must run as
+    a clean install. An ambient cloud API key (common in a dev config) would
+    otherwise let canonicalization adopt a cloud chat model and skip setup.
+    """
+    return patch(
+        "lilbee.modelhub.model_manager.validation._first_available_api_chat_ref",
+        return_value=None,
+    )
 
 
 class _PlainApp(LilbeeAppHost):
@@ -42,18 +57,28 @@ class _PlainApp(LilbeeAppHost):
         self.push_screen(SetupWizard())
 
 
+# Generous ceiling: slow Windows CI runners need many pauses before the wizard's
+# model cards finish mounting; waiting for the screen alone races the cards.
+_WIZARD_WAIT_PAUSES = 60
+
+
+async def _wait_for_wizard_cards(app: LilbeeApp, pilot) -> SetupWizard:
+    """Wait until the SetupWizard is the active screen and its model cards exist."""
+    for _ in range(_WIZARD_WAIT_PAUSES):
+        await pilot.pause()
+        screen = app.screen
+        if isinstance(screen, SetupWizard) and list(screen.query(ModelCard)):
+            return screen
+    raise AssertionError("SetupWizard model cards never appeared")
+
+
 @pytest.mark.asyncio
 async def test_enter_on_non_installed_chat_card_submits_download() -> None:
     """Enter on a non-installed card submits to TaskBarController.start_download."""
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             assert chat_cards
             first = chat_cards[0]
@@ -73,20 +98,19 @@ async def test_non_installed_card_defers_apply_until_download_finishes() -> None
     from lilbee.core.config import cfg
 
     app = LilbeeApp()
-    chat_default = cfg.chat_model
     captured: dict[str, object] = {}
-    with _patch_setup_scan(), _patch_setup_ram():
+    with _patch_setup_scan(), _patch_setup_ram(), _no_api_fallback():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             assert not first.row.installed
             mock_grid = GridSelect()
+            # Capture after mount: startup canonicalization may already have
+            # adjusted the configured model. The contract under test is that
+            # picking a not-yet-downloaded card does not change it further until
+            # the download's on_success fires.
+            chat_default = cfg.chat_model
 
             def _capture(_pending, **kwargs):
                 captured["on_success"] = kwargs.get("on_success")
@@ -124,12 +148,7 @@ async def test_enter_on_installed_card_does_not_submit_download() -> None:
     installed_chat = [FEATURED_CHAT[0].ref]
     with _patch_setup_scan(chat=installed_chat), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             installed_cards = [c for c in wizard.query(ModelCard) if c.row.installed]
             assert installed_cards
             chosen = installed_cards[0]
@@ -148,12 +167,7 @@ async def test_enter_does_not_resubmit_same_model_twice() -> None:
     app = LilbeeApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             mock_grid = GridSelect()
@@ -189,14 +203,12 @@ async def test_commit_selection_with_no_ref_returns_early() -> None:
     from lilbee.catalog.types import ModelTask
 
     app = LilbeeApp()
-    with _patch_setup_scan(), _patch_setup_ram():
+    # Force fresh-install state: without this, an ambient cloud API key in the
+    # dev config lets startup canonicalization adopt a cloud chat model, so the
+    # app boots to the chat screen instead of the setup wizard. CI has no key.
+    with _patch_setup_scan(), _patch_setup_ram(), _no_api_fallback():
         async with app.run_test(size=(120, 40)) as pilot:
-            for _ in range(10):
-                await pilot.pause()
-                if isinstance(app.screen, SetupWizard):
-                    break
-            wizard = app.screen
-            assert isinstance(wizard, SetupWizard)
+            wizard = await _wait_for_wizard_cards(app, pilot)
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
 

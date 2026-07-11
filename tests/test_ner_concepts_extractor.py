@@ -412,3 +412,28 @@ class TestFunnelLogging:
         with _patch_pipeline({"t": doc}):
             extractor.extract([_chunk("s.txt", 0, "t")])
         assert not any("ner funnel" in r.message for r in caplog.records)
+
+
+class TestNlpLockSerialization:
+    def test_extract_holds_nlp_lock_during_pipe(self) -> None:
+        """The shared cached spaCy Language is iterated under _NLP_LOCK.
+
+        The Language is not safe for concurrent processing, so extract() must
+        hold the module lock across the lazy nlp.pipe iteration.
+        """
+        from lilbee.wiki.entity_extractor import ner_concepts
+
+        locked_during: list[bool] = []
+
+        class _LockProbePipeline:
+            def pipe(self, texts: Any) -> Any:
+                for _text in texts:
+                    locked_during.append(ner_concepts._NLP_LOCK.locked())
+                    yield _FakeDoc(ents=[_FakeSpan(text="Acme", label_="ORG")])
+
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        with patch.object(ner_concepts, "_load_spacy", return_value=_LockProbePipeline()):
+            extractor.extract([_chunk("a.txt", 0, "Acme makes things")])
+
+        assert locked_during == [True]  # lock held during pipe iteration
+        assert not ner_concepts._NLP_LOCK.locked()  # released afterwards

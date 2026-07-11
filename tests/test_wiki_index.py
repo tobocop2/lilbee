@@ -50,6 +50,11 @@ class TestParseTitle:
     def test_empty_string(self):
         assert parse_title("") == ""
 
+    def test_empty_title_falls_back_to_h1(self):
+        """An explicit empty ``title:`` falls back to the H1, not the literal 'None'
+        (matches browse._resolve_page_title)."""
+        assert parse_title("---\ntitle:\n---\n# Real Heading\nbody") == "Real Heading"
+
 
 class TestParseSourceCount:
     def test_single_source(self):

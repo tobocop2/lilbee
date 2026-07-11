@@ -46,8 +46,8 @@ def windowed_history(
     start = 0
     # ``len(messages) - 2`` keeps the newest user/assistant pair even when it
     # exceeds the budget on its own. The caller decides what to do if the
-    # final pair is over-sized (typically: send it anyway and let llama-cpp
-    # error if it must, rather than send nothing at all).
+    # final pair is over-sized (typically: send it anyway and let the chat
+    # server error if it must, rather than send nothing at all).
     while start < len(messages) - 2 and total > max_tokens:
         # Drop the front pair (user + assistant). If the front isn't a user
         # message (malformed input), drop one to realign.

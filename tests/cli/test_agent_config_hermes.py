@@ -1,0 +1,181 @@
+"""Tests for the hermes config-fragment builder and `lilbee agent-config hermes`."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+import yaml
+from typer.testing import CliRunner
+
+from lilbee.catalog.types import ModelTask
+from lilbee.cli import app
+from lilbee.cli.agent_configs.hermes import hermes_config
+from lilbee.core.config import cfg
+from lilbee.server.auth import server_json_path
+
+runner = CliRunner()
+
+_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+_TOKEN = "tok-abc"
+_PORT = 8123
+
+
+def test_provider_block_shape():
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080",
+        api_key="${LILBEE_TOKEN}",
+        model_refs=[_REF],
+        default_ref=_REF,
+        chat_ctx=8192,
+    )
+    prov = cfg_frag["providers"]["lilbee"]
+    assert prov["api"] == "http://127.0.0.1:8080/v1"
+    assert prov["api_key"] == "${LILBEE_TOKEN}"
+    assert prov["max_tokens"] == 8192  # output cap so input fits the window
+    # hermes shows the pinned id, so pin the clean agent id; lilbee's /v1 resolves
+    # it back to the full ref for routing.
+    assert prov["default_model"] == "Qwen3-0.6B"
+    assert prov["context_length"] == 8192
+    assert cfg_frag["model"] == {"default": "Qwen3-0.6B", "provider": "lilbee", "max_tokens": 8192}
+
+
+def test_context_file_max_chars_sized_to_window():
+    """The context-file budget rises to the served window so a large project
+    context file (the repo's AGENTS.md is ~49k chars) loads without hermes cutting
+    it to its 20000-char default."""
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF], chat_ctx=65536
+    )
+    assert cfg_frag["context_file_max_chars"] == 65536
+
+
+def test_context_file_max_chars_floored_at_hermes_default():
+    """A small served window never lowers the budget below hermes's own default."""
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF], chat_ctx=4096
+    )
+    assert cfg_frag["context_file_max_chars"] == 20000
+
+
+def test_context_file_max_chars_omitted_without_window():
+    """Without a known served window the key is omitted, leaving hermes's default."""
+    cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF])
+    assert "context_file_max_chars" not in cfg_frag
+
+
+def test_mcp_block_url_with_bearer_header():
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080", api_key="${LILBEE_TOKEN}", model_refs=[_REF]
+    )
+    mcp = cfg_frag["mcp_servers"]["lilbee"]
+    assert mcp["url"] == "http://127.0.0.1:8080/mcp"
+    # url alone = HTTP transport; a `transport` string makes hermes reject the entry.
+    assert "transport" not in mcp
+    assert mcp["headers"]["Authorization"] == "Bearer ${LILBEE_TOKEN}"
+
+
+def test_no_mcp_omits_block():
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080",
+        api_key="${LILBEE_TOKEN}",
+        model_refs=[_REF],
+        include_mcp=False,
+    )
+    assert "mcp_servers" not in cfg_frag
+
+
+def test_literal_api_key_inline_for_paste():
+    cfg_frag = hermes_config(
+        base_url="http://127.0.0.1:8080", api_key="literal-tok", model_refs=[_REF]
+    )
+    assert cfg_frag["providers"]["lilbee"]["api_key"] == "literal-tok"
+    assert cfg_frag["mcp_servers"]["lilbee"]["headers"]["Authorization"] == "Bearer literal-tok"
+
+
+def test_default_falls_back_to_first_model_ref():
+    cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[_REF])
+    assert cfg_frag["model"] == {"default": "Qwen3-0.6B", "provider": "lilbee", "max_tokens": 8192}
+    assert cfg_frag["providers"]["lilbee"]["default_model"] == "Qwen3-0.6B"
+
+
+def test_pins_clean_agent_id_for_subdir_quant_giant():
+    """A four-segment subdir-quant giant ref pins the clean id, not the GGUF path."""
+    giant = (
+        "unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/UD-Q4_K_XL/"
+        "Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf"
+    )
+    cfg_frag = hermes_config(base_url="http://127.0.0.1:8080", api_key="k", model_refs=[giant])
+    assert cfg_frag["providers"]["lilbee"]["default_model"] == "Qwen3-235B-A22B"
+    assert cfg_frag["model"]["default"] == "Qwen3-235B-A22B"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
+    snapshot = cfg.model_copy()
+    cfg.data_root = tmp_path
+    cfg.data_dir = tmp_path / "data"
+    cfg.data_dir.mkdir(exist_ok=True)
+    yield tmp_path
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture(autouse=True)
+def _stub_registry():
+    manifest = MagicMock()
+    manifest.ref = _REF
+    manifest.task = ModelTask.CHAT
+    registry = MagicMock()
+    registry.list_installed.return_value = [manifest]
+    services = MagicMock()
+    services.registry = registry
+    with patch("lilbee.cli.launchers.server.get_services", return_value=services):
+        yield
+
+
+def _write_server_session() -> None:
+    server_json_path().write_text(json.dumps({"token": _TOKEN}))
+    (cfg.data_dir / "server.port").write_text(str(_PORT))
+
+
+def test_agent_config_hermes_prints_yaml_block(monkeypatch):
+    _write_server_session()
+    monkeypatch.setattr("lilbee.cli.commands.agent_config.client_chat_ctx", lambda _p: None)
+    result = runner.invoke(app, ["agent-config", "hermes"])
+    assert result.exit_code == 0
+    block = yaml.safe_load(result.stdout)
+    assert "lilbee" in block["providers"]
+    assert block["providers"]["lilbee"]["api"] == f"http://127.0.0.1:{_PORT}/v1"
+    # Paste path embeds the literal token (explicit copy), not an env ref.
+    assert block["providers"]["lilbee"]["api_key"] == _TOKEN
+
+
+def test_agent_config_hermes_notes_mcp_extra(monkeypatch):
+    # Entry-point parity with `lilbee launch hermes`: the paste path can't install
+    # hermes's `mcp` extra, so it must at least tell the user it's needed.
+    _write_server_session()
+    monkeypatch.setattr("lilbee.cli.commands.agent_config.client_chat_ctx", lambda _p: None)
+    result = runner.invoke(app, ["agent-config", "hermes"])
+    assert result.exit_code == 0
+    assert "hermes-agent[mcp]" in result.stderr
+    assert yaml.safe_load(result.stdout) is not None  # YAML stays clean on stdout
+
+
+def test_agent_config_hermes_requires_running_server():
+    result = runner.invoke(app, ["agent-config", "hermes"])
+    assert result.exit_code == 1
+    assert "lilbee serve" in result.stderr
+
+
+def test_agent_config_hermes_carries_the_advertised_context_window(monkeypatch):
+    # Entry-point parity with `lilbee launch hermes`: the pasted block must carry the
+    # window a launcher would advertise, not omit it.
+    _write_server_session()
+    monkeypatch.setattr("lilbee.cli.commands.agent_config.client_chat_ctx", lambda _p: 40960)
+    result = runner.invoke(app, ["agent-config", "hermes"])
+    assert result.exit_code == 0
+    block = yaml.safe_load(result.stdout)
+    assert block["providers"]["lilbee"]["context_length"] == 40960

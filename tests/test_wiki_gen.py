@@ -91,8 +91,13 @@ def _mock_provider(
     faith_score: str = "0.85",
     capabilities: list[str] | None = None,
 ) -> MagicMock:
+    from lilbee.providers.base import ChatResult, FinishReason
+
+    def _result(text: str) -> ChatResult:
+        return ChatResult(text=text, tool_calls=(), finish_reason=FinishReason.STOP)
+
     provider = MagicMock()
-    provider.chat.side_effect = [wiki_text, faith_score]
+    provider.chat.side_effect = [_result(wiki_text), _result(faith_score)]
     provider.get_capabilities.return_value = (
         list(capabilities) if capabilities is not None else ["completion"]
     )
@@ -1080,13 +1085,15 @@ class TestDivertToDrafts:
     def test_writes_draft_with_note(self, tmp_path: Path):
         drafts_dir = tmp_path / "drafts"
         content = "# New Page\n\nNew content."
-        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text")
+        result = divert_to_drafts(content, drafts_dir, "my-page", 0.45, "diff text", "concepts")
         assert result.exists()
         assert result.parent == drafts_dir
         text = result.read_text()
         assert "DRIFT" in text
         assert "45%" in text
         assert "human review" in text
+        # The origin subdir rides the marker so accept restores the page to concepts/.
+        assert "origin: concepts" in text
         assert content in text
 
 
@@ -1280,6 +1287,28 @@ class TestBuildFrontmatter:
         fm = build_frontmatter(cfg, ["doc.md"], 0.9)
         assert "provenance:" not in fm
 
+    def test_source_with_quotes_and_backslashes_round_trips(self):
+        """A filename with quotes/backslashes stays valid YAML, not corrupt frontmatter."""
+        import yaml
+
+        from lilbee.wiki.page import build_frontmatter
+
+        nasty = 'weird"name\\path.txt'
+        fm = build_frontmatter(cfg, [nasty, "plain.md"], 0.9)
+        parsed = yaml.safe_load(fm.strip().strip("-").strip())
+        assert set(parsed["sources"]) == {nasty, "plain.md"}
+
+    def test_find_excerpt_location_matches_across_whitespace(self):
+        """A verified excerpt finds its page/line even when the chunk wraps it
+        across newlines (verify normalizes whitespace; location must too)."""
+        from lilbee.wiki.citations import _find_excerpt_location
+
+        chunk = _make_chunk(
+            "the quick\nbrown   fox jumps", page_start=3, page_end=3, line_start=7, line_end=8
+        )
+        loc = _find_excerpt_location("the quick brown fox", [chunk])
+        assert loc == (3, 3, 7, 8)
+
     def test_with_chunks_renders_provenance_block(self):
         from lilbee.wiki.page import build_frontmatter
 
@@ -1294,6 +1323,18 @@ class TestBuildFrontmatter:
         assert "source: doc.md" in fm
         assert "chunk_index: 0" in fm
         assert "chunk_index: 1" in fm
+
+    def test_provenance_records_effective_mode_not_configured(self, monkeypatch):
+        """When the configured entity mode falls back, provenance names the one that ran."""
+        from lilbee.core.config.enums import WikiEntityMode
+        from lilbee.wiki.page import build_frontmatter
+
+        monkeypatch.setattr(cfg, "wiki_entity_mode", WikiEntityMode.LLM_TAGGED)
+        chunks = [_make_chunk("body", source="doc.md", chunk_index=0)]
+        fm = build_frontmatter(cfg, ["doc.md"], 0.85, chunks=chunks)
+        # LLM_TAGGED isn't implemented; it falls back to ner_entities at run time.
+        assert "extraction_method: ner_entities" in fm
+        assert "llm_tagged" not in fm
 
     def test_provenance_round_trips_through_parse_frontmatter(self):
         from lilbee.wiki.page import build_frontmatter
@@ -1482,3 +1523,37 @@ class TestRunFullSynthesize:
         assert captured["config"] is cfg
         assert result["count"] == 1
         assert result["paths"][0].endswith("typing.md")
+
+
+class TestPersistAndFinalizeDrift:
+    """A drift-diverted regen must not leak its unreviewed body into the index or
+    citations under the published page's identity (bb-ziks.35)."""
+
+    def test_diversion_skips_publish_indexing(self):
+        from lilbee.wiki.persistence import persist_and_finalize
+
+        store = MagicMock(spec=Store)
+        target = TestWikiIndexing._target()
+        published = target.wiki_root / target.subdir / f"{target.slug}.md"
+        published.parent.mkdir(parents=True, exist_ok=True)
+        published.write_text("Old published body, unrelated to the regen.", encoding="utf-8")
+
+        old = cfg.wiki_drift_threshold
+        cfg.wiki_drift_threshold = 0.1
+        try:
+            page_path = persist_and_finalize(
+                "Brand new drifted body sharing nothing with the old page.",
+                target,
+                [],
+                [],
+                store,
+                cfg,
+            )
+        finally:
+            cfg.wiki_drift_threshold = old
+
+        assert WikiSubdir.DRAFTS in page_path.parts
+        assert "Old published body" in published.read_text()
+        store.add_citations.assert_not_called()
+        store.delete_citations_for_wiki.assert_not_called()
+        store.clear_table.assert_not_called()

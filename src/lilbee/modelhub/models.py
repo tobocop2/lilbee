@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
@@ -234,20 +235,11 @@ def ensure_chat_model() -> str | None:
     The caller is responsible for persisting the returned ref via the
     settings boundary; this function only handles the pull side.
     """
-    from lilbee.app.services import get_services
-
-    manager = get_services().model_manager
-    try:
-        installed = manager.list_installed()
-    except RuntimeError as exc:
-        raise RuntimeError(f"Cannot list models: {exc}") from exc
-
-    # Filter out the configured embedding model so we only check for chat
-    # candidates. The embedding ref points at one specific manifest; we
-    # match it exactly rather than by family stem.
-    embed_ref = cfg.embedding_model
-    chat_models = [m for m in installed if m != embed_ref]
-    if chat_models:
+    # Only an actual chat-task model counts. Treating any non-embedding install as
+    # a chat model let a pulled vision/reranker model, or any remote model the
+    # local servers report, short-circuit the bootstrap, leaving cfg.chat_model
+    # pointing at an unpulled default. list_installed_models() classifies by task.
+    if list_installed_models():
         return None
 
     ram_gb = get_system_ram_gb()
@@ -275,7 +267,6 @@ def list_installed_models() -> list[str]:
     """
     # circular: modelhub.model_manager.discovery imports modelhub.models at top
     from lilbee.modelhub.model_manager import classify_all_remote_models
-    from lilbee.modelhub.model_manager.discovery import reclassify_by_name
 
     try:
         names: list[str] = []

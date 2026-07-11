@@ -1,6 +1,7 @@
 """Persistent settings stored in config.toml alongside the data directory."""
 
 import logging
+import os
 import sys
 import threading
 import tomllib
@@ -43,7 +44,7 @@ def save(data_root: Path, settings: dict[str, str]) -> None:
     path = _config_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f'{k} = "{_escape_toml_string(v)}"\n' for k, v in sorted(settings.items())]
-    path.write_text("".join(lines))
+    path.write_text("".join(lines), encoding="utf-8", newline="\n")
     if sys.platform != "win32":
         path.chmod(0o600)  # pragma: no cover - POSIX-only; Windows has no 0600 mode bits
 
@@ -87,7 +88,18 @@ def delete_values(data_root: Path, keys: list[str]) -> None:
 
 
 def overlay_persisted_settings(root: Path) -> None:
-    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values."""
+    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values.
+
+    An explicit ``LILBEE_<FIELD>`` env var wins over config.toml (the documented
+    precedence): cfg already holds the env-loaded value, so a key whose env var is
+    set is left untouched rather than overwritten by the persisted file.
+
+    ``LILBEE_SKIP_TOML_CONFIG=1`` disables this overlay entirely, matching the
+    pydantic-settings source in ``config/model.py`` so the escape hatch is honored
+    on every config-read path (import-time load, CLI callback, MCP server).
+    """
+    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1":
+        return
     log = logging.getLogger(__name__)
     try:
         persisted = load(root)
@@ -97,8 +109,12 @@ def overlay_persisted_settings(root: Path) -> None:
     if not persisted:
         return
     overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
+    env_prefix = cfg.model_config.get("env_prefix", "")
     for key, raw in persisted.items():
         if key not in overlayable:
+            continue
+        # Non-empty env var wins over config.toml (matches pydantic env_ignore_empty=True).
+        if os.environ.get(f"{env_prefix}{key.upper()}", "") != "":
             continue
         # Legacy: set_setting used to persist None as "". Skip rather than
         # warn so a stale config doesn't spam logs on every CLI invocation.

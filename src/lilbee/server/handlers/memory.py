@@ -64,7 +64,7 @@ async def update_memory_shared(memory_id: str, shared: bool) -> MemoryFlagsRespo
 
 
 async def remove_memory(memory_id: str) -> MemoryRemoveResponse:
-    """Delete a memory by id."""
+    """Delete a memory by id; ``deleted`` is False when the id was unknown."""
     _require_memory()
-    forget(memory_id)
-    return MemoryRemoveResponse(removed=memory_id)
+    deleted = forget(memory_id)
+    return MemoryRemoveResponse(id=memory_id, deleted=deleted)

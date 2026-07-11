@@ -63,6 +63,20 @@ class TestUserMessage:
         children = list(msg.compose())
         assert len(children) == 2  # speaker label + content
 
+    async def test_question_with_markup_chars_does_not_crash(self) -> None:
+        """A question containing console-markup chars (``arr[0]``, ``[/]``) renders
+        literally; parsing it as markup would raise MarkupError and crash the TUI."""
+        from textual.app import App
+
+        from lilbee.cli.tui.widgets.message import UserMessage
+
+        class _App(App):
+            def compose(self) -> ComposeResult:  # module-level ComposeResult
+                yield UserMessage("what does arr[0] do? [/] and [bold")
+
+        async with _App().run_test() as pilot:
+            await pilot.pause()  # renders without raising MarkupError
+
 
 class TestAssistantMessageAsync:
     async def test_compose_yields_speaker_content_citation(self) -> None:
@@ -126,8 +140,25 @@ class TestAssistantMessageAsync:
                 am.finish(sources=None)
                 # finish() flushes the buffered tail.
                 assert mock_update.call_count == 1
+                # Reasoning is wrapped as literal Content (never parsed as markup).
                 last_call_text = mock_update.call_args_list[-1].args[0]
-                assert last_call_text == "a b c "
+                assert last_call_text.plain == "a b c "
+
+    async def test_reasoning_with_markup_chars_does_not_crash(self) -> None:
+        """Reasoning that quotes code with console-markup chars (e.g. ``[/]`` or an
+        unbalanced ``[bold]``) must render literally; passing the raw string to a
+        Static would raise MarkupError and kill the whole TUI."""
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_reasoning("quoting yield from _flush(buffer) then [/] and [bold]x")
+            await pilot.pause()
+            am.finish(sources=None)
+            await pilot.pause()  # renders without raising MarkupError
+            assert am._reasoning_static is not None
+            # The markup chars are preserved verbatim in the reasoning, not parsed.
+            assert "[/]" in "".join(am._reasoning_parts)
 
     async def test_append_content_updates_markdown(self) -> None:
         app = _MsgApp()
@@ -435,6 +466,69 @@ class TestTaskBar:
             bar = app.query_one(TaskBar)
             out = bar._spawning_workers_template(["chat", "embed"])
             assert out == "Starting chat, embed workers..."
+
+    def test_warm_detail_phases(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import _warm_detail
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        assert _warm_detail(None) is None
+        assert _warm_detail(WarmProgress(phase=WarmPhase.READY)) is None
+        # Each active phase carries a progress bar plus the phase word.
+        starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
+        assert "starting" in starting and "▓" in starting
+        loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
+        assert "loading engine" in loading and ("▓" in loading or "░" in loading)
+        reading = _warm_detail(
+            WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
+        )
+        assert "reading weights 42%" in reading
+        assert reading.startswith("▓▓▓▓▓")  # round(0.42 * 12) = 5 filled cells
+        # No total yet: percent floors to 0 instead of dividing by zero.
+        zero = _warm_detail(WarmProgress(phase=WarmPhase.READING_WEIGHTS))
+        assert "reading weights 0%" in zero
+
+    async def test_warm_line_shows_phase_when_chat_warming(self) -> None:
+        from unittest import mock
+
+        from lilbee.app.services import set_services
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        services = mock.MagicMock()
+        services.provider.role_ready.return_value = False
+        services.provider.warm_progress.return_value = WarmProgress(
+            phase=WarmPhase.READING_WEIGHTS, bytes_done=1, bytes_total=4
+        )
+        set_services(services)
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            warm = bar._warm_line()
+            assert warm.startswith("loading chat · ")
+            assert "reading weights 25%" in warm and "▓" in warm
+            bar._refresh_display()
+            await pilot.pause()
+            assert bar.display is True
+
+    def test_sweep_bar_animates_and_keeps_width(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import _WARM_BAR_WIDTH, _sweep_bar
+
+        frames = [_sweep_bar(t) for t in range(_WARM_BAR_WIDTH + 4)]
+        assert all(len(f) == _WARM_BAR_WIDTH for f in frames)  # fixed width every frame
+        assert len({*frames}) > 1  # the lit window moves, so frames differ
+        assert all("▓" in f for f in frames)  # always shows a lit window
+
+    async def test_warm_line_none_when_not_warming(self) -> None:
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            # Default mock services report ready, so there is no warm line.
+            assert bar._warm_line() is None
 
     async def test_renders_spawning_summary_when_idle_with_spawn(self) -> None:
         """When idle except for in-flight worker spawns, the bar surfaces the
@@ -948,6 +1042,7 @@ class TestModelPickerButton:
                 ),
             ):
                 btn._on_picker_dismissed(new_ref)
+                await app.workers.wait_for_complete()
                 await pilot.pause()
             store_mock.initialize_meta_if_legacy.assert_called_once()
             assert cfg.embedding_model == new_ref
@@ -1003,7 +1098,7 @@ class TestModelPickerButton:
         """Pressing Yes on the confirm modal applies the swap and reloads embed."""
         from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.providers.worker.transport import WorkerRole
+        from lilbee.providers.roles import WorkerRole
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -1027,8 +1122,9 @@ class TestModelPickerButton:
                 assert isinstance(app.screen, ConfirmDialog)
                 await pilot.press("y")
                 await pilot.pause()
+                await app.workers.wait_for_complete()
             assert cfg.embedding_model == new_ref
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
 
     async def test_embed_picker_dismiss_confirm_no_keeps_old_ref(self) -> None:
         """Pressing No on the confirm modal leaves cfg untouched and notifies cancel."""
@@ -1062,7 +1158,7 @@ class TestModelPickerButton:
     async def test_embed_picker_dismiss_empty_store_skips_confirm(self) -> None:
         """A store with no chunks (fresh install) swaps without the confirm modal."""
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.providers.worker.transport import WorkerRole
+        from lilbee.providers.roles import WorkerRole
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -1082,9 +1178,10 @@ class TestModelPickerButton:
                 ),
             ):
                 btn._on_picker_dismissed(new_ref)
+                await app.workers.wait_for_complete()
                 await pilot.pause()
             assert cfg.embedding_model == new_ref
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
 
     async def test_embed_picker_dismiss_reloads_only_embed_role(self) -> None:
         """Embed swap respawns just the embed worker. Chat stream stays untouched.
@@ -1095,7 +1192,7 @@ class TestModelPickerButton:
         role that actually changed.
         """
         from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
-        from lilbee.providers.worker.transport import WorkerRole
+        from lilbee.providers.roles import WorkerRole
 
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
@@ -1115,8 +1212,9 @@ class TestModelPickerButton:
                 ),
             ):
                 btn._on_picker_dismissed(new_ref)
+                await app.workers.wait_for_complete()
                 await pilot.pause()
-            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED)
+            services_mock.reload_role.assert_called_once_with(WorkerRole.EMBED, wait=True)
             mock_reset.assert_not_called()
 
     async def test_chat_picker_dismiss_does_not_reload_role(self) -> None:
@@ -2098,6 +2196,10 @@ class TestClassifyInstalledModels:
                 "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[blank, good],
             ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
+            ),
         ):
             MockRegistry.return_value.list_installed.return_value = []
             chat, _ = _classify_chat_embed()
@@ -2134,6 +2236,10 @@ class TestClassifyInstalledModels:
             mock.patch(
                 "lilbee.modelhub.model_manager.classify_all_remote_models",
                 return_value=[],
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.discover_api_models",
+                return_value={},
             ),
         ):
             MockRegistry.return_value.list_installed.return_value = [m_q4, m_q8]
@@ -2212,6 +2318,26 @@ class TestSlashSuggester:
 
         s = SlashSuggester(use_cache=False)
         assert await s.get_suggestion("") is None
+
+    def test_setting_names_exclude_non_settable(self) -> None:
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        names = SlashSuggester(use_cache=False)._get_setting_names()
+        assert "wiki_dir" not in names  # read-only: would be refused by /set
+        assert "chat_model" in names
+
+    def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
+        from unittest.mock import patch
+
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+
+        s = SlashSuggester(use_cache=False)
+        with patch(
+            "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
+        ):
+            assert s._get_model_names() == []
+        with patch("lilbee.cli.tui.widgets.suggester.get_services", side_effect=RuntimeError):
+            assert s._get_document_names() == []
 
     async def test_slash_prefix_suggests_command(self) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
@@ -2404,6 +2530,36 @@ class TestGetCompletions:
         (d / "testfile.txt").touch()
         r = get_completions(f"/add {d}/")
         assert any("testfile.txt" in x for x in r)
+
+    def test_path_exists_swallows_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A path the OS refuses to stat must read as missing, not raise."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets import autocomplete
+
+        def _boom(self: P) -> P:
+            raise OSError("bad path")
+
+        monkeypatch.setattr(P, "expanduser", _boom)
+        assert autocomplete._path_exists("~oops") is False
+
+    def test_add_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:
+        """Regression (bb-7wq): a fully-typed existing directory or file (no
+        trailing separator) yields no completions, so the dropdown collapses and
+        Enter submits ``/add <path>`` instead of accepting a child entry."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "sub").mkdir()
+        (d / "sub" / "a.py").touch()
+        # complete directory path, no trailing slash -> collapse (Enter submits)
+        assert get_completions(f"/add {d}/sub") == []
+        # complete file path -> collapse too
+        assert get_completions(f"/add {d}/sub/a.py") == []
+        # a trailing separator still descends to list the directory's contents
+        assert any("a.py" in x for x in get_completions(f"/add {d}/sub/"))
 
     def test_add_tilde_completions_not_filtered_out(self, tmp_path, monkeypatch) -> None:
         """Regression: ``~/`` expands to absolute paths that do not start with
@@ -6570,3 +6726,19 @@ class TestCatalogFocusEdgeGuards:
         assert screen.load_more_called is True
         assert screen.focus_next_called is False
         assert scroll_end_calls, "last-grid LeaveDown must scroll to end to reveal hint"
+
+
+class TestAppTitleSingleSource:
+    def test_app_title_format(self):
+        from lilbee.cli.tui import messages as msg
+
+        assert msg.app_title("owner/Model-GGUF/m.gguf") == "lilbee: owner/Model-GGUF/m.gguf"
+
+
+class TestPathExists:
+    def test_returns_false_when_path_resolution_raises(self) -> None:
+        """A path that can't even be resolved reports as absent, not an error."""
+        from lilbee.cli.tui.widgets import autocomplete
+
+        with mock.patch.object(autocomplete, "Path", side_effect=OSError("boom")):
+            assert autocomplete._path_exists("~/whatever") is False

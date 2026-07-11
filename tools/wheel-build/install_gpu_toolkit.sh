@@ -63,6 +63,16 @@ linux_install_cuda() {
       echo "CUDACXX=${cuda_home}/bin/nvcc"
     } >> "$GITHUB_ENV"
   fi
+  # Outside GitHub Actions (e.g. a QA pod) there is no $GITHUB_ENV/$GITHUB_PATH
+  # to carry the toolkit location to the next step. Emit the same facts as a
+  # sourceable file so the caller can put nvcc on PATH for the build.
+  if [ -n "${TOOLKIT_ENV_FILE:-}" ]; then
+    {
+      echo "export PATH=\"${cuda_home}/bin:\$PATH\""
+      echo "export CUDA_HOME=\"${cuda_home}\""
+      echo "export CUDACXX=\"${cuda_home}/bin/nvcc\""
+    } >> "$TOOLKIT_ENV_FILE"
+  fi
 }
 
 linux_install_rocm() {

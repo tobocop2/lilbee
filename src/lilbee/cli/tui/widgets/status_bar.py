@@ -90,7 +90,7 @@ class ViewTabs(Widget):
         # Compose every nav view including Wiki; visibility is toggled at
         # runtime via _apply_wiki_visibility so the user can flip the wiki
         # setting without restarting.
-        all_views = [*msg._BASE_NAV_VIEWS, "Wiki"]
+        all_views = list(msg.ALL_NAV_VIEWS)
         with Horizontal(id="view-tabs-row"):
             for i, name in enumerate(all_views):
                 if i > 0:

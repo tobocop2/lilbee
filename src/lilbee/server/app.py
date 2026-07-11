@@ -11,14 +11,17 @@ from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
-from lilbee.app.services import get_services
+from lilbee.app.services import get_services, peek_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
 from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.auth import AuthMiddleware, session_manager
+from lilbee.server.chat_completions_api.routes import completions_router
+from lilbee.server.mcp_mount import build_mcp_mount
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
+    add_upload_route,
     documents_list_route,
     documents_remove_route,
     export_route,
@@ -32,6 +35,7 @@ from lilbee.server.routes.general import (
     health_route,
     source_content_route,
     status_route,
+    warm_stream_route,
 )
 from lilbee.server.routes.memory import (
     memories_list_route,
@@ -51,6 +55,14 @@ from lilbee.server.routes.models import (
     models_set_reranker_route,
     models_set_vision_route,
     models_show_route,
+)
+from lilbee.server.routes.placement import (
+    gpu_stats_stream_route,
+    gpus_route,
+    placement_clear_route,
+    placement_preview_route,
+    placement_route,
+    placement_set_route,
 )
 from lilbee.server.routes.search import (
     ask_route,
@@ -103,6 +115,11 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
         yield
     finally:
         session_manager.cleanup()
+        # Terminate the provider's worker/fleet subprocesses so they don't
+        # outlive the server (e.g. on parent-death shutdown in managed mode).
+        svc = peek_services()
+        if svc is not None:
+            svc.provider.shutdown()
 
 
 def create_app() -> Litestar:
@@ -113,11 +130,14 @@ def create_app() -> Litestar:
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
     )
+    mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(
-        lifespan=[_lifespan],
+        lifespan=[_lifespan, mcp_session_lifespan],
         middleware=[DefineMiddleware(AuthMiddleware)],
         route_handlers=[
+            mcp_route,
             health_route,
+            warm_stream_route,
             status_route,
             config_route,
             config_defaults_route,
@@ -128,8 +148,10 @@ def create_app() -> Litestar:
             ask_stream_route,
             chat_route,
             chat_stream_route,
+            completions_router,
             sync_route,
             add_route,
+            add_upload_route,
             models_list_route,
             models_external_route,
             models_set_chat_route,
@@ -149,6 +171,12 @@ def create_app() -> Litestar:
             memories_remove_route,
             export_route,
             import_route,
+            placement_route,
+            placement_preview_route,
+            placement_set_route,
+            placement_clear_route,
+            gpus_route,
+            gpu_stats_stream_route,
             crawl_route,
             setup_crawler_route,
             setup_crawler_status_route,

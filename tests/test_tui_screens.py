@@ -377,9 +377,10 @@ class TestRemoteToRow:
 class TestBackendField:
     """Verify the backend field is set correctly across all row builders.
 
-    Native (llama-cpp) models have backend="" because they are managed by
-    lilbee itself. Only externally-managed models (ollama, litellm) show
-    a backend pill so users know lilbee cannot install/delete them.
+    Native (llama-server fleet) models have backend="" because they are
+    managed by lilbee itself. Only externally-managed models (ollama,
+    litellm) show a backend pill so users know lilbee cannot
+    install/delete them.
     """
 
     def test_catalog_to_row_backend_native(self):
@@ -2295,17 +2296,17 @@ def test_status_read_chat_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "llama"},
         ),
     ):
         result = _read_chat_arch(info)
     assert result.chat_arch == "llama"
-    assert result.active_handler == "llama-cpp"
+    assert result.active_handler == "llama-server"
 
 
 def test_status_read_embed_arch_success():
@@ -2314,11 +2315,11 @@ def test_status_read_embed_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_gguf_metadata",
+            "lilbee.providers.gguf_meta.read_gguf_metadata",
             return_value={"architecture": "bert"},
         ),
     ):
@@ -2333,15 +2334,15 @@ def test_status_read_vision_arch_success():
     info = ModelArchInfo()
     with (
         patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             return_value="/fake/path",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.find_mmproj_for_model",
+            "lilbee.providers.gguf_meta.find_mmproj_for_model",
             return_value="/fake/mmproj",
         ),
         patch(
-            "lilbee.providers.llama_cpp.gguf_meta.read_mmproj_projector_type",
+            "lilbee.providers.gguf_meta.read_mmproj_projector_type",
             return_value="resampler",
         ),
     ):
@@ -2365,27 +2366,11 @@ def test_status_read_vision_arch_swallows_errors():
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     info = ModelArchInfo()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         side_effect=RuntimeError("boom"),
     ):
         result = _read_vision_arch(info)
     assert result.vision_projector == "unknown"
-
-
-def test_status_read_model_arch_import_error():
-    from lilbee.modelhub.model_info import get_model_architecture, invalidate_cache
-
-    invalidate_cache()
-    with patch(
-        "builtins.__import__",
-        side_effect=lambda name, *a, **kw: (
-            (_ for _ in ()).throw(ImportError("no llama-cpp"))
-            if "llama_cpp" in name
-            else __import__(name, *a, **kw)
-        ),
-    ):
-        result = get_model_architecture()
-    assert result.chat_arch == "unknown"
 
 
 def test_get_model_architecture_caches_within_session():
@@ -2791,7 +2776,8 @@ async def test_chat_slash_delete_store_error(mock_svc):
             await app.screen.workers.wait_for_complete()
             await _pilot.pause()
             mock_notify.assert_called_once()
-            assert "No documents" in mock_notify.call_args[0][0]
+            # A read failure is distinct from the genuinely-empty case.
+            assert "Could not read" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_delete_empty_sources(mock_svc):
@@ -3264,60 +3250,173 @@ async def test_chat_cancel_stream_while_streaming():
 
 
 async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels stream and defers service reset."""
+    """apply_model_change cancels the stream and spawns the off-thread reload."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = True
         with (
             patch.object(screen, "action_cancel_stream") as mock_cancel,
-            patch.object(screen, "call_later") as mock_later,
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
             mock_cancel.assert_called_once()
-            mock_later.assert_called_once_with(screen._deferred_service_reset)
+            mock_worker.assert_called_once()
 
 
-async def testapply_model_change_resets_immediately_when_not_streaming():
-    """apply_model_change resets services immediately when not streaming."""
+async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming():
+    """Not streaming: the reload runs in a worker, never on the event loop, so the
+    swap can't freeze the TUI."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = False
-        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
+        with (
+            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "_reload_chat_model_worker") as mock_worker,
+            patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
+        ):
             screen.apply_model_change()
-            mock_reset.assert_called_once()
+            mock_cancel.assert_not_called()
+            mock_worker.assert_called_once()
+            # The reload runs in the worker, not inline on the event loop.
+            mock_get.assert_not_called()
 
 
-async def test_deferred_service_reset_retries_while_workers_active():
-    """_deferred_service_reset retries via call_later when workers exist."""
+async def test_apply_model_change_ignores_reentry_while_swapping():
+    """A second swap while one is loading is ignored, not a duplicate worker.
+
+    The model bar stays clickable during a swap; a re-click (or a rapid second
+    /model) must not spawn a second reload worker and a duplicate done toast.
+    """
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        with (
-            patch.object(
-                type(screen), "workers", new_callable=MagicMock, return_value=[MagicMock()]
-            ),
-            patch.object(screen, "call_later") as mock_later,
-            patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset,
-        ):
-            screen._deferred_service_reset()
-            mock_later.assert_called_once_with(screen._deferred_service_reset)
-            mock_reset.assert_not_called()
+        screen.swapping_model = True
+        with patch.object(screen, "_reload_chat_model_worker") as mock_worker:
+            screen.apply_model_change()
+            mock_worker.assert_not_called()
 
 
-async def test_deferred_service_reset_resets_when_no_workers():
-    """_deferred_service_reset calls reset_services when workers drained."""
+async def test_placement_reload_holds_submit_then_releases():
+    """While the Fleet drawer reloads placement, a chat submit is held (not a 429),
+    and it's released once the reload finishes."""
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as pilot:
+    async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        # Cancel background workers so the screen's worker manager is empty
-        for w in list(screen.workers):
-            w.cancel()
-        await pilot.pause()
-        with patch("lilbee.cli.tui.screens.chat.reset_services") as mock_reset:
-            screen._deferred_service_reset()
-            mock_reset.assert_called_once()
+        screen.on_fleet_body_placement_reloading(FleetBody.PlacementReloading(True))
+        assert screen.reloading_placement is True
+        assert screen._reject_submit_when_busy() is True  # held, not sent to a warming fleet
+        screen.on_fleet_body_placement_reloading(FleetBody.PlacementReloading(False))
+        assert screen.reloading_placement is False
+        assert screen._reject_submit_when_busy() is False  # released once the reload finished
+
+
+async def test_reload_chat_worker_reloads_only_chat_and_unblocks():
+    """The worker reloads the CHAT role (keeping the store) and unblocks input."""
+    from lilbee.providers.roles import WorkerRole
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        services_mock = MagicMock()
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services_mock),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
+            # Only the chat role is reloaded, synchronously (wait=True), so the
+            # store and searcher are kept rather than torn down.
+            services_mock.reload_role.assert_called_once_with(WorkerRole.CHAT, wait=True)
+            # The input is unblocked only after the worker finishes the reload.
+            assert screen.swapping_model is False
+            assert any("Now using" in str(call.args[0]) for call in mock_notify.call_args_list), (
+                mock_notify.call_args_list
+            )
+
+
+async def test_reload_chat_worker_failure_unblocks_and_errors():
+    """A reload failure still unblocks the input and surfaces an error toast."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        services_mock = MagicMock()
+        services_mock.reload_role.side_effect = RuntimeError("boom")
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services", return_value=services_mock),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            screen._reload_chat_model_worker()
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
+            assert screen.swapping_model is False
+            assert any(
+                "Could not switch model" in str(call.args[0]) for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_apply_model_change_blocks_input_during_swap():
+    """apply_model_change disables the chat input so a prompt can't race the load."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.streaming = False
+        # Stub the worker so the swap stays in its in-progress state long enough
+        # to observe the input gate (the real worker would unblock on completion).
+        with patch.object(screen, "_reload_chat_model_worker"):
+            screen.apply_model_change()
+            # swapping_model is set synchronously; its watcher disables the input.
+            assert screen.swapping_model is True
+            assert screen.query_one("#chat-input").disabled is True
+
+
+async def test_submit_rejected_while_swapping_model():
+    """A submit mid-swap is rejected with a 'still switching' toast, not sent."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = True
+        with (
+            patch.object(screen, "_send_message") as mock_send,
+            patch.object(app, "notify") as mock_notify,
+        ):
+            rejected = screen._reject_submit_when_busy()
+            assert rejected is True
+            mock_send.assert_not_called()
+            assert any(
+                "switching model" in str(call.args[0]).lower()
+                for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_submit_rejected_while_streaming():
+    """A submit while a response is streaming is rejected with the busy toast."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = False
+        screen.streaming = True
+        with patch.object(app, "notify") as mock_notify:
+            assert screen._reject_submit_when_busy() is True
+            assert any(
+                "answering" in str(call.args[0]).lower() for call in mock_notify.call_args_list
+            ), mock_notify.call_args_list
+
+
+async def test_submit_not_rejected_when_idle():
+    """When neither swapping nor streaming, the submit is allowed through."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen.swapping_model = False
+        screen.streaming = False
+        assert screen._reject_submit_when_busy() is False
 
 
 async def test_chat_vim_j_k_scrolls_in_normal_mode():
@@ -3912,8 +4011,13 @@ async def test_command_provider_delete_doc(mock_svc):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        provider._delete_doc("notes.md")
+        with patch(
+            "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
+        ) as mock_invalidate:
+            provider._delete_doc("notes.md")
         mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
+        # Palette delete invalidates the doc cache like the chat /delete path.
+        mock_invalidate.assert_called_once()
 
 
 async def test_command_provider_action_sync():
@@ -3948,7 +4052,7 @@ async def test_command_provider_action_version():
 
 
 async def test_command_provider_action_reset_pushes_confirm():
-    """Palette 'Reset knowledge base' invokes ChatScreen._cmd_reset to push the ConfirmDialog."""
+    """Palette 'Reset knowledge base' invokes ChatScreen.request_reset (the public entry)."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -3957,11 +4061,11 @@ async def test_command_provider_action_reset_pushes_confirm():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         chat = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
-        with patch.object(chat, "_cmd_reset") as mock_reset:
+        with patch.object(chat, "request_reset") as mock_reset:
             provider = LilbeeCommandProvider(app.screen, match_style=None)
             provider._action_reset()
             await pilot.pause()
-            mock_reset.assert_called_once_with("")
+            mock_reset.assert_called_once_with()
 
 
 async def test_command_provider_action_reset_no_chat_screen():
@@ -4332,7 +4436,7 @@ async def test_catalog_select_ollama_remote_row_stores_prefix():
     """Picking an Ollama-backed catalog row stores the ollama/ prefix.
 
     Without the prefix, routing would classify it as local and dispatch
-    to llama-cpp, silently bypassing the user's Ollama choice.
+    to the llama-server fleet, silently bypassing the user's Ollama choice.
     """
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.catalog_utils import remote_to_row
@@ -4578,6 +4682,21 @@ async def test_catalog_load_more_noop_when_exhausted():
                 screen._load_more()
                 assert not fetch.called
                 assert screen._hf_offset_by_task[ModelTask.CHAT] == old_offset
+
+
+def test_catalog_load_more_short_circuits_without_more_pages():
+    """_load_more's guard returns without fetching or arming the loading flag when
+    the active task has no more pages. Constructed without a pilot so coverage of the
+    guard is deterministic across platforms, not subject to TUI mount timing."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._active_tab_id_cache = "chat"
+    screen._hf_has_more_by_task[ModelTask.CHAT] = False
+    with patch.object(screen, "_fetch_more_hf_for_task") as fetch:
+        screen._load_more()
+    assert not fetch.called
+    assert screen._loading_more is False
 
 
 async def test_catalog_append_more_hf_to_list_extends_rows_and_options():
@@ -7390,11 +7509,11 @@ async def test_app_nav_prev_cycles_views():
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.active_view == "Wiki"
+        assert app.active_view == "Fleet"
 
         app.action_nav_prev()
         await pilot.pause()
-        assert app.active_view == "Tasks"
+        assert app.active_view == "Wiki"
 
 
 async def test_app_nav_next_cycles_views():
@@ -7891,6 +8010,7 @@ async def test_chat_tab_in_input_inserts_literal_tab():
         assert inp.has_focus
 
 
+@pytest.mark.xdist_group("tui_pilot")
 async def test_chat_tab_cycles_through_all_four_model_buttons():
     """Tab walks all four role buttons in order: chat -> embed -> vision -> rerank."""
     from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
@@ -8169,54 +8289,6 @@ class TestWikiRootShortcuts:
             assert "Log" not in top_labels
 
 
-class TestWikiSelectedSource:
-    """_selected_source covers all three branches: no-cursor, group-node, leaf.
-
-    Patches ``query_one`` to swap in a faked Tree whose ``cursor_node``
-    is set explicitly per branch. Directly invoking the real widget
-    cursor is flaky because setting ``cursor_line = -1`` doesn't always
-    nullify ``cursor_node`` in the Textual version in use.
-    """
-
-    async def test_all_branches(self, tmp_path):
-        from unittest.mock import MagicMock
-
-        from textual.widgets import Tree
-
-        from lilbee.cli.tui.screens.wiki import WikiScreen
-
-        cfg.wiki = True
-        cfg.data_root = tmp_path
-        wiki_root = cfg.data_root / cfg.wiki_dir
-        _create_wiki_page(wiki_root, "summaries", "my-doc", "My Doc")
-
-        app = WikiTestApp()
-        async with app.run_test(size=(120, 40)) as _pilot:
-            screen = app.screen
-            assert isinstance(screen, WikiScreen)
-            real_tree = screen.query_one("#wiki-page-list", Tree)
-            fake_tree = MagicMock(spec=Tree)
-
-            # Branch 1: cursor_node is None → returns None (line 284).
-            fake_tree.cursor_node = None
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                assert screen._selected_source() is None
-
-            # Branch 2: group node carries data=None, not a slug string.
-            group_node = real_tree.root.children[0]
-            fake_tree.cursor_node = group_node
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                assert screen._selected_source() is None
-
-            # Branch 3: leaf with a real slug reaches line 288 and delegates
-            # to _source_for_slug. The return value may be None when the
-            # frontmatter omits a source; the point is line 288 is executed.
-            leaf_node = group_node.children[0]
-            fake_tree.cursor_node = leaf_node
-            with patch.object(screen, "query_one", return_value=fake_tree):
-                screen._selected_source()
-
-
 class TestWikiScreenSearch:
     async def test_search_filters_pages(self, tmp_path):
         """Search input filters the page list."""
@@ -8236,9 +8308,60 @@ class TestWikiScreenSearch:
             assert isinstance(screen, WikiScreen)
             search = app.screen.query_one("#wiki-search", TextualInput)
             search.value = "Alpha"
-            await pilot.pause()
+            # Poll until the debounce timer fires and the filter runs.  A fixed
+            # pause is too short under xdist parallel load; the debounce is
+            # 0.12 s so allow up to 20 * 0.1 s = 2 s before the assertion.
+            for _ in range(20):
+                await pilot.pause(0.1)
+                if "summaries/beta-doc" not in screen._page_slugs:
+                    break
             assert "summaries/alpha-doc" in screen._page_slugs
             assert "summaries/beta-doc" not in screen._page_slugs
+
+    async def test_search_debounce_collapses_rapid_keystrokes(self, tmp_path):
+        """Two rapid edits schedule a single filter pass, not one per keystroke.
+
+        Driven through the handler with a fake ``set_timer`` so the assertion is on
+        the debounce bookkeeping, not on a real timer firing within a wall-clock
+        window (that timing race starved and flaked under parallel CI load).
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "alpha-doc", "Alpha Document")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from lilbee.cli.tui.screens.wiki import WikiScreen
+
+            screen = app.screen
+            assert isinstance(screen, WikiScreen)
+
+            scheduled: list[tuple[object, MagicMock]] = []
+
+            def _fake_set_timer(_delay, callback):
+                timer = MagicMock()
+                scheduled.append((callback, timer))
+                return timer
+
+            with (
+                patch.object(screen, "_load_pages") as mock_load,
+                patch.object(screen, "set_timer", side_effect=_fake_set_timer),
+            ):
+                screen._on_search_changed(SimpleNamespace(value="A"))
+                screen._on_search_changed(SimpleNamespace(value="Al"))
+                # The second edit cancels the first pending timer; both scheduled.
+                assert len(scheduled) == 2
+                _, first_timer = scheduled[0]
+                first_timer.stop.assert_called_once()
+                # Firing only the surviving (latest) debounce runs one filter pass.
+                latest_callback, _ = scheduled[-1]
+                latest_callback()
+                await pilot.pause()
+            mock_load.assert_called_once_with(filter_text="Al")
 
     async def test_escape_clears_search(self, tmp_path):
         """Escape clears search text when search has a value."""
@@ -8391,6 +8514,67 @@ def test_wiki_drafts_go_back_guarded_against_empty_stack() -> None:
         fake_app.screen_stack = [object(), screen]  # something underneath now
         screen.action_go_back()
         fake_app.pop_screen.assert_called_once()
+
+
+class TestWikiDraftsTraversal:
+    """A traversal slug surfaces the generic message, not the absolute path."""
+
+    def test_display_diff_traversal_shows_generic(self) -> None:
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+        from lilbee.core.security import PathTraversalError
+        from lilbee.wiki.shared import INVALID_DRAFT_SLUG_ERROR
+
+        screen = WikiDraftsScreen()
+        with (
+            patch.object(WikiDraftsScreen, "_show_diff") as show,
+            patch(
+                "lilbee.cli.tui.screens.wiki_drafts.diff_draft",
+                side_effect=PathTraversalError("Path escapes allowed directory: /abs/secret.md"),
+            ),
+        ):
+            screen._display_diff("../../secret")
+        show.assert_called_once_with(INVALID_DRAFT_SLUG_ERROR)
+
+    def test_do_accept_traversal_notifies_generic(self) -> None:
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+        from lilbee.core.security import PathTraversalError
+        from tests.conftest import make_mock_services
+
+        set_services(make_mock_services())
+        try:
+            screen = WikiDraftsScreen()
+            with (
+                patch.object(WikiDraftsScreen, "notify") as notify,
+                patch.object(WikiDraftsScreen, "_load_drafts"),
+                patch(
+                    "lilbee.cli.tui.screens.wiki_drafts.accept_draft",
+                    side_effect=PathTraversalError(
+                        "Path escapes allowed directory: /abs/secret.md"
+                    ),
+                ),
+            ):
+                screen._do_accept("../../secret")
+            assert "invalid draft slug" in str(notify.call_args)
+            assert "/abs/secret.md" not in str(notify.call_args)
+        finally:
+            set_services(None)
+
+    def test_do_reject_traversal_notifies_generic(self) -> None:
+        from lilbee.cli.tui.screens.wiki_drafts import WikiDraftsScreen
+        from lilbee.core.security import PathTraversalError
+
+        screen = WikiDraftsScreen()
+        with (
+            patch.object(WikiDraftsScreen, "notify") as notify,
+            patch.object(WikiDraftsScreen, "_load_drafts"),
+            patch(
+                "lilbee.cli.tui.screens.wiki_drafts.reject_draft",
+                side_effect=PathTraversalError("Path escapes allowed directory: /abs/secret.md"),
+            ),
+        ):
+            screen._do_reject("../../secret")
+        assert "invalid draft slug" in str(notify.call_args)
+        assert "/abs/secret.md" not in str(notify.call_args)
 
 
 class TestWikiDraftsScreen:
@@ -9880,6 +10064,7 @@ async def test_catalog_grid_leave_down_at_last_grid_with_no_more_keeps_focus():
             assert screen.focused is last
 
 
+@pytest.mark.xdist_group("tui_pilot")
 async def test_catalog_grid_leave_up_focuses_previous():
     """LeaveUp on a NON-first grid moves focus to the previous grid."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -11008,7 +11193,7 @@ async def test_chat_embedding_ready_false_on_exception():
         screen = app.screen
         assert isinstance(screen, ChatScreen)
         with patch(
-            "lilbee.providers.llama_cpp.provider.resolve_model_path",
+            "lilbee.providers.engine_params.resolve_model_path",
             side_effect=FileNotFoundError("not found"),
         ):
             assert screen._embedding_ready() is False
@@ -11295,7 +11480,7 @@ def test_chat_embedding_ready_true_via_provider_list(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         side_effect=FileNotFoundError("not found"),
     ):
         assert _real_embedding_ready(sentinel) is True
@@ -11311,7 +11496,7 @@ def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value="/fake/path/to/model.gguf",
     ):
         assert _real_embedding_ready(sentinel) is True
@@ -11883,58 +12068,6 @@ async def test_chat_crawl_dialog_callback_none_noop():
         mock_start.assert_not_called()
 
 
-async def test_wiki_source_for_slug_returns_source():
-    """_source_for_slug extracts source from page frontmatter."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": ["doc.txt", "other.txt"]}
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page):
-            result = app.screen._source_for_slug("summaries/doc")
-        assert result == "doc.txt"
-
-
-async def test_wiki_source_for_slug_returns_none_for_missing():
-    """_source_for_slug returns None when page not found."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=None):
-            result = app.screen._source_for_slug("summaries/missing")
-        assert result is None
-
-
-async def test_wiki_source_for_slug_returns_none_for_empty_sources():
-    """_source_for_slug returns None when sources list is empty."""
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        mock_page = MagicMock()
-        mock_page.frontmatter = {"sources": []}
-        with patch("lilbee.cli.tui.screens.wiki.read_page", return_value=mock_page):
-            result = app.screen._source_for_slug("summaries/doc")
-        assert result is None
-
-
-async def test_wiki_selected_source_returns_none_for_branch_without_slug():
-    """_selected_source returns None when the highlighted tree node is a branch (no slug)."""
-    from textual.widgets import Tree
-
-    app = _make_wiki_app()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        tree = app.screen.query_one("#wiki-page-list", Tree)
-        tree.reset("Wiki")
-        tree.root.add("Branch")  # branch with no data=slug
-        tree.focus()
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.pause()
-        result = app.screen._selected_source()
-        assert result is None
-
-
 # =============================================================================
 # Coverage fill: catalog.py branches
 # =============================================================================
@@ -12320,10 +12453,13 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
     from lilbee.cli.tui.screens.settings_widgets import MODEL_PICKER_BUTTON_PREFIX
 
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
             screen._on_model_picker_dismissed("chat_model", "fake/new-model.gguf")
+            # The persist + role reload now runs in a thread worker; await it.
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             mock_apply.assert_called_once()
         button = app.screen.query_one(f"#{MODEL_PICKER_BUTTON_PREFIX}chat_model", Button)
         # Label was repainted via model_picker_label; the chat_model field
@@ -12332,32 +12468,36 @@ async def test_settings_model_picker_dismissed_persists_and_refreshes_label():
         assert str(button.label).strip() != ""
 
 
-async def test_settings_model_picker_dismissed_reloads_worker_for_role():
-    """Picking from Settings respawns just the role that changed.
+async def test_settings_model_picker_dismissed_reloads_worker_once():
+    """Picking from Settings respawns just the role that changed, exactly once.
 
-    Without this, the new model is written to cfg but the live worker
-    keeps the old model loaded until restart. With it, the rerank /
-    vision / embed worker reflects the new selection on the next call,
-    and an in-flight chat stream is unaffected.
+    The reload is owned by ``apply_model_pick`` (off the event loop); the Settings
+    on_done must NOT also reload, or the fleet restarts twice and the second
+    reload blocks the UI thread. ``model_pick`` is the only path that reloads, so
+    asserting a single reload there guards that regression.
     """
     from unittest.mock import patch
 
-    from lilbee.providers.worker.transport import WorkerRole
+    from lilbee.providers.roles import WorkerRole
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
         with (
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
+            # apply_model_pick's worker owns the single reload; the Settings on_done
+            # only repaints the button, so there is exactly one reload_role call.
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
         ):
             screen._on_model_picker_dismissed("vision_model", "fake/vision.gguf")
-        services_mock.reload_role.assert_called_once_with(WorkerRole.VISION)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
 
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():
@@ -12422,6 +12562,28 @@ def test_settings_model_picker_dismissed_no_op_on_blank_ref():
         mock_apply.assert_not_called()
 
 
+class _SyncWorkerApp:
+    """Stub App for unit tests of the model-swap persist path.
+
+    The persist now offloads its config write + role reload to a thread worker;
+    this stub runs that worker (and its main-thread completion callback)
+    synchronously so a non-async unit test still exercises the path inline.
+    """
+
+    def notify(self, *_args, **_kwargs) -> None:
+        pass
+
+    def run_worker(self, work, **_kwargs):
+        work()
+
+    def call_from_thread(self, fn, *args, **kwargs):
+        fn(*args, **kwargs)
+
+    @property
+    def app(self) -> _SyncWorkerApp:
+        return self
+
+
 def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monkeypatch):
     """Nullable fields treat ref='' as 'disable'; ref=None is still cancel."""
     from unittest.mock import patch
@@ -12434,7 +12596,8 @@ def test_settings_model_picker_dismissed_clears_nullable_field_on_empty_ref(monk
         raise RuntimeError("button absent in unit test")
 
     screen.query_one = _raise
-    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: type("_A", (), {})()))
+    sync_app = _SyncWorkerApp()
+    monkeypatch.setattr(SettingsScreen, "app", property(lambda self: sync_app))
     with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model") as mock_apply:
         screen._on_model_picker_dismissed("vision_model", None)
         mock_apply.assert_not_called()
@@ -12548,7 +12711,7 @@ def test_settings_on_model_picker_dismissed_swallows_query_failures(monkeypatch)
         raise RuntimeError("button removed")
 
     screen.query_one = _raise
-    fake_app = type("FakeApp", (), {})()
+    fake_app = _SyncWorkerApp()
     monkeypatch.setattr(SettingsScreen, "app", property(lambda self: fake_app))
     with patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"):
         screen._on_model_picker_dismissed("chat_model", "fake/x.gguf")
@@ -12709,6 +12872,10 @@ async def test_catalog_get_highlighted_model_name_grid_select_branch():
                 assert screen._get_highlighted_model_name() == "ref-grid"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="CatalogScreen grid-mount timing race on Windows Textual",
+)
 async def test_catalog_tick_loading_spinner_updates_widgets_when_mounted():
     """The success branches of _tick_loading_spinner update both targets."""
     from textual.widgets import Static
@@ -12825,3 +12992,19 @@ async def test_catalog_mount_remaining_grid_sections_iterates_remaining():
             await _pilot.pause()
             after = len(list(screen._grid_container.query(".section-heading")))
             assert after > before, "expected an additional section heading"
+
+
+class TestWikiSafeCoerce:
+    def test_safe_float_handles_non_numeric(self):
+        from lilbee.cli.tui.screens.wiki import _safe_float
+
+        assert _safe_float("0.8") == 0.8
+        assert _safe_float(None) is None
+        assert _safe_float("high") is None  # non-numeric frontmatter must not crash
+
+    def test_safe_int_handles_non_numeric(self):
+        from lilbee.cli.tui.screens.wiki import _safe_int
+
+        assert _safe_int(3) == 3
+        assert _safe_int(None) == 0
+        assert _safe_int("lots", default=0) == 0

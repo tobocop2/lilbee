@@ -48,6 +48,11 @@ def compute_fit(model_size_bytes: int, available_bytes: int) -> FitChip:
 def available_memory_for_fit() -> int | None:
     """Bytes available to a model after ``cfg.gpu_memory_fraction``, or None on probe failure.
 
+    Sums every GPU's memory (``total=True``) because lilbee tensor-splits a model
+    too large for one card across the whole fleet; sizing the fit chip against a
+    single card would wrongly mark a runnable split model "won't run". The actual
+    per-card placement is decided precisely by the fleet planner at load time.
+
     Single entry point so the TUI and the HTTP catalog handler classify fit
     against the same number; otherwise the same model would chip differently in
     each surface.
@@ -55,7 +60,7 @@ def available_memory_for_fit() -> int | None:
     try:
         from lilbee.providers.model_cache import get_available_memory
 
-        return get_available_memory(cfg.gpu_memory_fraction)
+        return get_available_memory(cfg.gpu_memory_fraction, total=True)
     except Exception:
         return None
 

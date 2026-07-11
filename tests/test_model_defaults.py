@@ -1,29 +1,22 @@
-"""Tests for per-model default generation settings."""
+"""Tests for per-model default generation settings and the 3-layer merge."""
 
 from __future__ import annotations
 
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.providers.model_defaults import (
-    ModelDefaults,
-    clear_cache,
-    get_defaults,
-    parse_kv_parameters,
-    read_gguf_defaults,
-    set_defaults,
-)
+from lilbee.providers.model_defaults import ModelDefaults
 
 
 @pytest.fixture(autouse=True)
-def _isolated_defaults(tmp_path):
-    """Snapshot config and clear model defaults cache for each test.
+def _isolated_defaults():
+    """Snapshot config and clear model defaults for each test.
+
     Resets all generation-option fields to None so tests aren't affected
     by the user's local config.toml (e.g. temperature=0.6).
     """
     snapshot = cfg.model_copy()
     cfg.apply_model_defaults(None)
-    # Reset user-configurable generation fields so toml values don't leak
     cfg.temperature = None
     cfg.top_p = None
     cfg.top_k_sampling = None
@@ -31,147 +24,10 @@ def _isolated_defaults(tmp_path):
     cfg.num_ctx = None
     cfg.seed = None
     cfg.max_tokens = None
-    clear_cache()
     yield
-    clear_cache()
     for field_name in type(cfg).model_fields:
         setattr(cfg, field_name, getattr(snapshot, field_name))
     cfg.clear_model_defaults()
-
-
-class TestParseKvParameters:
-    def test_empty_string(self):
-        result = parse_kv_parameters("")
-        assert result == ModelDefaults()
-
-    def test_valid_params(self):
-        text = "temperature 0.7\ntop_p 0.9\nnum_ctx 4096\nrepeat_penalty 1.1"
-        result = parse_kv_parameters(text)
-        assert result.temperature == 0.7
-        assert result.top_p == 0.9
-        assert result.num_ctx == 4096
-        assert result.repeat_penalty == 1.1
-
-    def test_unknown_keys_skipped(self):
-        text = "temperature 0.7\nstop <|im_end|>\nmirostat 2\ntop_p 0.8"
-        result = parse_kv_parameters(text)
-        assert result.temperature == 0.7
-        assert result.top_p == 0.8
-        assert result.num_ctx is None
-
-    def test_invalid_values_skipped(self):
-        text = "temperature abc\ntop_p 0.9"
-        result = parse_kv_parameters(text)
-        assert result.temperature is None
-        assert result.top_p == 0.9
-
-    def test_whitespace_handling(self):
-        text = "  temperature   0.5  \n\n  num_ctx   2048  \n"
-        result = parse_kv_parameters(text)
-        assert result.temperature == 0.5
-        assert result.num_ctx == 2048
-
-    def test_single_word_lines_skipped(self):
-        text = "temperature\ntop_p 0.9"
-        result = parse_kv_parameters(text)
-        assert result.temperature is None
-        assert result.top_p == 0.9
-
-    def test_top_k_parsed_as_int(self):
-        result = parse_kv_parameters("top_k 40")
-        assert result.top_k == 40
-        assert isinstance(result.top_k, int)
-
-    def test_max_tokens_parsed(self):
-        result = parse_kv_parameters("max_tokens 2048")
-        assert result.max_tokens == 2048
-
-    def test_max_reasoning_chars_parsed(self):
-        result = parse_kv_parameters("max_reasoning_chars 80000")
-        assert result.max_reasoning_chars == 80_000
-
-
-class TestReadGgufDefaults:
-    def test_empty_dict(self):
-        result = read_gguf_defaults({})
-        assert result == ModelDefaults()
-
-    def test_valid_metadata(self):
-        metadata = {
-            "general.temperature": "0.8",
-            "general.top_p": "0.95",
-            "context_length": "8192",
-        }
-        result = read_gguf_defaults(metadata)
-        assert result.temperature == 0.8
-        assert result.top_p == 0.95
-        assert result.num_ctx == 8192
-
-    def test_missing_keys(self):
-        metadata = {"general.architecture": "llama", "general.name": "test"}
-        result = read_gguf_defaults(metadata)
-        assert result == ModelDefaults()
-
-    def test_repeat_penalty(self):
-        metadata = {"general.repeat_penalty": "1.1"}
-        result = read_gguf_defaults(metadata)
-        assert result.repeat_penalty == 1.1
-
-    def test_top_k(self):
-        metadata = {"general.top_k": "40"}
-        result = read_gguf_defaults(metadata)
-        assert result.top_k == 40
-
-    def test_invalid_value_skipped(self):
-        metadata = {"general.temperature": "not_a_number", "context_length": "4096"}
-        result = read_gguf_defaults(metadata)
-        assert result.temperature is None
-        assert result.num_ctx == 4096
-
-    def test_invalid_context_length_skipped(self):
-        metadata = {"context_length": "abc"}
-        result = read_gguf_defaults(metadata)
-        assert result.num_ctx is None
-
-    def test_zero_context_length_skipped(self):
-        """Published GGUFs reporting ``context_length=0`` must not seed num_ctx=0,
-        which would propagate through to ``Llama(n_ctx=0)`` and trip ggml's
-        Vulkan dispatch into STATUS_HEAP_CORRUPTION on Windows."""
-        metadata = {"context_length": "0"}
-        result = read_gguf_defaults(metadata)
-        assert result.num_ctx is None
-
-    def test_negative_context_length_skipped(self):
-        metadata = {"context_length": "-1"}
-        result = read_gguf_defaults(metadata)
-        assert result.num_ctx is None
-
-    def test_max_reasoning_chars_from_gguf(self):
-        metadata = {"general.max_reasoning_chars": "120000"}
-        result = read_gguf_defaults(metadata)
-        assert result.max_reasoning_chars == 120_000
-
-
-class TestCache:
-    def test_get_returns_none_when_empty(self):
-        assert get_defaults("nonexistent") is None
-
-    def test_set_and_get(self):
-        defaults = ModelDefaults(temperature=0.5)
-        set_defaults("test-model", defaults)
-        assert get_defaults("test-model") is defaults
-
-    def test_clear_removes_all(self):
-        set_defaults("a", ModelDefaults(temperature=0.1))
-        set_defaults("b", ModelDefaults(temperature=0.2))
-        clear_cache()
-        assert get_defaults("a") is None
-        assert get_defaults("b") is None
-
-    def test_overwrite(self):
-        set_defaults("m", ModelDefaults(temperature=0.1))
-        set_defaults("m", ModelDefaults(temperature=0.9))
-        assert get_defaults("m") == ModelDefaults(temperature=0.9)
 
 
 class TestGenerationOptions3LayerMerge:
@@ -211,7 +67,7 @@ class TestGenerationOptions3LayerMerge:
         assert result == {"temperature": 0.5}
 
     def test_model_defaults_fill_gaps(self):
-        """Model defaults provide values where user hasn't set any."""
+        """Model defaults provide values where the user hasn't set any."""
         cfg.apply_model_defaults(ModelDefaults(temperature=0.7, top_p=0.9, num_ctx=8192))
         cfg.temperature = 0.5
         cfg.max_tokens = None
@@ -268,24 +124,3 @@ class TestGenerationOptions3LayerMerge:
         assert result["top_p"] == 0.9  # model default fills gap
         assert result["num_ctx"] == 8192  # per-call wins over model
         assert result["top_k"] == 40  # model default fills gap
-
-
-class TestLiteLLMCacheIntegration:
-    """Test that _cache_ollama_defaults correctly parses and stores."""
-
-    def test_cache_ollama_defaults(self):
-        from lilbee.providers.litellm_sdk import _cache_ollama_defaults
-
-        _cache_ollama_defaults("qwen3:8b", "temperature 0.7\nnum_ctx 32768\nstop <|im_end|>")
-        defaults = get_defaults("qwen3:8b")
-        assert defaults is not None
-        assert defaults.temperature == 0.7
-        assert defaults.num_ctx == 32768
-
-    def test_cache_ollama_defaults_empty(self):
-        from lilbee.providers.litellm_sdk import _cache_ollama_defaults
-
-        _cache_ollama_defaults("empty-model", "")
-        defaults = get_defaults("empty-model")
-        assert defaults is not None
-        assert defaults == ModelDefaults()

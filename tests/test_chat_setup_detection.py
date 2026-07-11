@@ -33,7 +33,7 @@ def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
     """Fresh data dir must trigger the wizard even when models resolve globally."""
     assert not cfg.lancedb_dir.exists()
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ) as resolve:
         assert _make_screen()._needs_setup() is True
@@ -64,7 +64,7 @@ def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir
     cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
     cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ):
         assert _make_screen()._needs_setup() is False
@@ -78,7 +78,7 @@ def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
     cfg.chat_model = "owner/chat-GGUF/chat.Q4_K_M.gguf"
     cfg.embedding_model = "owner/embed-GGUF/embed.Q8_0.gguf"
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         side_effect=ProviderError("no such model", provider="llama-cpp"),
     ):
         assert _make_screen()._needs_setup() is True
@@ -101,7 +101,7 @@ def test_needs_setup_skips_native_probe_for_usable_remote_models(isolated_data_d
             "lilbee.modelhub.model_manager.validate_persisted_model",
             return_value=ValidationResult.OK,
         ),
-        mock.patch("lilbee.providers.llama_cpp.provider.resolve_model_path") as resolve,
+        mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve,
     ):
         assert _make_screen()._needs_setup() is False
         resolve.assert_not_called()
@@ -133,7 +133,7 @@ def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
     assert cfg.lancedb_dir.exists()
     assert not cfg.lancedb_dir.is_dir()
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ):
         assert _make_screen()._needs_setup() is True

@@ -13,9 +13,12 @@ import pytest
 
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
+    SKIP_REASON_FILENAME,
     clear_skip_markers,
     load_skip_markers,
+    load_skip_reasons,
     write_skip_markers,
+    write_skip_reasons,
 )
 
 
@@ -118,3 +121,42 @@ def test_write_is_atomic_via_tmp_rename(tmp_path: Path, monkeypatch: pytest.Monk
     write_skip_markers(tmp_path, {"k": "v"})
     leftover = list(tmp_path.glob(f"{SKIP_MARKER_FILENAME}.tmp"))
     assert leftover == [], f"tmp file leaked: {leftover}"
+
+
+class TestSkipReasons:
+    """The reasons sidecar records WHY a file was skipped (filename -> error),
+    so a report can show the cause, not just the hash. Separate from the
+    hash-keyed markers, which drive the resume logic."""
+
+    def test_load_empty_when_file_missing(self, tmp_path: Path) -> None:
+        assert load_skip_reasons(tmp_path) == {}
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        reasons = {
+            "a.pdf": "OCR timed out after 120s",
+            "b.tiff": "no text extracted (0 chunks)",
+        }
+        write_skip_reasons(tmp_path, reasons)
+        assert load_skip_reasons(tmp_path) == reasons
+        assert (tmp_path / SKIP_REASON_FILENAME).exists()
+
+    def test_reasons_file_is_separate_from_markers(self, tmp_path: Path) -> None:
+        # The two sidecars are independent files; writing one leaves the other.
+        write_skip_markers(tmp_path, {"a.pdf": "deadbeef"})
+        write_skip_reasons(tmp_path, {"a.pdf": "decode failure"})
+        assert (tmp_path / SKIP_MARKER_FILENAME) != (tmp_path / SKIP_REASON_FILENAME)
+        assert load_skip_markers(tmp_path) == {"a.pdf": "deadbeef"}
+        assert load_skip_reasons(tmp_path) == {"a.pdf": "decode failure"}
+
+    def test_clear_removes_reasons_too(self, tmp_path: Path) -> None:
+        # Clearing skip state (force-rebuild / retry-skipped) must drop the
+        # reasons too, or stale errors linger after a clean re-run.
+        write_skip_markers(tmp_path, {"a.pdf": "deadbeef"})
+        write_skip_reasons(tmp_path, {"a.pdf": "decode failure"})
+        clear_skip_markers(tmp_path)
+        assert not (tmp_path / SKIP_REASON_FILENAME).exists()
+        assert load_skip_reasons(tmp_path) == {}
+
+    def test_load_handles_corrupt_json(self, tmp_path: Path) -> None:
+        (tmp_path / SKIP_REASON_FILENAME).write_text("not json {{{", encoding="utf-8")
+        assert load_skip_reasons(tmp_path) == {}

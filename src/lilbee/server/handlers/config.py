@@ -8,7 +8,11 @@ from typing import Any
 
 from pydantic_core import PydanticUndefined
 
-from lilbee.app.settings import apply_settings_update
+from lilbee.app.settings import (
+    apply_settings_update,
+    provider_reset_refused_message,
+    requires_services_reset,
+)
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
 )
@@ -30,7 +34,13 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     CLI, and the TUI share one write boundary. Model role writes are
     refused at this surface because PUT /api/models/<role> already
     handles them with an install-availability check.
+
+    A provider switch rebuilds the shared Services singleton, unsafe while other
+    clients have in-flight requests, so it is refused on the always-concurrent
+    HTTP server; do it from the CLI instead.
     """
+    if requires_services_reset(updates):
+        raise ValueError(provider_reset_refused_message("Switching"))
     result = apply_settings_update(updates, allow_model_roles=False)
     return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
 

@@ -2,6 +2,8 @@
 
 import fnmatch
 import logging
+import re
+import threading
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -16,12 +18,19 @@ from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers, hf
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import pick_best_gguf
 from lilbee.catalog.types import ModelTask
-from lilbee.core.config.model import cfg
 from lilbee.runtime.cancellation import TaskCancelledError
 
 CompleteCallback = Callable[[CatalogModel, Path], None]
 
 log = logging.getLogger(__name__)
+
+
+def _models_dir() -> Path:
+    """Deferred cfg read: a module-level cfg import is circular via Config()'s
+    model-ref validator (config -> model_ref -> catalog -> here -> config)."""
+    from lilbee.core.config.model import cfg
+
+    return cfg.models_dir
 
 
 class DownloadConfig(BaseModel):
@@ -35,15 +44,55 @@ class DownloadConfig(BaseModel):
     tqdm_class: Any = None
 
 
-def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run the HF download and translate every error class into a clean exception."""
+_HTTP_TOO_LARGE_MARKER = "too large to be downloaded using the regular download method"
+
+_xet_flip_lock = threading.Lock()
+"""Serializes the global ``HF_HUB_DISABLE_XET`` flip in ``_download_with_xet``.
+
+The flag is a huggingface_hub module global with no per-call override, so two
+overlapping xet downloads would otherwise nest their save/restore and leave xet
+permanently toggled. Holding the lock for the whole download keeps the window
+exclusive; over-cap xet downloads are rare large files, so serializing them is
+an acceptable cost for a correct restore."""
+
+
+def _download_with_xet(config: DownloadConfig) -> Path:
+    """Re-run the download with xet enabled, for files past the HTTP size cap.
+
+    xet is enabled by default, but a user can force the slow HTTP path with
+    ``HF_HUB_DISABLE_XET=1``; huggingface_hub then refuses files over its HTTP
+    size cap, and only xet can fetch them. ``is_xet_available()`` reads the
+    constant live, so flip it on for this one download (under ``_xet_flip_lock``
+    so concurrent xet downloads cannot corrupt the restore) and restore it after.
+    hf_xet is a hard dependency, so the xet path is always available.
+    """
+    from huggingface_hub import constants, hf_hub_download
+
+    with _xet_flip_lock:
+        original = constants.HF_HUB_DISABLE_XET
+        constants.HF_HUB_DISABLE_XET = False
+        try:
+            log.info("File exceeds the HTTP download cap; retrying %s via xet.", config.repo_id)
+            return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
+        finally:
+            constants.HF_HUB_DISABLE_XET = original
+
+
+def _hf_download_or_translate(
+    entry: CatalogModel, config: DownloadConfig, *, use_xet: bool = False
+) -> Path:
+    """Run the HF download and translate every error class into a clean exception.
+
+    *use_xet* forces xet for this file (large files, where xet's speed beats the
+    smoother HTTP bar). Otherwise the default HTTP path is used, with a one-shot
+    xet fallback for files past huggingface_hub's HTTP size cap.
+    """
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError
 
     try:
-        # HF_HUB_DISABLE_XET is set in lilbee/__init__.py at import time.
-        # Setting it here is too late: huggingface_hub.constants already
-        # captured the value when this module first imported it.
+        if use_xet:
+            return _download_with_xet(config)
         return Path(hf_hub_download(**config.model_dump(exclude_none=True)))
     except TaskCancelledError:
         raise
@@ -58,10 +107,39 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         raise RuntimeError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
         raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
+    except ValueError as exc:
+        if not use_xet and _HTTP_TOO_LARGE_MARKER in str(exc):
+            return _download_with_xet(config)
+        raise RuntimeError(f"Failed to download {entry.hf_repo}: ValueError: {exc}") from None
     except Exception as exc:
         raise RuntimeError(
             f"Failed to download {entry.hf_repo}: {type(exc).__name__}: {exc}"
         ) from None
+
+
+# Above this total model size, fetch via xet (much faster) even though its
+# progress bar is coarser; below it, the HTTP path's smooth per-chunk bar is
+# worth the wait. Read from the catalog's known size_gb, so no extra probe.
+_XET_SIZE_THRESHOLD_GB = 8.0
+
+
+_SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
+
+
+def split_shard_filenames(filename: str) -> list[str]:
+    """Return every shard of a split GGUF in order, or ``[filename]`` if it isn't split.
+
+    A split GGUF names its parts ``<base>-00001-of-0000N.gguf`` through
+    ``<base>-0000N-of-0000N.gguf``. llama.cpp loads the whole set from the first
+    shard but needs every part on disk, so the catalog must fetch all of them and
+    only consider the model installed once the full set is present.
+    """
+    match = _SPLIT_SHARD_RE.match(filename)
+    if match is None:
+        return [filename]
+    base = match.group("base")
+    total = int(match.group("total"))
+    return [f"{base}-{index:05d}-of-{total:05d}.gguf" for index in range(1, total + 1)]
 
 
 def download_model(
@@ -70,46 +148,87 @@ def download_model(
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
 ) -> Path:
-    """Download a GGUF model from HuggingFace to cfg.models_dir.
+    """Download a GGUF model from HuggingFace to the models dir.
     Uses huggingface_hub for resumable downloads, caching, and auth.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
     The optional *on_complete(entry, file_path)* callback runs after the file
     is on disk; modelhub uses it to write a registry manifest. For vision
     models, also downloads the mmproj (CLIP projection) file.
 
+    A split GGUF has every shard fetched before the model is finalized, so the
+    registry manifest (and thus "installed") only lands once the full set is on
+    disk; an interrupted multi-part pull leaves the model not-installed and
+    re-pullable rather than registered-but-unloadable.
+
     Raises:
         PermissionError: gated repo requiring authentication
         RuntimeError: repo not found or download failure with details
     """
-    cfg.models_dir.mkdir(parents=True, exist_ok=True)
+    models_dir = _models_dir()
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     filename = resolve_filename(entry)
-    dest = cfg.models_dir / filename
-    if dest.exists() and _cached_file_is_complete(entry.hf_repo, filename, dest):
+    shards = split_shard_filenames(filename)
+    dest = models_dir / shards[0]
+    if all(
+        (models_dir / shard).exists()
+        and _cached_file_is_complete(entry.hf_repo, shard, models_dir / shard)
+        for shard in shards
+    ):
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
-            size = dest.stat().st_size
-            on_progress(size, size)  # Report 100% immediately
+            size = sum((models_dir / shard).stat().st_size for shard in shards)
+            on_progress(size, size)  # Report 100% immediately (every shard)
         return _finalize_download(entry, dest, on_progress=on_progress, on_complete=on_complete)
 
-    log.info("Downloading %s/%s → %s", entry.hf_repo, filename, cfg.models_dir)
-    tracker = _ProgressTracker(on_progress) if on_progress else None
-    config = DownloadConfig(
-        repo_id=entry.hf_repo,
-        filename=filename,
-        token=hf_token(),
-        cache_dir=str(cfg.models_dir),
-        tqdm_class=tracker.make_tqdm_class() if tracker else None,
+    # Sum the shard sizes up front so a multi-shard pull reports one monotonic
+    # 0->100% against the real total, not N separate per-shard cycles. Only use
+    # the sum when every shard size is known (0 = unresolved/offline); a partial
+    # sum would undercount the total and let progress run past 100%.
+    shard_sizes = (
+        [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
+        if len(shards) > 1
+        else []
     )
-
-    cached = _hf_download_or_translate(entry, config)
+    grand_total = (
+        sum(shard_sizes)
+        if shard_sizes and all(size != _SIZE_UNKNOWN for size in shard_sizes)
+        else 0
+    )
+    # Big models go over xet (fast, coarser bar); small ones stay on the HTTP
+    # path for its smooth per-chunk progress. Decided once from the catalog size.
+    use_xet = entry.size_gb >= _XET_SIZE_THRESHOLD_GB
+    tracker = _ProgressTracker(on_progress, grand_total=grand_total) if on_progress else None
+    shard_paths: list[Path] = []
+    for shard in shards:
+        log.info(
+            "Downloading %s/%s → %s (%s)",
+            entry.hf_repo,
+            shard,
+            models_dir,
+            "xet" if use_xet else "http",
+        )
+        config = DownloadConfig(
+            repo_id=entry.hf_repo,
+            filename=shard,
+            token=hf_token(),
+            cache_dir=str(models_dir),
+            tqdm_class=tracker.make_tqdm_class() if tracker else None,
+        )
+        shard_path = _hf_download_or_translate(entry, config, use_xet=use_xet)
+        shard_paths.append(shard_path)
+        if tracker is not None:
+            tracker.shard_done(shard_path.stat().st_size)
+    first_shard_path = shard_paths[0]  # the 00001-of-N shard llama.cpp loads from
 
     if on_progress:
-        actual_size = cached.stat().st_size
+        total_size = sum(path.stat().st_size for path in shard_paths)
         if not tracker or not tracker.was_used:
-            log.info("Model found in HuggingFace cache: %s", cached)
-        on_progress(actual_size, actual_size)
-    return _finalize_download(entry, cached, on_progress=on_progress, on_complete=on_complete)
+            log.info("Model found in HuggingFace cache: %s", first_shard_path)
+        on_progress(total_size, total_size)
+    return _finalize_download(
+        entry, first_shard_path, on_progress=on_progress, on_complete=on_complete
+    )
 
 
 def _finalize_download(
@@ -123,11 +242,11 @@ def _finalize_download(
     if on_complete is not None:
         on_complete(entry, dest)
     if entry.task == ModelTask.VISION:
-        _download_mmproj(entry, on_progress=on_progress)
+        download_mmproj(entry, on_progress=on_progress)
     return dest
 
 
-def _download_mmproj(
+def download_mmproj(
     entry: CatalogModel,
     *,
     on_progress: ProgressCallback | None = None,
@@ -147,12 +266,12 @@ def _download_mmproj(
     from huggingface_hub import hf_hub_download
 
     tracker = _ProgressTracker(on_progress) if on_progress else None
-    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, cfg.models_dir)
+    log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, _models_dir())
     path = Path(
         hf_hub_download(
             repo_id=entry.hf_repo,
             filename=mmproj_filename,
-            cache_dir=str(cfg.models_dir),
+            cache_dir=str(_models_dir()),
             token=hf_token(),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
@@ -187,7 +306,7 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     if not mmproj_files:
         return None
 
-    # Prefer F16 over F32 (smaller), and any over BF16
+    # Prefer an F16 mmproj when one is offered; otherwise take the first match.
     for preference in ("f16", "F16"):
         for f in mmproj_files:
             if preference in f:
@@ -195,17 +314,26 @@ def _resolve_mmproj_filename(hf_repo: str, pattern: str) -> str | None:
     return mmproj_files[0]
 
 
-def _mmproj_in_models_dir_matching(pattern: str) -> Path | None:
-    """Return the first ``*.gguf`` under ``cfg.models_dir`` that matches."""
-    models_dir: Path = cfg.models_dir
-    for p in models_dir.rglob("*.gguf"):
+def _mmproj_in_repo_cache(hf_repo: str, pattern: str) -> Path | None:
+    """Return an mmproj ``*.gguf`` from *hf_repo*'s own HF cache subtree, or None.
+
+    Scoped to the repo's ``models--<org>--<repo>`` directory so a different vision
+    repo's mmproj is never returned. An unscoped models-dir walk would let a chat
+    model inherit another model's mmproj and be misreported as vision-capable.
+    """
+    from huggingface_hub.constants import REPO_ID_SEPARATOR
+
+    repo_cache = _models_dir() / f"models--{hf_repo.replace('/', REPO_ID_SEPARATOR)}"
+    if not repo_cache.exists():
+        return None
+    for p in repo_cache.rglob("*.gguf"):
         if fnmatch.fnmatch(p.name, pattern) or "mmproj" in p.name.lower():
             return p
     return None
 
 
 def find_mmproj_file(model_ref: str) -> Path | None:
-    """Find the mmproj for a ``FEATURED_VISION`` entry under ``cfg.models_dir``.
+    """Find the mmproj for a ``FEATURED_VISION`` entry under the models dir.
 
     *model_ref* is matched against each featured vision entry's
     ``hf_repo``. Returns ``None`` when nothing matches. Never falls back
@@ -216,13 +344,13 @@ def find_mmproj_file(model_ref: str) -> Path | None:
     # Local import to avoid pulling featured.py into hf_client/ etc.
     from lilbee.catalog.featured import FEATURED_VISION
 
-    if not cfg.models_dir.exists():
+    if not _models_dir().exists():
         return None
     for entry in FEATURED_VISION:
         if model_ref not in entry.hf_repo and entry.hf_repo not in model_ref:
             continue
         pattern = VISION_MMPROJ_FILES.get(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
-        match = _mmproj_in_models_dir_matching(pattern)
+        match = _mmproj_in_repo_cache(entry.hf_repo, pattern)
         if match is not None:
             return match
     return None
@@ -308,31 +436,3 @@ def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
         return _hf_file_size(hf_repo, filename) or _SIZE_UNKNOWN
     except Exception:
         return _SIZE_UNKNOWN
-
-
-def fetch_model_file_size(hf_repo: str) -> float:
-    """Fetch the best GGUF file size from HuggingFace tree API.
-    Returns size in GB, or 0.0 if unavailable.
-    """
-    try:
-        resp = httpx.get(
-            f"{HF_API_URL}/{hf_repo}/tree/main",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        resp.raise_for_status()
-        files = resp.json()
-    except Exception:
-        return 0.0
-
-    gguf_files = [
-        (f.get("path", ""), f.get("size", 0) or f.get("lfs", {}).get("size", 0))
-        for f in files
-        if isinstance(f, dict) and f.get("path", "").endswith(".gguf")
-    ]
-    if not gguf_files:
-        return 0.0
-
-    best_name = pick_best_gguf([name for name, _ in gguf_files])
-    size_bytes = next((s for n, s in gguf_files if n == best_name), 0)
-    return round(size_bytes / (1024**3), 1) if size_bytes else 0.0

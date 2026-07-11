@@ -6,6 +6,16 @@ from pydantic import BaseModel
 
 from lilbee.catalog.types import ModelCompat, ModelTask
 
+# Minimum recommended floor so a tiny model still reports a sane RAM ask.
+_MIN_RAM_FLOOR_GB = 2.0
+# Working-set multiple over the on-disk size (weights + KV cache + overhead).
+_RAM_OVER_SIZE_FACTOR = 1.5
+
+
+def estimate_min_ram_gb(size_gb: float) -> float:
+    """Estimate the RAM a model needs from its on-disk size (single source)."""
+    return round(max(_MIN_RAM_FLOOR_GB, size_gb * _RAM_OVER_SIZE_FACTOR), 1)
+
 
 class HfGgufMeta(BaseModel):
     """GGUF metadata returned by the HF API when expand=gguf is requested.

@@ -18,6 +18,7 @@ from lilbee.core.config import Config
 from lilbee.data.store import CitationRecord, SearchChunk
 from lilbee.wiki.cache import normalize_whitespace
 from lilbee.wiki.citation import ParsedCitation
+from lilbee.wiki.entity_extractor.factory import effective_entity_mode
 
 log = logging.getLogger(__name__)
 
@@ -70,10 +71,16 @@ def _find_excerpt_location(
     excerpt: str,
     chunks: list[SearchChunk],
 ) -> tuple[int, int, int, int]:
-    """Find page/line location of an excerpt within chunks."""
+    """Find page/line location of an excerpt within chunks.
+
+    Matches on whitespace-normalized text, the same way ``verify_citations``
+    does, so a citation that verifies doesn't then lose its location to a
+    raw-vs-normalized whitespace mismatch.
+    """
     if excerpt:
+        needle = normalize_whitespace(excerpt)
         for chunk in chunks:
-            if excerpt in chunk.chunk:
+            if needle in normalize_whitespace(chunk.chunk):
                 return chunk.page_start, chunk.page_end, chunk.line_start, chunk.line_end
     return 0, 0, 0, 0
 
@@ -172,7 +179,9 @@ def render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
     """
     block = {
         "provenance": {
-            "extraction_method": config.wiki_entity_mode.value,
+            # Record the extractor that actually runs (config mode may fall back),
+            # so the audit reflects reality, not the requested setting.
+            "extraction_method": effective_entity_mode(config.wiki_entity_mode).value,
             "chunks": [{"source": c.source, "chunk_index": c.chunk_index} for c in chunks],
         }
     }
@@ -227,8 +236,12 @@ def resolve_multi_source_citations(
 
 
 def _match_citation_source(source_ref: str, source_names: list[str]) -> str:
-    """Find which source a citation references by matching filenames in the ref."""
-    for name in source_names:
+    """Find which source a citation references by matching filenames in the ref.
+
+    Checks longest names first so a filename that is a substring of another
+    (e.g. ``doc.md`` within ``mydoc.md``) can't shadow the more specific match.
+    """
+    for name in sorted(source_names, key=len, reverse=True):
         if name in source_ref:
             return name
     return ""

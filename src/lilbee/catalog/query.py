@@ -1,6 +1,7 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
 import functools
+import logging
 from typing import Any, NamedTuple
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
@@ -10,6 +11,8 @@ from lilbee.catalog.featured import FEATURED_ALL
 from lilbee.catalog.models import CatalogModel, CatalogResult
 from lilbee.catalog.refs import GGUF_GLOB, format_native_gguf_ref, hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
+
+log = logging.getLogger(__name__)
 
 
 def _search_blob(m: CatalogModel) -> str:
@@ -134,10 +137,16 @@ def pipeline_to_task(pipeline_tag: str) -> ModelTask:
 
 
 def _get_installed_models(model_manager: Any) -> set[str]:
-    """Get set of installed model names from model_manager."""
+    """Get set of installed model names from model_manager.
+
+    Treats a manager failure as "nothing installed" so the browse list still
+    renders, but logs it: silently swallowing would hide a broken registry that
+    makes every model look uninstalled.
+    """
     try:
         return set(model_manager.list_installed())
     except Exception:
+        log.warning("Could not read installed models; treating as none installed", exc_info=True)
         return set()
 
 
@@ -223,11 +232,21 @@ def _is_hf_repo_id(value: str) -> bool:
     return True
 
 
-def build_adhoc_entry(hf_repo: str, *, task: ModelTask = ModelTask.CHAT) -> CatalogModel:
-    """Minimal CatalogModel for a non-featured HuggingFace GGUF repo."""
+def build_adhoc_entry(
+    hf_repo: str,
+    *,
+    gguf_filename: str = GGUF_GLOB,
+    task: ModelTask = ModelTask.CHAT,
+) -> CatalogModel:
+    """Minimal CatalogModel for a non-featured HuggingFace GGUF repo.
+
+    *gguf_filename* defaults to the ``*.gguf`` glob (bare-repo pull picks the best
+    quant); pass a concrete filename, which may include a repo subdirectory, to
+    pin the exact file the user named.
+    """
     return CatalogModel(
         hf_repo=hf_repo,
-        gguf_filename=GGUF_GLOB,
+        gguf_filename=gguf_filename,
         size_gb=0.0,
         min_ram_gb=2.0,
         description="",
@@ -238,8 +257,73 @@ def build_adhoc_entry(hf_repo: str, *, task: ModelTask = ModelTask.CHAT) -> Cata
 
 
 def resolve_pull_target(model: str) -> CatalogModel | None:
-    """Resolve *model* to a pullable entry: featured first, then ad-hoc HF."""
+    """Resolve *model* to a pullable entry.
+
+    A ref that names a concrete ``.gguf`` file (flat or in a repo subdir) is
+    honored exactly, HF-first: the explicit quant wins over a featured entry's
+    default. A bare ``owner/name`` repo prefers the featured entry, then falls
+    back to an ad-hoc glob pull that picks the best quant.
+    """
+    # circular: modelhub.registry imports catalog.query at top
+    from lilbee.modelhub.registry import parse_hf_ref
+
+    if model.endswith(".gguf") and model.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
+        try:
+            hf_repo, gguf_filename = parse_hf_ref(model)
+        except ValueError:
+            return None
+        task = _task_for_repo(hf_repo, model)
+        return build_adhoc_entry(hf_repo, gguf_filename=gguf_filename, task=task)
     featured = find_catalog_entry(model)
     if featured is not None:
         return featured
-    return build_adhoc_entry(model) if _is_hf_repo_id(model) else None
+    if not _is_hf_repo_id(model):
+        return None
+    return build_adhoc_entry(model, task=_task_for_repo(model, model))
+
+
+def _task_for_repo(hf_repo: str, ref: str) -> ModelTask:
+    """Featured entries keep their catalog task; other repos are classified by name."""
+    featured = find_catalog_entry(hf_repo)
+    if featured is not None:
+        return featured.task
+    return ModelTask(reclassify_by_name(ref, ModelTask.CHAT))
+
+
+# Embedding detection by name, for servers (LM Studio) that report ids but no
+# family. Trailing hyphens keep chat models that merely contain the letters out.
+EMBEDDING_NAME_PATTERNS: frozenset[str] = frozenset({"embed", "bge-", "e5-", "gte-"})
+VISION_NAME_PATTERNS: frozenset[str] = frozenset(
+    {"llava", "vision", "moondream", "ocr", "minicpm-v"}
+)
+# Reranker detection runs before embedding detection so ``bge-reranker-*`` is
+# not misclassified as EMBEDDING.
+RERANKER_NAME_PATTERNS: frozenset[str] = frozenset({"reranker", "rerank", "cross-encoder"})
+
+
+def reclassify_by_name(ref: str, declared_task: str) -> str:
+    """Override declared_task to RERANK / VISION / EMBEDDING when ref names a known role.
+
+    Defends against manifests that stored ``task="chat"`` for models whose ref
+    obviously identifies them as rerankers (e.g. ``bge-reranker-*``), vision
+    loaders, or embedders. Embedders on a chat decoder arch (e.g.
+    ``Qwen3-Embedding-*``, a qwen3 backbone + pooling head) classify as chat by
+    architecture, so the name is the only signal short of probing the GGUF
+    pooling type.
+
+    Check order (rerank, embedding, vision) matches
+    :func:`lilbee.modelhub.model_manager.discovery._classify_remote_task` so the
+    manifest and remote-discovery paths never disagree. Reranker is checked first
+    so ``bge-reranker`` (which also matches the ``bge-`` embedder pattern) stays a
+    reranker; embedding is checked before vision so an image embedder like
+    ``nomic-embed-vision`` (matching both ``embed`` and ``vision``) stays an
+    embedder.
+    """
+    name_lower = ref.lower()
+    if any(rp in name_lower for rp in RERANKER_NAME_PATTERNS):
+        return ModelTask.RERANK
+    if any(ep in name_lower for ep in EMBEDDING_NAME_PATTERNS):
+        return ModelTask.EMBEDDING
+    if any(vp in name_lower for vp in VISION_NAME_PATTERNS):
+        return ModelTask.VISION
+    return declared_task

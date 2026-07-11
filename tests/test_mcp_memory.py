@@ -64,9 +64,18 @@ class TestDeriveOwner:
         monkeypatch.delenv("LILBEE_AGENT_ID", raising=False)
         assert mcp_server._derive_owner("", _ctx("OpenCode")) == "agent:opencode"
 
-    def test_generic_when_nothing(self, monkeypatch):
+    def test_anonymous_when_no_ctx(self, monkeypatch):
         monkeypatch.delenv("LILBEE_AGENT_ID", raising=False)
-        assert mcp_server._derive_owner("", None) == "agent:generic"
+        assert mcp_server._derive_owner("", None) == "agent:anonymous"
+
+    def test_unidentified_sessions_get_distinct_owners(self, monkeypatch):
+        monkeypatch.delenv("LILBEE_AGENT_ID", raising=False)
+        ctx_a, ctx_b = _ctx(None), _ctx(None)
+        owner_a = mcp_server._derive_owner("", ctx_a)
+        owner_b = mcp_server._derive_owner("", ctx_b)
+        assert owner_a != owner_b
+        # Stable within the same connection.
+        assert mcp_server._derive_owner("", ctx_a) == owner_a
 
 
 class TestMemoryRememberTool:
@@ -124,12 +133,19 @@ class TestMemoryListTool:
 
 
 class TestMemoryForgetTool:
-    def test_forgets(self, monkeypatch):
+    def test_forgets_within_own_namespace(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
-        forget = MagicMock()
+        forget = MagicMock(return_value=True)
         monkeypatch.setattr(mcp_server, "forget", forget)
-        assert mcp_server.memory_forget("d1") == {"ok": True, "id": "d1"}
-        forget.assert_called_once_with("d1")
+        assert mcp_server.memory_forget("d1", agent_id="opencode") == {"ok": True, "id": "d1"}
+        forget.assert_called_once_with("d1", owner="agent:opencode")
+
+    def test_unowned_id_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "memory_enabled", lambda: True)
+        monkeypatch.setattr(mcp_server, "forget", MagicMock(return_value=False))
+        result = mcp_server.memory_forget("other", agent_id="opencode")
+        assert "error" in result
+        assert "other" in result["error"]
 
     def test_disabled_returns_hint(self, monkeypatch):
         monkeypatch.setattr(mcp_server, "memory_enabled", lambda: False)

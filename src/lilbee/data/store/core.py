@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +14,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from lilbee.core.config import (
+    CHUNK_CONCEPTS_TABLE,
     CHUNKS_TABLE,
     CITATIONS_TABLE,
     MEMORIES_TABLE,
@@ -21,7 +24,7 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.core.security import validate_path_within
-from lilbee.runtime.lock import write_lock
+from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
 from .lance_helpers import (
     _chunk_type_predicate,
@@ -40,7 +43,9 @@ from .types import (
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
+    SOURCE_STAT_UNKNOWN,
     ChunkType,
+    ChunkWrite,
     CitationRecord,
     EmbeddingModelMismatchError,
     MemoryKind,
@@ -49,6 +54,8 @@ from .types import (
     RemoveResult,
     SearchChunk,
     SourceRecord,
+    SourceStat,
+    SourceStatBackfill,
     SourceType,
     StoreMeta,
 )
@@ -58,6 +65,12 @@ if TYPE_CHECKING:
     import lancedb.table
 
 log = logging.getLogger(__name__)
+
+# Batched ingest flushes contend with long store operations (a search-triggered
+# FTS optimize can hold the lock past the interactive 30s), and failing the
+# flush replans and re-embeds the whole batch. Give the batch path more
+# patience than interactive writes before it gives up.
+BATCH_LOCK_TIMEOUT = 120.0
 
 
 def _hybrid_search(
@@ -95,8 +108,45 @@ _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
 _VECTOR_METRIC = "cosine"
 _ANN_INDEX_TYPE = "IVF_PQ"
-_ANN_NPROBES = 20
+_ANN_NPROBES_FLOOR = 20
+_ANN_NPROBES_PARTITION_FRACTION = 0.05
 _ANN_REFINE_FACTOR = 10
+
+# Stat columns of ``_sources``; mirrors the field names in ``schema._sources_schema``
+# and ``types.SourceRecord``. Legacy tables that predate these columns are migrated
+# in place with the SOURCE_STAT_UNKNOWN sentinel.
+_SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
+
+# (table, source column) pairs deleted when a source's rows are replaced. The
+# concept nodes/edges tables carry no source column (corpus-level aggregates),
+# so only the per-chunk concept mapping is source-scoped.
+_PER_SOURCE_TABLES = (
+    (CHUNKS_TABLE, "source"),
+    (PAGE_TEXTS_TABLE, "source"),
+    (CHUNK_CONCEPTS_TABLE, "chunk_source"),
+)
+
+# Stat backfills replace this many source rows per locked write: the first
+# sync after a stat-column upgrade backfills every source, and an unchunked
+# replace would join millions of filenames into one delete predicate.
+_SOURCE_STAT_BATCH_ROWS = 2000
+
+
+def _ann_nprobes(row_count: int) -> int:
+    """Partitions to probe: a fixed fraction of the IVF partition count (~sqrt(N)), floored."""
+    partitions = math.isqrt(max(row_count, 0))
+    return max(_ANN_NPROBES_FLOOR, math.ceil(partitions * _ANN_NPROBES_PARTITION_FRACTION))
+
+
+def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
+    """Raise ``ValueError`` when any record's vector is not *embedding_dim* wide."""
+    for rec in records:
+        vec = rec.get("vector", [])
+        if len(vec) != embedding_dim:
+            raise ValueError(
+                f"Vector dimension mismatch: expected {embedding_dim}, "
+                f"got {len(vec)} (source={rec.get('source', '?')})"
+            )
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -122,6 +172,15 @@ class Store:
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
         self._source_ingested_cache: dict[str, str] | None = None
+
+    def _write_lock(self, timeout: float = LOCK_TIMEOUT) -> AbstractContextManager[None]:
+        """Acquire the write lock keyed on *this* store's data directory.
+
+        A per-instance ``Lilbee`` writes to its own ``lancedb_dir``; locking the
+        global ``cfg`` dir instead would leave those writes uncoordinated across
+        processes.
+        """
+        return write_lock(self._config.lancedb_dir, timeout)
 
     def _invalidate_source_cache(self) -> None:
         """Drop the cached {filename: ingested_at} map."""
@@ -162,10 +221,13 @@ class Store:
         table = self.open_table(META_TABLE)
         if table is None:
             return None
-        rows = table.search().limit(1).to_list()
+        rows = table.search().limit(None).to_list()
         if not rows:
             return None
-        row = rows[0]
+        # _meta is meant to hold one row, but a swallowed delete on rewrite could
+        # leave a stale one behind; take the newest so identity reads stay
+        # deterministic rather than returning an arbitrary row.
+        row = max(rows, key=lambda r: r["updated_at"])
         return StoreMeta(
             embedding_model=row["embedding_model"],
             embedding_dim=int(row["embedding_dim"]),
@@ -218,7 +280,7 @@ class Store:
             return False
         embedding_model = self._config.embedding_model
         embedding_dim = self._config.embedding_dim
-        with write_lock():
+        with self._write_lock():
             # Re-check under the lock so two callers do not both warn-and-write.
             if self.get_meta() is not None:
                 return False
@@ -296,7 +358,7 @@ class Store:
         current_dim = self._config.embedding_dim
         if not self._needs_canonical_meta_rewrite(self.get_meta(), current_model, current_dim):
             return False
-        with write_lock():
+        with self._write_lock():
             meta = self.get_meta()  # re-read under the lock for racing callers
             if not self._needs_canonical_meta_rewrite(meta, current_model, current_dim):
                 return False
@@ -336,7 +398,7 @@ class Store:
         chunk count, so large corpora no longer pay the full
         ``create_fts_index(replace=True)`` rebuild cost on every sync.
         """
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return
@@ -361,7 +423,7 @@ class Store:
         Returns True when an index was created or refreshed.
         """
         threshold = self._config.ann_index_threshold
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return False
@@ -376,7 +438,14 @@ class Store:
                 log.info("Vector ANN index created on '%s'", CHUNKS_TABLE)
                 return True
             except Exception:
-                log.debug("Vector index build failed (too few rows?)", exc_info=True)
+                log.warning(
+                    "Vector ANN index build failed on '%s' at %d rows; search falls back "
+                    "to exact flat scan, which is slow at this scale. Free up memory/disk "
+                    "and re-run to rebuild the index.",
+                    CHUNKS_TABLE,
+                    table.count_rows(),
+                    exc_info=True,
+                )
                 return False
 
     def add_chunks(self, records: list[dict]) -> int:
@@ -390,20 +459,14 @@ class Store:
         concurrent ``set_embedding_model`` cannot slip a write in past a stale
         compatibility check.
         """
-        with write_lock():
+        with self._write_lock():
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
             self._fts_ready = False
             if not records:
                 return 0
-            for rec in records:
-                vec = rec.get("vector", [])
-                if len(vec) != embedding_dim:
-                    raise ValueError(
-                        f"Vector dimension mismatch: expected {embedding_dim}, "
-                        f"got {len(vec)} (source={rec.get('source', '?')})"
-                    )
+            _check_vector_dims(records, embedding_dim)
             db = self.get_db()
             table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
             table.add(records)
@@ -413,8 +476,13 @@ class Store:
                 )
             return len(records)
 
-    def bm25_probe(self, query_text: str, top_k: int = 5) -> list[SearchChunk]:
-        """Quick BM25-only search for confidence checking. Returns up to top_k results."""
+    def bm25_probe(
+        self, query_text: str, top_k: int = 5, chunk_type: ChunkType | None = None
+    ) -> list[SearchChunk]:
+        """Quick BM25-only search for confidence checking. Returns up to top_k results.
+
+        When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
+        """
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
@@ -423,7 +491,10 @@ class Store:
         if not self._fts_ready:
             return []
         try:
-            rows = table.search(query_text, query_type="fts").limit(top_k).to_list()
+            query = table.search(query_text, query_type="fts")
+            if chunk_type:
+                query = query.where(_chunk_type_predicate(chunk_type))
+            rows = query.limit(top_k).to_list()
             return [SearchChunk(**r) for r in rows]
         except Exception:
             log.debug("BM25 probe failed", exc_info=True)
@@ -471,7 +542,8 @@ class Store:
         if _has_vector_index(table):
             # IVF_PQ is lossy; probe more partitions and refine against full
             # vectors so recall stays close to the exact flat scan.
-            query = query.nprobes(_ANN_NPROBES).refine_factor(_ANN_REFINE_FACTOR)
+            nprobes = _ann_nprobes(table.count_rows())
+            query = query.nprobes(nprobes).refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
         rows = query.to_list()
@@ -482,7 +554,9 @@ class Store:
             max_distance,
         )
         if rows:
-            distances = [r.get("distance", 0) for r in rows[:5]]
+            # LanceDB names the similarity column "_distance"; "distance" would
+            # always miss and log 0.
+            distances = [r.get("_distance", 0) for r in rows[:5]]
             log.debug("Top 5 distances: %s", distances)
         results = [SearchChunk(**r) for r in rows]
         return self._filter_and_rerank(results, query_vector, top_k, max_distance)
@@ -565,17 +639,28 @@ class Store:
             rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
-    def _delete_by_source_unlocked(self, source: str) -> None:
-        """Delete a source's chunks and page texts. Caller must hold ``write_lock()``."""
-        predicate = f"source = '{escape_sql_string(source)}'"
-        for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE):
+    def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
+        """Delete the sources' chunks, page texts, and chunk-concept rows.
+
+        Caller must hold ``write_lock()``. One ``IN`` delete per table covers
+        every source, so a batched flush pays a constant number of predicate
+        deletes instead of one set per document. A delete failure propagates:
+        swallowed, it would leave every flushed file silently stale; raised,
+        the flush fails and the files replan on the next sync.
+        """
+        quoted = ", ".join(f"'{escape_sql_string(source)}'" for source in sources)
+        for name, column in _PER_SOURCE_TABLES:
             table = self.open_table(name)
             if table is not None:
-                _safe_delete_unlocked(table, predicate)
+                table.delete(f"{column} IN ({quoted})")
+
+    def _delete_by_source_unlocked(self, source: str) -> None:
+        """Delete a single source's chunks, page texts, and chunk-concept rows."""
+        self._delete_by_sources_unlocked([source])
 
     def delete_by_source(self, source: str) -> None:
         """Delete a source's chunks and page texts."""
-        with write_lock():
+        with self._write_lock():
             self._delete_by_source_unlocked(source)
         self._invalidate_source_cache()
 
@@ -583,7 +668,7 @@ class Store:
         """Add per-page text rows (no vectors). Returns count added."""
         if not records:
             return 0
-        with write_lock():
+        with self._write_lock():
             db = self.get_db()
             table = ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema())
             table.add(records)
@@ -599,6 +684,21 @@ class Store:
             query = query.where(f"source = '{escape_sql_string(source)}'")
         rows: list[PageTextRecord] = query.limit(None).to_list()
         return rows
+
+    def page_texts_arrow(self, source: str | None = None) -> pa.Table:
+        """Return per-page text rows as an Arrow table in a single scan.
+
+        The columnar sibling of :meth:`get_page_texts`: the export path keeps the
+        whole set in Arrow (no per-row Python objects) from read through file
+        write. Empty with the canonical schema when the table or *source* is empty.
+        """
+        table = self.open_table(PAGE_TEXTS_TABLE)
+        if table is None:
+            return _page_texts_schema().empty_table()
+        query = table.search().select(["source", "page", "text", "content_type"])
+        if source is not None:
+            query = query.where(f"source = '{escape_sql_string(source)}'")
+        return query.limit(None).to_arrow()
 
     def page_text_sources(self) -> set[str]:
         """Return the distinct sources present in the page-text table."""
@@ -637,30 +737,153 @@ class Store:
         count: int = table.count_rows() if where is None else table.count_rows(filter=where)
         return count
 
+    def _source_row(
+        self,
+        filename: str,
+        file_hash: str,
+        chunk_count: int,
+        source_type: str,
+        stat: SourceStat | None,
+    ) -> dict:
+        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel."""
+        return {
+            "filename": filename,
+            "file_hash": file_hash,
+            "ingested_at": datetime.now(UTC).isoformat(),
+            "chunk_count": chunk_count,
+            "source_type": source_type,
+            "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
+            "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
+            "stat_captured_ns": stat.captured_ns if stat else SOURCE_STAT_UNKNOWN,
+        }
+
+    def _sources_table(self) -> lancedb.table.Table:
+        """Open/create ``_sources``, adding the stat columns to pre-stat tables."""
+        table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
+        missing = [name for name in _SOURCE_STAT_COLUMNS if name not in table.schema.names]
+        if missing:
+            table.add_columns({name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in missing})
+        return table
+
+    def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:
+        """Replace source rows: one batched delete plus one batched add.
+
+        Caller must hold ``write_lock()``. A per-file delete+add pair costs two
+        LanceDB version commits, so bulk ingest folds every file in a flush into
+        a single pair.
+        """
+        table = self._sources_table()
+        filenames = ", ".join(f"'{escape_sql_string(r['filename'])}'" for r in rows)
+        # Skip the add when the delete failed: adding over a stale row would leave
+        # two _sources rows for one filename. The file replans on the next sync.
+        if not _safe_delete_unlocked(table, f"filename IN ({filenames})"):
+            return
+        table.add(rows)
+
     def upsert_source(
         self,
         filename: str,
         file_hash: str,
         chunk_count: int,
         source_type: SourceType = SourceType.DOCUMENT,
+        stat: SourceStat | None = None,
     ) -> None:
         """Add or update a source tracking record."""
-        with write_lock():
-            db = self.get_db()
-            table = ensure_table(db, SOURCES_TABLE, _sources_schema())
-            _safe_delete_unlocked(table, f"filename = '{escape_sql_string(filename)}'")
-            table.add(
-                [
-                    {
-                        "filename": filename,
-                        "file_hash": file_hash,
-                        "ingested_at": datetime.now(UTC).isoformat(),
-                        "chunk_count": chunk_count,
-                        "source_type": str(source_type),
-                    }
-                ]
-            )
+        row = self._source_row(filename, file_hash, chunk_count, source_type, stat)
+        with self._write_lock():
+            self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
+
+    def update_source_stats(self, backfills: list[SourceStatBackfill]) -> None:
+        """Record size/mtime for already-tracked sources in batched locked writes."""
+        if not backfills:
+            return
+        for start in range(0, len(backfills), _SOURCE_STAT_BATCH_ROWS):
+            rows = [
+                {
+                    **bf.record,
+                    "size_bytes": bf.stat.size_bytes,
+                    "mtime_ns": bf.stat.mtime_ns,
+                    "stat_captured_ns": bf.stat.captured_ns,
+                }
+                for bf in backfills[start : start + _SOURCE_STAT_BATCH_ROWS]
+            ]
+            with self._write_lock():
+                self._replace_source_rows_unlocked(rows)
+        self._invalidate_source_cache()
+
+    def optimize_sources(self) -> None:
+        """Compact the sources table; per-flush upserts otherwise accrete tiny versions."""
+        with self._write_lock():
+            table = self.open_table(SOURCES_TABLE)
+            if table is None:
+                return
+            try:
+                table.optimize()
+            except Exception:
+                log.debug("Sources table optimize failed", exc_info=True)
+
+    def write_chunks_batch(self, items: list[ChunkWrite]) -> int:
+        """Write several documents' chunks in one locked transaction. Returns chunks added.
+
+        One ``write_lock`` acquisition covers the batch's cleanup deletes, page
+        texts, chunk add, and source upserts, so a reader never observes a
+        half-applied batch. Page texts land after the cleanup and before the
+        source rows, so a page-text failure leaves the rows stale and the files
+        replan next sync; a document with no chunks still persists its page
+        texts and source row. The embedding-identity gate and per-vector
+        dimension check mirror ``add_chunks``; a dimension mismatch raises and
+        the whole batch is rejected.
+        """
+        if not items:
+            return 0
+        with self._write_lock(timeout=BATCH_LOCK_TIMEOUT):
+            embedding_model = self._config.embedding_model
+            embedding_dim = self._config.embedding_dim
+            self._ensure_embedding_compat()
+            self._fts_ready = False
+            all_records = [rec for it in items for rec in it.records]
+            _check_vector_dims(all_records, embedding_dim)
+            db = self.get_db()
+            self._cleanup_batch_unlocked(items)
+            self._add_page_texts_unlocked(db, items)
+            self._add_chunk_records_unlocked(db, all_records, embedding_model, embedding_dim)
+            self._replace_source_rows_unlocked(self._batch_source_rows(items))
+        self._invalidate_source_cache()
+        return len(all_records)
+
+    def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
+        """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
+        cleanup_sources = [it.source for it in items if it.needs_cleanup]
+        if cleanup_sources:
+            self._delete_by_sources_unlocked(cleanup_sources)
+
+    def _add_page_texts_unlocked(self, db: lancedb.DBConnection, items: list[ChunkWrite]) -> None:
+        """Add the batch's page-text rows. Caller holds ``write_lock()``."""
+        page_rows = [row for it in items for row in (it.page_texts or [])]
+        if page_rows:
+            ensure_table(db, PAGE_TEXTS_TABLE, _page_texts_schema()).add(page_rows)
+
+    def _add_chunk_records_unlocked(
+        self,
+        db: lancedb.DBConnection,
+        all_records: list[dict],
+        embedding_model: str,
+        embedding_dim: int,
+    ) -> None:
+        """Add the batch's chunk rows, writing meta on first use. Caller holds ``write_lock()``."""
+        if not all_records:
+            return
+        ensure_table(db, CHUNKS_TABLE, self._chunks_schema()).add(all_records)
+        if self.get_meta() is None:
+            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
+
+    def _batch_source_rows(self, items: list[ChunkWrite]) -> list[dict]:
+        """One ``_sources`` row per batched document."""
+        return [
+            self._source_row(it.source, it.file_hash, len(it.records), it.source_type, it.stat)
+            for it in items
+        ]
 
     def _delete_source_unlocked(self, filename: str) -> None:
         """Remove the *filename* source record. Caller must hold ``write_lock()``."""
@@ -670,18 +893,22 @@ class Store:
 
     def delete_source(self, filename: str) -> None:
         """Remove a source file tracking record."""
-        with write_lock():
+        with self._write_lock():
             self._delete_source_unlocked(filename)
         self._invalidate_source_cache()
 
-    def _remove_one_unlocked(self, name: str) -> None:
-        """Delete a document's chunks and its source record together.
+    def _remove_many_unlocked(self, names: list[str]) -> None:
+        """Delete the documents' chunks and source records together.
 
-        Both deletes run under the caller's single ``write_lock()`` so no
-        reader can observe chunks whose source record is already gone.
+        All deletes run under the caller's single ``write_lock()`` so no
+        reader can observe chunks whose source record is already gone; one
+        ``IN`` delete per table covers the whole set.
         """
-        self._delete_by_source_unlocked(name)
-        self._delete_source_unlocked(name)
+        self._delete_by_sources_unlocked(names)
+        quoted = ", ".join(f"'{escape_sql_string(name)}'" for name in names)
+        table = self.open_table(SOURCES_TABLE)
+        if table is not None:
+            _safe_delete_unlocked(table, f"filename IN ({quoted})")
 
     def remove_documents(
         self,
@@ -701,18 +928,19 @@ class Store:
             documents_dir = self._config.documents_dir
 
         known = {s["filename"] for s in self.get_sources()}
-        removed: list[str] = []
-        not_found: list[str] = []
+        removed = [name for name in names if name in known]
+        not_found = [name for name in names if name not in known]
 
-        for name in names:
-            if name not in known:
-                not_found.append(name)
-                continue
-            with write_lock():
-                self._remove_one_unlocked(name)
+        if removed:
+            # One lock acquisition and one IN-delete per table for the whole
+            # set, mirroring the batched flush path, instead of a LanceDB
+            # version commit per document.
+            with self._write_lock():
+                self._remove_many_unlocked(removed)
             self._invalidate_source_cache()
-            removed.append(name)
-            if delete_files:
+
+        if delete_files:
+            for name in removed:
                 try:
                     path = validate_path_within(documents_dir / name, documents_dir)
                 except ValueError:
@@ -725,16 +953,31 @@ class Store:
 
     def clear_table(self, name: str, predicate: str) -> None:
         """Delete rows matching *predicate* from *name*. Acquires write lock."""
-        with write_lock():
+        with self._write_lock():
             table = self.open_table(name)
             if table is not None:
                 _safe_delete_unlocked(table, predicate)
+
+    def clear_and_add(self, name: str, schema: pa.Schema, rows: list[dict], predicate: str) -> None:
+        """Replace the rows matching *predicate* with *rows* in one locked write.
+
+        Delete and add run under a single write lock, so a reader never observes
+        the table emptied mid-rebuild. The add is skipped when the delete failed,
+        to avoid duplicating rows whose predecessors were not removed.
+        """
+        with self._write_lock():
+            db = self.get_db()
+            table = ensure_table(db, name, schema)
+            if not _safe_delete_unlocked(table, predicate):
+                return
+            if rows:
+                table.add(rows)
 
     def add_citations(self, records: list[CitationRecord]) -> int:
         """Add citation records to the store. Returns count added."""
         if not records:
             return 0
-        with write_lock():
+        with self._write_lock():
             db = self.get_db()
             table = ensure_table(db, CITATIONS_TABLE, _citations_schema())
             table.add(records)
@@ -820,15 +1063,18 @@ class Store:
                 f"Memory vector dimension mismatch: expected "
                 f"{self._config.embedding_dim}, got {len(record.vector)}"
             )
-        with write_lock():
+        with self._write_lock():
             embedding_model = self._config.embedding_model
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
             db = self.get_db()
             table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())
             duplicate_id = self._duplicate_memory_id_unlocked(table, record)
-            if duplicate_id is not None:
-                _safe_delete_unlocked(table, f"id = '{escape_sql_string(duplicate_id)}'")
+            if duplicate_id is not None and _safe_delete_unlocked(
+                table, f"id = '{escape_sql_string(duplicate_id)}'"
+            ):
+                # Only reuse the id once the old row is actually gone; a swallowed
+                # delete failure would otherwise leave two rows with the same id.
                 record.id = duplicate_id
             self._evict_overflow_unlocked(table, record.owner)
             table.add([record.model_dump(mode="json")])
@@ -873,26 +1119,51 @@ class Store:
         rows = table.search(query_vector).metric("cosine").where(predicate).limit(top_k).to_list()
         return [MemoryRow(**r) for r in rows if r.get("_distance", 1.0) <= max_distance]
 
-    def update_memory(self, memory_id: str, *, shared: bool) -> bool:
-        """Set the *shared* flag on a memory by id. Returns True when found."""
-        with write_lock():
+    def update_memory(self, memory_id: str, *, shared: bool, owner: str) -> bool:
+        """Set the *shared* flag on *owner*'s memory. Returns True when found and owned.
+
+        The ``owner`` predicate scopes the mutation to the caller's namespace so an
+        agent cannot flip another owner's (or the human's) memory.
+        """
+        with self._write_lock():
             table = self.open_table(MEMORIES_TABLE)
             if table is None:
                 return False
-            escaped = escape_sql_string(memory_id)
-            rows = table.search().where(f"id = '{escaped}'").limit(1).to_list()
+            predicate = self._owned_memory_predicate(memory_id, owner)
+            rows = table.search().where(predicate).limit(1).to_list()
             if not rows:
                 return False
             record = MemoryRow(**rows[0])
             record.shared = shared
             record.updated_at = datetime.now(UTC).isoformat()
-            _safe_delete_unlocked(table, f"id = '{escaped}'")
+            # If the delete fails, do not add the modified copy: that would leave
+            # two rows for one id. Report not-updated instead.
+            if not _safe_delete_unlocked(table, predicate):
+                return False
             table.add([record.model_dump(mode="json")])
             return True
 
-    def delete_memory(self, memory_id: str) -> None:
-        """Delete a memory by id."""
-        self.clear_table(MEMORIES_TABLE, f"id = '{escape_sql_string(memory_id)}'")
+    def delete_memory(self, memory_id: str, *, owner: str) -> bool:
+        """Delete *owner*'s memory by id. Returns True when a matching row was deleted.
+
+        The ``owner`` predicate scopes the delete to the caller's namespace so an
+        agent cannot destroy another owner's (or the human's) memory.
+        """
+        with self._write_lock():
+            table = self.open_table(MEMORIES_TABLE)
+            if table is None:
+                return False
+            predicate = self._owned_memory_predicate(memory_id, owner)
+            if not table.search().where(predicate).limit(1).to_list():
+                return False
+            # Report the real outcome: a swallowed delete failure must not be
+            # reported as a successful forget.
+            return _safe_delete_unlocked(table, predicate)
+
+    @staticmethod
+    def _owned_memory_predicate(memory_id: str, owner: str) -> str:
+        """SQL predicate matching a single memory id within *owner*'s namespace."""
+        return f"id = '{escape_sql_string(memory_id)}' AND owner = '{escape_sql_string(owner)}'"
 
     def rebuild_memory_embeddings(self, embed: Callable[[list[str]], list[list[float]]]) -> int:
         """Re-embed every memory under the current model, recreating the table.
@@ -900,18 +1171,23 @@ class Store:
         The vector column dimension is immutable, so a different-dim model needs a
         fresh table; recreating unconditionally also covers the same-dim case. Memory
         text is human-authored and re-embeddable, so no data is lost. Returns the count.
+
+        The snapshot, embed, and table rebuild all run under the write lock so a
+        concurrent ``add_memory`` cannot commit into the read-then-drop window and
+        be erased; it either lands before the snapshot or blocks until the rebuild
+        finishes.
         """
-        table = self.open_table(MEMORIES_TABLE)
-        if table is None:
-            return 0
-        rows = table.search().limit(None).to_list()
-        if not rows:
-            return 0
-        memories = [MemoryRow(**r) for r in rows]
-        vectors = embed([m.text for m in memories])
-        for memory, vector in zip(memories, vectors, strict=True):
-            memory.vector = vector
-        with write_lock():
+        with self._write_lock():
+            table = self.open_table(MEMORIES_TABLE)
+            if table is None:
+                return 0
+            rows = table.search().limit(None).to_list()
+            if not rows:
+                return 0
+            memories = [MemoryRow(**r) for r in rows]
+            vectors = embed([m.text for m in memories])
+            for memory, vector in zip(memories, vectors, strict=True):
+                memory.vector = vector
             db = self.get_db()
             db.drop_table(MEMORIES_TABLE)
             new_table = ensure_table(db, MEMORIES_TABLE, self._memories_schema())
@@ -930,7 +1206,7 @@ class Store:
         documents, so a rebuild preserves it. Only a factory reset (which deletes
         the data directory) clears it.
         """
-        with write_lock():
+        with self._write_lock():
             self._fts_ready = False
             db = self.get_db()
             for name in _table_names(db):

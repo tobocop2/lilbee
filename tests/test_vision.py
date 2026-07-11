@@ -6,7 +6,6 @@ from unittest import mock
 import pytest
 
 from lilbee.app.services import CrawlerSyncState, Services, set_services
-from lilbee.providers.worker.health_ticker import HealthTickerHandle
 
 
 @pytest.fixture()
@@ -47,9 +46,6 @@ def mock_provider():
         model_manager=mock.MagicMock(),
         crawler_semaphore=None,
         crawler_sync_state=CrawlerSyncState(),
-        worker_pool=mock.MagicMock(),
-        pool_runtime=mock.MagicMock(),
-        pool_health_ticker=HealthTickerHandle(),
     )
     set_services(services)
     yield provider
@@ -163,3 +159,29 @@ class TestBuildVisionMessages:
         assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
         assert content[1]["type"] == "text"
         assert content[1]["text"] == "describe this"
+
+
+class TestResolveOcrPrompt:
+    """The OCR prompt is resolved per model: native for specialists, generic fallback otherwise."""
+
+    def test_deepseek_gets_its_grounding_prompt(self):
+        from lilbee.vision import resolve_ocr_prompt
+
+        prompt = resolve_ocr_prompt("ggml-org/DeepSeek-OCR-GGUF")
+        assert prompt == "<|grounding|>Convert the document to markdown."
+
+    def test_glm_ocr_gets_terse_prompt(self):
+        from lilbee.vision import resolve_ocr_prompt
+
+        assert resolve_ocr_prompt("ggml-org/GLM-OCR-GGUF") == "OCR"
+
+    def test_match_is_case_insensitive_and_works_on_a_gguf_path(self):
+        from lilbee.vision import resolve_ocr_prompt
+
+        path = "/models/ggml-org/GLM-OCR-GGUF/glm-ocr-Q8_0.gguf"
+        assert resolve_ocr_prompt(path) == "OCR"
+
+    def test_unknown_model_falls_back_to_generic_prompt(self):
+        from lilbee.vision import OCR_PROMPT, resolve_ocr_prompt
+
+        assert resolve_ocr_prompt("unsloth/Qwen3-VL-8B-Instruct-GGUF") == OCR_PROMPT

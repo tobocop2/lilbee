@@ -1,0 +1,10 @@
+/* width must match the .fleet-open bar inset in app.tcss so the docked
+ * top/bottom bars shrink to exactly the space left of the drawer. */
+FleetDrawer {
+    dock: right;
+    width: 50;
+    height: 100%;
+    background: $surface;
+    border-left: thick $primary;
+    padding: 0 1;
+}

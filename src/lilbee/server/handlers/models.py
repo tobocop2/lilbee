@@ -141,7 +141,8 @@ async def list_models() -> ModelsResponse:
     Uses the unfiltered installed set so a single ref lights up in every
     catalog section it legitimately matches.
     """
-    installed = set(get_services().model_manager.list_installed())
+    # list_installed walks the model filesystem; offload it like list_external_models.
+    installed = set(await asyncio.to_thread(get_services().model_manager.list_installed))
 
     return ModelsResponse(
         chat=_catalog_section(FEATURED_CHAT, cfg.chat_model, installed),
@@ -481,6 +482,7 @@ async def models_catalog(
         sort=parsed_sort,
         limit=limit,
         offset=offset,
+        model_manager=get_services().model_manager,
     )
 
     registry = get_services().registry
@@ -523,37 +525,51 @@ async def models_installed() -> ModelsInstalledResponse:
     return ModelsInstalledResponse(models=models)
 
 
+async def enforce_pull_arch_compat(
+    model: str, *, source: str = "native", allow_unsupported: bool = False
+) -> None:
+    """Raise HTTP 409 for an unsupported architecture before the pull stream opens.
+
+    The route must await this BEFORE returning ``Stream(models_pull(...))``: a raise
+    inside the ``models_pull`` async generator fires only on first iteration, after
+    Litestar has already flushed the 200 SSE headers, so it can no longer set the
+    status. (``manager.pull`` re-enforces compatibility during the pull itself.)
+    """
+    from litestar.exceptions import HTTPException
+
+    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
+
+    if _parse_source(source) is not ModelSource.NATIVE or allow_unsupported:
+        return
+    manager = get_services().model_manager
+    try:
+        await asyncio.to_thread(manager._enforce_arch_compat, model)
+    except UnsupportedArchError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="unsupported_arch",
+            extra={
+                "code": "unsupported_arch",
+                "arch": exc.architecture,
+                "ref": exc.ref,
+                "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
+                "total_supported": len(SUPPORTED_ARCHS),
+            },
+        ) from exc
+
+
 async def models_pull(
     model: str, *, source: str = "native", allow_unsupported: bool = False
 ) -> AsyncGenerator[str, None]:
     """Yield SSE progress events while pulling a model in real time.
     Sets a cancel event on client disconnect so the pull stops.
 
-    Pre-checks architecture compatibility BEFORE opening the SSE stream so
-    refusals surface as an HTTP 409 from the route, not an in-stream error.
+    Architecture compatibility is enforced by the route via
+    :func:`enforce_pull_arch_compat` before this stream opens; ``manager.pull``
+    re-enforces it during the pull.
     """
-    from litestar.exceptions import HTTPException
-
-    from lilbee.catalog.compat import SUPPORTED_ARCHS, UnsupportedArchError
-
     manager = get_services().model_manager
     src = _parse_source(source)
-
-    if src is ModelSource.NATIVE and not allow_unsupported:
-        try:
-            await asyncio.to_thread(manager._enforce_arch_compat, model)
-        except UnsupportedArchError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail="unsupported_arch",
-                extra={
-                    "code": "unsupported_arch",
-                    "arch": exc.architecture,
-                    "ref": exc.ref,
-                    "supported_examples": sorted(SUPPORTED_ARCHS)[:5],
-                    "total_supported": len(SUPPORTED_ARCHS),
-                },
-            ) from exc
 
     sse = SseStream()
 
@@ -562,7 +578,7 @@ async def models_pull(
             if sse.cancel.is_set():
                 return
             payload = sse_event(SseEvent.PROGRESS, {"current": downloaded, "total": total})
-            sse.loop.call_soon_threadsafe(sse.queue.put_nowait, payload)
+            sse.loop.call_soon_threadsafe(sse.queue.put_event_nowait, payload, SseEvent.PROGRESS)
 
         try:
             manager.pull(
@@ -589,13 +605,18 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
     """
     from litestar.exceptions import HTTPException
 
-    manager = get_services().model_manager
+    from lilbee.app.models import remove_model_data
+
     src = _parse_source(source)
     try:
-        deleted = manager.remove(model, src)
+        # Delegate to the shared remove path so REST reports the same freed size
+        # (full multi-shard total) as the CLI and MCP, not a hardcoded 0.
+        result = remove_model_data(model, src)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return ModelsDeleteResponse(deleted=deleted, model=model, freed_gb=0.0)
+    return ModelsDeleteResponse(
+        deleted=result.deleted, model=result.model, freed_gb=result.freed_gb
+    )
 
 
 _EXTERNAL_MODELS_TTL = 60

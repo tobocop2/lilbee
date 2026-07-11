@@ -18,11 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lilbee.core.security import validate_path_within
 from lilbee.data.store import Store
 from lilbee.wiki.page import index_wiki_page
 from lilbee.wiki.shared import (
     PENDING_MARKER_KEYWORD_COLLISION,
     PENDING_MARKER_KEYWORD_PARSE,
+    WIKI_CONTENT_SUBDIRS,
     PendingKind,
     WikiSubdir,
     parse_frontmatter,
@@ -145,7 +147,16 @@ class AcceptResult:
 
 
 def _draft_path(wiki_root: Path, slug: str) -> Path:
-    return wiki_root / WikiSubdir.DRAFTS / f"{slug}.md"
+    """Resolve a draft slug to a path, rejecting traversal outside the drafts dir.
+
+    The slug reaches here straight from a ``{slug:path}`` HTTP route and the
+    MCP tool, so an unvalidated ``..`` would let accept/reject/diff read,
+    overwrite, or delete arbitrary ``.md`` files. Mirrors browse.find_page.
+    """
+    drafts_root = wiki_root / WikiSubdir.DRAFTS
+    candidate = drafts_root / f"{slug}.md"
+    validate_path_within(candidate, drafts_root)
+    return candidate
 
 
 def _find_published(wiki_root: Path, slug: str) -> Path | None:
@@ -154,13 +165,23 @@ def _find_published(wiki_root: Path, slug: str) -> Path | None:
     Checks summaries, synthesis, concepts, and entities subdirs in
     priority order so a draft regenerated from an existing summary
     page pairs with its original rather than the same slug under a
-    different page type.
+    different page type. Rejects a traversal slug rather than reading
+    a matching file outside the wiki tree.
     """
     for subdir in _PUBLISHED_SUBDIRS:
         candidate = wiki_root / subdir / f"{slug}.md"
+        validate_path_within(candidate, wiki_root)
         if candidate.is_file():
             return candidate
     return None
+
+
+_ORIGIN_MARKER_RE = re.compile(
+    r"<!--\s*DRIFT:[^>]*origin:\s*(?P<subdir>\w+)[^>]*-->",
+    re.IGNORECASE,
+)
+
+_CONTENT_SUBDIR_BY_VALUE = {s.value: s for s in WIKI_CONTENT_SUBDIRS}
 
 
 def _parse_drift_ratio(text: str) -> float | None:
@@ -169,6 +190,20 @@ def _parse_drift_ratio(text: str) -> float | None:
     if match is None:
         return None
     return int(match.group("pct")) / 100.0
+
+
+def _parse_origin_subdir(text: str) -> WikiSubdir | None:
+    """Extract the origin page-type subdir from a drift marker, if it names a valid one.
+
+    The marker carries ``origin: <subdir>`` so an unpaired drift draft accepts
+    back into its own page type. Returns None for drafts without the field
+    (markers written before this was recorded) or values outside the content
+    subdirs, so the caller keeps the summaries fallback.
+    """
+    match = _ORIGIN_MARKER_RE.search(text)
+    if match is None:
+        return None
+    return _CONTENT_SUBDIR_BY_VALUE.get(match.group("subdir").lower())
 
 
 def _parse_pending_kind(text: str) -> str | None:
@@ -184,18 +219,6 @@ def _parse_pending_kind(text: str) -> str | None:
     if _PENDING_COLLISION_MARKER_RE.search(text):
         return PendingKind.COLLISION
     return None
-
-
-def _strip_drift_marker(text: str) -> str:
-    """Remove the drift-review marker so accepted content lands clean."""
-    return _DRIFT_MARKER_RE.sub("", text, count=1).lstrip()
-
-
-def _strip_pending_markers(text: str) -> str:
-    """Remove PENDING-PARSE/COLLISION markers on the way into a published page."""
-    text = _PENDING_PARSE_MARKER_RE.sub("", text, count=1)
-    text = _PENDING_COLLISION_MARKER_RE.sub("", text, count=1)
-    return text.lstrip()
 
 
 def _classify_and_strip_markers(text: str) -> tuple[str | None, float | None, str]:
@@ -311,7 +334,9 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
     if not draft.is_file():
         raise FileNotFoundError(f"draft not found: {slug}")
     raw = draft.read_text(encoding="utf-8")
-    pending_kind = _parse_pending_kind(raw)
+    # Single-pass classify + strip (kind plus the three-marker removal), instead
+    # of re-deriving the kind and re-stripping the markers separately.
+    pending_kind, _drift, clean = _classify_and_strip_markers(raw)
 
     if pending_kind == PendingKind.PARSE:
         draft.unlink()
@@ -322,18 +347,17 @@ def accept_draft(slug: str, wiki_root: Path, store: Store) -> AcceptResult:
         )
         return AcceptResult(slug=slug, requested_slug=slug, moved_to=draft, reindexed_chunks=0)
 
-    clean = _strip_pending_markers(_strip_drift_marker(raw))
-
     target_slug = _base_slug_for_collision(slug) if pending_kind == PendingKind.COLLISION else slug
     published = _find_published(wiki_root, target_slug)
     if published is not None:
         target = published
     else:
-        target = wiki_root / WikiSubdir.SUMMARIES / f"{target_slug}.md"
+        fallback_subdir = _parse_origin_subdir(raw) or WikiSubdir.SUMMARIES
+        target = wiki_root / fallback_subdir / f"{target_slug}.md"
         log.info(
             "Draft %s has no published counterpart; accepting into %s",
             slug,
-            WikiSubdir.SUMMARIES,
+            fallback_subdir,
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(clean, encoding="utf-8")

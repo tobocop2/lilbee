@@ -68,7 +68,7 @@ def build_logo_frames() -> list[list[str]]:
 
 
 def build_knight_rider_frames() -> list[str]:
-    """Build 22-frame Knight Rider bar spanning the full logo width."""
+    """Build a Knight Rider bar sweeping the full logo width and back."""
     frames: list[str] = []
     sweep_range = LOGO_WIDTH - 1
     total_frames = sweep_range * 2

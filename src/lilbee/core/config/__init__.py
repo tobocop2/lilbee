@@ -20,6 +20,10 @@ from .defaults import (
     PAGE_TEXTS_TABLE as PAGE_TEXTS_TABLE,
     SOURCES_TABLE as SOURCES_TABLE,
 )
+from .context import (
+    active_config as active_config,
+    config_scope as config_scope,
+)
 from .enums import (
     ClustererBackend as ClustererBackend,
     WikiEntityMode as WikiEntityMode,
@@ -51,6 +55,8 @@ __all__ = [
     "Config",
     "ConfigField",
     "WikiEntityMode",
+    "active_config",
     "cfg",
     "config_load_error",
+    "config_scope",
 ]

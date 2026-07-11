@@ -10,7 +10,7 @@ For day-to-day coding conventions and the full set of project rules, [`AGENTS.md
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - `git`
 
-No external services are required. lilbee downloads and runs models locally via in-process `llama.cpp` (native GGUF). There is no Ollama dependency, though lilbee can talk to a running Ollama or LM Studio if you have one.
+No external services are required. lilbee downloads models locally (native GGUF) and runs each one in its own bundled `llama-server` process, supervised by llama-swap. There is no Ollama dependency, though lilbee can talk to a running Ollama or LM Studio if you have one.
 
 ## Getting started
 
@@ -49,7 +49,7 @@ All source lives under `src/lilbee/`:
 | `data/chunk.py`, `data/code_chunker.py` | Text and tree-sitter code chunking |
 | `retrieval/query/` | RAG pipeline (embed → search → generate) |
 | `retrieval/embedder.py` | Embedding wrapper over the provider abstraction |
-| `providers/` | LLM provider abstraction (llama-cpp default, litellm bridge, factory) |
+| `providers/` | LLM provider abstraction (managed llama-server fleet default, litellm bridge, factory) |
 | `catalog/`, `modelhub/` | Model discovery (Hugging Face) and lifecycle (install, remove, run) |
 | `crawler/` | Website crawling to markdown |
 | `wiki/` | Concept/entity wiki layer |

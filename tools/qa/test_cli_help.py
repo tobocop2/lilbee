@@ -18,8 +18,6 @@ _TOP_LEVEL_COMMANDS = [
     "ask",
     "chat",
     "version",
-    "self-check",
-    "self-check-extras",
     "status",
     "reset",
     "init",

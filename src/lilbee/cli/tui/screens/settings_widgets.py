@@ -246,7 +246,7 @@ def make_list_editor(key: str) -> Collapsible:
         text="\n".join(current),
         show_line_numbers=True,
         name=key,
-        id=f"ed-{key}",
+        id=f"{EDITOR_ID_PREFIX}{key}",
         classes="setting-list-editor",
     )
     error = Static("", id=f"{LIST_ERROR_ID_PREFIX}{key}", classes="setting-list-error")

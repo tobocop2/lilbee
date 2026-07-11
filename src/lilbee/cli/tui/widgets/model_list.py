@@ -20,6 +20,7 @@ from textual.widgets.option_list import Option
 
 from lilbee.catalog.types import ModelCompat
 from lilbee.cli.tui.screens.catalog_utils import (
+    NATIVE_BACKEND,
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
@@ -199,7 +200,7 @@ def _render_local_meta(row: LocalCatalogRow) -> list[Content]:
 
 def _local_meta_strip(row: LocalCatalogRow) -> list[str]:
     rest: list[str] = []
-    if row.backend and row.backend != "native":
+    if row.backend and row.backend != NATIVE_BACKEND:
         rest.append(row.backend)
     specs = _format_specs(row)
     if specs:

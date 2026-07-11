@@ -74,3 +74,5 @@ demos/_sandbox/
 packaging/snap/payload/
 packaging/snap-compat/payload/
 packaging/snap-cuda/payload/
+# Built engine binaries land here during wheel/executable builds.
+packaging/engine-wheel/lilbee_engine/bin/

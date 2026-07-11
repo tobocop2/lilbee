@@ -56,6 +56,13 @@ def isolated_env(tmp_path, monkeypatch):
     # import directly) are patched so the value is consistent across import paths.
     monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
     monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: True)
+    # Periodic sync off: at the 30s default, a fresh services container (every
+    # test on the forked CI lane) fires a REAL ingest sync inside crawl_and_save,
+    # and that native work inside a forked child can deadlock past the 60s test
+    # timeout -- which pytest-timeout's parent-armed alarm then escalates to a
+    # dead xdist worker. The sync-behavior tests mock _maybe_periodic_sync
+    # directly, so nothing here loses coverage.
+    cfg.crawl_sync_interval = 0
     # Bypass SSRF DNS resolution by default so localhost-like test URLs
     # don't hit real DNS.
     monkeypatch.setattr(

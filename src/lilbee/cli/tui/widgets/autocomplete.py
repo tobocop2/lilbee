@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +15,7 @@ from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from lilbee.app.services import get_services
+from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import completion_names
@@ -27,13 +29,6 @@ _MAX_VISIBLE = 8  # max dropdown items shown at once
 _MAX_PATH_COMPLETIONS = 20
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
-
-
-# Cached document list for ``/delete`` and ``/reset`` Tab completion.
-# Invalidated by ``invalidate_document_cache`` on document mutations so
-# Tab returns the live set. Order is stable across reads because the
-# dropdown renders in fetch order.
-_doc_cache: list[str] | None = None
 
 
 def get_completions(text: str) -> list[str]:
@@ -60,6 +55,13 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     if sources is None:
         return []
     if cmd == "/add":
+        # A fully-typed existing path (no trailing separator) should submit on
+        # Enter rather than keep offering completions, so collapse the dropdown.
+        # Without this a complete directory path lists its contents forever and
+        # Enter accepts a child instead of submitting. A trailing separator still
+        # descends to list the directory's contents.
+        if partial and not partial.endswith(_PATH_SEPARATORS) and _path_exists(partial):
+            return []
         # _path_options already prefix-filters against the basename and returns
         # bare segment names (not the typed prefix), so the generic startswith
         # filter below would wrongly wipe them.
@@ -83,31 +85,45 @@ def _model_options() -> list[str]:
 
 
 def _setting_options() -> list[str]:
-    return list(SETTINGS_MAP.keys())
+    # Only settable keys, in map order: a non-writable entry (e.g. wiki_dir)
+    # would be offered then refused by /set.
+    return [k for k in SETTINGS_MAP if _is_settable(k)]
+
+
+@functools.lru_cache(maxsize=1)
+def _document_options_cached() -> tuple[str, ...]:
+    # Cached for ``/delete`` and ``/reset`` Tab completion; cleared by
+    # invalidate_document_cache on document mutations. Order is stable (fetch
+    # order) so the dropdown is deterministic.
+    try:
+        return tuple(
+            s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()
+        )
+    except Exception:
+        log.debug("Failed to list documents for autocomplete", exc_info=True)
+        return ()
 
 
 def _document_options() -> list[str]:
-    global _doc_cache
-    if _doc_cache is not None:
-        return _doc_cache
-    try:
-        _doc_cache = [
-            s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()
-        ]
-    except Exception:
-        log.debug("Failed to list documents for autocomplete", exc_info=True)
-        _doc_cache = []
-    return _doc_cache
+    return list(_document_options_cached())
 
 
 def invalidate_document_cache() -> None:
     """Drop the cached document list; the next Tab refetches from the store."""
-    global _doc_cache
-    _doc_cache = None
+    _document_options_cached.cache_clear()
 
 
 def _theme_options() -> list[str]:
     return list(DARK_THEMES)
+
+
+def _path_exists(partial: str) -> bool:
+    """True if *partial* resolves to an existing file or directory."""
+    try:
+        return Path(partial).expanduser().exists()
+    except Exception:
+        log.debug("Failed to check path existence for autocomplete", exc_info=True)
+        return False
 
 
 def _path_options(partial: str = "") -> list[str]:

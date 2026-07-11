@@ -1,0 +1,88 @@
+"""opencode.json builder."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from lilbee.catalog import agent_model_id, display_label_for_ref
+
+_OUTPUT_TOKEN_LIMIT = 8192
+"""Per-response output cap reported to opencode (it reserves this from the context)."""
+
+_MCP_TIMEOUT_MS = 120_000
+"""Remote-MCP request timeout. opencode defaults to 5000 ms, which the first
+``lilbee_search`` can exceed while the embedding model cold-loads."""
+
+
+def _model_entry(ref: str, chat_ctx: int | None) -> dict[str, Any]:
+    """One opencode model entry, carrying the served window so opencode trims to it.
+
+    opencode's schema requires both ``limit.context`` and ``limit.output`` once a
+    ``limit`` is present, so when the window is known emit both -- a limit with only
+    ``context`` makes opencode reject the whole config and fail to start.
+    """
+    entry: dict[str, Any] = {"name": display_label_for_ref(ref)}
+    if chat_ctx is not None:
+        entry["limit"] = {
+            "context": chat_ctx,
+            "output": max(1, min(chat_ctx // 2, _OUTPUT_TOKEN_LIMIT)),
+        }
+    return entry
+
+
+def opencode_config(
+    *,
+    base_url: str,
+    api_key: str,
+    model_refs: list[str],
+    chat_ctx: int | None = None,
+    default_ref: str | None = None,
+    include_mcp: bool = True,
+) -> dict[str, Any]:
+    """Return the opencode.json block wiring lilbee as a provider.
+
+    ``base_url`` is the lilbee server origin (e.g. ``http://127.0.0.1:8080``);
+    the chat-completions ``/v1`` and MCP ``/mcp`` suffixes are appended here.
+    The MCP block points opencode at the daemon's streamable-http endpoint with
+    the bearer token, so retrieval shares the daemon's warm models instead of
+    spawning a second process. ``chat_ctx`` is the active model's served window;
+    when set it becomes each model's ``limit.context`` so opencode trims history
+    to fit instead of overflowing on a long agentic session. ``default_ref``
+    pins opencode's startup model via the top-level ``model`` key
+    (``provider/model-id`` form).
+
+    ``include_mcp=False`` omits the ``mcp`` block entirely (rather than emitting
+    ``enabled: false``) so a user who brings their own MCP servers keeps them via
+    opencode's own config merge, while lilbee stays the model provider.
+    """
+    config: dict[str, Any] = {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "lilbee": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "lilbee",
+                "options": {
+                    "baseURL": f"{base_url}/v1",
+                    "apiKey": api_key,
+                },
+                # Key by the clean agent id (not the full ref) so opencode routes
+                # and shows a friendly id; lilbee's /v1 resolves it back to the ref.
+                "models": {
+                    agent_model_id(ref): _model_entry(ref, chat_ctx) for ref in sorted(model_refs)
+                },
+            }
+        },
+    }
+    if include_mcp:
+        config["mcp"] = {
+            "lilbee": {
+                "type": "remote",
+                "url": f"{base_url}/mcp",
+                "enabled": True,
+                "headers": {"Authorization": f"Bearer {api_key}"},
+                "timeout": _MCP_TIMEOUT_MS,
+            }
+        }
+    if default_ref is not None:
+        config["model"] = f"lilbee/{agent_model_id(default_ref)}"
+    return config

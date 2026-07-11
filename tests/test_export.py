@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 
 from lilbee.app import services as svc_mod
@@ -89,9 +90,9 @@ class TestResolveFormat:
 class TestWriteRoundTrip:
     @pytest.mark.parametrize("fmt", [DatasetFormat.PARQUET, DatasetFormat.JSONL])
     def test_round_trip(self, tmp_path, fmt):
-        rows = [_page("a.pdf", 1, "hello"), _page("a.pdf", 2, "world")]
+        table = pa.Table.from_pylist([_page("a.pdf", 1, "hello"), _page("a.pdf", 2, "world")])
         path = tmp_path / f"pages.{fmt}"
-        write_dataset(rows, path, fmt)
+        write_dataset(table, path, fmt)
         loaded = load_page_dataset(path, fmt)
         assert [(r["source"], r["page"], r["text"]) for r in loaded] == [
             ("a.pdf", 1, "hello"),
@@ -118,14 +119,14 @@ class TestBuildPageDataset:
     def test_clean_path_uses_captured_text(self, store):
         store.add_page_texts([_page("a.pdf", 1, "clean one"), _page("a.pdf", 2, "clean two")])
         store.upsert_source("a.pdf", "h", 2)
-        rows = build_page_dataset(store)
+        rows = build_page_dataset(store).to_pylist()
         assert [(r["page"], r["text"]) for r in rows] == [(1, "clean one"), (2, "clean two")]
 
     def test_fallback_reconstructs_from_chunks(self, store):
         # No page texts captured; reconstruct from chunks, ordered by chunk_index.
         store.add_chunks([_chunk("b.pdf", 1, 1, "second"), _chunk("b.pdf", 1, 0, "first")])
         store.upsert_source("b.pdf", "h", 2)
-        rows = build_page_dataset(store)
+        rows = build_page_dataset(store).to_pylist()
         assert len(rows) == 1
         assert rows[0]["page"] == 1
         assert rows[0]["text"] == "first\nsecond"
@@ -135,8 +136,60 @@ class TestBuildPageDataset:
         store.add_page_texts([_page("b.pdf", 1, "b-text")])
         store.upsert_source("a.pdf", "h", 1)
         store.upsert_source("b.pdf", "h", 1)
-        rows = build_page_dataset(store, source="b.pdf")
+        rows = build_page_dataset(store, source="b.pdf").to_pylist()
         assert {r["source"] for r in rows} == {"b.pdf"}
+
+    def test_single_source_reconstructs_when_not_captured(self, store):
+        # Exporting one source that has chunks but no captured page text
+        # reconstructs just that source from its chunks.
+        store.add_chunks([_chunk("only-chunks.pdf", 1, 0, "rebuilt body")])
+        store.upsert_source("only-chunks.pdf", "h", 1)
+        rows = build_page_dataset(store, source="only-chunks.pdf").to_pylist()
+        assert [(r["source"], r["text"]) for r in rows] == [("only-chunks.pdf", "rebuilt body")]
+
+    def test_all_sources_scans_page_texts_once(self, store, monkeypatch):
+        # Regression (bb-bqg): the all-sources export must read the page-text
+        # table in a single Arrow scan, not one filtered query per source. The
+        # per-source loop was O(sources) and hung for >25 min on a 346k-source
+        # store; the fixed-per-query overhead, not data size, dominated.
+        for i in range(5):
+            store.add_page_texts([_page(f"s{i}.pdf", 1, f"t{i}")])
+            store.upsert_source(f"s{i}.pdf", "h", 1)
+        calls: list[str | None] = []
+        real = store.page_texts_arrow
+
+        def spy(source=None):
+            calls.append(source)
+            return real(source)
+
+        monkeypatch.setattr(store, "page_texts_arrow", spy)
+        table = build_page_dataset(store)
+        assert table.num_rows == 5
+        # Exactly one full-table scan (source=None); never a per-source query.
+        assert calls == [None]
+
+    def test_orphaned_page_text_without_source_is_excluded(self, store):
+        # A page-text row whose source has no tracking record (e.g. the source was
+        # removed) is left out: the scan is restricted to get_sources(), matching
+        # the universe the old per-source loop walked.
+        store.add_page_texts([_page("real.pdf", 1, "kept")])
+        store.upsert_source("real.pdf", "h", 1)
+        store.add_page_texts([_page("orphan.pdf", 1, "dropped")])  # no upsert_source
+        rows = build_page_dataset(store).to_pylist()
+        assert {r["source"] for r in rows} == {"real.pdf"}
+
+    def test_mixed_captured_and_reconstructed_sources(self, store):
+        # Captured sources come from the single scan; only sources with no
+        # captured text fall back to per-source chunk reconstruction.
+        store.add_page_texts([_page("cap.pdf", 1, "captured")])
+        store.upsert_source("cap.pdf", "h", 1)
+        store.add_chunks([_chunk("recon.pdf", 1, 0, "rebuilt")])
+        store.upsert_source("recon.pdf", "h", 1)
+        rows = build_page_dataset(store).to_pylist()
+        assert [(r["source"], r["text"]) for r in rows] == [
+            ("cap.pdf", "captured"),
+            ("recon.pdf", "rebuilt"),
+        ]
 
     def test_sorted_by_source_and_page(self, store):
         store.add_page_texts(
@@ -144,7 +197,7 @@ class TestBuildPageDataset:
         )
         store.upsert_source("a.pdf", "h", 2)
         store.upsert_source("b.pdf", "h", 1)
-        rows = build_page_dataset(store)
+        rows = build_page_dataset(store).to_pylist()
         assert [(r["source"], r["page"]) for r in rows] == [
             ("a.pdf", 1),
             ("a.pdf", 2),
@@ -183,3 +236,30 @@ class TestImportDataset:
         test_config.embedding_model = "ollama/other-model:v1"
         with pytest.raises(EmbeddingModelMismatchError):
             await import_dataset(store, [_page("doc.pdf", 1, "body")])
+
+    async def test_import_uses_single_atomic_batch_write(self, services, monkeypatch):
+        # Each source must be written via one locked write_chunks_batch
+        # (cleanup + chunks + page texts + source row), not four separate unlocked
+        # writes that could destroy the source if one fails mid-way.
+        store = services
+        batch_calls = 0
+        real_batch = store.write_chunks_batch
+
+        def counting_batch(items):
+            nonlocal batch_calls
+            batch_calls += 1
+            return real_batch(items)
+
+        legacy: list[str] = []
+        monkeypatch.setattr(store, "write_chunks_batch", counting_batch)
+        monkeypatch.setattr(store, "delete_by_source", lambda *a, **k: legacy.append("delete"))
+        monkeypatch.setattr(store, "add_chunks", lambda *a, **k: legacy.append("add_chunks"))
+        monkeypatch.setattr(store, "add_page_texts", lambda *a, **k: legacy.append("page_texts"))
+        monkeypatch.setattr(store, "upsert_source", lambda *a, **k: legacy.append("upsert"))
+
+        await import_dataset(store, [_page("doc.pdf", 1, "body")])
+
+        assert batch_calls == 1
+        assert legacy == []  # none of the old per-op unlocked writes were used
+        # The atomic write still landed the source as IMPORTED.
+        assert store.get_sources()[0]["source_type"] == SourceType.IMPORTED

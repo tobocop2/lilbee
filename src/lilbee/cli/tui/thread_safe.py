@@ -30,7 +30,11 @@ def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
     """
     try:
         node.app.call_from_thread(fn, *args, **kwargs)
-    except Exception as exc:
+    except (OSError, RuntimeError) as exc:
+        # Only the shutdown signals: OSError when the message queue is closed,
+        # RuntimeError (incl. NoActiveAppError) when the app is no longer running.
+        # A genuine exception raised inside *fn* propagates so the bug surfaces
+        # instead of being silently swallowed.
         log.debug(
             "call_from_thread dropped %s: %s",
             getattr(fn, "__name__", fn),

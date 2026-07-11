@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Emit the CMAKE_ARGS string for an llama-cpp-python source build.
+# Emit the CMAKE_ARGS string for the llama-server engine source build.
 #
-# Single source of truth for per-OS / per-backend compile flags. The wheel
-# workflows (build-*-wheels.yml) and release.yml shell out here so the wheel
-# and the frozen exe never end up with mismatched compile options.
+# Single source of truth for per-OS / per-backend compile flags. Everything
+# that builds the engine (build_llama_server.sh via the bundle-llama-server
+# action) shells out here so no two builds end up with mismatched options.
 #
 # Usage:
 #   eval "$(BACKEND=vulkan RUNNER_OS=Linux tools/wheel-build/cmake_args.sh)"
@@ -55,8 +55,10 @@ esac
 #
 # arm64: NEON is mandatory in ARMv8 so a single baseline variant covers
 # every aarch64 system.
-common_x86="-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
-common_arm="-DGGML_NATIVE=OFF"
+# LLAMA_BUILD_UI=OFF: skip the npm/vite server-UI build (flaky on Windows
+# runners); assets fall back to the prebuilt HF bucket download.
+common_x86="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF"
+common_arm="-DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF"
 
 case "${backend}_${runner_os}" in
   cpu_Linux)

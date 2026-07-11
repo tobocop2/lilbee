@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from lilbee.modelhub.model_manager.types import RemoteModel
-from lilbee.providers.model_ref import format_remote_ref, parse_model_ref, translate_options
+from lilbee.providers.model_ref import (
+    format_remote_ref,
+    parse_model_ref,
+    routes_to_native_gguf,
+    translate_options,
+    with_configured_remote_chat,
+)
 
 # Canonical native HF ref for tests that need a local model.
 _LOCAL_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -23,6 +29,35 @@ class TestParseModelRef:
         ref = parse_model_ref("Qwen/Qwen3-8B-GGUF")
         assert ref.provider == "local"
         assert ref.name == "Qwen/Qwen3-8B-GGUF"
+
+    @pytest.mark.parametrize("org", ["openai", "mistral", "deepseek"])
+    def test_native_gguf_shape_wins_over_api_provider_prefix(self, org: str) -> None:
+        """A real HF org colliding with an API provider prefix still routes locally for GGUFs."""
+        raw = f"{org}/Some-Model-GGUF/some-model-Q4_K_M.gguf"
+        ref = parse_model_ref(raw)
+        assert ref.provider == "local"
+        assert ref.name == raw
+
+    def test_lm_studio_gguf_path_id_routes_to_lm_studio(self) -> None:
+        """LM Studio 0.2.x reports model ids as relative GGUF paths; the prefix wins."""
+        ref = parse_model_ref("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf")
+        assert ref.provider == "lm_studio"
+        assert ref.name == "TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf"
+
+    def test_ollama_gguf_path_id_routes_to_ollama(self) -> None:
+        """An Ollama-prefixed id that looks like a GGUF path stays with Ollama."""
+        ref = parse_model_ref("ollama/some/dir/model.gguf")
+        assert ref.provider == "ollama"
+
+    def test_native_gguf_shape_check(self) -> None:
+        from lilbee.providers.model_ref import is_native_gguf_ref
+
+        assert is_native_gguf_ref("openai/Repo-GGUF/file.gguf") is True
+        # Case-sensitive on purpose: hf_repo_from_ref only matches ".gguf".
+        assert is_native_gguf_ref("openai/Repo-GGUF/sub/file.GGUF") is False
+        assert is_native_gguf_ref("openai/gpt-4o") is False
+        assert is_native_gguf_ref("ollama/llama3:8b") is False
+        assert is_native_gguf_ref("file.gguf") is False
 
     def test_ollama_prefix(self) -> None:
         ref = parse_model_ref("ollama/qwen3:8b")
@@ -93,6 +128,35 @@ class TestParseModelRef:
     def test_empty_string_rejected(self) -> None:
         with pytest.raises(ValueError):
             parse_model_ref("")
+
+
+class TestRoutesToNativeGguf:
+    """The exemption-aware shape check shared by parsing and rerank routing."""
+
+    def test_native_gguf_shape_routes_native(self) -> None:
+        assert routes_to_native_gguf(_LOCAL_REF) is True
+
+    def test_local_server_prefix_is_exempt_from_shape_rule(self) -> None:
+        assert routes_to_native_gguf("lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf") is False
+        assert routes_to_native_gguf("ollama/some/dir/model.gguf") is False
+
+    def test_non_gguf_ref_does_not_route_native(self) -> None:
+        assert routes_to_native_gguf("openai/gpt-4o") is False
+
+
+class TestWithConfiguredRemoteChat:
+    """A model listing includes a remote-configured chat model."""
+
+    def test_remote_configured_chat_model_is_prepended(self) -> None:
+        refs = with_configured_remote_chat(["a/b/c.gguf"], "ollama/qwen3:8b")
+        assert refs == ["ollama/qwen3:8b", "a/b/c.gguf"]
+
+    def test_native_configured_chat_model_is_untouched(self) -> None:
+        assert with_configured_remote_chat(["a/b/c.gguf"], "a/b/c.gguf") == ["a/b/c.gguf"]
+
+    def test_already_listed_remote_ref_is_not_duplicated(self) -> None:
+        refs = with_configured_remote_chat(["ollama/qwen3:8b"], "ollama/qwen3:8b")
+        assert refs == ["ollama/qwen3:8b"]
 
 
 class TestProviderModelRefProperties:
@@ -269,28 +333,28 @@ _SHARED_OPTIONS = {
     "num_ctx": 4096,
 }
 
-# llama_cpp.Llama.create_chat_completion accepts these and nothing else from the
-# option set; the in-process worker splats kwargs straight into it, so any extra
-# key (num_ctx, num_predict) would raise TypeError.
-_LLAMA_CPP_ACCEPTED = frozenset(
+# The local chat-option translation emits these keys and nothing else from the
+# option set; the llama-server request builder consumes exactly this set, so any
+# extra key (num_ctx, num_predict) is a translation bug.
+_LOCAL_CHAT_OPTION_KEYS = frozenset(
     {"temperature", "top_p", "top_k", "seed", "max_tokens", "repeat_penalty"}
 )
 
 
 class TestChatOptionTranslationParity:
-    """Differential gate: same options through in-process vs API translation.
+    """Differential gate: same options through local-engine vs API translation.
 
     Pins the intentional divergence so the two paths can't silently drift:
-    the local llama.cpp path keeps top_k/repeat_penalty and renames
+    the local llama-server path keeps top_k/repeat_penalty and renames
     num_predict->max_tokens; the API path additionally strips top_k/num_ctx.
     Both rename num_predict consistently and neither leaks a key its backend
     would reject.
     """
 
-    def _in_process(self) -> dict[str, object]:
-        from lilbee.providers.llama_cpp.provider import LlamaCppProvider
+    def _local(self) -> dict[str, object]:
+        from lilbee.providers.engine_params import chat_options_to_kwargs
 
-        return LlamaCppProvider._chat_kwargs_from_options(dict(_SHARED_OPTIONS))
+        return chat_options_to_kwargs(dict(_SHARED_OPTIONS))
 
     def _api(self) -> dict[str, object]:
         ref = parse_model_ref("openai/gpt-4o")
@@ -298,13 +362,13 @@ class TestChatOptionTranslationParity:
 
     def test_num_predict_renamed_consistently(self) -> None:
         """Both backends speak max_tokens, not num_predict."""
-        for translated in (self._in_process(), self._api()):
+        for translated in (self._local(), self._api()):
             assert translated["max_tokens"] == 1024
             assert "num_predict" not in translated
 
-    def test_in_process_keeps_local_only_params(self) -> None:
-        """Local llama.cpp honors top_k and repeat_penalty, so they survive."""
-        translated = self._in_process()
+    def test_local_translation_keeps_local_only_params(self) -> None:
+        """The local engine honors top_k and repeat_penalty, so they survive."""
+        translated = self._local()
         assert translated["top_k"] == 40
         assert translated["repeat_penalty"] == 1.1
 
@@ -314,13 +378,13 @@ class TestChatOptionTranslationParity:
 
     def test_neither_path_leaks_num_ctx(self) -> None:
         """num_ctx is a model-load param; it must never reach a per-call request."""
-        assert "num_ctx" not in self._in_process()
+        assert "num_ctx" not in self._local()
         assert "num_ctx" not in self._api()
 
-    def test_in_process_emits_no_key_create_chat_completion_rejects(self) -> None:
-        """Every emitted key is a real create_chat_completion kwarg."""
-        translated = self._in_process()
-        assert set(translated) <= _LLAMA_CPP_ACCEPTED
+    def test_local_translation_emits_only_supported_keys(self) -> None:
+        """Every emitted key is one the llama-server request builder accepts."""
+        translated = self._local()
+        assert set(translated) <= _LOCAL_CHAT_OPTION_KEYS
 
     def test_api_translation_does_not_error_in_litellm(self) -> None:
         """litellm accepts the API-translated kwargs without raising.

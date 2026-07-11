@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -60,30 +60,21 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --locked --all-extras
-        env:
-          # GGML_NATIVE=OFF alone still auto-enables AVX2/FMA/BMI2 from the
-          # build host; pin the AVX baseline so the cached wheel runs on any
-          # runner (matches ci.yml).
-          CMAKE_ARGS: >-
-            -DGGML_METAL=OFF
-            -DGGML_NATIVE=OFF
-            -DGGML_BLAS=OFF
-            -DGGML_CUDA=OFF
-            -DGGML_AVX=ON -DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF
-            -DGGML_BMI2=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX512=OFF
+      # Audit the locked third-party set; lilbee-engine is first-party vendored
+      # binaries resolved from a local path, which a PyPI dry-run cannot install.
+      - name: Export locked requirements for audit
+        run: >
+          uv export --locked --all-extras --no-emit-project
+          --no-emit-package lilbee-engine
+          --format requirements-txt -o requirements-audit.txt
 
       - name: Run pip-audit
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
-          inputs: .
+          inputs: requirements-audit.txt
           # Keep this list mirrored with osv-scanner.toml. Per-ID rationale:
-          # - CVE-2025-69872: diskcache 5.6.3 uses pickle for serialization.
-          #   Pulled in transitively by llama-cpp-python; no upstream fix.
-          #   Exploitation requires write access to the user's own cache dir
-          #   (post-compromise scenario). Revisit when llama-cpp-python drops
-          #   or patches the diskcache dependency.
+          # - CVE-2025-69872: diskcache pickle serialization; exploiting it needs
+          #   write access to the user's own cache dir. No upstream fix yet.
           # - PYSEC-2022-42969: ReDoS in the unmaintained `py` package 1.11.0
           #   (py.path.svnwc). Pulled in transitively by pytest-forked>=1.6.0.
           #   Not reachable from lilbee or pytest-forked. No upstream fix.
@@ -124,6 +115,9 @@ jobs:
           #   nltk and crawl4ai only loads hardcoded resource names, so the
           #   attacker-controlled-path vector is unreachable. bb-m851 tracks
           #   the bump to nltk >= 3.10 once it ships.
+          # - PYSEC-2026-597: second nltk path-traversal advisory for the
+          #   incomplete #3504 fix (percent-encoded ..%2f; CVE-2026-12243).
+          #   Same triage and tracking as GHSA-p4gq-832x-fm9v.
           ignore-vulns: |
             CVE-2025-69872
             PYSEC-2022-42969
@@ -135,6 +129,7 @@ jobs:
             PYSEC-2025-183
             PYSEC-2024-277
             GHSA-p4gq-832x-fm9v
+            PYSEC-2026-597
 
   osv-scan:
     name: OSV-Scanner (multi-ecosystem CVEs)

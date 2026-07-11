@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -16,13 +16,13 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Input, Markdown, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
-from lilbee.wiki.browse import read_page
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,22 @@ _SLUG_WITH_TYPE_MIN_PARTS = 2
 def _wiki_root() -> Path:
     """Resolve the wiki root directory from config."""
     return cfg.data_root / cfg.wiki_dir
+
+
+def _safe_float(value: object) -> float | None:
+    """Coerce an untyped frontmatter value to float, or None if not numeric."""
+    try:
+        return float(cast("float", value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    """Coerce an untyped frontmatter value to int, or *default* if not numeric."""
+    try:
+        return int(cast("float", value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _format_page_header(
@@ -96,9 +112,12 @@ class WikiScreen(Screen[None]):
         Binding("G", "jump_bottom", "End", show=False),
     ]
 
+    _SEARCH_FILTER_DEBOUNCE_SECONDS = 0.12
+
     def __init__(self) -> None:
         super().__init__()
         self._page_slugs: list[str] = []
+        self._search_filter_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -258,8 +277,9 @@ class WikiScreen(Screen[None]):
             self.query_one("#wiki-content", Markdown).update(msg.WIKI_NO_CONTENT)
             return
 
-        faithfulness = page.frontmatter.get("faithfulness_score")
-        faith_val = float(faithfulness) if faithfulness is not None else None
+        # Frontmatter is arbitrary parsed YAML; a non-numeric value must not
+        # crash the node-select handler that calls this.
+        faith_val = _safe_float(page.frontmatter.get("faithfulness_score"))
 
         page_type = ""
         parts = slug.split("/")
@@ -276,7 +296,7 @@ class WikiScreen(Screen[None]):
         header_text = _format_page_header(
             title=page.title,
             page_type=page_type,
-            source_count=int(source_count) if source_count else 0,
+            source_count=_safe_int(source_count),
             created_at=str(created_at),
             faithfulness=faith_val,
         )
@@ -286,31 +306,15 @@ class WikiScreen(Screen[None]):
 
     @on(Input.Changed, "#wiki-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
-        """Filter pages when search input changes."""
-        self._load_pages(filter_text=event.value.strip())
-
-    def _selected_source(self) -> str | None:
-        """Return the source name for the highlighted wiki page, or None."""
-        tree = self.query_one("#wiki-page-list", Tree)
-        node = tree.cursor_node
-        if node is None:
-            return None
-        slug = node.data
-        if not isinstance(slug, str):
-            return None
-        return self._source_for_slug(slug)
-
-    def _source_for_slug(self, slug: str) -> str | None:
-        """Extract the primary source filename from a wiki page's frontmatter."""
-        root = _wiki_root()
-        page = read_page(root, slug)
-        if page is None:
-            return None
-        sources = page.frontmatter.get("sources")
-        # frontmatter values are untyped (Any from YAML); guard against non-list shapes
-        if isinstance(sources, list) and sources:
-            return str(sources[0])
-        return None
+        """Re-filter after a short debounce so a multi-key term re-walks the wiki
+        tree once on pause, not once per keystroke."""
+        filter_text = event.value.strip()
+        if self._search_filter_timer is not None:
+            self._search_filter_timer.stop()
+        self._search_filter_timer = self.set_timer(
+            self._SEARCH_FILTER_DEBOUNCE_SECONDS,
+            lambda: self._load_pages(filter_text=filter_text),
+        )
 
     def action_focus_search(self) -> None:
         """Focus the search input -- bound to / key."""

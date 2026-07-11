@@ -248,6 +248,14 @@ class TestLintWritesLogEntry:
         content = log_path.read_text()
         assert "lint |" in content
 
+    def test_lint_all_record_log_false_does_not_write_log(self, tmp_path: Path) -> None:
+        """A read-only status check (record_log=False) must not mutate log.md."""
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        lint_all(store, record_log=False)
+        assert not (tmp_path / "wiki" / "log.md").exists()
+
 
 class TestOrphanDetection:
     def test_orphan_concept_flagged(self, tmp_path: Path):
@@ -276,6 +284,34 @@ class TestOrphanDetection:
             i for i in report.issues if i.issue_type is not None and i.issue_type.value == "orphan"
         ]
         assert orphan_issues == []
+
+    def test_link_only_from_draft_does_not_exempt_orphan(self, tmp_path: Path):
+        # A [[slug]] living only in a draft must not keep the live
+        # concept page off the orphan list (no published page links it).
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "drafts", "wip", "Mentions [[braking]] but unpublished.\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_slugs = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert "wiki/concepts/braking.md" in orphan_slugs
+
+    def test_link_only_from_archive_does_not_exempt_orphan(self, tmp_path: Path):
+        write_wiki_page(tmp_path, "concepts", "braking", "# Braking\n\nText.\n")
+        write_wiki_page(tmp_path, "archive", "old", "Mentions [[braking]].\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        report = lint_all(store)
+        orphan_slugs = {
+            i.wiki_source
+            for i in report.issues
+            if i.issue_type is not None and i.issue_type.value == "orphan"
+        }
+        assert "wiki/concepts/braking.md" in orphan_slugs
 
     def test_entity_page_with_incoming_link_is_not_orphan(self, tmp_path: Path):
         write_wiki_page(tmp_path, "entities", "henry-ford", "# Henry Ford\n\nText.\n")
@@ -322,6 +358,16 @@ class TestPathTraversalDefense:
         issues = lint_wiki_page("wiki/summaries/doc.md", store)
         error_issues = [i for i in issues if i.severity == IssueSeverity.ERROR]
         assert any("escapes documents dir" in i.message for i in error_issues)
+
+    def test_wiki_source_traversal_does_not_read_outside_wiki_root(self, tmp_path: Path):
+        """A traversal wiki_source must not read/disclose a file outside wiki_root."""
+        secret = cfg.data_root.parent / "secret.md"
+        secret.write_text("UNMARKEDSECRET disclosed claim line\n")
+        store = MagicMock(spec=Store)
+        store.get_citations_for_wiki.return_value = []
+        issues = lint_wiki_page("../../secret.md", store)
+        assert issues == []
+        assert all("UNMARKEDSECRET" not in i.message for i in issues)
 
 
 class TestParseFrontmatter:

@@ -36,6 +36,7 @@ def mock_svc():
     store.add_memory.return_value = "id123"
     store.get_memories.return_value = []
     store.search_memories.return_value = []
+    store.delete_memory.return_value = True
     embedder = MagicMock()
     embedder.embed.return_value = [0.1] * 768
     services = make_mock_services(store=store, embedder=embedder)
@@ -45,7 +46,8 @@ def mock_svc():
 
 
 @pytest.fixture(autouse=True)
-def isolated_env(tmp_path):
+def isolated_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("LILBEE_DATA", raising=False)
     snapshot = cfg.model_copy()
     cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
@@ -152,9 +154,23 @@ class TestRemove:
         cfg.memory_enabled = True
         result = runner.invoke(app, ["memory", "remove", "abc"])
         assert "Removed abc." in result.output
-        mock_svc.store.delete_memory.assert_called_once_with("abc")
+        mock_svc.store.delete_memory.assert_called_once_with("abc", owner=LOCAL_OWNER)
 
     def test_remove_json(self):
         cfg.memory_enabled = True
         result = runner.invoke(app, ["--json", "memory", "remove", "abc"])
-        assert json.loads(result.output) == {"removed": "abc"}
+        assert json.loads(result.output) == {"id": "abc", "deleted": True}
+
+    def test_remove_unknown_id_reports_not_found(self, mock_svc):
+        cfg.memory_enabled = True
+        mock_svc.store.delete_memory.return_value = False
+        result = runner.invoke(app, ["memory", "remove", "ghost"])
+        assert "No memory ghost found." in result.output
+        assert result.exit_code == 1  # not-found exits non-zero, like `model remove`
+
+    def test_remove_unknown_id_json_exits_nonzero(self, mock_svc):
+        cfg.memory_enabled = True
+        mock_svc.store.delete_memory.return_value = False
+        result = runner.invoke(app, ["--json", "memory", "remove", "ghost"])
+        assert json.loads(result.output) == {"id": "ghost", "deleted": False}
+        assert result.exit_code == 1

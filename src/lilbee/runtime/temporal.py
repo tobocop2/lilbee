@@ -20,8 +20,8 @@ class DateRange(NamedTuple):
     end: datetime
 
 
-# Temporal keywords mapped to date range generators.
-# Each value is a callable taking "now" and returning a DateRange.
+# Temporal keyword -> resolver-key string; the resolver callables live in
+# _RANGE_RESOLVERS, keyed by these strings.
 _TEMPORAL_KEYWORDS: dict[str, str] = {
     "today": "today",
     "yesterday": "yesterday",

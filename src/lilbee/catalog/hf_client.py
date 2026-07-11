@@ -13,9 +13,8 @@ from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
-from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage
+from lilbee.catalog.models import CatalogModel, HfGgufMeta, HfPage, estimate_min_ram_gb
 from lilbee.catalog.refs import GGUF_GLOB, pick_best_gguf
-from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +84,10 @@ _BYTES_PER_GB = 1024**3
 
 def hf_token() -> str | None:
     """Resolve the HuggingFace token in priority order: env > cfg > hub cache."""
+    # circular: a module-level cfg import makes Config()'s model-ref validator
+    # circular (config -> model_ref -> catalog -> here -> config).
+    from lilbee.core.config import cfg
+
     token = os.environ.get("LILBEE_HF_TOKEN") or os.environ.get("HF_TOKEN") or None
     if token:
         return token
@@ -125,13 +128,19 @@ def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:
 
 
 def _estimate_size_from_siblings(siblings: list[RepoSibling]) -> float:
-    """Estimate model size in GB from the largest GGUF file in siblings."""
-    max_bytes = 0
-    for sib in siblings:
-        if sib.rfilename.endswith(".gguf"):
-            max_bytes = max(max_bytes, sib.size or 0)
-    if max_bytes > 0:
-        return round(max_bytes / _BYTES_PER_GB, 1)
+    """Estimate model size in GB from the GGUF the row will actually pull.
+
+    Sizes the same quant ``_resolve_sibling_gguf`` names (via ``pick_best_gguf``),
+    not the repo's largest GGUF. Sizing the largest (often an F16/BF16) while the
+    row names the Q4_K_M quant mis-buckets the model under size filtering.
+    """
+    gguf_files = [s for s in siblings if s.rfilename.endswith(".gguf")]
+    if not gguf_files:
+        return 0.0
+    picked = pick_best_gguf([s.rfilename for s in gguf_files])
+    for sib in gguf_files:
+        if sib.rfilename == picked and sib.size:
+            return round(sib.size / _BYTES_PER_GB, 1)
     return 0.0  # unknown: display as "?" in UI
 
 
@@ -240,7 +249,7 @@ class HfClient:
                     hf_repo=item.id,
                     gguf_filename=_resolve_sibling_gguf(item.siblings or []),
                     size_gb=size_gb,
-                    min_ram_gb=round(max(2.0, size_gb * 1.5), 1),
+                    min_ram_gb=estimate_min_ram_gb(size_gb),
                     description=card_desc[:120] if card_desc else "",
                     featured=False,
                     downloads=item.downloads or 0,

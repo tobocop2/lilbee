@@ -58,7 +58,7 @@ def _suppress_catalog_auto_hf_fetch():
 @pytest.fixture()
 def _mock_resolve():
     with mock.patch(
-        "lilbee.providers.llama_cpp.provider.resolve_model_path",
+        "lilbee.providers.engine_params.resolve_model_path",
         return_value=cfg.models_dir / "fake.gguf",
     ):
         yield
@@ -1110,3 +1110,12 @@ class TestCompletionOpenAndAcceptAsync:
             # the next path segment.
             assert inp.value == "/add mydir/"
             assert not overlay.is_visible
+
+
+def test_setting_options_exclude_non_settable_keys():
+    """Autocomplete offers only settable keys (wiki_dir is read-only)."""
+    from lilbee.cli.tui.widgets.autocomplete import _setting_options
+
+    opts = _setting_options()
+    assert "wiki_dir" not in opts
+    assert "chat_model" in opts

@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from typing import Any
 
 _MIN_LEIDEN_WEIGHT = 0.01
+# Fixed seed so Leiden returns the same communities for the same edge set;
+# the algorithm is randomized and would otherwise drift between runs.
+_LEIDEN_SEED = 42
 
 
 @dataclass
@@ -53,9 +56,9 @@ def _leiden_partition(
     edges: list[tuple[str, str, float]] = [
         (row["source"], row["target"], max(_MIN_LEIDEN_WEIGHT, row["weight"])) for row in edge_rows
     ]
-    _modularity, partition = leiden(edges=edges)  # type: ignore[call-arg]
+    _modularity, partition = leiden(edges=edges, seed=_LEIDEN_SEED)  # type: ignore[call-arg]
 
-    degree_map: dict[str, int] = Counter()
+    degree_map: Counter[str] = Counter()
     for row in edge_rows:
         degree_map[row["source"]] += 1
         degree_map[row["target"]] += 1

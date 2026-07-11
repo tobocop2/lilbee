@@ -56,10 +56,13 @@ def download_task_name(ref: str) -> str:
     """
     if not ref or "/" not in ref:
         return ""
-    repo = hf_repo_from_ref(ref)
-    if "/" not in repo:
+    # A ``.gguf`` ref needs ``<owner>/<repo>/<file>`` (two slashes) to be a valid
+    # native ref; a one-slash ``<file>.gguf`` is malformed and has no repo label.
+    if ref.endswith(".gguf") and ref.count("/") < _NATIVE_GGUF_REF_MIN_SLASHES:
         return ""
-    return clean_display_name(repo)
+    # Every remaining ref has a ``<owner>/<repo>`` portion: a native ref keeps its
+    # first two segments, a provider-prefixed/bare ref is returned unchanged.
+    return clean_display_name(hf_repo_from_ref(ref))
 
 
 def display_label_for_ref(ref: str) -> str:
@@ -72,10 +75,23 @@ def display_label_for_ref(ref: str) -> str:
     if not ref:
         return ""
     if ref.endswith(".gguf") and ref.count("/") >= _NATIVE_GGUF_REF_MIN_SLASHES:
-        return clean_display_name(ref.rsplit("/", 1)[0])
+        # hf_repo_from_ref keeps the first two segments, so a subdir-quant ref
+        # (``unsloth/MiniMax-M2-GGUF/Q4_K_M/...gguf``) still yields the real repo.
+        return clean_display_name(hf_repo_from_ref(ref))
     if "/" in ref:
         return ref.split("/", 1)[1]
     return ref
+
+
+def agent_model_id(ref: str) -> str:
+    """A clean, routable model id for agent configs, e.g. ``Qwen3-235B-A22B``.
+
+    The display label with spaces folded to hyphens so it is a single token an
+    agent can pin and send back as the ``model`` field. ``known_models.resolve``
+    maps it back to the ref when it is unambiguous, so the agent shows and routes
+    this id instead of the full GGUF path.
+    """
+    return display_label_for_ref(ref).replace(" ", "-")
 
 
 def extract_quant(filename: str) -> str:

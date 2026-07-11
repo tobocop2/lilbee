@@ -23,7 +23,6 @@ import httpx
 import pytest
 
 from conftest import (
-    CLI_FAST_TIMEOUT,
     HTTP_FAST_TIMEOUT,
     OLLAMA_HOST_ENV_VAR,
     OLLAMA_MODEL_ENV_VAR,
@@ -118,29 +117,9 @@ def lilbee_env_with_ollama(
     )
 
 
-def _has_litellm_extras(lane: Lane, lilbee_data: Path) -> bool:
-    """Probe whether the artifact has the [litellm] extra wired at runtime.
-
-    Runs ``lilbee --json self-check-extras`` against an isolated env
-    (mirrors the per-test isolation invariant the rest of the harness
-    follows) and reads the per-extra boolean directly from the JSON
-    payload. Can't gate on exit-code alone because the command exits 1
-    if ANY extra is missing, so a healthy litellm with a missing crawler
-    would falsely mark this probe False.
-    """
-    result = run_lilbee_with_env(
-        lane, ["--json", "self-check-extras"], env=lilbee_env(lilbee_data), timeout=CLI_FAST_TIMEOUT
-    )
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return False
-    return payload.get("litellm") is True
-
-
 # Every ollama-backed test pays the same two gates: xfail on the bundled
 # binary (bb-m234 startup segfault on ollama/* chat models) and skip when
-# the artifact doesn't ship the [litellm] extra. Wrap once so the
+# the artifact doesn't ship the [remote] extra. Wrap once so the
 # decorators don't drift between tests.
 _xfail_on_binary_segfault = pytest.mark.xfail(
     current_lane_name() is LaneName.L2_BINARY,
@@ -150,7 +129,10 @@ _xfail_on_binary_segfault = pytest.mark.xfail(
 
 
 def _skip_without_litellm(lane: Lane, lilbee_data: Path) -> None:
-    if not _has_litellm_extras(lane, lilbee_data):
+    """Skip when the lilbee under test doesn't have the ``[remote]`` extra wired."""
+    import importlib.util
+
+    if importlib.util.find_spec("litellm") is None:
         pytest.skip("litellm not importable; ollama provider path not available")
 
 

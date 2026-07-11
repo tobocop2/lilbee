@@ -2,7 +2,43 @@
 
 from unittest import mock
 
+import pytest
+
 from lilbee.core import settings
+
+
+class TestChunkSizeOverlapInvariant:
+    def test_lowering_chunk_size_below_existing_overlap_is_rejected(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "chunk_size", 512)
+        monkeypatch.setattr(appset.cfg, "chunk_overlap", 100)
+        with pytest.raises(ValueError, match="chunk_overlap"):
+            appset._validate({"chunk_size": 64})
+
+    def test_lowering_chunk_size_above_existing_overlap_is_allowed(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "chunk_size", 512)
+        monkeypatch.setattr(appset.cfg, "chunk_overlap", 50)
+        appset._validate({"chunk_size": 256})  # 50 < 256, no raise
+
+
+class TestApplySettingsRollback:
+    def test_parse_error_during_persist_restores_snapshot(self, monkeypatch):
+        """A non-OSError (e.g. corrupt-toml parse) during persist must roll the
+        in-memory snapshot back, not leave cfg holding unpersisted values."""
+        from lilbee.app import settings as appset
+
+        original = appset.cfg.chunk_size
+
+        def _boom(*_a, **_k):
+            raise ValueError("corrupt config.toml")
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", _boom)
+        with pytest.raises(ValueError):
+            appset.apply_settings_update({"chunk_size": original + 64})
+        assert appset.cfg.chunk_size == original
 
 
 class TestLoad:
@@ -124,6 +160,66 @@ class TestTomlEscaping:
         assert _escape_toml_string("") == ""
 
 
+class TestRerankerConfig:
+    """Reranker mode + prompt config fields."""
+
+    def test_reranker_type_defaults_auto(self):
+        from lilbee.core.config import Config
+        from lilbee.core.config.enums import RerankerType
+
+        assert Config().reranker_type == RerankerType.AUTO
+
+    def test_reranker_type_rejects_junk(self):
+        import pydantic
+        import pytest
+
+        from lilbee.core.config import Config
+
+        with pytest.raises(pydantic.ValidationError):
+            Config(reranker_type="bogus")
+
+    def test_reranker_prompt_defaults_empty(self):
+        from lilbee.core.config import Config
+
+        assert Config().reranker_prompt == ""
+
+    def test_reranker_type_is_load_affecting(self):
+        from lilbee.core.config.keys import LOAD_AFFECTING_KEYS
+
+        assert "reranker_type" in LOAD_AFFECTING_KEYS
+
+    def test_reranker_fields_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        assert "reranker_type" in SETTINGS_MAP
+        assert "reranker_prompt" in SETTINGS_MAP
+        assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
+
+
+class TestReplicaDefaults:
+    """embed/vision replica counts default to 0 = auto (one per GPU at placement)."""
+
+    def test_replicas_default_to_auto_zero(self):
+        from lilbee.core.config import Config
+
+        assert Config().embed_replicas == 0
+        assert Config().vision_replicas == 0
+
+    def test_replicas_accept_zero(self):
+        from lilbee.core.config import Config
+
+        assert Config(embed_replicas=0, vision_replicas=0).embed_replicas == 0
+
+    def test_replicas_reject_negative(self):
+        import pydantic
+        import pytest
+
+        from lilbee.core.config import Config
+
+        with pytest.raises(pydantic.ValidationError):
+            Config(embed_replicas=-1)
+
+
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 
@@ -173,6 +269,26 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is True  # None = auto/all
         assert get_default("n_gpu_layers") is None
+
+    def test_vision_ocr_max_tokens_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["vision_ocr_max_tokens"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is int
+        assert defn.group == "Ingest"
+        assert get_default("vision_ocr_max_tokens") == 4096
+
+    def test_vision_ocr_concurrency_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["vision_ocr_concurrency"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is int
+        assert defn.group == "Ingest"
+        assert get_default("vision_ocr_concurrency") == 4
 
     def test_crawl_render_mode_in_settings_map(self):
         from lilbee.app.settings_map import SETTINGS_MAP
@@ -240,11 +356,12 @@ class TestCrawlRenderModeConfig:
 
 
 class TestOverlayPersistedSettings:
-    def test_empty_string_value_is_skipped(self, tmp_path):
+    def test_empty_string_value_is_skipped(self, tmp_path, monkeypatch):
         """Legacy persisted empty strings (None written as "") skip overlay
         instead of corrupting the in-memory config or spamming warnings."""
         from lilbee.core.config import cfg
 
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
         original = cfg.chat_model
         try:
             (tmp_path / "config.toml").write_text('chat_model = ""\n')
@@ -252,3 +369,112 @@ class TestOverlayPersistedSettings:
             assert cfg.chat_model == original
         finally:
             cfg.chat_model = original
+
+    def test_env_var_wins_over_config_toml(self, tmp_path, monkeypatch):
+        """An explicit LILBEE_<FIELD> env var overrides config.toml, as documented."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+            cfg.vision_replicas = 4  # value as loaded from LILBEE_VISION_REPLICAS
+            monkeypatch.setenv("LILBEE_VISION_REPLICAS", "4")
+            (tmp_path / "config.toml").write_text("vision_replicas = 2\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 4
+        finally:
+            cfg.vision_replicas = original
+
+    def test_empty_env_var_does_not_suppress_config_toml(self, tmp_path, monkeypatch):
+        """An empty LILBEE_<FIELD> env var is treated as unset; config.toml wins."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+            monkeypatch.setenv("LILBEE_VISION_REPLICAS", "")
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 3
+        finally:
+            cfg.vision_replicas = original
+
+    def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
+        """Without the env var, config.toml is still overlaid onto cfg."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+            monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 3
+        finally:
+            cfg.vision_replicas = original
+
+    def test_skip_toml_config_makes_overlay_noop(self, tmp_path, monkeypatch):
+        """LILBEE_SKIP_TOML_CONFIG=1 disables the overlay path too, so the escape
+        hatch is honored consistently with the pydantic-settings source (the CLI
+        and MCP overlay must not re-read config.toml behind the skip flag)."""
+        from lilbee.core.config import cfg
+
+        original = cfg.vision_replicas
+        try:
+            monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+            cfg.vision_replicas = 1
+            (tmp_path / "config.toml").write_text("vision_replicas = 3\n")
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_replicas == 1  # config.toml ignored while skipping
+        finally:
+            cfg.vision_replicas = original
+
+
+class TestAutoSyncConfig:
+    def test_auto_sync_defaults_true(self):
+        from lilbee.core.config import Config
+
+        assert Config().auto_sync is True
+
+    def test_auto_sync_is_writable(self):
+        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
+
+        assert "auto_sync" in WRITABLE_CONFIG_FIELDS
+
+    def test_auto_sync_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        assert "auto_sync" in SETTINGS_MAP
+
+
+class TestListSettingRegexMarker:
+    def test_only_regex_list_validates_as_regex(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        assert SETTINGS_MAP["crawl_exclude_patterns"].validate_regex is True
+        # Chromium flag list must not be regex-validated.
+        assert SETTINGS_MAP["crawl_browser_extra_args"].validate_regex is False
+
+
+class TestUtf8RoundTrip:
+    """save() writes UTF-8 and load() reads it back correctly (finding #2)."""
+
+    def test_non_ascii_value_round_trips(self, tmp_path) -> None:
+        settings.save(tmp_path, {"model": "qwen3-中文"})
+        result = settings.load(tmp_path)
+        assert result == {"model": "qwen3-中文"}
+
+    def test_file_is_utf8_encoded(self, tmp_path) -> None:
+        settings.save(tmp_path, {"key": "éàü"})
+        raw = (tmp_path / "config.toml").read_bytes()
+        decoded = raw.decode("utf-8")
+        assert "key" in decoded
+
+    def test_win32_platform_sim_does_not_break_save(self, tmp_path, monkeypatch) -> None:
+        """Simulate Windows platform: write_text with encoding= must still work."""
+        monkeypatch.setattr("lilbee.core.settings.sys.platform", "win32")
+        settings.save(tmp_path, {"key": "value", "unicode": "é"})
+        result = settings.load(tmp_path)
+        assert result["unicode"] == "é"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -185,6 +186,21 @@ class TestModelEntryFactories:
         assert entry.size_gb is None
         assert entry.display_name == ""
 
+    def test_from_native_reports_full_split_total(self):
+        # A split GGUF lists its total on-disk size, not the
+        # first-shard size, so list/show agree with the freed-on-remove total.
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=1 * 1024**3, task="chat")
+        manifest.total_size_bytes = 6 * 1024**3  # six-shard total
+        entry = ModelEntry.from_native(_CHAT_REF, manifest)
+        assert entry.size_gb == 6.0
+
+    def test_manifest_data_reports_full_split_total(self):
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=1 * 1024**3, task="chat")
+        manifest.total_size_bytes = 6 * 1024**3
+        data = ManifestData.from_manifest(manifest)
+        assert data.size_gb == 6.0
+        assert data.size_bytes == 6 * 1024**3
+
     def test_from_backend_with_remote(self):
         remote = _remote(_OLLAMA_REF, task="chat", parameter_size="8B")
         entry = ModelEntry.from_backend(_OLLAMA_REF, remote, ModelSource.OLLAMA)
@@ -203,6 +219,67 @@ class TestModelEntryFactories:
         assert entry.source == "ollama"
         assert entry.task is None
         assert entry.display_name == ""
+
+
+class TestRemoveModelDataFreedSize:
+    def test_legacy_split_manifest_reports_full_shard_total(self, tmp_path, monkeypatch):
+        # A pre-accounting split manifest
+        # (total_size_bytes None) still frees every shard, so the reported freed
+        # size must reflect the on-disk total, not just the first shard.
+        from unittest.mock import MagicMock
+
+        from lilbee.app.models import _bytes_to_gb, remove_model_data
+
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=10, task="chat")  # first shard only
+        shards = []
+        for n in (1, 2, 3):
+            path = tmp_path / f"shard{n}.gguf"
+            path.write_bytes(b"x" * 100)  # 100 bytes each -> 300 total
+            shards.append(path)
+        registry = MagicMock()
+        registry.shard_paths.return_value = shards
+        manager = MagicMock()
+        manager.remove.return_value = True
+        services = MagicMock(model_manager=manager, registry=registry)
+        monkeypatch.setattr(model_mod, "get_services", lambda: services)
+        monkeypatch.setattr(model_mod, "_native_manifest_index", lambda: {_CHAT_REF: manifest})
+
+        result = remove_model_data(_CHAT_REF)
+        assert result.freed_gb == _bytes_to_gb(300)  # all 3 shards, not the 10-byte first
+
+    def test_modern_manifest_uses_recorded_total(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lilbee.app.models import _bytes_to_gb, remove_model_data
+
+        manifest = _manifest(_CHAT_REPO, _CHAT_FILE, size=10, task="chat")
+        manifest.total_size_bytes = 600  # accounted at install; no shard re-stat needed
+        registry = MagicMock()
+        manager = MagicMock()
+        manager.remove.return_value = True
+        services = MagicMock(model_manager=manager, registry=registry)
+        monkeypatch.setattr(model_mod, "get_services", lambda: services)
+        monkeypatch.setattr(model_mod, "_native_manifest_index", lambda: {_CHAT_REF: manifest})
+
+        result = remove_model_data(_CHAT_REF)
+        assert result.freed_gb == _bytes_to_gb(600)
+        registry.shard_paths.assert_not_called()  # recorded total used directly
+
+
+class TestListNoEagerWarm:
+    def test_model_list_disables_eager_warm(self, monkeypatch):
+        """`model list` reads installed files and must not warm the fleet."""
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+        seen: dict[str, object] = {}
+
+        def _capture(*_args, **_kwargs):
+            seen["eager"] = cfg.worker_pool_eager_start
+            return ListModelsResult(models=[], total=0)
+
+        monkeypatch.setattr("lilbee.cli.model.list_models_data", _capture)
+        result = CliRunner().invoke(app, ["model", "list"])
+        assert result.exit_code == 0
+        assert seen["eager"] is False
 
 
 class TestListModelsData:
@@ -290,7 +367,17 @@ class TestListCmd:
     def test_invalid_task_raises_bad_param(self, fake_manager):
         result = runner.invoke(app, ["model", "list", "--task", "bogus"])
         assert result.exit_code != 0
-        assert "ModelTask" in result.output
+        # Friendly message listing valid tasks; never leaks the internal enum name.
+        assert "ModelTask" not in result.output
+        assert "chat" in result.output
+
+    def test_invalid_task_json_mode_emits_error_envelope(self, fake_manager):
+        result = runner.invoke(app, ["--json", "model", "list", "--task", "bogus"])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert "error" in data
+        assert "bogus" in data["error"]
+        assert "ModelTask" not in data["error"]
 
 
 class TestShowModelData:
@@ -413,6 +500,17 @@ class TestPullModelData:
         assert result.status == PullStatus.ALREADY_INSTALLED
         assert fake_manager.pull_calls == []
 
+    def test_already_installed_vision_ensures_mmproj(
+        self, fake_manager, native_manifests, monkeypatch
+    ):
+        # Main GGUF present: still ensure the projector before reporting installed,
+        # so a cached vision model missing its mmproj becomes usable.
+        ensured: list[str] = []
+        monkeypatch.setattr(model_mod, "_ensure_vision_projector", lambda ref: ensured.append(ref))
+        result = model_mod.pull_model_data(_CHAT_REF, ModelSource.NATIVE)
+        assert result.status == PullStatus.ALREADY_INSTALLED
+        assert ensured == [_CHAT_REF]
+
     def test_pull_native_invokes_manager_and_callbacks(self, fake_manager, native_manifests):
         events = []
         target = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -422,6 +520,74 @@ class TestPullModelData:
         assert events
         assert events[0].percent == 50
         assert fake_manager.pull_calls == [(target, ModelSource.NATIVE)]
+
+
+class TestEnsureVisionProjector:
+    def test_non_vision_ref_is_noop(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        monkeypatch.setattr(
+            "lilbee.catalog.resolve_pull_target",
+            lambda _q: SimpleNamespace(task=ModelTask.CHAT),
+        )
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda entry: called.append(entry))
+        model_mod._ensure_vision_projector("acme/chat/model.gguf")
+        assert called == []
+
+    def test_vision_ref_with_missing_projector_downloads_mmproj(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        entry = SimpleNamespace(task=ModelTask.VISION)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: True)
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF")
+        assert called == [entry]
+
+    def test_vision_ref_with_projector_on_disk_skips_network(self, monkeypatch):
+        # A complete install must not resolve filenames over the network.
+        from types import SimpleNamespace
+
+        from lilbee.catalog.types import ModelTask
+
+        entry = SimpleNamespace(task=ModelTask.VISION)
+        monkeypatch.setattr("lilbee.catalog.resolve_pull_target", lambda _q: entry)
+        monkeypatch.setattr(model_mod, "_vision_projector_missing", lambda _r: False)
+        called: list[object] = []
+        monkeypatch.setattr("lilbee.catalog.download_mmproj", lambda e: called.append(e))
+        model_mod._ensure_vision_projector("noctrex/LightOnOCR-2-1B-GGUF")
+        assert called == []
+
+    def test_projector_missing_true_when_mmproj_unresolvable(self, monkeypatch):
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path",
+            lambda _r: Path("/models/vision.gguf"),
+        )
+
+        def _no_projector(_path):
+            raise ProviderError("no mmproj", provider="llama-server")
+
+        monkeypatch.setattr("lilbee.providers.gguf_meta.find_mmproj_for_model", _no_projector)
+        assert model_mod._vision_projector_missing("org/vision-GGUF") is True
+
+    def test_projector_missing_false_when_mmproj_resolves(self, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.providers.engine_params.resolve_model_path",
+            lambda _r: Path("/models/vision.gguf"),
+        )
+        monkeypatch.setattr(
+            "lilbee.providers.gguf_meta.find_mmproj_for_model",
+            lambda _p: Path("/models/mmproj.gguf"),
+        )
+        assert model_mod._vision_projector_missing("org/vision-GGUF") is False
 
 
 class TestAdoptEmbedder:

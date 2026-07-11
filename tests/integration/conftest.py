@@ -69,9 +69,9 @@ def _integration_loop():
 def run_async(_integration_loop):
     """Run a coroutine on the shared session loop.
 
-    Tests must NOT use asyncio.run() directly. A fresh loop tears down
-    call_soon_threadsafe plumbing that the llama-cpp provider's daemon-thread
-    embed/rerank workers depend on, wedging subsequent awaits on CPU-only CI.
+    Tests must NOT use asyncio.run() directly: the pipeline runs blocking
+    provider/embedder calls via asyncio.to_thread on this shared loop, and a
+    fresh per-test loop would strand that plumbing and wedge subsequent awaits.
     """
 
     def _run(coro):
@@ -102,7 +102,11 @@ def rag_pipeline(tmp_path_factory, _integration_loop):
     for name, content in TEST_DOCS.items():
         (docs_dir / name).write_text(content)
 
-    cfg.llm_provider = "llama-cpp"
+    cfg.llm_provider = "auto"  # local GGUF refs route to the llama-server fleet
+    # Lazy server spawn: get_services() must not block tests that don't infer
+    # (e.g. the status screen) on the fleet warm-up; inference tests spawn on
+    # first call.
+    cfg.worker_pool_eager_start = False
     cfg.models_dir = canonical_models_dir()
     cfg.documents_dir = docs_dir
     cfg.data_dir = data_dir
@@ -162,7 +166,11 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     for name, content in TEST_DOCS.items():
         (docs_dir / name).write_text(content)
 
-    cfg.llm_provider = "llama-cpp"
+    cfg.llm_provider = "auto"  # local GGUF refs route to the llama-server fleet
+    # Lazy server spawn: get_services() must not block tests that don't infer
+    # (e.g. the status screen) on the fleet warm-up; inference tests spawn on
+    # first call.
+    cfg.worker_pool_eager_start = False
     cfg.models_dir = canonical_models_dir()
     cfg.documents_dir = docs_dir
     cfg.data_dir = data_dir
