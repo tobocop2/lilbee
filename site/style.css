@@ -205,12 +205,11 @@ h2.label { font-size: inherit; font-weight: inherit; }
   font-size: 12.5px;
   letter-spacing: 0.03em;
   color: var(--ink-2);
-  border: 1px solid var(--rule-2);
+  border: 1px solid var(--rule);
   border-radius: 3px;
   padding: 2px 9px;
-  transition: color 140ms, border-color 140ms;
+  cursor: default;
 }
-.surface:hover { color: var(--accent-hot); border-color: var(--accent-hot); }
 
 /* section labels ----------------------------------------------------- */
 .label {
@@ -468,26 +467,8 @@ h2.label { font-size: inherit; font-weight: inherit; }
 .installtabs {
   display: flex;
   flex-wrap: wrap;
-  margin-top: 0.3rem;
-  border-bottom: 1px solid var(--rule-2);
-}
-.installtabs .tab {
-  font-family: var(--mono);
-  font-size: 13px;
-  letter-spacing: 0.05em;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--ink-3);
-  padding: 0.5rem 0.85rem;
-  margin-bottom: -1px;
-  cursor: pointer;
-  transition: color 140ms, border-color 140ms;
-}
-.installtabs .tab:hover { color: var(--ink-2); }
-.installtabs .tab[aria-selected="true"] {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  gap: 7px;
+  margin-top: 0.5rem;
 }
 .installpane { padding-top: 1rem; }
 .installpane[hidden] { display: none; }
@@ -747,21 +728,23 @@ footer .meta { text-align: right; font-size: 12px; }
 
 .tutorialtabs {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 1.1rem;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin-bottom: 1.3rem;
 }
-.tutorialtabs-break { flex-basis: 100%; height: 0; }
+.tutorialtabs-row { display: flex; flex-direction: column; gap: 0.45rem; }
 .tutorialtabs-group {
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--ink-3);
-  margin: 0.3rem 0.15rem 0.1rem 0;
 }
-.tutorialtabs .tutorialtab {
+.tutorialtabs-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+
+/* clickable chip tabs, shared by the tutorial reel and the install methods */
+.tutorialtabs .tutorialtab,
+.installtabs .tab {
   font-family: var(--mono);
   font-size: 12.5px;
   letter-spacing: 0.02em;
@@ -769,29 +752,30 @@ footer .meta { text-align: right; font-size: 12px; }
   border: 1px solid var(--rule-2);
   border-radius: 5px;
   color: var(--ink-2);
-  padding: 0.35rem 0.7rem;
+  padding: 0.35rem 0.75rem;
   cursor: pointer;
   transition: color 130ms, background-color 130ms, border-color 130ms, transform 110ms, box-shadow 130ms;
 }
-.tutorialtabs .tutorialtab::before { content: "\25B8"; color: var(--accent); opacity: 0.65; margin-right: 0.4em; }
-.tutorialtabs .tutorialtab:hover {
+.tutorialtabs .tutorialtab:hover,
+.installtabs .tab:hover {
   color: var(--ink);
   background: var(--bg-card);
   border-color: var(--accent);
   transform: translateY(-1px);
   box-shadow: 0 5px 14px -8px rgba(0, 0, 0, 0.7);
 }
-.tutorialtabs .tutorialtab:focus-visible {
+.tutorialtabs .tutorialtab:focus-visible,
+.installtabs .tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-.tutorialtabs .tutorialtab[aria-selected="true"] {
+.tutorialtabs .tutorialtab[aria-selected="true"],
+.installtabs .tab[aria-selected="true"] {
   color: var(--bg);
   background: var(--accent);
   border-color: var(--accent);
   font-weight: 600;
 }
-.tutorialtabs .tutorialtab[aria-selected="true"]::before { content: "\25BE"; color: var(--bg); opacity: 0.85; }
 
 .tutorialpane[hidden] { display: none; }
 
