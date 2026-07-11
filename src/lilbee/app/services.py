@@ -122,11 +122,11 @@ class _ServicesState:
     """The cached process-global singleton plus the per-task scoped override.
 
     ``singleton`` is set on first ``get_services()`` call. Concurrency
-    contract: lilbee runs the asyncio loop on a single worker thread +
-    Textual's main thread; ``get_services()`` is idempotent (the early-out
-    covers re-entry from a background thread), and the Services dataclass is
-    logically immutable post-construction, so concurrent reads are safe
-    without a lock. Tests that need a custom container call
+    contract: creation is serialized by ``_singleton_create_lock`` (several
+    worker threads can first-touch services at once, and a duplicate build
+    would collide in xberg's process-global backend registry), and the
+    Services dataclass is logically immutable post-construction, so concurrent
+    reads are safe without a lock. Tests that need a custom container call
     ``set_services(make_mock_services(...))``; ``peek_services()`` is the
     read-only inspector for cleanup fixtures.
 
@@ -226,6 +226,18 @@ def build_services(
     )
 
 
+# Serializes first-touch singleton creation: several worker threads (e.g.
+# concurrent downloads) can call get_services() before the singleton exists,
+# and a duplicate build re-registers xberg's process-global backends mid-flight,
+# raising 'already registered' in the losing thread.
+_singleton_create_lock = threading.Lock()
+
+# Makes each xberg registry re-bind (unregister + register) atomic, so
+# concurrent binds serialize and the most recently built provider wins instead
+# of colliding on 'already registered'.
+_backend_bind_lock = threading.Lock()
+
+
 def get_services() -> Services:
     """Return the active container: a scoped override if set, else the cached singleton.
 
@@ -240,26 +252,30 @@ def get_services() -> Services:
     if _state.singleton is not None:
         return _state.singleton
 
-    from lilbee.app.settings import reconcile_embedding_dim
-    from lilbee.core.config import cfg
-    from lilbee.modelhub.registry import ModelRegistry
+    with _singleton_create_lock:
+        if _state.singleton is not None:
+            return _state.singleton
 
-    registry = ModelRegistry(cfg.models_dir)
-    # Pin the store width to the embedder before Store(); pass the registry so
-    # resolution doesn't re-enter this half-built get_services.
-    reconcile_embedding_dim(registry)
-    _state.singleton = build_services(cfg, registry=registry)
-    # Eager start is the default: pay the spawn cost per role server at TUI mount
-    # so the first user action lands on a warm fleet. Roles whose model is unset
-    # are skipped, so a setup with only chat + embed never spawns rerank or
-    # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
-    # where mount time matters more than first-call latency.
-    if cfg.worker_pool_eager_start:
-        from contextlib import suppress
+        from lilbee.app.settings import reconcile_embedding_dim
+        from lilbee.core.config import cfg
+        from lilbee.modelhub.registry import ModelRegistry
 
-        with suppress(Exception):
-            _state.singleton.provider.warm_up_pool()
-    return _state.singleton
+        registry = ModelRegistry(cfg.models_dir)
+        # Pin the store width to the embedder before Store(); pass the registry so
+        # resolution doesn't re-enter this half-built get_services.
+        reconcile_embedding_dim(registry)
+        _state.singleton = build_services(cfg, registry=registry)
+        # Eager start is the default: pay the spawn cost per role server at TUI mount
+        # so the first user action lands on a warm fleet. Roles whose model is unset
+        # are skipped, so a setup with only chat + embed never spawns rerank or
+        # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
+        # where mount time matters more than first-call latency.
+        if cfg.worker_pool_eager_start:
+            from contextlib import suppress
+
+            with suppress(Exception):
+                _state.singleton.provider.warm_up_pool()
+        return _state.singleton
 
 
 @contextmanager
@@ -292,16 +308,17 @@ def sync_vision_ocr_backend(provider: LLMProvider) -> None:
     from lilbee.data.ingest.types import OcrBackendName
     from lilbee.data.ingest.vision_ocr_backend import VisionOcrBackend
 
-    registered = OcrBackendName.LILBEE_VISION in list_ocr_backends()
-    if cfg.vision_model:
-        # Re-register so the backend always binds to the current provider.
-        if registered:
+    with _backend_bind_lock:
+        registered = OcrBackendName.LILBEE_VISION in list_ocr_backends()
+        if cfg.vision_model:
+            # Re-register so the backend always binds to the current provider.
+            if registered:
+                unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+            register_ocr_backend(
+                VisionOcrBackend(ocr_fn=provider.vision_ocr, model_ref_fn=lambda: cfg.vision_model)
+            )
+        elif registered:
             unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
-        register_ocr_backend(
-            VisionOcrBackend(ocr_fn=provider.vision_ocr, model_ref_fn=lambda: cfg.vision_model)
-        )
-    elif registered:
-        unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
 
 
 def sync_embedding_backend(provider: LLMProvider) -> None:
@@ -324,11 +341,12 @@ def sync_embedding_backend(provider: LLMProvider) -> None:
     from lilbee.data.embedding_backend import LilbeeEmbeddingBackend
     from lilbee.data.ingest.types import EmbeddingBackendName
 
-    if EmbeddingBackendName.LILBEE in list_embedding_backends():
-        unregister_embedding_backend(EmbeddingBackendName.LILBEE)
-    register_embedding_backend(
-        LilbeeEmbeddingBackend(embed_fn=provider.embed, dim_fn=lambda: cfg.embedding_dim)
-    )
+    with _backend_bind_lock:
+        if EmbeddingBackendName.LILBEE in list_embedding_backends():
+            unregister_embedding_backend(EmbeddingBackendName.LILBEE)
+        register_embedding_backend(
+            LilbeeEmbeddingBackend(embed_fn=provider.embed, dim_fn=lambda: cfg.embedding_dim)
+        )
 
 
 def sync_tokenizer_backend(provider: LLMProvider) -> None:
@@ -352,14 +370,15 @@ def sync_tokenizer_backend(provider: LLMProvider) -> None:
     from lilbee.data.ingest.types import TokenizerBackendName
     from lilbee.data.tokenizer_backend import LilbeeTokenizerBackend
 
-    registered = TokenizerBackendName.LILBEE in list_tokenizer_backends()
-    if cfg.token_sizing:
-        # Re-register so the backend always binds to the current provider.
-        if registered:
+    with _backend_bind_lock:
+        registered = TokenizerBackendName.LILBEE in list_tokenizer_backends()
+        if cfg.token_sizing:
+            # Re-register so the backend always binds to the current provider.
+            if registered:
+                unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
+            register_tokenizer_backend(LilbeeTokenizerBackend(count_fn=provider.count_tokens))
+        elif registered:
             unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
-        register_tokenizer_backend(LilbeeTokenizerBackend(count_fn=provider.count_tokens))
-    elif registered:
-        unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
 
 
 def set_services(services: Services | None) -> None:

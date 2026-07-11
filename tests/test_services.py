@@ -446,3 +446,49 @@ class TestResetStore:
         assert services_mod.peek_services() is None
         reset_store()
         assert services_mod.peek_services() is None
+
+
+class TestGetServicesThreadSafety:
+    def test_concurrent_first_touch_builds_one_container(self, monkeypatch):
+        """Concurrent first ``get_services()`` calls must build exactly one container.
+
+        A duplicate concurrent build re-registers xberg's process-global backends
+        mid-flight, and the losing thread raises 'Embedding backend already
+        registered' -- surfacing as failed download tasks when several workers
+        first-touch services at once."""
+        import threading
+        import time
+
+        from lilbee.app import services as services_mod
+        from tests.conftest import make_mock_services
+
+        builds: list[int] = []
+
+        def slow_build(config, provider=None, registry=None):
+            builds.append(threading.get_ident())
+            time.sleep(0.05)
+            return make_mock_services()
+
+        monkeypatch.setattr(services_mod, "build_services", slow_build)
+        monkeypatch.setattr("lilbee.app.settings.reconcile_embedding_dim", lambda registry: None)
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", False)
+        services_mod._state.singleton = None
+
+        results: list[object] = []
+        errors: list[BaseException] = []
+
+        def touch() -> None:
+            try:
+                results.append(services_mod.get_services())
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=touch) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        assert len(builds) == 1
+        assert len({id(r) for r in results}) == 1
