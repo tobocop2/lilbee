@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-G8F65BKGRJ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-G8F65BKGRJ');
+</script>
+
+<title>Run and manage local AI models, in one program | lilbee</title>
+<meta name="description" content="lilbee is a complete local model manager: browse Hugging Face, download models, give each one a role, and run them on Metal, Vulkan, or CUDA, with VRAM-aware multi-GPU placement. You do not need a separate model runner.">
+<link rel="canonical" href="https://lilbee.sh/model-manager/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="lilbee">
+<meta property="og:title" content="Run and manage local AI models, in one program | lilbee">
+<meta property="og:description" content="A complete local model manager: browse Hugging Face, download models, assign roles, and run them on Metal, Vulkan, or CUDA, with VRAM-aware multi-GPU placement. No separate model runner needed.">
+<meta property="og:url" content="https://lilbee.sh/model-manager/">
+<meta property="og:image" content="https://lilbee.sh/social-card.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="lilbee browsing Hugging Face and running a local model on the GPU, shown in the terminal UI">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Run and manage local AI models, in one program | lilbee">
+<meta name="twitter:description" content="A complete local model manager: browse Hugging Face, download models, assign roles, and run them on Metal, Vulkan, or CUDA, with VRAM-aware multi-GPU placement.">
+<meta name="twitter:image" content="https://lilbee.sh/social-card.png">
+<meta name="twitter:image:alt" content="lilbee browsing Hugging Face and running a local model on the GPU, shown in the terminal UI">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "lilbee", "item": "https://lilbee.sh/" },
+    { "@type": "ListItem", "position": 2, "name": "Model manager", "item": "https://lilbee.sh/model-manager/" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Is lilbee a model manager?", "acceptedAnswer": { "@type": "Answer", "text": "Yes, a complete one. lilbee browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU. It also places large models across multiple GPUs with the right tensor split. It is the model manager, not a client of one." } },
+    { "@type": "Question", "name": "Do I need Ollama or LM Studio?", "acceptedAnswer": { "@type": "Answer", "text": "No. lilbee runs models itself, so you do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead and keep them." } },
+    { "@type": "Question", "name": "Where do the models come from?", "acceptedAnswer": { "@type": "Answer", "text": "From Hugging Face Hub. lilbee has a built-in catalog you browse, then pull a model straight into your library without hunting for files." } },
+    { "@type": "Question", "name": "What hardware does it run on?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee runs models on Metal, Vulkan, and CUDA, and spreads a large model across multiple GPUs sized to each device's VRAM." } },
+    { "@type": "Question", "name": "Can it run several models at once?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. You assign models to roles such as chat, embedding, reranking, and vision, and lilbee keeps them warm or swaps them on demand across your GPUs." } }
+  ]
+}
+</script>
+
+<link rel="stylesheet" href="../style.css?v=20260515a">
+<script src="../main.js?v=20260515a" defer></script>
+</head>
+<body>
+<div class="layout">
+  <main class="main">
+
+    <div class="topstrip">
+      <div><a class="badge" href="/">lilbee</a> <span>model manager</span></div>
+      <div>
+        <span class="pill">hugging face</span>
+        <span class="pill">metal / vulkan / cuda</span>
+        <span class="pill">multi-gpu</span>
+      </div>
+    </div>
+
+    <p class="crumb"><a href="/">lilbee</a> / model manager</p>
+
+    <section class="hero">
+<pre class="wordmark" aria-hidden="true">888 d8b 888 888
+888 Y8P 888 888
+888     888 888
+888 888 888 88888b.  .d88b.  .d88b.
+888 888 888 888 "88bd8P  Y8bd8P  Y8b
+888 888 888 888  88888888888888888888
+888 888 888 888 d88PY8b.    Y8b.
+888 888 888 88888P"  "Y8888  "Y8888</pre>
+      <h1 class="tagline">Run and manage <strong>local AI models</strong>, in one program. lilbee browses Hugging Face, downloads a model, gives it a role, and runs it on your own GPU. It is a complete model manager, not a client of one.</h1>
+      <p class="sub">You do not need a separate model runner. lilbee places large models across multiple GPUs sized to each card, and keeps models warm or swaps them on demand.</p>
+    </section>
+
+    <section>
+      <h2 class="label">a complete model manager</h2>
+      <p class="lede">Most local-AI tools make you stand up a model server and feed it files by hand. lilbee is the manager itself: browse Hugging Face from a built-in catalog, pull a model, assign it a role, and run it. One program covers the whole path from finding a model to answering with it.</p>
+    </section>
+
+    <section>
+      <h2 class="label">what it does</h2>
+      <div class="caps">
+        <div class="cap">
+          <h3>browse and pull from Hugging Face</h3>
+          <p>A built-in catalog searches Hugging Face Hub and downloads a model straight into your library, with no hunting for the right file.</p>
+        </div>
+        <div class="cap">
+          <h3>give each model a role</h3>
+          <p>Assign models to roles: chat, embedding, reranking, and vision. lilbee wires them into the search pipeline for you.</p>
+        </div>
+        <div class="cap">
+          <h3>runs on your GPU</h3>
+          <p>Metal, Vulkan, or CUDA. lilbee runs the model itself; you never point it at a server you set up first.</p>
+        </div>
+        <div class="cap">
+          <h3>VRAM-aware multi-GPU fleet</h3>
+          <p>Large models are split across your GPUs sized to each card, and kept warm or swapped on demand. See <a href="/gpu/">will it fit your GPU</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">already have a runner? keep it</h2>
+      <p class="lede">lilbee is a full model manager on its own, so you do not need anything else. If you already use Ollama or LM Studio, point lilbee at your setup and it will use those models instead. A cloud model is there when you want one, and never used unless you pick it.</p>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>Is lilbee a model manager?</summary><p>Yes, a complete one. lilbee browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU. It also places large models across multiple GPUs. It is the model manager, not a client of one.</p></details>
+        <details><summary>Do I need Ollama or LM Studio?</summary><p>No. lilbee runs models itself, so you do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead and keep them.</p></details>
+        <details><summary>Where do the models come from?</summary><p>From Hugging Face Hub. lilbee has a built-in catalog you browse, then pull a model straight into your library without hunting for files.</p></details>
+        <details><summary>What hardware does it run on?</summary><p>lilbee runs models on Metal, Vulkan, and CUDA, and spreads a large model across multiple GPUs sized to each device's VRAM.</p></details>
+        <details><summary>Can it run several models at once?</summary><p>Yes. You assign models to roles such as chat, embedding, reranking, and vision, and lilbee keeps them warm or swaps them on demand across your GPUs.</p></details>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">go deeper</h2>
+      <div class="links">
+        <a href="/"><span class="num">[1]</span><span>lilbee</span><span class="dots">·······································</span><span class="desc">home</span></a>
+        <a href="/gpu/"><span class="num">[2]</span><span>Will it fit your GPU</span><span class="dots">·······································</span><span class="desc">vram</span></a>
+        <a href="/local-rag/"><span class="num">[3]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs</span></a>
+        <a href="https://github.com/tobocop2/lilbee"><span class="num">[4]</span><span>GitHub</span><span class="dots">·······································</span><span class="desc">source</span></a>
+        <a href="https://pypi.org/project/lilbee/"><span class="num">[5]</span><span>PyPI</span><span class="dots">·······································</span><span class="desc">install</span></a>
+      </div>
+    </section>
+
+    <footer>
+      <div>
+<pre aria-hidden="true">+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|t|o|b|i|a|s|@|l|i|l|b|e|e|.|s|h|
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+</pre>
+      </div>
+      <div class="meta"><a href="https://github.com/tobocop2/lilbee">lilbee</a> &nbsp;.&nbsp; MIT License</div>
+    </footer>
+  </main>
+
+  <aside class="bee-art" aria-hidden="true"><pre>     %           %
+         %           %
+            %           %
+               %          %
+                 %          %
+                   %          %                   :::
+                    %          %                ::::::
+                 %%%%%%  %%%%%%%%%            ::::::::
+              %%%%%ZZZZ%%%%%%   %%%ZZZZ     ::::::::::         ::::::
+             %%%ZZZZZ%%%%%%%%%%%%%%ZZZZZZ  :::::::::::    :::::::::::::::::
+             ZZZ%ZZZ%%%%%%%%%%%%%%%ZZZZZZZ::::::::::***:::::::::::::::::::::
+          ZZZ%ZZZZZZ%%%%%%%%%%%%%%ZZZZZZZZZ::::::***:::::::::::::::::::::::
+        ZZZ%ZZZZZZZZZZ%%%%%%%%%%ZZZZZZ%ZZZZ:::***:::::::::::::::::::::::
+       ZZ%ZZZZZZZZZZZZZZZZZZZZZZZ%%%%% %ZZZ:**::::::::::::::::::::::
+      ZZ%ZZZZZZZZZZZZZZZZZZZ%%%%% | | %ZZZ *:::::::::::::::::::
+      Z%ZZZZZZZZZZZZZZZ%%%%%%%%%%%%%%%ZZZ::::::::::::::::::::::::::
+       ZZZZZZZZZZZ%%%%%ZZZZZZZZZZZZZZZZZ%%%%:::ZZZZ:::::::::::::::::
+         ZZZZ%%%%%ZZZZZZZZZZZZZZZZZZ%%%%%ZZZ%%ZZZ%ZZ%%*:::::::::::
+            ZZZZZZZZZZZZZZZZZZ%%%%%%%%%ZZZZZZZZZZ%ZZ%:::*:::::::
+            *:::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZZZZZZ%%%*::::*::::
+          *:::::::%%%%%%%%%%%%%%%%%%%%%%%ZZZZZ%%      *:::Z
+         **:ZZZZ:::%%%%%%%%%%%%%%%%%%%%%%%%%%%ZZ      ZZZZZ
+        *:ZZZZZZZ       %%%%%%%%%%%%%%%%%%%%%ZZZZ    ZZZZZZZ
+       *::::ZZZZZZ         %%%%%%%%%%%%%%%ZZZZZZZ      ZZZ
+        *::ZZZZZZ           Z%%%%%%%%%%%ZZZZZZZ%%
+          ZZZZ              ZZZZZZZZZZZZZZZZ%%%%%
+                           %%%ZZZZZZZZZZZ%%%%%%%%
+                          Z%%%%%%%%%%%%%%%%%%%%%
+                          ZZ%%%%%%%%%%%%%%%%%%%
+                          %ZZZZZZZZZZZZZZZZZZZ
+                          %%ZZZZZZZZZZZZZZZZZ
+                           %%%%%%%%%%%%%%%%
+                            %%%%%%%%%%%%%
+                             %%%%%%%%%
+                              ZZZZ
+                              ZZZ
+                             ZZ
+                            Z</pre></aside>
+</div>
+</body>
+</html>
