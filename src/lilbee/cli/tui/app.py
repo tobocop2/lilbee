@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
@@ -22,6 +21,7 @@ from lilbee.app.settings import apply_settings_update
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.commands import LilbeeCommandProvider
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
@@ -174,15 +174,17 @@ class LilbeeApp(App[None]):
     async def on_mount(self) -> None:
         if self._test_skip_auto_init:
             return
-        # Paint the gate before any awaiting work so the terminal is never blank
-        # between the splash handing over and the first screen appearing.
+        # Paint the gate before any other work so the terminal is never blank
+        # between the splash handing over and the first screen appearing. Nothing
+        # slower than widget mounting may run before the first frame: model
+        # canonicalization does disk and network probes, so it lives in the
+        # gate's boot worker, off this thread.
         from lilbee.cli.tui.screens.startup_gate import StartupGate
 
         gate = StartupGate()
         # Awaited: the gate's boot worker treats an unmounted gate as "torn down",
         # so it must be mounted before start_boot can hand over.
         await self.push_screen(gate)
-        await self._canonicalize_persisted_models()
         self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the default.
@@ -226,12 +228,14 @@ class LilbeeApp(App[None]):
 
         get_services().add_pool_listener(on_spawning=_on_spawning, on_spawned=_on_spawned)
 
-    async def _canonicalize_persisted_models(self) -> None:
+    def canonicalize_persisted_models(self) -> None:
         """Swap stale persisted refs to a working fallback, persist, and log once.
 
-        Canonicalization can probe local model servers over HTTP/DNS, so it runs
-        off the event loop to keep the TUI from freezing at mount. The probes
-        finish before the chat screen installs, so it still sees a settled ref.
+        Canonicalization reads model files and can probe local model servers
+        over HTTP/DNS, so the startup gate's boot worker calls this off the
+        event loop before the services container builds; anything slower than
+        widget mounting on the mount path delays the TUI's first frame. UI
+        updates marshal back to the main thread.
         """
         from lilbee.modelhub.model_manager import (
             ValidationResult,
@@ -239,8 +243,8 @@ class LilbeeApp(App[None]):
             canonicalize_embedding_model,
         )
 
-        chat_canon = await asyncio.to_thread(canonicalize_chat_model)
-        embedding_canon = await asyncio.to_thread(canonicalize_embedding_model)
+        chat_canon = canonicalize_chat_model()
+        embedding_canon = canonicalize_embedding_model()
         for canon, field, label in (
             (chat_canon, "chat_model", "Chat"),
             (embedding_canon, "embedding_model", "Embedding"),
@@ -280,7 +284,14 @@ class LilbeeApp(App[None]):
                 label=label, original=canon.original, effective=canon.effective, reason=reason
             )
             log.warning(notice)
-            self.notify(notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S)
+            call_from_thread(
+                self, self.notify, notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S
+            )
+        call_from_thread(self, self._refresh_title)
+
+    def _refresh_title(self) -> None:
+        """Re-derive the window title after canonicalization may have swapped the ref."""
+        self.title = msg.app_title(cfg.chat_model)
 
     def _fan_out_provider_availability(self, payload: tuple[str, object]) -> None:
         """Republish on provider_availability_changed_signal when an API key changes."""

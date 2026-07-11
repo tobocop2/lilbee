@@ -58,16 +58,23 @@ class StartupGate(Screen[None]):
 
     @work(thread=True, name="startup_gate", exit_on_error=False)
     def _boot_worker(self) -> None:
-        """Build the services container (which kicks the engine warm), then hand over."""
-        if needs_setup():
-            self._marshal(self._release)
-            return
+        """Settle the model refs, build the services container, then hand over.
+
+        Canonicalization runs first (it can swap a stale ref to a working
+        fallback, which decides whether setup is needed) and runs here rather
+        than on the mount path: its disk reads and server probes would sit
+        between the terminal handover and the TUI's first frame.
+        """
         try:
+            self.app.canonicalize_persisted_models()
+            if needs_setup():
+                self._marshal(self._release)
+                return
             get_services()
         except Exception as exc:
-            # Any failure to build the container leaves the user with no engine.
+            # Any failure to prepare the app leaves the user with no engine.
             # Show it and hand them the rest of the TUI rather than a dead screen.
-            log.exception("startup gate could not build the services container")
+            log.exception("startup gate could not prepare the app")
             self._marshal(self._fail, str(exc))
             return
         self._marshal(self._release)

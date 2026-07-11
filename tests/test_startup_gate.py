@@ -390,3 +390,41 @@ async def test_start_boot_builds_services_when_none_exist(monkeypatch):
 
     assert worker_calls == [True]
     assert deferred == []
+
+
+async def test_boot_worker_canonicalizes_before_the_setup_check(monkeypatch):
+    """Canonicalization can swap a stale ref to a working one, which is exactly
+    what decides whether setup is needed, so it must run first."""
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate, app = _gate_with_app()
+    order: list[str] = []
+    app.canonicalize_persisted_models.side_effect = lambda: order.append("canonicalize")
+    monkeypatch.setattr(gate_mod, "needs_setup", lambda: order.append("setup") or True)
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+        mock.patch.object(StartupGate, "query_one"),
+        mock.patch.object(StartupGate, "_stopping", return_value=False),
+    ):
+        StartupGate._boot_worker.__wrapped__(gate)
+    assert order == ["canonicalize", "setup"]
+
+
+async def test_boot_worker_surfaces_a_canonicalization_failure(monkeypatch):
+    """A crash while settling the refs shows the error instead of hanging the gate."""
+    from lilbee.cli.tui.screens import startup_gate as gate_mod
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
+
+    gate, app = _gate_with_app()
+    app.canonicalize_persisted_models.side_effect = OSError("registry unreadable")
+    monkeypatch.setattr(gate_mod, "needs_setup", lambda: False)
+    with (
+        mock.patch.object(type(gate), "app", new=mock.PropertyMock(return_value=app)),
+        mock.patch.object(StartupGate, "query_one"),
+        mock.patch.object(StartupGate, "_stopping", return_value=False),
+    ):
+        StartupGate._boot_worker.__wrapped__(gate)
+    notified = [c.args[0] for c in app.notify.call_args_list if c.args]
+    assert msg.STARTUP_FAILED.format(error="registry unreadable") in notified
+    app.reveal_chat.assert_called_once_with()
