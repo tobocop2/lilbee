@@ -6,8 +6,9 @@ import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.await_complete import AwaitComplete
 from textual.binding import Binding, BindingType
@@ -26,6 +27,9 @@ from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
+
+if TYPE_CHECKING:
+    from lilbee.cli.tui.screens.startup_gate import StartupGate
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +198,23 @@ class LilbeeApp(App[None]):
 
         self.settings_changed_signal.subscribe(self, self._fan_out_provider_availability)
         self._wire_worker_pool_notifications()
+        # Chat's import graph is the TUI's heaviest; loading it here would hold
+        # the first frame back for seconds on a cold disk, leaving the terminal
+        # blank exactly where the gate should be. Paint first, then load.
+        self.call_after_refresh(self._load_chat_screen, gate)
 
+    def _load_chat_screen(self, gate: StartupGate) -> None:
+        """Import the chat stack off-thread after the first frame, then boot."""
+        self._chat_import_worker(gate)
+
+    @work(thread=True, name="chat_import", exit_on_error=False)
+    def _chat_import_worker(self, gate: StartupGate) -> None:
+        import lilbee.cli.tui.screens.chat  # noqa: F401 - imported for its side effect
+
+        self.call_from_thread(self._install_chat_screen, gate)
+
+    def _install_chat_screen(self, gate: StartupGate) -> None:
+        """Install chat and start the gate's boot; runs once chat's modules exist."""
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         chat = ChatScreen()

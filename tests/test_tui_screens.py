@@ -46,7 +46,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -2407,7 +2407,8 @@ async def test_app_mounts_chat_screen():
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert isinstance(app.screen, ChatScreen)
+        chat = await await_chat(app, _pilot)
+        assert isinstance(chat, ChatScreen)
 
 
 async def test_app_title_has_model():
@@ -2504,6 +2505,7 @@ async def test_app_push_help():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         app.action_push_help()
         await _pilot.pause()
         assert app.screen.query("HelpPanel")
@@ -2701,6 +2703,7 @@ async def test_chat_slash_theme_with_arg():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/theme dracula")
             mock_notify.assert_called_once()
@@ -2712,6 +2715,7 @@ async def test_chat_slash_theme_no_arg():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/theme")
             mock_notify.assert_called_once()
@@ -4060,13 +4064,12 @@ async def test_command_provider_action_version():
 async def test_command_provider_action_reset_pushes_confirm():
     """Palette 'Reset knowledge base' invokes ChatScreen.request_reset (the public entry)."""
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
-        chat = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        chat = await await_chat(app, pilot)
         with patch.object(chat, "request_reset") as mock_reset:
             provider = LilbeeCommandProvider(app.screen, match_style=None)
             provider._action_reset()
