@@ -181,8 +181,11 @@ async def test_enter_does_not_resubmit_same_model_twice() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enter_noop_outside_lilbee_app() -> None:
-    """Without a TaskBarController, Enter on a card still records the selection."""
+async def test_enter_records_selection_and_submits_download() -> None:
+    """Enter on a not-installed card records the selection and submits its
+    download to the task bar. The submission is mocked: the real target
+    spawns a worker thread that outlives the test by a whole model download
+    and starves unrelated TUI tests on the same xdist worker."""
     app = _PlainApp()
     with _patch_setup_scan(), _patch_setup_ram():
         async with app.run_test(size=(120, 40)) as pilot:
@@ -192,9 +195,13 @@ async def test_enter_noop_outside_lilbee_app() -> None:
             chat_cards = [c for c in wizard.query(ModelCard) if c.row.task == "chat"]
             first = chat_cards[0]
             mock_grid = GridSelect()
-            with patch("lilbee.app.settings.persistent_settings.update_values"):
+            with (
+                patch("lilbee.app.settings.persistent_settings.update_values"),
+                patch.object(app.task_bar, "start_download") as start_download,
+            ):
                 wizard._on_grid_selected(GridSelect.Selected(grid_select=mock_grid, widget=first))
             assert first.selected is True
+            start_download.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -216,6 +216,33 @@ def overlay_reads_config_toml(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_leaked_task_workers():
+    """Fail the test that leaves a live task-bar worker thread behind.
+
+    A leaked ``task-*`` worker (an unmocked model download, most expensively)
+    outlives its test by minutes and starves whichever TUI test shares the
+    xdist worker next, so the suite fails on a random victim instead of the
+    owner. A short grace join absorbs workers that are finishing a mocked
+    no-op target.
+    """
+    before = {t.name for t in threading.enumerate() if t.name.startswith("task-")}
+    yield
+    leaked: list[str] = []
+    for thread in threading.enumerate():
+        if not thread.name.startswith("task-") or thread.name in before:
+            continue
+        thread.join(timeout=2.0)
+        if thread.is_alive():
+            leaked.append(thread.name)
+    if leaked:
+        pytest.fail(
+            f"Test leaked live task-bar worker thread(s) {leaked}: the task "
+            "target (often a model download) must be mocked or joined before "
+            "the test returns, or it will starve later TUI tests on this worker."
+        )
+
+
+@pytest.fixture(autouse=True)
 def _drain_textual_threads():
     """Safety net: join non-daemon threads that outlive the test.
 
