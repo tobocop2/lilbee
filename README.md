@@ -401,14 +401,6 @@ These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `p
 
 See the [full guide on optional extras](docs/usage.md#optional-extras) for configuration.
 
-### Upgrading
-
-```bash
-pip install --upgrade --pre lilbee
-# or
-uv tool install --reinstall --prerelease=allow lilbee
-```
-
 ## First start
 
 The very first launch does one-time work: the executable unpacks itself behind
