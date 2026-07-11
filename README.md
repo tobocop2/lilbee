@@ -104,7 +104,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up.
-- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, terminal UI, Python, and llama.cpp) in ~270-400 MB, or ~0.6-1.15 GB with CUDA. No Docker, no vector database, no model server, nothing to keep running; it loads on demand. Comparable desktop AI apps (often Electron) ship hundreds of MB to several GB and do less.
+- **Everything in one file, nothing to operate.** The standalone binary bundles the whole thing (search engine, web crawler, MCP server, HTTP server, terminal UI, Python, and llama.cpp) in ~290-420 MB, or ~0.6-1.2 GB with CUDA. No Docker, no vector database, no model server, nothing to keep running; it loads on demand. Comparable desktop AI apps (often Electron) ship hundreds of MB to several GB and do less.
 - **Works with your coding agent.** Connect lilbee to your AI coding assistant and it answers from your actual files and code, with citations, instead of guessing. It can even adjust its own search as it works.
 
 ## Why lilbee
@@ -156,15 +156,17 @@ Of the four, lilbee is the only one built around retrieval, and the only one tha
 
 ### Install size (single-file download, models excluded)
 
+Download sizes in decimal GB/MB (bytes ÷ 1000), measured from each project's own release artifacts, linked.
+
 | | macOS | Windows | Linux | What you get |
 |---|---|---|---|---|
-| **lilbee** (Metal / Vulkan, default) | [273 MB](https://github.com/tobocop2/lilbee/releases) | 289 MB | 403 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
-| **lilbee** (CUDA, opt-in for NVIDIA) | n/a | [604 MB](https://github.com/tobocop2/lilbee/releases) | 1.15 GB | the same whole stack, with the faster CUDA runtime |
-| [Ollama](https://github.com/ollama/ollama/releases) | 164 MB | ~1.4 GB (CUDA bundled) | ~1.4 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
-| [LM Studio](https://lmstudio.ai/download) | ~570 MB | ~617 MB | ~1.1 GB | a desktop app (Electron) |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (Metal / Vulkan, default) | 286 MB | 303 MB | 422 MB | the whole stack: search engine, crawler, servers, TUI, model runner, fleet manager |
+| **[lilbee](https://github.com/tobocop2/lilbee/releases)** (CUDA, opt-in for NVIDIA) | n/a | 633 MB | 1.20 GB | the same whole stack, with the faster CUDA runtime |
+| [Ollama](https://github.com/ollama/ollama/releases) | 164 MB | 1.43 GB (CUDA bundled) | 1.44 GB (CUDA bundled) | a model runner, fetches its runtimes separately |
+| [LM Studio](https://lmstudio.ai/download) | 569 MB | 617 MB | 1.10 GB | a desktop app (Electron) |
 | [vLLM](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/) | n/a | n/a | multi-GB | a Python + CUDA serving engine |
 
-Even lilbee's CUDA build stays at or under Ollama's, and it's the whole stack, not just a model runner.
+Even lilbee's CUDA build stays under Ollama's, and it's the whole stack, not just a model runner.
 
 </details>
 
