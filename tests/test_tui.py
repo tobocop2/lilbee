@@ -1462,28 +1462,53 @@ def test_import_chat_stack_pulls_the_module_in() -> None:
 
 
 class TestRunSyncRetry:
-    def test_run_sync_retries_until_the_switch_lands_and_gives_up_cleanly(self) -> None:
-        """The view switch is deferred; a single early check silently dropped
-        the sync. The retry keeps polling and stops after the budget."""
+    def test_run_sync_retries_the_switch_itself_and_gives_up_cleanly(self) -> None:
+        """switch_view drops requests while its guard is held, so each retry
+        must re-attempt the switch, and the budget bounds the loop."""
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp.__new__(LilbeeApp)
         chat = mock.MagicMock()
         timers: list = []
         laters: list = []
+        switches: list = []
         with (
             mock.patch.object(LilbeeApp, "screen", new=mock.PropertyMock(return_value=object())),
+            mock.patch.object(
+                LilbeeApp, "screen_stack", new=mock.PropertyMock(return_value=[object()])
+            ),
             mock.patch.object(LilbeeApp, "get_screen", return_value=chat),
-            mock.patch.object(LilbeeApp, "switch_view"),
+            mock.patch.object(LilbeeApp, "switch_view", side_effect=switches.append),
             mock.patch.object(LilbeeApp, "call_later", side_effect=lambda fn: laters.append(fn)),
             mock.patch.object(LilbeeApp, "set_timer", side_effect=lambda _d, fn: timers.append(fn)),
         ):
             app.action_run_sync()
             start = laters[0]
-            start(attempts=2)  # screen never becomes chat: schedules a retry
-            assert len(timers) == 1
-            timers[0]()  # attempts=1: schedules once more
-            assert len(timers) == 2
+            start(attempts=2)  # screen never becomes chat: re-switches and retries
+            assert len(timers) == 1 and switches == ["Chat"]
+            timers[0]()  # attempts=1: switches and schedules once more
+            assert len(timers) == 2 and switches == ["Chat", "Chat"]
             timers[1]()  # attempts=0: gives up without scheduling
             assert len(timers) == 2
+        chat._run_sync.assert_not_called()
+
+    def test_run_sync_retry_stops_when_the_app_is_tearing_down(self) -> None:
+        """A pending retry firing after the screens are gone must do nothing."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp.__new__(LilbeeApp)
+        chat = mock.MagicMock()
+        laters: list = []
+        with (
+            mock.patch.object(LilbeeApp, "screen_stack", new=mock.PropertyMock(return_value=[])),
+            mock.patch.object(LilbeeApp, "screen", new=mock.PropertyMock(return_value=object())),
+            mock.patch.object(LilbeeApp, "get_screen", return_value=chat),
+            mock.patch.object(LilbeeApp, "switch_view") as switch,
+            mock.patch.object(LilbeeApp, "call_later", side_effect=lambda fn: laters.append(fn)),
+            mock.patch.object(LilbeeApp, "set_timer") as timer,
+        ):
+            app.action_run_sync()
+            laters[0]()  # fires with an empty stack: returns immediately
+        switch.assert_not_called()
+        timer.assert_not_called()
         chat._run_sync.assert_not_called()

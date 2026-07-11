@@ -595,15 +595,18 @@ class LilbeeApp(App[None]):
             chat = self.get_screen(_CHAT_SCREEN_NAME, ChatScreen)
         except KeyError:
             return
-        self.switch_view("Chat")
 
-        # The switch is guarded and lands over several message-pump slots; a
-        # single deferred check silently dropped the sync when it fired early.
+        # switch_view drops the request outright while its re-entrancy guard is
+        # held (an earlier switch still in flight), so the retry must re-attempt
+        # the switch itself, not just wait for one that may never have started.
         def _start(attempts: int = 600) -> None:
+            if not self.screen_stack:
+                return  # the app is tearing down; nothing left to sync
             if isinstance(self.screen, ChatScreen):
                 chat._run_sync()
                 return
             if attempts > 0:
+                self.switch_view("Chat")
                 self.set_timer(0.05, lambda: _start(attempts - 1))
 
         self.call_later(_start)
