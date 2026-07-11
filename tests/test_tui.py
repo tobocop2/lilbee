@@ -83,7 +83,12 @@ class TestRunTui:
 
         app = LilbeeApp(initial_view="Catalog")
         async with app.run_test() as pilot:
-            await pilot.pause()
+            # The chat install and the initial-view switch land after the gate's
+            # first frame; poll them in rather than assuming one pause.
+            for _ in range(200):
+                if app.active_view == "Catalog":
+                    break
+                await pilot.pause()
             assert app.active_view == "Catalog"
 
 
@@ -1310,7 +1315,13 @@ class TestSyncHint:
         with mock.patch("lilbee.data.ingest.detect_pending", return_value=0):
             app = LilbeeApp(initial_view="Catalog")
             async with app.run_test() as pilot:
-                await pilot.pause()
+                # Let the boot chain finish its own screen switches first: the
+                # KeyError mock below would otherwise sabotage reveal_chat's
+                # switch_screen, which resolves screens through get_screen too.
+                for _ in range(200):
+                    if app.active_view == "Catalog":
+                        break
+                    await pilot.pause()
                 with mock.patch.object(app, "get_screen", side_effect=KeyError("chat")):
                     # Should return without raising or attempting a switch.
                     app.action_run_sync()

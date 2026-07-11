@@ -56,6 +56,7 @@ async def test_on_success_exception_is_swallowed() -> None:
     """An exception raised inside on_success must not propagate."""
     app = LilbeeApp()
     async with app.run_test() as pilot:
+        await await_chat(app, pilot)
         controller = TaskBarController(app)
 
         def _oops() -> None:

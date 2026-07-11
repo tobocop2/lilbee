@@ -393,11 +393,14 @@ class ChatScreen(Screen[None]):
 
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
-        inp = self._chat_input
-        if self._insert_mode:
-            inp.remove_class("normal-mode")
-        else:
-            inp.add_class("normal-mode")
+        # Lifecycle interleaves (an installed-but-swapped-away screen during
+        # app teardown) can invoke this before or after the input exists.
+        with contextlib.suppress(NoMatches):
+            inp = self._chat_input
+            if self._insert_mode:
+                inp.remove_class("normal-mode")
+            else:
+                inp.add_class("normal-mode")
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
