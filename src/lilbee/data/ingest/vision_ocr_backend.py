@@ -17,7 +17,7 @@ from lilbee.vision import resolve_ocr_prompt
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    # rc9's OcrBackend Protocol types the callback config as the public
+    # The OcrBackend Protocol types the callback config as the public
     # xberg.OcrConfig (kreuzberg-u4r); a backend typed against the native
     # xberg._xberg.OcrConfig no longer satisfies it. The runtime object still
     # arrives with backend_options as a JSON string (handled in _OcrConfigView).
@@ -84,7 +84,7 @@ def backend_options_for(token: str) -> dict[str, str]:
 class _OcrConfigView:
     """Typed reader over the xberg OcrConfig object passed to process_image.
 
-    Typed against the public ``xberg.OcrConfig`` (rc9's OcrBackend Protocol), whose
+    Typed against the public ``xberg.OcrConfig`` from the OcrBackend Protocol, whose
     fields are read directly as attributes. The native round-trip hands
     ``backend_options`` back as a JSON string rather than the dict lilbee put in, so
     ``request_token`` accepts both shapes.

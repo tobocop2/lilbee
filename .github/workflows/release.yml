@@ -239,16 +239,13 @@ jobs:
         if: matrix.os != 'macos-15-intel'
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
 
-      # Intel Mac: `uv sync` can't run here for two reasons -- stock lancedb 0.33.0
-      # ships no macosx_x86_64 wheel, and xberg is pinned to a local arm64 dev wheel
-      # via [tool.uv.sources]. Resolve both from the +compat index (PEP 440 drop-ins),
-      # then install the rest of [release] fresh from PyPI (every other dep has an
-      # x86_64 macOS wheel). CMAKE_ARGS + deployment target hold any throwaway
-      # llama-cpp-python sdist build at the cpu/x86_64/macOS-11 baseline; the dedicated
-      # step below builds the llama-cpp-python that actually ships.
-      # NOTE: gated on xberg landing an x86_64 macOS wheel on the +compat index; until
-      # then this cell is expected to fail at install (it is soft, so it never blocks
-      # the release fan-out).
+      # Intel Mac: `uv sync` can't run here -- stock lancedb 0.33.0 ships no
+      # macosx_x86_64 wheel. Resolve it from the +compat index (PEP 440 drop-in),
+      # then install the rest of [release] fresh from PyPI (xberg >=1.0.0rc22 and
+      # every other dep ship an x86_64 macOS wheel). CMAKE_ARGS + deployment target
+      # hold any throwaway llama-cpp-python sdist build at the cpu/x86_64/macOS-11
+      # baseline; the dedicated step below builds the llama-cpp-python that actually
+      # ships. The cell stays soft so an install failure never blocks the fan-out.
       - name: Install dependencies (Intel Mac)
         if: matrix.os == 'macos-15-intel'
         shell: bash
@@ -260,7 +257,7 @@ jobs:
           export CMAKE_ARGS
           uv venv
           uv pip install --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.33.0+compat xberg==1.0.0rc5
+            lancedb==0.33.0+compat
           uv pip install '.[release]' 'nuitka[onefile]>=4.0,<5' pip
 
       - name: Verify extras installed in build venv
