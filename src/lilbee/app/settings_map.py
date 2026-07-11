@@ -331,6 +331,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate pool size for reranking",
     ),
+    "rerank_blend": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Blend reranker scores with retrieval fusion (off = pure reranker order)",
+    ),
     "show_reasoning": SettingDef(
         bool,
         nullable=False,

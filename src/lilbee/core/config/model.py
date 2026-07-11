@@ -289,6 +289,11 @@ class Config(BaseSettings):
     # Candidate count sent to the reranker.
     rerank_candidates: int = ConfigField(default=60, ge=1, writable=True, public=True)
 
+    # Blend reranker scores with the retrieval fusion signal (position-aware).
+    # Off = the cross-encoder's own ordering stands unblended, which isolates
+    # the reranker's effect when measuring it.
+    rerank_blend: bool = ConfigField(default=True, writable=True, public=True)
+
     # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)
 
