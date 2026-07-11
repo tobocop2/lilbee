@@ -148,7 +148,7 @@ It sits between two worlds: the desktop runners that get a model chatting on you
 <details>
 <summary><b>Everything you can do with lilbee, and more on how it compares. Click to expand.</b></summary>
 
-Ollama and LM Studio are great at running a model and chatting with it; vLLM is what you reach for to serve one model to many users at maximum throughput. lilbee is the only one of the four built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router.
+Of the four, lilbee is the only one built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router.
 
 **On size:** lilbee ships as one self-contained file that bundles the whole stack (search engine, crawler, servers, TUI, model runner, and fleet manager): 273 MB on macOS, 289 MB on Windows, 403 MB on Linux. That undercuts LM Studio's Electron app on every platform (~570 MB macOS, ~617 MB Windows, ~1.1 GB Linux), and on Windows and Linux it's a fraction of Ollama's GPU-bundled [~1.4 GB download](https://github.com/ollama/ollama/releases). Ollama's macOS app is leaner at 164 MB, but it's a model runner that fetches its runtimes separately, where lilbee's one file already is the search engine and the servers. Only NVIDIA users who want the faster CUDA build reach for the larger artifact (~604 MB Windows, ~1.15 GB Linux), and even that stays at or under Ollama's.
 
