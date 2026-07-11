@@ -934,3 +934,23 @@ footer .meta { text-align: right; font-size: 12px; }
 .faq details[open] summary { border-bottom: 1px solid var(--rule); }
 .faq p { color: var(--ink-2); margin: 0.6rem 0 0.9rem; }
 .faq a { color: var(--accent); }
+
+/* comparison table --------------------------------------------------- */
+.cmp-wrap { overflow-x: auto; margin: 0.4rem 0 0.5rem; border: 1px solid var(--rule); border-radius: 4px; }
+.cmp { width: 100%; min-width: 660px; border-collapse: collapse; font-size: 12.5px; }
+.cmp th, .cmp td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.5; }
+.cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: none; }
+.cmp thead th { color: var(--ink-3); font-weight: 500; letter-spacing: 0.04em; border-bottom: 1px solid var(--rule-2); background: var(--bg-elev); }
+.cmp tbody th { font-weight: 400; color: var(--ink-2); }
+.cmp td { color: var(--ink-2); }
+.cmp .lb { color: var(--ink); background: rgba(235, 188, 186, 0.05); border-left: 2px solid var(--accent); }
+.cmp thead .lb { color: var(--accent); font-weight: 700; }
+.cmp .yes { color: var(--trust); }
+.cmp .no { color: var(--ink-3); }
+.cmp a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+.cmp a:hover { border-bottom-color: var(--accent); }
+.cmp-hint { font-size: 11px; color: var(--ink-3); margin: 0 0 1rem; letter-spacing: 0.04em; }
+
+/* stacked reels on the comparison page ------------------------------- */
+.vs-reel { margin-bottom: 1.7rem; }
+.vs-reel:last-child { margin-bottom: 0; }

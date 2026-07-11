@@ -24,12 +24,13 @@ MARKETING_PAGES: dict[str, str] = {
     "code-search/index.html": BASE + "code-search/",
     "mcp/index.html": BASE + "mcp/",
     "gpu/index.html": BASE + "gpu/",
+    "vs/index.html": BASE + "vs/",
 }
 
 _PAGE_ITEMS = list(MARKETING_PAGES.items())
 
 # Satellites the home page must link to so they are crawlable and inherit authority.
-SATELLITES = ("model-manager/", "local-rag/", "code-search/", "mcp/", "gpu/")
+SATELLITES = ("model-manager/", "local-rag/", "code-search/", "mcp/", "gpu/", "vs/")
 
 
 def _html(rel: str) -> str:
