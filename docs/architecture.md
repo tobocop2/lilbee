@@ -559,9 +559,8 @@ flowchart TD
     GUARD --> MULTI[Multi-Query Search + Merge]
     MULTI --> DUAL
 
-    DUAL --> FUSE[Score Fusion → canonical score]
-    FUSE --> MMR[MMR Diversity on canonical score]
-    MMR --> CBOOST[Concept Boost]
+    DUAL --> FUSE[Reciprocal-Rank Fusion → canonical score]
+    FUSE --> CBOOST[Concept Boost]
     CBOOST --> GSORT[Global re-sort by score]
     GSORT --> ABST{All below min_relevance_score?}
     ABST -->|Yes| REFUSE[Grounded refusal]
@@ -943,12 +942,12 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | Setting | Default | Description | Caveats |
 |---------|---------|-------------|---------|
 | `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs diversity (0.0=diverse, 1.0=relevant) | 0.5 is the standard default from Carbonell & Goldstein 1998. Lower for broad exploratory queries. |
-| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `3` | Max chunks returned per source document | Lower = more diverse sources. Higher = deeper coverage of a single document. |
-| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | How many extra candidates to retrieve for MMR | Higher = better diversity selection but slower. 3x is empirically effective. |
+| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `5` | Max chunks returned per source document | Lower = more diverse sources. Higher = deeper coverage of a single document. |
+| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Vector-only candidate pool multiplier feeding MMR | Higher = better diversity selection but slower; hybrid search ignores it. |
 | `LILBEE_QUERY_EXPANSION_COUNT` | `3` | Number of LLM-generated query variants | Each variant requires an embedding call. Set to 0 to disable expansion entirely for fastest search. |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | Distance filter widening increment | Only used when `LILBEE_ADAPTIVE_THRESHOLD=true`. Smaller = more granular adaptation but more filter iterations |
-| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 score above which expansion is skipped | 90th percentile of sigmoid-normalized BM25 scores. Calibrate for your library. |
-| `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Min score gap (top-1 minus top-2) to skip expansion | Approximately 1 std dev of typical score spread. Ensures the match isn't ambiguous. |
+| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 confidence above which expansion is skipped | Confidence is s/(s+5) of the raw top BM25 score, unsaturated. 0 disables the skip. |
+| `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Min relative gap between top-1 and top-2 raw BM25 to skip expansion | Fraction of the top score. Ensures the match isn't ambiguous. |
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Validate expansion variants for drift | Prevents hallucinated variants at the cost of potentially filtering valid creative expansions |
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum question↔variant cosine similarity for an expansion variant to survive the guardrail | Raise for stricter filtering, lower to keep more variants. Calibrate per embedding model. |
 | `LILBEE_MAX_CONTEXT_SOURCES` | `5` | Max chunks included in LLM context | More = more complete answers but higher latency and token cost |

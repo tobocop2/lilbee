@@ -151,9 +151,8 @@ class SearchChunk(BaseModel):
     bm25_score: float | None = Field(None, validation_alias="_score")
     rerank_score: float | None = None
     # Canonical relevance in [0, 1], set by the store on every search path:
-    # convex fusion of vector similarity and normalized BM25 on the hybrid
-    # path, clamped cosine similarity on vector-only, list-normalized BM25 on
-    # FTS-only probes.
+    # normalized reciprocal-rank fusion on the hybrid path, clamped cosine
+    # similarity on vector-only, list-normalized BM25 on FTS-only probes.
     score: float | None = None
 
 

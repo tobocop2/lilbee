@@ -1059,7 +1059,7 @@ export LILBEE_RERANKER_MODEL="bge-reranker-v2-m3"   # any GGUF reranker
 export LILBEE_RERANK_CANDIDATES=20                  # how many candidates to rerank
 ```
 
-Without a reranker set, hybrid search + MMR already provides good results for
+Without a reranker set, fused hybrid search already provides good results for
 most use cases.
 
 Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al.

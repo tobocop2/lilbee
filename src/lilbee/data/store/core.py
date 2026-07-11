@@ -82,7 +82,7 @@ def _drop_unsupported_far_rows(
 
     A row the BM25 arm also matched keeps lexical support regardless of its
     vector distance; dropping it on distance alone would re-bury exactly the
-    identifier hits score fusion exists to preserve.
+    identifier hits rank fusion exists to preserve.
     """
     if max_distance <= 0:
         return results

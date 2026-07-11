@@ -97,8 +97,8 @@ class Config(BaseSettings):
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
     # Abstention floor against the canonical [0, 1] relevance score
     # (0.0 = no filtering). When every retrieved chunk falls below it, ask
-    # refuses instead of feeding noise as context; useful values start
-    # around 0.02-0.05 against the fused reciprocal-rank score.
+    # refuses instead of feeding noise as context. On the fused reciprocal-rank
+    # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
     rag_system_prompt: str = ConfigField(
