@@ -1241,7 +1241,12 @@ class TestSyncHint:
         ):
             app = LilbeeApp(initial_view="Catalog")
             async with app.run_test() as pilot:
-                await pilot.pause()
+                # The chat install and the initial-view switch now happen after
+                # the gate's first frame, so poll rather than assume one pause.
+                for _ in range(100):
+                    if app.active_view == "Catalog":
+                        break
+                    await pilot.pause()
                 assert app.active_view == "Catalog"
                 app.action_run_sync()
                 for _ in range(50):
@@ -1312,3 +1317,45 @@ class TestSyncHint:
                     await pilot.pause()
                 assert observed == [0]
                 assert len(start_calls) >= 1
+
+
+class TestChatImportWorker:
+    def test_import_failure_exits_with_the_error(self) -> None:
+        """An unimportable chat stack must exit loudly, not strand the gate."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp.__new__(LilbeeApp)
+        gate = mock.MagicMock()
+        with (
+            mock.patch("lilbee.cli.tui.app._import_chat_stack", side_effect=ImportError("boom")),
+            mock.patch(
+                "lilbee.cli.tui.app.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+            mock.patch.object(LilbeeApp, "exit") as mock_exit,
+        ):
+            LilbeeApp._chat_import_worker.__wrapped__(app, gate)
+        mock_exit.assert_called_once_with(
+            return_code=1, message=msg.CHAT_STACK_FAILED.format(error="boom")
+        )
+
+    def test_successful_import_installs_chat_and_boots(self) -> None:
+        """The worker hands over to the installer once the modules exist."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp.__new__(LilbeeApp)
+        gate = mock.MagicMock()
+        installed: list = []
+        with (
+            mock.patch("lilbee.cli.tui.app._import_chat_stack"),
+            mock.patch(
+                "lilbee.cli.tui.app.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+            mock.patch.object(
+                LilbeeApp, "_install_chat_screen", side_effect=lambda g: installed.append(g)
+            ),
+        ):
+            LilbeeApp._chat_import_worker.__wrapped__(app, gate)
+        assert installed == [gate]

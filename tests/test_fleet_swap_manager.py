@@ -1420,3 +1420,24 @@ class TestDetachAdoptUnits:
         owned = tmp_path / sm._state_filename(1, _GROUP.value)
         owned.write_text(json.dumps({"pid": 2, "detached": False}))
         assert sm.find_detached_state(tmp_path, _GROUP) is None
+
+
+def test_owned_swap_scan_skips_processes_that_deny_inspection(monkeypatch):
+    """macOS psutil can leak a raw PermissionError for entitlement-protected
+    binaries (sysctl KERN_PROCARGS2); one such process must not break the sweep."""
+    from unittest import mock
+
+    import psutil
+
+    from lilbee.providers.fleet import swap_manager
+
+    denied = mock.MagicMock()
+    denied.cmdline.side_effect = PermissionError(13, "force permission denied")
+    visible = mock.MagicMock()
+    visible.cmdline.return_value = ["/opt/bin/llama-swap", "-config", "/tmp/x.json"]
+    monkeypatch.setattr(psutil, "process_iter", lambda: [denied, visible])
+
+    from pathlib import Path
+
+    swaps = swap_manager._swaps_for_config(Path("/tmp/x.json"))
+    assert swaps == [visible]

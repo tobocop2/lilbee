@@ -93,6 +93,11 @@ _VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
 }
 
 
+def _import_chat_stack() -> None:
+    """Pull in the chat screen's module graph, the TUI's heaviest import."""
+    import lilbee.cli.tui.screens.chat  # noqa: F401 - imported for its side effect
+
+
 def get_views() -> dict[str, Callable[[], Screen]]:
     """Return the active view factories, derived from the nav view list."""
     return {name: _VIEW_FACTORIES[name] for name in msg.get_nav_views() if name in _VIEW_FACTORIES}
@@ -209,9 +214,19 @@ class LilbeeApp(App[None]):
 
     @work(thread=True, name="chat_import", exit_on_error=False)
     def _chat_import_worker(self, gate: StartupGate) -> None:
-        import lilbee.cli.tui.screens.chat  # noqa: F401 - imported for its side effect
+        try:
+            _import_chat_stack()
+        except Exception as exc:
+            # Without chat the app has no home screen; exit loudly like the old
+            # inline import did rather than stranding the user on the gate.
+            log.exception("the chat screen failed to import")
+            call_from_thread(self, self._exit_on_chat_import_failure, str(exc))
+            return
+        call_from_thread(self, self._install_chat_screen, gate)
 
-        self.call_from_thread(self._install_chat_screen, gate)
+    def _exit_on_chat_import_failure(self, error: str) -> None:
+        """Leave the TUI with the import error where the user can read it."""
+        self.exit(return_code=1, message=msg.CHAT_STACK_FAILED.format(error=error))
 
     def _install_chat_screen(self, gate: StartupGate) -> None:
         """Install chat and start the gate's boot; runs once chat's modules exist."""

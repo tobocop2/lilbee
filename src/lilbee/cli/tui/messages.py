@@ -126,6 +126,7 @@ FLEET_RELOADING = "Applying placement, reloading the fleet. One moment, then sen
 # Startup gate: shown from the moment the TUI paints until the app can serve.
 STARTUP_PREPARING = "Preparing lilbee"
 STARTUP_FAILED = "lilbee could not start: {error}"
+CHAT_STACK_FAILED = "lilbee could not load its chat screen: {error}"
 # Engine-load status painted into the pending answer while a prompt waits on a
 # cold engine, and the failure that wait can end in.
 ENGINE_READING_WEIGHTS = "Reading {name} weights"
