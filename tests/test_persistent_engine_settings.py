@@ -25,7 +25,7 @@ def _isolated_cfg(tmp_path):
 def test_defaults_are_on_demand():
     """Off by default: today's teardown-on-quit behavior is the shipped default."""
     assert cfg.model_fields["keep_engine_warm"].default is False
-    assert cfg.model_fields["engine_idle_ttl_minutes"].default == 0
+    assert cfg.model_fields["engine_idle_ttl_minutes"].default == 5
 
 
 @pytest.mark.parametrize("name", ["keep_engine_warm", "engine_idle_ttl_minutes"])

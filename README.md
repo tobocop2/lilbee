@@ -115,10 +115,12 @@ If you relaunch lilbee often, opt into a persistent engine in Settings:
 
 - **Keep engine warm** leaves the engine running when you quit, and the next
   launch connects to it in about two seconds instead of reloading the model.
-- **Engine idle ttl minutes** bounds how long idle weights stay in memory. `0`
-  keeps them loaded until you turn the setting off; any other value frees the
-  memory after that many idle minutes (a small proxy process stays behind, a few
-  tens of MB and no VRAM).
+- **Engine idle ttl minutes** bounds how long idle weights stay in memory,
+  five minutes by default (the same idea as Ollama's keep_alive). The memory
+  frees itself after that many idle minutes; a small proxy process stays behind,
+  a few tens of MB and no VRAM. `0` keeps weights loaded until you stop them.
+- **`lilbee engine stop`** frees everything immediately from any terminal, no
+  TUI needed.
 
 Turning the setting off returns to the on-demand default and stops the engine at
 the next opportunity. Both knobs live in the TUI Settings screen,

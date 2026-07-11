@@ -216,6 +216,30 @@ per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
 from scratch, lint, drafts review, and prune are also available as CLI
 commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 
+## The warm engine
+
+By default the engine lives and dies with lilbee: launch loads the model, quit
+frees the GPU. Every launch pays the model load before chat opens.
+
+If you relaunch often, turn on **Keep engine warm** (Settings, MCP
+`lilbee_settings_set`, the HTTP config API, or `config.toml`). Quitting then
+leaves the engine running, and the next launch connects to it in a couple of
+seconds. **Engine idle ttl minutes** bounds how long idle weights stay in GPU
+memory, five minutes by default, the same idea as Ollama's `keep_alive`. After
+that the memory is freed on its own; a small proxy process (a few tens of MB, no
+GPU memory) stays behind until reuse or stop. Set the ttl to `0` only if you
+want the model resident until you say otherwise.
+
+To stop a warm engine without opening the TUI:
+
+```bash
+lilbee engine stop
+```
+
+It reports whether anything was running, frees the GPU immediately, and is safe
+to run at any time. Turning **Keep engine warm** off also cleans the engine up
+at the next launch of any lilbee command.
+
 ## Memory
 
 lilbee can remember durable facts about you and standing preferences for how

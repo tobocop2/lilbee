@@ -370,9 +370,10 @@ class Config(BaseSettings):
     # on close.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before a warm fleet unloads its weights (llama-swap ttl).
-    # 0 keeps them loaded forever. Read only when keep_engine_warm is on.
-    engine_idle_ttl_minutes: int = ConfigField(default=0, writable=True)
+    # Idle minutes before a warm fleet unloads its weights (llama-swap ttl), so
+    # a warm engine never holds VRAM past this window. 0 keeps weights loaded
+    # forever. Read only when keep_engine_warm is on.
+    engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):
