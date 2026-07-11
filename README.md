@@ -92,30 +92,47 @@ Defaults are sane for chatting with code, documentation, crawled sites, and long
 
 CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless runs, and custom integrations. See the [usage guide](docs/usage.md).
 
-## Startup and the engine lifecycle
+## First start
 
-lilbee opens fast and loads the model lazily, the way Ollama and LM Studio do.
-The TUI is on screen within a couple of seconds of launch; the engine, a real
-llama.cpp server, starts loading your model in the background at the same
-moment. Ask something before it's ready and the answer bubble shows the load
-itself, weights read as a live percentage, then your answer streams in. Nothing
-freezes and nothing is silently queued.
+The very first launch does one-time work: the executable unpacks itself behind
+a progress bar, and the model loads before your first answer, shown live inside
+the answer bubble. Every launch after that opens straight to chat in a couple
+of seconds.
+
+<table>
+  <tr>
+    <th align="center">Very first launch</th>
+    <th align="center">Every launch after</th>
+  </tr>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/first-start.gif" alt="First launch: a one-time unpack bar, chat opens, the first answer shows the engine loading in its bubble, then streams" width="420"></td>
+    <td><img src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/later-start.gif" alt="Every later launch: chat opens in about two seconds and the answer follows" width="420"></td>
+  </tr>
+</table>
+
+Measured with a small chat model (Qwen3 0.6B):
+
+| | Very first launch | Every launch after |
+|---|---|---|
+| Chat on screen | 15 to 20s, one-time unpack | 2 to 3s |
+| First answer of the session | 10 to 20s, the engine load plays in the bubble | the same, or instant with **Keep engine warm** |
+| Answers after that | model speed | model speed |
+
+Bigger models load longer; the bubble shows real progress while weights are read.
+
+## The engine lifecycle
+
+lilbee loads the model lazily, the way Ollama and LM Studio do: the TUI never
+waits for the engine, a real llama.cpp server that starts loading in the
+background the moment the app opens. Ask something before it's ready and the
+answer bubble carries the load until your answer streams. Nothing freezes and
+nothing is silently queued.
 
 By default the engine lives and dies with lilbee: launch starts it, quit frees
 all of its memory. That on-demand default is deliberate, no VRAM or RAM is held
 while lilbee is closed, but it means the first answer of a session waits out the
-engine load. Measured on real builds with a small chat model (Qwen3 0.6B):
-
-| | Apple Silicon Mac | Linux + CUDA |
-|---|---|---|
-| Launch to a usable TUI | ~2s | ~2s |
-| First answer, very first run (one-time unpack + load) | ~22s | ~33s |
-| First answer, later sessions (engine load only) | ~15s | ~20s |
-| Answers after the engine is loaded | model speed | model speed |
-
-Bigger models load longer; the bubble shows real progress while weights are read.
-
-If you relaunch lilbee often, opt into a persistent engine in Settings:
+engine load. If you relaunch lilbee often, opt into a persistent engine in
+Settings:
 
 - **Keep engine warm** leaves the engine running when you quit, and the next
   session's first answer skips the load entirely.

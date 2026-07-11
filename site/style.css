@@ -475,16 +475,17 @@ h2.label { font-size: inherit; font-weight: inherit; }
   font-family: var(--mono);
   font-size: 13px;
   letter-spacing: 0.05em;
-  background: transparent;
-  border: none;
+  background: rgba(57, 53, 82, 0.35);
+  border: 1px solid var(--rule-2);
   border-bottom: 2px solid transparent;
-  color: var(--ink-3);
+  border-radius: 3px 3px 0 0;
+  color: var(--ink-2);
   padding: 0.5rem 0.85rem;
   margin-bottom: -1px;
   cursor: pointer;
-  transition: color 140ms, border-color 140ms;
+  transition: color 140ms, background-color 140ms, border-color 140ms;
 }
-.installtabs .tab:hover { color: var(--ink-2); }
+.installtabs .tab:hover { color: var(--ink); border-color: var(--ink-3); }
 .installtabs .tab[aria-selected="true"] {
   color: var(--accent);
   border-bottom-color: var(--accent);
@@ -756,11 +757,13 @@ footer .meta { text-align: right; font-size: 12px; }
   font-family: var(--mono);
   font-size: 13px;
   letter-spacing: 0.04em;
-  background: transparent;
-  border: 1px solid transparent;
+  /* Resting chip: a visible border and a faint fill so the row reads as
+     buttons, not labels. Hover and the selected highlight stay as they were. */
+  background: rgba(57, 53, 82, 0.35);
+  border: 1px solid var(--rule-2);
   border-bottom: 2px solid transparent;
   border-radius: 3px 3px 0 0;
-  color: var(--ink-3);
+  color: var(--ink-2);
   padding: 0.5rem 0.9rem;
   margin-bottom: -1px;
   cursor: pointer;
@@ -769,6 +772,7 @@ footer .meta { text-align: right; font-size: 12px; }
 .tutorialtabs .tutorialtab:hover {
   color: var(--ink);
   background: rgba(235, 188, 186, 0.05);
+  border-color: var(--ink-3);
 }
 .tutorialtabs .tutorialtab:focus-visible {
   outline: 2px solid var(--accent);
