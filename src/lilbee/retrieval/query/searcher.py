@@ -119,6 +119,17 @@ def _bm25_confidence(score: float | None) -> float:
     return score / (score + _BM25_HALF_SATURATION)
 
 
+def _noun_names_type(noun: str, type_name: str) -> bool:
+    """Whether the question's noun IS the type (modulo case/space/plural),
+    as opposed to reaching it through a synonym."""
+    wanted = " ".join(noun.strip().lower().split())
+    names = {type_name, type_name.replace("_", " ")}
+    variants = set(names)
+    for n in names:
+        variants.add(n + "s" if not n.endswith("s") else n[:-1])
+    return wanted in variants
+
+
 # RAG mode answer when retrieval finds no usable sources: a grounded refusal
 # instead of free-wheeling on the model's parametric knowledge. Users who want
 # off-corpus answers can switch to chat mode.
@@ -834,13 +845,13 @@ class Searcher:
         if schema is None or counted is None:
             return None
         if aggregate.kind is AggregateKind.DISTINCT_TYPE:
-            return self._answer_distinct_count(counted.name)
+            return self._answer_distinct_count(counted.name, asked_for=aggregate.noun)
         grouped = schema.type_for_noun(aggregate.group_noun)
         if grouped is None:
             return None
         return self._answer_association_count(counted.name, grouped.name)
 
-    def _answer_distinct_count(self, type_name: str) -> str:
+    def _answer_distinct_count(self, type_name: str, asked_for: str = "") -> str:
         pretty = type_name.replace("_", " ")
         mentions, distinct = self._store.entity_value_counts(type_name)
         if mentions == 0:
@@ -848,10 +859,19 @@ class Searcher:
                 f"No {pretty} entities are extracted yet; "
                 "run a sync with entity extraction enabled first."
             )
-        return (
+        answer = (
             f"Exact scan of the extracted records: {distinct} distinct "
             f"{pretty} values, across {mentions} mentions."
         )
+        if asked_for and not _noun_names_type(asked_for, type_name):
+            # A synonym resolved the question's noun to a proxy type; counting
+            # one is not counting the other (one aircraft flies many flights),
+            # so the answer must say which quantity it actually measured.
+            answer += (
+                f" Note: this counts {pretty} values, the closest extracted type to "
+                f"{asked_for.strip()!r}, which may not be the same quantity."
+            )
+        return answer
 
     def _answer_association_count(self, counted: str, grouped: str) -> str:
         counted_pretty = counted.replace("_", " ")

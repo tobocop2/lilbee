@@ -45,7 +45,9 @@ INDUCTION_PROMPT = (
     'spacy kinds, empty for llm kinds>", "description": "one line", '
     '"synonyms": ["words a question would use"]}}]}}\n'
     "Prefer regex for identifier-shaped types (codes, numbered records), spacy "
-    "for people/organizations/dates, llm only when unavoidable.\n\n"
+    "for people/organizations/dates, llm only when unavoidable. Regex patterns "
+    "must match identifiers INLINE in running text: describe the identifier "
+    "token itself and never use ^ or $ anchors.\n\n"
     "Passages:\n{sample}"
 )
 
@@ -123,8 +125,39 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
     return EntitySchema(types=types) if types else None
 
 
+# Tokens for anchored-pattern matching: identifier-shaped runs of word chars
+# (hyphens allowed inside), so punctuation adjacent to an inline identifier
+# never defeats the match.
+_IDENTIFIER_TOKEN_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]*")
+
+
 def _extract_regex(entity_type: EntityType, text: str) -> list[str]:
-    return [m.group(0) for m in re.finditer(entity_type.pattern, text)]
+    """Regex mentions, treating anchored patterns as per-token full matches.
+
+    Schema authors (and the induction model) tend to write ^...$ patterns
+    that describe an identifier's whole shape. Applied to running text those
+    match almost nothing, since identifiers appear inline with adjacent
+    punctuation; a ^...$ pattern therefore full-matches each identifier
+    token instead of the chunk.
+    """
+    pattern = entity_type.pattern
+    inner_text = pattern[1:-1]
+    # Only a single fully-anchored pattern converts; an alternation of
+    # anchored branches (^A$|^B$) would be mangled by stripping the outer
+    # pair, so it falls through to finditer unchanged.
+    if (
+        pattern.startswith("^")
+        and pattern.endswith("$")
+        and "^" not in inner_text
+        and "$" not in inner_text
+    ):
+        inner = re.compile(inner_text)
+        return [
+            token.group(0)
+            for token in _IDENTIFIER_TOKEN_RE.finditer(text)
+            if inner.fullmatch(token.group(0))
+        ]
+    return [m.group(0) for m in re.finditer(pattern, text)]
 
 
 def _extract_spacy(types: list[EntityType], text: str, nlp: Any) -> list[tuple[EntityType, str]]:

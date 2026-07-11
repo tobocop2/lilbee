@@ -175,6 +175,40 @@ class TestExtractEntities:
         }
         assert all(r["confidence"] == 1.0 for r in rows)
 
+    def test_anchored_pattern_matches_identifiers_inline(self):
+        """The OCR-corpus failure: an induced pattern anchored with ^...$
+        matches only a token that IS the identifier, so identifiers inline in
+        running text (with adjacent punctuation) were never found. Anchored
+        patterns must apply per token."""
+        anchored = EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"^PX\d{4}$")
+        rows = extract_entities(
+            [_chunk("shipment via PX4471, then PX9001; see also (PX4471).")],
+            EntitySchema(types=[anchored]),
+        )
+        assert {r["normalized_value"] for r in rows} == {"px4471", "px9001"}
+
+    def test_anchored_pattern_still_rejects_partial_tokens(self):
+        anchored = EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"^PX\d{4}$")
+        rows = extract_entities(
+            [_chunk("codes PX44712 and XPX4471 are different families")],
+            EntitySchema(types=[anchored]),
+        )
+        assert rows == []
+
+    def test_anchored_alternation_is_not_mangled(self):
+        """^A$|^B$ must not have its outer anchors stripped (that would turn
+        it into A$|^B); it falls through to plain finditer untouched."""
+        alternation = EntityType(
+            name="part_number", kind=ExtractorKind.REGEX, pattern=r"^PX\d{4}$|^QX\d{4}$"
+        )
+        rows = extract_entities(
+            [_chunk("PX4471"), _chunk("inline PX4471 here", idx=1)],
+            EntitySchema(types=[alternation]),
+        )
+        # Whole-token chunk still matches via finditer; inline stays unmatched,
+        # same as before the per-token conversion existed.
+        assert [r["chunk_index"] for r in rows] == [0]
+
     def test_spacy_kind_uses_injected_nlp(self):
         rows = extract_entities(
             [_chunk("keeper E. Larsen wrote nightly")],

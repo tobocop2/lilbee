@@ -1868,6 +1868,19 @@ class TestTypedAggregates:
         result = get_services().searcher.ask_raw("how many distinct part numbers are there?")
         assert "extracted yet" in result.answer
 
+    def test_synonym_proxy_count_discloses_the_measured_type(self, mock_svc, part_schema):
+        """A noun resolved through a synonym gets the count of a DIFFERENT
+        quantity; the answer must say which type it actually measured."""
+        mock_svc.store.entity_value_counts.return_value = (57, 12)
+        result = get_services().searcher.ask_raw("how many distinct parts are recorded?")
+        assert "12 distinct part number values" in result.answer
+        assert "closest extracted type" in result.answer
+
+    def test_direct_type_name_carries_no_proxy_note(self, mock_svc, part_schema):
+        mock_svc.store.entity_value_counts.return_value = (57, 12)
+        result = get_services().searcher.ask_raw("how many distinct part numbers are recorded?")
+        assert "closest extracted type" not in result.answer
+
     def test_association_with_unresolvable_group_noun_declines(self, mock_svc, part_schema):
         result = get_services().searcher.ask_raw("how many parts is each vessel associated with?")
         assert "Countable entity types" in result.answer
