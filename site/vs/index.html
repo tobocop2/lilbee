@@ -48,7 +48,7 @@
   "@context": "https://schema.org",
   "@type": "FAQPage",
   "mainEntity": [
-    { "@type": "Question", "name": "Is lilbee an alternative to Ollama or LM Studio?", "acceptedAnswer": { "@type": "Answer", "text": "Not exactly. lilbee runs and manages models like they do, but it is built around search over your own files, and it can use your existing Ollama or LM Studio setup as a backend rather than replacing it." } },
+    { "@type": "Question", "name": "Is lilbee an alternative to Ollama or LM Studio?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. lilbee is a complete model manager: it browses Hugging Face, downloads models, gives each a role, and runs them on Metal, Vulkan, or CUDA, so it can replace Ollama or LM Studio outright. It also does more, with a search engine over your own files, a web crawler, and an MCP server, and if you would rather keep your current setup it runs on top of Ollama or LM Studio instead." } },
     { "@type": "Question", "name": "How is lilbee different from vLLM?", "acceptedAnswer": { "@type": "Answer", "text": "vLLM serves one model to many users at high throughput. lilbee runs a whole local fleet, chat, embedding, vision, and reranking, on your own machine to answer questions from your files, with retrieval and citations built in." } },
     { "@type": "Question", "name": "Is lilbee bigger to install than Ollama?", "acceptedAnswer": { "@type": "Answer", "text": "No. lilbee's CUDA build is about the same size as Ollama's, roughly 1.1 GB on Linux and 0.6 GB on Windows, next to Ollama's 1.4 GB GPU download. The difference is that lilbee bundles a search engine, a web crawler, servers, and a terminal UI, not just a model runner." } },
     { "@type": "Question", "name": "Can I use my existing Ollama or LM Studio models?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Point lilbee at a running Ollama or LM Studio and its models appear in the same catalog and role pickers alongside lilbee's own, read-only, so their lifecycle stays in the app you already use." } },
@@ -85,7 +85,7 @@
 888 888 888 888 d88PY8b.    Y8b.
 888 888 888 88888P"  "Y8888  "Y8888</pre>
       <h1 class="tagline"><strong>lilbee vs Ollama, LM Studio, and vLLM.</strong> Where each one fits, and what you actually get for a comparable-size install.</h1>
-      <p class="sub">lilbee is a local search engine with the model runner built in. It runs models to do retrieval over your own files, and scales that whole stack across every GPU in the machine. Already on Ollama or LM Studio? It runs on top of them.</p>
+      <p class="sub">lilbee is a full alternative to a model runner: it finds, runs, and manages the models itself, with a search engine over your own files on top, and it scales that whole stack across every GPU in the machine. Already on Ollama or LM Studio? It also runs on top of them.</p>
     </section>
 
     <section>
@@ -146,7 +146,7 @@
             </tr>
             <tr>
               <th>Built for many-user throughput at scale</th>
-              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#local-inference-engine">balanced across every GPU you add</a></td>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/blob/main/docs/architecture.md#local-inference-engine">a data-parallel replica per GPU, requests load-balanced</a></td>
               <td><span class="no">&#8212;</span></td>
               <td><a href="https://docs.ollama.com/faq">limited</a></td>
               <td><span class="yes">&#10003;</span> <a href="https://github.com/vllm-project/vllm">this is its job</a></td>
@@ -166,10 +166,10 @@
               <td><span class="no">&#8212;</span></td>
             </tr>
             <tr>
-              <th>Single-file footprint, GPU build (excludes models)</th>
-              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/releases">~1.1 GB Linux / ~0.6 GB Windows</a>, whole stack</td>
-              <td>desktop app + llama.cpp/MLX runtimes</td>
-              <td><a href="https://github.com/ollama/ollama/releases">~1.4 GB, runner only</a></td>
+              <th>Single-file footprint (excludes models)</th>
+              <td class="lb"><span class="yes">&#10003;</span> <a href="https://github.com/tobocop2/lilbee/releases">273 MB macOS / 289 MB Windows / 403 MB Linux</a>, whole stack (~0.6-1.1 GB with optional CUDA)</td>
+              <td><a href="https://lmstudio.ai/download">~570 MB macOS / 617 MB Windows / 1.1 GB Linux</a>, Electron app</td>
+              <td><a href="https://github.com/ollama/ollama/releases">164 MB macOS / ~1.4 GB Windows &amp; Linux</a>, runner only</td>
               <td><a href="https://docs.vllm.ai/en/stable/getting_started/installation/gpu/">multi-GB Python + CUDA stack</a></td>
             </tr>
             <tr>
@@ -193,7 +193,7 @@
 
     <section>
       <h2 class="label">on size</h2>
-      <p class="note">lilbee's CUDA build is about the same size as Ollama's (~1.1 GB on Linux, ~0.6 GB on Windows, next to Ollama's ~1.4 GB GPU download). The difference is what's inside. Ollama's download is a model runner; for a comparable footprint lilbee bundles a full search engine, document processing for 90+ formats, a web crawler, an MCP server, an HTTP/REST server, a full terminal UI, per-project libraries, and the multi-GPU fleet manager, none of which a runner ships.</p>
+      <p class="note">lilbee ships as one self-contained file that bundles the whole stack (search engine, crawler, servers, TUI, model runner, and fleet manager): 273 MB on macOS, 289 MB on Windows, 403 MB on Linux. That undercuts LM Studio's Electron app on every platform (~570 MB macOS, ~617 MB Windows, ~1.1 GB Linux), and on Windows and Linux it's a fraction of Ollama's GPU-bundled download (~1.4 GB). Ollama's macOS app is leaner at 164 MB, but it's a model runner that fetches its runtimes separately, where lilbee's one file already is the search engine and the servers. Only NVIDIA users who want the faster CUDA build reach for the larger artifact (~604 MB Windows, ~1.15 GB Linux), and even that stays at or under Ollama's.</p>
     </section>
 
     <section>
@@ -238,7 +238,7 @@
     <section>
       <h2 class="label">questions</h2>
       <div class="faq">
-        <details><summary>Is lilbee an alternative to Ollama or LM Studio?</summary><p>Not exactly. lilbee runs and manages models like they do, but it is built around search over your own files, and it can use your existing Ollama or LM Studio setup as a backend rather than replacing it.</p></details>
+        <details><summary>Is lilbee an alternative to Ollama or LM Studio?</summary><p>Yes. lilbee is a complete model manager: it browses Hugging Face, downloads models, gives each a role, and runs them on Metal, Vulkan, or CUDA, so it can replace Ollama or LM Studio outright. It also does more, with a search engine over your own files, a web crawler, and an MCP server, and if you would rather keep your current setup it runs on top of Ollama or LM Studio instead.</p></details>
         <details><summary>How is lilbee different from vLLM?</summary><p>vLLM serves one model to many users at high throughput. lilbee runs a whole local fleet, chat, embedding, vision, and reranking, on your own machine to answer questions from your files, with retrieval and citations built in.</p></details>
         <details><summary>Is lilbee bigger to install than Ollama?</summary><p>No. lilbee's CUDA build is about the same size as Ollama's, roughly 1.1 GB on Linux and 0.6 GB on Windows, next to Ollama's 1.4 GB GPU download. The difference is that lilbee bundles a search engine, a web crawler, servers, and a terminal UI, not just a model runner.</p></details>
         <details><summary>Can I use my existing Ollama or LM Studio models?</summary><p>Yes. Point lilbee at a running Ollama or LM Studio and its models appear in the same catalog and role pickers alongside lilbee's own, read-only, so their lifecycle stays in the app you already use.</p></details>
