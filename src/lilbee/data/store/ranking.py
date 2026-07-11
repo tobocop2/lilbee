@@ -25,7 +25,6 @@ def mmr_rerank(
     results: list[SearchChunk],
     top_k: int,
     mmr_lambda: float | None = None,
-    relevance_scores: list[float] | None = None,
 ) -> list[SearchChunk]:
     """Maximal Marginal Relevance: select diverse results.
     Algorithm: Carbonell & Goldstein 1998,
@@ -35,12 +34,6 @@ def mmr_rerank(
     ``mmr_lambda`` controls the relevance/diversity tradeoff:
     0.0 = maximum diversity, 1.0 = pure relevance.
     Defaults to ``cfg.mmr_lambda`` (0.5).
-
-    ``relevance_scores`` overrides the relevance term (one value per result,
-    higher = better). Fused hybrid results pass their canonical score here so
-    a lexically-certain hit with weak vector similarity keeps its standing;
-    without the override, relevance is cosine similarity to the query, which
-    would silently re-demote exactly the rows fusion promoted.
 
     Complexity: O(top_k · N · D) time, O(N · D) space for N candidates
     of dimension D. Each outer iteration updates a running max-redundancy
@@ -64,10 +57,7 @@ def mmr_rerank(
     query_norm = float(np.linalg.norm(query)) or 1.0
     query_unit = query / query_norm
 
-    if relevance_scores is not None:
-        relevance = np.asarray(relevance_scores, dtype=np.float32)
-    else:
-        relevance = cand_unit @ query_unit  # shape (N,)
+    relevance = cand_unit @ query_unit  # shape (N,)
 
     n = len(results)
     max_redundancy = np.zeros(n, dtype=np.float32)

@@ -785,10 +785,8 @@ reason the defaults are the defaults.
 | `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Minimum relative raw-score gap between top-1 and top-2, `(top - second) / top`, for expansion to skip |
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Filter expansion variants whose embedding drifts too far from the original query |
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
-| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Per-arm retrieval depth as a multiple of top_k (hybrid overfetch; also the vector-only MMR pool) |
-| `LILBEE_FUSION_OVERFETCH_FLOOR` | `50` | Minimum rows fetched per retrieval arm before fusion, regardless of top_k |
+| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Vector-only candidate pool as a multiple of top_k, feeding MMR reranking |
 | `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities at ingest for exact count answers (needs a reviewed `entity_schema.json`; see `lilbee entities`) |
-| `LILBEE_FUSION_ALPHA` | `0.6` | Vector-arm weight in hybrid score fusion; the BM25 arm gets the complement |
 | `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
 | `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |
 | `LILBEE_INTENT_ROUTING` | `true` | Route document-name lookups to exact retrieval and count questions to a full-corpus scan |

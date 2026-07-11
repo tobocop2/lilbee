@@ -678,8 +678,9 @@ class TestHybridSearch:
         results = store.search(query_vec, top_k=5, query_text="part number PX4471")
         assert any(r.source == "parts_catalog_214.pdf" for r in results)
 
-    def test_hybrid_overfetch_floor(self, store, test_config):
-        """Each arm is fetched at least fusion_overfetch_floor deep."""
+    def test_hybrid_arms_fetch_exactly_top_k(self, store, test_config):
+        """Deeper pools flood rank fusion with both-arm mediocre rows, so
+        each arm is fetched exactly top_k deep."""
         records = _make_records(n=3)
         store.add_chunks(records)
         store.ensure_fts_index()
@@ -689,8 +690,8 @@ class TestHybridSearch:
             mock.patch.object(store, "_fts_arm", return_value=[]) as fts_arm,
         ):
             store.search(query_vec, top_k=3, query_text="chunk")
-        assert vec_arm.call_args[0][2] == test_config.fusion_overfetch_floor
-        assert fts_arm.call_args[0][2] == test_config.fusion_overfetch_floor
+        assert vec_arm.call_args[0][2] == 3
+        assert fts_arm.call_args[0][2] == 3
 
     def test_hybrid_vector_arm_applies_ann_recovery(self, store, test_config):
         """With a vector index present, the hybrid vector arm probes extra

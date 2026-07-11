@@ -606,31 +606,25 @@ class Store:
         max_distance: float,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
-        """Dual-arm retrieval fused by score, then MMR-selected down to top_k.
+        """Dual-arm retrieval fused by reciprocal rank; the fused ordering is final.
 
-        Each arm is overfetched well past ``top_k`` so fusion sees rows ranked
-        just outside the final window in both arms; the previous rank-fused
-        path capped each arm at ``top_k``, hiding those rows entirely. MMR
-        runs on the canonical fused score, so lexical-only hits keep the
-        standing fusion gave them.
+        Each arm fetches exactly ``top_k`` rows. Deeper pools measurably hurt
+        rank fusion: rows a single arm is certain about score a fixed 0.5,
+        while rows both arms rank mid-pool accumulate two contributions, so
+        widening the arms floods the fused top-k with both-arm mediocrity and
+        buries single-arm certainty (lexical identifier hits above all).
+
+        No diversity selection runs here either. For lexical queries the
+        relevant passages are often mutually similar (they quote the same
+        identifiers), which is exactly what MMR penalizes: selecting the
+        fused pool through MMR measurably traded relevant lexical hits for
+        diverse off-topic neighbors on graded evaluation.
         """
-        overfetch = max(
-            top_k * self._config.candidate_multiplier, self._config.fusion_overfetch_floor
-        )
         fused = fuse_arms(
-            self._vector_arm(table, query_vector, overfetch, chunk_type),
-            self._fts_arm(table, query_text, overfetch, chunk_type),
-            self._config.fusion_alpha,
+            self._vector_arm(table, query_vector, top_k, chunk_type),
+            self._fts_arm(table, query_text, top_k, chunk_type),
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)
-        if len(fused) > top_k:
-            fused = mmr_rerank(
-                query_vector,
-                fused,
-                top_k,
-                self._config.mmr_lambda,
-                relevance_scores=[r.score or 0.0 for r in fused],
-            )
         return fused[:top_k]
 
     def _filter_and_rerank(

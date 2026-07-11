@@ -98,7 +98,7 @@ class Config(BaseSettings):
     # Abstention floor against the canonical [0, 1] relevance score
     # (0.0 = no filtering). When every retrieved chunk falls below it, ask
     # refuses instead of feeding noise as context; useful values start
-    # around 0.05-0.15 depending on fusion_alpha.
+    # around 0.02-0.05 against the fused reciprocal-rank score.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
     rag_system_prompt: str = ConfigField(
@@ -188,19 +188,10 @@ class Config(BaseSettings):
     # (Carbonell & Goldstein 1998).
     mmr_lambda: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
-    # Per-arm retrieval depth as a multiple of top_k: hybrid overfetches each
-    # arm this deep (floored at 50) before fusion, and the vector-only path
-    # retrieves this many extra candidates for MMR reranking.
+    # Vector-only search retrieves this many candidates per final result so
+    # MMR reranking has a pool to diversify from. Hybrid search ignores it:
+    # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
-
-    # Vector-arm weight in hybrid score fusion; the BM25 arm gets the
-    # complement. 1.0 = pure vector, 0.0 = pure lexical.
-    fusion_alpha: float = ConfigField(default=0.6, ge=0.0, le=1.0, writable=True)
-
-    # Minimum rows fetched per arm before fusion, regardless of top_k and
-    # candidate_multiplier. Answer-level sweeps found deeper pools dilute the
-    # fused top-k, so this is tunable rather than fixed.
-    fusion_overfetch_floor: int = ConfigField(default=50, ge=1, writable=True)
 
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact

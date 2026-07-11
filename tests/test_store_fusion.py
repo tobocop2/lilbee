@@ -1,4 +1,4 @@
-"""Tests for score-aware fusion of the vector and BM25 arms."""
+"""Tests for reciprocal-rank fusion of the vector and BM25 arms."""
 
 import pytest
 
@@ -50,59 +50,126 @@ class TestFuseArms:
         both = _chunk("a.md", 0, distance=0.3)
         vec_only = _chunk("b.md", 0, distance=0.3)
         lex = _chunk("a.md", 0, bm25=12.0)
-        fused = fuse_arms([both, vec_only], [lex], alpha=0.6)
+        fused = fuse_arms([both, vec_only], [lex])
         scores = {(r.source, r.chunk_index): r.score for r in fused}
         assert scores[("a.md", 0)] > scores[("b.md", 0)]
 
+    def test_top_of_both_arms_scores_one(self):
+        fused = fuse_arms([_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=12.0)])
+        assert fused[0].score == pytest.approx(1.0)
+
     def test_lexical_only_row_survives_with_score(self):
         """The identifier case: a row invisible to the vector arm must carry
-        real fused weight from its BM25 strength alone."""
+        real fused weight from its BM25-arm rank alone."""
         vec = [_chunk("noise.md", i, distance=0.5) for i in range(3)]
         lex = [_chunk("catalog_482.pdf", 0, bm25=35.0)]
-        fused = fuse_arms(vec, lex, alpha=0.6)
+        fused = fuse_arms(vec, lex)
         lexical_row = next(r for r in fused if r.source == "catalog_482.pdf")
-        assert lexical_row.score == pytest.approx(0.4)
+        assert lexical_row.score == pytest.approx(0.5)
 
-    def test_certain_lexical_hit_outranks_mediocre_dense_neighbors(self):
-        """The pinpoint-document failure mode, inverted: top BM25 with weak
-        vector support must beat vector rows at middling similarity."""
-        vec = [_chunk("noise.md", i, distance=0.8) for i in range(5)]
+    def test_top_lexical_hit_outranks_all_but_the_top_dense_neighbor(self):
+        """The pinpoint-document failure mode: an FTS-arm top hit unseen by
+        the vector arm must rank above every vector row except at most the
+        vector arm's own number one."""
+        vec = [_chunk("noise.md", i, distance=0.1) for i in range(30)]
         lex = [_chunk("target.pdf", 0, bm25=30.0), _chunk("noise.md", 0, bm25=3.0)]
-        fused = fuse_arms(vec, lex, alpha=0.5)
-        assert fused[0].source == "target.pdf"
+        fused = fuse_arms(vec, lex)
+        rank = next(i for i, r in enumerate(fused) if r.source == "target.pdf")
+        assert rank <= 1
 
-    def test_alpha_one_is_pure_vector(self):
-        fused = fuse_arms(
-            [_chunk("v.md", 0, distance=0.2)], [_chunk("l.md", 0, bm25=50.0)], alpha=1.0
-        )
-        scores = {r.source: r.score for r in fused}
-        assert scores["v.md"] == pytest.approx(0.8)
-        assert scores["l.md"] == 0.0
-
-    def test_alpha_zero_is_pure_lexical(self):
-        fused = fuse_arms(
-            [_chunk("v.md", 0, distance=0.2)], [_chunk("l.md", 0, bm25=50.0)], alpha=0.0
-        )
-        scores = {r.source: r.score for r in fused}
-        assert scores["l.md"] == pytest.approx(1.0)
-        assert scores["v.md"] == 0.0
+    def test_rank_order_ignores_score_magnitude(self):
+        """A wildly stronger BM25 score at rank 2 stays rank 2: fusion is
+        scale-free by construction."""
+        lex = [_chunk("first.md", 0, bm25=5.0), _chunk("second.md", 0, bm25=500.0)]
+        fused = fuse_arms([], lex)
+        assert [r.source for r in fused] == ["first.md", "second.md"]
 
     def test_dedup_keeps_both_provenance_fields(self):
-        fused = fuse_arms(
-            [_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)], alpha=0.5
-        )
+        fused = fuse_arms([_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)])
         assert len(fused) == 1
         assert fused[0].distance == pytest.approx(0.3)
         assert fused[0].bm25_score == pytest.approx(9.0)
 
     def test_sorted_descending_by_score(self):
         fused = fuse_arms(
-            [_chunk("far.md", 0, distance=1.5), _chunk("near.md", 0, distance=0.1)],
+            [_chunk("near.md", 0, distance=0.1), _chunk("far.md", 0, distance=1.5)],
             [],
-            alpha=1.0,
         )
         assert [r.source for r in fused] == ["near.md", "far.md"]
         assert all(r.score is not None for r in fused)
+
+
+class TestRegressionMechanism:
+    """Synthetic reproduction of the graded-A/B regression shape: a lexical
+    query whose relevant passages are mutually similar (they all quote the
+    same identifiers) competing against semantically-generic neighbors."""
+
+    @staticmethod
+    def _relevant(i, dim=8):
+        # Relevant rows: strong BM25, decent query-sim, and nearly identical
+        # to EACH OTHER (they all quote the same identifier table).
+        v = [0.9] * dim
+        v[0] += i * 0.001
+        return SearchChunk(
+            source=f"ledger_{i}.txt",
+            content_type="text",
+            chunk_type="raw",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=f"identifier table row {i}",
+            chunk_index=i,
+            vector=v,
+            distance=0.45,
+            bm25_score=30.0 - i,
+        )
+
+    @staticmethod
+    def _generic(i, dim=8):
+        # Generic rows: no lexical support, slightly better query-sim,
+        # mutually diverse.
+        v = [0.1] * dim
+        v[i % dim] = 0.9
+        return SearchChunk(
+            source=f"essay_{i}.txt",
+            content_type="text",
+            chunk_type="raw",
+            page_start=0,
+            page_end=0,
+            line_start=0,
+            line_end=0,
+            chunk=f"general discussion {i}",
+            chunk_index=i,
+            vector=v,
+            distance=0.38,
+            bm25_score=None,
+        )
+
+    def test_fusion_alone_keeps_the_lexical_cluster(self):
+        """Rank fusion by itself keeps the both-arm relevant rows above
+        vector-only generics: the fusion ordering is not the regression."""
+        relevant = [self._relevant(i) for i in range(15)]
+        generic = [self._generic(i) for i in range(35)]
+        fused = fuse_arms(relevant + generic, [r.model_copy() for r in relevant])
+        top12 = fused[:12]
+        assert sum(1 for r in top12 if r.source.startswith("ledger")) >= 10
+
+    def test_mmr_diversifies_away_the_relevant_cluster(self):
+        """MMR at the default lambda over the fused pool demotes the mutually
+        similar relevant rows: the regression mechanism, and why the hybrid
+        path returns the fused ordering without diversity selection."""
+        from lilbee.data.store import mmr_rerank
+
+        relevant = [self._relevant(i) for i in range(15)]
+        generic = [self._generic(i) for i in range(35)]
+        fused = fuse_arms(relevant + generic, [r.model_copy() for r in relevant])
+        query_vec = [0.5] * 8
+        selected = mmr_rerank(query_vec, fused, 12, 0.5)
+        kept_relevant = sum(1 for r in selected if r.source.startswith("ledger"))
+        # The mutually-similar relevant set gets thinned hard in favor of
+        # diverse generics; this documents the mechanism the graded A/B saw.
+        assert kept_relevant < 10
 
 
 class TestDropUnsupportedFarRows:
