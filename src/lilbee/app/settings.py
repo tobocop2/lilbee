@@ -198,6 +198,9 @@ def _validate(updates: dict[str, Any]) -> None:
             raise ValueError(f"Unknown or read-only setting: {key}")
         if value is None and not _is_nullable(key):
             raise ValueError(f"Setting '{key}' does not accept null")
+    new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
+    if new_ttl is not None and new_ttl < 0:
+        raise ValueError("engine_idle_ttl_minutes must be >= 0 (0 keeps weights loaded)")
     new_chunk_size = _as_int_setting(updates.get("chunk_size"))
     if new_chunk_size is not None and new_chunk_size < _MIN_CHUNK_SIZE:
         raise ValueError(f"chunk_size must be >= {_MIN_CHUNK_SIZE}")

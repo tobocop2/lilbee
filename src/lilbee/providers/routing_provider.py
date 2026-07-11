@@ -342,6 +342,10 @@ class RoutingProvider(LLMProvider):
             return None
         return self._local.served_chat_ctx()
 
+    def warm_pending(self) -> bool:
+        """Forward to the native side; the SDK side never warms."""
+        return self._get_local().warm_pending()
+
     def warm_progress(self) -> WarmProgress | None:
         """Cold-load progress of the local engine, or None when none exists yet."""
         if self._local is None:
