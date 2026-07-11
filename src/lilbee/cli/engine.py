@@ -23,9 +23,7 @@ _NOTHING_RUNNING = "No warm engine is running."
 def stop() -> None:
     """Stop a warm engine left running by keep_engine_warm."""
     detached = [
-        group.value
-        for group in SwapGroup
-        if find_detached_state(cfg.data_dir, group) is not None
+        group.value for group in SwapGroup if find_detached_state(cfg.data_dir, group) is not None
     ]
     reap_stale(cfg.data_dir)
     if cfg.json_mode:

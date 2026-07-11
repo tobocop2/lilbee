@@ -74,6 +74,22 @@ class TestRunTui:
             run_tui(initial_view="Catalog")
         init.assert_called_once_with(initial_view="Catalog")
 
+    @mock.patch("lilbee.cli.tui.app.LilbeeApp.run")
+    def test_run_tui_dismisses_the_splash_before_textual_starts(
+        self, mock_run: mock.MagicMock
+    ) -> None:
+        """The launcher's splash animates until here; a frame written after
+        Textual claims the terminal would land on the alt-screen."""
+        from lilbee.cli.tui import run_tui
+
+        order: list[str] = []
+        mock_run.side_effect = lambda: order.append("run")
+        with mock.patch(
+            "lilbee.runtime.splash.dismiss", side_effect=lambda: order.append("dismiss")
+        ):
+            run_tui()
+        assert order == ["dismiss", "run"]
+
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_initial_view_switches_to_catalog(self, mock_catalog: mock.MagicMock) -> None:

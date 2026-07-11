@@ -22,9 +22,7 @@ def _data_args(tmp_path) -> list[str]:
 def _write_detached(tmp_path) -> object:
     (tmp_path / "data").mkdir(exist_ok=True)
     path = tmp_path / "data" / sm._state_filename(999_999, SwapGroup.CHAT.value)
-    path.write_text(
-        json.dumps({"pid": 999_998, "owner_pid": 999_999, "detached": True})
-    )
+    path.write_text(json.dumps({"pid": 999_998, "owner_pid": 999_999, "detached": True}))
     return path
 
 
