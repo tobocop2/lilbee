@@ -30,6 +30,38 @@ class InstanceLaunch:
     replica: int = 0  # index within the role's data-parallel pool (0 = single server)
     rerank_mode: RerankMode | None = None  # set only for RERANK; picks the client scoring path
 
+    def to_state(self) -> dict:
+        """JSON-safe form persisted in a detached fleet's state file."""
+        return {
+            "role": self.role.value,
+            "argv": list(self.argv),
+            "env_overrides": dict(self.env_overrides),
+            "model": self.model,
+            "token_cap": self.token_cap,
+            "weights_bytes": self.weights_bytes,
+            "slots": self.slots,
+            "ctx": self.ctx,
+            "replica": self.replica,
+            "rerank_mode": self.rerank_mode.value if self.rerank_mode else None,
+        }
+
+    @classmethod
+    def from_state(cls, payload: dict) -> InstanceLaunch:
+        """Rebuild a launch from :meth:`to_state` output; raises on a foreign shape."""
+        raw_mode = payload.get("rerank_mode")
+        return cls(
+            role=WorkerRole(payload["role"]),
+            argv=list(payload["argv"]),
+            env_overrides=dict(payload.get("env_overrides") or {}),
+            model=str(payload["model"]),
+            token_cap=payload.get("token_cap"),
+            weights_bytes=int(payload.get("weights_bytes") or 0),
+            slots=int(payload.get("slots") or 1),
+            ctx=int(payload.get("ctx") or 0),
+            replica=int(payload.get("replica") or 0),
+            rerank_mode=RerankMode(raw_mode) if raw_mode else None,
+        )
+
     @property
     def model_id(self) -> str:
         """The llama-swap model id for this instance: ``<role>-<replica>``."""

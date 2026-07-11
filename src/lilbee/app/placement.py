@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from lilbee.app.services import peek_services
@@ -179,8 +180,18 @@ def set_placement(spec: PlacementSpec | None) -> PlacementView:
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
 
 
-def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
-    """Block while a chat warm is in flight after a placement change; True when ready.
+def warm_is_reporting(snapshot: WarmProgress | None) -> bool:
+    """Whether *snapshot* is a warm that is actively loading, rather than idle or done."""
+    return snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES
+
+
+def wait_chat_ready(
+    timeout_s: float = _CHAT_READY_TIMEOUT_S,
+    *,
+    on_progress: Callable[[WarmProgress], None] | None = None,
+    should_abort: Callable[[], bool] | None = None,
+) -> bool:
+    """Block while a chat warm is in flight; True once a prompt can be served.
 
     ``reload_placement(wait=True)`` returns once the proxies are healthy while the
     restarted model still warms off-thread, so a chat request sent right after an
@@ -189,6 +200,10 @@ def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
     actively in flight: with no fleet, no warm, or a failed/finished warm it
     returns at once, so a change that never restarts chat cannot stall the caller.
     The brief grace covers the reload kicking its warm on a separate thread.
+
+    ``on_progress`` receives each actively-reporting warm snapshot so the caller
+    can render the load. ``should_abort`` is polled every cycle; True ends the
+    wait at once, so a cancelled prompt never pins its worker thread.
     """
     services = peek_services()
     if services is None:
@@ -200,12 +215,34 @@ def wait_chat_ready(timeout_s: float = _CHAT_READY_TIMEOUT_S) -> bool:
     while time.monotonic() < deadline:
         if provider.role_ready(WorkerRole.CHAT):
             return True
+        if should_abort is not None and should_abort():
+            return False
         snapshot = provider.warm_progress()
-        warm_in_flight = snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES
-        if not warm_in_flight and time.monotonic() > grace_deadline:
+        # A requested warm counts as in flight before it stamps a phase: the fleet
+        # spawns and health-checks llama-swap first, which takes seconds.
+        if warm_is_reporting(snapshot):
+            if on_progress is not None and snapshot is not None:
+                on_progress(snapshot)
+            grace_deadline = time.monotonic() + _CHAT_READY_GRACE_S
+        elif provider.warm_pending():
+            grace_deadline = time.monotonic() + _CHAT_READY_GRACE_S
+        elif time.monotonic() > grace_deadline:
             return False
         time.sleep(_CHAT_READY_POLL_S)
     return False
+
+
+def chat_engine_ready() -> bool:
+    """Whether a chat prompt can be served right now.
+
+    Positive readiness, not absence-of-warm: before the services container is
+    built nothing is loading yet and nothing can answer, which a warm snapshot
+    cannot distinguish from a finished load.
+    """
+    services = peek_services()
+    if services is None:
+        return False
+    return services.provider.role_ready(WorkerRole.CHAT)
 
 
 def active_chat_warm_progress() -> WarmProgress | None:
@@ -222,6 +259,15 @@ def active_chat_warm_progress() -> WarmProgress | None:
     if provider.role_ready(WorkerRole.CHAT):
         return None
     snapshot = provider.warm_progress()
-    if snapshot is not None and snapshot.phase in _ACTIVE_WARM_PHASES:
-        return snapshot
+    return snapshot if warm_is_reporting(snapshot) else None
+
+
+def chat_warm_error() -> str | None:
+    """The failed chat warm's error text, or None when no failure is on record."""
+    services = peek_services()
+    if services is None:
+        return None
+    snapshot = services.provider.warm_progress()
+    if snapshot is not None and snapshot.phase is WarmPhase.ERROR:
+        return snapshot.error or ""
     return None

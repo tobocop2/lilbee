@@ -22,6 +22,7 @@ from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import await_chat
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +39,7 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # Simulate "already-initialized" state so needs_setup()
     # doesn't push the SetupWizard during tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
@@ -64,7 +65,7 @@ def _mock_services():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(
@@ -79,6 +80,7 @@ async def test_bracket_keys_cycle_all_screens():
     """Press ] through all 6 views from normal mode (Escape first on Chat)."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
@@ -96,7 +98,11 @@ async def test_bracket_keys_cycle_all_screens():
         ]
         for screen_type in expected:
             await pilot.press("right_square_bracket")
-            await pilot.pause()
+            # Switches are deferred behind the view-switch guard; poll them in.
+            for _ in range(40):
+                await pilot.pause()
+                if isinstance(app.screen, screen_type):
+                    break
             assert isinstance(app.screen, screen_type), (
                 f"Expected {screen_type.__name__}, got {type(app.screen).__name__}"
             )
@@ -109,6 +115,7 @@ async def test_view_switch_guard_held_until_transition_completes():
     """
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
 
         app.switch_view("Catalog")
@@ -131,6 +138,7 @@ async def test_bracket_keys_typed_literally_when_chat_input_focused():
     """Pressing [ or ] with the chat input focused must insert text, not switch screens."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
@@ -156,6 +164,7 @@ async def test_bracket_keys_cycle_backward():
     """Press [ to go backward through views."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # Escape to normal mode so ] works
         await pilot.press("escape")
@@ -174,6 +183,7 @@ async def test_bracket_keys_work_from_settings():
     """Navigate to Settings, press ], verify screen changes to Tasks."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause()
@@ -188,6 +198,7 @@ async def test_bracket_keys_typed_literally_when_catalog_search_focused():
     """Brackets in catalog search input must insert text, not switch screens."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Catalog")
         await pilot.pause()
@@ -217,6 +228,7 @@ async def test_settings_escape_returns_to_chat():
     """Escape on Settings switches back to Chat (no filter input to blur)."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause()
@@ -241,6 +253,7 @@ async def test_rapid_fleet_back_does_not_corrupt_screen_stack():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         for _ in range(5):
             app.switch_view("Fleet")
@@ -264,6 +277,7 @@ async def test_slash_catalog_routes_through_switch_view_under_lilbee_app():
     """/models from Chat under LilbeeApp must use switch_view, not push_screen."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         chat = app.screen
         assert isinstance(chat, ChatScreen)
@@ -276,6 +290,7 @@ async def test_slash_settings_routes_through_switch_view_under_lilbee_app():
     """/settings under LilbeeApp must use switch_view, not push_screen."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         chat = app.screen
         assert isinstance(chat, ChatScreen)
@@ -288,6 +303,7 @@ async def test_slash_status_routes_through_switch_view_under_lilbee_app():
     """/status under LilbeeApp must use switch_view, not push_screen."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         chat = app.screen
         assert isinstance(chat, ChatScreen)
@@ -300,6 +316,7 @@ async def test_grid_arrows_stay_on_catalog():
     """Right arrow in catalog grid mode should move grid cursor, not switch screens."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Catalog")
         await pilot.pause()
@@ -313,6 +330,7 @@ async def test_footer_present_on_screens():
     """Every screen should have a Footer widget."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
 
         views = ["Chat", "Catalog", "Status", "Settings", "Tasks"]
@@ -334,6 +352,7 @@ async def test_help_panel_toggle():
     """? opens HelpPanel, ? again closes it."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # Escape to normal mode so ? isn't typed into Input
         await pilot.press("escape")
@@ -355,6 +374,7 @@ async def test_catalog_nav_noop_when_search_focused():
     """Navigation actions are no-ops when catalog search input is focused."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Catalog")
         await pilot.pause()
@@ -381,6 +401,7 @@ async def test_chat_tab_outside_input_advances_focus():
     """Tab from outside the chat input advances the focus chain."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # Escape to normal mode: input loses focus
         await pilot.press("escape")
@@ -398,6 +419,7 @@ async def test_chat_escape_from_model_picker_button():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         screen = app.screen
 
@@ -419,6 +441,7 @@ async def test_app_footer_hides_tasks_hint_when_text_input_focused():
     focused Input/TextArea swallows `t` as a literal character."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # Chat boots in INSERT mode with the prompt (a TextArea) focused.
         assert app.check_action("open_tasks", ()) is False
@@ -441,6 +464,7 @@ async def test_backward_nav_from_catalog_after_visiting_tasks():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
         await pilot.press("escape")
@@ -475,6 +499,7 @@ async def test_switching_guard_blocks_concurrent_switch():
     """The _switching guard drops a second switch_view call while one is pending."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -519,6 +544,7 @@ async def test_lilbee_app_wires_worker_pool_notifications_on_mount() -> None:
     try:
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             on_spawning = captured.get("on_spawning")
             on_spawned = captured.get("on_spawned")

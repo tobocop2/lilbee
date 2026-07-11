@@ -1,4 +1,4 @@
-"""Tests for ChatScreen._needs_setup: wizard shows on fresh data dirs."""
+"""Tests for needs_setup: the wizard shows on fresh data dirs."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ from unittest import mock
 
 import pytest
 
+from lilbee.app.setup_state import needs_setup
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import await_chat
 
 
 @pytest.fixture
@@ -25,10 +27,6 @@ def isolated_data_dir(tmp_path):
             setattr(cfg, field_name, getattr(snapshot, field_name))
 
 
-def _make_screen() -> ChatScreen:
-    return ChatScreen.__new__(ChatScreen)
-
-
 def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
     """Fresh data dir must trigger the wizard even when models resolve globally."""
     assert not cfg.lancedb_dir.exists()
@@ -36,7 +34,7 @@ def test_needs_setup_true_when_lancedb_dir_missing(isolated_data_dir):
         "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ) as resolve:
-        assert _make_screen()._needs_setup() is True
+        assert needs_setup() is True
         resolve.assert_not_called()
 
 
@@ -67,7 +65,7 @@ def test_needs_setup_false_when_initialized_and_models_resolve(isolated_data_dir
         "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ):
-        assert _make_screen()._needs_setup() is False
+        assert needs_setup() is False
 
 
 def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
@@ -81,7 +79,7 @@ def test_needs_setup_true_when_initialized_but_model_missing(isolated_data_dir):
         "lilbee.providers.engine_params.resolve_model_path",
         side_effect=ProviderError("no such model", provider="llama-cpp"),
     ):
-        assert _make_screen()._needs_setup() is True
+        assert needs_setup() is True
 
 
 def test_needs_setup_skips_native_probe_for_usable_remote_models(isolated_data_dir):
@@ -103,7 +101,7 @@ def test_needs_setup_skips_native_probe_for_usable_remote_models(isolated_data_d
         ),
         mock.patch("lilbee.providers.engine_params.resolve_model_path") as resolve,
     ):
-        assert _make_screen()._needs_setup() is False
+        assert needs_setup() is False
         resolve.assert_not_called()
 
 
@@ -123,7 +121,7 @@ def test_needs_setup_true_when_remote_model_unusable(isolated_data_dir):
         "lilbee.modelhub.model_manager.validate_persisted_model",
         return_value=ValidationResult.UNKNOWN,
     ):
-        assert _make_screen()._needs_setup() is True
+        assert needs_setup() is True
 
 
 def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
@@ -136,7 +134,7 @@ def test_needs_setup_true_when_lancedb_path_is_a_file(isolated_data_dir):
         "lilbee.providers.engine_params.resolve_model_path",
         return_value="/some/resolved/path",
     ):
-        assert _make_screen()._needs_setup() is True
+        assert needs_setup() is True
 
 
 @pytest.fixture
@@ -156,7 +154,7 @@ def mock_services():
 async def test_chat_screen_cached_across_navigation(isolated_data_dir, mock_services):
     """Navigating away from Chat and back reuses the same instance.
     ChatScreen is installed via install_screen, so on_mount (and therefore
-    _needs_setup) runs only on first mount, not on every revisit."""
+    the setup check) runs only on first mount, not on every revisit."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.catalog import CatalogScreen
     from lilbee.cli.tui.screens.chat import ChatScreen
@@ -165,7 +163,7 @@ async def test_chat_screen_cached_across_navigation(isolated_data_dir, mock_serv
 
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(
@@ -175,6 +173,7 @@ async def test_chat_screen_cached_across_navigation(isolated_data_dir, mock_serv
     ):
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             chat = app.screen
             assert isinstance(chat, ChatScreen)

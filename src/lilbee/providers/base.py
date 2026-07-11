@@ -494,6 +494,15 @@ class LLMProvider(Protocol):
         """
         return None
 
+    def warm_pending(self) -> bool:
+        """Whether a warm has been requested and has not finished.
+
+        True from the moment ``warm_up_pool`` accepts a warm until its background
+        work ends, so a surface can hold before the first phase is stamped. Default
+        ``False``: providers without managed servers never warm.
+        """
+        return False
+
     def warm_progress(self) -> WarmProgress | None:
         """Snapshot of the chat model's cold-load progress, or None when idle.
 

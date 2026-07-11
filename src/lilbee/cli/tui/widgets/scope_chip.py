@@ -101,7 +101,9 @@ class ScopeChip(Widget):
 
     def on_mount(self) -> None:
         self._refresh_visibility()
-        self._refresh()
+        # _refresh queries the pills this widget composes, which are not guaranteed
+        # to be mounted yet when on_mount runs. Defer it a frame.
+        self.call_after_refresh(self._refresh)
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
 
     def _refresh_visibility(self) -> None:

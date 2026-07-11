@@ -24,7 +24,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
 from lilbee.runtime.cancellation import TaskCancelledError
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, ready_services
 
 
 def _make_model(slug: str = "test", display: str = "Test Model") -> CatalogModel:
@@ -320,16 +320,13 @@ async def test_notify_model_installed_refreshes_chat_screen() -> None:
     """When a DOWNLOAD finalizes DONE the ChatScreen's model bar is refreshed."""
     from lilbee.cli.tui.app import LilbeeApp
 
-    app = LilbeeApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
-        assert screen is not None
-        with patch.object(screen, "refresh_model_bar") as mock_refresh:
-            app.task_bar._notify_model_installed()
-            assert mock_refresh.called
+    with ready_services():
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            screen = await await_chat(app, pilot)
+            with patch.object(screen, "refresh_model_bar") as mock_refresh:
+                app.task_bar._notify_model_installed()
+                assert mock_refresh.called
 
 
 @pytest.mark.asyncio
@@ -338,16 +335,14 @@ async def test_notify_model_installed_swallows_query_error() -> None:
     from textual.css.query import NoMatches
 
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
-    app = LilbeeApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        screen = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
-        assert screen is not None
-        # NoMatches is a QueryError subclass; simulates the query miss path.
-        with patch.object(screen, "refresh_model_bar", side_effect=NoMatches("no bar")):
-            app.task_bar._notify_model_installed()  # must not raise
+    with ready_services():
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            screen = await await_chat(app, pilot)
+            # NoMatches is a QueryError subclass; simulates the query miss path.
+            with patch.object(screen, "refresh_model_bar", side_effect=NoMatches("no bar")):
+                app.task_bar._notify_model_installed()  # must not raise
 
 
 @pytest.mark.asyncio
