@@ -45,7 +45,7 @@
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
 </p>
 
-A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line.
+A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line. It is local RAG, done for you: the retrieval and the model both run on your own machine.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
@@ -186,11 +186,17 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 If you've already got an MCP-aware coding agent running, it can do the setup: browse the catalog, pull picks, assign them to the embedding / reranker / vision roles, and tune retrieval. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs are obvious to them. See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the workflow and example prompts.
 
-### Coding agents: opencode and hermes
+### Launch your coding agent on local models
 
-lilbee launches straight into [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent) with your local fleet configured, so a coding agent runs entirely on your machine. It calls lilbee's tools to search your library, swap models, and tune retrieval, and answers from your own files with file:line citations. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) lists the verified models and how the QA harness measures them.
+`lilbee launch opencode` and `lilbee launch hermes` set up lilbee's local models in your agent in one command. lilbee registers itself as a provider and an MCP server in the agent's own config, leaves your existing setup intact, warms a model, and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
 
-![opencode running a local model against lilbee's tools](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.gif)
+These reels show each agent, launched on a local model, doing real work on lilbee's own source. opencode adds a `lilbee launch status` subcommand, runs it, and writes a test that passes; hermes does the same with `lilbee launch list`.
+
+![opencode, launched on a local lilbee model, adds a launch-status subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.gif)
+
+![hermes, launched on a local lilbee model, adds a launch-list subcommand and lands a passing test](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
+
+It tunes itself, too. Give a small local model a thin first result and tell it to widen lilbee's search, and the second pass returns full function bodies with file:line citations. A more capable model would do the same from a higher-level prompt like "improve your search results." Read the [lilbee-mcp skill](docs/agent-skills/lilbee-mcp/SKILL.md) to teach your own model the pattern.
 
 ![hermes running a local model against lilbee's tools](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.gif)
 
@@ -406,7 +412,7 @@ uv tool install --reinstall --prerelease=allow lilbee
 
 Drop the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) into `.opencode/skills/` or `.claude/skills/`, register lilbee as an MCP server, and any MCP-aware coding agent can search your library, swap models, and tune retrieval. The skill is the single entry point: it documents every tool, the workflows the agent should follow, and points to drop-in `AGENTS.md` and worker-subagent starters under [`examples/agent-integration/`](examples/agent-integration/).
 
-**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** Local-model opencode and hermes integration works across many GGUF families: see [Coding agents: opencode and hermes](#coding-agents-opencode-and-hermes) above.
+**The demos below use opencode with a cloud model. lilbee stays local; only the queries and the returned chunks go to the cloud model.** To run the agent itself on a local model instead, see [Launch your coding agent on local models](#launch-your-coding-agent-on-local-models) above.
 
 Live-indexing example: opencode (cloud model) indexes a Godot 4 pathfinding subset (~3s), then `lilbee_search`-es for `AStarGrid2D` and answers method-by-method against your _local_ files.
 
@@ -500,6 +506,20 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
 - [Nuitka] compiles the whole thing into the standalone single-file binary, bundling its own Python runtime so there is nothing to install and nothing to compile.
+
+## FAQ
+
+**What is lilbee, in one line?** A local AI search engine: it runs the models and searches your files, code, and the web, with answers that cite the source.
+
+**Is it really one program?** Yes. The model runtime (llama.cpp) and the index (LanceDB) run inside lilbee. No separate model server, no vector database, no container.
+
+**Is lilbee a model manager?** Yes, a complete one. It browses Hugging Face, downloads models, assigns roles, runs them on Metal, Vulkan, or CUDA, and places large models across multiple GPUs, so you do not need a separate model runner. Already use Ollama or LM Studio? Point lilbee at them instead.
+
+**Does my data leave my machine?** No. Your files stay on disk and search runs locally. A cloud model is used only when you pick one.
+
+**Will a model fit my GPU?** lilbee reads the GGUF file and your devices and estimates fit before you download, and splits large models across multiple GPUs. More at [lilbee.sh/gpu](https://lilbee.sh/gpu/).
+
+**Can my coding agent use it?** Yes, over MCP. The agent reads your real code and docs before answering, cited to the file and line. More at [lilbee.sh/mcp](https://lilbee.sh/mcp/).
 
 ## Support
 
