@@ -115,6 +115,23 @@ class TestAssistantMessageAsync:
             assert isinstance(am._thinking_header, ThinkingHeader)
             assert am._thinking_header.is_mounted
 
+    async def test_thinking_status_renders_beside_the_scanner(self) -> None:
+        """set_thinking_status reaches the header and lands in the next frame."""
+        from lilbee.cli.tui.widgets.thinking_header import _frame_content
+
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.set_thinking_status("Loading engine")
+            header = am._thinking_header
+            assert header is not None
+            header._tick()
+            assert "Loading engine" in str(_frame_content(header._frame, header._detail))
+            # A dismissed header makes the setter a no-op, not a crash.
+            am._dismiss_thinking_header()
+            am.set_thinking_status("gone")
+
     async def test_first_reasoning_token_mounts_streaming_collapsible(self) -> None:
         """The Collapsible appears only when the first reasoning token arrives,
         carrying the ``-streaming`` modifier so the toggle row is hidden by CSS.

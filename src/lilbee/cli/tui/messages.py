@@ -123,14 +123,18 @@ MODEL_SWAP_FAILED = "Could not switch model: {error}"
 # Shown when the user tries to send a prompt while the new chat model is still loading.
 CHAT_MODEL_SWITCHING = "Still switching model. One moment, then send your prompt."
 FLEET_RELOADING = "Applying placement, reloading the fleet. One moment, then send your prompt."
-# Startup gate: shown from the moment the TUI paints until the chat engine answers.
+# Startup gate: shown from the moment the TUI paints until the app can serve.
 STARTUP_PREPARING = "Preparing lilbee"
-STARTUP_READING_WEIGHTS = "Reading {name} weights"
-STARTUP_LOADING_ENGINE = "Loading engine"
-STARTUP_FAILED = "The chat model failed to load: {error}"
-STARTUP_FAILED_HINT = "Open Catalog or Settings to pick a different model."
-# Shown while a cold engine load runs and keep_engine_warm is off.
-STARTUP_WARM_TIP = "Tip: Settings > Keep engine warm makes the next launch fast"
+STARTUP_FAILED = "lilbee could not start: {error}"
+# Engine-load status painted into the pending answer while a prompt waits on a
+# cold engine, and the failure that wait can end in.
+ENGINE_READING_WEIGHTS = "Reading {name} weights"
+ENGINE_LOADING = "Loading engine"
+ENGINE_LOAD_FAILED = "The engine failed to load: {error}"
+ENGINE_FAILED_HINT = "Open Catalog or Settings to pick a different model."
+ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
+# Shown once when a prompt first waits on a cold engine and keep_engine_warm is off.
+ENGINE_WARM_TIP = "Tip: Settings > Keep engine warm makes the next launch fast"
 CMD_REMOVE_USAGE = "Usage: /remove <model_name>"
 CMD_REMOVE_NOT_FOUND = "{name} is not installed"
 CMD_REMOVE_SUCCESS = "Removed {name}"
@@ -219,7 +223,6 @@ SCOPE_PILL_BOTH = "Both"
 SCOPE_PILL_WIKI = "Wiki"
 SCOPE_PILL_RAW = "Raw"
 CHAT_BUSY = "Already answering. Press Ctrl+C to cancel, then submit your next prompt."
-CHAT_WARMING = "Loading the chat model. One moment, then send your prompt."
 CHAT_MODEL_DOWNLOADING = "{name} is still downloading. Wait for it to finish, then submit."
 MODEL_BEING_DOWNLOADED = (
     "{name} is still downloading. Wait for it to finish before setting it active."

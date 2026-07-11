@@ -94,27 +94,31 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 
 ## Startup and the engine lifecycle
 
-The first thing you should know before launching lilbee: the engine is a real
-llama.cpp server that loads your model into memory, and by default it lives and
-dies with lilbee. Launch starts it, quit frees everything. That on-demand default
-is deliberate, no VRAM or RAM is held while lilbee is closed, but it means every
-launch pays the engine load before chat opens. You will watch a progress bar, not
-a frozen screen, and chat stays out of reach until the model can actually answer.
+lilbee opens fast and loads the model lazily, the way Ollama and LM Studio do.
+The TUI is on screen within a couple of seconds of launch; the engine, a real
+llama.cpp server, starts loading your model in the background at the same
+moment. Ask something before it's ready and the answer bubble shows the load
+itself, weights read as a live percentage, then your answer streams in. Nothing
+freezes and nothing is silently queued.
 
-Measured on real builds with a small chat model (Qwen3 0.6B):
+By default the engine lives and dies with lilbee: launch starts it, quit frees
+all of its memory. That on-demand default is deliberate, no VRAM or RAM is held
+while lilbee is closed, but it means the first answer of a session waits out the
+engine load. Measured on real builds with a small chat model (Qwen3 0.6B):
 
-| Launch | Apple Silicon Mac | Linux + CUDA |
+| | Apple Silicon Mac | Linux + CUDA |
 |---|---|---|
-| Very first run (one-time unpack + engine load) | ~22s | ~33s |
-| Later launches (engine load only) | ~15s | ~20s |
-| `lilbee --version` and other quick commands | ~1s | ~2s |
+| Launch to a usable TUI | ~2s | ~2s |
+| First answer, very first run (one-time unpack + load) | ~22s | ~33s |
+| First answer, later sessions (engine load only) | ~15s | ~20s |
+| Answers after the engine is loaded | model speed | model speed |
 
-Bigger models load longer; the bar shows real progress while weights are read.
+Bigger models load longer; the bubble shows real progress while weights are read.
 
 If you relaunch lilbee often, opt into a persistent engine in Settings:
 
 - **Keep engine warm** leaves the engine running when you quit, and the next
-  launch connects to it in about two seconds instead of reloading the model.
+  session's first answer skips the load entirely.
 - **Engine idle ttl minutes** bounds how long idle weights stay in memory,
   five minutes by default (the same idea as Ollama's keep_alive). The memory
   frees itself after that many idle minutes; a small proxy process stays behind,

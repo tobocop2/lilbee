@@ -130,6 +130,11 @@ class AssistantMessage(Vertical):
             self._last_reasoning_update = now
             self._reasoning_static.update(Content("".join(self._reasoning_parts)))
 
+    def set_thinking_status(self, detail: str) -> None:
+        """Show *detail* beside the thinking animator (e.g. an engine-load phase)."""
+        if self._thinking_header is not None:
+            self._thinking_header.set_status(detail)
+
     def append_content(self, text: str) -> None:
         """Append response content token (debounced markdown updates)."""
         first_token = not self._content_parts

@@ -218,13 +218,16 @@ commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 
 ## The warm engine
 
-By default the engine lives and dies with lilbee: launch loads the model, quit
-frees the GPU. Every launch pays the model load before chat opens.
+By default the engine lives and dies with lilbee: launch starts loading the
+model in the background, quit frees the GPU. The TUI opens right away either
+way; a question asked before the engine is ready shows the load's progress in
+its answer bubble and streams the answer once loaded, so only the session's
+first answer waits out the load.
 
 If you relaunch often, turn on **Keep engine warm** (Settings, MCP
 `lilbee_settings_set`, the HTTP config API, or `config.toml`). Quitting then
-leaves the engine running, and the next launch connects to it in a couple of
-seconds. **Engine idle ttl minutes** bounds how long idle weights stay in GPU
+leaves the engine running, the next launch connects to it, and even that first
+answer skips the load. **Engine idle ttl minutes** bounds how long idle weights stay in GPU
 memory, five minutes by default, the same idea as Ollama's `keep_alive`. After
 that the memory is freed on its own; a small proxy process (a few tens of MB, no
 GPU memory) stays behind until reuse or stop. Set the ttl to `0` only if you
