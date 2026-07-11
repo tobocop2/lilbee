@@ -216,22 +216,33 @@ per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
 from scratch, lint, drafts review, and prune are also available as CLI
 commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 
-## The warm engine
+## The engine lifecycle
 
-By default the engine lives and dies with lilbee: launch starts loading the
-model in the background, quit frees the GPU. The TUI opens right away either
-way; a question asked before the engine is ready shows the load's progress in
-its answer bubble and streams the answer once loaded, so only the session's
-first answer waits out the load.
+lilbee loads the model lazily, the way Ollama and LM Studio do: the TUI never
+waits for the engine, a real llama.cpp server that starts loading in the
+background the moment the app opens. Ask something before it's ready and the
+answer bubble carries the load until your answer streams. Nothing freezes and
+nothing is silently queued.
 
-If you relaunch often, turn on **Keep engine warm** (Settings, MCP
-`lilbee_settings_set`, the HTTP config API, or `config.toml`). Quitting then
-leaves the engine running, the next launch connects to it, and even that first
-answer skips the load. **Engine idle ttl minutes** bounds how long idle weights stay in GPU
-memory, five minutes by default, the same idea as Ollama's `keep_alive`. After
-that the memory is freed on its own; a small proxy process (a few tens of MB, no
-GPU memory) stays behind until reuse or stop. Set the ttl to `0` only if you
-want the model resident until you say otherwise.
+By default the engine lives and dies with lilbee: launch starts it, quit frees
+all of its memory. That on-demand default is deliberate, no VRAM or RAM is held
+while lilbee is closed, but it means the first answer of a session waits out the
+engine load. If you relaunch lilbee often, opt into a persistent engine in
+Settings:
+
+- **Keep engine warm** leaves the engine running when you quit, and the next
+  session's first answer skips the load entirely.
+- **Engine idle ttl minutes** bounds how long idle weights stay in memory,
+  five minutes by default (the same idea as Ollama's keep_alive). The memory
+  frees itself after that many idle minutes; a small proxy process stays behind,
+  a few tens of MB and no VRAM. `0` keeps weights loaded until you stop them.
+- **`lilbee engine stop`** frees everything immediately from any terminal, no
+  TUI needed.
+
+Turning the setting off returns to the on-demand default and stops the engine at
+the next opportunity. Both knobs live in the TUI Settings screen,
+MCP `lilbee_settings_set`, the HTTP config API, and `config.toml`. The first
+launch after a reboot is always a cold one.
 
 To stop a warm engine without opening the TUI:
 
