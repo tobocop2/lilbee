@@ -239,11 +239,11 @@ class TestKnightRiderFrames:
 
 class TestApplyColor:
     def test_empty_line_unchanged(self) -> None:
-        assert apply_color("   ", "\033[38;5;214m") == "   "
+        assert apply_color("   ", "\033[38;5;217m") == "   "
 
     def test_colored_line(self) -> None:
-        result = apply_color("hello", "\033[38;5;214m")
-        assert result.startswith("\033[38;5;214m")
+        result = apply_color("hello", "\033[38;5;217m")
+        assert result.startswith("\033[38;5;217m")
         assert result.endswith("\033[0m")
         assert "hello" in result
 
