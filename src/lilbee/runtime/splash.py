@@ -17,6 +17,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from lilbee.runtime._splash_runner import TAKEOVER_BYTE
+
 _SPLASH_FD_ENV = "_LILBEE_SPLASH_FD"
 
 _SHOW_CURSOR = "\033[?25h"
@@ -107,16 +109,18 @@ def stop(handle: SplashHandle | None) -> None:
 
 def dismiss() -> None:
     """Signal the splash to stop from the TUI side.
-    Called by the chat screen's ``on_show()`` to dismiss the splash once
-    the TUI is ready to paint. Closes the pipe so the subprocess sees EOF,
-    waits for it to exit, and clears the active handle so ``atexit`` does
-    not re-run ``stop()`` (which would write ``\\033[?25h`` into the
-    Textual alt-screen and leave a cursor artifact at (0,0)).
+    Called once the TUI is ready to paint. Writes the takeover byte so the
+    subprocess exits without touching the terminal (its frame clear and
+    cursor-show would land on the Textual alt-screen and leave a visible
+    cursor for the whole session), then closes the pipe, waits for the
+    subprocess, and clears the active handle so ``atexit`` does not re-run
+    ``stop()``.
     """
     global _active_handle
 
     fd_str = os.environ.pop(_SPLASH_FD_ENV, None)
     if fd_str is not None:
+        _signal_takeover(int(fd_str))
         _close_write_fd(int(fd_str))
 
     handle = _active_handle
@@ -124,11 +128,12 @@ def dismiss() -> None:
         return
     _active_handle = None
 
-    # Close the write end so the subprocess sees EOF. This may double-close
-    # the same fd that the env-var path already closed; _close_write_fd
-    # suppresses OSError so that is harmless.
+    # Signal and close the write end. This may double-signal/close the same
+    # fd that the env-var path already handled; both helpers suppress
+    # OSError so that is harmless.
     # No _restore_cursor() here: we are inside Textual's alt-screen,
     # where writing cursor-show would produce a visible artifact.
+    _signal_takeover(handle.write_fd)
     _close_write_fd(handle.write_fd)
     try:
         handle.process.wait(timeout=_STOP_TIMEOUT)
@@ -141,6 +146,12 @@ def _close_write_fd(fd: int) -> None:
     """Close a pipe write fd, ignoring errors if already closed."""
     with contextlib.suppress(OSError):
         os.close(fd)
+
+
+def _signal_takeover(fd: int) -> None:
+    """Send the TUI-takeover byte, ignoring errors if the pipe is gone."""
+    with contextlib.suppress(OSError):
+        os.write(fd, TAKEOVER_BYTE)
 
 
 def _restore_cursor() -> None:

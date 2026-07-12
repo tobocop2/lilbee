@@ -2663,6 +2663,37 @@ class TestChatSlashCommands:
             assert app.screen.streaming is False
             assert app.screen._history == []
 
+    async def test_cmd_clear_cancels_workers_when_idle(self, _mock_resolve):
+        """/clear with no stream in flight still cancels background workers."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.streaming = False
+            mock_worker = mock.MagicMock()
+            with mock.patch.object(
+                type(app.screen), "workers", new_callable=mock.PropertyMock
+            ) as mock_workers:
+                mock_workers.return_value = [mock_worker]
+                app.screen._handle_slash("/clear")
+            await pilot.pause()
+            mock_worker.cancel.assert_called_once()
+            assert app.screen._history == []
+
+    async def test_cmd_cancel_cancels_workers_when_idle(self, _mock_resolve):
+        """/cancel with no stream in flight still cancels background workers."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.streaming = False
+            mock_worker = mock.MagicMock()
+            with mock.patch.object(
+                type(app.screen), "workers", new_callable=mock.PropertyMock
+            ) as mock_workers:
+                mock_workers.return_value = [mock_worker]
+                app.screen._handle_slash("/cancel")
+            await pilot.pause()
+            mock_worker.cancel.assert_called_once()
+
     async def test_cmd_theme_with_name(self, _mock_resolve):
         """/theme <name> sets theme."""
         from lilbee.cli.tui.app import LilbeeApp
