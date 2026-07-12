@@ -237,6 +237,59 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
 
+<details>
+<summary><b>Model families tested end to end on real GPUs, per role. Click to expand.</b></summary>
+
+### Tested model families
+
+One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method.
+
+**Vision** (all on a single 12 GB card, projector fetched by the pull itself):
+
+| Family | Projector type |
+|--------|----------------|
+| LightOnOCR | lightonocr |
+| Qwen2.5-VL | qwen2.5vl merger |
+| Qwen3-VL | qwen3vl |
+| Gemma 3 | gemma3 |
+| SmolVLM2 | idefics3 |
+| MiniCPM-V | resampler |
+| InternVL3 | internvl |
+| LLaVA 1.6 | mlp |
+| Gemma 4 | mixed vision+audio |
+| dots.ocr | dots.ocr |
+
+**Chat** (one per memory-architecture class):
+
+| Class | Representative |
+|-------|----------------|
+| Dense GQA | Llama 3.2 |
+| Dense | Qwen3 |
+| Sliding-window attention | Gemma 3 |
+| Multi-head latent attention | DeepSeek V2 Lite |
+| Mixture of experts | OLMoE |
+| Hybrid SSM | LFM2 |
+
+**Embedding:**
+
+| Class | Representative |
+|-------|----------------|
+| BERT encoder | all-MiniLM-L6-v2 |
+| nomic-bert | nomic-embed-text v1.5 |
+| Decoder-pooled | Qwen3-Embedding 0.6B |
+| Decoder-pooled, large | Qwen3-Embedding 8B |
+| XLM-RoBERTa | bge-m3 |
+
+**Rerank:**
+
+| Class | Representative |
+|-------|----------------|
+| Cross-encoder | bge-reranker-v2-m3 |
+| LLM reranker | Qwen3-Reranker 0.6B |
+
+</details>
+
+
 ![browse the model catalog, search Hugging Face Hub, pull a model live](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-catalog.gif)
 
 ### Already running Ollama or LM Studio? Keep them.
