@@ -44,6 +44,7 @@ from lilbee.providers.fleet.placement import (
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
@@ -268,16 +269,22 @@ def _fit_slots(
 ) -> int:
     """Largest slot count in ``1..ceiling`` whose instance footprint fits *budget*;
     1 when none larger fit."""
+    from lilbee.providers.base import ProviderError
+
     for slots in range(ceiling, 1, -1):
-        est = estimate_instance_footprint(
-            model_path,
-            ctx=ctx,
-            slots=slots,
-            gpu_layers=_role_gpu_layers(role),
-            flash_attn=_role_flash(role),
-            kv_cache_type=_role_kv_cache_type(role),
-            mmproj_path=mmproj_path,
-        )
+        try:
+            est = estimate_instance_footprint(
+                model_path,
+                ctx=ctx,
+                slots=slots,
+                gpu_layers=_role_gpu_layers(role),
+                flash_attn=_role_flash(role),
+                kv_cache_type=_role_kv_cache_type(role),
+                mmproj_path=mmproj_path,
+            )
+        except (ProviderError, OSError):
+            # An unsizable model runs a single slot; the load decides the rest.
+            return 1
         if est.footprint(unified=unified) <= budget:
             return slots
     return 1
@@ -582,11 +589,140 @@ def _search_reservation(inputs: dict[WorkerRole, ModelPlacementInput]) -> int:
     )
 
 
+def _role_weights_bytes(role: WorkerRole, ref: str) -> int:
+    """The model's weight bytes on disk (plus the mmproj for vision): a
+    ground-truth lower bound on residency. 0 when the file cannot be resolved."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.engine_params import resolve_model_path
+
+    try:
+        size = _weights_bytes(resolve_model_path(ref))
+        if role is WorkerRole.VISION:
+            mmproj = _vision_mmproj(ref)
+            if mmproj is not None:
+                size += int(mmproj.stat().st_size)
+    except (ProviderError, OSError):
+        return 0
+    return size
+
+
+def _weights_exceed_hardware(size: int, total_vram: int) -> bool:
+    """True when a model's weight bytes alone cannot fit the fleet's physical VRAM.
+
+    File size is ground truth, not an estimate, so this bound cannot repeat the
+    false-refusal class: no estimator error makes a 40 GiB file fit a 1 GiB card.
+    It stands down when the user configured partial CPU offload (``n_gpu_layers``),
+    where big-weights-small-VRAM is a legitimate setup.
+    """
+    from lilbee.core.config import cfg
+
+    return total_vram > 0 and cfg.n_gpu_layers is None and size > total_vram
+
+
+def _vision_without_mmproj(role: WorkerRole, ref: str) -> bool:
+    """True (with a warning) for a configured vision model whose mmproj is missing.
+
+    The skip would silently disable OCR; the warning names the cause and the fix.
+    """
+    if role is not WorkerRole.VISION or _vision_mmproj(ref) is not None:
+        return False
+    log.warning(
+        "Vision model %s has no mmproj (CLIP projector); OCR is disabled. "
+        "Re-run 'lilbee model pull %s' to fetch the projector.",
+        ref,
+        ref,
+    )
+    return True
+
+
+def _estimate_or_fallback(
+    role: WorkerRole,
+    ref: str,
+    *,
+    unified_budget: int | None,
+    chat_reservation: int,
+    device_count: int,
+    total_vram: int,
+    skipped_not_installed: dict[WorkerRole, str],
+) -> ModelPlacementInput | None:
+    """Size *role* for placement, degrading rather than refusing.
+
+    A missing model is skipped and recorded; a sizing failure on an installed
+    model falls back to its weight bytes; weights alone exceeding the physical
+    VRAM refuse with a plain message (ground truth, not an estimate).
+    """
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    try:
+        estimate = _estimate_role(
+            role,
+            ref,
+            unified_budget=unified_budget,
+            chat_reservation=chat_reservation,
+            device_count=device_count,
+        )
+    except (ProviderError, OSError) as exc:
+        if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
+            log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
+            skipped_not_installed[role] = ref
+            return None
+        return _sizing_failure_fallback(
+            role, ref, exc, device_count=device_count, total_vram=total_vram
+        )
+    weights = _role_weights_bytes(role, ref)
+    if _weights_exceed_hardware(weights, total_vram):
+        _warn_weights_exceed(role, ref, weights, total_vram)
+        return None
+    return estimate
+
+
+def _sizing_failure_fallback(
+    role: WorkerRole,
+    ref: str,
+    exc: Exception,
+    *,
+    device_count: int,
+    total_vram: int,
+) -> ModelPlacementInput | None:
+    """Weights-bytes placement input for an installed model the estimator cannot
+    size, so the load, not the estimator, decides; ``None`` skips the role (the
+    file is unresolvable, or its weights alone exceed the hardware)."""
+    weights = _role_weights_bytes(role, ref)
+    if weights == 0:
+        log.warning("Skipping %s server: could not size model %r (%s).", role.value, ref, exc)
+        return None
+    if _weights_exceed_hardware(weights, total_vram):
+        _warn_weights_exceed(role, ref, weights, total_vram)
+        return None
+    log.warning(
+        "Could not size the %s model %s (%s). Using its file size and letting the load decide.",
+        role.value,
+        ref,
+        exc,
+    )
+    return ModelPlacementInput(
+        role=role, est_vram_bytes=weights, replicas=_replica_count(role, device_count)
+    )
+
+
+def _warn_weights_exceed(role: WorkerRole, ref: str, weights: int, total_vram: int) -> None:
+    log.warning(
+        "The %s model %s cannot load: its weights alone are %.1f GiB and the GPU "
+        "memory is %.1f GiB in total. Use a smaller model, or set n_gpu_layers to "
+        "offload part of it to system memory.",
+        role.value,
+        ref,
+        weights / 1024**3,
+        total_vram / 1024**3,
+    )
+
+
 def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,
     unified_budget: int | None = None,
     device_count: int = 0,
+    total_vram: int = 0,
 ) -> tuple[list[ModelPlacementInput], dict[WorkerRole, str], int, dict[WorkerRole, str]]:
     """Build placement inputs for the configured server roles.
 
@@ -595,11 +731,13 @@ def _server_model_inputs(
     starve embed/rerank on a shared-memory host. ``device_count`` resolves an auto
     replica knob to one per GPU. When *roles* is given, only those are considered.
     Skips an unconfigured optional role, a vision model with no resolvable mmproj
-    projector, and a role whose model is not installed on disk (the last returned as
-    ``skipped_not_installed`` so a surface can say so).
+    projector, a role whose model is not installed on disk (returned as
+    ``skipped_not_installed`` so a surface can say so), and a model whose weight
+    bytes alone exceed ``total_vram`` (physically unloadable under all-GPU layers).
+    A model the estimator cannot size is enrolled at its file size instead of
+    skipped, so the load, not the estimator, decides.
     """
     from lilbee.core.config import cfg
-    from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     inputs: dict[WorkerRole, ModelPlacementInput] = {}
     model_refs: dict[WorkerRole, str] = {}
@@ -613,39 +751,20 @@ def _server_model_inputs(
         ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
         if not ref:
             return  # unconfigured optional role -> no server
-        if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
-            # A configured vision model with no mmproj is skipped, which silently
-            # disables OCR; warn so the cause (a missing projector, fixed by
-            # re-pulling the model) is visible instead of "no usable text".
-            log.warning(
-                "Vision model %s has no mmproj (CLIP projector); OCR is disabled. "
-                "Re-run 'lilbee model pull %s' to fetch the projector.",
-                ref,
-                ref,
-            )
+        if parse_model_ref(ref).is_remote:
+            return  # SDK-routed role: no local server to plan, not a missing install
+        if _vision_without_mmproj(role, ref):
             return  # no projector -> vision can't run on a server
-        try:
-            estimate = _estimate_role(
-                role,
-                ref,
-                unified_budget=unified_budget,
-                chat_reservation=chat_reservation,
-                device_count=device_count,
-            )
-        except (ProviderError, OSError) as exc:
-            # Skip this role rather than failing the whole fleet build: search-only
-            # indexing must not require an installed chat model, and a genuinely-
-            # needed role surfaces a clear per-role error on first use instead of a
-            # build-time traceback. Keep "not installed" for an actually-missing
-            # model; a sizing failure (estimator errored) must say so, not misdirect
-            # debugging toward the registry.
-            if isinstance(exc, ProviderError) and exc.kind is ProviderErrorKind.NOT_FOUND:
-                log.warning("Skipping %s server: model %r is not installed.", role.value, ref)
-                skipped_not_installed[role] = ref
-            else:
-                log.warning(
-                    "Skipping %s server: could not size model %r (%s).", role.value, ref, exc
-                )
+        estimate = _estimate_or_fallback(
+            role,
+            ref,
+            unified_budget=unified_budget,
+            chat_reservation=chat_reservation,
+            device_count=device_count,
+            total_vram=total_vram,
+            skipped_not_installed=skipped_not_installed,
+        )
+        if estimate is None:
             return
         inputs[role] = estimate
         model_refs[role] = ref
@@ -1056,7 +1175,7 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
     devices = _read_device_cache.get(binary)
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
-        None, unified_budget=unified_budget
+        None, unified_budget=unified_budget, total_vram=sum(d.total_bytes for d in devices)
     )
     resolved = _resolve_placement(
         placement, inputs, model_refs, devices, unified_budget=unified_budget
@@ -1079,6 +1198,37 @@ class FleetPlan:
     co_tenants: frozenset[WorkerRole] = frozenset()
 
 
+def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, str]) -> None:
+    """Warn about placements that exceed the memory budget.
+
+    Shared-memory roles that fit nowhere get no server (loading them would OOM the
+    host). GPU roles are never refused: one whose estimate exceeds the free VRAM
+    still loads on demand, with a warning carrying the shortfall.
+    """
+    for role in placement.unplaceable_roles:
+        log.warning(
+            "%s model %s does not fit available memory and will not be served; "
+            "free up memory or use a smaller model.",
+            role.value,
+            model_refs[role],
+        )
+    for role, shortfall in placement.tight_roles.items():
+        log.warning(
+            "Memory is tight for the %s model %s: it is estimated to need %.1f GiB more "
+            "GPU memory than is available. It will still load on demand; if it fails to "
+            "load or runs slowly, free up GPU memory or use a smaller model.",
+            role.value,
+            model_refs[role],
+            # A sub-0.05 GiB shortfall would render as "0.0 GiB more".
+            max(shortfall / 1024**3, 0.1),
+        )
+    if placement.co_tenants:
+        log.info(
+            "%s share GPU memory and load on demand; only one is resident at a time.",
+            ", ".join(sorted(role.value for role in placement.co_tenants)),
+        )
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
@@ -1089,22 +1239,14 @@ def plan_launches(
 
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, reservation, _ = _server_model_inputs(
-        roles, unified_budget=unified_budget, device_count=len(devices)
+        roles,
+        unified_budget=unified_budget,
+        device_count=len(devices),
+        total_vram=sum(d.total_bytes for d in devices),
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     placement = _resolve_placement(spec, inputs, model_refs, devices, unified_budget=unified_budget)
-    for role in placement.unplaceable_roles:
-        log.warning(
-            "%s model %s does not fit available memory and will not be served; "
-            "free up memory or use a smaller model.",
-            role.value,
-            model_refs[role],
-        )
-    if placement.co_tenants:
-        log.info(
-            "%s share GPU memory and load on demand; only one is resident at a time.",
-            ", ".join(sorted(role.value for role in placement.co_tenants)),
-        )
+    _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     return FleetPlan(
         launches=tuple(

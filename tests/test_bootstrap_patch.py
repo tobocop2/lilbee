@@ -7,10 +7,10 @@ import pathlib
 import pytest
 
 from lilbee.runtime.bee_logo import (
-    AMBER_BRIGHT_XTERM,
-    AMBER_DIM_XTERM,
-    AMBER_MID_XTERM,
     BEE_LINES,
+    ROSE_BRIGHT_XTERM,
+    ROSE_DIM_XTERM,
+    ROSE_MID_XTERM,
 )
 
 _PATCH = (
@@ -53,10 +53,10 @@ def test_c_logo_has_no_extra_rows(added_lines):
     assert literals == expected
 
 
-def test_bootstrap_uses_the_shared_amber_ramp(added_lines):
+def test_bootstrap_uses_the_shared_rose_ramp(added_lines):
     """The bootstrap paints the wordmark and bar from the shared palette."""
     body = "\n".join(added_lines)
-    for index in (AMBER_DIM_XTERM, AMBER_MID_XTERM, AMBER_BRIGHT_XTERM):
+    for index in (ROSE_DIM_XTERM, ROSE_MID_XTERM, ROSE_BRIGHT_XTERM):
         assert f"38;5;{index}m" in body, f"xterm index {index} missing from the C bootstrap"
 
 

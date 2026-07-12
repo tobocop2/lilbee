@@ -104,21 +104,54 @@ def estimate_instance_footprint(
     estimate is single-device and the per-GPU peak that actually OOMs is invisible.
     Pass *batch_size* when the launch raises ``--batch-size``/``--ubatch-size``
     (pooled embed/rerank), so the compute-buffer estimate matches the launch.
+
+    With an *mmproj_path* the discrete-GPU number is corrected: gguf-parser's
+    nonuma merge overcharges a multimodal projector by roughly 10 GiB of compute
+    buffer (v0.24.x and current main), while its unified-memory accounting stays
+    accurate, so the projector is re-charged from that side
+    (:func:`_corrected_projector_estimate`).
     """
-    mmproj = str(mmproj_path) if mmproj_path is not None else None
-    mmproj_mtime = mmproj_path.stat().st_mtime_ns if mmproj_path is not None else 0
-    return _cached_footprint(
-        str(model_path),
-        model_path.stat().st_mtime_ns,
-        ctx,
-        slots,
-        gpu_layers,
-        flash_attn,
-        kv_cache_type.value,
-        mmproj,
-        mmproj_mtime,
-        tensor_split,
-        batch_size,
+
+    def run(mmproj: Path | None) -> GgufVramEstimate:
+        return _cached_footprint(
+            str(model_path),
+            model_path.stat().st_mtime_ns,
+            ctx,
+            slots,
+            gpu_layers,
+            flash_attn,
+            kv_cache_type.value,
+            str(mmproj) if mmproj is not None else None,
+            mmproj.stat().st_mtime_ns if mmproj is not None else 0,
+            tensor_split,
+            batch_size,
+        )
+
+    if mmproj_path is None:
+        return run(None)
+    with_projector = run(mmproj_path)
+    return _corrected_projector_estimate(run(None), with_projector, mmproj_path.stat().st_size)
+
+
+def _corrected_projector_estimate(
+    base: GgufVramEstimate, with_projector: GgufVramEstimate, mmproj_bytes: int
+) -> GgufVramEstimate:
+    """Charge the projector at its unified-memory delta, floored at its weights.
+
+    The floor covers a mmap-shared projector whose uma delta hides weights that
+    still occupy VRAM once offloaded. The charge lands on the first device:
+    llama.cpp loads the projector on the main GPU, not across a split.
+    """
+    projector = max(with_projector.unified_bytes - base.unified_bytes, mmproj_bytes)
+    per_device_vram = tuple(
+        vram + (projector if i == 0 else 0) for i, vram in enumerate(base.per_device_vram)
+    )
+    return GgufVramEstimate(
+        vram_bytes=base.vram_bytes + projector,
+        ram_bytes=with_projector.ram_bytes,
+        unified_bytes=with_projector.unified_bytes,
+        per_device_vram=per_device_vram,
+        per_device_unified=with_projector.per_device_unified,
     )
 
 

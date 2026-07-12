@@ -1187,6 +1187,68 @@ def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) 
     assert warnings and all(r.exc_info is None for r in warnings)
 
 
+def test_cancel_inference_severs_chat_and_retiring_streams() -> None:
+    """The cancel reaches every chat replica, including a client a reload
+    already retired: the swap's settings write can retire the busy client
+    before the cancel lands."""
+    active, retired, embed = _fake_client(), _fake_client(), _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [active], WorkerRole.EMBED: [embed]})
+    p._retiring_clients = [retired]
+    p.cancel_inference()
+    active.abort_streams.assert_called_once_with()
+    retired.abort_streams.assert_called_once_with()
+    embed.abort_streams.assert_not_called()
+
+
+def test_warm_up_blocking_stamps_error_with_the_real_reason(monkeypatch) -> None:
+    """A warm that dies before the chat warm begins still surfaces its reason.
+
+    The prompt path reads this via chat_warm_error(); without the stamp the
+    user got a generic "not ready" bounce with no explanation.
+    """
+    from lilbee.providers.warm_progress import WarmPhase
+
+    def _boom() -> list:
+        raise RuntimeError("engine exited before it was ready")
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
+    p = FleetProvider()
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert "engine exited before it was ready" in (snap.error or "")
+
+
+def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> None:
+    """The tracker stamps STARTING before the spawn so the task bar shows life
+    during the whole spawn/health window instead of a dead gap."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    seen: list[WarmPhase] = []
+
+    def _observe_fleet() -> None:
+        snap = p.warm_progress()
+        assert snap is not None
+        seen.append(snap.phase)
+
+    monkeypatch.setattr(p, "_ensure_fleet", _observe_fleet)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    assert seen == [WarmPhase.STARTING]
+
+
+def test_warm_up_blocking_clears_stamp_when_chat_never_warms(monkeypatch) -> None:
+    """No chat instance placed (model not installed): the early STARTING stamp
+    is dropped so the warm line cannot spin forever."""
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    assert p.warm_progress() is None
+
+
 def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
     # A fast CLI exit tears down the interpreter mid-warm; the pool submit then
     # raises RuntimeError. During finalization this must be dropped quietly, not
@@ -1253,6 +1315,104 @@ def test_preload_roles_warms_roles_concurrently(monkeypatch) -> None:
     release_chat.set()
     preload.join(timeout=5.0)
     assert not preload.is_alive()
+
+
+def _pinned_launch(role: WorkerRole, devices: str, replica: int = 0) -> InstanceLaunch:
+    return InstanceLaunch(
+        role=role,
+        argv=[],
+        env_overrides={"CUDA_VISIBLE_DEVICES": devices},
+        model=f"{role.value}-{replica}",
+        replica=replica,
+    )
+
+
+def test_warm_chains_serializes_shared_device_chat_last() -> None:
+    sets = {
+        WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0"}),
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=0"}),
+    }
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED], sets)
+    assert chains == [[WorkerRole.EMBED, WorkerRole.CHAT]]
+
+
+def test_warm_chains_keeps_disjoint_devices_parallel() -> None:
+    sets = {
+        WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0"}),
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=1"}),
+    }
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED], sets)
+    assert {tuple(c) for c in chains} == {(WorkerRole.EMBED,), (WorkerRole.CHAT,)}
+
+
+def test_warm_chains_unpinned_role_stays_parallel() -> None:
+    # No pinning info (Metal, or a launch without visibility env) keeps today's
+    # concurrent warm; only proven device sharing serializes.
+    sets = {WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0"})}
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED], sets)
+    assert {tuple(c) for c in chains} == {(WorkerRole.EMBED,), (WorkerRole.CHAT,)}
+
+
+def test_warm_chains_transitive_overlap_merges() -> None:
+    sets = {
+        WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0", "CUDA_VISIBLE_DEVICES=1"}),
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=1", "CUDA_VISIBLE_DEVICES=2"}),
+        WorkerRole.RERANK: frozenset({"CUDA_VISIBLE_DEVICES=2"}),
+    }
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK], sets)
+    assert chains == [[WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.CHAT]]
+
+
+def test_role_device_sets_unions_replicas_and_skips_unpinned() -> None:
+    launches = [
+        _pinned_launch(WorkerRole.EMBED, "0", replica=0),
+        _pinned_launch(WorkerRole.EMBED, "1", replica=1),
+        InstanceLaunch(role=WorkerRole.VISION, argv=[], env_overrides={}, model="vision-0"),
+    ]
+    sets = prov_mod._role_device_sets(launches)
+    assert sets == {
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=0", "CUDA_VISIBLE_DEVICES=1"})
+    }
+
+
+def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
+    # Chat and embed pinned to the same card must warm one at a time, embed
+    # first: concurrent loads on a shared device race each other for VRAM and
+    # the loser OOMs its first attempt.
+    order: list[str] = []
+    chat, embed = _fake_client(), _fake_client()
+    chat.chat.side_effect = lambda *a, **k: (order.append("chat"), MagicMock())[1]
+    embed.embed.side_effect = lambda *a, **k: (order.append("embed"), [[0.1]])[1]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    p._launches = {
+        SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
+        SwapGroup.EMBED: (_pinned_launch(WorkerRole.EMBED, "0"),),
+    }
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._preload_roles()
+    assert order == ["embed", "chat"]
+
+
+def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
+    # An unexpected error warming one chain role (a listener blowing up) must
+    # not rob the roles behind it of their warm; it surfaces after the chain.
+    chat, embed = _fake_client(), _fake_client()
+    embed.embed.return_value = [[0.1]]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    p._launches = {
+        SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
+        SwapGroup.EMBED: (_pinned_launch(WorkerRole.EMBED, "0"),),
+    }
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+
+    def _blowing_listener(role: WorkerRole) -> None:
+        if role is WorkerRole.EMBED:
+            raise RuntimeError("listener broke")
+
+    p.add_spawn_listener(on_spawning=_blowing_listener)
+    with pytest.raises(RuntimeError, match="listener broke"):
+        p._preload_roles()
+    chat.chat.assert_called_once()  # chat still warmed behind the failed embed
 
 
 def _registry_with_shards(monkeypatch, shards: list[Path]) -> None:

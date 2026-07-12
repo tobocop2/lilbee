@@ -86,9 +86,9 @@ class Services:
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. Idempotent.
 
-        The fleet engine stops a llama-server by client disconnect (the chat
-        worker closes the active stream), so this is a no-op there; it stays the
-        canonical entry point in case a backend needs an explicit interrupt.
+        The fleet engine severs its live chat streams (llama-server stops
+        generating when the connection drops); providers with nothing in
+        flight treat this as a no-op.
         """
         self.provider.cancel_inference()
 

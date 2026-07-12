@@ -75,11 +75,13 @@ class TestPlanPlacement:
         placed first (bb-7jg1.6)."""
         chat = ModelPlacementInput(WorkerRole.CHAT, 20 * _GB)
         embed = ModelPlacementInput(WorkerRole.EMBED, 18 * _GB)
-        # One 24 GB card (21.6 GB usable): either model fits alone, not both.
+        # One 24 GB card (21.6 GB usable): either model fits alone, not both. Embed
+        # keeps its full charge; chat (never phase-disjoint from embed, so nothing
+        # to swap with) loads tight into the leftover instead of being refused.
         plan = plan_placement([chat, embed], [(0, 24 * _GB)], estimate_peak=_even(chat, embed))
         placed = {i.role for i in plan.instances}
-        assert WorkerRole.EMBED in placed
-        assert WorkerRole.CHAT in plan.unplaceable_roles
+        assert placed == {WorkerRole.EMBED, WorkerRole.CHAT}
+        assert plan.tight_roles.keys() == {WorkerRole.CHAT}
 
     def test_colocates_small_models_on_one_gpu(self) -> None:
         plan = plan_placement(
@@ -118,15 +120,20 @@ class TestPlanPlacement:
         assert plan.instances[0].devices == (0, 1)
         assert plan.instances[0].tensor_split == (21, 14)
 
-    def test_unplaceable_when_model_fits_nowhere(self) -> None:
+    def test_model_that_fits_nowhere_loads_tight_on_one_card(self) -> None:
+        # An oversize model still gets a server: placed tight on one card.
         model = ModelPlacementInput(WorkerRole.CHAT, 100 * _GB)
         plan = plan_placement(
             [model],
             [(0, 24 * _GB), (1, 24 * _GB)],
             estimate_peak=_even(model),
         )
-        assert plan.instances == ()
-        assert plan.unplaceable_roles == (WorkerRole.CHAT,)
+        assert len(plan.instances) == 1
+        assert plan.instances[0].role is WorkerRole.CHAT
+        assert len(plan.instances[0].devices) == 1
+        assert plan.unplaceable_roles == ()
+        # Short by its estimate minus one card's 90% headroom.
+        assert plan.tight_roles == {WorkerRole.CHAT: int(100 * _GB - 24 * _GB * 0.9)}
 
     def test_no_gpu_devices_places_every_role_on_cpu(self) -> None:
         # A GPU-less host (or a probe that found nothing): each role runs as a
@@ -258,7 +265,7 @@ class TestPerDeviceSplit:
         assert elastic.devices == (0,)  # card 0 (charged 2) has room; card 1 (charged 20) does not
         assert plan.co_tenants == frozenset()
 
-    def test_unplaceable_when_per_device_never_fits(self) -> None:
+    def test_loads_tight_when_per_device_never_fits(self) -> None:
         model = ModelPlacementInput(WorkerRole.CHAT, 40 * _GB)
 
         def peak(_role: WorkerRole, ratio: tuple[int, ...]) -> tuple[int, ...]:
@@ -269,8 +276,8 @@ class TestPerDeviceSplit:
             [(0, 24 * _GB), (1, 24 * _GB)],
             estimate_peak=peak,
         )
-        assert plan.instances == ()
-        assert plan.unplaceable_roles == (WorkerRole.CHAT,)
+        assert len(plan.instances) == 1
+        assert plan.tight_roles.keys() == {WorkerRole.CHAT}
 
     def test_skips_count_when_estimator_returns_wrong_cardinality(self) -> None:
         # A malformed estimate (cardinality != device count) is skipped, not crashed.
@@ -284,7 +291,7 @@ class TestPerDeviceSplit:
             [(0, 24 * _GB), (1, 24 * _GB)],
             estimate_peak=peak,
         )
-        assert plan.unplaceable_roles == (WorkerRole.CHAT,)
+        assert plan.tight_roles.keys() == {WorkerRole.CHAT}
 
 
 class TestContextAwareChatSplit:
@@ -402,14 +409,16 @@ class TestReplicas:
         assert sorted(i.devices[0] for i in embeds) == [0, 0, 1, 1]
         assert {i.replica for i in embeds} == {0, 1, 2, 3}
 
-    def test_replicated_role_unplaceable_when_no_gpu_fits_one(self) -> None:
+    def test_oversize_replicated_role_loads_one_tight_instance(self) -> None:
+        # The persistent single loads tight; the drained card leaves the elastic
+        # replica nowhere to go, so exactly one instance serves the role.
         plan = plan_placement(
             [ModelPlacementInput(WorkerRole.EMBED, 100 * _GB, replicas=2)],
             [(0, 24 * _GB)],
             estimate_peak=_never,
         )
-        assert plan.instances == ()
-        assert plan.unplaceable_roles == (WorkerRole.EMBED,)
+        assert [i.role for i in plan.instances] == [WorkerRole.EMBED]
+        assert plan.tight_roles.keys() == {WorkerRole.EMBED}
 
     def test_chat_placed_before_replicas_then_replicas_fill_remaining(self) -> None:
         plan = plan_placement(
@@ -517,15 +526,18 @@ class TestPersistentSingleElasticSplit:
         assert len(embeds) < 4  # capped by residual, not all 4 requested
         assert plan.unplaceable_roles == ()
 
-    def test_replicated_role_unplaceable_when_persistent_single_does_not_fit(self) -> None:
-        # If replica 0 (the persistent single) fits nowhere, the role is unplaceable.
+    def test_oversize_persistent_single_loads_tight_without_elastic_replicas(self) -> None:
+        # Replica 0 (the persistent single) fits nowhere: it loads tight and drains
+        # the card, so the elastic batch places nothing on top of it.
         plan = plan_placement(
             [ModelPlacementInput(WorkerRole.EMBED, 100 * _GB, replicas=2)],
             [(0, 24 * _GB)],
             estimate_peak=_never,
         )
-        assert self._embeds(plan) == []
-        assert plan.unplaceable_roles == (WorkerRole.EMBED,)
+        embeds = self._embeds(plan)
+        assert len(embeds) == 1
+        assert embeds[0].replica == 0
+        assert plan.tight_roles.keys() == {WorkerRole.EMBED}
 
     def test_single_replica_role_is_unchanged(self) -> None:
         # replicas=1 still places exactly one replica-0 single, no elastic batch.
@@ -582,10 +594,10 @@ class TestChatVisionCoTenancy:
         assert plan.unplaceable_roles == ()
         assert plan.co_tenants == frozenset()
 
-    def test_vision_too_big_even_for_ingest_alone_is_unplaceable(self) -> None:
-        # Vision does not fit even beside the embedder alone (its ingest working set):
-        # a real "use a smaller model", not a co-residency conflict. 8GB card is 7.2
+    def test_vision_too_big_even_for_ingest_alone_loads_tight(self) -> None:
+        # Vision does not fit even beside the embedder alone: 8GB card is 7.2
         # usable; embed 1 + vision 8 overflows even with rerank and chat refunded.
+        # Vision anchors the swap group tight (short by 1.8) instead of refused.
         models = [
             ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
             *self._search(),
@@ -593,8 +605,16 @@ class TestChatVisionCoTenancy:
         ]
         plan = plan_placement(models, [(0, 8 * _GB)], estimate_peak=_never)
 
-        assert plan.unplaceable_roles == (WorkerRole.VISION,)
-        assert plan.co_tenants == frozenset()
+        assert plan.unplaceable_roles == ()
+        assert self._roles(plan) == {
+            WorkerRole.CHAT,
+            WorkerRole.EMBED,
+            WorkerRole.RERANK,
+            WorkerRole.VISION,
+        }
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
+        # Short by its 8GB estimate minus what refunding rerank freed (7.2 - embed 1).
+        assert plan.tight_roles == {WorkerRole.VISION: int(8 * _GB - (8 * _GB * 0.9 - 1 * _GB))}
 
     def test_vision_that_fits_ingest_pulls_rerank_into_the_swap_group(self) -> None:
         # 8GB card (7.2 usable): embed 1 + rerank 1 + vision 6 = 8 overflows, but the
@@ -635,9 +655,9 @@ class TestChatVisionCoTenancy:
 
     def test_large_llm_reranker_cannot_crowd_out_the_embedder(self) -> None:
         # The embedder runs in every phase, so nothing can swap with it; it charges
-        # before same-rank single-phase roles. A 5GB LLM reranker on a 6GB card is
-        # the genuinely unservable role (query needs embed+rerank co-resident);
-        # embed, vision, and chat all still get servers.
+        # before same-rank single-phase roles. A 5GB LLM reranker on a 6GB card
+        # cannot take the embedder's charge: it loads tight into the leftover
+        # (short by 0.2) and every role still gets a server.
         models = [
             ModelPlacementInput(WorkerRole.EMBED, int(0.6 * _GB)),
             ModelPlacementInput(WorkerRole.RERANK, 5 * _GB),
@@ -646,9 +666,15 @@ class TestChatVisionCoTenancy:
         ]
         plan = plan_placement(models, [(0, 6 * _GB)], estimate_peak=_never)
 
-        assert plan.unplaceable_roles == (WorkerRole.RERANK,)
-        assert self._roles(plan) == {WorkerRole.EMBED, WorkerRole.VISION, WorkerRole.CHAT}
-        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert plan.unplaceable_roles == ()
+        assert self._roles(plan) == {
+            WorkerRole.EMBED,
+            WorkerRole.RERANK,
+            WorkerRole.VISION,
+            WorkerRole.CHAT,
+        }
+        assert plan.tight_roles.keys() == {WorkerRole.RERANK}
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
 
     def test_vision_swap_group_forms_without_chat_when_chat_is_disabled(self) -> None:
         # No chat model configured: on a tight card vision still cannot sit beside the
@@ -677,8 +703,9 @@ class TestChatVisionCoTenancy:
         assert len(visions) == 1
         assert visions[0].replica == 0
 
-    def test_chat_that_fits_nowhere_is_unplaceable_and_vision_stays_pinned(self) -> None:
-        # Refunding vision still does not make room: chat is the genuinely oversize one.
+    def test_chat_that_fits_nowhere_loads_tight_in_visions_swap_group(self) -> None:
+        # Refunding vision still does not make room: chat is genuinely oversize.
+        # Chat loads tight; the refunded vision shares its swap group.
         models = [
             ModelPlacementInput(WorkerRole.CHAT, 200 * _GB),
             *self._search(),
@@ -686,9 +713,77 @@ class TestChatVisionCoTenancy:
         ]
         plan = plan_placement(models, [(0, 24 * _GB)], estimate_peak=_never)
 
-        assert plan.unplaceable_roles == (WorkerRole.CHAT,)
-        assert plan.co_tenants == frozenset()
+        assert plan.unplaceable_roles == ()
+        assert plan.tight_roles.keys() == {WorkerRole.CHAT}
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
         assert WorkerRole.VISION in self._roles(plan)
+
+
+class TestTightPlacement:
+    """The estimate never refuses a role: a model that fits nowhere loads tight
+    (best-effort) on the emptiest card with its shortfall reported."""
+
+    def test_inflated_vision_estimate_still_gets_a_server(self) -> None:
+        # Vision's estimate exceeds the whole card and embed (same phase) cannot
+        # be refunded: vision anchors the swap group tight; chat joins by
+        # refunding that slot.
+        models = [
+            ModelPlacementInput(WorkerRole.CHAT, 3 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, int(0.5 * _GB)),
+            ModelPlacementInput(WorkerRole.RERANK, 1 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 18 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 16 * _GB)], estimate_peak=_never)
+
+        assert plan.unplaceable_roles == ()
+        assert {i.role for i in plan.instances} == {
+            WorkerRole.CHAT,
+            WorkerRole.EMBED,
+            WorkerRole.RERANK,
+            WorkerRole.VISION,
+        }
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.RERANK, WorkerRole.VISION})
+        # Short by the estimate minus the card's headroom less the embedder's charge.
+        assert plan.tight_roles == {WorkerRole.VISION: int(18 * _GB - (16 * _GB * 0.9 - 0.5 * _GB))}
+
+    def test_lone_tight_role_forms_no_swap_group(self) -> None:
+        # Nothing charged is phase-disjoint from vision (the embedder shares ingest):
+        # the tight role stays a plain pinned instance, no co-tenancy.
+        models = [
+            ModelPlacementInput(WorkerRole.EMBED, int(0.5 * _GB)),
+            ModelPlacementInput(WorkerRole.VISION, 18 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 16 * _GB)], estimate_peak=_never)
+
+        assert {i.role for i in plan.instances} == {WorkerRole.EMBED, WorkerRole.VISION}
+        assert plan.co_tenants == frozenset()
+        assert plan.tight_roles.keys() == {WorkerRole.VISION}
+
+    def test_tight_role_lands_on_the_emptiest_card(self) -> None:
+        # Two unequal cards: the tight model takes the one with the most headroom.
+        models = [
+            ModelPlacementInput(WorkerRole.EMBED, 4 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 40 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 8 * _GB), (1, 24 * _GB)], estimate_peak=_even(*models))
+
+        vision = next(i for i in plan.instances if i.role is WorkerRole.VISION)
+        embed = next(i for i in plan.instances if i.role is WorkerRole.EMBED)
+        assert embed.devices == (1,)  # most-free single placement charges card 1 first
+        assert vision.devices == (1,)  # 24GB minus embed still beats the empty 8GB card
+        assert plan.tight_roles.keys() == {WorkerRole.VISION}
+
+    def test_tight_role_drains_its_card_so_replicas_cannot_pile_on(self) -> None:
+        # The tight slot consumes the card's whole headroom: no room remains for
+        # an elastic embed replica.
+        models = [
+            ModelPlacementInput(WorkerRole.EMBED, 1 * _GB, replicas=2),
+            ModelPlacementInput(WorkerRole.VISION, 40 * _GB),
+        ]
+        plan = plan_placement(models, [(0, 16 * _GB)], estimate_peak=_never)
+
+        embeds = [i for i in plan.instances if i.role is WorkerRole.EMBED]
+        assert len(embeds) == 1
 
 
 class TestSharedMemoryCoTenancy:
@@ -738,3 +833,21 @@ class TestSharedMemoryCoTenancy:
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
         assert [i.replica for i in visions] == [0]
         assert WorkerRole.CHAT in {i.role for i in plan.instances}
+
+
+class TestUnsizableModelPlacement:
+    def test_unsizable_split_falls_to_tight_single(self) -> None:
+        # estimate_peak raising (the estimator cannot parse the model) must not
+        # crash the plan: split options are skipped and the model places tight.
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        model = ModelPlacementInput(WorkerRole.CHAT, 40 * _GB)
+
+        def boom(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
+            raise ProviderError(
+                "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
+            )
+
+        plan = plan_placement([model], [(0, 24 * _GB), (1, 24 * _GB)], estimate_peak=boom)
+        assert len(plan.instances) == 1
+        assert plan.tight_roles.keys() == {WorkerRole.CHAT}

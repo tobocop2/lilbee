@@ -21,9 +21,9 @@
 +// same column and the splash can repaint over it in place.
 +#define LILBEE_LOGO_WIDTH 55
 +#define LILBEE_BAR_CELLS 40
-+#define LILBEE_AMBER_BRIGHT "\033[38;5;214m"
-+#define LILBEE_AMBER_MID "\033[38;5;172m"
-+#define LILBEE_AMBER_DIM "\033[38;5;94m"
++#define LILBEE_ROSE_BRIGHT "\033[38;5;217m"
++#define LILBEE_ROSE_MID "\033[38;5;181m"
++#define LILBEE_ROSE_DIM "\033[38;5;95m"
 +#define LILBEE_RESET "\033[0m"
 +// Same block glyphs the Python splash bar uses, so the two read as one surface.
 +#define LILBEE_CELL_FULL "\u2593"
@@ -117,7 +117,7 @@
 +        lilbee_pad = (lilbee_ws.ws_col - LILBEE_LOGO_WIDTH) / 2;
 +    }
 +    fputc('\n', stderr);
-+    fputs(LILBEE_AMBER_DIM, stderr);
++    fputs(LILBEE_ROSE_DIM, stderr);
 +    for (int i = 0; lilbee_logo_lines[i] != NULL; i += 1) {
 +        fprintf(stderr, "%*s", lilbee_pad, "");
 +        fputs(lilbee_logo_lines[i], stderr);
@@ -142,20 +142,20 @@
 +
 +    // Sit under the centred wordmark.
 +    fprintf(stderr, "\r%*s", lilbee_pad, "");
-+    fputs("  " LILBEE_AMBER_DIM "bootstrapping" LILBEE_RESET "  ", stderr);
++    fputs("  " LILBEE_ROSE_DIM "bootstrapping" LILBEE_RESET "  ", stderr);
 +
-+    fputs(LILBEE_AMBER_BRIGHT, stderr);
++    fputs(LILBEE_ROSE_BRIGHT, stderr);
 +    for (int i = 0; i < filled; i += 1) {
 +        fputs(LILBEE_CELL_FULL, stderr);
 +    }
 +    if (filled < LILBEE_BAR_CELLS) {
-+        fputs(LILBEE_AMBER_MID LILBEE_CELL_EDGE, stderr);
-+        fputs(LILBEE_AMBER_DIM, stderr);
++        fputs(LILBEE_ROSE_MID LILBEE_CELL_EDGE, stderr);
++        fputs(LILBEE_ROSE_DIM, stderr);
 +        for (int i = filled + 1; i < LILBEE_BAR_CELLS; i += 1) {
 +            fputs(LILBEE_CELL_EMPTY, stderr);
 +        }
 +    }
-+    fprintf(stderr, LILBEE_RESET "  " LILBEE_AMBER_MID "%3d%%" LILBEE_RESET, percent);
++    fprintf(stderr, LILBEE_RESET "  " LILBEE_ROSE_MID "%3d%%" LILBEE_RESET, percent);
 +    fflush(stderr);
 +}
 +

@@ -4,9 +4,13 @@ in-process pool would have served on demand.
 The in-process ``WorkerPool`` had no VRAM admission and no idle reaping: a role's
 worker spawned lazily on first call, so only the roles a single operation used were
 ever co-resident. Ingest loaded embed+vision; query loaded embed+chat+rerank. Peak
-was ``embed + max(vision, chat+rerank)``, never the sum. This suite feeds low-RAM /
-on-the-cusp conditions into the real :func:`plan_placement` and asserts it never
-refuses a role that lazy per-phase residency would have served.
+was ``embed + max(vision, chat+rerank)``, never the sum, and no load was ever
+gated on an estimate. This suite feeds low-RAM / on-the-cusp conditions into the
+real :func:`plan_placement` and asserts three properties: the GPU path never
+refuses a role, tight (best-effort) placement fires only for roles whose working
+set exceeds the budget by estimate, and the normally-placed tier fits the budget
+it claims. The shared-memory path keeps its deliberate divergence: a role larger
+than free system RAM is refused rather than OOM-livelocking the host.
 """
 
 from __future__ import annotations
@@ -62,7 +66,15 @@ def _estimate(footprints: dict[WorkerRole, int]):
 
 
 def _oracle_servable(sc: Scenario) -> set[WorkerRole]:
-    """Every role in a working set that fits: what the lazy pool would serve."""
+    """What the b507 lazy pool would serve: everything on GPUs (no estimate
+    gate); on shared memory, every role in a working set that fits the budget."""
+    if sc.devices:
+        return set(sc.footprints)
+    return _working_set_servable(sc)
+
+
+def _working_set_servable(sc: Scenario) -> set[WorkerRole]:
+    """Every role in a working set that fits the budget by estimate."""
     budget = _budget(sc)
     servable: set[WorkerRole] = set()
     for roles in _WORKING_SETS:
@@ -72,7 +84,9 @@ def _oracle_servable(sc: Scenario) -> set[WorkerRole]:
     return servable
 
 
-def _planner_servable(sc: Scenario) -> tuple[set[WorkerRole], frozenset[WorkerRole]]:
+def _planner_servable(
+    sc: Scenario,
+) -> tuple[set[WorkerRole], frozenset[WorkerRole], dict[WorkerRole, int]]:
     models = [
         ModelPlacementInput(role=role, est_vram_bytes=vram) for role, vram in sc.footprints.items()
     ]
@@ -83,7 +97,7 @@ def _planner_servable(sc: Scenario) -> tuple[set[WorkerRole], frozenset[WorkerRo
         unified_budget=sc.unified_budget,
     )
     servable = set(sc.footprints) - set(placement.unplaceable_roles)
-    return servable, placement.co_tenants
+    return servable, placement.co_tenants, placement.tight_roles
 
 
 # Footprints modeled on the friend's stack: a ~4B chat, nomic embed, a small
@@ -112,6 +126,9 @@ _SMALL_CHAT = {
     WorkerRole.RERANK: _gb(0.6),
 }
 
+# A vision estimate larger than the whole card (the inflated-projector case).
+_INFLATED_VISION = {**_STACK, WorkerRole.VISION: _gb(18.0)}
+
 SCENARIOS = [
     Scenario("gpu-24gb-roomy", dict(_STACK), devices=[(0, _gb(24))]),
     Scenario("gpu-12gb-cusp", dict(_STACK), devices=[(0, _gb(12))]),
@@ -120,6 +137,7 @@ SCENARIOS = [
     Scenario("gpu-8gb-big-vision", dict(_BIG_VISION), devices=[(0, _gb(8))]),
     Scenario("gpu-6gb-llm-rerank", dict(_LLM_RERANK), devices=[(0, _gb(6))]),
     Scenario("gpu-6gb-small-chat-big-vision", dict(_SMALL_CHAT), devices=[(0, _gb(6))]),
+    Scenario("gpu-16gb-inflated-vision-estimate", dict(_INFLATED_VISION), devices=[(0, _gb(16))]),
     Scenario("unified-6gb-llm-rerank", dict(_LLM_RERANK), unified_budget=_gb(6)),
     Scenario("unified-6gb-embed-rerank-vision-overflow", dict(_STACK), unified_budget=_gb(6)),
     Scenario("unified-8gb", dict(_STACK), unified_budget=_gb(8)),
@@ -146,7 +164,7 @@ def _charged_total(sc: Scenario, servable: set[WorkerRole], swap: frozenset[Work
 @pytest.mark.parametrize("sc", SCENARIOS, ids=lambda s: s.name)
 def test_planner_serves_every_role_the_oracle_would(sc: Scenario) -> None:
     oracle = _oracle_servable(sc)
-    servable, _co = _planner_servable(sc)
+    servable, _co, _tight = _planner_servable(sc)
     refused = {r.value for r in oracle if r not in servable}
     assert not refused, (
         f"{sc.name}: planner refuses {sorted(refused)} that the in-process oracle "
@@ -156,10 +174,23 @@ def test_planner_serves_every_role_the_oracle_would(sc: Scenario) -> None:
 
 
 @pytest.mark.parametrize("sc", SCENARIOS, ids=lambda s: s.name)
+def test_tight_is_reserved_for_genuinely_oversize_working_sets(sc: Scenario) -> None:
+    """A memory-is-tight warning must not fire for a placement the budget affords."""
+    _servable, _co, tight = _planner_servable(sc)
+    affordable = _working_set_servable(sc)
+    spurious = {r.value for r in tight if r in affordable}
+    assert not spurious, (
+        f"{sc.name}: planner marks {sorted(spurious)} tight although their working "
+        f"sets fit the budget by estimate"
+    )
+
+
+@pytest.mark.parametrize("sc", SCENARIOS, ids=lambda s: s.name)
 def test_plan_fits_its_own_budget(sc: Scenario) -> None:
-    """Serving a role is not enough: the plan's reservation must fit the budget."""
-    servable, swap = _planner_servable(sc)
-    reserved = _charged_total(sc, servable, swap)
+    """The normally-placed tier must fit the budget; tight roles are excluded
+    (their slot is clamped to the leftover headroom)."""
+    servable, swap, tight = _planner_servable(sc)
+    reserved = _charged_total(sc, servable - set(tight), swap)
     budget = _budget(sc)
     assert reserved <= budget, (
         f"{sc.name}: plan reserves {reserved / GB:.2f}GB > budget {budget / GB:.2f}GB "
@@ -172,7 +203,7 @@ def _print_diff_table() -> int:
     regressions = 0
     for sc in SCENARIOS:
         oracle = _oracle_servable(sc)
-        servable, co = _planner_servable(sc)
+        servable, co, tight = _planner_servable(sc)
         refused = sorted(r.value for r in oracle if r not in servable)
         regressions += bool(refused)
         if sc.devices:
@@ -185,6 +216,7 @@ def _print_diff_table() -> int:
         print(
             f"        planner : {sorted(r.value for r in servable)}"
             f"  swap-group={sorted(r.value for r in co)}"
+            f"  tight={sorted(r.value for r in tight)}"
         )
         if refused:
             print(f"        >>> REGRESSION: planner refuses {refused}")

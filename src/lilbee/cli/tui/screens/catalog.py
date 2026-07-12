@@ -12,6 +12,7 @@ from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import Click, Key, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
@@ -125,6 +126,11 @@ _LIST_ID_PREFIX = "list-"
 
 # Toggles the filter Input between revealed and `display: none` (catalog.tcss).
 _HIDDEN_CLASS = "-hidden"
+
+# Refresh cycles the initial tab activation waits for the tab strip's children
+# to mount before giving up (they mount a frame after construction; a slow host
+# can take several).
+_TAB_ACTIVATION_RETRY_BUDGET = 20
 
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
@@ -301,6 +307,9 @@ class CatalogScreen(Screen[None]):
         # __init__ default through the race; user-driven tab switches after
         # mount flip the flag and re-arm normal cache updates.
         self._activation_settled: bool = False
+        # Refresh cycles left to wait for the tab strip to mount before the
+        # initial activation gives up (see _activate_initial_tab).
+        self._activation_retries: int = _TAB_ACTIVATION_RETRY_BUDGET
         # Per-tab source mode (local / cloud / both). Defaults to LOCAL on
         # every task tab so the catalog opens on the same row set the
         # mega-grid era surfaced; users opt into cloud-mixed views via `c`.
@@ -337,6 +346,22 @@ class CatalogScreen(Screen[None]):
         widget = self.query_one(f"#{_LIST_ID_PREFIX}{target}", ModelList)
         self._tab_list_cache[target] = widget
         return widget
+
+    def _grid_mounted(self) -> bool:
+        """Whether the active tab's grid container exists to paint into."""
+        try:
+            self._grid_for_tab(self._active_tab_id_cache)
+        except NoMatches:
+            return False
+        return True
+
+    def _list_mounted(self) -> bool:
+        """Whether the active tab's list widget exists to paint into."""
+        try:
+            self._list_for_tab(self._active_tab_id_cache)
+        except NoMatches:
+            return False
+        return True
 
     @property
     def _grid_container(self) -> VerticalScroll:
@@ -434,13 +459,24 @@ class CatalogScreen(Screen[None]):
         except Exception:
             self._activation_settled = True
             return
+        target: str | None
         if self._focus_task is not None:
             # On-ramp: land directly on the requested task tab.
             self._active_tab_id_cache = self._focus_task
-            if tabs.active != self._focus_task:
-                tabs.active = self._focus_task
-        elif self._active_tab_id_cache == TAB_CHAT and tabs.active != TAB_CHAT:
-            tabs.active = TAB_CHAT
+            target = self._focus_task
+        else:
+            target = TAB_CHAT if self._active_tab_id_cache == TAB_CHAT else None
+        if target is not None and tabs.active != target:
+            try:
+                tabs.active = target
+            except ValueError:
+                # The strip's Tab children mount a frame after construction; on
+                # a slow host this refresh callback can still beat them and the
+                # setter raises "No Tab with id". Wait out the next refresh.
+                if self._activation_retries > 0:
+                    self._activation_retries -= 1
+                    self.call_after_refresh(self._activate_initial_tab)
+                    return
         if not self._activation_settled:
             self._activation_settled = True
         self.call_after_refresh(self._refresh_grid)
@@ -797,8 +833,6 @@ class CatalogScreen(Screen[None]):
         # A fast worker can complete before TabbedContent finishes mounting
         # its panes; tolerate that and let the deferred _refresh_grid that
         # _activate_initial_tab schedules rebuild against the applied state.
-        from textual.css.query import NoMatches
-
         with contextlib.suppress(NoMatches):
             # FETCH_MORE_HF appends to the active view's tail; skip the full
             # _refresh_view rebuild so scroll position and focus are preserved.
@@ -1128,7 +1162,14 @@ class CatalogScreen(Screen[None]):
         update each existing ModelGrid via set_rows rather than tearing
         the container down and re-mounting from scratch. Avoids a 100%
         CPU spike on every "Browse more" return.
+
+        A scheduled refresh can fire while the screen is composing or being
+        dismissed, when the tab containers aren't mounted; there is nothing
+        to paint then, and the guard runs before the row-cache update so the
+        next mounted refresh still repaints.
         """
+        if not self._grid_mounted():
+            return
         prep = self._prepare_grid_refresh()
         if prep is None:
             self._update_sort_label()
@@ -1566,6 +1607,8 @@ class CatalogScreen(Screen[None]):
 
     def _refresh_list(self) -> None:
         """Rebuild the list view for the active tab; per-tab cache key skips no-op rebuilds."""
+        if not self._list_mounted():
+            return
         active_tab = self._active_tab_id_cache
         all_rows = self._sort_rows(self._build_rows())
         if active_tab in TASK_TAB_IDS:
@@ -1670,8 +1713,6 @@ class CatalogScreen(Screen[None]):
         new screen's ``compose`` has finished mounting ``#sort-label``.
         On Windows that race lands often enough to fail CI.
         """
-        from textual.css.query import NoMatches
-
         try:
             label = self.query_one("#sort-label", Static)
         except NoMatches:
@@ -2218,8 +2259,6 @@ class CatalogScreen(Screen[None]):
 
     def _first_grid_or_none(self) -> ModelGrid | None:
         """Return the first ModelGrid in the active tab's container, or None."""
-        from textual.css.query import NoMatches
-
         try:
             return self._grid_container.query(ModelGrid).first()
         except NoMatches:

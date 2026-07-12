@@ -1931,3 +1931,35 @@ def test_chat_stream_items_closes_unterminated_reasoning() -> None:
     items = list(c.chat_stream_items([{"role": "user", "content": "q"}]))
     text = "".join(i for i in items if isinstance(i, str))
     assert text == "<think>endless</think>"
+
+
+def test_stream_tracks_the_live_response_until_drained() -> None:
+    """The SSE response is registered while iterating and dropped when done."""
+    client = _client()
+    tokens = client.chat([{"role": "user", "content": "hi"}], stream=True)
+    assert next(tokens) == "He"
+    assert len(client._active_streams) == 1
+    assert "".join(tokens) == "llo"
+    assert client._active_streams == set()
+
+
+def test_abort_streams_closes_registered_responses() -> None:
+    from unittest.mock import MagicMock
+
+    client = _client()
+    resp = MagicMock()
+    client._active_streams.add(resp)
+    client.abort_streams()
+    resp.close.assert_called_once_with()
+
+
+def test_abort_streams_survives_close_errors() -> None:
+    """A response that fails to close must not break the sweep."""
+    from unittest.mock import MagicMock
+
+    client = _client()
+    failing, healthy = MagicMock(), MagicMock()
+    failing.close.side_effect = RuntimeError("already closed")
+    client._active_streams.update({failing, healthy})
+    client.abort_streams()  # must not raise
+    healthy.close.assert_called_once_with()

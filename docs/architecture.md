@@ -305,7 +305,12 @@ flowchart LR
   whichever GPU is fullest, not on the summed total. The estimate also carries the
   same `--batch-size`/`--ubatch-size` the launch will use (pooled embed/rerank raise
   them to the full context), so the compute-buffer estimate matches what the server
-  actually allocates. This replaced a hand-rolled
+  actually allocates. For a vision model the discrete-GPU number is corrected on
+  lilbee's side: gguf-parser's `nonuma` merge charges any multimodal projector
+  roughly 10 GiB of phantom compute buffer (a 1.2 GiB OCR model plus its 0.9 GiB
+  projector came back as 12.7 GiB), so the projector is instead charged at its
+  unified-memory delta, floored at the projector's own weights. This replaced a
+  hand-rolled
   weights + KV-cache estimate that used discrete-GPU accounting and over-estimated
   ~3x on unified memory, which was crowding the co-resident embed/rerank servers out
   of the budget and 503-ing every search.
@@ -451,8 +456,13 @@ touching the running fleet.
   `swap: true` group evicts same-group siblings, so a second replica inside it would
   evict the first). Interleaving a query with an ingest costs a model reload each
   way. With the VRAM to hold everything at once, no swap group forms and every role
-  pins to its own group. A role is unplaceable only when it does not fit even beside
-  the one embedder its own phase needs (a genuine "use a smaller model").
+  pins to its own group. On GPUs the estimate advises but never refuses: a role that
+  does not fit even beside the one embedder its own phase needs is still **placed
+  tight** (best-effort) on the emptiest card, anchoring the swap group so the load
+  starts against as much free VRAM as possible, with a memory-is-tight warning
+  carrying the estimated shortfall. The in-process pool never gated a load on an
+  estimate, and the load itself is the only reliable arbiter (the estimate can be
+  high, and some drivers page into shared memory rather than fail).
 - **Data-parallel replicas** (`embed_replicas` / `vision_replicas`): the embed and
   vision roles can run as N independent servers, fanning embedding and OCR across
   the box during ingest. Setting either value to `0` (the default) means auto: one

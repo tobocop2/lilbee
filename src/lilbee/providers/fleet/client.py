@@ -410,6 +410,10 @@ class LlamaServerClient:
         self._rerank_mode = rerank_mode
         self.in_flight = 0
         self._in_flight_lock = threading.Lock()
+        # Live SSE responses, so a cancel can sever the transport from another
+        # thread: a reader blocked in iter_lines cannot see a cooperative
+        # cancel flag, but closing its response unblocks it with an error.
+        self._active_streams: set[httpx.Response] = set()
         # Whether this server's chat template needs OpenAI tool exchanges reshaped
         # into strict user/assistant alternation. Determined lazily by a one-time
         # probe of the live template (see _prepare_chat_messages); None until then.
@@ -520,10 +524,11 @@ class LlamaServerClient:
             ) as resp,
         ):
             _raise_for_status(resp)
-            for line in resp.iter_lines():
-                delta = inliner.feed(*_parse_sse_deltas(line))
-                if delta:
-                    yield delta
+            with self._abortable(resp):
+                for line in resp.iter_lines():
+                    delta = inliner.feed(*_parse_sse_deltas(line))
+                    if delta:
+                        yield delta
             tail = inliner.finish()
             if tail:
                 yield tail
@@ -688,8 +693,9 @@ class LlamaServerClient:
             self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
         ):
             _raise_for_status(resp)
-            for line in resp.iter_lines():
-                yield from _parse_sse_stream_items(line, inliner)
+            with self._abortable(resp):
+                for line in resp.iter_lines():
+                    yield from _parse_sse_stream_items(line, inliner)
             tail = inliner.finish()
             if tail:
                 yield tail
@@ -977,6 +983,30 @@ class LlamaServerClient:
     def count_tokens(self, text: str) -> int:
         """Exact token count from this server's tokenizer (embed/rerank servers)."""
         return len(self._tokenize(text))
+
+    @contextlib.contextmanager
+    def _abortable(self, resp: httpx.Response) -> Generator[None]:
+        """Expose *resp* to ``abort_streams`` for the duration of its read loop."""
+        with self._in_flight_lock:
+            self._active_streams.add(resp)
+        try:
+            yield
+        finally:
+            with self._in_flight_lock:
+                self._active_streams.discard(resp)
+
+    def abort_streams(self) -> None:
+        """Sever every in-flight SSE response on this replica.
+
+        Closing the response from another thread unblocks a reader stuck in
+        ``iter_lines`` with a stream error, which unwinds its worker;
+        llama-server stops generating when the connection drops.
+        """
+        with self._in_flight_lock:
+            streams = list(self._active_streams)
+        for resp in streams:
+            with contextlib.suppress(Exception):
+                resp.close()
 
     def close(self) -> None:
         """Close the underlying client if this instance created it."""

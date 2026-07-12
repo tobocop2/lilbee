@@ -430,9 +430,9 @@ class LLMProvider(Protocol):
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. No-op default.
 
-        The fleet engine stops a llama-server mid-generation by client
-        disconnect (the caller closes the active stream), so there is no abort
-        flag to flip; SDK and routing wrappers have nothing to interrupt here.
+        The fleet engine severs its live chat streams (llama-server stops
+        generating when the connection drops); the SDK wrapper has nothing to
+        interrupt here.
         """
         return
 

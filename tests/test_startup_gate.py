@@ -66,12 +66,12 @@ def _gate_stylesheet() -> str:
     ).read_text()
 
 
-def test_gate_colours_match_the_shared_amber_palette():
+def test_gate_colours_match_the_shared_rose_palette():
     """Every hex in the stylesheet must be an xterm index from runtime/bee_logo."""
-    from lilbee.runtime.bee_logo import AMBER_BRIGHT_XTERM, AMBER_DIM_XTERM, AMBER_MID_XTERM
+    from lilbee.runtime.bee_logo import ROSE_BRIGHT_XTERM, ROSE_DIM_XTERM, ROSE_MID_XTERM
 
     stylesheet = _gate_stylesheet()
-    for index in (AMBER_BRIGHT_XTERM, AMBER_MID_XTERM, AMBER_DIM_XTERM):
+    for index in (ROSE_BRIGHT_XTERM, ROSE_MID_XTERM, ROSE_DIM_XTERM):
         assert _xterm_to_hex(index) in stylesheet, f"xterm {index} missing from the gate CSS"
 
 
@@ -79,9 +79,9 @@ def test_gate_stylesheet_has_no_colour_outside_the_palette():
     """A hand-picked hex would drift from the bootstrap and the splash."""
     import re
 
-    from lilbee.runtime.bee_logo import AMBER_BRIGHT_XTERM, AMBER_DIM_XTERM, AMBER_MID_XTERM
+    from lilbee.runtime.bee_logo import ROSE_BRIGHT_XTERM, ROSE_DIM_XTERM, ROSE_MID_XTERM
 
-    allowed = {_xterm_to_hex(i) for i in (AMBER_BRIGHT_XTERM, AMBER_MID_XTERM, AMBER_DIM_XTERM)}
+    allowed = {_xterm_to_hex(i) for i in (ROSE_BRIGHT_XTERM, ROSE_MID_XTERM, ROSE_DIM_XTERM)}
     found = set(re.findall(r"#[0-9a-fA-F]{6}", _gate_stylesheet()))
     assert found <= allowed, f"colours outside the palette: {sorted(found - allowed)}"
 
@@ -281,7 +281,7 @@ async def test_gate_composes_and_styles_its_widgets(monkeypatch):
 
     from lilbee.cli.tui.screens import startup_gate as gate_mod
     from lilbee.cli.tui.screens.startup_gate import StartupGate
-    from lilbee.runtime.bee_logo import AMBER_BRIGHT_XTERM
+    from lilbee.runtime.bee_logo import ROSE_BRIGHT_XTERM
 
     monkeypatch.setattr(StartupGate, "start_boot", lambda self: None)
 
@@ -304,7 +304,7 @@ async def test_gate_composes_and_styles_its_widgets(monkeypatch):
 
         assert bar.show_percentage is False  # the build has no byte signal to fake
         assert msg.STARTUP_PREPARING in str(status.render())
-        assert logo.styles.color.hex.lower() == _xterm_to_hex(AMBER_BRIGHT_XTERM)
+        assert logo.styles.color.hex.lower() == _xterm_to_hex(ROSE_BRIGHT_XTERM)
         assert gate_mod._LOGO.splitlines()[1].strip().startswith("@@@")
 
 
