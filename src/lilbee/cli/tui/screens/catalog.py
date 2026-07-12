@@ -127,6 +127,11 @@ _LIST_ID_PREFIX = "list-"
 # Toggles the filter Input between revealed and `display: none` (catalog.tcss).
 _HIDDEN_CLASS = "-hidden"
 
+# Refresh cycles the initial tab activation waits for the tab strip's children
+# to mount before giving up (they mount a frame after construction; a slow host
+# can take several).
+_TAB_ACTIVATION_RETRY_BUDGET = 20
+
 _SORT_CYCLE: tuple[str, ...] = ("Name", "Downloads", "Size", "Params")
 
 # Braille spinner frames for the catalog pagination/search loading
@@ -302,6 +307,9 @@ class CatalogScreen(Screen[None]):
         # __init__ default through the race; user-driven tab switches after
         # mount flip the flag and re-arm normal cache updates.
         self._activation_settled: bool = False
+        # Refresh cycles left to wait for the tab strip to mount before the
+        # initial activation gives up (see _activate_initial_tab).
+        self._activation_retries: int = _TAB_ACTIVATION_RETRY_BUDGET
         # Per-tab source mode (local / cloud / both). Defaults to LOCAL on
         # every task tab so the catalog opens on the same row set the
         # mega-grid era surfaced; users opt into cloud-mixed views via `c`.
@@ -454,10 +462,20 @@ class CatalogScreen(Screen[None]):
         if self._focus_task is not None:
             # On-ramp: land directly on the requested task tab.
             self._active_tab_id_cache = self._focus_task
-            if tabs.active != self._focus_task:
-                tabs.active = self._focus_task
-        elif self._active_tab_id_cache == TAB_CHAT and tabs.active != TAB_CHAT:
-            tabs.active = TAB_CHAT
+            target = self._focus_task
+        else:
+            target = TAB_CHAT if self._active_tab_id_cache == TAB_CHAT else None
+        if target is not None and tabs.active != target:
+            try:
+                tabs.active = target
+            except ValueError:
+                # The strip's Tab children mount a frame after construction; on
+                # a slow host this refresh callback can still beat them and the
+                # setter raises "No Tab with id". Wait out the next refresh.
+                if self._activation_retries > 0:
+                    self._activation_retries -= 1
+                    self.call_after_refresh(self._activate_initial_tab)
+                    return
         if not self._activation_settled:
             self._activation_settled = True
         self.call_after_refresh(self._refresh_grid)
