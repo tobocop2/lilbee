@@ -361,6 +361,50 @@ class TestChatScreenAsync:
                 mock_send.assert_not_called()
 
 
+class TestStatusStorageEntities:
+    def test_storage_panel_shows_entities_when_enabled(self):
+        from lilbee.app.status import EntityStatus
+        from lilbee.cli.tui.screens.status import _build_storage_content
+        from lilbee.core.config import cfg
+
+        old_flag = cfg.entity_extraction
+        cfg.entity_extraction = True
+        try:
+            with mock.patch(
+                "lilbee.app.status.entity_status",
+                return_value=EntityStatus(types=["part_number"], rows=4),
+            ):
+                content = _build_storage_content(doc_count=1)
+        finally:
+            cfg.entity_extraction = old_flag
+        assert "4 extracted (part_number)" in content.plain
+
+    def test_storage_panel_omits_entities_when_off(self):
+        from lilbee.cli.tui.screens.status import _build_storage_content
+        from lilbee.core.config import cfg
+
+        old_flag = cfg.entity_extraction
+        cfg.entity_extraction = False
+        try:
+            content = _build_storage_content(doc_count=1)
+        finally:
+            cfg.entity_extraction = old_flag
+        assert "extracted" not in content.plain
+
+
+class TestCatalogRefreshGuards:
+    def test_unmounted_refreshes_are_noops(self):
+        """A scheduled refresh landing while the screen is composing or being
+        dismissed has no containers to paint into and must not crash."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen()
+        screen._refresh_grid()
+        screen._refresh_list()
+        assert not screen._grid_mounted()
+        assert not screen._list_mounted()
+
+
 class TestCatalogScreenAsync:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_shows_featured(self, mock_catalog: mock.MagicMock) -> None:
@@ -388,9 +432,19 @@ class TestCatalogScreenAsync:
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
-            await pilot.pause()
+            # Fixed single pauses race a loaded xdist worker: the key must not
+            # fire before the catalog is the active screen, and the dismissal
+            # needs time to process. Bounded condition loops on both sides.
+            for _ in range(40):
+                if app.screen is catalog:
+                    break
+                await pilot.pause(0.05)
+            assert app.screen is catalog
             await pilot.press("q")
-            await pilot.pause()
+            for _ in range(40):
+                if not isinstance(app.screen, CatalogScreen):
+                    break
+                await pilot.pause(0.05)
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
 
