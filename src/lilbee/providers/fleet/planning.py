@@ -24,7 +24,6 @@ from lilbee.providers.fleet.adapters import (
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
-from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.fleet.devices import (
     FleetDevice,
     host_lacks_nvlink,
@@ -44,6 +43,7 @@ from lilbee.providers.fleet.placement import (
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
