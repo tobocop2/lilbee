@@ -385,13 +385,16 @@ def test_server_model_inputs_skips_sdk_routed_roles(monkeypatch, caplog) -> None
         planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
     )
     monkeypatch.setattr(cfg, "chat_model", "gemini/gemini-2.0-flash")
+    monkeypatch.setattr(cfg, "reranker_model", "ollama/bge-reranker")
     monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
     with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
         _inputs, refs, _res, skipped = planning_mod._server_model_inputs(
-            (WorkerRole.CHAT, WorkerRole.EMBED)
+            (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
         )
     assert WorkerRole.CHAT not in refs
     assert WorkerRole.CHAT not in skipped
+    assert WorkerRole.RERANK not in refs  # ollama-managed server, not the fleet's
+    assert WorkerRole.RERANK not in skipped
     assert WorkerRole.EMBED in refs
     assert "is not installed" not in caplog.text
 
