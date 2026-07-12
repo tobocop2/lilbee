@@ -10,10 +10,10 @@ import pytest
 
 
 def test_apply_color_non_empty():
-    from lilbee.runtime._splash_runner import AMBER_BRIGHT, RESET, apply_color
+    from lilbee.runtime._splash_runner import RESET, ROSE_BRIGHT, apply_color
 
-    result = apply_color("hello", AMBER_BRIGHT)
-    assert result == AMBER_BRIGHT + "hello" + RESET
+    result = apply_color("hello", ROSE_BRIGHT)
+    assert result == ROSE_BRIGHT + "hello" + RESET
 
 
 def test_apply_color_empty_line():

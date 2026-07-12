@@ -200,8 +200,8 @@ class TestLogoFrames:
 
     def test_logo_color_pulsing(self) -> None:
         frames = build_logo_frames()
-        assert "\033[38;5;214m" in frames[0][1]  # bright
-        assert "\033[38;5;94m" in frames[2][1]  # dim
+        assert "\033[38;5;217m" in frames[0][1]  # bright
+        assert "\033[38;5;95m" in frames[2][1]  # dim
 
 
 class TestKnightRiderFrames:

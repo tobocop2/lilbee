@@ -17,9 +17,9 @@ from collections.abc import Callable
 from enum import IntEnum
 
 from lilbee.runtime.bee_logo import (
-    AMBER_BRIGHT_XTERM,
-    AMBER_DIM_XTERM,
-    AMBER_MID_XTERM,
+    ROSE_BRIGHT_XTERM,
+    ROSE_DIM_XTERM,
+    ROSE_MID_XTERM,
     BEE_LINES,
     LOGO_WIDTH,
     xterm_fg,
@@ -30,9 +30,9 @@ SHOW_CURSOR = "\033[?25h"
 CLEAR_LINE = "\033[2K"
 MOVE_UP = "\033[A"
 
-AMBER_BRIGHT = xterm_fg(AMBER_BRIGHT_XTERM)
-AMBER_MID = xterm_fg(AMBER_MID_XTERM)
-AMBER_DIM = xterm_fg(AMBER_DIM_XTERM)
+ROSE_BRIGHT = xterm_fg(ROSE_BRIGHT_XTERM)
+ROSE_MID = xterm_fg(ROSE_MID_XTERM)
+ROSE_DIM = xterm_fg(ROSE_DIM_XTERM)
 RESET = "\033[0m"
 
 FRAME_INTERVAL = 0.15
@@ -61,7 +61,7 @@ class PipeSignal(IntEnum):
     TAKEOVER = 2
 
 
-COLOR_SEQUENCE = [AMBER_BRIGHT, AMBER_MID, AMBER_DIM, AMBER_MID]
+COLOR_SEQUENCE = [ROSE_BRIGHT, ROSE_MID, ROSE_DIM, ROSE_MID]
 
 
 def apply_color(line: str, color: str) -> str:
@@ -89,11 +89,11 @@ def build_knight_rider_frames() -> list[str]:
         for i in range(LOGO_WIDTH):
             dist = abs(i - head_pos)
             if dist == 0:
-                bar += AMBER_BRIGHT + "\u2593" + RESET
+                bar += ROSE_BRIGHT + "\u2593" + RESET
             elif dist == _BAR_FALLOFF_DENSE:
-                bar += AMBER_DIM + "\u2592" + RESET
+                bar += ROSE_DIM + "\u2592" + RESET
             elif dist == _BAR_FALLOFF_LIGHT:
-                bar += AMBER_DIM + "\u2591" + RESET
+                bar += ROSE_DIM + "\u2591" + RESET
             else:
                 bar += " "
         frames.append(bar)
