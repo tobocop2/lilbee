@@ -459,6 +459,7 @@ class CatalogScreen(Screen[None]):
         except Exception:
             self._activation_settled = True
             return
+        target: str | None
         if self._focus_task is not None:
             # On-ramp: land directly on the requested task tab.
             self._active_tab_id_cache = self._focus_task
