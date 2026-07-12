@@ -76,6 +76,20 @@ def _patch_chat_setup():
         yield
 
 
+async def _wait_for_screen(app, pilot, screen_type):
+    """Wait (bounded) for a view transition to land on *screen_type*.
+
+    The view-switch guard deliberately drops a switch while the previous
+    transition is still in flight, so pressing again after one fixed pause
+    races a loaded worker; each press must wait for its transition.
+    """
+    for _ in range(40):
+        if isinstance(app.screen, screen_type):
+            return
+        await pilot.pause(0.05)
+    raise AssertionError(f"Expected {screen_type.__name__}, got {type(app.screen).__name__}")
+
+
 async def test_bracket_keys_cycle_all_screens():
     """Press ] through all 6 views from normal mode (Escape first on Chat)."""
     app = LilbeeApp()
@@ -98,14 +112,7 @@ async def test_bracket_keys_cycle_all_screens():
         ]
         for screen_type in expected:
             await pilot.press("right_square_bracket")
-            # Switches are deferred behind the view-switch guard; poll them in.
-            for _ in range(40):
-                await pilot.pause()
-                if isinstance(app.screen, screen_type):
-                    break
-            assert isinstance(app.screen, screen_type), (
-                f"Expected {screen_type.__name__}, got {type(app.screen).__name__}"
-            )
+            await _wait_for_screen(app, pilot, screen_type)
 
 
 async def test_view_switch_guard_held_until_transition_completes():
@@ -171,12 +178,10 @@ async def test_bracket_keys_cycle_backward():
         await pilot.pause()
 
         await pilot.press("left_square_bracket")
-        await pilot.pause()
-        assert isinstance(app.screen, FleetScreen)
+        await _wait_for_screen(app, pilot, FleetScreen)
 
         await pilot.press("left_square_bracket")
-        await pilot.pause()
-        assert isinstance(app.screen, TaskCenter)
+        await _wait_for_screen(app, pilot, TaskCenter)
 
 
 async def test_bracket_keys_work_from_settings():

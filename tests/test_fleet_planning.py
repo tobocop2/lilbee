@@ -1742,3 +1742,144 @@ class TestPlacementFindingsLog:
             planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
         assert "0.0 GiB" not in caplog.text
         assert "0.1 GiB" in caplog.text
+
+
+class TestSizingFailureFallsBackToFileSize:
+    """A model the estimator cannot size is enrolled at its weight bytes, so the
+    load, not the estimator, decides. Weight bytes are also a physics bound:
+    weights alone exceeding total VRAM refuses with a clear message."""
+
+    @pytest.fixture
+    def _sizing_boom(self, tmp_path, monkeypatch):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        model = tmp_path / "unsizable.gguf"
+        model.write_bytes(b"G" * 4096)
+
+        def boom(role, ref, **_k):
+            if role is WorkerRole.CHAT:
+                raise ProviderError(
+                    "unexpected estimator output",
+                    provider="llama-server",
+                    kind=ProviderErrorKind.SERVER,
+                )
+            return ModelPlacementInput(role, 512)
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", boom)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/unsizable.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        return model
+
+    def test_unsizable_model_enrolls_at_its_file_size(self, _sizing_boom, caplog) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=24 * _GB)
+        by_role = {i.role: i for i in inputs}
+        assert by_role[WorkerRole.CHAT].est_vram_bytes == 4096
+        assert "Using its file size" in caplog.text
+
+    def test_weights_beyond_total_vram_refuse_with_a_clear_message(
+        self, _sizing_boom, caplog
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=1024)
+        assert WorkerRole.CHAT not in {i.role for i in inputs}
+        assert "weights alone" in caplog.text
+
+    def test_weights_bound_stands_down_under_partial_offload(
+        self, _sizing_boom, monkeypatch, caplog
+    ) -> None:
+        import logging
+
+        monkeypatch.setattr(cfg, "n_gpu_layers", 10)
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=1024)
+        assert WorkerRole.CHAT in {i.role for i in inputs}
+        assert "weights alone" not in caplog.text
+
+    def test_unresolvable_file_still_skips(self, tmp_path, monkeypatch, caplog) -> None:
+        import logging
+
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def boom(role, ref, **_k):
+            raise ProviderError(
+                "unexpected estimator output",
+                provider="llama-server",
+                kind=ProviderErrorKind.SERVER,
+            )
+
+        def no_path(_r):
+            raise ProviderError(
+                "no file", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+            )
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", boom)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", no_path)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/ghost.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs()
+        assert inputs == []
+        assert "could not size" in caplog.text
+
+    def test_unsizable_vision_model_counts_its_mmproj(self, tmp_path, monkeypatch, caplog) -> None:
+        import logging
+
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        model = tmp_path / "vl.gguf"
+        model.write_bytes(b"G" * 4096)
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"G" * 1024)
+
+        def boom(role, ref, **_k):
+            if role is WorkerRole.VISION:
+                raise ProviderError(
+                    "unexpected estimator output",
+                    provider="llama-server",
+                    kind=ProviderErrorKind.SERVER,
+                )
+            return ModelPlacementInput(role, 512)
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", boom)
+        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/vl.gguf")
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=24 * _GB)
+        by_role = {i.role: i for i in inputs}
+        assert by_role[WorkerRole.VISION].est_vram_bytes == 4096 + 1024
+
+    def test_fit_slots_returns_single_slot_when_estimator_fails(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def boom(*_a, **_k):
+            raise ProviderError(
+                "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
+            )
+
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", boom)
+        slots = planning_mod._fit_slots(
+            4,
+            WorkerRole.CHAT,
+            tmp_path / "m.gguf",
+            2048,
+            mmproj_path=None,
+            unified=False,
+            budget=8 * _GB,
+        )
+        assert slots == 1
