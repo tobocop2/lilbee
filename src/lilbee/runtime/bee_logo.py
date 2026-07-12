@@ -22,9 +22,9 @@ LOGO_WIDTH = len(BEE_LINES[1])
 # xterm-256 indexes. The logo warms from dim to bright as startup advances:
 # dim while the bootstrap unpacks, pulsing while Python imports, bright once
 # the engine is warm.
-AMBER_DIM_XTERM = 94
-AMBER_MID_XTERM = 172
-AMBER_BRIGHT_XTERM = 214
+ROSE_DIM_XTERM = 95
+ROSE_MID_XTERM = 181
+ROSE_BRIGHT_XTERM = 217
 
 
 def xterm_fg(index: int) -> str:

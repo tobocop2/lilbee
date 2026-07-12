@@ -447,3 +447,32 @@ async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
             await pilot.pause()
             assert isinstance(app.screen, ConfirmDialog)
             mock_apply.assert_not_called()
+
+
+async def test_picker_enter_selects_first_row_and_arrows_reach_the_list() -> None:
+    """Open -> arrows -> Enter works from the auto-focused search input."""
+    from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+    from lilbee.cli.tui.widgets.model_list import ModelList
+
+    app = LilbeeAppHost()
+    async with app.run_test(size=(90, 30)) as pilot:
+        picked: list[str | None] = []
+        modal = ModelPickerModal(
+            scope="chat",
+            options=[
+                ModelOption(label="model-a", ref="hf:org/a"),
+                ModelOption(label="model-b", ref="hf:org/b"),
+            ],
+        )
+        app.push_screen(modal, picked.append)
+        await pilot.pause()
+        ml = modal.query_one("#picker-list", ModelList)
+        assert ml.highlighted == 0  # default highlight: Enter is never a no-op
+        await pilot.press("down")
+        assert ml.highlighted == 1
+        await pilot.press("up")
+        assert ml.highlighted == 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert picked == ["hf:org/a"]

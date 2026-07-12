@@ -8,36 +8,36 @@ StartupGate {
     align: center middle;
 }
 
-/* Bright amber, xterm-256 index 214 (AMBER_BRIGHT_XTERM in runtime/bee_logo.py).
-   The wordmark warms from the bootstrap's dim amber to this once the TUI owns
-   the screen. tests/test_startup_gate.py pins the two together. */
+/* Bright rose, xterm-256 index 217 (ROSE_BRIGHT_XTERM in runtime/bee_logo.py),
+   the 256-color match for the site's rose-pine accent. The wordmark bleeds from
+   the bootstrap's dim rose to this once the TUI owns the screen.
+   tests/test_startup_gate.py pins the two together. */
 #gate-logo {
     width: auto;
-    color: #ffaf00;
+    color: #ffafaf;
     text-style: bold;
 }
 
-/* The bar carries the same amber ramp as the bootstrap's blocks: a bright fill,
-   a mid-amber sweep while indeterminate, and a dim-amber trough. Every hex is the
-   xterm index in runtime/bee_logo.py; tests/test_startup_gate.py pins them.
-   Textual's default accent is the theme's pink, which fights the wordmark. */
+/* The bar carries the same rose ramp as the bootstrap's blocks: a bright fill,
+   a mid-rose sweep while indeterminate, and a dim-rose trough. Every hex is the
+   xterm index in runtime/bee_logo.py; tests/test_startup_gate.py pins them. */
 #gate-bar {
     width: 55;
     margin: 1 0 0 0;
 }
 
 #gate-bar Bar > .bar--bar {
-    color: #ffaf00;
-    background: #875f00;
+    color: #ffafaf;
+    background: #875f5f;
 }
 
 #gate-bar Bar > .bar--indeterminate {
-    color: #d78700;
-    background: #875f00;
+    color: #d7afaf;
+    background: #875f5f;
 }
 
 #gate-bar PercentageStatus {
-    color: #d78700;
+    color: #d7afaf;
 }
 
 #gate-status {

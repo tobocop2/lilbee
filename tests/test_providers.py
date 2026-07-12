@@ -3774,3 +3774,42 @@ def test_gguf_scalar_str_array_field_returns_none() -> None:
     # An ARRAY-typed scalar field is not renderable as a single value.
     field = SimpleNamespace(types=[GGUFValueType.ARRAY], data=[0], parts=[b"x"])
     assert gguf_scalar_str(field) is None
+
+
+class TestRoutingRoleReadyRemote:
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "gemini/gemini-2.0-flash",  # cloud API
+            "ollama/llama3.2:1b",  # local server managed by Ollama, not the fleet
+            "lm_studio/qwen2.5-7b-instruct",  # local server managed by LM Studio
+        ],
+    )
+    def test_role_ready_true_for_sdk_routed_role_regardless_of_fleet(self, ref: str) -> None:
+        """An SDK-routed chat model needs no local server, so the fleet's
+        readiness must not gate it into an engine error. Covers cloud APIs
+        and the external local servers (Ollama, LM Studio) alike."""
+        from lilbee.core.config import cfg
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        local.role_ready.return_value = False
+        rp._local = local
+        cfg.chat_model = ref
+        assert rp.role_ready(WorkerRole.CHAT) is True
+        local.role_ready.assert_not_called()
+
+    def test_role_ready_still_forwards_for_native_ref(self) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.providers.roles import WorkerRole
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        rp = RoutingProvider()
+        local = mock.MagicMock()
+        local.role_ready.return_value = False
+        rp._local = local
+        cfg.chat_model = "org/repo/chat-Q4_K_M.gguf"
+        assert rp.role_ready(WorkerRole.CHAT) is False
+        local.role_ready.assert_called_once_with(WorkerRole.CHAT)
