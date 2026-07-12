@@ -43,6 +43,7 @@ from lilbee.providers.fleet.placement import (
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION, estimate_instance_footprint
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
@@ -760,6 +761,8 @@ def _server_model_inputs(
         ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
         if not ref:
             return  # unconfigured optional role -> no server
+        if parse_model_ref(ref).is_remote:
+            return  # SDK-routed role: no local server to plan, not a missing install
         if _vision_without_mmproj(role, ref):
             return  # no projector -> vision can't run on a server
         estimate = _estimate_or_fallback(

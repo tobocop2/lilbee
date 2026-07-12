@@ -88,6 +88,30 @@ async def test_await_engine_returns_at_once_when_ready(_warming_services):
             assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
         waited.assert_not_called()
         widget.set_thinking_status.assert_not_called()
+        _warming_services.provider.warm_up_pool.assert_not_called()
+
+
+async def test_await_engine_kicks_a_rewarm_when_not_ready(_warming_services):
+    """A prompt into a dead engine restarts the warm instead of bouncing.
+
+    warm_up_pool is idempotent, so this is a no-op while a healthy warm is in
+    flight and a fresh engine start after a failed boot warm-up.
+    """
+    app = _ChatHost()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        widget = mock.MagicMock()
+        with (
+            mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
+            mock.patch("lilbee.app.placement.wait_chat_ready", return_value=True),
+            mock.patch(
+                "lilbee.cli.tui.screens.chat._get_worker",
+                return_value=mock.MagicMock(is_cancelled=False),
+            ),
+        ):
+            assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
+        _warming_services.provider.warm_up_pool.assert_called_once_with()
 
 
 async def test_await_engine_paints_progress_then_proceeds(_warming_services):

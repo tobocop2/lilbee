@@ -84,6 +84,28 @@ class TestSplashE2ENonTTY:
 class TestSplashSubprocessLifecycle:
     """Tests that the splash subprocess starts and stops reliably."""
 
+    def test_runner_takeover_emits_no_cursor_show(self) -> None:
+        """A real runner subprocess dismissed via takeover never writes cursor-show."""
+        import time
+
+        from lilbee.runtime._splash_runner import TAKEOVER_BYTE
+
+        read_fd, write_fd = os.pipe()
+        os.set_inheritable(read_fd, True)
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "lilbee.runtime._splash_runner", str(read_fd)],
+            pass_fds=(read_fd,),
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+        os.close(read_fd)
+        time.sleep(0.3)  # let it start animating
+        os.write(write_fd, TAKEOVER_BYTE)
+        os.close(write_fd)
+        _, err = proc.communicate(timeout=10)
+        assert b"\033[?25h" not in err
+
     @patch("lilbee.runtime.splash._should_skip", return_value=False)
     def test_start_stop_no_orphan(self, _mock_skip: object) -> None:
         """Starting and stopping should leave no orphan process."""
