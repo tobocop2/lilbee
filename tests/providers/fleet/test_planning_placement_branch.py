@@ -60,7 +60,9 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
     monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda: None)
     monkeypatch.setattr(planning, "resolve_devices", counting)
     monkeypatch.setattr(
-        planning, "_server_model_inputs", lambda roles, *, unified_budget=None: ([], {}, 0, {})
+        planning,
+        "_server_model_inputs",
+        lambda roles, *, unified_budget=None, total_vram=0: ([], {}, 0, {}),
     )
     monkeypatch.setattr(
         planning,
