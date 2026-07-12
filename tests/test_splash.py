@@ -111,6 +111,24 @@ class TestDismiss:
         finally:
             splash_mod._active_handle = original
 
+    def test_dismiss_sends_takeover_byte_before_closing(self) -> None:
+        """dismiss() tells the child the TUI owns the terminal, then EOFs."""
+        from lilbee.runtime._splash_runner import TAKEOVER_BYTE
+
+        read_fd, write_fd = os.pipe()
+        os.environ[_SPLASH_FD_ENV] = str(write_fd)
+        import lilbee.runtime.splash as splash_mod
+
+        original = splash_mod._active_handle
+        splash_mod._active_handle = None
+        try:
+            dismiss()
+            assert os.read(read_fd, 2) == TAKEOVER_BYTE
+            assert os.read(read_fd, 1) == b""  # write end closed after the byte
+        finally:
+            os.close(read_fd)
+            splash_mod._active_handle = original
+
     def test_dismiss_tolerates_already_closed_fd(self) -> None:
         read_fd, write_fd = os.pipe()
         os.close(read_fd)
