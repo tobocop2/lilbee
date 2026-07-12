@@ -24,6 +24,7 @@ from lilbee.providers.fleet.adapters import (
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
+from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.fleet.devices import (
     FleetDevice,
     host_lacks_nvlink,
@@ -623,6 +624,8 @@ def _server_model_inputs(
         ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
         if not ref:
             return  # unconfigured optional role -> no server
+        if parse_model_ref(ref).is_remote:
+            return  # SDK-routed role: no local server to plan, not a missing install
         if role is WorkerRole.VISION and _vision_mmproj(ref) is None:
             # A configured vision model with no mmproj is skipped, which silently
             # disables OCR; warn so the cause (a missing projector, fixed by

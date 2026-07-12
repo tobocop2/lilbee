@@ -372,6 +372,30 @@ def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
     assert set(refs) == {WorkerRole.EMBED}
 
 
+def test_server_model_inputs_skips_sdk_routed_roles(monkeypatch, caplog) -> None:
+    """A remote-ref role gets no local server plan and no misleading warning.
+
+    Regression: a cloud chat model (API key set) was fed to the local planner,
+    which warned 'is not installed' and left chat unplaced, so the chat surface
+    reported an engine error for a model that never needed the engine.
+    """
+    import logging
+
+    monkeypatch.setattr(
+        planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
+    )
+    monkeypatch.setattr(cfg, "chat_model", "gemini/gemini-2.0-flash")
+    monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+        _inputs, refs, _res, skipped = planning_mod._server_model_inputs(
+            (WorkerRole.CHAT, WorkerRole.EMBED)
+        )
+    assert WorkerRole.CHAT not in refs
+    assert WorkerRole.CHAT not in skipped
+    assert WorkerRole.EMBED in refs
+    assert "is not installed" not in caplog.text
+
+
 def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypatch) -> None:
     # The blocker fix: on a shared-memory host, chat is sized against the budget
     # minus the embed+rerank footprint so a large chat can never starve search.
