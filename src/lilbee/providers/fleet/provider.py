@@ -46,7 +46,7 @@ from lilbee.providers.fleet.swap_manager import (
 )
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
-from lilbee.providers.warm_progress import WarmProgress, WarmProgressTracker
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress, WarmProgressTracker
 
 log = logging.getLogger(__name__)
 
@@ -1330,10 +1330,18 @@ class FleetProvider:
         Runs on a daemon thread with no caller to catch failures, so a startup
         error is logged and swallowed: a role that can't load surfaces a
         user-facing ProviderError on the next call, not a thread traceback.
+
+        The tracker is stamped STARTING before the fleet spawn so surfaces
+        show the engine coming up from the first moment (spawn plus health
+        check takes seconds and previously reported nothing), and stamped
+        ERROR with the real reason when the warm fails before the chat warm
+        proper begins.
         """
         try:
+            self._warm_tracker.begin(str(cfg.chat_model))
             self._ensure_fleet()
             self._preload_roles()
+            self._clear_warm_if_chat_never_ran()
         except Exception as exc:
             if isinstance(exc, RuntimeError) and sys.is_finalizing():
                 # A fast CLI exit can tear down the interpreter while this daemon
@@ -1348,9 +1356,34 @@ class FleetProvider:
                 # from.
                 log.warning("Engine warm-up failed; roles will load on first use: %s", exc)
                 log.debug("Engine warm-up failure detail.", exc_info=True)
+            self._fail_warm_unless_ready(str(exc))
         finally:
             with self._lock:
                 self._warming = False
+
+    def _fail_warm_unless_ready(self, message: str) -> None:
+        """Stamp the warm tracker ERROR unless the chat warm already finished.
+
+        A failure in a later role's preload must not clobber a chat warm that
+        reached READY; every earlier failure leaves the tracker mid-phase,
+        where surfaces would spin forever and the prompt path could not name
+        the reason.
+        """
+        snapshot = self._warm_tracker.snapshot()
+        if snapshot is None or snapshot.phase is not WarmPhase.READY:
+            self._warm_tracker.fail(message)
+
+    def _clear_warm_if_chat_never_ran(self) -> None:
+        """Drop the early STARTING stamp when no chat role was placed to warm.
+
+        ``_warm_chat_role`` always ends in READY or ERROR when it runs; a
+        snapshot still on STARTING after a successful preload means the plan
+        had no chat instances (model not installed), and leaving it would spin
+        the warm line forever.
+        """
+        snapshot = self._warm_tracker.snapshot()
+        if snapshot is not None and snapshot.phase is WarmPhase.STARTING:
+            self._warm_tracker.clear()
 
     def _preload_roles(self, roles: frozenset[WorkerRole] | None = None) -> None:
         """Issue a cheap request per replica so llama-swap loads each upstream now.

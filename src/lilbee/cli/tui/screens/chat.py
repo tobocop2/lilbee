@@ -1301,7 +1301,12 @@ class ChatScreen(Screen[None]):
         False once the wait was cancelled or the load failed, with any failure
         already rendered into the bubble.
         """
-        from lilbee.app.placement import chat_engine_ready, chat_warm_error, wait_chat_ready
+        from lilbee.app.placement import (
+            chat_engine_ready,
+            chat_warm_error,
+            request_engine_warm,
+            wait_chat_ready,
+        )
 
         # Build the container if nothing holds it (a settings change resets it);
         # readiness is probed via peek_services, which never builds, so without
@@ -1310,6 +1315,9 @@ class ChatScreen(Screen[None]):
         get_services()
         if chat_engine_ready():
             return True
+        # A failed boot warm leaves nothing in flight; this restarts the engine
+        # so the prompt waits out a fresh load instead of bouncing.
+        request_engine_warm()
         self._show_warm_tip_once()
         worker = _get_worker()
 

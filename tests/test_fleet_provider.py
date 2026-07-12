@@ -1369,6 +1369,55 @@ def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) 
     assert warnings and all(r.exc_info is None for r in warnings)
 
 
+def test_warm_up_blocking_stamps_error_with_the_real_reason(monkeypatch) -> None:
+    """A warm that dies before the chat warm begins still surfaces its reason.
+
+    The prompt path reads this via chat_warm_error(); without the stamp the
+    user got a generic "not ready" bounce with no explanation.
+    """
+    from lilbee.providers.warm_progress import WarmPhase
+
+    def _boom() -> list:
+        raise RuntimeError("engine exited before it was ready")
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _boom)
+    p = FleetProvider()
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert "engine exited before it was ready" in (snap.error or "")
+
+
+def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> None:
+    """The tracker stamps STARTING before the spawn so the task bar shows life
+    during the whole spawn/health window instead of a dead gap."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+    seen: list[WarmPhase] = []
+
+    def _observe_fleet() -> None:
+        snap = p.warm_progress()
+        assert snap is not None
+        seen.append(snap.phase)
+
+    monkeypatch.setattr(p, "_ensure_fleet", _observe_fleet)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    assert seen == [WarmPhase.STARTING]
+
+
+def test_warm_up_blocking_clears_stamp_when_chat_never_warms(monkeypatch) -> None:
+    """No chat instance placed (model not installed): the early STARTING stamp
+    is dropped so the warm line cannot spin forever."""
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    assert p.warm_progress() is None
+
+
 def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
     # A fast CLI exit tears down the interpreter mid-warm; the pool submit then
     # raises RuntimeError. During finalization this must be dropped quietly, not
