@@ -1508,7 +1508,7 @@ class FleetProvider:
                     self._warm_role_clients(role, pools[role])
                 if on_spawned is not None:
                     on_spawned(role)
-            except Exception as exc:  # noqa: BLE001 - every role gets its warm attempt
+            except Exception as exc:
                 first_exc = first_exc or exc
         if first_exc is not None:
             raise first_exc
