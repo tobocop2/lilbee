@@ -116,6 +116,11 @@ class ModelPickerModal(ModalScreen[str | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "dismiss(None)", "Cancel", show=True),
         Binding("slash", "focus_search", "Search", show=True),
+        # Arrow keys reach the list even while the search input has focus, so
+        # open -> arrows -> Enter works without knowing about Tab. When the
+        # list itself is focused its own cursor bindings win.
+        Binding("down", "list_cursor_down", "Next", show=False),
+        Binding("up", "list_cursor_up", "Prev", show=False),
     ]
 
     _SEARCH_DEBOUNCE_SECONDS = 0.08
@@ -145,6 +150,9 @@ class ModelPickerModal(ModalScreen[str | None]):
     def _refresh_list(self, search: str) -> None:
         ml = self.query_one("#picker-list", ModelList)
         ml.set_rows(self._options.to_sections(search))
+        # A default highlight makes Enter select the first match immediately;
+        # without it Enter in the search input silently does nothing.
+        ml.highlighted = 0 if ml.option_count else None
 
     @on(Input.Changed, "#picker-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
@@ -170,3 +178,9 @@ class ModelPickerModal(ModalScreen[str | None]):
 
     def action_focus_search(self) -> None:
         self.query_one("#picker-search", Input).focus()
+
+    def action_list_cursor_down(self) -> None:
+        self.query_one("#picker-list", ModelList).action_cursor_down()
+
+    def action_list_cursor_up(self) -> None:
+        self.query_one("#picker-list", ModelList).action_cursor_up()

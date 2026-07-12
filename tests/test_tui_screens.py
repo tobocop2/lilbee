@@ -13090,3 +13090,35 @@ class TestWikiSafeCoerce:
         assert _safe_int(3) == 3
         assert _safe_int(None) == 0
         assert _safe_int("lots", default=0) == 0
+
+
+async def test_picker_dismiss_returns_focus_to_the_prompt():
+    """Closing the model picker must not park focus on the pill."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen.action_enter_normal_mode()
+        await pilot.pause()
+        pill = screen.query(ModelPickerButton).first()
+        pill._on_picker_dismissed(None)  # Esc/cancel path
+        await pilot.pause()
+        assert screen._insert_mode is True
+        assert app.focused is screen._chat_input
+
+
+async def test_i_returns_to_insert_even_when_the_pill_has_focus():
+    """i/a/o always return to INSERT; only Enter is deferred to the pill."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen.action_enter_normal_mode()
+        await pilot.pause()
+        screen.query(ModelPickerButton).first().focus()
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert screen._insert_mode is True

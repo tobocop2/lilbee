@@ -394,6 +394,14 @@ class ChatScreen(Screen[None]):
         self._chat_input.focus()
         self._update_input_style()
 
+    def focus_prompt(self) -> None:
+        """Return focus to the chat input in INSERT mode.
+
+        Called when a modal (the model picker) closes: the next act is typing
+        a prompt, so focus must not stay parked on the widget that opened it.
+        """
+        self._enter_insert_mode()
+
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
         # Lifecycle interleaves (an installed-but-swapped-away screen during
@@ -427,8 +435,9 @@ class ChatScreen(Screen[None]):
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select / picker button handle Enter / i / a / o itself.
-            if isinstance(self.focused, (Select, ModelPickerButton)):
+            # Let a focused Select / picker button handle Enter itself; i/a/o
+            # mean nothing to those widgets, so they always return to INSERT.
+            if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
                 return
             if self._focus_in_fleet_drawer():
                 return
