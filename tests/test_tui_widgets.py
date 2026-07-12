@@ -6839,3 +6839,21 @@ class TestModelBarScanRaces:
         bar = ModelBar.__new__(ModelBar)
         with mock.patch.object(ModelBar, "query_one", side_effect=NoMatches("no warning row")):
             bar._refresh_cloud_warning()  # must not raise
+
+
+def test_size_variant_strip_disambiguates_same_quant_families():
+    """Chips fall back to full labels when every variant shares one quant."""
+    from lilbee.cli.tui.screens.catalog_utils import SizeVariant
+    from lilbee.cli.tui.widgets.model_grid import _build_size_variant_strip
+
+    same_quant = [
+        SizeVariant(label="0.6B Q8_0", quant="Q8_0", size_gb=0.7, ref="r/a"),
+        SizeVariant(label="1.7B Q8_0", quant="Q8_0", size_gb=1.9, ref="r/b"),
+    ]
+    assert str(_build_size_variant_strip(same_quant)) == "0.6B Q8_0 · 1.7B Q8_0"
+
+    distinct = [
+        SizeVariant(label="8B Q4_K_M", quant="Q4_K_M", size_gb=4.6, ref="r/q4"),
+        SizeVariant(label="8B Q5_K_M", quant="Q5_K_M", size_gb=5.7, ref="r/q5"),
+    ]
+    assert str(_build_size_variant_strip(distinct)) == "Q4_K_M · Q5_K_M"
