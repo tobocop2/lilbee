@@ -28,6 +28,7 @@ from textual.widgets import Footer, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
 # since it's used in multiple methods.
+from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_store
@@ -714,17 +715,21 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
+        # _cancel_inflight_stream already cancels every screen worker, so the
+        # two branches each cancel everything exactly once.
         if self.streaming:
             self._cancel_inflight_stream(msg.STREAM_CANCELLED)
-        for worker in self.workers:
-            worker.cancel()
+        else:
+            for worker in self.workers:
+                worker.cancel()
         self.notify(msg.CMD_CANCEL)
 
     def _cmd_clear(self, _args: str) -> None:
         if self.streaming:
             self._cancel_inflight_stream(msg.STREAM_CANCELLED)
-        for worker in self.workers:
-            worker.cancel()
+        else:
+            for worker in self.workers:
+                worker.cancel()
         self.streaming = False
         chat_log = self._chat_log
         chat_log.remove_children()
@@ -1305,7 +1310,7 @@ class ChatScreen(Screen[None]):
             log.debug("Stream error", exc_info=True)
             # A deliberate cancel severs the transport, which surfaces here as a
             # stream error; the cancel already wrote its note into the bubble.
-            if not _get_worker().is_cancelled:
+            if not self._stream_worker_cancelled():
                 with contextlib.suppress(Exception):
                     call_from_thread(
                         self, widget.append_content, msg.STREAM_ERROR.format(error=exc)
@@ -1314,6 +1319,14 @@ class ChatScreen(Screen[None]):
             close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
             call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
+
+    @staticmethod
+    def _stream_worker_cancelled() -> bool:
+        """Whether the calling stream worker was cancelled; False off-worker."""
+        try:
+            return _get_worker().is_cancelled
+        except NoActiveWorker:
+            return False
 
     def _await_chat_engine(self, widget: AssistantMessage) -> bool:
         """Hold the stream until the engine can serve, painting the load into *widget*.

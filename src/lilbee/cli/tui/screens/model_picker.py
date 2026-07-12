@@ -149,10 +149,15 @@ class ModelPickerModal(ModalScreen[str | None]):
 
     def _refresh_list(self, search: str) -> None:
         ml = self.query_one("#picker-list", ModelList)
-        ml.set_rows(self._options.to_sections(search))
-        # A default highlight makes Enter select the first match immediately;
-        # without it Enter in the search input silently does nothing.
-        ml.highlighted = 0 if ml.option_count else None
+        sections = self._options.to_sections(search)
+        ml.set_rows(sections)
+        # A default highlight makes Enter select the first match immediately.
+        # The ever-present browse-catalog action row is not a match, so Enter
+        # with no real matches stays a no-op instead of jumping to the catalog.
+        has_match = any(
+            row.ref != BROWSE_CATALOG_REF for section in sections for row in section.rows
+        )
+        ml.highlighted = 0 if has_match else None
 
     @on(Input.Changed, "#picker-search")
     def _on_search_changed(self, event: Input.Changed) -> None:
