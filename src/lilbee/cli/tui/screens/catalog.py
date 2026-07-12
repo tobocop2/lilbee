@@ -12,6 +12,7 @@ from textual import getters, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import Click, Key, MouseScrollDown
 from textual.message import Message
 from textual.screen import Screen
@@ -337,6 +338,22 @@ class CatalogScreen(Screen[None]):
         widget = self.query_one(f"#{_LIST_ID_PREFIX}{target}", ModelList)
         self._tab_list_cache[target] = widget
         return widget
+
+    def _grid_mounted(self) -> bool:
+        """Whether the active tab's grid container exists to paint into."""
+        try:
+            self._grid_for_tab(self._active_tab_id_cache)
+        except NoMatches:
+            return False
+        return True
+
+    def _list_mounted(self) -> bool:
+        """Whether the active tab's list widget exists to paint into."""
+        try:
+            self._list_for_tab(self._active_tab_id_cache)
+        except NoMatches:
+            return False
+        return True
 
     @property
     def _grid_container(self) -> VerticalScroll:
@@ -797,8 +814,6 @@ class CatalogScreen(Screen[None]):
         # A fast worker can complete before TabbedContent finishes mounting
         # its panes; tolerate that and let the deferred _refresh_grid that
         # _activate_initial_tab schedules rebuild against the applied state.
-        from textual.css.query import NoMatches
-
         with contextlib.suppress(NoMatches):
             # FETCH_MORE_HF appends to the active view's tail; skip the full
             # _refresh_view rebuild so scroll position and focus are preserved.
@@ -1128,7 +1143,14 @@ class CatalogScreen(Screen[None]):
         update each existing ModelGrid via set_rows rather than tearing
         the container down and re-mounting from scratch. Avoids a 100%
         CPU spike on every "Browse more" return.
+
+        A scheduled refresh can fire while the screen is composing or being
+        dismissed, when the tab containers aren't mounted; there is nothing
+        to paint then, and the guard runs before the row-cache update so the
+        next mounted refresh still repaints.
         """
+        if not self._grid_mounted():
+            return
         prep = self._prepare_grid_refresh()
         if prep is None:
             self._update_sort_label()
@@ -1566,6 +1588,8 @@ class CatalogScreen(Screen[None]):
 
     def _refresh_list(self) -> None:
         """Rebuild the list view for the active tab; per-tab cache key skips no-op rebuilds."""
+        if not self._list_mounted():
+            return
         active_tab = self._active_tab_id_cache
         all_rows = self._sort_rows(self._build_rows())
         if active_tab in TASK_TAB_IDS:
@@ -1670,8 +1694,6 @@ class CatalogScreen(Screen[None]):
         new screen's ``compose`` has finished mounting ``#sort-label``.
         On Windows that race lands often enough to fail CI.
         """
-        from textual.css.query import NoMatches
-
         try:
             label = self.query_one("#sort-label", Static)
         except NoMatches:
@@ -2218,8 +2240,6 @@ class CatalogScreen(Screen[None]):
 
     def _first_grid_or_none(self) -> ModelGrid | None:
         """Return the first ModelGrid in the active tab's container, or None."""
-        from textual.css.query import NoMatches
-
         try:
             return self._grid_container.query(ModelGrid).first()
         except NoMatches:
