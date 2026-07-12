@@ -814,8 +814,6 @@ class CatalogScreen(Screen[None]):
         # A fast worker can complete before TabbedContent finishes mounting
         # its panes; tolerate that and let the deferred _refresh_grid that
         # _activate_initial_tab schedules rebuild against the applied state.
-        from textual.css.query import NoMatches
-
         with contextlib.suppress(NoMatches):
             # FETCH_MORE_HF appends to the active view's tail; skip the full
             # _refresh_view rebuild so scroll position and focus are preserved.
@@ -1696,8 +1694,6 @@ class CatalogScreen(Screen[None]):
         new screen's ``compose`` has finished mounting ``#sort-label``.
         On Windows that race lands often enough to fail CI.
         """
-        from textual.css.query import NoMatches
-
         try:
             label = self.query_one("#sort-label", Static)
         except NoMatches:
@@ -2244,8 +2240,6 @@ class CatalogScreen(Screen[None]):
 
     def _first_grid_or_none(self) -> ModelGrid | None:
         """Return the first ModelGrid in the active tab's container, or None."""
-        from textual.css.query import NoMatches
-
         try:
             return self._grid_container.query(ModelGrid).first()
         except NoMatches:
