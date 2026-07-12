@@ -534,6 +534,66 @@ async def test_activate_initial_tab_swallows_missing_tabs(monkeypatch) -> None:
         assert screen._activation_settled is True
 
 
+async def test_activate_initial_tab_retries_while_tab_strip_mounts(monkeypatch) -> None:
+    """The setter racing the tab strip's mount reschedules instead of raising.
+
+    Regression for the Windows CI flake: on a slow host the refresh callback
+    can run before the Tab children mount, and Textual raises
+    "No Tab with id" from the active setter.
+    """
+    from unittest import mock
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = False
+        screen._active_tab_id_cache = "chat"
+        fake_tabs = mock.MagicMock()
+        type(fake_tabs).active = mock.PropertyMock(
+            return_value="discover",
+            side_effect=[  # get, then set raises
+                "discover",
+                ValueError("No Tab with id '--content-tab-chat'"),
+            ],
+        )
+        rescheduled: list[object] = []
+        monkeypatch.setattr(screen, "query_one", lambda *_a, **_k: fake_tabs)
+        monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
+        budget = screen._activation_retries
+        screen._activate_initial_tab()  # must not raise
+        assert screen._activate_initial_tab in rescheduled
+        assert screen._activation_settled is False  # settles only once the tab takes
+        assert screen._activation_retries == budget - 1
+
+
+async def test_activate_initial_tab_retry_budget_exhausts(monkeypatch) -> None:
+    """A tab strip that never mounts stops rescheduling once the budget is spent."""
+    from unittest import mock
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = False
+        screen._active_tab_id_cache = "chat"
+        screen._activation_retries = 0
+        fake_tabs = mock.MagicMock()
+        type(fake_tabs).active = mock.PropertyMock(
+            return_value="discover",
+            side_effect=["discover", ValueError("No Tab with id '--content-tab-chat'")],
+        )
+        rescheduled: list[object] = []
+        monkeypatch.setattr(screen, "query_one", lambda *_a, **_k: fake_tabs)
+        monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
+        # The post-activation boot fetches are exercised elsewhere; the fake
+        # TabbedContent would otherwise leak into their tab-id parsing.
+        monkeypatch.setattr(screen, "_fetch_remote_models", lambda: None)
+        monkeypatch.setattr(screen, "_fetch_frontier_models", lambda: None)
+        monkeypatch.setattr(screen, "_ensure_task_initial_fetch", lambda task: None)
+        screen._activate_initial_tab()  # must not raise and must not loop
+        assert screen._activate_initial_tab not in rescheduled
+        assert screen._activation_settled is True
+
+
 async def test_action_select_tab_swallows_missing_tabs(monkeypatch) -> None:
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()

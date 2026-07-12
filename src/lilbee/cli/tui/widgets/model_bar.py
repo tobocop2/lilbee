@@ -305,6 +305,7 @@ class ModelPickerButton(Static, can_focus=True):
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
+        self._focus_chat_prompt()
         if ref is not None and ref == getattr(cfg, self._key):
             return
         # Chat swaps reset services in _commit_after_change -> apply_model_change,
@@ -316,6 +317,14 @@ class ModelPickerButton(Static, can_focus=True):
             on_done=self._commit_after_change,
             reload_worker=self._scope != "chat",
         )
+
+    def _focus_chat_prompt(self) -> None:
+        """Hand focus back to the chat prompt; parking it on this pill dead-ends."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = self.app.screen
+        if isinstance(screen, ChatScreen):  # the model bar is also hosted off-chat
+            screen.focus_prompt()
 
     def _commit_after_change(self) -> None:
         """Repaint the label, then run the chat-screen side effect for chat swaps.

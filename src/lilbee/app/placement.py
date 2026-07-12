@@ -232,6 +232,19 @@ def wait_chat_ready(
     return False
 
 
+def request_engine_warm() -> None:
+    """Kick the provider's warm-up when nothing is loaded or loading.
+
+    ``warm_up_pool`` is idempotent (a no-op while a warm is in flight or the
+    fleet is up), so a prompt sent after a failed boot warm drives a fresh
+    engine start instead of bouncing for the rest of the session.
+    """
+    services = peek_services()
+    if services is None:
+        return
+    services.provider.warm_up_pool()
+
+
 def chat_engine_ready() -> bool:
     """Whether a chat prompt can be served right now.
 

@@ -28,6 +28,7 @@ from textual.widgets import Footer, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
 # since it's used in multiple methods.
+from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_store
@@ -279,6 +280,9 @@ class ChatScreen(Screen[None]):
         # The warm tip is worth one toast per session, on the first prompt that
         # has to wait out a cold engine load.
         self._warm_tip_shown: bool = False
+        # The bubble receiving the in-flight response, so a cancel can leave a
+        # visible note in it instead of letting the turn die silently.
+        self._active_assistant: AssistantMessage | None = None
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -391,6 +395,14 @@ class ChatScreen(Screen[None]):
         self._chat_input.focus()
         self._update_input_style()
 
+    def focus_prompt(self) -> None:
+        """Return focus to the chat input in INSERT mode.
+
+        Called when a modal (the model picker) closes: the next act is typing
+        a prompt, so focus must not stay parked on the widget that opened it.
+        """
+        self._enter_insert_mode()
+
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
         # Lifecycle interleaves (an installed-but-swapped-away screen during
@@ -424,8 +436,9 @@ class ChatScreen(Screen[None]):
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select / picker button handle Enter / i / a / o itself.
-            if isinstance(self.focused, (Select, ModelPickerButton)):
+            # Let a focused Select / picker button handle Enter itself; i/a/o
+            # mean nothing to those widgets, so they always return to INSERT.
+            if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
                 return
             if self._focus_in_fleet_drawer():
                 return
@@ -702,16 +715,25 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
-        for worker in self.workers:
-            worker.cancel()
+        # _cancel_inflight_stream already cancels every screen worker, so the
+        # two branches each cancel everything exactly once.
+        if self.streaming:
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
+        else:
+            for worker in self.workers:
+                worker.cancel()
         self.notify(msg.CMD_CANCEL)
 
     def _cmd_clear(self, _args: str) -> None:
-        for worker in self.workers:
-            worker.cancel()
+        if self.streaming:
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
+        else:
+            for worker in self.workers:
+                worker.cancel()
         self.streaming = False
         chat_log = self._chat_log
         chat_log.remove_children()
+        self._active_assistant = None
         with self._history_lock:
             self._history.clear()
         self.notify(msg.CMD_CLEAR)
@@ -1228,6 +1250,7 @@ class ChatScreen(Screen[None]):
         # The assistant bubble owns its own ThinkingHeader animator until
         # the first reasoning or content token swaps it out.
         assistant_msg = AssistantMessage()
+        self._active_assistant = assistant_msg
         log.mount(assistant_msg)
         log.scroll_end(animate=False)
         # A fresh turn always follows its own answer, even if the user had
@@ -1285,12 +1308,25 @@ class ChatScreen(Screen[None]):
                 call_from_thread(self, self._on_embedding_mismatch, exc, question, widget)
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
-            with contextlib.suppress(Exception):
-                call_from_thread(self, widget.append_content, msg.STREAM_ERROR.format(error=exc))
+            # A deliberate cancel severs the transport, which surfaces here as a
+            # stream error; the cancel already wrote its note into the bubble.
+            if not self._stream_worker_cancelled():
+                with contextlib.suppress(Exception):
+                    call_from_thread(
+                        self, widget.append_content, msg.STREAM_ERROR.format(error=exc)
+                    )
         finally:
             close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
             call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
+
+    @staticmethod
+    def _stream_worker_cancelled() -> bool:
+        """Whether the calling stream worker was cancelled; False off-worker."""
+        try:
+            return _get_worker().is_cancelled
+        except NoActiveWorker:
+            return False
 
     def _await_chat_engine(self, widget: AssistantMessage) -> bool:
         """Hold the stream until the engine can serve, painting the load into *widget*.
@@ -1301,7 +1337,12 @@ class ChatScreen(Screen[None]):
         False once the wait was cancelled or the load failed, with any failure
         already rendered into the bubble.
         """
-        from lilbee.app.placement import chat_engine_ready, chat_warm_error, wait_chat_ready
+        from lilbee.app.placement import (
+            chat_engine_ready,
+            chat_warm_error,
+            request_engine_warm,
+            wait_chat_ready,
+        )
 
         # Build the container if nothing holds it (a settings change resets it);
         # readiness is probed via peek_services, which never builds, so without
@@ -1310,6 +1351,9 @@ class ChatScreen(Screen[None]):
         get_services()
         if chat_engine_ready():
             return True
+        # A failed boot warm leaves nothing in flight; this restarts the engine
+        # so the prompt waits out a fresh load instead of bouncing.
+        request_engine_warm()
         self._show_warm_tip_once()
         worker = _get_worker()
 
@@ -1569,19 +1613,23 @@ class ChatScreen(Screen[None]):
     def action_cancel_stream(self) -> None:
         """Cancel an in-flight chat stream. Bound to Ctrl+C from INSERT mode."""
         if self.streaming:
-            self._cancel_inflight_stream()
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
 
-    def _cancel_inflight_stream(self) -> None:
-        """Stop the streaming Textual worker AND interrupt its inference call.
+    def _cancel_inflight_stream(self, note: str) -> None:
+        """Stop the streaming worker, sever its inference call, and say so.
 
-        Cancelling the Textual worker alone unwinds the producer task but
-        does not reach into the chat subprocess; the worker subprocess
-        keeps generating until ``Services.cancel_inference()`` flips its
-        abort flag (or sets the in-process Event in fallback mode).
+        The worker cancel is cooperative and only observed between tokens, so
+        ``cancel_inference`` severs the in-flight stream's transport to unblock
+        a reader stuck in a socket read. *note* lands in the answer bubble: a
+        cancelled turn must say it was cancelled, not die silently while the
+        user waits for an answer that will never arrive.
         """
-        get_services().cancel_inference()
         for worker in self.workers:
             worker.cancel()
+        get_services().cancel_inference()
+        bubble = self._active_assistant
+        if bubble is not None and bubble.is_mounted:
+            bubble.append_content(note)
         self.streaming = False
 
     def apply_model_change(self) -> None:
@@ -1604,7 +1652,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
             return
         if self.streaming:
-            self.action_cancel_stream()
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED_MODEL_SWITCH)
         self.swapping_model = True
         self.app.notify(msg.MODEL_SWAP_APPLYING)
         self._reload_chat_model_worker()

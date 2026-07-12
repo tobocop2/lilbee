@@ -423,3 +423,17 @@ def test_chat_warm_error_empty_string_when_error_text_is_missing(monkeypatch):
     provider.polls = 1
     monkeypatch.setattr(app_placement, "peek_services", lambda: _WaitServices(provider))
     assert app_placement.chat_warm_error() == ""
+
+
+def test_request_engine_warm_kicks_the_provider(monkeypatch):
+    from unittest.mock import MagicMock
+
+    services = MagicMock()
+    monkeypatch.setattr(app_placement, "peek_services", lambda: services)
+    app_placement.request_engine_warm()
+    services.provider.warm_up_pool.assert_called_once_with()
+
+
+def test_request_engine_warm_noop_without_services(monkeypatch):
+    monkeypatch.setattr(app_placement, "peek_services", lambda: None)
+    app_placement.request_engine_warm()  # nothing to warm; must not raise

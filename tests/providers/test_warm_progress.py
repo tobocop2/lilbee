@@ -45,6 +45,13 @@ def test_ready_and_error_phases() -> None:
     assert failed.error == "out of memory"
 
 
+def test_clear_drops_recorded_state() -> None:
+    tracker = WarmProgressTracker()
+    tracker.begin("m")
+    tracker.clear()
+    assert tracker.snapshot() is None
+
+
 def test_progress_model_defaults() -> None:
     snap = WarmProgress(phase=WarmPhase.STARTING)
     assert snap.model_ref is None

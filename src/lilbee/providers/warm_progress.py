@@ -85,6 +85,12 @@ class WarmProgressTracker:
         """Mark the load as failed with a user-facing reason."""
         self._advance(WarmPhase.ERROR, error=message)
 
+    def clear(self) -> None:
+        """Drop any recorded warm state."""
+        with self._lock:
+            self._snapshot = None
+            self._started_at = None
+
     def snapshot(self) -> WarmProgress | None:
         """Return a copy of the current state with live ``elapsed_s``, or None."""
         with self._lock:
