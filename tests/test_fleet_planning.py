@@ -1673,3 +1673,45 @@ class TestPlanProbe:
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 5 * _GB)
         assert planning_mod._plan_available_memory() == 7 * _GB
         assert planning_mod._plan_free_system_memory() == 5 * _GB
+
+
+class TestPlacementFindingsLog:
+    """plan_launches tells the user about tight and unservable placements."""
+
+    def test_tight_role_logs_a_memory_is_tight_warning(self, caplog) -> None:
+        import logging
+
+        placement = Placement(
+            instances=(InstancePlan(role=WorkerRole.VISION, devices=(0,)),),
+            unplaceable_roles=(),
+            tight_roles={WorkerRole.VISION: int(4.1 * _GB)},
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
+        assert "Memory is tight for the vision model org/ocr.gguf" in caplog.text
+        assert "4.1 GiB" in caplog.text
+        assert "will still load on demand" in caplog.text
+
+    def test_unplaceable_shared_memory_role_still_warns_it_gets_no_server(self, caplog) -> None:
+        import logging
+
+        placement = Placement(
+            instances=(),
+            unplaceable_roles=(WorkerRole.CHAT,),
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod._log_placement_findings(placement, {WorkerRole.CHAT: "org/chat.gguf"})
+        assert "will not be served" in caplog.text
+
+    def test_tiny_shortfall_never_reads_as_zero(self, caplog) -> None:
+        import logging
+
+        placement = Placement(
+            instances=(InstancePlan(role=WorkerRole.VISION, devices=(0,)),),
+            unplaceable_roles=(),
+            tight_roles={WorkerRole.VISION: 10 * 1024 * 1024},
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
+        assert "0.0 GiB" not in caplog.text
+        assert "0.1 GiB" in caplog.text

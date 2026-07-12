@@ -1093,6 +1093,37 @@ class FleetPlan:
     co_tenants: frozenset[WorkerRole] = frozenset()
 
 
+def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, str]) -> None:
+    """Warn about placements that exceed the memory budget.
+
+    Shared-memory roles that fit nowhere get no server (loading them would OOM the
+    host). GPU roles are never refused: one whose estimate exceeds the free VRAM
+    still loads on demand, with a warning carrying the shortfall.
+    """
+    for role in placement.unplaceable_roles:
+        log.warning(
+            "%s model %s does not fit available memory and will not be served; "
+            "free up memory or use a smaller model.",
+            role.value,
+            model_refs[role],
+        )
+    for role, shortfall in placement.tight_roles.items():
+        log.warning(
+            "Memory is tight for the %s model %s: it is estimated to need %.1f GiB more "
+            "GPU memory than is available. It will still load on demand; if it fails to "
+            "load or runs slowly, free up GPU memory or use a smaller model.",
+            role.value,
+            model_refs[role],
+            # A sub-0.05 GiB shortfall would render as "0.0 GiB more".
+            max(shortfall / 1024**3, 0.1),
+        )
+    if placement.co_tenants:
+        log.info(
+            "%s share GPU memory and load on demand; only one is resident at a time.",
+            ", ".join(sorted(role.value for role in placement.co_tenants)),
+        )
+
+
 def plan_launches(
     roles: tuple[WorkerRole, ...] | None,
     binary: Path,
@@ -1108,18 +1139,7 @@ def plan_launches(
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
     placement = _resolve_placement(spec, inputs, model_refs, devices, unified_budget=unified_budget)
-    for role in placement.unplaceable_roles:
-        log.warning(
-            "%s model %s does not fit available memory and will not be served; "
-            "free up memory or use a smaller model.",
-            role.value,
-            model_refs[role],
-        )
-    if placement.co_tenants:
-        log.info(
-            "%s share GPU memory and load on demand; only one is resident at a time.",
-            ", ".join(sorted(role.value for role in placement.co_tenants)),
-        )
+    _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     return FleetPlan(
         launches=tuple(

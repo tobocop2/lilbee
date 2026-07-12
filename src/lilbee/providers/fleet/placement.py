@@ -6,14 +6,14 @@ model that fits one GPU runs as a single pinned instance, small models co-locate
 on a GPU with spare VRAM, and a model too big for any single GPU is tensor-split
 across enough GPUs to fit. Roles that never run in the same phase (ingest OCR vs a
 query) share one swap group when they cannot all co-reside, so only the phase in
-use is charged; a role that fits nowhere gets no server (its calls error). See
-docs/architecture.md.
+use is charged. On GPUs the estimate advises but never refuses: a role that fits
+nowhere is placed tight (best-effort, with a warning). See docs/architecture.md.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
 from lilbee.providers.fleet.vram import USABLE_VRAM_FRACTION
@@ -61,17 +61,21 @@ class InstancePlan:
 
 @dataclass(frozen=True)
 class Placement:
-    """Planner output: server instances, swap tenants, and roles that fit on no device.
+    """Planner output: server instances, swap tenants, and best-effort placements.
 
     ``unplaceable_roles`` get no server, so a call to them surfaces a
-    ``ProviderError`` (there is no in-process fallback). ``co_tenants`` share one
-    llama-swap group and evict each other on demand, so only one is resident at a
-    time; each runs a single instance.
+    ``ProviderError`` (there is no in-process fallback); only the shared-memory
+    path produces them (an oversize load there OOM-livelocks the host). On GPUs
+    a role that fits nowhere is placed anyway and listed in ``tight_roles`` with
+    its estimated shortfall in bytes. ``co_tenants`` share one llama-swap group
+    and evict each other on demand, so only one is resident at a time; each runs
+    a single instance.
     """
 
     instances: tuple[InstancePlan, ...]
     unplaceable_roles: tuple[WorkerRole, ...]
     co_tenants: frozenset[WorkerRole] = frozenset()
+    tight_roles: dict[WorkerRole, int] = field(default_factory=dict)
 
 
 def plan_placement(
@@ -91,7 +95,8 @@ def plan_placement(
     too big for any single GPU is tensor-split. Chat is charged last: when it fits
     only if vision's VRAM is refunded, the two become ``co_tenants`` of one swap
     group instead of either becoming unplaceable. A model that fits nowhere, even
-    alone beside the pinned tier, is an unplaceable role.
+    alone beside the pinned tier, is still placed tight and reported in
+    ``tight_roles``.
 
     A chat split widens past the fewest fitting cards when ``chat_ctx_fit`` shows a
     tighter shard would starve its served context below ``chat_ctx_target``; the
@@ -131,13 +136,14 @@ def plan_placement(
             free_headroom=free_headroom,
         )
 
-    instances, unplaceable, co_tenants = _place_persistent(persistent_singles, place, remaining)
+    instances, co_tenants, tight = _place_persistent(persistent_singles, place, remaining)
     instances.extend(_place_elastic(replicated, instances, remaining, co_tenants))
 
     return Placement(
         instances=tuple(instances),
-        unplaceable_roles=tuple(unplaceable),
+        unplaceable_roles=(),
         co_tenants=co_tenants,
+        tight_roles=tight,
     )
 
 
@@ -157,29 +163,32 @@ def _place_persistent(
     persistent_singles: list[ModelPlacementInput],
     place: Callable[[ModelPlacementInput], _Placed | None],
     remaining: dict[int, float],
-) -> tuple[list[InstancePlan], list[WorkerRole], frozenset[WorkerRole]]:
+) -> tuple[list[InstancePlan], frozenset[WorkerRole], dict[WorkerRole, int]]:
     """Charge every persistent single in ``placement_rank`` order.
 
     A role that does not fit refunds every already-charged role it is phase-disjoint
     from (never co-resident with) and retries; the roles that let it in become one
     swap group. This restores the in-process pool's behavior, where a role loaded
     only when its phase ran, so ingest never paid for the query models or vice versa.
+    A role that still fits nowhere is placed tight (:func:`_place_tight`) instead
+    of refused.
     """
     instances: list[InstancePlan] = []
-    unplaceable: list[WorkerRole] = []
     charges: dict[WorkerRole, dict[int, float]] = {}
     co_tenants: set[WorkerRole] = set()
+    tight: dict[WorkerRole, int] = {}
     for model in sorted(persistent_singles, key=_shared_pool_order):
         placed = place(model)
         if placed is None:
             placed, group = _place_beside_disjoint(model, place, remaining, charges)
             co_tenants |= group
         if placed is None:
-            unplaceable.append(model.role)
-        else:
-            instances.append(placed.plan)
-            charges[model.role] = placed.charges
-    return instances, unplaceable, frozenset(co_tenants)
+            placed, group, shortfall = _place_tight(model, remaining, charges)
+            co_tenants |= group
+            tight[model.role] = shortfall
+        instances.append(placed.plan)
+        charges[model.role] = placed.charges
+    return instances, frozenset(co_tenants), tight
 
 
 def _place_beside_disjoint(
@@ -212,6 +221,35 @@ def _place_beside_disjoint(
         for idx, held in charged.items():
             remaining[idx] -= held
     return None, frozenset()
+
+
+def _place_tight(
+    model: ModelPlacementInput,
+    remaining: dict[int, float],
+    charges: dict[WorkerRole, dict[int, float]],
+) -> tuple[_Placed, frozenset[WorkerRole], int]:
+    """Place an oversize *model* best-effort instead of refusing it.
+
+    Refunds every phase-disjoint charged role (they become *model*'s swap group),
+    pins *model* to the card with the most headroom, and drains that card so the
+    elastic tier places nothing on it. Returns the estimated shortfall in bytes.
+    """
+    refunds = {r: c for r, c in charges.items() if _phase_disjoint(r, model.role)}
+    for charged in refunds.values():
+        for idx, held in charged.items():
+            remaining[idx] += held
+    device = max(remaining, key=lambda idx: remaining[idx])
+    available = remaining[device]
+    remaining[device] = 0.0
+    slot = _group_slot({device: available}, refunds, remaining)
+    for role in refunds:
+        del charges[role]
+    placed = _Placed(
+        plan=InstancePlan(role=model.role, devices=(device,)),
+        charges=slot,
+    )
+    group = frozenset(refunds) | {model.role} if refunds else frozenset()
+    return placed, group, int(model.est_vram_bytes - available)
 
 
 def _group_slot(
