@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fnmatch
+import functools
 import logging
 import os
 import threading
@@ -113,6 +115,28 @@ def _hf_search_value(search: str) -> str:
     """Build the HF ``search=`` value: GGUF plus the user's tokens, space-joined."""
     tokens = [_HF_GGUF_SEARCH_TERM, *search.split()]
     return " ".join(tokens)
+
+
+@functools.lru_cache(maxsize=64)
+def repo_has_mmproj(hf_repo: str) -> bool:
+    """True when *hf_repo* ships a multimodal projector (``mmproj*.gguf`` sibling).
+
+    A projector sibling marks the repo's model as a vision loader regardless of
+    its text architecture or name; mainstream VL repos (Qwen-VL, InternVL,
+    SmolVLM, gemma-3) match no vision name pattern. Fails open to False (any
+    error: the probe is advisory) so an offline pull degrades to name-based
+    classification.
+    """
+    from huggingface_hub import HfApi
+
+    from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN
+
+    try:
+        siblings = HfApi(token=hf_token()).model_info(hf_repo).siblings or []
+    except Exception as exc:
+        log.debug("mmproj sibling probe failed for %s: %s", hf_repo, exc)
+        return False
+    return any(fnmatch.fnmatch(s.rfilename, DEFAULT_MMPROJ_PATTERN) for s in siblings)
 
 
 def _resolve_sibling_gguf(siblings: list[RepoSibling]) -> str:

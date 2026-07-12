@@ -833,3 +833,21 @@ class TestSharedMemoryCoTenancy:
         assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
         assert [i.replica for i in visions] == [0]
         assert WorkerRole.CHAT in {i.role for i in plan.instances}
+
+
+class TestUnsizableModelPlacement:
+    def test_unsizable_split_falls_to_tight_single(self) -> None:
+        # estimate_peak raising (the estimator cannot parse the model) must not
+        # crash the plan: split options are skipped and the model places tight.
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        model = ModelPlacementInput(WorkerRole.CHAT, 40 * _GB)
+
+        def boom(_role: WorkerRole, _ratio: tuple[int, ...]) -> tuple[int, ...]:
+            raise ProviderError(
+                "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
+            )
+
+        plan = plan_placement([model], [(0, 24 * _GB), (1, 24 * _GB)], estimate_peak=boom)
+        assert len(plan.instances) == 1
+        assert plan.tight_roles.keys() == {WorkerRole.CHAT}
