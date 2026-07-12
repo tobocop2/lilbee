@@ -51,7 +51,7 @@ from lilbee.providers.warm_progress import WarmPhase, WarmProgress, WarmProgress
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     from lilbee.providers.base import (
         ChatMessage,
@@ -197,6 +197,66 @@ def _no_healthy_replica_error() -> ProviderError:
         provider=_PROVIDER_NAME,
         kind=ProviderErrorKind.CONNECTION,
     )
+
+
+# Env vars a launch pins its devices with, one per backend (Metal has none).
+_VISIBLE_DEVICE_ENV_VARS = (
+    "CUDA_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "GGML_VK_VISIBLE_DEVICES",
+    "ONEAPI_DEVICE_SELECTOR",
+)
+
+
+def _role_device_sets(
+    launches: Iterable[InstanceLaunch],
+) -> dict[WorkerRole, frozenset[str]]:
+    """Backend-qualified device tokens each role's launches pin, by role.
+
+    A role's set is the union across its replicas. Roles whose launches carry
+    no visibility env (Metal, or an unpinned backend) are absent: without
+    pinning there is no proof of sharing, so they keep the concurrent warm.
+    """
+    sets: dict[WorkerRole, set[str]] = {}
+    for launch in launches:
+        for var in _VISIBLE_DEVICE_ENV_VARS:
+            value = launch.env_overrides.get(var)
+            if value:
+                sets.setdefault(launch.role, set()).update(
+                    f"{var}={part.strip()}" for part in value.split(",")
+                )
+    return {role: frozenset(tokens) for role, tokens in sets.items()}
+
+
+def _warm_chains(
+    warm_roles: list[WorkerRole], device_sets: dict[WorkerRole, frozenset[str]]
+) -> list[list[WorkerRole]]:
+    """Group *warm_roles* into chains warmed sequentially; chains run in parallel.
+
+    Roles with overlapping device sets land in one chain, merged transitively.
+    Within a chain chat goes last: it sizes its KV against the headroom the
+    settled residents leave, so it must not race their loads. A role with no
+    device set shares nothing provable and gets its own chain.
+    """
+    chains: list[tuple[set[str], list[WorkerRole]]] = []
+    ordered = sorted(warm_roles, key=lambda r: (r is WorkerRole.CHAT, list(WorkerRole).index(r)))
+    for role in ordered:
+        tokens = device_sets.get(role)
+        if not tokens:
+            chains.append((set(), [role]))
+            continue
+        merged_tokens, merged_roles = set(tokens), [role]
+        kept: list[tuple[set[str], list[WorkerRole]]] = []
+        for chain_tokens, chain_roles in chains:
+            if chain_tokens & merged_tokens:
+                merged_tokens |= chain_tokens
+                merged_roles = chain_roles + merged_roles
+            else:
+                kept.append((chain_tokens, chain_roles))
+        kept.append((merged_tokens, merged_roles))
+        chains = kept
+    return [roles for _tokens, roles in chains]
 
 
 def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
@@ -1395,8 +1455,12 @@ class FleetProvider:
         :meth:`_warm_chat_role` so a launcher gets granular progress. *roles*
         narrows the warm to just those roles (a reload warms only what restarted).
 
-        Roles warm concurrently: chat is the long pole (a large model's load
-        dominates), so the light roles load alongside it instead of before it.
+        Roles on separate devices warm concurrently: chat is the long pole (a
+        large model's load dominates), so the light roles load alongside it
+        instead of before it. Roles whose launches pin overlapping devices warm
+        one at a time instead, chat last: two engines loading into the same
+        card at once race each other for VRAM, and the loser's first load can
+        OOM even though both fit once settled.
         """
         with self._lock:
             pools = {
@@ -1405,23 +1469,49 @@ class FleetProvider:
                 if roles is None or role in roles
             }
             on_spawning, on_spawned = self._on_spawning, self._on_spawned
-
-        def _warm_one(role: WorkerRole, clients: list[LlamaServerClient]) -> None:
-            if on_spawning is not None:
-                on_spawning(role)
-            if role is WorkerRole.CHAT:
-                self._warm_chat_role(clients)
-            else:
-                self._warm_role_clients(role, clients)
-            if on_spawned is not None:
-                on_spawned(role)
+            device_sets = _role_device_sets(
+                launch for launches in self._launches.values() for launch in launches
+            )
 
         if not pools:
             return
-        with ThreadPoolExecutor(max_workers=len(pools), thread_name_prefix="fleet-preload") as pool:
-            futures = [pool.submit(_warm_one, role, clients) for role, clients in pools.items()]
+        listeners = (on_spawning, on_spawned)
+        chains = _warm_chains(list(pools), device_sets)
+        with ThreadPoolExecutor(
+            max_workers=len(chains), thread_name_prefix="fleet-preload"
+        ) as pool:
+            futures = [pool.submit(self._warm_chain, chain, pools, listeners) for chain in chains]
             for future in futures:
                 future.result()
+
+    def _warm_chain(
+        self,
+        chain: list[WorkerRole],
+        pools: dict[WorkerRole, list[LlamaServerClient]],
+        listeners: tuple[Callable[[WorkerRole], None] | None, Callable[[WorkerRole], None] | None],
+    ) -> None:
+        """Warm *chain*'s roles one at a time; every role gets its attempt.
+
+        An unexpected error warming one role (a listener blowing up) must not rob
+        the roles behind it of their warm, so the first error is re-raised only
+        after the chain finishes.
+        """
+        on_spawning, on_spawned = listeners
+        first_exc: Exception | None = None
+        for role in chain:
+            try:
+                if on_spawning is not None:
+                    on_spawning(role)
+                if role is WorkerRole.CHAT:
+                    self._warm_chat_role(pools[role])
+                else:
+                    self._warm_role_clients(role, pools[role])
+                if on_spawned is not None:
+                    on_spawned(role)
+            except Exception as exc:  # noqa: BLE001 - every role gets its warm attempt
+                first_exc = first_exc or exc
+        if first_exc is not None:
+            raise first_exc
 
     def _warm_role_clients(self, role: WorkerRole, clients: list[LlamaServerClient]) -> bool:
         """Warm every replica of *role*; return whether at least one loaded.
