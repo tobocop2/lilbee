@@ -239,6 +239,28 @@ class TestStatus:
         assert result.sources == []
         assert result.total_chunks == 0
 
+    async def test_status_carries_entities_section(self):
+        """The entity section must survive the StatusResponse mapping; a
+        missing field there silently drops it from the HTTP surface."""
+        from lilbee.app.status import EntityStatus, StatusConfig, StatusResult
+
+        mock_status = StatusResult(
+            config=StatusConfig(
+                documents_dir="docs",
+                data_dir="data",
+                chat_model="test:latest",
+                embedding_model="embed:latest",
+            ),
+            sources=[],
+            total_chunks=0,
+            entities=EntityStatus(types=["part_number"], rows=3),
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
+            result = await handlers.status()
+        assert result.entities is not None
+        assert result.entities.types == ["part_number"]
+        assert result.entities.rows == 3
+
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
         cfg.vision_model = ""

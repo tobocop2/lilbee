@@ -508,9 +508,6 @@ lilbee ask "Explain this" --model qwen3
 | `lilbee sync` | Re-index changed files |
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
-| `lilbee entities induce` | Propose a typed entity schema from the indexed chunks (writes a reviewable `entity_schema.json`) |
-| `lilbee entities backfill` | Extract typed entities from every stored chunk under the reviewed schema (no re-ingest; `--replace` clears prior rows first) |
-| `lilbee entities status` | Show the entity schema, extracted row count, and whether sync-time extraction is on |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
 | `lilbee reset` | Factory reset. Deletes all documents and data |
 
@@ -787,7 +784,7 @@ reason the defaults are the defaults.
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Filter expansion variants whose embedding drifts too far from the original query |
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
 | `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Vector-only candidate pool as a multiple of top_k, feeding MMR reranking |
-| `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities at ingest for exact count answers (needs a reviewed `entity_schema.json`; see `lilbee entities`) |
+| `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities for exact count answers; fully automatic at sync (schema induced on first run, `entity_schema.json` editable to tune) |
 | `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
 | `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |
 | `LILBEE_INTENT_ROUTING` | `true` | Route document-name lookups to exact retrieval and count questions to a full-corpus scan |

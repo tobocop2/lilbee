@@ -147,7 +147,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Extract typed entities at ingest (needs a reviewed entity_schema.json)",
+        help_text="Extract typed entities automatically at sync (schema induced on first run)",
     ),
     "semantic_chunking": SettingDef(
         bool,

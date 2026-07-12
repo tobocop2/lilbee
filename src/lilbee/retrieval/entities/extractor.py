@@ -27,7 +27,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 INDUCTION_SAMPLE_SIZE = 40
-INDUCTION_MAX_TOKENS = 1200
+# Thinking models spend most of their budget reasoning before the JSON
+# appears (the reasoning is stripped afterward); 1200 starved them into
+# emitting nothing parseable.
+INDUCTION_MAX_TOKENS = 4096
 # Chunks per LLM call in phase 2; larger batches save round-trips, smaller
 # ones keep each response comfortably parseable.
 LLM_EXTRACTION_BATCH = 8
@@ -99,7 +102,11 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
         response = provider.chat(
             [{"role": "user", "content": prompt}],
             stream=False,
-            options={"num_predict": INDUCTION_MAX_TOKENS},
+            # think=False: a small thinking model can loop inside <think>
+            # until the budget is gone and emit no JSON at all. temperature 0:
+            # induction wants one deterministic, well-formed schema, not a
+            # creative sample that parses only some of the time.
+            options={"num_predict": INDUCTION_MAX_TOKENS, "think": False, "temperature": 0},
         )
     except Exception:
         log.warning("Entity schema induction failed at the provider", exc_info=True)

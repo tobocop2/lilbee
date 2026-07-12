@@ -226,7 +226,16 @@ def status() -> dict[str, Any]:
             for s in sorted(sources, key=lambda x: x["filename"])
         ],
         "total_chunks": sum(s["chunk_count"] for s in sources),
+        "entities": _entity_status_dict(),
     }
+
+
+def _entity_status_dict() -> dict[str, Any] | None:
+    """Entity types + extracted rows, mirroring the HTTP status section."""
+    from lilbee.app.status import entity_status
+
+    section = entity_status()
+    return section.model_dump() if section is not None else None
 
 
 @_tool

@@ -163,6 +163,13 @@ class StatusConfigInfo(BaseModel):
     enable_ocr: bool | None = None
 
 
+class StatusEntityInfo(BaseModel):
+    """Entity-extraction section of a status response (present when enabled)."""
+
+    types: list[str]
+    rows: int
+
+
 class StatusResponse(BaseModel):
     """Response for GET /api/status."""
 
@@ -170,6 +177,7 @@ class StatusResponse(BaseModel):
     config: StatusConfigInfo
     sources: list[StatusSourceInfo]
     total_chunks: int
+    entities: StatusEntityInfo | None = None
 
 
 class HealthResponse(BaseModel):

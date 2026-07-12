@@ -5,6 +5,7 @@ from lilbee.retrieval.entities.extractor import (
     induce_schema,
     normalize_value,
 )
+from lilbee.retrieval.entities.lifecycle import ensure_entities
 from lilbee.retrieval.entities.schema import (
     EntitySchema,
     EntityType,
@@ -18,6 +19,7 @@ __all__ = [
     "EntitySchema",
     "EntityType",
     "ExtractorKind",
+    "ensure_entities",
     "extract_entities",
     "induce_schema",
     "load_schema",

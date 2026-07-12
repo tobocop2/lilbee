@@ -703,22 +703,23 @@ answers from a scan instead of a hedge from top-k retrieval. Additive: the new
 table changes no existing schema, requires no migration, and a store without
 it behaves as if nothing was extracted.
 
-Two phases, deliberately operator-driven:
+Turning the setting on is the whole interaction; sync runs the lifecycle:
 
-1. **Induction** (`lilbee entities induce`, cheap): an LLM reads a stratified
-   sample of the indexed chunks and proposes the corpus-specific type schema,
-   written to a reviewable `entity_schema.json`. A general NER tag set has no
-   notion of the identifier types a specific corpus carries; the schema is
-   the contract, and it is inspected (and edited) before anything expensive
-   runs.
-2. **Application** (`lilbee entities backfill` for the existing index, plus
-   sync-time extraction for new files once the flag is on): each type is
-   found by the cheapest extractor that serves it: compiled regex for
+1. **Induction** (first sync after enabling, cheap): an LLM reads a
+   stratified sample of the indexed chunks and proposes the corpus-specific
+   type schema, saved as `entity_schema.json` next to the index. A general
+   NER tag set has no notion of the identifier types a specific corpus
+   carries. The file is a tuning artifact, not a gate: edit a pattern and
+   the next sync detects the change (by digest) and re-extracts.
+2. **Extraction** (same sync, then incrementally): each type is found by
+   the cheapest extractor that serves it: compiled regex for
    identifier-shaped types, spaCy labels for people/organizations/dates
    (when the `graph` extra's model is available), and an LLM only for types
-   neither can catch. Cost is dominated by how many LLM-kind types the
-   reviewed schema keeps. Backfill reads chunk text from the store, so no
-   documents are re-ingested and no embeddings are recomputed.
+   neither can catch. The full pass reads chunk text from the store (no
+   documents re-ingested, no embeddings recomputed) and always clears prior
+   rows first, so interrupted passes and schema edits never double-count.
+   New files extract at ingest. If no chat model is available for
+   induction, sync logs it and retries next time; nothing fails.
 
 Query-time effects: "how many distinct X" answers with exact distinct counts,
 and "how many X per Y" groups by chunk co-occurrence, both computed by full

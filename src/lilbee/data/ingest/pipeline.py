@@ -533,6 +533,13 @@ async def sync(
 
         await incremental_update(set(added) | set(updated) | set(removed))
 
+    # Entity lifecycle: induce-once, extract, and re-apply edited schemas.
+    # Runs every sync (cheap no-op when off or up to date) so flipping the
+    # setting on takes effect without any separate operation.
+    from lilbee.retrieval.entities.lifecycle import ensure_entities
+
+    await to_ingest_thread(ensure_entities, cancel)
+
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor the failed/skipped lists was dropped without
     # a signal. Surface it loudly instead of letting a whole dataset vanish quietly.

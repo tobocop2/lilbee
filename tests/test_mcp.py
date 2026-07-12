@@ -257,6 +257,19 @@ class TestStatus:
         result = status()
         assert result["config"]["enable_ocr"] is None
 
+    def test_status_includes_entities_when_enabled(self, mock_svc):
+        cfg.entity_extraction = True
+        mock_svc.store.open_table.return_value = None
+        try:
+            result = status()
+        finally:
+            cfg.entity_extraction = False
+        assert result["entities"] == {"types": [], "rows": 0}
+
+    def test_status_omits_entities_when_off(self, mock_svc):
+        cfg.entity_extraction = False
+        assert status()["entities"] is None
+
     def test_status_exposes_all_four_model_roles(self):
         """MCP status must expose vision + reranker slots so plugin clients see them."""
         result = status()

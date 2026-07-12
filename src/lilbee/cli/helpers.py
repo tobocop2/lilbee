@@ -68,6 +68,12 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     if status.config.enable_ocr is not None:
         ocr_label = "enabled" if status.config.enable_ocr else "disabled"
         yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
+    if status.entities is not None:
+        names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"
+        yield (
+            f"[{theme.LABEL}]Entities:[/{theme.LABEL}]   "
+            f"{status.entities.rows} entities extracted ({names})"
+        )
     yield ""
 
     if not status.sources:

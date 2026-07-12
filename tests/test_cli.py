@@ -104,6 +104,17 @@ class TestStatus:
         assert "Chat model:" in result.output
         assert "Embeddings:" in result.output
 
+    def test_status_shows_entities_when_enabled(self):
+        cfg.entity_extraction = True
+        result = runner.invoke(app, ["status"])
+        assert "entities extracted" in result.output
+        assert "schema pending" in result.output
+
+    def test_status_hides_entities_when_off(self):
+        cfg.entity_extraction = False
+        result = runner.invoke(app, ["status"])
+        assert "entities extracted" not in result.output
+
     def test_status_shows_ocr_when_enabled(self):
         cfg.enable_ocr = True
         result = runner.invoke(app, ["status"])
