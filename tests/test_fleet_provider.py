@@ -1499,6 +1499,104 @@ def test_preload_roles_warms_roles_concurrently(monkeypatch) -> None:
     assert not preload.is_alive()
 
 
+def _pinned_launch(role: WorkerRole, devices: str, replica: int = 0) -> InstanceLaunch:
+    return InstanceLaunch(
+        role=role,
+        argv=[],
+        env_overrides={"CUDA_VISIBLE_DEVICES": devices},
+        model=f"{role.value}-{replica}",
+        replica=replica,
+    )
+
+
+def test_warm_chains_serializes_shared_device_chat_last() -> None:
+    sets = {
+        WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0"}),
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=0"}),
+    }
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED], sets)
+    assert chains == [[WorkerRole.EMBED, WorkerRole.CHAT]]
+
+
+def test_warm_chains_keeps_disjoint_devices_parallel() -> None:
+    sets = {
+        WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0"}),
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=1"}),
+    }
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED], sets)
+    assert {tuple(c) for c in chains} == {(WorkerRole.EMBED,), (WorkerRole.CHAT,)}
+
+
+def test_warm_chains_unpinned_role_stays_parallel() -> None:
+    # No pinning info (Metal, or a launch without visibility env) keeps today's
+    # concurrent warm; only proven device sharing serializes.
+    sets = {WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0"})}
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED], sets)
+    assert {tuple(c) for c in chains} == {(WorkerRole.EMBED,), (WorkerRole.CHAT,)}
+
+
+def test_warm_chains_transitive_overlap_merges() -> None:
+    sets = {
+        WorkerRole.CHAT: frozenset({"CUDA_VISIBLE_DEVICES=0", "CUDA_VISIBLE_DEVICES=1"}),
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=1", "CUDA_VISIBLE_DEVICES=2"}),
+        WorkerRole.RERANK: frozenset({"CUDA_VISIBLE_DEVICES=2"}),
+    }
+    chains = prov_mod._warm_chains([WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK], sets)
+    assert chains == [[WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.CHAT]]
+
+
+def test_role_device_sets_unions_replicas_and_skips_unpinned() -> None:
+    launches = [
+        _pinned_launch(WorkerRole.EMBED, "0", replica=0),
+        _pinned_launch(WorkerRole.EMBED, "1", replica=1),
+        InstanceLaunch(role=WorkerRole.VISION, argv=[], env_overrides={}, model="vision-0"),
+    ]
+    sets = prov_mod._role_device_sets(launches)
+    assert sets == {
+        WorkerRole.EMBED: frozenset({"CUDA_VISIBLE_DEVICES=0", "CUDA_VISIBLE_DEVICES=1"})
+    }
+
+
+def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
+    # Chat and embed pinned to the same card must warm one at a time, embed
+    # first: concurrent loads on a shared device race each other for VRAM and
+    # the loser OOMs its first attempt.
+    order: list[str] = []
+    chat, embed = _fake_client(), _fake_client()
+    chat.chat.side_effect = lambda *a, **k: (order.append("chat"), MagicMock())[1]
+    embed.embed.side_effect = lambda *a, **k: (order.append("embed"), [[0.1]])[1]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    p._launches = {
+        SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
+        SwapGroup.EMBED: (_pinned_launch(WorkerRole.EMBED, "0"),),
+    }
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._preload_roles()
+    assert order == ["embed", "chat"]
+
+
+def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
+    # An unexpected error warming one chain role (a listener blowing up) must
+    # not rob the roles behind it of their warm; it surfaces after the chain.
+    chat, embed = _fake_client(), _fake_client()
+    embed.embed.return_value = [[0.1]]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    p._launches = {
+        SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
+        SwapGroup.EMBED: (_pinned_launch(WorkerRole.EMBED, "0"),),
+    }
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+
+    def _blowing_listener(role: WorkerRole) -> None:
+        if role is WorkerRole.EMBED:
+            raise RuntimeError("listener broke")
+
+    p.add_spawn_listener(on_spawning=_blowing_listener)
+    with pytest.raises(RuntimeError, match="listener broke"):
+        p._preload_roles()
+    chat.chat.assert_called_once()  # chat still warmed behind the failed embed
+
+
 def _registry_with_shards(monkeypatch, shards: list[Path]) -> None:
     registry = MagicMock()
     registry.shard_paths.return_value = shards
