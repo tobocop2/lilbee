@@ -1834,3 +1834,25 @@ class TestSizingFailureFallsBackToFileSize:
             inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=24 * _GB)
         by_role = {i.role: i for i in inputs}
         assert by_role[WorkerRole.VISION].est_vram_bytes == 4096 + 1024
+
+    def test_fit_slots_returns_single_slot_when_estimator_fails(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def boom(*_a, **_k):
+            raise ProviderError(
+                "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
+            )
+
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", boom)
+        slots = planning_mod._fit_slots(
+            4,
+            WorkerRole.CHAT,
+            tmp_path / "m.gguf",
+            2048,
+            mmproj_path=None,
+            unified=False,
+            budget=8 * _GB,
+        )
+        assert slots == 1
