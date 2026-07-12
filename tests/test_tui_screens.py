@@ -3262,17 +3262,19 @@ async def test_chat_cancel_stream_while_streaming():
 
 
 async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels the stream and spawns the off-thread reload."""
+    """apply_model_change cancels the stream with the model-switch note."""
+    from lilbee.cli.tui import messages as msg
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = True
         with (
-            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "_cancel_inflight_stream") as mock_cancel,
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
-            mock_cancel.assert_called_once()
+            mock_cancel.assert_called_once_with(msg.STREAM_CANCELLED_MODEL_SWITCH)
             mock_worker.assert_called_once()
 
 
@@ -3284,7 +3286,7 @@ async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming
         screen = app.screen
         screen.streaming = False
         with (
-            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "_cancel_inflight_stream") as mock_cancel,
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
             patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
         ):
@@ -3293,6 +3295,35 @@ async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming
             mock_worker.assert_called_once()
             # The reload runs in the worker, not inline on the event loop.
             mock_get.assert_not_called()
+
+
+async def test_cancel_stream_writes_a_note_into_the_bubble():
+    """A cancelled turn says so in its bubble instead of dying silently."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        bubble = MagicMock()
+        bubble.is_mounted = True
+        screen._active_assistant = bubble
+        screen.streaming = True
+        screen.action_cancel_stream()
+        bubble.append_content.assert_called_once_with(msg.STREAM_CANCELLED)
+        assert screen.streaming is False
+
+
+async def test_cancel_stream_severs_the_inference_transport():
+    """The cancel reaches the provider so a blocked SSE read unblocks."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        screen.streaming = True
+        services = MagicMock()
+        with patch("lilbee.cli.tui.screens.chat.get_services", return_value=services):
+            screen.action_cancel_stream()
+        services.cancel_inference.assert_called_once_with()
 
 
 async def test_apply_model_change_ignores_reentry_while_swapping():

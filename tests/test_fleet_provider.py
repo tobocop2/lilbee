@@ -1369,6 +1369,19 @@ def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) 
     assert warnings and all(r.exc_info is None for r in warnings)
 
 
+def test_cancel_inference_severs_chat_and_retiring_streams() -> None:
+    """The cancel reaches every chat replica, including a client a reload
+    already retired: the swap's settings write can retire the busy client
+    before the cancel lands."""
+    active, retired, embed = _fake_client(), _fake_client(), _fake_client()
+    p = _provider_with_clients({WorkerRole.CHAT: [active], WorkerRole.EMBED: [embed]})
+    p._retiring_clients = [retired]
+    p.cancel_inference()
+    active.abort_streams.assert_called_once_with()
+    retired.abort_streams.assert_called_once_with()
+    embed.abort_streams.assert_not_called()
+
+
 def test_warm_up_blocking_stamps_error_with_the_real_reason(monkeypatch) -> None:
     """A warm that dies before the chat warm begins still surfaces its reason.
 

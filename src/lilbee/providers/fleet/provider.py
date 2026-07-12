@@ -1520,12 +1520,17 @@ class FleetProvider:
                 log.debug("Prewarm read of %s stopped early.", shard, exc_info=True)
 
     def cancel_inference(self) -> None:
-        """No-op: a llama-server stops generating when its client disconnects.
+        """Sever every in-flight chat stream so its blocked reader unwinds.
 
-        The caller (the TUI chat worker) triggers that disconnect by closing the
-        active stream, so there is no in-process abort flag to flip here.
+        A cooperative worker cancel cannot reach a thread blocked in a socket
+        read, and the reader's own close runs only when its worker unwinds, so
+        the disconnect must happen here. Retired clients are swept too: a
+        model-swap reload retires a busy client before the cancel lands.
         """
-        return
+        with self._lock:
+            clients = [*self._clients.get(WorkerRole.CHAT, ()), *self._retiring_clients]
+        for client in clients:
+            client.abort_streams()
 
     def reload_role(self, role: WorkerRole, *, wait: bool = False) -> None:
         """Apply a model/settings change for *role* with current cfg.
