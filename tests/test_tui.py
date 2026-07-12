@@ -386,6 +386,19 @@ class TestChatScreenAsync:
                 mock_send.assert_not_called()
 
 
+class TestCatalogRefreshGuards:
+    def test_unmounted_refreshes_are_noops(self):
+        """A scheduled refresh landing while the screen is composing or being
+        dismissed has no containers to paint into and must not crash."""
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+        screen = CatalogScreen()
+        screen._refresh_grid()
+        screen._refresh_list()
+        assert not screen._grid_mounted()
+        assert not screen._list_mounted()
+
+
 class TestCatalogScreenAsync:
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_shows_featured(self, mock_catalog: mock.MagicMock) -> None:
@@ -415,9 +428,19 @@ class TestCatalogScreenAsync:
             await pilot.pause()
             catalog = CatalogScreen()
             app.push_screen(catalog)
-            await pilot.pause()
+            # Fixed single pauses race a loaded xdist worker: the key must not
+            # fire before the catalog is the active screen, and the dismissal
+            # needs time to process. Bounded condition loops on both sides.
+            for _ in range(40):
+                if app.screen is catalog:
+                    break
+                await pilot.pause(0.05)
+            assert app.screen is catalog
             await pilot.press("q")
-            await pilot.pause()
+            for _ in range(40):
+                if not isinstance(app.screen, CatalogScreen):
+                    break
+                await pilot.pause(0.05)
             # Catalog should be gone, chat screen visible
             assert not isinstance(app.screen, CatalogScreen)
 
