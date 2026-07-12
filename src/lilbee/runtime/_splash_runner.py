@@ -17,11 +17,11 @@ from collections.abc import Callable
 from enum import IntEnum
 
 from lilbee.runtime.bee_logo import (
+    BEE_LINES,
+    LOGO_WIDTH,
     ROSE_BRIGHT_XTERM,
     ROSE_DIM_XTERM,
     ROSE_MID_XTERM,
-    BEE_LINES,
-    LOGO_WIDTH,
     xterm_fg,
 )
 
