@@ -352,12 +352,19 @@ def _place_split(
     split widens past the fewest fitting cards via *chat_ctx_fit* (see
     :func:`plan_placement`); every other split takes the fewest that fit.
     """
+    from lilbee.providers.base import ProviderError
+
     by_free = sorted(remaining, key=lambda idx: remaining[idx], reverse=True)
     best: tuple[int, list[int], tuple[int, ...], tuple[int, ...]] | None = None
     for count in range(2, len(by_free) + 1):
         chosen = by_free[:count]
         ratio = _vram_proportional_split(chosen, remaining)
-        per_device = estimate_peak(model.role, ratio)
+        try:
+            per_device = estimate_peak(model.role, ratio)
+        except (ProviderError, OSError):
+            # An unsizable model cannot evaluate a split; the tight single-card
+            # path downstream still places it.
+            continue
         if len(per_device) != count or not all(
             peak <= remaining[idx] for idx, peak in zip(chosen, per_device, strict=True)
         ):

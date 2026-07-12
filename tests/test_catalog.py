@@ -1732,10 +1732,11 @@ class TestVisionMmprojFiles:
     def test_download_model_skips_mmproj_for_chat(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """download_model does NOT download mmproj for chat entries."""
+        """download_model does NOT download mmproj when the repo ships none."""
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = FEATURED_EMBEDDING[0]
         monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: False)
 
         download_calls: list[dict] = []
 
@@ -1747,6 +1748,33 @@ class TestVisionMmprojFiles:
         download_model(entry)
 
         assert len(download_calls) == 1
+
+    def test_download_model_fetches_mmproj_for_chat_classified_repo_shipping_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dual-use VL repo (chat by name and arch, mmproj sibling present) still
+        gets its projector, so a later vision_model assignment can run OCR."""
+        monkeypatch.setattr(cfg, "models_dir", tmp_path)
+        entry = FEATURED_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr(catalog.download, "repo_has_mmproj", lambda _repo: True)
+        monkeypatch.setattr(
+            catalog.download,
+            "_resolve_mmproj_filename",
+            lambda repo, pat: "mmproj-model-f16.gguf",
+        )
+
+        download_calls: list[dict] = []
+
+        def fake_download(**kwargs: Any) -> str:
+            download_calls.append(kwargs)
+            return _fake_download(**kwargs)
+
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+        download_model(entry)
+
+        filenames = [c["filename"] for c in download_calls]
+        assert "mmproj-model-f16.gguf" in filenames
 
     def test_download_model_vision_mmproj_resolution_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2597,3 +2625,49 @@ class TestRegisterDownloadedModel:
             cfg.models_dir = old
 
         assert captured == [(entry, existing)]
+
+
+class TestRepoHasMmproj:
+    """The mmproj sibling probe: authoritative vision signal, fail-open on errors."""
+
+    def _patch_model_info(self, monkeypatch: pytest.MonkeyPatch, siblings: list[str]) -> None:
+        from types import SimpleNamespace
+
+        info = SimpleNamespace(siblings=[SimpleNamespace(rfilename=f) for f in siblings])
+
+        class _Api:
+            def __init__(self, token: str | None = None) -> None:
+                pass
+
+            def model_info(self, _repo: str) -> object:
+                return info
+
+        monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+
+    def test_true_when_repo_ships_an_mmproj(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.catalog import hf_client
+
+        self._patch_model_info(monkeypatch, ["model-Q4_K_M.gguf", "mmproj-model-f16.gguf"])
+        hf_client.repo_has_mmproj.cache_clear()
+        assert hf_client.repo_has_mmproj("org/vl-repo") is True
+
+    def test_false_when_no_mmproj_sibling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.catalog import hf_client
+
+        self._patch_model_info(monkeypatch, ["model-Q4_K_M.gguf"])
+        hf_client.repo_has_mmproj.cache_clear()
+        assert hf_client.repo_has_mmproj("org/chat-repo") is False
+
+    def test_fails_open_to_false_on_network_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.catalog import hf_client
+
+        class _Api:
+            def __init__(self, token: str | None = None) -> None:
+                pass
+
+            def model_info(self, _repo: str) -> object:
+                raise OSError("offline")
+
+        monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+        hf_client.repo_has_mmproj.cache_clear()
+        assert hf_client.repo_has_mmproj("org/unreachable") is False
