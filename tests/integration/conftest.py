@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 from pathlib import Path
 
@@ -61,7 +62,16 @@ def _integration_loop():
             task.cancel()
         if pending:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
         loop.run_until_complete(asyncio.sleep(0.1))
+        # Windows + Python 3.11: subprocess/pipe transports left to the garbage
+        # collector finalize after the loop closes, and their __del__ then blows
+        # up during interpreter shutdown (pytest dies on stdout.flush() at
+        # exit). Collect while the proactor is still alive so every transport
+        # closes through the loop, then give the loop one last spin to run the
+        # close callbacks. Harmless on other platforms/versions.
+        gc.collect()
+        loop.run_until_complete(asyncio.sleep(0))
         loop.close()
 
 
