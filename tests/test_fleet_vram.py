@@ -348,3 +348,104 @@ class TestBatchSizeFlags:
         estimate_instance_footprint(model_file, **common)
         estimate_instance_footprint(model_file, **common, batch_size=2048)
         assert len(recorder) == 2  # a different batch size is a different estimate
+
+
+class TestProjectorCorrection:
+    """A multimodal projector is charged at its unified-memory delta, floored at its
+    weights, instead of gguf-parser's inflated discrete-GPU merge (v0.24.x adds ~10
+    GiB of phantom compute buffer to any model+mmproj estimate)."""
+
+    _GB = 1024**3
+
+    def _patch_two_run_parser(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        base_json: str,
+        mmproj_json: str,
+        recorder: list[list[str]] | None = None,
+    ) -> None:
+        monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+
+        def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+            if recorder is not None:
+                recorder.append(argv)
+            return SimpleNamespace(stdout=mmproj_json if "--mmproj-path" in argv else base_json)
+
+        monkeypatch.setattr(vram_mod.subprocess, "run", fake_run)
+
+    def _estimate(self, model_file: Path, mmproj: Path) -> GgufVramEstimate:
+        return estimate_instance_footprint(
+            model_file,
+            ctx=2048,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+            mmproj_path=mmproj,
+        )
+
+    def test_projector_vram_is_the_uma_delta_not_the_nonuma_merge(
+        self, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Without the projector: 3GB nonuma / 2GB uma. With it the parser claims
+        # 13GB nonuma but a sane 2.8GB uma. The projector must cost the 0.8GB the
+        # unified model attributes to it, not the 10GB phantom.
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"G" * 1024)  # far below the uma delta
+        self._patch_two_run_parser(
+            monkeypatch,
+            base_json=_sample_json(ram_uma=0, ram_nonuma=0, vrams=[(2 * self._GB, 3 * self._GB)]),
+            mmproj_json=_sample_json(
+                ram_uma=0, ram_nonuma=0, vrams=[(int(2.8 * self._GB), 13 * self._GB)]
+            ),
+        )
+        est = self._estimate(model_file, mmproj)
+        assert est.vram_bytes == 3 * self._GB + int(0.8 * self._GB)
+        # The unified estimate was never inflated; it passes through untouched.
+        assert est.unified_bytes == int(2.8 * self._GB)
+
+    def test_projector_charge_is_floored_at_its_weights(
+        self, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A projector whose weights are mmap-shared can show a near-zero uma delta,
+        # but offloaded weights still occupy VRAM: floor the charge at the file size.
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"G" * 4096)  # weights larger than the 1000-byte uma delta
+        self._patch_two_run_parser(
+            monkeypatch,
+            base_json=_sample_json(ram_uma=0, ram_nonuma=0, vrams=[(2_000, 3_000)]),
+            mmproj_json=_sample_json(ram_uma=0, ram_nonuma=0, vrams=[(3_000, 13_000)]),
+        )
+        est = self._estimate(model_file, mmproj)
+        assert est.vram_bytes == 3_000 + 4096  # base plus the projector weights floor
+
+    def test_projector_lands_on_the_first_device_of_a_split(
+        self, model_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"G" * 4096)
+        self._patch_two_run_parser(
+            monkeypatch,
+            base_json=_sample_json(
+                ram_uma=0,
+                ram_nonuma=0,
+                vrams=[(2_000, 3_000), (2_000, 3_000)],
+            ),
+            mmproj_json=_sample_json(
+                ram_uma=0,
+                ram_nonuma=0,
+                vrams=[(2_000, 9_000), (2_000, 9_000)],
+            ),
+        )
+        est = estimate_instance_footprint(
+            model_file,
+            ctx=2048,
+            slots=1,
+            gpu_layers=-1,
+            flash_attn=True,
+            kv_cache_type=KvCacheType.F16,
+            mmproj_path=mmproj,
+            tensor_split=(1, 1),
+        )
+        assert est.per_device_vram == (3_000 + 4096, 3_000)
