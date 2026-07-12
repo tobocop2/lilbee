@@ -14,7 +14,13 @@ from pydantic import BaseModel
 
 from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
 from lilbee.catalog.featured import DEFAULT_MMPROJ_PATTERN, VISION_MMPROJ_FILES
-from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers, hf_token
+from lilbee.catalog.hf_client import (
+    DEFAULT_TIMEOUT,
+    HF_API_URL,
+    hf_headers,
+    hf_token,
+    repo_has_mmproj,
+)
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.refs import pick_best_gguf
 from lilbee.catalog.types import ModelTask
@@ -238,10 +244,16 @@ def _finalize_download(
     on_progress: ProgressCallback | None = None,
     on_complete: CompleteCallback | None = None,
 ) -> Path:
-    """Run post-download hooks: registry write (via on_complete) + mmproj fetch."""
+    """Run post-download hooks: registry write (via on_complete) + mmproj fetch.
+
+    The mmproj is fetched whenever the repo ships one, not only for VISION-task
+    entries: dual-use VL repos (Qwen-VL, InternVL, SmolVLM, gemma-3) classify as
+    chat by name and arch, and without their projector the vision role dies at
+    plan time with a missing-mmproj warning a re-pull cannot cure.
+    """
     if on_complete is not None:
         on_complete(entry, dest)
-    if entry.task == ModelTask.VISION:
+    if entry.task == ModelTask.VISION or repo_has_mmproj(entry.hf_repo):
         download_mmproj(entry, on_progress=on_progress)
     return dest
 
