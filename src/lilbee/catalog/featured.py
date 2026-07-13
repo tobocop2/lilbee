@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from lilbee.catalog.models import CatalogModel
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelCompat, ModelTask
 
 
 def _load_featured() -> tuple[
@@ -31,6 +31,8 @@ def _load_featured() -> tuple[
                 downloads=0,
                 task=task,
                 recommended=m.get("recommended", False),
+                # Curated entries are hand-verified against the bundled engine.
+                compat=ModelCompat.SUPPORTED,
             )
             for m in data.get(task, [])
         )

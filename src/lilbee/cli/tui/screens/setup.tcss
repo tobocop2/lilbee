@@ -30,23 +30,19 @@
     padding: 0 2;
 }
 
-/* Setup-wizard cards inherit ModelCard's catalog styling (tall $secondary 50%
- * border, $accent focus/hover) verbatim; only the wizard-specific "-selected"
- * state overlays an extra cue so the picked card reads as committed. */
+/* Exactly one treatment means "Enter acts here": the focused grid's
+ * highlighted card gets the strong filled+accent look (see the GridSelect
+ * block below). A remembered pick ("-selected") in any grid keeps only a
+ * dimmed accent border so it never competes with the cursor. */
 
 ModelCard.-selected {
-    background: $primary 30%;
-    border: tall $accent;
+    background: transparent;
+    border: tall $accent 50%;
 }
 
 GridSelect:focus ModelCard.-highlight.-selected {
     background: $primary 30%;
     border: tall $accent;
-}
-
-GridSelect:focus ModelCard.-highlight #card-hint {
-    color: $primary;
-    text-style: bold italic;
 }
 
 .section-heading {
@@ -64,15 +60,10 @@ GridSelect {
     border: round $secondary 50%;
     keyline: none;
 
-    &.-highlight {
-        background: $surface;
-        border: tall $primary 30%;
-    }
-
     &:focus * {
         &.-highlight {
-            background: $surface;
-            border: tall $primary;
+            background: $primary 30%;
+            border: tall $accent;
         }
     }
 }

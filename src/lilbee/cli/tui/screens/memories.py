@@ -17,7 +17,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Input
+from textual.widgets import DataTable, Input, Static
 
 from lilbee.app.memory import forget, list_memories, memory_enabled, set_memory_shared
 from lilbee.cli.tui import messages as msg
@@ -72,6 +72,7 @@ class MemoriesScreen(Screen[None]):
         yield Vertical(
             Input(placeholder=msg.MEMORIES_SEARCH_PLACEHOLDER, id="memories-search"),
             table,
+            Static("", id="memories-empty"),
             id="memories-layout",
         )
         with BottomBars():
@@ -91,6 +92,7 @@ class MemoriesScreen(Screen[None]):
         """Fetch memories and populate the table, respecting the active filter."""
         table = self.query_one("#memories-table", DataTable)
         table.clear()
+        self._set_empty_state(None)
         if not memory_enabled():
             self.notify(msg.MEMORIES_DISABLED, severity="warning")
             self._memories = []
@@ -105,6 +107,9 @@ class MemoriesScreen(Screen[None]):
 
         visible = self._visible_memories()
         if not visible:
+            self._set_empty_state(
+                msg.MEMORIES_NO_MATCHES if self._filter else msg.MEMORIES_EMPTY_STATE
+            )
             self.notify(msg.MEMORIES_EMPTY)
             return
         for m in visible:
@@ -114,6 +119,16 @@ class MemoriesScreen(Screen[None]):
                 m.text,
                 key=m.id,
             )
+
+    def _set_empty_state(self, text: str | None) -> None:
+        """Show the under-table hint line with *text*, or hide it when None."""
+        empty = self.query_one("#memories-empty", Static)
+        self.query_one("#memories-layout", Vertical).set_class(text is not None, "-empty")
+        if text is None:
+            empty.remove_class("-visible")
+            return
+        empty.update(text)
+        empty.add_class("-visible")
 
     def _visible_memories(self) -> list[MemoryRow]:
         """Apply the current text filter to the loaded memory list."""

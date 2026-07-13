@@ -223,6 +223,11 @@ _CSS_FILE = Path(__file__).parent / "model_bar.tcss"
 
 _CLOUD_WARNING_ID = "model-bar-cloud-warning"
 
+# Below this width the bar degrades: disabled role rows hide, picker labels
+# compact, and the mode toggle docks right so it never clips off-screen.
+_NARROW_BAR_WIDTH = 100
+_NARROW_CLASS = "-narrow"
+
 _SCOPE_TO_LABEL: dict[str, str] = {
     "chat": msg.MODEL_BAR_CHAT_LABEL,
     "embed": msg.MODEL_BAR_EMBED_LABEL,
@@ -543,6 +548,10 @@ class ModelBar(Widget, can_focus=False):
         self._refresh_cloud_warning()
         self._scan_models()
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Toggle the narrow-layout class so the bar degrades instead of clipping."""
+        self.set_class(event.size.width < _NARROW_BAR_WIDTH, _NARROW_CLASS)
 
     def _on_settings_changed(self, payload: tuple[str, object]) -> None:
         key, _ = payload

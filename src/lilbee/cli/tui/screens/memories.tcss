@@ -9,3 +9,20 @@
 #memories-table {
     height: 1fr;
 }
+
+#memories-layout.-empty #memories-table {
+    height: auto;
+}
+
+#memories-empty {
+    display: none;
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+    text-align: center;
+    color: $text-muted;
+}
+
+#memories-empty.-visible {
+    display: block;
+}

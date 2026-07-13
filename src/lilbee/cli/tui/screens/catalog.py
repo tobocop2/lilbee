@@ -196,7 +196,7 @@ class CatalogScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "go_back", "Back", show=True, group=_ACTION_GROUP),
-        Binding("escape", "dismiss_filter", "", show=False),
+        Binding("escape", "go_back", "", show=False),
         # Surfaced outside _ACTION_GROUP so the "Grid/List" affordance prints
         # in full in the footer instead of collapsing into the compact pill.
         # Keep the label terse; the row of bindings runs out of space on
@@ -1925,27 +1925,13 @@ class CatalogScreen(Screen[None]):
 
     def action_go_back(self) -> None:
         # An open filter collapses to hidden (restoring grid/list focus);
-        # otherwise q leaves for Chat.
+        # otherwise q / Esc leaves for Chat.
         if self._filter_open:
             self._search_input.value = ""
             self._search_input.add_class(_HIDDEN_CLASS)
             self._focus_list_or_grid()
             return
         self.app.switch_view("Chat")
-
-    def action_dismiss_filter(self) -> None:
-        """Esc: hide the filter Input + restore grid/list focus; never dismiss.
-
-        Heavy-interaction QA showed a stray Esc (from info-modal-then-Esc
-        cycles, drawer thrash, filter typing chains) would dismiss the
-        catalog mid-task and leak subsequent keystrokes into the chat
-        Input on the next screen. Esc now only handles the filter; the
-        dismiss path is `q` (action_go_back) which still does both.
-        """
-        if self._filter_open:
-            self._search_input.value = ""
-            self._search_input.add_class(_HIDDEN_CLASS)
-            self._focus_list_or_grid()
 
     def _focus_list_or_grid(self) -> None:
         """Move focus from the filter input to the active view's list/grid."""
