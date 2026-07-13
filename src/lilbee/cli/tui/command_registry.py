@@ -66,7 +66,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_theme",
         aliases=(),
         args_hint="[name]",
-        help_text="Switch theme (no arg lists themes)",
+        help_text="Switch theme (no arg opens the theme list)",
         has_arg_completion=True,
     ),
     SlashCommand(
