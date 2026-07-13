@@ -237,12 +237,12 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
 
-<details>
-<summary><b>Model families tested end to end on real GPUs, per role. Click to expand.</b></summary>
-
 ### Tested model families
 
 One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method. Between them, these families are the architectures behind most of the 190,000+ GGUF model repos on Hugging Face: if a model's family is listed, its variants and quants are expected to work.
+
+<details>
+<summary><b>The family tables, per role. Click to expand.</b></summary>
 
 **Vision** (all on a single 12 GB card, projector fetched by the pull itself):
 
