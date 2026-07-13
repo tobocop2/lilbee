@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from lilbee.retrieval.query.dedup import (
-    deduplicate_sources,
     diversify_sources,
     filter_results,
     prepare_results,
@@ -13,6 +12,7 @@ from lilbee.retrieval.query.formatting import (
     build_context,
     display_source_path,
     format_source,
+    format_sources_block,
     strip_llm_citations,
 )
 from lilbee.retrieval.query.searcher import AskResult, ChatMessage, Searcher
@@ -22,11 +22,11 @@ __all__ = [
     "ChatMessage",
     "Searcher",
     "build_context",
-    "deduplicate_sources",
     "display_source_path",
     "diversify_sources",
     "filter_results",
     "format_source",
+    "format_sources_block",
     "prepare_results",
     "sort_by_relevance",
     "strip_llm_citations",
