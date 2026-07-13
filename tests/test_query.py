@@ -11,17 +11,19 @@ from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.retrieval.query import (
     Searcher,
     build_context,
-    deduplicate_sources,
     filter_results,
     format_source,
+    format_sources_block,
     sort_by_relevance,
     strip_llm_citations,
 )
 from lilbee.retrieval.query.dedup import _relevance_weight
 from lilbee.retrieval.query.formatting import (
+    StreamingCitationFilter,
     _extract_cited_indices,
     _format_citation,
     cited_subset,
+    unique_sources,
 )
 from lilbee.retrieval.query.searcher import _GROUNDED_REFUSAL, SEARCH_NEEDS_EMBEDDER
 from tests.conftest import make_citation
@@ -190,33 +192,79 @@ class TestFormatSource:
         r = _make_result(source="readme.md", content_type="text")
         result = format_source(r)
         assert "readme.md" in result
-        # Text sources should not carry page/line annotations appended after
-        # the source path. The path itself may contain "page" or "line" as
-        # substrings (e.g. tmp dirs), so only check the tail.
-        tail = result.split("readme.md", 1)[1]
-        assert "page" not in tail
-        assert "line" not in tail
+        # Text sources carry no page/line locator suffix (", page N" / ", line N").
+        assert ", page" not in result
+        assert ", line" not in result
+
+    def test_renders_a_clickable_markdown_link(self):
+        r = _make_result(source="notes/readme.md", content_type="text")
+        result = format_source(r)
+        # [label](file-url): readable label, file:// target so the reader can open it.
+        assert result.startswith("[notes/readme.md](file://")
+        assert result.endswith(".md)")
+
+    def test_web_source_gets_a_readable_host_slug_label(self):
+        r = _make_result(source="_web/www.example.com/how-to-foo/index.md", content_type="text")
+        assert format_source(r).startswith("[example.com · how-to-foo](file://")
+
+    def test_degenerate_web_path_keeps_raw_source_label(self):
+        # Nothing left after dropping index.md: fall back to the stored path.
+        r = _make_result(source="_web/index.md", content_type="text")
+        assert format_source(r).startswith("[_web/index.md](file://")
+
+    def test_unresolvable_path_renders_plain_label_without_link(self, monkeypatch):
+        # A source that can't resolve to a file URL degrades to bare text. The
+        # failure is injected directly: OS-level triggers like null bytes vary
+        # by platform and Python version (Windows 3.13 percent-encodes NUL
+        # instead of raising).
+        class _UnresolvableDir:
+            def __truediv__(self, other: str) -> "_UnresolvableDir":
+                raise OSError("cannot resolve")
+
+        monkeypatch.setattr(
+            "lilbee.retrieval.query.formatting.cfg",
+            mock.Mock(documents_dir=_UnresolvableDir()),
+        )
+        r = _make_result(source="doc.md", content_type="text")
+        assert format_source(r) == "doc.md"
 
 
-class TestDeduplicateSources:
-    def test_removes_duplicates(self):
+class TestUniqueSources:
+    def test_first_chunk_per_distinct_source_in_order(self):
         results = [
-            _make_result(source="a.pdf", page_start=1, page_end=1),
-            _make_result(source="a.pdf", page_start=1, page_end=1),
-            _make_result(source="b.pdf", page_start=2, page_end=2),
+            _make_result(source="a.md", chunk="a1"),
+            _make_result(source="b.md", chunk="b1"),
+            _make_result(source="a.md", chunk="a2"),
         ]
-        citations = deduplicate_sources(results)
-        assert len(citations) == 2
+        uniq = unique_sources(results)
+        assert [r.source for r in uniq] == ["a.md", "b.md"]
+        assert uniq[0].chunk == "a1"
 
-    def test_caps_at_max_citations(self):
-        results = [_make_result(source=f"file{i}.pdf", page_start=i, page_end=i) for i in range(10)]
-        citations = deduplicate_sources(results, max_citations=5)
-        assert len(citations) == 5
 
-    def test_custom_max_citations(self):
-        results = [_make_result(source=f"file{i}.pdf", page_start=i, page_end=i) for i in range(10)]
-        citations = deduplicate_sources(results, max_citations=3)
-        assert len(citations) == 3
+class TestFormatSourcesBlock:
+    def test_numbers_each_unique_source_matching_inline_markers(self):
+        results = [
+            _make_result(source="a.md", content_type="text"),
+            _make_result(source="b.md", content_type="text"),
+        ]
+        block = format_sources_block(results)
+        assert block.startswith("\n\nSources:\n\n")
+        assert "1. [a.md](file://" in block
+        assert "2. [b.md](file://" in block
+
+    def test_collapses_repeated_source_to_one_number(self):
+        results = [
+            _make_result(source="a.md", content_type="text"),
+            _make_result(source="a.md", content_type="text"),
+            _make_result(source="b.md", content_type="text"),
+        ]
+        block = format_sources_block(results)
+        assert "1. [a.md](file://" in block
+        assert "2. [b.md](file://" in block
+        assert "3." not in block
+
+    def test_empty_when_no_sources(self):
+        assert format_sources_block([]) == ""
 
 
 class TestSortByRelevance:
@@ -317,12 +365,27 @@ class TestDiversifySources:
 
 
 class TestBuildContext:
-    def test_numbers_chunks(self):
-        results = [_make_result(chunk="chunk one"), _make_result(chunk="chunk two")]
+    def test_numbers_passages_by_source(self):
+        results = [
+            _make_result(source="a.md", chunk="chunk one"),
+            _make_result(source="b.md", chunk="chunk two"),
+        ]
         ctx = build_context(results)
-        assert "[1]" in ctx
-        assert "[2]" in ctx
-        assert "chunk one" in ctx
+        assert "[1] chunk one" in ctx
+        assert "[2] chunk two" in ctx
+
+    def test_passages_from_the_same_source_share_a_number(self):
+        # Stable, streamable numbers that map 1:1 to the Sources block: two
+        # passages from one file are both [1], the next distinct file is [2].
+        results = [
+            _make_result(source="a.md", chunk="one"),
+            _make_result(source="a.md", chunk="two"),
+            _make_result(source="b.md", chunk="three"),
+        ]
+        ctx = build_context(results)
+        assert "[1] one" in ctx
+        assert "[1] two" in ctx
+        assert "[2] three" in ctx
 
 
 @pytest.mark.usefixtures("wiki_enabled")
@@ -537,6 +600,71 @@ class TestFormattingHelpers:
         assert cited_subset("[5] does not exist", [_make_result()]) == []
 
 
+class TestStreamingCitationFilter:
+    """The streamed answer must never surface a model-generated Sources block,
+    since lilbee appends its own authoritative one right after."""
+
+    @staticmethod
+    def _run(chunks: list[str]) -> tuple[str, StreamingCitationFilter]:
+        f = StreamingCitationFilter()
+        shown = "".join(f.feed(c) for c in chunks) + f.flush()
+        return shown, f
+
+    def test_passes_answer_without_a_citation_block_through_verbatim(self):
+        shown, f = self._run(["The answer ", "is 42.\n\nMore ", "detail here."])
+        assert shown == "The answer is 42.\n\nMore detail here."
+        assert f.answer == "The answer is 42.\n\nMore detail here."
+
+    def test_drops_a_trailing_sources_block(self):
+        shown, f = self._run(["Grounded answer [1].", "\n\nSources:\n- made-up.pdf"])
+        assert "made-up.pdf" not in shown
+        assert "Sources:" not in shown
+        assert shown.startswith("Grounded answer [1].")
+        assert "made-up.pdf" not in f.answer
+
+    def test_never_leaks_a_heading_split_across_chunks(self):
+        # "References:" arrives one letter at a time, then its list.
+        chunks = ["Body text.", "\n\nRef", "erences", ":", "\n- x.pdf", "\n- y.pdf"]
+        shown, _ = self._run(chunks)
+        assert "References" not in shown
+        assert "x.pdf" not in shown
+        assert shown.startswith("Body text.")
+
+    def test_prose_after_a_heading_line_streams_through(self):
+        # A heading the answer legitimately discusses is not a citation block:
+        # no list follows, so the heading and its prose both reach the reader.
+        chunks = ["The paper is structured simply.", "\n\nReferences:", "\nIt lists 40 works."]
+        shown, f = self._run(chunks)
+        assert "References:" in shown
+        assert "It lists 40 works." in shown
+        assert f.answer.endswith("It lists 40 works.")
+
+    def test_dangling_heading_at_stream_end_is_dropped(self):
+        # The model emitted a citation heading and stopped; showing it would put
+        # a stray "Sources:" right above lilbee's authoritative block.
+        shown, f = self._run(["Grounded answer [1].", "\n\nSources:\n"])
+        assert "Sources" not in shown
+        assert shown == "Grounded answer [1]."
+        assert f.answer == "Grounded answer [1]."
+
+    def test_heading_is_held_not_shown_while_ambiguous(self):
+        # Mid-stream, a bare heading must not be emitted until the next line
+        # decides list (drop) versus prose (show).
+        f = StreamingCitationFilter()
+        assert f.feed("Answer.\n\nSources:\n") == "Answer."
+        assert f.feed("- fake.pdf\n- other.pdf") == ""
+        assert f.flush() == ""
+
+    def test_holds_only_the_trailing_partial_line(self):
+        # A completed line is released promptly (its newline waits with the next
+        # line so a citation heading right after it can never leak); only the
+        # final line is held until flush.
+        f = StreamingCitationFilter()
+        assert f.feed("first line\n") == "first line"
+        assert f.feed("second line") == ""
+        assert f.flush() == "\nsecond line"
+
+
 class TestCitedSources:
     """bb-ky3: ask_raw exposes the answer's cited subset so JSON consumers get
     the same citation truth the string method computes."""
@@ -558,15 +686,18 @@ class TestCitedSources:
         assert result.sources
         assert result.cited_sources == []
 
-    def test_ask_lists_only_the_cited_source(self, mock_svc):
+    def test_ask_numbers_sources_to_match_inline_markers(self, mock_svc):
+        # The text answer lists every retrieved source numbered, so an inline [1]
+        # resolves to source 1 in the block. (Which sources were actually cited
+        # is exposed separately via ask_raw().cited_sources, tested above.)
         mock_svc.store.search.return_value = [
             _make_result(source="a.pdf", chunk="alpha", distance=0.1),
             _make_result(source="b.pdf", chunk="beta", distance=0.2),
         ]
         mock_svc.provider.chat.return_value = _text_result("From [1] we learn the answer.")
         answer = get_services().searcher.ask("q")
-        assert "a.pdf" in answer
-        assert "b.pdf" not in answer
+        assert "1. [a.pdf](file://" in answer
+        assert "2. [b.pdf](file://" in answer
 
 
 class TestContextBudget:
@@ -701,6 +832,20 @@ class TestAskStream:
         combined = "".join(st.content for st in stream_tokens)
         assert "Hello world" in combined
         assert "Sources:" in combined
+
+    def test_model_sources_block_is_suppressed_leaving_one_authoritative_list(self, mock_svc):
+        """A model that appends its own Sources block must not double up with
+        lilbee's: the streamed output carries exactly one Sources block and none
+        of the model's invented source lines."""
+        mock_svc.store.search.return_value = [_make_result(source="real.pdf", chunk="alpha")]
+        mock_svc.provider.chat.return_value = iter(
+            ["Grounded answer [1].", "\n\nSources:\n- invented.pdf"]
+        )
+        combined = "".join(st.content for st in get_services().searcher.ask_stream("test"))
+        assert combined.count("Sources:") == 1
+        assert "invented.pdf" not in combined
+        assert "real.pdf" in combined
+        assert "Grounded answer [1]." in combined
 
     def test_empty_results_streams_grounded_refusal(self, mock_svc):
         """Zero RAG hits stream a single grounded-refusal token, no Sources block,
@@ -2096,6 +2241,16 @@ class TestStripLlmCitations:
         text = "The sources indicate that oil capacity is 5 quarts."
         assert strip_llm_citations(text) == text
 
+    def test_preserves_heading_followed_by_prose(self):
+        # An answer discussing a document's References section is not a
+        # citation block; only heading-plus-list gets stripped.
+        text = "The paper has three parts.\n\nReferences:\nIt lists 40 works."
+        assert strip_llm_citations(text) == text
+
+    def test_removes_dangling_heading(self):
+        text = "The answer is 42.\n\nSources:\n"
+        assert strip_llm_citations(text) == "The answer is 42."
+
 
 class TestExtractCitedIndices:
     def test_extracts_multiple(self):
@@ -2108,15 +2263,17 @@ class TestExtractCitedIndices:
         assert _extract_cited_indices("[1] and [1] again.") == {1}
 
 
-class TestAskCitesOnlyUsedSources:
-    def test_ask_cites_only_referenced(self, mock_svc):
+class TestAskSourcesBlock:
+    def test_ask_numbers_all_sources_so_markers_resolve(self, mock_svc):
+        # Every retrieved source is listed and numbered so an inline [1] resolves
+        # to source 1; the answer no longer drops the passages it didn't cite.
         r1 = _make_result(source="used.pdf", chunk="oil info", chunk_index=0)
         r2 = _make_result(source="unused.pdf", chunk="unrelated", chunk_index=1)
         mock_svc.store.search.return_value = [r1, r2]
         mock_svc.provider.chat.return_value = _text_result("Oil is 5 quarts [1].")
         answer = get_services().searcher.ask("oil capacity?")
-        assert "used.pdf" in answer
-        assert "unused.pdf" not in answer
+        assert "1. [used.pdf](file://" in answer
+        assert "2. [unused.pdf](file://" in answer
 
     def test_ask_falls_back_to_all_sources_when_no_refs(self, mock_svc):
         r1 = _make_result(source="a.pdf", chunk="oil info", chunk_index=0)
@@ -2135,16 +2292,25 @@ class TestAskCitesOnlyUsedSources:
         assert answer.count("Sources:") == 1
 
 
-class TestAskStreamCitesOnlyUsedSources:
-    def test_stream_cites_only_referenced(self, mock_svc):
+class TestAskStreamSourcesBlock:
+    def test_stream_releases_held_back_final_line_before_sources(self, mock_svc):
+        # The filter holds the last (possibly partial) line until the stream
+        # ends; the flush tail must still reach the reader ahead of the block.
+        mock_svc.store.search.return_value = [_make_result(source="a.pdf", chunk="oil")]
+        mock_svc.provider.chat.return_value = iter(["First line [1].\n", "Held final line."])
+        combined = "".join(st.content for st in get_services().searcher.ask_stream("q"))
+        assert "First line [1].\nHeld final line." in combined
+        assert combined.index("Held final line.") < combined.index("Sources:")
+
+    def test_stream_numbers_all_sources_so_markers_resolve(self, mock_svc):
         r1 = _make_result(source="used.pdf", chunk="oil info", chunk_index=0)
         r2 = _make_result(source="unused.pdf", chunk="unrelated", chunk_index=1)
         mock_svc.store.search.return_value = [r1, r2]
         mock_svc.provider.chat.return_value = iter(["Oil is 5 quarts ", "[1]."])
         tokens = list(get_services().searcher.ask_stream("oil capacity?"))
         combined = "".join(st.content for st in tokens)
-        assert "used.pdf" in combined
-        assert "unused.pdf" not in combined
+        assert "1. [used.pdf](file://" in combined
+        assert "2. [unused.pdf](file://" in combined
 
     def test_stream_falls_back_when_no_refs(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(source="a.pdf", chunk="oil")]

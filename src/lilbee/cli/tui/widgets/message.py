@@ -6,10 +6,12 @@ import time
 from pathlib import Path
 from typing import ClassVar
 
+from markdown_it import MarkdownIt
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.content import Content
 from textual.widgets import Collapsible, Markdown, Static
+from typing_extensions import override
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
@@ -21,6 +23,26 @@ _MD_UPDATE_INTERVAL = 0.1
 
 _SPEAKER_YOU = "[bold $primary]you[/]"
 _SPEAKER_LILBEE = "[bold $success]lilbee[/]"
+
+
+class _AnswerMarkdownIt(MarkdownIt):
+    """Markdown parser for answers, additionally allowing ``file:`` links.
+
+    markdown-it rejects ``file:`` destinations by default (a web-context XSS
+    guard), which left the Sources block's citation links rendering as raw
+    ``[label](file://...)`` text. Answers link to the reader's own documents on
+    disk, so re-admit the scheme; everything else keeps the default validation.
+    """
+
+    @override
+    def validateLink(self, url: str) -> bool:
+        return url.startswith("file://") or super().validateLink(url)
+
+
+def _answer_markdown_parser() -> MarkdownIt:
+    """Textual's default gfm-like parser with ``file:`` links admitted."""
+    return _AnswerMarkdownIt("gfm-like")
+
 
 _REASONING_BLOCK_CLASS = "reasoning-block"
 _REASONING_STREAMING_CLASS = "-streaming"
@@ -83,9 +105,19 @@ class AssistantMessage(Vertical):
         self.mount(header, before=self._content_widget)
 
     def _build_content_widget(self) -> Markdown | Static:
-        """Create the content widget based on the current rendering mode."""
+        """Create the content widget based on the current rendering mode.
+
+        ``open_links=False``: clicks route to the chat screen's link handler,
+        which opens ``file:`` citations with the OS opener instead of the
+        browser the default handling would use.
+        """
         if self._use_markdown:
-            return Markdown("", classes="response-md")
+            return Markdown(
+                "",
+                classes="response-md",
+                parser_factory=_answer_markdown_parser,
+                open_links=False,
+            )
         return Static("", classes="response-md")
 
     @property
