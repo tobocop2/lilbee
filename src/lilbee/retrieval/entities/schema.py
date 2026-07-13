@@ -1,11 +1,11 @@
 """Typed entity extraction: the schema artifact and the entities table.
 
 The extraction taxonomy is induced from the corpus, not fixed: a general NER
-tag set has no notion of the identifier types a specific corpus carries, so a
-schema built from a sample is proposed first, written to a reviewable JSON
-artifact, and only then applied at scale. The artifact is the contract: a
-human (or agent) can edit types, patterns, and synonyms before paying for the
-corpus-wide pass.
+tag set has no notion of the identifier types a specific corpus carries.
+Sync induces a schema from a corpus sample and applies it automatically; the
+JSON artifact it writes is the contract for later tuning: a human (or agent)
+can edit types, patterns, and synonyms after the fact, and the next sync
+detects the edit and re-applies it across the corpus.
 """
 
 from __future__ import annotations
@@ -52,25 +52,60 @@ class EntityType(BaseModel):
         return slug
 
 
+# Plural forms the suffix rules below can't produce, mapped both ways.
+_IRREGULAR_PLURALS = {
+    "person": "people",
+    "man": "men",
+    "woman": "women",
+    "child": "children",
+    "foot": "feet",
+    "tooth": "teeth",
+    "mouse": "mice",
+    "goose": "geese",
+}
+_IRREGULAR_SINGULARS = {plural: singular for singular, plural in _IRREGULAR_PLURALS.items()}
+
+
+def noun_variants(noun: str) -> set[str]:
+    """Normalized spelling variants of a noun phrase: itself plus
+    singular/plural forms of its last word ("tail numbers" ~ "tail number",
+    "people" ~ "person"). Over-generated junk forms match nothing; a missed
+    form only fails to resolve, never resolves wrongly.
+    """
+    normalized = " ".join(noun.strip().lower().split())
+    if not normalized:
+        return set()
+    head, _, last = normalized.rpartition(" ")
+    prefix = head + " " if head else ""
+    forms = {last}
+    if last in _IRREGULAR_PLURALS:
+        forms.add(_IRREGULAR_PLURALS[last])
+    if last in _IRREGULAR_SINGULARS:
+        forms.add(_IRREGULAR_SINGULARS[last])
+    if last.endswith("ies") and len(last) > len("ies"):
+        forms.add(last[:-3] + "y")
+    if last.endswith("y"):
+        forms.add(last[:-1] + "ies")
+    if last.endswith(("ses", "xes", "zes", "ches", "shes")):
+        forms.add(last[:-2])
+    forms.add(last[:-1] if last.endswith("s") else last + "s")
+    return {prefix + form for form in forms}
+
+
 class EntitySchema(BaseModel):
-    """The reviewable extraction contract for one corpus."""
+    """The editable extraction contract for one corpus."""
 
     types: list[EntityType]
 
     def type_for_noun(self, noun: str) -> EntityType | None:
         """Resolve a question noun (singular or plural) to a type, if any."""
-        wanted = noun.strip().lower()
-        candidates = {wanted}
-        if wanted.endswith("s"):
-            candidates.add(wanted[:-1])
-        else:
-            candidates.add(wanted + "s")
+        candidates = noun_variants(noun)
         for entity_type in self.types:
             names = {entity_type.name, entity_type.name.replace("_", " ")}
-            names.update(s.strip().lower() for s in entity_type.synonyms)
-            expanded = set(names)
-            for n in names:
-                expanded.add(n + "s" if not n.endswith("s") else n[:-1])
+            names.update(entity_type.synonyms)
+            expanded: set[str] = set()
+            for name in names:
+                expanded |= noun_variants(name)
             if candidates & expanded:
                 return entity_type
         return None

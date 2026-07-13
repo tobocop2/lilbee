@@ -28,6 +28,18 @@ class TestDocumentReferences:
         assert document_references("which documents mention the harbor?") == []
         assert document_references("what do the files say about travel?") == []
 
+    def test_apostrophes_are_not_quotes(self):
+        # Contractions and possessives must not pair into a phantom quoted
+        # name ("what's ... Alice's" would otherwise yield "s in Alice").
+        assert document_references("what's in Alice's summary about the harbor?") == []
+
+    def test_quoted_name_may_contain_an_apostrophe(self):
+        refs = document_references('open "the keeper\'s log" for me')
+        assert refs == ["the keeper's log"]
+
+    def test_mismatched_quote_characters_do_not_pair(self):
+        assert document_references("it was labeled \"harbor log' by someone") == []
+
     def test_generic_noun_after_document_is_not_a_reference(self):
         assert document_references("is there a document that lists the deliveries?") == []
 

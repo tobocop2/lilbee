@@ -63,8 +63,11 @@ _DOC_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Quoted names: 'harbor survey 2002' / "harbor survey 2002".
-_QUOTED_RE = re.compile(r"[\"']([^\"']{2,80})[\"']")
+# Quoted names: 'harbor survey 2002' / "harbor survey 2002". A quote only
+# delimits when the pair matches and neither end touches a word from the
+# outside, so contractions and possessives ("what's", "Alice's") never pair
+# into a phantom name; double-quoted names may contain apostrophes.
+_QUOTED_RE = re.compile(r"(?<!\w)\"([^\"]{2,80})\"(?!\w)|(?<!\w)'([^']{2,80})'(?!\w)")
 
 # Generic nouns that follow a document noun in topical questions ("the
 # documents mention...", "which document says..."); never identifiers.
@@ -119,7 +122,9 @@ def document_references(question: str) -> list[str]:
     for m in _FILENAME_RE.finditer(question):
         candidates.append(m.group(0).strip())
     for m in _QUOTED_RE.finditer(question):
-        candidates.append(m.group(1).strip())
+        quoted = (m.group(1) or m.group(2)).strip()
+        if quoted:
+            candidates.append(quoted)
     for m in _DOC_REF_RE.finditer(question):
         ref = m.group(1).strip()
         if ref.lower() not in _REF_STOPWORDS:

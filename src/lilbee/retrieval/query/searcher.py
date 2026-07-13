@@ -24,6 +24,7 @@ from lilbee.data.store import (
 )
 from lilbee.providers.base import LLMProvider, ProviderError, ProviderErrorKind
 from lilbee.retrieval.embedder import Embedder
+from lilbee.retrieval.entities.schema import noun_variants
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
@@ -122,12 +123,8 @@ def _bm25_confidence(score: float | None) -> float:
 def _noun_names_type(noun: str, type_name: str) -> bool:
     """Whether the question's noun IS the type (modulo case/space/plural),
     as opposed to reaching it through a synonym."""
-    wanted = " ".join(noun.strip().lower().split())
-    names = {type_name, type_name.replace("_", " ")}
-    variants = set(names)
-    for n in names:
-        variants.add(n + "s" if not n.endswith("s") else n[:-1])
-    return wanted in variants
+    named = noun_variants(type_name) | noun_variants(type_name.replace("_", " "))
+    return bool(noun_variants(noun) & named)
 
 
 # RAG mode answer when retrieval finds no usable sources: a grounded refusal
@@ -863,7 +860,7 @@ class Searcher:
 
     def _answer_typed_aggregate(self, aggregate: AggregateQuery) -> str | None:
         """Exact answers over extracted entities, or None when the question's
-        nouns don't resolve against the reviewed schema."""
+        nouns don't resolve against the extraction schema."""
         from lilbee.retrieval.entities import load_schema
 
         schema = load_schema(self._config.data_dir)

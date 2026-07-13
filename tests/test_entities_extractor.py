@@ -16,6 +16,7 @@ from lilbee.retrieval.entities import (
     normalize_value,
     save_schema,
 )
+from lilbee.retrieval.entities.schema import noun_variants
 
 
 def _text_result(text):
@@ -66,6 +67,35 @@ class TestSchemaArtifact:
         assert schema.type_for_noun("part numbers") is not None
         assert schema.type_for_noun("Part Number") is not None
         assert schema.type_for_noun("vessels") is None
+
+    def test_type_for_noun_matches_irregular_plurals(self):
+        schema = EntitySchema(types=[PERSON])
+        assert schema.type_for_noun("people") is not None
+
+    def test_type_for_noun_matches_ies_plurals(self):
+        company = EntityType(name="company", kind=ExtractorKind.LLM, description="orgs")
+        assert EntitySchema(types=[company]).type_for_noun("companies") is not None
+
+
+class TestNounVariants:
+    def test_inflects_only_the_last_word(self):
+        assert "tail number" in noun_variants("tail numbers")
+        assert "tail numbers" in noun_variants("tail number")
+
+    def test_irregular_forms_map_both_ways(self):
+        assert "people" in noun_variants("person")
+        assert "person" in noun_variants("people")
+
+    def test_es_and_ies_forms(self):
+        assert "box" in noun_variants("boxes")
+        assert "company" in noun_variants("companies")
+        assert "companies" in noun_variants("company")
+
+    def test_normalizes_case_and_spacing(self):
+        assert "part number" in noun_variants("  Part   Numbers ")
+
+    def test_blank_has_no_variants(self):
+        assert noun_variants("   ") == set()
 
 
 class TestInduceSchema:
