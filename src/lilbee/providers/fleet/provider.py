@@ -24,6 +24,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 
+from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -627,6 +628,10 @@ class FleetProvider:
         # The engine's own reason a role's model failed to warm, so the launcher and
         # the TUI report the real cause instead of a generic "did not load".
         self._warm_errors: dict[WorkerRole, str] = {}
+        # Configured roles the last plan left unplaced because their model isn't
+        # installed (role -> ref). The warm finalizer reads it to fail a not-installed
+        # chat with a named reason instead of clearing to a silent "not ready" retry.
+        self._skipped_not_installed: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -693,6 +698,7 @@ class FleetProvider:
         except ProviderError:
             log.debug("Engine binary unavailable; no swap started")
             plan = None
+        self._skipped_not_installed = dict(plan.skipped_not_installed) if plan else {}
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
@@ -1426,7 +1432,7 @@ class FleetProvider:
             self._warm_tracker.begin(str(cfg.chat_model))
             self._ensure_fleet()
             self._preload_roles()
-            self._clear_warm_if_chat_never_ran()
+            self._finalize_warm_if_chat_never_ran()
         except Exception as exc:
             if isinstance(exc, RuntimeError) and sys.is_finalizing():
                 # A fast CLI exit can tear down the interpreter while this daemon
@@ -1458,17 +1464,24 @@ class FleetProvider:
         if snapshot is None or snapshot.phase is not WarmPhase.READY:
             self._warm_tracker.fail(message)
 
-    def _clear_warm_if_chat_never_ran(self) -> None:
-        """Drop the early STARTING stamp when no chat role was placed to warm.
+    def _finalize_warm_if_chat_never_ran(self) -> None:
+        """Terminate the early STARTING stamp when no chat instance was placed.
 
-        ``_warm_chat_role`` always ends in READY or ERROR when it runs; a
-        snapshot still on STARTING after a successful preload means the plan
-        had no chat instances (model not installed), and leaving it would spin
-        the warm line forever.
+        ``_warm_chat_role`` always ends in READY or ERROR when it runs, so a
+        snapshot still on STARTING after a successful preload means the plan had
+        no chat instance. A chat model that isn't installed fails the warm with a
+        user-facing reason so the prompt path renders "failed to load" instead of
+        spinning a "not ready" retry that can never succeed; any other reason (a
+        remote-routed chat has no local server to warm) clears the stamp.
         """
         snapshot = self._warm_tracker.snapshot()
-        if snapshot is not None and snapshot.phase is WarmPhase.STARTING:
+        if snapshot is None or snapshot.phase is not WarmPhase.STARTING:
+            return
+        missing = self._skipped_not_installed.get(WorkerRole.CHAT)
+        if missing is None:
             self._warm_tracker.clear()
+        else:
+            self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
 
     def _preload_roles(self, roles: frozenset[WorkerRole] | None = None) -> None:
         """Issue a cheap request per replica so llama-swap loads each upstream now.
