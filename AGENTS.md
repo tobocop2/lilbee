@@ -24,9 +24,9 @@ The full rules follow; this block is the part that gets skipped under time
 pressure, so it leads.
 
 ## Project
-Local search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
+The whole local AI stack in one executable: a model manager plus a search engine you can talk to. Python 3.11+, pluggable LLM providers (a managed local `llama-server` fleet by default, Ollama/OpenAI via litellm), LanceDB for vectors. Managed with `uv`. Task tracking with `beads` (`bd`). Learned behaviors with `floop`.
 
-**Framing:** Lead with "search engine" (a local search engine you can talk to) — not "RAG" or "local-first" (those are properties, not the identity). lilbee is both a standalone multipurpose tool AND an AI agent backend.
+**Framing:** Lead with "the whole local AI stack in one executable". Two pillars, always both: it runs and manages the models (its own model manager, no Ollama or LM Studio needed, works with both), and it is a search engine you can talk to (cited answers). "RAG" and "local-first" are properties, not the identity. lilbee is both a standalone multipurpose tool AND an AI agent backend.
 
 ## Task Tracking (beads)
 ```bash

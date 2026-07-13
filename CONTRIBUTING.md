@@ -1,6 +1,6 @@
 # Contributing to lilbee
 
-Thanks for your interest in contributing. lilbee is a local search engine you can talk to: index your files, code, and websites, then query them with models that run on your own machine.
+Thanks for your interest in contributing. lilbee is the whole local AI stack in one executable: it runs and manages local models, and it's a search engine you can talk to over your files, code, and websites.
 
 For day-to-day coding conventions and the full set of project rules, [`AGENTS.md`](AGENTS.md) is the source of truth. This file is the short on-ramp.
 
