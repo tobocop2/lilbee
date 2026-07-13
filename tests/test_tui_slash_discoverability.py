@@ -1087,6 +1087,47 @@ class TestOverlayBackoutAsync:
             await pilot.pause()
             assert screen._insert_mode is False
 
+    async def test_enter_in_normal_mode_submits_waiting_draft(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        """Esc after typing must not strand the draft: NORMAL-mode Enter sends it."""
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            with mock.patch.object(screen, "_send_message") as send:
+                inp.value = "hello draft"
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                assert screen._insert_mode is False
+                await pilot.press("enter")
+                await pilot.pause()
+            send.assert_called_once_with("hello draft")
+            assert screen._insert_mode is True
+            assert inp.value == ""
+
+    async def test_enter_in_normal_mode_with_empty_input_returns_to_insert(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            with mock.patch.object(screen, "_send_message") as send:
+                await pilot.press("escape")
+                await pilot.pause()
+                assert screen._insert_mode is False
+                await pilot.press("enter")
+                await pilot.pause()
+            send.assert_not_called()
+            assert screen._insert_mode is True
+
 
 _LIVE_FILTER_MODELS = ["qwen3:8b", "mistral:7b"]
 

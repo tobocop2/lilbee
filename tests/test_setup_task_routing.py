@@ -315,6 +315,33 @@ def test_ready_hint_when_both_configured_refs_installed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_commit_selection_resolves_repo_ref_to_installed_file_ref() -> None:
+    """Picking an installed featured card writes the exact installed file ref.
+
+    Featured rows carry the repo-level ref (org/Repo-GGUF); persisting that
+    breaks the display label and the ready check, which compare full file refs.
+    """
+    from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+    app = _PlainApp()
+    with (
+        _patch_setup_scan(chat=["Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"]),
+        _patch_setup_ram(),
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            row = _installed_name_to_row("Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf", "chat")
+            row.ref = "Qwen/Qwen3-8B-GGUF"
+            row.installed = True
+            card = ModelCard(row)
+            with patch.object(wizard, "_apply_selection") as mock_apply:
+                wizard._commit_selection(card, "chat")
+            mock_apply.assert_called_once_with("chat", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf")
+
+
+@pytest.mark.asyncio
 async def test_commit_selection_never_writes_a_ref_it_cannot_install() -> None:
     """A non-installed card with no downloadable catalog model writes nothing."""
     from lilbee.cli.tui.screens.setup import _installed_name_to_row

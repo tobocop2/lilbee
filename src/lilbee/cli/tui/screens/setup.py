@@ -56,6 +56,14 @@ log = logging.getLogger(__name__)
 SETUP_CHAT_GRID_ID = "setup-chat-grid"
 
 
+def _exact_installed_ref(installed: list[str], ref: str) -> str | None:
+    """The exact installed ref for *ref*, expanding a repo-level ref to its file."""
+    if ref in installed:
+        return ref
+    matches = [r for r in installed if r.startswith(f"{ref}/")]
+    return matches[0] if matches else None
+
+
 def _scan_installed_models() -> tuple[list[str], list[str]]:
     """List installed models from the registry, split into chat vs embedding."""
     try:
@@ -284,9 +292,17 @@ class SetupWizard(Screen[str | None]):
         pending = _pending_download(card)
         if pending is None:
             row = card.row
-            # Only a ref that is already on disk may be written without a download.
+            # Only a ref that is already on disk may be written without a
+            # download, and always as the exact installed file ref: featured
+            # rows carry the repo-level ref, which the display label and the
+            # ready check cannot resolve.
             if row.kind == CatalogRowKind.LOCAL and row.installed:
-                self._apply_selection(task, ref)
+                installed = (
+                    self._chat_installed if task == ModelTask.CHAT else self._embed_installed
+                )
+                exact = _exact_installed_ref(installed, ref)
+                if exact is not None:
+                    self._apply_selection(task, exact)
             return
         if pending.ref in self._submitted:
             return

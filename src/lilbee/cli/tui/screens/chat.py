@@ -470,6 +470,10 @@ class ChatScreen(Screen[None]):
             if self._focus_in_fleet_drawer():
                 return
             self._enter_insert_mode()
+            if event.key == "enter" and inp.value.strip():
+                # Enter meant "send": submit the draft the user Esc'd over
+                # instead of stranding it invisibly in the dimmed input.
+                self._submit_draft(inp, inp.value)
             event.prevent_default()
             event.stop()
             return
@@ -525,10 +529,14 @@ class ChatScreen(Screen[None]):
             # submitting whatever empty / stale text the input still holds.
             self._enter_insert_mode()
             return
-        text = event.value.strip()
+        self._submit_draft(event.chat_input, event.value)
+
+    def _submit_draft(self, chat_input: ChatInput, value: str) -> None:
+        """Send *value* as a command or message once the submit gate allows it."""
+        text = value.strip()
         if not self._ready_to_submit(text):
             return
-        event.chat_input.value = ""
+        chat_input.value = ""
         self._input_history.append(text)
         self._history_index = -1
 
@@ -536,6 +544,7 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
 
     def _ready_to_submit(self, text: str) -> bool:
         """Gate a submit: busy, consumed, empty, and keep-the-draft cases say no."""
