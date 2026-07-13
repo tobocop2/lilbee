@@ -25,7 +25,7 @@ from textual.css.query import NoMatches
 from textual.dom import DOMNode
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Footer, Select, Static
+from textual.widgets import Footer, Markdown, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
 # since it's used in multiple methods.
@@ -43,6 +43,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     build_add_progress_callback,
     build_sync_progress_callback,
     close_stream,
+    open_local_file,
     remember_from_input,
     remove_copied_files,
 )
@@ -1766,6 +1767,16 @@ class ChatScreen(Screen[None]):
         """Main-thread failure: unblock the input and surface the error."""
         self.swapping_model = False
         self.app.notify(msg.MODEL_SWAP_FAILED.format(error=error), severity="error")
+
+    @on(Markdown.LinkClicked)
+    def _open_answer_link(self, event: Markdown.LinkClicked) -> None:
+        """Open a link clicked in an answer: ``file:`` citations open in the OS
+        default app for the file type; web links open in the browser."""
+        event.stop()
+        if event.href.startswith("file://"):
+            open_local_file(event.href)
+        else:
+            self.app.open_url(event.href)
 
     async def action_toggle_markdown(self) -> None:
         """Toggle between Markdown and plain-text rendering for chat responses."""
