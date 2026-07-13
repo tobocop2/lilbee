@@ -24,7 +24,11 @@ from lilbee.retrieval.query.formatting import (
     _format_citation,
     cited_subset,
 )
-from lilbee.retrieval.query.searcher import _GROUNDED_REFUSAL, SEARCH_NEEDS_EMBEDDER
+from lilbee.retrieval.query.searcher import (
+    _GROUNDED_REFUSAL,
+    EMPTY_LIBRARY,
+    SEARCH_NEEDS_EMBEDDER,
+)
 from tests.conftest import make_citation
 
 
@@ -730,6 +734,17 @@ class TestAskRaw:
         assert result.cited_sources == []
         mock_svc.provider.chat.assert_not_called()
 
+    def test_empty_library_returns_add_content_guidance(self, mock_svc):
+        """With nothing indexed, ask_raw points the user at adding content
+        instead of the grounded refusal (which implies a search happened). The
+        store is never searched and the model is never called."""
+        mock_svc.store.has_chunks.return_value = False
+        result = get_services().searcher.ask_raw("say hello")
+        assert result.answer == EMPTY_LIBRARY
+        assert result.sources == []
+        mock_svc.store.search.assert_not_called()
+        mock_svc.provider.chat.assert_not_called()
+
     def test_ask_raw_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
         mock_svc.provider.chat.return_value = _text_result("answer")
@@ -778,6 +793,14 @@ class TestAsk:
         assert "Sources:" not in answer
         mock_svc.provider.chat.assert_not_called()
 
+    def test_empty_library_returns_add_content_guidance(self, mock_svc):
+        """ask() surfaces the empty-library guidance verbatim, no Sources block."""
+        mock_svc.store.has_chunks.return_value = False
+        answer = get_services().searcher.ask("say hello")
+        assert answer == EMPTY_LIBRARY
+        assert "Sources:" not in answer
+        mock_svc.provider.chat.assert_not_called()
+
     def test_ask_with_history(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
         mock_svc.provider.chat.return_value = _text_result("answer")
@@ -807,6 +830,16 @@ class TestAskStream:
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
         combined = "".join(st.content for st in stream_tokens)
         assert combined == _GROUNDED_REFUSAL
+        assert "Sources:" not in combined
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_empty_library_streams_add_content_guidance(self, mock_svc):
+        """With nothing indexed, the stream yields the empty-library guidance as a
+        single token, no Sources block, and never calls the model."""
+        mock_svc.store.has_chunks.return_value = False
+        stream_tokens = list(get_services().searcher.ask_stream("say hello"))
+        combined = "".join(st.content for st in stream_tokens)
+        assert combined == EMPTY_LIBRARY
         assert "Sources:" not in combined
         mock_svc.provider.chat.assert_not_called()
 

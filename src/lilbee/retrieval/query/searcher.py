@@ -132,6 +132,15 @@ def _noun_names_type(noun: str, type_name: str) -> bool:
 # off-corpus answers can switch to chat mode.
 _GROUNDED_REFUSAL = "I couldn't find anything in the indexed documents that answers that."
 
+# Ask/search answer when the library holds nothing yet. Distinct from the
+# grounded refusal, which implies a search ran and came up empty: here there is
+# nothing to search, so point the user at adding content. Shared across TUI,
+# CLI, HTTP, and MCP, so the phrasing stays surface-neutral (no slash commands).
+EMPTY_LIBRARY = (
+    "Your library is empty, so there's nothing to search yet. "
+    "Add documents to your library first, then ask again."
+)
+
 # Ask/search needs an embedder to ground an answer. When none is loaded, refuse
 # with an actionable message rather than hard-failing or silently answering
 # ungrounded; chat mode stays available for an off-corpus reply.
@@ -950,6 +959,10 @@ class Searcher:
             and not self._embedder.embedding_available()
         )
 
+    def library_empty(self) -> bool:
+        """Whether the store holds no indexed content yet (nothing to search)."""
+        return not self._store.has_chunks()
+
     def direct_messages(
         self, question: str, history: list[ChatMessage] | None = None
     ) -> list[ChatMessage]:
@@ -998,6 +1011,8 @@ class Searcher:
             return AskResult(answer=SEARCH_NEEDS_EMBEDDER, sources=[])
         if self.skip_retrieval():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
+        if self.library_empty():
+            return AskResult(answer=EMPTY_LIBRARY, sources=[])
         aggregate_answer = self.route_direct_answer(question)
         if aggregate_answer is not None:
             return AskResult(answer=aggregate_answer, sources=[])
@@ -1085,6 +1100,9 @@ class Searcher:
             return
         if self.skip_retrieval():
             yield from self._stream_direct(question, history, options)
+            return
+        if self.library_empty():
+            yield StreamToken(content=EMPTY_LIBRARY, is_reasoning=False)
             return
         aggregate_answer = self.route_direct_answer(question)
         if aggregate_answer is not None:

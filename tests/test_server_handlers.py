@@ -73,6 +73,8 @@ def mock_svc():
     # Default to the grounded retrieval path; mode/embedder tests flip these.
     searcher.skip_retrieval.return_value = False
     searcher.search_unavailable.return_value = False
+    # The library has content unless an empty-library test flips this.
+    searcher.library_empty.return_value = False
     # No direct (count-scan) answer unless a test routes one explicitly.
     searcher.route_direct_answer.return_value = None
     services = make_mock_services(searcher=searcher)
@@ -440,6 +442,22 @@ class TestAskStream:
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
+
+    async def test_empty_library_streams_add_content_guidance(self, mock_svc):
+        """With nothing indexed, the ask stream points the user at adding content
+        as a normal answer token (not an SSE error), and never builds RAG context,
+        so every ask surface surfaces the empty library the same way."""
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        mock_svc.searcher.library_empty.return_value = True
+        events = [e async for e in handlers.ask_stream("say hello")]
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        non_empty = [e for e in events if e]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in non_empty]
+        assert "error" not in event_types
+        assert event_types[-1] == "done"
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert json.loads(token_event.split("data: ")[1].strip())["token"] == EMPTY_LIBRARY
 
     async def test_search_mode_no_embedder_refuses(self, mock_svc):
         """Search mode with no embedder refuses by streaming the refusal as a normal

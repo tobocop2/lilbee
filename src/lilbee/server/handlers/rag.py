@@ -19,7 +19,7 @@ from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import cited_subset
-from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
+from lilbee.retrieval.query.searcher import EMPTY_LIBRARY, SEARCH_NEEDS_EMBEDDER
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -561,6 +561,15 @@ def _resolve_stream_context(
     """
     if retrieval_off:
         return [], searcher.direct_messages(question, history), []
+    if searcher.library_empty():
+        # Nothing indexed yet: point the user at adding content instead of
+        # reporting an empty search, matching Searcher.ask_stream.
+        frames = [
+            sse_event(SseEvent.TOKEN, {"token": EMPTY_LIBRARY}),
+            sse_event(SseEvent.SOURCES, []),
+            sse_done({}),
+        ]
+        return [], None, frames
     direct = searcher.route_direct_answer(question)
     if direct is not None:
         frames = [
