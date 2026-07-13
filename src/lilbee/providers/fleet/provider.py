@@ -24,6 +24,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 
+from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
@@ -560,8 +561,15 @@ def _adoptable_launches(state: _SwapState) -> list[InstanceLaunch] | None:
 
 
 def _warm_ttl_seconds() -> int:
-    """llama-swap idle-unload timer: the user's warm ttl, or 0 when warm is off."""
-    if not cfg.keep_engine_warm:
+    """llama-swap idle-unload timer in seconds for the spawned fleet.
+
+    ``keep_engine_warm`` keeps the fleet resident: ttl 0, so llama-swap never
+    idle-unloads it. With warm off the engine is on-demand and releases its
+    weights after ``engine_idle_ttl_minutes`` of inactivity to free VRAM; the
+    next prompt reloads transparently. A ttl of 0 there disables the idle unload
+    entirely (weights stay until the app tears the fleet down).
+    """
+    if cfg.keep_engine_warm:
         return 0
     return cfg.engine_idle_ttl_minutes * 60
 
@@ -620,6 +628,10 @@ class FleetProvider:
         # The engine's own reason a role's model failed to warm, so the launcher and
         # the TUI report the real cause instead of a generic "did not load".
         self._warm_errors: dict[WorkerRole, str] = {}
+        # Configured roles the last plan left unplaced because their model isn't
+        # installed (role -> ref). The warm finalizer reads it to fail a not-installed
+        # chat with a named reason instead of clearing to a silent "not ready" retry.
+        self._skipped_not_installed: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -686,6 +698,7 @@ class FleetProvider:
         except ProviderError:
             log.debug("Engine binary unavailable; no swap started")
             plan = None
+        self._skipped_not_installed = dict(plan.skipped_not_installed) if plan else {}
         if plan is None or not plan.launches:
             # No engine binary, or no installed/configured model: serve nothing.
             return False
@@ -1375,7 +1388,19 @@ class FleetProvider:
         (or once the fleet is up) is a no-op.
         """
         with self._lock:
-            if self._swaps or self._warming:
+            if self._warming:
+                return
+            fleet_up = bool(self._swaps)
+        # A live swap whose model llama-swap idle-unloaded (its ttl stops only the
+        # llama-server child, leaving the swap handle in _swaps) reports its role
+        # cold. Re-warm so a prompt sent into that gap drives llama-swap's
+        # on-demand reload; bailing on "swaps exist" alone stranded every later
+        # prompt on a stale not-ready. A fully-loaded fleet still short-circuits.
+        # The probe runs off the lock (role_ready may hit the proxy).
+        if fleet_up and self._roles_ready():
+            return
+        with self._lock:
+            if self._warming:
                 return
             self._warming = True
         threading.Thread(
@@ -1383,6 +1408,12 @@ class FleetProvider:
             name="fleet-warm-up",
             daemon=True,
         ).start()
+
+    def _roles_ready(self) -> bool:
+        """Whether every configured role's upstream is loaded (fleet fully warm)."""
+        with self._lock:
+            roles = list(self._role_group)
+        return bool(roles) and all(self.role_ready(role) for role in roles)
 
     def _warm_up_blocking(self) -> None:
         """Start the fleet and pre-load every role on a background thread.
@@ -1401,7 +1432,7 @@ class FleetProvider:
             self._warm_tracker.begin(str(cfg.chat_model))
             self._ensure_fleet()
             self._preload_roles()
-            self._clear_warm_if_chat_never_ran()
+            self._finalize_warm_if_chat_never_ran()
         except Exception as exc:
             if isinstance(exc, RuntimeError) and sys.is_finalizing():
                 # A fast CLI exit can tear down the interpreter while this daemon
@@ -1433,17 +1464,24 @@ class FleetProvider:
         if snapshot is None or snapshot.phase is not WarmPhase.READY:
             self._warm_tracker.fail(message)
 
-    def _clear_warm_if_chat_never_ran(self) -> None:
-        """Drop the early STARTING stamp when no chat role was placed to warm.
+    def _finalize_warm_if_chat_never_ran(self) -> None:
+        """Terminate the early STARTING stamp when no chat instance was placed.
 
-        ``_warm_chat_role`` always ends in READY or ERROR when it runs; a
-        snapshot still on STARTING after a successful preload means the plan
-        had no chat instances (model not installed), and leaving it would spin
-        the warm line forever.
+        ``_warm_chat_role`` always ends in READY or ERROR when it runs, so a
+        snapshot still on STARTING after a successful preload means the plan had
+        no chat instance. A chat model that isn't installed fails the warm with a
+        user-facing reason so the prompt path renders "failed to load" instead of
+        spinning a "not ready" retry that can never succeed; any other reason (a
+        remote-routed chat has no local server to warm) clears the stamp.
         """
         snapshot = self._warm_tracker.snapshot()
-        if snapshot is not None and snapshot.phase is WarmPhase.STARTING:
+        if snapshot is None or snapshot.phase is not WarmPhase.STARTING:
+            return
+        missing = self._skipped_not_installed.get(WorkerRole.CHAT)
+        if missing is None:
             self._warm_tracker.clear()
+        else:
+            self._warm_tracker.fail(f"chat model {clean_display_name(missing)} is not installed")
 
     def _preload_roles(self, roles: frozenset[WorkerRole] | None = None) -> None:
         """Issue a cheap request per replica so llama-swap loads each upstream now.
