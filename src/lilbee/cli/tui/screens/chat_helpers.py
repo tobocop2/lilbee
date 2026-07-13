@@ -5,10 +5,15 @@ from __future__ import annotations
 import contextlib
 import logging
 import shutil
+import subprocess
+import sys
 import time
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
@@ -43,6 +48,31 @@ def close_stream(stream: Any) -> None:
     if isinstance(stream, ClosableIterator):
         with contextlib.suppress(Exception):
             stream.close()
+
+
+def _opener_argv(platform: str) -> list[str] | None:
+    """The platform's open-with-default-app command, or None to use the browser."""
+    if platform == "darwin":
+        return ["open"]
+    if platform.startswith("linux"):
+        return ["xdg-open"]
+    return None
+
+
+def open_local_file(href: str) -> None:
+    """Open a ``file:`` URL with the OS opener so it lands in the default app
+    for its type (an editor for markdown, a viewer for PDF), not a browser
+    rendering raw text. Platforms without a known opener fall back to the
+    webbrowser module."""
+    argv = _opener_argv(sys.platform)
+    if argv is None:
+        webbrowser.open(href)
+        return
+    path = url2pathname(urlparse(href).path)
+    try:
+        subprocess.run([*argv, path], check=False, timeout=10)  # noqa: S603 - fixed opener command; path comes from lilbee's own store
+    except (OSError, subprocess.TimeoutExpired):
+        log.warning("Could not open source file: %s", path)
 
 
 def detail_for_batch_progress(data: BatchProgressEvent, in_flight: list[str]) -> str:
