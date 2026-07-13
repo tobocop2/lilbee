@@ -20,7 +20,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
-from lilbee.core.config import CHUNKS_TABLE, ENTITIES_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, ENTITIES_TABLE, active_config
 from lilbee.retrieval.entities.extractor import (
     INDUCTION_SAMPLE_SIZE,
     extract_entities,
@@ -48,14 +48,14 @@ _APPLIED_MARKER = "entity_schema.applied"
 
 
 def _schema_digest() -> str | None:
-    path = schema_path(cfg.data_dir)
+    path = schema_path(active_config().data_dir)
     if not path.is_file():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _applied_digest() -> str | None:
-    marker = cfg.data_dir / _APPLIED_MARKER
+    marker = active_config().data_dir / _APPLIED_MARKER
     if not marker.is_file():
         return None
     return marker.read_text().strip() or None
@@ -64,7 +64,7 @@ def _applied_digest() -> str | None:
 def _record_applied(digest: str | None) -> None:
     if digest is None:
         return
-    (cfg.data_dir / _APPLIED_MARKER).write_text(digest)
+    (active_config().data_dir / _APPLIED_MARKER).write_text(digest)
 
 
 def ensure_entities(cancel: threading.Event | None = None) -> None:
@@ -74,12 +74,15 @@ def ensure_entities(cancel: threading.Event | None = None) -> None:
     the next sync with a log line, and a cancelled pass leaves the applied
     marker unset so the next sync redoes the (idempotent) full pass.
     """
-    if not cfg.entity_extraction:
+    # Read through the scope: under the library API the active config is the
+    # caller's, not the process-global cfg (which may say the feature is off).
+    config = active_config()
+    if not config.entity_extraction:
         return
     from lilbee.app.services import get_services
 
     store = get_services().store
-    schema = load_schema(cfg.data_dir)
+    schema = load_schema(config.data_dir)
     if schema is None:
         schema = _induce(store)
         if schema is None:
@@ -104,7 +107,7 @@ def _induce(store: Store) -> EntitySchema | None:
     if schema is None:
         log.warning("Entity schema induction produced nothing usable; retrying next sync")
         return None
-    path = save_schema(schema, cfg.data_dir)
+    path = save_schema(schema, active_config().data_dir)
     log.info(
         "Induced entity schema (%d types) at %s; edit it to tune, the next sync re-applies",
         len(schema.types),

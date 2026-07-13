@@ -134,6 +134,22 @@ class TestEnsureEntities:
         assert store.entity_value_counts("part_number") == (1, 1)  # not doubled
         assert store.entity_value_counts("dock") == (1, 1)
 
+    def test_scoped_config_governs_lifecycle(self, isolated):
+        """The library API binds its config via config_scope without touching
+        the process-global cfg; the lifecycle must read the scoped config or
+        Lilbee(config=...) silently skips entity extraction."""
+        from lilbee.core.config import config_scope
+
+        store, _services = isolated
+        _index_chunks(store, ["part PX4471"])
+        save_schema(_part_schema(), cfg.data_dir)
+        scoped = cfg.model_copy()
+        cfg.entity_extraction = False  # global says off; the scope says on
+        scoped.entity_extraction = True
+        with config_scope(scoped):
+            ensure_entities()
+        assert store.entity_value_counts("part_number") == (1, 1)
+
     def test_cancelled_pass_restarts_next_sync(self, isolated):
         store, _services = isolated
         _index_chunks(store, ["part PX4471"])
