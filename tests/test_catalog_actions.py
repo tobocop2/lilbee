@@ -66,6 +66,23 @@ class _CatalogTestApp(LilbeeAppHost):
         yield CatalogScreen()
 
 
+def _fake_tabs_query_one(screen: CatalogScreen, fake_tabs: object):
+    """A ``query_one`` substitute faking only the ``#catalog-tabs`` strip.
+
+    Faking every query poisons unrelated lookups: a mount-time fetch worker
+    resolving mid-test re-renders rows and reads the search input through
+    ``query_one``, and a MagicMock search needle blows up row matching.
+    """
+    real_query_one = screen.query_one
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#catalog-tabs":
+            return fake_tabs
+        return real_query_one(selector, *args, **kwargs)
+
+    return query_one
+
+
 async def test_action_select_tab_switches_active_tab() -> None:
     from tests._async_wait import wait_until
 
@@ -576,7 +593,7 @@ async def test_activate_initial_tab_retries_while_tab_strip_mounts(monkeypatch) 
             ],
         )
         rescheduled: list[object] = []
-        monkeypatch.setattr(screen, "query_one", lambda *_a, **_k: fake_tabs)
+        monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
         monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
         budget = screen._activation_retries
         screen._activate_initial_tab()  # must not raise
@@ -601,7 +618,7 @@ async def test_activate_initial_tab_retry_budget_exhausts(monkeypatch) -> None:
             side_effect=["discover", ValueError("No Tab with id '--content-tab-chat'")],
         )
         rescheduled: list[object] = []
-        monkeypatch.setattr(screen, "query_one", lambda *_a, **_k: fake_tabs)
+        monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
         monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
         # The post-activation boot fetches are exercised elsewhere; the fake
         # TabbedContent would otherwise leak into their tab-id parsing.
