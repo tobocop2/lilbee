@@ -1271,6 +1271,33 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
         assert planning_mod.plan_all_launches() == planning_mod.FleetPlan((sentinel,))
 
+    def test_plan_all_launches_carries_skipped_not_installed(self, monkeypatch) -> None:
+        # The plan surfaces a configured-but-missing chat model so the provider's
+        # warm path can fail with a named reason instead of spinning.
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.EMBED, 1 * _GB)],
+                {WorkerRole.EMBED: "eref"},
+                0,
+                {WorkerRole.CHAT: "org/repo/missing-chat.gguf"},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.EMBED, (0,)),), unplaceable_roles=()
+            ),
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
+        plan = planning_mod.plan_all_launches()
+        assert plan.skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
+
     def test_plan_launches_reports_co_tenant_roles(self, monkeypatch, caplog) -> None:
         # Co-tenancy changes how the box behaves (one model resident at a time), so it
         # is stated in the log rather than being inferred from a silent plan.
