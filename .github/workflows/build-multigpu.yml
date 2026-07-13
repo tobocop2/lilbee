@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       llama_cpp_version:
-        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in tools/wheel-build/build_llama_server.sh)."
+        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in engine-versions.env)."
         default: ""
         required: false
   workflow_call:
@@ -22,7 +22,7 @@ on:
         type: string
         default: ""
       llama_cpp_version:
-        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in tools/wheel-build/build_llama_server.sh)."
+        description: "Override the llama-cpp-python release tag whose vendored llama.cpp gets built (blank = the pin in engine-versions.env)."
         type: string
         default: ""
 
@@ -75,7 +75,7 @@ jobs:
         shell: bash
         run: echo "LLAMA_BUILD_DIR=/c/lb" >> "$GITHUB_ENV"
 
-      # Every engine source is tag-pinned in build_llama_server.sh, so the same
+      # Every engine source is tag-pinned in engine-versions.env, so the same
       # key means byte-identical output. Caches saved from tag runs are not
       # restorable by later runs, so warm-engine-cache.yml builds these on main;
       # release runs (and the executable bundle steps, which share this key
@@ -86,7 +86,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packaging/engine-wheel/lilbee_engine/bin
-          key: engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
+          key: engine-${{ matrix.os }}-${{ matrix.backend }}-tk${{ matrix.cuda }}-llcp${{ inputs.llama_cpp_version }}-${{ hashFiles('engine-versions.env', 'tools/wheel-build/build_llama_server.sh', 'tools/wheel-build/cmake_args.sh', 'tools/wheel-build/install_gpu_toolkit.sh') }}
 
       - name: Set up Python
         uses: actions/setup-python@v6

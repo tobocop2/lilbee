@@ -8,30 +8,23 @@
 # Reads:
 #   BACKEND            cpu|vulkan|metal|cu121..cu125|rocm|sycl
 #   LLAMA_CPP_VERSION  llama.cpp source tag (via the llama-cpp-python release that
-#                      vendors it; defaults to the pin below)
+#                      vendors it; defaults to the pin in engine-versions.env)
 #   TARGET_ARCH        cross-compile target (optional; defaults to host)
 #   LLAMA_BUILD_DIR    work dir (default /tmp/llama-build)
 
 set -euxo pipefail
-
-# Pinned llama.cpp source: the llama-cpp-python release tag whose vendored
-# llama.cpp commit we build the server from. Bump deliberately (and re-run the
-# Metal/CPU/GPU self-check matrix) rather than tracking latest. llama-cpp-python
-# is only a BUILD-TIME source here -- lilbee no longer depends on it at runtime.
-_DEFAULT_LLAMA_CPP_VERSION="0.3.30"
-
-# Pinned source tags for the two Go engine helpers bundled alongside llama-server.
-# Built from source (deterministic, no release-asset-name guessing); the wheel-build
-# job provides the Go toolchain. Bump deliberately.
-_LLAMA_SWAP_VERSION="v223"
-_GGUF_PARSER_REF="v0.24.1"
 
 backend="${BACKEND:?BACKEND is required}"
 build_dir="${LLAMA_BUILD_DIR:-/tmp/llama-build}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target_arch="${TARGET_ARCH:-}"
 pkg_bin_dir="${script_dir}/../../packaging/engine-wheel/lilbee_engine/bin"
-version="${LLAMA_CPP_VERSION:-${_DEFAULT_LLAMA_CPP_VERSION}}"
+
+# Pinned engine sources live in engine-versions.env at the repo root (shared
+# with CI's engine-helper install). LLAMA_CPP_VERSION from the environment
+# still overrides the pin.
+source "${script_dir}/../../engine-versions.env"
+version="${LLAMA_CPP_VERSION:-${ENGINE_LLAMA_CPP_VERSION}}"
 
 # rpath so the binary and libs find each other from the same dir at runtime.
 case "$(uname -s)" in
@@ -236,11 +229,11 @@ case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe_suffix=".exe" ;; esac
 
 rm -rf "${go_build_dir}"
 mkdir -p "${go_build_dir}"
-clone_with_retry -q --depth 1 --branch "${_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${go_build_dir}/llama-swap"
+clone_with_retry -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" https://github.com/mostlygeek/llama-swap.git "${go_build_dir}/llama-swap"
 ( cd "${go_build_dir}/llama-swap" && go build -trimpath -o "${pkg_bin_dir}/llama-swap${exe_suffix}" . )
 
 # gguf-parser's cmd has a nested go.mod, so build from inside cmd/gguf-parser.
-clone_with_retry -q --depth 1 --branch "${_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
+clone_with_retry -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" https://github.com/gpustack/gguf-parser-go.git "${go_build_dir}/gguf-parser-go"
 ( cd "${go_build_dir}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${pkg_bin_dir}/gguf-parser${exe_suffix}" . )
 
 echo "Built self-contained engine (${backend}: llama-server + llama-swap + gguf-parser) -> ${pkg_bin_dir}/"
