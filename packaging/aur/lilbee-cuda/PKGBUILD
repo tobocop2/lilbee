@@ -2,7 +2,7 @@
 pkgname=lilbee-cuda
 pkgver=0.6.66b481
 pkgrel=1
-pkgdesc="Run and manage local AI models and search your files, code, and crawled web pages, with cited answers (CUDA build)"
+pkgdesc="The whole local AI stack in one executable: run and manage local AI models, and search your files, code, and crawled web pages, with cited answers (CUDA build)"
 arch=('x86_64')
 url="https://github.com/tobocop2/lilbee"
 license=('MIT')
