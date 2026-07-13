@@ -212,10 +212,21 @@ class TestFormatSource:
         r = _make_result(source="_web/index.md", content_type="text")
         assert format_source(r).startswith("[_web/index.md](file://")
 
-    def test_unresolvable_path_renders_plain_label_without_link(self):
-        # An embedded null byte can't resolve to a file URL; degrade to bare text.
-        r = _make_result(source="bad\x00name.md", content_type="text")
-        assert format_source(r) == "bad\x00name.md"
+    def test_unresolvable_path_renders_plain_label_without_link(self, monkeypatch):
+        # A source that can't resolve to a file URL degrades to bare text. The
+        # failure is injected directly: OS-level triggers like null bytes vary
+        # by platform and Python version (Windows 3.13 percent-encodes NUL
+        # instead of raising).
+        class _UnresolvableDir:
+            def __truediv__(self, other: str) -> "_UnresolvableDir":
+                raise OSError("cannot resolve")
+
+        monkeypatch.setattr(
+            "lilbee.retrieval.query.formatting.cfg",
+            mock.Mock(documents_dir=_UnresolvableDir()),
+        )
+        r = _make_result(source="doc.md", content_type="text")
+        assert format_source(r) == "doc.md"
 
 
 class TestUniqueSources:
