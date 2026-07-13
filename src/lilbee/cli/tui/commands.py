@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from textual.command import Hit, Hits, Provider
 
-from lilbee.app.services import get_services
+from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
 from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,11 @@ class LilbeeCommandProvider(Provider):
                 "Re-attempt files that failed a previous sync",
                 self._action_retry_skipped,
             ),
+            (
+                "Delete document",
+                "Remove a file from the index (Tab completes names)",
+                self._action_delete_document,
+            ),
             ("Open wiki", "Browse and generate wiki pages", self._action_open_wiki),
             ("Show version", "Display lilbee version", self._action_version),
             (
@@ -61,9 +67,32 @@ class LilbeeCommandProvider(Provider):
             ("Quit", "Exit lilbee", app.action_quit),
         ]
 
+        commands.extend(self._slash_commands())
         commands.extend(self._model_commands())
-        commands.extend(self._document_commands())
         return commands
+
+    def _slash_commands(self) -> list[tuple[str, str, Any]]:
+        """One palette entry per slash command, mirroring the chat surface."""
+        return [
+            (cmd.name, cmd.help_text, lambda c=cmd: self._run_slash_command(c)) for cmd in COMMANDS
+        ]
+
+    def _run_slash_command(self, cmd: SlashCommand) -> None:
+        """Run *cmd* through Chat: dispatch it, or prefill it when it needs arguments."""
+        app = self._app
+        chat = app.chat_screen()
+        if chat is None:
+            app.notify(f"Open Chat to run {cmd.name}")
+            return
+        if cmd.args_hint.startswith("<"):
+            # Needs an argument: land in the chat prompt for Tab completion.
+            app.switch_view("Chat")
+            chat.insert_slash_command(cmd.name)
+        else:
+            # Complete as-is: dispatch like a submitted prompt. Handlers that
+            # navigate call switch_view themselves, and switch_view no-ops
+            # while another switch is in flight, so don't pre-switch to Chat.
+            chat.run_command(cmd.name)
 
     def _model_commands(self) -> list[tuple[str, str, Any]]:
         """Generate commands for installed models."""
@@ -84,45 +113,19 @@ class LilbeeCommandProvider(Provider):
 
         return commands
 
-    def _document_commands(self) -> list[tuple[str, str, Any]]:
-        """Generate commands for indexed documents."""
-        commands: list[tuple[str, str, Any]] = []
-        try:
-            for src in get_services().store.get_sources():
-                name = src.get("filename", src.get("source", ""))
-                if name:
-                    commands.append(
-                        (
-                            f"Delete document → {name}",
-                            f"Remove {name} from index",
-                            lambda n=name: self._delete_doc(n),
-                        )
-                    )
-        except Exception:
-            log.debug("Failed to list documents", exc_info=True)
-        return commands
-
     def _set_model(self, attr: str, value: str) -> None:
         # Route through LilbeeApp.set_active_model so model-bar / scope chip
         # / status bar subscribers (settings_changed_signal) refresh.
         app = self._app
         app.set_active_model(attr, value)
-        display = value or "off"
+        display = display_label_for_ref(value) or "off"
         app.notify(f"{attr}: {display}")
         if attr == "chat_model":
             app.title = msg.app_title(value)
 
-    def _delete_doc(self, name: str) -> None:
-        from lilbee.app.ingest import remove_documents_durably
-        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
-
-        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
-        # non-destructive delete; the file stays on disk).
-        remove_documents_durably([name])
-        # Invalidate the document cache like the chat /delete path, so the
-        # deleted file stops being offered by autocomplete and the palette.
-        invalidate_document_cache()
-        self.screen.app.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
+    def _action_delete_document(self) -> None:
+        """Jump to Chat with /delete prefilled; Tab there completes file names."""
+        self._run_slash_command(get_command("/delete"))
 
     def _action_sync(self) -> None:
         self._app.action_run_sync()
@@ -156,11 +159,4 @@ class LilbeeCommandProvider(Provider):
 
     def _action_reset(self) -> None:
         """Trigger /reset from the palette so the ConfirmDialog flow fires."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        app = self._app
-        chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
-        if chat is None:
-            app.notify("Open Chat to run /reset")
-            return
-        chat.request_reset()
+        self._run_slash_command(get_command("/reset"))

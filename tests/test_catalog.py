@@ -350,7 +350,7 @@ class TestFetchHfModels:
         models = page.models
         assert len(models) == 2
         assert models[0].hf_repo == "user/model-7b-gguf"
-        assert models[0].display_name == "model 7b"
+        assert models[0].display_name == "Model 7B"
         assert models[0].downloads == 5000
         assert models[0].featured is False
         assert models[0].task == "chat"
@@ -842,7 +842,7 @@ class TestBuildAdhocEntry:
         entry = build_adhoc_entry("bartowski/gemma-2-2b-it-GGUF")
         assert entry.hf_repo == "bartowski/gemma-2-2b-it-GGUF"
         assert entry.gguf_filename == "*.gguf"
-        assert entry.display_name == "gemma 2 2b it"
+        assert entry.display_name == "Gemma 2 2B"
         assert entry.featured is False
         assert entry.task == ModelTask.CHAT
 
@@ -2190,18 +2190,31 @@ class TestCleanDisplayName:
         assert result == "Mistral 7B v0.3"
 
     def test_strips_qat_marker(self) -> None:
-        assert clean_display_name("unsloth/embeddinggemma-300M-qat-GGUF") == "embeddinggemma 300M"
+        assert clean_display_name("unsloth/embeddinggemma-300M-qat-GGUF") == "Embeddinggemma 300M"
 
     def test_strips_embedding_suffix(self) -> None:
-        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Embedding-GGUF") == "all MiniLM L6 v2"
+        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Embedding-GGUF") == "All MiniLM L6 v2"
 
     def test_strips_trailing_quant(self) -> None:
-        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Q8_0") == "all MiniLM L6 v2"
+        assert clean_display_name("ggml-org/all-MiniLM-L6-v2-Q8_0") == "All MiniLM L6 v2"
 
     def test_strips_combined_quant_and_qat(self) -> None:
         assert (
-            clean_display_name("unsloth/embeddinggemma-300M-qat-Q8_0-GGUF") == "embeddinggemma 300M"
+            clean_display_name("unsloth/embeddinggemma-300M-qat-Q8_0-GGUF") == "Embeddinggemma 300M"
         )
+
+    def test_capitalizes_lowercase_words_and_strips_it_suffix(self) -> None:
+        assert clean_display_name("unsloth/gemma-4-E2B-it-GGUF") == "Gemma 4 E2B"
+
+    def test_uppercases_lowercase_param_count(self) -> None:
+        assert (
+            clean_display_name("ggml-org/embeddinggemma-300m-qat-q8_0-GGUF")
+            == "Embeddinggemma 300M"
+        )
+
+    def test_mixed_case_words_are_preserved(self) -> None:
+        result = clean_display_name("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF")
+        assert result == "Qwen3 Coder 30B A3B"
 
 
 class TestDownloadTaskName:
