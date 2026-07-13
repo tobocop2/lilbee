@@ -546,7 +546,6 @@ class ChatScreen(Screen[None]):
             return
         self._send_message(text)
 
-
     def _ready_to_submit(self, text: str) -> bool:
         """Gate a submit: busy, consumed, empty, and keep-the-draft cases say no."""
         if self._reject_submit_when_busy() or self._dismiss_overlay_on_submit() or not text:
