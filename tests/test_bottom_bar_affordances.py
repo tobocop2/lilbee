@@ -230,10 +230,16 @@ async def test_setup_wizard_hint_when_no_models_installed() -> None:
 
 
 async def test_setup_wizard_hint_when_models_already_installed() -> None:
-    """Models present -> hint shifts to 'Esc to return' so the wizard reads as a review."""
+    """Configured refs installed -> hint shifts to 'Esc to return' (a review, not setup)."""
+    from lilbee.core.config import cfg
+
+    chat_ref = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q8_0.gguf"
+    embed_ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    cfg.chat_model = chat_ref
+    cfg.embedding_model = embed_ref
     with mock.patch(
         "lilbee.cli.tui.screens.setup._scan_installed_models",
-        return_value=(["qwen3:8b"], ["nomic-embed-text"]),
+        return_value=([chat_ref], [embed_ref]),
     ):
         app = _SetupHostApp()
         async with app.run_test(size=(120, 40)) as pilot:

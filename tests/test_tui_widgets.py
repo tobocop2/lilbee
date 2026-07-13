@@ -2561,12 +2561,46 @@ class TestGetCompletions:
         r = get_completions("/model ")
         assert "qwen3:8b" in r
 
+    @mock.patch(
+        "lilbee.modelhub.models.list_installed_models",
+        return_value=[
+            "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+            "bartowski/SmolLM2-360M-Instruct-GGUF/SmolLM2-360M-Instruct-Q4_K_M.gguf",
+        ],
+    )
+    def test_model_arg_substring_matches_display_words(self, _mock: mock.MagicMock) -> None:
+        """Typing a model's human name must match even mid-ref (no HF org needed)."""
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        r = get_completions("/model smol")
+        assert r == ["bartowski/SmolLM2-360M-Instruct-GGUF/SmolLM2-360M-Instruct-Q4_K_M.gguf"]
+
+    @mock.patch(
+        "lilbee.modelhub.models.list_installed_models",
+        return_value=["qwen3:8b", "abc-qwen-mix:1b"],
+    )
+    def test_model_arg_prefix_matches_rank_first(self, _mock: mock.MagicMock) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        r = get_completions("/model qwen")
+        assert r == ["qwen3:8b", "abc-qwen-mix:1b"]
+
     def test_slash_prefix_includes_aliases(self) -> None:
         """/cat expands via the /catalog alias for /models."""
         from lilbee.cli.tui.widgets.autocomplete import get_completions
 
         r = get_completions("/cat")
         assert "/catalog" in r
+
+    def test_command_option_prompt_carries_help_text(self) -> None:
+        """Dropdown rows for commands show the registry help beside the name."""
+        from lilbee.cli.tui.widgets.autocomplete import _option_prompt
+
+        prompt = str(_option_prompt("/crawl"))
+        assert "/crawl" in prompt
+        assert "Crawl a URL" in prompt
+        # Non-command options (model names, paths) stay bare.
+        assert str(_option_prompt("qwen3:8b")) == "qwen3:8b"
 
     def test_unknown_command_arg_returns_empty(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import get_completions
@@ -3422,7 +3456,7 @@ class TestSetupWizard:
 
         ref = "unsloth/embeddinggemma-300M-qat-GGUF/embeddinggemma-300M-qat-Q8_0.gguf"
         row = _installed_name_to_row(ref, "embedding")
-        assert row.name == "embeddinggemma 300M"
+        assert row.name == "Embeddinggemma 300M"
         assert row.quant == "Q8_0"
         assert row.ref == ref
 

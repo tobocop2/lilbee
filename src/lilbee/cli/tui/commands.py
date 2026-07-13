@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from textual.command import Hit, Hits, Provider
 
+from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
 from lilbee.core.config import cfg
@@ -117,7 +118,7 @@ class LilbeeCommandProvider(Provider):
         # / status bar subscribers (settings_changed_signal) refresh.
         app = self._app
         app.set_active_model(attr, value)
-        display = value or "off"
+        display = display_label_for_ref(value) or "off"
         app.notify(f"{attr}: {display}")
         if attr == "chat_model":
             app.title = msg.app_title(value)

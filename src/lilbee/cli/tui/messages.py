@@ -88,6 +88,7 @@ CMD_DELETE_NO_DOCS = "No documents indexed"
 CMD_DELETE_READ_FAILED = "Could not read the document list"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
+CMD_DELETE_SUGGESTION = "Did you mean {name}?"
 CMD_DELETE_SUCCESS = "Deleted {name}"
 CMD_REMEMBER_USAGE = "Usage: /remember <text>  (prefix with 'pref:' for a preference)"
 CMD_REMEMBER_SUCCESS = "Remembered ({kind})."
@@ -113,6 +114,8 @@ TASK_NAME_REBUILD = "Rebuild index"
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
+CMD_SET_TYPE_HINT = "{key} needs {kind}"
+CMD_SET_CHOICES = "{key} must be one of {choices}"
 CMD_SET_READONLY = "{key} is read-only; use the Models screen"
 CMD_MODEL_SET = "Model set to {name}"
 # Shown while a model swap's fleet reload runs off the event loop, so the swap
@@ -143,7 +146,7 @@ CMD_REMOVE_SUCCESS = "Removed {name}"
 CMD_REMOVE_FAILED = "Failed to remove {name}"
 CMD_CANCEL = "Cancelled active operations"
 CMD_CLEAR = "Conversation cleared"
-CMD_THEME_LIST = "Themes: {names}"
+CMD_THEME_UNKNOWN = "No theme called {name}. Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
 TASK_NAME_CRAWL = "Crawl {url}"
 STREAM_ERROR = "\n\n*Error: {error}*"
@@ -371,7 +374,7 @@ MEMORIES_FLAG_FAILED = "Update failed: {error}"
 WIKI_TYPE_HEADINGS: dict[str, str] = {
     kind.value: label for kind, label in _WIKI_TYPE_HEADINGS.items()
 }
-APP_CANCELLED = "Cancelled"
+APP_QUIT_AGAIN_HINT = "Answer cancelled. Press Ctrl+C again to quit."
 SETUP_WELCOME = "Welcome to lilbee"
 SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
 SETUP_INTRO = (
@@ -389,7 +392,7 @@ INSTALLED_CARD_HINT = "D / ⌫ to delete"
 # Architecture compatibility pill labels (catalog row).
 # SUPPORTED renders nothing to keep the row visually quiet for the common case.
 COMPAT_PILL_UNSUPPORTED = "unsupported"
-COMPAT_PILL_UNKNOWN = "?"
+COMPAT_PILL_UNKNOWN = "untested"
 
 # Architecture compatibility copy for the catalog detail view + confirm modal.
 COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by your llama.cpp build."

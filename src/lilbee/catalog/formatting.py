@@ -13,16 +13,27 @@ PARAM_COUNT_RE = re.compile(r"(\d+\.?\d*B)", re.IGNORECASE)
 # name suffixes (anywhere they precede ``-`` or end-of-string), trailing GGUF
 # quant tokens (``-Q4_K_M``, ``-F16`` ...), and trailing date stamps (``-2507``).
 _DISPLAY_NAME_NOISE = re.compile(
-    r"-(?:GGUF|Instruct|Chat|Embedding|Embed|qat)(?=-|$)"
+    r"-(?:GGUF|Instruct|Chat|Embedding|Embed|qat|it)(?=-|$)"
     r"|-(?:Q\d[A-Z0-9_]*|F16|F32)$"
     r"|-\d{4}$",
     re.IGNORECASE,
 )
 _DISPLAY_NAME_META_PREFIX = re.compile(r"^Meta-", re.IGNORECASE)
+# A bare parameter-count word (``300m``, ``0.6b``); rendered uppercase.
+_PARAM_COUNT_WORD = re.compile(r"\d+(?:\.\d+)?[bm]", re.IGNORECASE)
 
 # A native GGUF ref of the form ``<owner>/<repo>/<file>.gguf`` has at least
 # two ``/`` separators; one-slash refs are bare repo IDs.
 _NATIVE_GGUF_REF_MIN_SLASHES = 2
+
+
+def _prettify_word(word: str) -> str:
+    """Normalize one display-name word: uppercase param counts, capitalize lowercase words."""
+    if _PARAM_COUNT_WORD.fullmatch(word):
+        return word.upper()
+    if word.isalpha() and word.islower():
+        return word.capitalize()
+    return word
 
 
 def clean_display_name(repo_id: str) -> str:
@@ -31,8 +42,8 @@ def clean_display_name(repo_id: str) -> str:
     Examples:
         "Qwen/Qwen2.5-7B-Instruct-GGUF"           -> "Qwen2.5 7B"
         "meta-llama/Meta-Llama-3-8B"              -> "Llama 3 8B"
-        "unsloth/embeddinggemma-300M-qat-GGUF"    -> "embeddinggemma 300M"
-        "ggml-org/all-MiniLM-L6-v2-Embedding-Q8_0" -> "all MiniLM L6 v2"
+        "unsloth/embeddinggemma-300m-qat-GGUF"    -> "Embeddinggemma 300M"
+        "ggml-org/all-MiniLM-L6-v2-Embedding-Q8_0" -> "All MiniLM L6 v2"
     """
     name = repo_id.split("/")[-1]
     while True:
@@ -42,7 +53,8 @@ def clean_display_name(repo_id: str) -> str:
         name = stripped
     name = _DISPLAY_NAME_META_PREFIX.sub("", name)
     name = name.replace("-", " ").strip()
-    return re.sub(r"\s+", " ", name)
+    name = re.sub(r"\s+", " ", name)
+    return " ".join(_prettify_word(w) for w in name.split(" "))
 
 
 def download_task_name(ref: str) -> str:

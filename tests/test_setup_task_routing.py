@@ -272,3 +272,62 @@ async def test_escape_with_selection_dismisses_completed() -> None:
                         break
             assert not isinstance(app.screen, SetupWizard)
             mock_reset.assert_called_once()
+
+
+_INSTALLED_CHAT_REF = "org/Other-Chat-GGUF/Other-Chat-Q8_0.gguf"
+_INSTALLED_EMBED_REF = "Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
+
+
+def test_ready_hint_requires_configured_chat_ref_installed() -> None:
+    """Other installed chat models don't make an uninstalled configured ref 'ready'."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
+
+    cfg.chat_model = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+    cfg.embedding_model = _INSTALLED_EMBED_REF
+    with _patch_setup_scan(chat=[_INSTALLED_CHAT_REF], embed=[_INSTALLED_EMBED_REF]):
+        wizard = SetupWizard()
+    assert wizard._initial_hint_text() == msg.SETUP_ENTER_HINT
+
+
+def test_ready_hint_requires_configured_embedding_ref_installed() -> None:
+    """A configured embedding ref that isn't installed keeps the install hint."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
+
+    cfg.chat_model = _INSTALLED_CHAT_REF
+    cfg.embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    with _patch_setup_scan(chat=[_INSTALLED_CHAT_REF], embed=[_INSTALLED_EMBED_REF]):
+        wizard = SetupWizard()
+    assert wizard._initial_hint_text() == msg.SETUP_ENTER_HINT
+
+
+def test_ready_hint_when_both_configured_refs_installed() -> None:
+    """The ready hint shows only when both configured refs resolve to installs."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config import cfg
+
+    cfg.chat_model = _INSTALLED_CHAT_REF
+    cfg.embedding_model = _INSTALLED_EMBED_REF
+    with _patch_setup_scan(chat=[_INSTALLED_CHAT_REF], embed=[_INSTALLED_EMBED_REF]):
+        wizard = SetupWizard()
+    assert wizard._initial_hint_text() == msg.SETUP_RETURN_HINT
+
+
+@pytest.mark.asyncio
+async def test_commit_selection_never_writes_a_ref_it_cannot_install() -> None:
+    """A non-installed card with no downloadable catalog model writes nothing."""
+    from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+    app = _PlainApp()
+    with _patch_setup_scan(), _patch_setup_ram():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            wizard = app.screen
+            assert isinstance(wizard, SetupWizard)
+            row = _installed_name_to_row(_INSTALLED_CHAT_REF, "chat")
+            row.installed = False
+            card = ModelCard(row)
+            with patch.object(wizard, "_apply_selection") as mock_apply:
+                wizard._commit_selection(card, "chat")
+            mock_apply.assert_not_called()

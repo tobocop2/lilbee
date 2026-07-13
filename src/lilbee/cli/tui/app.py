@@ -420,15 +420,14 @@ class LilbeeApp(App[None]):
             self._theme_index = 0
 
     async def action_quit(self) -> None:
-        """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
+        """Context-aware Ctrl+C: cancel the foreground operation, else quit.
+
+        Only operations the user is actively watching (the setup wizard, an
+        in-flight chat stream) get the cancel-first treatment; a background
+        task like an engine warm or a sync never swallows a quit.
+        """
         get_services().cancel_inference()
 
-        if not self.task_bar.queue.is_empty:
-            active = self.task_bar.queue.active_task
-            if active:
-                self.task_bar.cancel_task(active.task_id)
-                self.notify(msg.APP_CANCELLED)
-                return
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -438,6 +437,7 @@ class LilbeeApp(App[None]):
             return
         if isinstance(screen, ChatScreen) and screen.streaming:
             screen.action_cancel_stream()
+            self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
         self.exit()
 

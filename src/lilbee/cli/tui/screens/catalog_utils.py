@@ -275,6 +275,8 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> LocalCat
         backend=NATIVE_BACKEND,
         variant=v,
         family=f,
+        # Families are built exclusively from the curated featured catalog.
+        compat=ModelCompat.SUPPORTED,
     )
 
 
@@ -295,7 +297,8 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> LocalCatalogRow:
         ref=m.ref,
         backend=NATIVE_BACKEND,
         catalog_model=m,
-        compat=m.compat,
+        # An installed model demonstrably runs, whatever the catalog probe said.
+        compat=ModelCompat.SUPPORTED if installed else m.compat,
     )
 
 
@@ -320,6 +323,8 @@ def remote_to_row(rm: RemoteModel) -> LocalCatalogRow:
         ref=format_remote_ref(rm.name, rm.provider),
         backend=rm.provider.lower(),
         remote_model=rm,
+        # The model is live on the reporting server, so it demonstrably runs.
+        compat=ModelCompat.SUPPORTED,
     )
 
 

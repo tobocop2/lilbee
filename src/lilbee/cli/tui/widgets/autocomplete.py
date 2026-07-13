@@ -14,15 +14,30 @@ from textual.containers import Vertical
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
+from textual.content import Content
+
 from lilbee.app.services import get_services
 from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
-from lilbee.cli.tui.command_registry import completion_names
+from lilbee.cli.tui.command_registry import COMMANDS, completion_names
 
 log = logging.getLogger(__name__)
 
 _SLASH_COMMANDS = completion_names()
+_COMMAND_HELP: dict[str, str] = {
+    name: cmd.help_text for cmd in COMMANDS for name in (cmd.name, *cmd.aliases)
+}
+
+
+def _option_prompt(value: str) -> Content:
+    """Render a dropdown row: bare *value*, plus dim registry help for commands."""
+    help_text = _COMMAND_HELP.get(value, "")
+    if not help_text:
+        return Content(value)
+    return Content.assemble(value, Content.styled(f"  {help_text}", "$text-muted"))
+
+
 _MAX_VISIBLE = 8  # max dropdown items shown at once
 # Hard cap on path completions surfaced for /add so a deep directory doesn't
 # stall the dropdown rebuild.
@@ -69,8 +84,12 @@ def _get_arg_completions(cmd: str, partial: str) -> list[str]:
     else:
         options = sources()
         if partial:
+            # Substring match so a model's human name ("smol") finds its full
+            # ref without the HF org; prefix matches keep first place.
             low = partial.lower()
-            options = [o for o in options if o.lower().startswith(low)]
+            prefixed = [o for o in options if o.lower().startswith(low)]
+            contained = [o for o in options if low in o.lower() and not o.lower().startswith(low)]
+            options = prefixed + contained
     return [o for o in options if o.lower() != partial.lower()]
 
 
@@ -220,7 +239,7 @@ class CompletionOverlay(Vertical):
         ol = self.query_one("#completion-list", OptionList)
         ol.clear_options()
         for opt in self._options:
-            ol.add_option(Option(opt))
+            ol.add_option(Option(_option_prompt(opt)))
         if self._options:
             ol.highlighted = 0
             self.display = True

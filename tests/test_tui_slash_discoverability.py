@@ -506,6 +506,37 @@ class TestChatScreenIntegrationAsync:
             assert not isinstance(bare.screen, SlashCommandCatalog)
 
 
+class TestQuestionMarkHelpAsync:
+    """? opens help on an empty prompt; mid-typing it stays a literal character."""
+
+    async def test_question_mark_on_empty_input_opens_help(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            inp = app.screen.query_one("#chat-input")
+            assert inp.value == ""
+            with mock.patch.object(app, "action_push_help") as push_help:
+                await pilot.press("question_mark")
+                await pilot.pause()
+            push_help.assert_called_once()
+            assert inp.value == ""
+
+    async def test_question_mark_mid_typing_stays_literal(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            inp = app.screen.query_one("#chat-input")
+            inp.value = "what does this do"
+            await pilot.pause()
+            with mock.patch.object(app, "action_push_help") as push_help:
+                await pilot.press("question_mark")
+                await pilot.pause()
+            push_help.assert_not_called()
+            assert inp.value == "what does this do?"
+
+
 class TestPlaceholderCopy:
     def test_placeholder_advertises_three_discovery_keys(self) -> None:
         text = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
@@ -721,16 +752,38 @@ class TestDropdownNavigationAsync:
             assert isinstance(screen, ChatScreen)
             inp = screen.query_one("#chat-input")
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
-            inp.value = "/"
+            inp.value = "/add "
+            await pilot.pause()
+            overlay.show_completions(["mydir/"])
             await pilot.pause()
             await pilot.press("ctrl+n")
             await pilot.pause()
-            assert inp.value != "/"
+            assert inp.value != "/add "
             await pilot.press("escape")
             await pilot.pause()
             # Esc restores exactly what the user had typed and closes the menu.
-            assert inp.value == "/"
+            assert inp.value == "/add "
             assert not overlay.is_visible
+
+    async def test_esc_clears_a_bare_slash(self, _mock_resolve, _mock_services) -> None:
+        """Backing out of the dropdown must not leave a "/" to hijack the next message."""
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            inp.value = "/"
+            await pilot.pause()
+            assert overlay.is_visible
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not overlay.is_visible
+            assert inp.value == ""
 
     async def test_ctrl_p_opens_palette_when_overlay_hidden(
         self, _mock_resolve, _mock_services
@@ -775,9 +828,55 @@ class TestDropdownNavigationAsync:
 
 
 class TestEnterAcceptsHighlightAsync:
-    """Pressing Enter on a visible dropdown must accept the highlighted command."""
+    """Enter submits exactly what was typed; Tab and the arrows do completion."""
 
-    async def test_enter_accepts_highlight_when_input_differs(
+    async def test_enter_never_rewrites_typed_input(self, _mock_resolve, _mock_services) -> None:
+        """ "/model" must dispatch /model even while the dropdown highlights /models."""
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            with mock.patch.object(screen, "_handle_slash") as dispatch:
+                inp.value = "/model"
+                await pilot.pause()
+                assert overlay.is_visible
+                assert overlay.get_current() == "/models"
+                await pilot.press("enter")
+                await pilot.pause()
+            dispatch.assert_called_once_with("/model")
+            assert not overlay.is_visible
+
+    async def test_prose_submits_even_with_stale_overlay(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        """A leftover visible dropdown must not swallow a plain message."""
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            with mock.patch.object(screen, "_send_message") as send:
+                inp.value = "hello world"
+                await pilot.pause()
+                overlay.show_completions(["/model"])
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+            send.assert_called_once_with("hello world")
+            assert not overlay.is_visible
+
+    async def test_bare_slash_enter_clears_without_unknown_toast(
         self, _mock_resolve, _mock_services
     ) -> None:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -790,18 +889,58 @@ class TestEnterAcceptsHighlightAsync:
             assert isinstance(screen, ChatScreen)
             inp = screen.query_one("#chat-input")
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
-            inp.value = "/"
-            await pilot.pause()
-            assert overlay.is_visible
-            highlighted = overlay.get_current()
-            assert highlighted is not None and highlighted.startswith("/")
-            await pilot.press("enter")
-            await pilot.pause()
-            # Enter fills the highlighted command (nothing was previewed yet)
-            # and is consumed, so the message is NOT submitted; a second Enter
-            # would submit.
-            assert inp.value == highlighted
+            with (
+                mock.patch.object(screen, "_handle_slash") as dispatch,
+                mock.patch.object(screen, "notify") as notify,
+            ):
+                inp.value = "/"
+                await pilot.pause()
+                assert overlay.is_visible
+                await pilot.press("enter")
+                await pilot.pause()
+            dispatch.assert_not_called()
+            notify.assert_not_called()
+            assert inp.value == ""
             assert not overlay.is_visible
+
+    async def test_unknown_command_keeps_typed_text(self, _mock_resolve, _mock_services) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            with mock.patch.object(screen, "notify") as notify:
+                inp.value = "/what is a search engine"
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+            notify.assert_called_once()
+            assert "/what" in notify.call_args[0][0]
+            assert inp.value == "/what is a search engine"
+
+    async def test_history_recall_replaces_input(self, _mock_resolve, _mock_services) -> None:
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            inp = screen.query_one("#chat-input")
+            with mock.patch.object(screen, "_send_message"):
+                inp.value = "hello there"
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+            await pilot.press("up")
+            await pilot.pause()
+            assert inp.value == "hello there"
+            await pilot.press("up")
+            await pilot.pause()
+            # Recall replaces the buffer wholesale; it never stacks lines.
+            assert inp.value == "hello there"
+            assert inp.document.line_count == 1
 
     async def test_enter_submits_when_selection_matches_input(
         self, _mock_resolve, _mock_services
@@ -1053,17 +1192,18 @@ class TestCompletionOpenAndAcceptAsync:
             assert isinstance(screen, ChatScreen)
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             inp = screen.query_one("#chat-input")
-            inp.value = "/"
+            inp.value = "/m"
             await pilot.pause()
             await pilot.press("escape")
             await pilot.pause()
             assert not overlay.is_visible
+            assert inp.value == "/m"
             await pilot.press("tab")
             await pilot.pause()
             assert overlay.is_visible
-            # Commands share only "/", so Tab previews the first match.
+            # The /m commands share only that prefix, so Tab previews the first match.
             assert inp.value == overlay.get_current()
-            assert inp.value != "/"
+            assert inp.value != "/m"
 
     async def test_ctrl_n_opens_closed_overlay_and_previews_first(
         self, _mock_resolve, _mock_services
@@ -1078,16 +1218,17 @@ class TestCompletionOpenAndAcceptAsync:
             assert isinstance(screen, ChatScreen)
             overlay = screen.query_one("#completion-overlay", CompletionOverlay)
             inp = screen.query_one("#chat-input")
-            inp.value = "/"
+            inp.value = "/m"
             await pilot.pause()
             await pilot.press("escape")
             await pilot.pause()
             assert not overlay.is_visible
+            assert inp.value == "/m"
             await pilot.press("ctrl+n")
             await pilot.pause()
             assert overlay.is_visible
             assert inp.value == overlay.get_current()
-            assert inp.value != "/"
+            assert inp.value != "/m"
 
     async def test_directory_accept_omits_trailing_space(
         self, _mock_resolve, _mock_services
