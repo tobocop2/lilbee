@@ -1,5 +1,5 @@
 {
-  description = "Run and manage local AI models and search your files, code, and crawled web pages, with cited answers";
+  description = "The whole local AI stack in one executable: run and manage local AI models, and search your files, code, and crawled web pages, with cited answers";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
@@ -15,7 +15,7 @@
       mkPkgs = system: import nixpkgs { inherit system; };
 
       mkMeta = pkgs: {
-        description = "Run and manage local AI models and search your files, code, and crawled web pages, with cited answers";
+        description = "The whole local AI stack in one executable: run and manage local AI models, and search your files, code, and crawled web pages, with cited answers";
         homepage = "https://github.com/tobocop2/lilbee";
         license = pkgs.lib.licenses.mit;
         mainProgram = "lilbee";

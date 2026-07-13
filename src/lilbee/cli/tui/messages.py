@@ -231,7 +231,7 @@ MODEL_BEING_DOWNLOADED = (
     "{name} is still downloading. Wait for it to finish before setting it active."
 )
 CHAT_WELCOME_TITLE = "lilbee"
-CHAT_WELCOME_TAGLINE = "your local search engine and personal encyclopedia."
+CHAT_WELCOME_TAGLINE = "your local AI stack and personal encyclopedia."
 CHAT_WELCOME_HINT = "Press / for commands, or just ask."
 CHAT_LOGIN_PROMPT = "Paste your token with /login <token>"
 CHAT_LOGGED_IN = "Logged in to HuggingFace"
