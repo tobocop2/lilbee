@@ -208,22 +208,20 @@ jobs:
 
       - name: Install llama-swap + gguf-parser (engine helpers)
         shell: bash
-        env:
-          # Keep in sync with tools/wheel-build/build_llama_server.sh.
-          LLAMA_SWAP_VERSION: v223
-          GGUF_PARSER_REF: main
         run: |
           set -euxo pipefail
+          # Shared pins with tools/wheel-build/build_llama_server.sh.
+          source engine-versions.env
           helperdir="${HOME}/engine-helpers"
           mkdir -p "${helperdir}"
           exe=""
           if [ "${{ runner.os }}" = "Windows" ]; then exe=".exe"; fi
           work="$(mktemp -d)"
-          git clone -q --depth 1 --branch "${LLAMA_SWAP_VERSION}" \
+          git clone -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" \
             https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
           ( cd "${work}/llama-swap" && go build -trimpath -o "${helperdir}/llama-swap${exe}" . )
           # gguf-parser's CLI lives under a nested go.mod in cmd/gguf-parser.
-          git clone -q --depth 1 --branch "${GGUF_PARSER_REF}" \
+          git clone -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" \
             https://github.com/gpustack/gguf-parser-go.git "${work}/gguf-parser-go"
           ( cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${helperdir}/gguf-parser${exe}" . )
           if command -v cygpath >/dev/null 2>&1; then

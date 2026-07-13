@@ -9,6 +9,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'engine-versions.env'
       - 'tools/wheel-build/build_llama_server.sh'
       - 'tools/wheel-build/cmake_args.sh'
       - 'tools/wheel-build/install_gpu_toolkit.sh'
