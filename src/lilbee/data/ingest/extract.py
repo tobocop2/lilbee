@@ -34,7 +34,7 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, OcrQualityThresholds
+    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig
 
 log = logging.getLogger(__name__)
 
@@ -114,28 +114,23 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
         return OcrConfig(
             backend=OcrBackendName.LILBEE_VISION,
             backend_options=options,
-            quality_thresholds=_forced_ocr_thresholds(),
         )
     # xberg requires a non-empty language list (4.x defaulted to English;
     # 5.x errors on an empty one). cfg.ocr_language is validated non-empty.
     return OcrConfig(backend=OcrBackendName.TESSERACT, language=list(config.ocr_language))
 
 
-def _forced_ocr_thresholds() -> OcrQualityThresholds | None:
-    """OCR-forcing thresholds when LILBEE_OCR_FORCE=1, else None (xberg defaults).
+def _ocr_force_requested() -> bool:
+    """Whether LILBEE_OCR_FORCE opts every page into vision OCR.
 
-    Some scans carry a garbage text layer (whitespace-only or invisible text
-    objects), so the has-text-layer gate skips OCR and extraction yields zero
-    chunks. An impossible non-whitespace floor makes every page fail the
-    quality gate and fall through to OCR -- a targeted-reingest lever, not a
-    default: normal runs must keep native-first extraction."""
+    Born-digital PDFs carry a clean text layer that xberg extracts natively and,
+    since rc25, short-circuits past the OCR backend entirely -- so a re-OCR run
+    never touches the vision model. This lever sets ExtractionConfig.force_ocr,
+    which overrides that short-circuit and OCRs every page. A targeted-reingest
+    lever, not a default: normal runs keep native-first extraction."""
     import os
 
-    if os.environ.get("LILBEE_OCR_FORCE", "").strip().lower() not in {"1", "true", "yes"}:
-        return None
-    from xberg import OcrQualityThresholds
-
-    return OcrQualityThresholds(min_total_non_whitespace=10**9)
+    return os.environ.get("LILBEE_OCR_FORCE", "").strip().lower() in {"1", "true", "yes"}
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
@@ -148,16 +143,21 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # which lilbee never makes, so it is intentionally not set here.)
     chunking = build_chunking_config()
     ocr = _ocr_config(ocr_token)
+    # force_ocr defeats xberg's text-layer short-circuit so every page reaches the
+    # vision backend; scoped to the vision path, since it is a GPU re-OCR lever.
+    force_ocr = _ocr_force_requested() and ocr.backend == OcrBackendName.LILBEE_VISION
     if mode is ExtractMode.PAGINATED:
         return ExtractionConfig(
             chunking=chunking,
             pages=PageConfig(extract_pages=True, insert_page_markers=False),
             ocr=ocr,
+            force_ocr=force_ocr,
         )
     return ExtractionConfig(
         chunking=chunking,
         output_format=MARKDOWN_OUTPUT,
         ocr=ocr,
+        force_ocr=force_ocr,
     )
 
 
