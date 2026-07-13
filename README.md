@@ -7,7 +7,7 @@
   </a>
 </p>
 
-<p align="center"><strong>Run and manage local AI models, and search everything you own with them, all in one program.</strong></p>
+<p align="center"><strong>The whole local AI stack in one executable: it runs and manages the models, and searches everything you own with them.</strong></p>
 
 <p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/tutorial">Tutorial reels</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a> &nbsp;·&nbsp; <a href="https://web.libera.chat/#lilbee">Chat (#lilbee)</a></p>
 
@@ -45,7 +45,7 @@
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
 </p>
 
-A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line. It is local RAG, done for you: the retrieval and the model both run on your own machine.
+lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, [launches your coding agents on local models](#launch-your-coding-agent-on-local-models), and hands any [MCP-aware agent](#a-reference-for-ai-agents) cited answers from everything you've indexed. The same engine backs the [Obsidian community plugin](https://obsidian.lilbee.sh/), so your vault gets all of it without a terminal. Ask in plain English. No containers, no networking, nothing else to install or set up.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
