@@ -16,11 +16,23 @@ Question: {question}"""
 
 _CITE_REF_RE = re.compile(r"\[(\d+)\]")
 
-# Matches trailing LLM-generated citation blocks like "Key sources:", "Sources:",
-# "References:", "Bibliography:", "Citations:" (with optional markdown heading).
+# An LLM-generated citation block: a "Sources:"/"References:"/... heading line
+# followed by a list (bullets, arrows, "[1]" or "1." numbering). Requiring the
+# list keeps an answer that legitimately discusses such a heading in prose
+# (e.g. "References:\n\nIt lists 40 works.") from being clipped.
 _LLM_CITATION_BLOCK_RE = re.compile(
-    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*\n.*",
+    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*\n"
+    r"\s*(?:[-*•→\[]|\d+[.)]).*",
     re.IGNORECASE | re.DOTALL,
+)
+
+# A citation-style heading at the very end of the text, nothing after it yet.
+# Mid-stream this is ambiguous (the next line decides list vs prose), so it is
+# held back rather than shown; at end of stream it is a dangling artifact of a
+# citation block the model never finished, and is dropped either way.
+_TRAILING_HEADING_RE = re.compile(
+    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -170,31 +182,36 @@ def cited_subset(answer: str, sources: list[SearchChunk]) -> list[SearchChunk]:
     return [uniq[i - 1] for i in sorted(cited) if 1 <= i <= len(uniq)]
 
 
-def _drop_citation_block(text: str) -> str:
-    """Remove a trailing LLM-generated citation block without trimming whitespace.
+def _stream_safe_prefix(text: str) -> str:
+    """The prefix of *text* safe to show: a model-authored citation block
+    (heading plus list) is removed, and a bare trailing citation heading is
+    withheld until whatever follows disambiguates it.
 
     Kept rstrip-free so the streaming filter can track emitted length exactly;
     ``strip_llm_citations`` layers the final rstrip on top for one-shot answers.
     """
-    return _LLM_CITATION_BLOCK_RE.sub("", text)
+    cleaned = _LLM_CITATION_BLOCK_RE.sub("", text)
+    return _TRAILING_HEADING_RE.sub("", cleaned)
 
 
 def strip_llm_citations(text: str) -> str:
-    """Remove LLM-generated trailing citation blocks from answer text."""
-    return _drop_citation_block(text).rstrip()
+    """Remove an LLM-generated trailing citation block (or dangling citation
+    heading) from answer text. Prose that merely mentions such a heading stays."""
+    return _stream_safe_prefix(text).rstrip()
 
 
 class StreamingCitationFilter:
-    """Suppress a model-generated trailing ``Sources:``/``References:`` block as
+    """Suppress a model-generated ``Sources:``/``References:`` citation block as
     it streams, so only lilbee's authoritative source list reaches the reader.
 
     A one-shot answer can be stripped after the fact, but streamed tokens are
     already on screen by the time the block is recognizable. This feeds the
     answer in incrementally and only releases text once it is certain not to be
     the start of a citation block: everything up to the last newline is safe to
-    show, while the final (possibly partial) line is held back until more text
-    arrives or the stream ends. If a citation heading does appear, the block and
-    everything after it is dropped for good.
+    show, the final (possibly partial) line is held back until more text
+    arrives, and a bare citation heading is held until the next line shows
+    whether a list (a citation block, dropped) or prose (a legitimate mention,
+    shown) follows. A heading left dangling when the stream ends is dropped.
     """
 
     def __init__(self) -> None:
@@ -204,7 +221,7 @@ class StreamingCitationFilter:
     def feed(self, text: str) -> str:
         """Accept the next answer chunk; return the portion safe to show now."""
         self._buffer += text
-        stripped = _drop_citation_block(self._buffer)
+        stripped = _stream_safe_prefix(self._buffer)
         cut = stripped.rfind("\n")
         committed = stripped if cut == -1 else stripped[:cut]
         if len(committed) > self._emitted:
@@ -215,7 +232,7 @@ class StreamingCitationFilter:
 
     def flush(self) -> str:
         """Release any remaining safe text once the stream has ended."""
-        final = _drop_citation_block(self._buffer)
+        final = _stream_safe_prefix(self._buffer)
         if len(final) > self._emitted:
             out = final[self._emitted :]
             self._emitted = len(final)

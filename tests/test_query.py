@@ -619,6 +619,31 @@ class TestStreamingCitationFilter:
         assert "x.pdf" not in shown
         assert shown.startswith("Body text.")
 
+    def test_prose_after_a_heading_line_streams_through(self):
+        # A heading the answer legitimately discusses is not a citation block:
+        # no list follows, so the heading and its prose both reach the reader.
+        chunks = ["The paper is structured simply.", "\n\nReferences:", "\nIt lists 40 works."]
+        shown, f = self._run(chunks)
+        assert "References:" in shown
+        assert "It lists 40 works." in shown
+        assert f.answer.endswith("It lists 40 works.")
+
+    def test_dangling_heading_at_stream_end_is_dropped(self):
+        # The model emitted a citation heading and stopped; showing it would put
+        # a stray "Sources:" right above lilbee's authoritative block.
+        shown, f = self._run(["Grounded answer [1].", "\n\nSources:\n"])
+        assert "Sources" not in shown
+        assert shown == "Grounded answer [1]."
+        assert f.answer == "Grounded answer [1]."
+
+    def test_heading_is_held_not_shown_while_ambiguous(self):
+        # Mid-stream, a bare heading must not be emitted until the next line
+        # decides list (drop) versus prose (show).
+        f = StreamingCitationFilter()
+        assert f.feed("Answer.\n\nSources:\n") == "Answer."
+        assert f.feed("- fake.pdf\n- other.pdf") == ""
+        assert f.flush() == ""
+
     def test_holds_only_the_trailing_partial_line(self):
         # A completed line is released promptly (its newline waits with the next
         # line so a citation heading right after it can never leak); only the
@@ -2204,6 +2229,16 @@ class TestStripLlmCitations:
     def test_preserves_inline_source_mention(self):
         text = "The sources indicate that oil capacity is 5 quarts."
         assert strip_llm_citations(text) == text
+
+    def test_preserves_heading_followed_by_prose(self):
+        # An answer discussing a document's References section is not a
+        # citation block; only heading-plus-list gets stripped.
+        text = "The paper has three parts.\n\nReferences:\nIt lists 40 works."
+        assert strip_llm_citations(text) == text
+
+    def test_removes_dangling_heading(self):
+        text = "The answer is 42.\n\nSources:\n"
+        assert strip_llm_citations(text) == "The answer is 42."
 
 
 class TestExtractCitedIndices:
