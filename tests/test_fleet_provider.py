@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -116,6 +117,34 @@ def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetP
     p._swaps = {SwapGroup(role.value): _FakeSwap() for role in roles}
     p._clients = {role: list(cs) for role, cs in clients.items() if cs}
     return p
+
+
+def _stub_warm_thread(monkeypatch) -> list[dict]:
+    """Replace the warm-up daemon thread with a recorder; return the kicked list."""
+    kicked: list[dict] = []
+    monkeypatch.setattr(
+        prov_mod.threading,
+        "Thread",
+        lambda **kw: SimpleNamespace(start=lambda: kicked.append(kw)),
+    )
+    return kicked
+
+
+def test_warm_up_pool_rewarms_when_fleet_up_but_role_unloaded(monkeypatch) -> None:
+    # llama-swap idle-unloads a model (ttl) by stopping only the llama-server
+    # child; the swap handle stays in _swaps while the role goes cold. A prompt
+    # sent into that gap must re-warm so llama-swap reloads on demand, not bounce
+    # forever on a stale "swap exists therefore ready" assumption.
+    p = FleetProvider()
+    group = SwapGroup(WorkerRole.CHAT.value)
+    p._role_group = {WorkerRole.CHAT: group}
+    p._swaps = {group: _FakeSwap()}  # ready set empty -> role_ready False
+    kicked = _stub_warm_thread(monkeypatch)
+
+    p.warm_up_pool()
+
+    assert kicked, "warm_up_pool must re-warm a cold role even while its swap is up"
+    assert p._warming is True
 
 
 def test_least_in_flight_picks_minimum() -> None:
@@ -1341,15 +1370,23 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
     assert starts["n"] == 1
 
 
-def test_warm_up_pool_noop_when_swap_already_up(monkeypatch) -> None:
+def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch) -> None:
+    # A fully-loaded fleet (swap up AND its role ready) short-circuits: no swap
+    # restart and no re-warm thread. The cold-role counterpart, where the swap is
+    # up but the model idle-unloaded, is covered by the rewarm test above.
     starts = {"n": 0}
     swap = _install_engine(monkeypatch, launches=[])
     monkeypatch.setattr(swap, "start", lambda launches: starts.__setitem__("n", starts["n"] + 1))
+    ready_swap = _FakeSwap()
+    ready_swap.ready = {WorkerRole.CHAT}
     p = FleetProvider()
-    p._swaps = {SwapGroup.CHAT: _FakeSwap()}  # already up
+    p._swaps = {SwapGroup.CHAT: ready_swap}  # up and loaded
     p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+    kicked = _stub_warm_thread(monkeypatch)
     p.warm_up_pool()
     assert starts["n"] == 0  # no start dispatched
+    assert not kicked  # no re-warm thread dispatched
+    assert p._warming is False
 
 
 def test_warm_up_blocking_logs_and_clears_guard_on_failure(monkeypatch, caplog) -> None:

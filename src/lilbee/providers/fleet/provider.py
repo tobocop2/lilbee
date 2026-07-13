@@ -1375,7 +1375,19 @@ class FleetProvider:
         (or once the fleet is up) is a no-op.
         """
         with self._lock:
-            if self._swaps or self._warming:
+            if self._warming:
+                return
+            fleet_up = bool(self._swaps)
+        # A live swap whose model llama-swap idle-unloaded (its ttl stops only the
+        # llama-server child, leaving the swap handle in _swaps) reports its role
+        # cold. Re-warm so a prompt sent into that gap drives llama-swap's
+        # on-demand reload; bailing on "swaps exist" alone stranded every later
+        # prompt on a stale not-ready. A fully-loaded fleet still short-circuits.
+        # The probe runs off the lock (role_ready may hit the proxy).
+        if fleet_up and self._roles_ready():
+            return
+        with self._lock:
+            if self._warming:
                 return
             self._warming = True
         threading.Thread(
@@ -1383,6 +1395,12 @@ class FleetProvider:
             name="fleet-warm-up",
             daemon=True,
         ).start()
+
+    def _roles_ready(self) -> bool:
+        """Whether every configured role's upstream is loaded (fleet fully warm)."""
+        with self._lock:
+            roles = list(self._role_group)
+        return bool(roles) and all(self.role_ready(role) for role in roles)
 
     def _warm_up_blocking(self) -> None:
         """Start the fleet and pre-load every role on a background thread.
