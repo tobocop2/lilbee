@@ -119,6 +119,26 @@ def _provider_with_clients(clients: dict[WorkerRole, list[MagicMock]]) -> FleetP
     return p
 
 
+def test_warm_up_pool_rechecks_warming_after_readiness_probe(monkeypatch) -> None:
+    # The readiness probe runs off the lock; if a concurrent warm starts during
+    # it, the re-check under the lock abandons this dispatch so no second warm
+    # thread spawns.
+    p = FleetProvider()
+    group = SwapGroup(WorkerRole.CHAT.value)
+    p._role_group = {WorkerRole.CHAT: group}
+    p._swaps = {group: _FakeSwap()}  # fleet up, role cold
+    kicked = _stub_warm_thread(monkeypatch)
+
+    def _probe_then_a_warm_wins_the_race() -> bool:
+        p._warming = True  # a sibling warm started while we were probing
+        return False
+
+    monkeypatch.setattr(p, "_roles_ready", _probe_then_a_warm_wins_the_race)
+    p.warm_up_pool()
+
+    assert not kicked, "the re-check must abandon this dispatch, not start a second warm"
+
+
 def _stub_warm_thread(monkeypatch) -> list[dict]:
     """Replace the warm-up daemon thread with a recorder; return the kicked list."""
     kicked: list[dict] = []
@@ -216,6 +236,24 @@ def test_adopt_group_builds_a_client_per_replica(monkeypatch) -> None:
     p = FleetProvider()
     p._ensure_fleet()
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
+
+
+def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch) -> None:
+    # The plan reports a configured-but-missing chat model; _plan_and_spawn records
+    # it so the warm finalizer can fail chat with a named reason. The installed embed
+    # role still starts.
+    _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.EMBED)])
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan(
+            (_fake_launch(WorkerRole.EMBED),),
+            skipped_not_installed={WorkerRole.CHAT: "org/repo/missing-chat.gguf"},
+        ),
+    )
+    p = FleetProvider()
+    p._ensure_fleet()
+    assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
 def test_ensure_fleet_refused_after_shutdown(monkeypatch) -> None:
@@ -1458,14 +1496,37 @@ def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> No
     assert seen == [WarmPhase.STARTING]
 
 
-def test_warm_up_blocking_clears_stamp_when_chat_never_warms(monkeypatch) -> None:
-    """No chat instance placed (model not installed): the early STARTING stamp
-    is dropped so the warm line cannot spin forever."""
+def test_warm_up_blocking_clears_stamp_when_chat_absent_for_other_reasons(monkeypatch) -> None:
+    """No chat instance placed for a non-install reason (a remote-routed chat has
+    no local server to warm): the early STARTING stamp is dropped so the warm line
+    cannot spin forever, and no spurious failure is stamped."""
     p = FleetProvider()
     monkeypatch.setattr(p, "_ensure_fleet", lambda: None)
     monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
     p._warm_up_blocking()
     assert p.warm_progress() is None
+
+
+def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> None:
+    """Chat model configured but not installed: the warm ends in a terminal ERROR
+    naming the cause, so the prompt path renders 'failed to load' instead of an
+    endless 'not ready, send again' bounce that retrying can never resolve."""
+    from lilbee.providers.warm_progress import WarmPhase
+
+    p = FleetProvider()
+
+    def _plan_skips_chat() -> None:
+        # _ensure_fleet records what the plan left unplaced; a not-installed chat
+        # model is skipped here, as _plan_and_spawn would record it.
+        p._skipped_not_installed = {WorkerRole.CHAT: "Qwen/Qwen3-8B-GGUF"}
+
+    monkeypatch.setattr(p, "_ensure_fleet", _plan_skips_chat)
+    monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert (snap.error or "") == "chat model Qwen3 8B is not installed"
 
 
 def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
