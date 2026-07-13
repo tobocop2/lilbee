@@ -10,10 +10,10 @@ import pytest
 
 
 def test_apply_color_non_empty():
-    from lilbee.runtime._splash_runner import AMBER_BRIGHT, RESET, apply_color
+    from lilbee.runtime._splash_runner import RESET, ROSE_BRIGHT, apply_color
 
-    result = apply_color("hello", AMBER_BRIGHT)
-    assert result == AMBER_BRIGHT + "hello" + RESET
+    result = apply_color("hello", ROSE_BRIGHT)
+    assert result == ROSE_BRIGHT + "hello" + RESET
 
 
 def test_apply_color_empty_line():
@@ -46,6 +46,37 @@ def test_render_frame():
     assert b"bar" in result
 
 
+def test_render_frame_centres_every_row_by_the_same_margin():
+    from lilbee.runtime._splash_runner import render_frame
+
+    lines = render_frame(["line1", "line2"], "bar", pad=4).decode().splitlines()
+    assert lines[0] == "    line1"
+    assert lines[1] == "    line2"
+    assert lines[-1] == "      bar"  # margin plus the bar's own two-space indent
+
+
+def test_left_pad_matches_the_bootstrap_formula(monkeypatch):
+    import os
+
+    from lilbee.runtime import _splash_runner
+    from lilbee.runtime.bee_logo import LOGO_WIDTH
+
+    monkeypatch.setattr(os, "get_terminal_size", lambda fd=1: os.terminal_size((121, 40)))
+    assert _splash_runner.left_pad() == (121 - LOGO_WIDTH) // 2
+
+
+def test_left_pad_is_zero_when_the_terminal_size_is_unknown(monkeypatch):
+    import os
+
+    from lilbee.runtime import _splash_runner
+
+    def _raise(fd=1):
+        raise OSError("not a tty")
+
+    monkeypatch.setattr(os, "get_terminal_size", _raise)
+    assert _splash_runner.left_pad() == 0
+
+
 def test_move_up_and_clear():
     from lilbee.runtime._splash_runner import move_up_and_clear
 
@@ -71,71 +102,82 @@ def test_clear_screen():
     assert b"\033[H" not in result  # no cursor home
 
 
-def test_pipe_closed_returns_true_on_eof():
-    """pipe_closed returns True when the read end gets EOF."""
+def test_poll_pipe_returns_closed_on_eof():
+    """poll_pipe reports CLOSED when the read end gets EOF."""
     r, w = os.pipe()
     os.close(w)  # close write end -> read gets EOF
-    from lilbee.runtime._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import PipeSignal, poll_pipe
 
-    assert pipe_closed(r) is True
+    assert poll_pipe(r) is PipeSignal.CLOSED
     os.close(r)
 
 
-def test_pipe_closed_returns_false_when_open():
-    """pipe_closed returns False when pipe is still open."""
+def test_poll_pipe_returns_open_when_open():
+    """poll_pipe reports OPEN when the pipe is still open."""
     r, w = os.pipe()
-    from lilbee.runtime._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import PipeSignal, poll_pipe
 
-    assert pipe_closed(r) is False
+    assert poll_pipe(r) is PipeSignal.OPEN
     os.close(w)
     os.close(r)
 
 
-def test_pipe_closed_with_data_available():
-    """pipe_closed returns False when data is written but pipe not closed."""
+def test_poll_pipe_open_with_unrelated_data():
+    """poll_pipe reports OPEN when a non-takeover byte is available."""
     r, w = os.pipe()
     os.write(w, b"x")
-    from lilbee.runtime._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import PipeSignal, poll_pipe
 
-    assert pipe_closed(r) is False
+    assert poll_pipe(r) is PipeSignal.OPEN
     os.close(w)
     os.close(r)
 
 
-def test_pipe_closed_returns_true_on_bad_fd():
-    """A closed fd returns True instead of raising EBADF (matches POSIX branch)."""
+def test_poll_pipe_returns_takeover_on_takeover_byte():
+    """poll_pipe reports TAKEOVER when the parent sends the takeover byte."""
+    r, w = os.pipe()
+    from lilbee.runtime._splash_runner import TAKEOVER_BYTE, PipeSignal, poll_pipe
+
+    os.write(w, TAKEOVER_BYTE)
+    assert poll_pipe(r) is PipeSignal.TAKEOVER
+    os.close(w)
+    os.close(r)
+
+
+def test_poll_pipe_returns_closed_on_bad_fd():
+    """A closed fd reports CLOSED instead of raising EBADF (matches POSIX branch)."""
     r, w = os.pipe()
     os.close(w)
     os.close(r)
-    from lilbee.runtime._splash_runner import pipe_closed
+    from lilbee.runtime._splash_runner import PipeSignal, poll_pipe
 
-    assert pipe_closed(r) is True
+    assert poll_pipe(r) is PipeSignal.CLOSED
 
 
-def test_read_eof_with_bad_fd():
-    """_read_eof returns True when os.read raises OSError."""
-    from lilbee.runtime._splash_runner import _read_eof
+def test_read_signal_with_bad_fd():
+    """_read_signal reports CLOSED when os.read raises OSError."""
+    from lilbee.runtime._splash_runner import PipeSignal, _read_signal
 
-    assert _read_eof(-1) is True
+    assert _read_signal(-1) is PipeSignal.CLOSED
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="select-based path is Unix-only")
-def test_pipe_closed_select_error_returns_true():
-    """pipe_closed returns True when select raises."""
-    from lilbee.runtime._splash_runner import pipe_closed
+def test_poll_pipe_select_error_returns_closed():
+    """poll_pipe reports CLOSED when select raises."""
+    from lilbee.runtime._splash_runner import PipeSignal, poll_pipe
 
     with patch("select.select", side_effect=ValueError("bad fd")):
-        assert pipe_closed(-1) is True
+        assert poll_pipe(-1) is PipeSignal.CLOSED
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="select-based path is Unix-only")
 @patch("os.read", side_effect=OSError("bad fd"))
 @patch("select.select", return_value=([42], [], []))
-def test_pipe_closed_read_error_returns_true(_mock_select: object, _mock_read: object):
-    """pipe_closed returns True when os.read raises after select succeeds."""
-    from lilbee.runtime._splash_runner import pipe_closed
+def test_poll_pipe_read_error_returns_closed(_mock_select: object, _mock_read: object):
+    """poll_pipe reports CLOSED when os.read raises after select succeeds."""
+    from lilbee.runtime._splash_runner import PipeSignal, poll_pipe
 
-    assert pipe_closed(42) is True
+    assert poll_pipe(42) is PipeSignal.CLOSED
 
 
 def test_animation_loop_exits_on_closed_pipe():
@@ -155,16 +197,16 @@ def test_animation_loop_exits_on_closed_pipe():
 @patch("time.sleep")
 def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
     """animation_loop renders at least one frame with move_up_and_clear."""
-    from lilbee.runtime._splash_runner import animation_loop
+    from lilbee.runtime._splash_runner import PipeSignal, animation_loop
 
     call_count = 0
 
-    def mock_pipe_closed(_fd: int) -> bool:
+    def mock_poll_pipe(_fd: int) -> PipeSignal:
         nonlocal call_count
         call_count += 1
-        # Return False for outer while (call 1), then True on 2nd inner
+        # OPEN for the outer while (call 1), then CLOSED on the 2nd inner
         # loop iteration (call 3) to exercise the inner break path
-        return call_count >= 3
+        return PipeSignal.CLOSED if call_count >= 3 else PipeSignal.OPEN
 
     written: list[bytes] = []
 
@@ -173,13 +215,61 @@ def test_animation_loop_renders_one_full_frame(_mock_sleep: object):
         return len(data)
 
     with (
-        patch("lilbee.runtime._splash_runner.pipe_closed", side_effect=mock_pipe_closed),
+        patch("lilbee.runtime._splash_runner.poll_pipe", side_effect=mock_poll_pipe),
         patch("os.write", side_effect=mock_write),
     ):
         animation_loop(0)
 
-    # Should have written: HIDE_CURSOR, frame, move_up_and_clear, possibly more
+    # Should have written: HIDE_CURSOR, frame, then the final clear_screen
     assert len(written) >= 3
+    assert b"\033[?25h" in written[-1]  # EOF exit restores the cursor
+
+
+@patch("lilbee.runtime._splash_runner.STARTUP_DELAY", 0)
+@patch("lilbee.runtime._splash_runner.FRAME_INTERVAL", 0.003)
+@patch("lilbee.runtime._splash_runner.POLL_INTERVAL", 0.001)
+@patch("time.sleep")
+def test_animation_loop_takeover_writes_nothing_after_signal(_mock_sleep: object):
+    """A TUI takeover exits without any frame clear or cursor-show write."""
+    from lilbee.runtime._splash_runner import TAKEOVER_BYTE, animation_loop
+
+    r, w = os.pipe()
+    written: list[bytes] = []
+
+    def mock_write(fd: int, data: bytes) -> int:
+        written.append(data)
+        return len(data)
+
+    os.write(w, TAKEOVER_BYTE)
+    with patch("os.write", side_effect=mock_write):
+        animation_loop(r)
+    os.close(w)
+    os.close(r)
+
+    joined = b"".join(written)
+    assert b"\033[?25h" not in joined  # no cursor-show onto the alt-screen
+    assert b"\033[2K" not in joined  # no line clears onto the alt-screen
+
+
+def test_animation_loop_takeover_before_first_frame_writes_nothing():
+    """A takeover during the startup delay exits before anything is drawn."""
+    from lilbee.runtime._splash_runner import TAKEOVER_BYTE, animation_loop
+
+    r, w = os.pipe()
+    os.write(w, TAKEOVER_BYTE)
+
+    written: list[bytes] = []
+
+    def mock_write(fd: int, data: bytes) -> int:
+        written.append(data)
+        return len(data)
+
+    with patch("os.write", side_effect=mock_write):
+        animation_loop(r)
+    os.close(w)
+    os.close(r)
+
+    assert written == []
 
 
 @patch("lilbee.runtime._splash_runner.STARTUP_DELAY", 0)
@@ -252,14 +342,14 @@ def test_animation_loop_startup_delay_with_open_pipe():
     os.close(r)
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows pipe_closed path")
-def test_pipe_closed_windows_path():
-    """pipe_closed uses os.read on Windows."""
-    from lilbee.runtime._splash_runner import pipe_closed
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows poll_pipe path")
+def test_poll_pipe_windows_path():
+    """poll_pipe uses os.read on Windows."""
+    from lilbee.runtime._splash_runner import PipeSignal, poll_pipe
 
     r, w = os.pipe()
     os.close(w)
-    assert pipe_closed(r) is True
+    assert poll_pipe(r) is PipeSignal.CLOSED
     os.close(r)
 
 
@@ -317,11 +407,11 @@ def test_animation_loop_sleeps_during_startup_then_exits(monkeypatch):
     sleeps: list[float] = []
     polls = {"n": 0}
 
-    def fake_closed(_fd: int) -> bool:
+    def fake_poll(_fd: int) -> sr.PipeSignal:
         polls["n"] += 1
-        return polls["n"] > 1  # open on the first poll, closed afterward
+        return sr.PipeSignal.CLOSED if polls["n"] > 1 else sr.PipeSignal.OPEN
 
     monkeypatch.setattr(sr.time, "sleep", lambda interval: sleeps.append(interval))
-    monkeypatch.setattr(sr, "pipe_closed", fake_closed)
+    monkeypatch.setattr(sr, "poll_pipe", fake_poll)
     sr.animation_loop(0)
     assert sleeps == [sr.POLL_INTERVAL]

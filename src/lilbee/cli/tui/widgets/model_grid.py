@@ -482,11 +482,14 @@ def _build_size_variant_strip(variants: list[SizeVariant]) -> Content:
     """Inline chip strip showing every quant for a family-aggregated card.
 
     Renders compact 'Q4 · Q5 · F16' style chips so the eye reads the
-    available sizes at a glance. Per-variant fit colors aren't applied
-    here; the drawer (right pane) carries the full fit-per-size detail
-    when a card is highlighted.
+    available sizes at a glance. A family that varies by parameter count
+    rather than quant would render identical chips, so colliding quants
+    fall back to the full per-variant label. Per-variant fit colors aren't
+    applied here; the drawer (right pane) carries the full fit-per-size
+    detail when a card is highlighted.
     """
-    labels = [v.quant if v.quant != "--" else v.label for v in variants]
+    quants = [v.quant if v.quant != "--" else v.label for v in variants]
+    labels = quants if len(set(quants)) == len(quants) else [v.label for v in variants]
     return Content.styled(f" {MIDDLE_DOT} ".join(labels), "$text-muted")
 
 

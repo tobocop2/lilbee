@@ -20,7 +20,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,7 @@ def _isolated_cfg(tmp_path):
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.documents_dir.mkdir(parents=True, exist_ok=True)
     cfg.models_dir.mkdir(parents=True, exist_ok=True)
-    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # Simulate "already-initialized" state so needs_setup()
     # doesn't push the SetupWizard during tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
@@ -241,7 +241,7 @@ class TestViewTabsPresence:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await await_chat(app, pilot)
 
             # Chat screen
             bar = app.screen.query_one(ViewTabs)
@@ -289,6 +289,7 @@ class TestViewCycling:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 assert app.active_view == "Chat"
 
@@ -471,6 +472,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 assert app.active_view == "Chat"
 
@@ -494,6 +496,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
@@ -511,6 +514,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -535,6 +539,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -554,6 +559,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 assert app.active_view == "Chat"
                 # Blur the chat input so the app-level ] binding fires.
@@ -572,6 +578,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 assert app.active_view == "Chat"
                 # Blur the chat input so the app-level [ binding fires.
@@ -598,6 +605,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 sequence = ["Catalog", "Status", "Settings", "Catalog", "Status"]
                 for view in sequence:
@@ -612,6 +620,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 for view in ["Chat", "Catalog", "Status", "Settings", "Tasks"]:
                     app.switch_view(view)
@@ -636,6 +645,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -656,6 +666,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Two pauses: first lets the screen mount and on_mount run,
@@ -680,6 +691,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Settings")
                 await pilot.pause()
@@ -699,6 +711,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Tasks")
                 await pilot.pause()
@@ -719,6 +732,7 @@ class TestScreenTransitions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 for view in ["Catalog", "Status", "Settings", "Tasks"]:
                     app.switch_view(view)
@@ -739,6 +753,7 @@ class TestScreenTransitions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             initial_theme = app.theme
             await pilot.press("ctrl+t")
@@ -1051,6 +1066,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1071,6 +1087,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1119,6 +1136,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 # ChatScreen auto-focuses the insert-mode input; leave it
                 # before reaching for the screen-level nav keys.
@@ -1157,6 +1175,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1197,6 +1216,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1227,6 +1247,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1252,6 +1273,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1280,6 +1302,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1328,6 +1351,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1371,6 +1395,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1439,6 +1464,7 @@ class TestCatalogInteractions:
         ):
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1479,6 +1505,7 @@ class TestCatalogInteractions:
         ):
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1514,6 +1541,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1539,6 +1567,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1567,6 +1596,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1597,6 +1627,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1640,6 +1671,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1668,6 +1700,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1720,6 +1753,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1765,6 +1799,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1800,6 +1835,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1852,6 +1888,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1877,6 +1914,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1896,6 +1934,7 @@ class TestCatalogInteractions:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -1924,6 +1963,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -1937,6 +1977,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -1960,6 +2001,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 60)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -1980,6 +2022,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 60)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -1999,6 +2042,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 60)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -2026,6 +2070,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 120)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -2052,6 +2097,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -2072,6 +2118,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -2090,6 +2137,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -2109,6 +2157,7 @@ class TestSettingsInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -2129,6 +2178,7 @@ class TestSettingsInteractions:
         received = []
 
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.settings_changed_signal.subscribe(app, lambda data: received.append(data))
             app.switch_view("Settings")
@@ -2159,6 +2209,7 @@ class TestStatusInteractions:
         with _mock_status_deps():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Two pauses: first lets the screen mount and on_mount run,
@@ -2176,6 +2227,7 @@ class TestStatusInteractions:
         with _mock_status_deps():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Two pauses: first lets the screen mount and on_mount run,
@@ -2195,6 +2247,7 @@ class TestStatusInteractions:
         with _mock_status_deps():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Two pauses: first lets the screen mount and on_mount run,
@@ -2213,6 +2266,7 @@ class TestStatusInteractions:
         with _mock_status_deps():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Two pauses: first lets the screen mount and on_mount run,
@@ -2233,6 +2287,7 @@ class TestStatusInteractions:
         with _mock_status_deps():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Two pauses: first lets the screen mount and on_mount run,
@@ -2254,6 +2309,7 @@ class TestStatusInteractions:
         with _mock_status_deps():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Two pauses: first lets the screen mount and on_mount run,
@@ -2286,6 +2342,7 @@ class TestStatusInteractions:
         ):
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Status")
                 # Documents/Architecture/Storage collapsibles mount via
@@ -2315,6 +2372,7 @@ class TestTaskCenterInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.task_bar.add_task("Task 1", "download")
             app.task_bar.add_task("Task 2", "sync")
@@ -2333,6 +2391,7 @@ class TestTaskCenterInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.task_bar.add_task("Cancel Me", "download")
 
@@ -2349,6 +2408,7 @@ class TestTaskCenterInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Tasks")
             await pilot.pause()
@@ -2362,6 +2422,7 @@ class TestTaskCenterInteractions:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Tasks")
             await pilot.pause()
@@ -2408,6 +2469,7 @@ class TestAppQuit:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             with mock.patch.object(app, "exit") as mock_exit:
                 await pilot.press("ctrl+c")
@@ -2420,6 +2482,7 @@ class TestAppQuit:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.task_bar.add_task("Active Task", "download")
             app.task_bar.queue.advance("download")
@@ -2434,7 +2497,7 @@ class TestAppQuit:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await await_chat(app, pilot)
             app.screen.streaming = True
             with (
                 mock.patch.object(app.screen, "action_cancel_stream") as mock_cancel,
@@ -2600,13 +2663,44 @@ class TestChatSlashCommands:
             assert app.screen.streaming is False
             assert app.screen._history == []
 
+    async def test_cmd_clear_cancels_workers_when_idle(self, _mock_resolve):
+        """/clear with no stream in flight still cancels background workers."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.streaming = False
+            mock_worker = mock.MagicMock()
+            with mock.patch.object(
+                type(app.screen), "workers", new_callable=mock.PropertyMock
+            ) as mock_workers:
+                mock_workers.return_value = [mock_worker]
+                app.screen._handle_slash("/clear")
+            await pilot.pause()
+            mock_worker.cancel.assert_called_once()
+            assert app.screen._history == []
+
+    async def test_cmd_cancel_cancels_workers_when_idle(self, _mock_resolve):
+        """/cancel with no stream in flight still cancels background workers."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.screen.streaming = False
+            mock_worker = mock.MagicMock()
+            with mock.patch.object(
+                type(app.screen), "workers", new_callable=mock.PropertyMock
+            ) as mock_workers:
+                mock_workers.return_value = [mock_worker]
+                app.screen._handle_slash("/cancel")
+            await pilot.pause()
+            mock_worker.cancel.assert_called_once()
+
     async def test_cmd_theme_with_name(self, _mock_resolve):
         """/theme <name> sets theme."""
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await await_chat(app, pilot)
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             screen = app.screen
@@ -2621,7 +2715,7 @@ class TestChatSlashCommands:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await await_chat(app, pilot)
             from lilbee.cli.tui.screens.chat import ChatScreen
 
             screen = app.screen
@@ -2838,6 +2932,7 @@ class TestCatalogViewToggle:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -2861,6 +2956,7 @@ class TestCatalogViewToggle:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -2893,6 +2989,7 @@ class TestCatalogPickBadge:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -2929,6 +3026,7 @@ class TestCatalogAutoLoad:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 for _ in range(20):
@@ -2939,7 +3037,15 @@ class TestCatalogAutoLoad:
 
 
 class TestCatalogGridFocus:
-    """Catalog grid Tab/G key behavior (bb-zp4o, bb-8kxf)."""
+    """Catalog grid Tab/G key behavior."""
+
+    @pytest.fixture(autouse=True)
+    def _gate_releases_at_once(self):
+        """Bind a ready chat role so the startup gate hands over on mount."""
+        from tests._lilbee_app_test_host import ready_services
+
+        with ready_services():
+            yield
 
     async def test_grid_focus_auto_highlights_first_card(self, _mock_resolve):
         """A focused ModelGrid must auto-highlight a card so users see Tab feedback."""
@@ -2948,6 +3054,7 @@ class TestCatalogGridFocus:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 for _ in range(20):
@@ -2977,6 +3084,7 @@ class TestCatalogGridFocus:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 for _ in range(20):
@@ -3010,6 +3118,7 @@ class TestGlobalSlashRoutesToChat:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             await pilot.pause()
             app.switch_view("Settings")
             await pilot.pause()
@@ -3039,7 +3148,7 @@ class TestQuestionMarkBehavior:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await await_chat(app, pilot)
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.focus()
             await pilot.pause()
@@ -3058,7 +3167,7 @@ class TestQuestionMarkBehavior:
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await await_chat(app, pilot)
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.focus()
             await pilot.pause()
@@ -3193,6 +3302,7 @@ class TestSetupWizardGrid:
         with _mock_catalog_deps(), _mock_remote_models():
             app = LilbeeApp()
             async with app.run_test(size=(120, 40)) as pilot:
+                await await_chat(app, pilot)
                 await pilot.pause()
                 app.switch_view("Catalog")
                 await pilot.pause()
@@ -3257,9 +3367,7 @@ class TestChatEmbeddingReadyCoverage:
         try:
             app = ChatTestApp()
             # Keep the ChatScreen mounted; wizard routing is covered separately.
-            with mock.patch(
-                "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
-            ):
+            with mock.patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False):
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     screen = app.screen
@@ -3284,9 +3392,7 @@ class TestChatEmbeddingReadyCoverage:
         try:
             app = ChatTestApp()
             # Keep the ChatScreen mounted; wizard routing is covered separately.
-            with mock.patch(
-                "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False
-            ):
+            with mock.patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False):
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
                     screen = app.screen

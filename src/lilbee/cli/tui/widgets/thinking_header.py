@@ -38,8 +38,8 @@ def _bounce_position(frame: int) -> int:
     return cycle - step
 
 
-def _frame_content(frame: int) -> Content:
-    """Render the bouncing-block track for *frame* as styled content."""
+def _frame_content(frame: int, detail: str = "") -> Content:
+    """Render the bouncing-block track for *frame*, with an optional detail suffix."""
     pos = _bounce_position(frame)
     parts: list[Content] = []
     for i in range(_TRACK_CELLS):
@@ -47,6 +47,8 @@ def _frame_content(frame: int) -> Content:
             parts.append(Content.styled(_BLOCK_FILLED, _FILL_STYLE))
         else:
             parts.append(Content.styled(_BLOCK_EMPTY, _DIM_STYLE))
+    if detail:
+        parts.append(Content.styled(f"  {detail}", _DIM_STYLE))
     return Content.assemble(*parts)
 
 
@@ -58,6 +60,7 @@ class ThinkingHeader(Static):
     def __init__(self) -> None:
         super().__init__(_frame_content(0), classes="thinking-header")
         self._frame: int = 0
+        self._detail: str = ""
         self._timer: Timer | None = None
         self._target: Callable[[Content], None] | None = None
 
@@ -77,9 +80,13 @@ class ThinkingHeader(Static):
         """Send each frame's content to *target* instead of painting self."""
         self._target = target
 
+    def set_status(self, detail: str) -> None:
+        """Show *detail* beside the scanner track from the next frame on."""
+        self._detail = detail
+
     def _tick(self) -> None:
         self._frame += 1
-        content = _frame_content(self._frame)
+        content = _frame_content(self._frame, self._detail)
         if self._target is not None:
             self._target(content)
         else:

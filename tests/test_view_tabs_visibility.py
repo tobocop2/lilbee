@@ -10,6 +10,7 @@ from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import await_chat
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +51,7 @@ def _mock_services():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(
@@ -66,6 +67,7 @@ async def test_view_tabs_visible_on_screen(view_name: str) -> None:
     """ViewTabs must be mounted and occupy a non-zero region on every main screen."""
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # Chat starts in insert mode; escape to normal so [/] navigation works.
         await pilot.press("escape")
@@ -86,6 +88,7 @@ async def test_view_tabs_visible_on_chat() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
@@ -102,6 +105,7 @@ async def test_view_tabs_docks_at_top_not_bottom() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
@@ -122,6 +126,7 @@ async def test_view_tabs_no_stale_pill_after_navigation() -> None:
     cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -153,6 +158,7 @@ async def test_view_tabs_active_view_tracks_screen_changes() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()

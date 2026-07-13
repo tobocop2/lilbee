@@ -17,6 +17,7 @@ from lilbee.cli.tui.widgets.bottom_bars import BottomBars
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.core.config import cfg
+from tests._lilbee_app_test_host import await_chat
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +51,7 @@ def _mock_services():
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
     with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -70,6 +71,7 @@ async def test_chat_task_center_chat_task_center_cycle_has_no_leftovers() -> Non
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
 
@@ -106,6 +108,7 @@ async def test_footer_row_is_not_shared_with_other_bottom_widgets() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.action_open_tasks()
         await pilot.pause()

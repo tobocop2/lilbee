@@ -38,7 +38,11 @@ def main() -> None:
     """Entry point for the ``lilbee`` console script."""
     _force_utf8_stdio()
     args = sys.argv[1:]
-    is_interactive = (not args or args[0] in ("chat", "")) and not _shell_completion_active()
+    # Help exits before the TUI, so it must not print through the animation.
+    wants_help = any(arg in ("--help", "-h") for arg in args)
+    is_interactive = (
+        (not args or args[0] in ("chat", "")) and not wants_help and not _shell_completion_active()
+    )
 
     if not is_interactive:
         from lilbee.cli import app
@@ -55,11 +59,10 @@ def main() -> None:
     except BaseException:
         stop(handle)
         raise
-    else:
-        # Stop the splash BEFORE the TUI takes over the terminal so the
-        # subprocess's final writes don't land on Textual's alt-screen.
-        stop(handle)
 
+    # The splash keeps animating through the CLI dispatch and the TUI stack's
+    # own imports (Textual and every screen), which on a cold disk take seconds;
+    # run_tui dismisses it right before Textual takes over the terminal.
     try:
         app()
     except KeyboardInterrupt:

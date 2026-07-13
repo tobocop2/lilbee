@@ -1,4 +1,4 @@
-"""Standalone splash animation process: zero lilbee imports, stdlib only.
+"""Standalone splash animation process: stdlib plus the shared wordmark.
 
 Launched as a subprocess by ``splash.start()``. Reads a pipe fd from argv
 and animates until the pipe signals EOF (parent closed its write end, or
@@ -13,15 +13,26 @@ import select
 import signal
 import sys
 import time
+from collections.abc import Callable
+from enum import IntEnum
+
+from lilbee.runtime.bee_logo import (
+    BEE_LINES,
+    LOGO_WIDTH,
+    ROSE_BRIGHT_XTERM,
+    ROSE_DIM_XTERM,
+    ROSE_MID_XTERM,
+    xterm_fg,
+)
 
 HIDE_CURSOR = "\033[?25l"
 SHOW_CURSOR = "\033[?25h"
 CLEAR_LINE = "\033[2K"
 MOVE_UP = "\033[A"
 
-AMBER_BRIGHT = "\033[38;5;214m"
-AMBER_MID = "\033[38;5;172m"
-AMBER_DIM = "\033[38;5;94m"
+ROSE_BRIGHT = xterm_fg(ROSE_BRIGHT_XTERM)
+ROSE_MID = xterm_fg(ROSE_MID_XTERM)
+ROSE_DIM = xterm_fg(ROSE_DIM_XTERM)
 RESET = "\033[0m"
 
 FRAME_INTERVAL = 0.15
@@ -35,24 +46,22 @@ _BAR_FALLOFF_LIGHT = 2
 # Subprocess entry point expects exactly ``python -m ... <pipe_fd>`` (script name + 1 arg).
 _EXPECTED_ARGV_LEN = 2
 
-BEE_LINES = [
-    "                                                       ",
-    "@@@       @@@  @@@       @@@@@@@   @@@@@@@@  @@@@@@@@  ",
-    "@@@       @@@  @@@       @@@@@@@@  @@@@@@@@  @@@@@@@@  ",
-    "@@@       @@@  @@@       @@!  @@@  @@!       @@!       ",
-    "@!       !@!  !@!       !@   @!@  !@!       !@!       ",
-    "@!!       !!@  @!!       @!@!@!@   @!!!:!    @!!!:!    ",
-    "!!!       !!!  !!!       !!!@!!!!  !!!!!:    !!!!!:    ",
-    "!!:       !!:  !!:       !!:  !!!  !!:       !!:       ",
-    " :!:      :!:   :!:      :!:  !:!  :!:       :!:       ",
-    " :: ::::   ::   :: ::::   :: ::::   :: ::::   :: ::::  ",
-    ": :: : :  :    : :: : :  :: : ::   : :: ::   : :: ::   ",
-    "                                                       ",
-]
+# Sent down the pipe by ``splash.dismiss()`` when the TUI takes over the
+# terminal: the child must exit without writing anything (no frame clear, no
+# cursor-show), because every byte would land on Textual's alt-screen and the
+# cursor-show would leave a visible cursor for the whole TUI session.
+TAKEOVER_BYTE = b"T"
 
-LOGO_WIDTH = len(BEE_LINES[1])
 
-COLOR_SEQUENCE = [AMBER_BRIGHT, AMBER_MID, AMBER_DIM, AMBER_MID]
+class PipeSignal(IntEnum):
+    """What the control pipe currently says the child should do."""
+
+    OPEN = 0
+    CLOSED = 1
+    TAKEOVER = 2
+
+
+COLOR_SEQUENCE = [ROSE_BRIGHT, ROSE_MID, ROSE_DIM, ROSE_MID]
 
 
 def apply_color(line: str, color: str) -> str:
@@ -80,11 +89,11 @@ def build_knight_rider_frames() -> list[str]:
         for i in range(LOGO_WIDTH):
             dist = abs(i - head_pos)
             if dist == 0:
-                bar += AMBER_BRIGHT + "\u2593" + RESET
+                bar += ROSE_BRIGHT + "\u2593" + RESET
             elif dist == _BAR_FALLOFF_DENSE:
-                bar += AMBER_DIM + "\u2592" + RESET
+                bar += ROSE_DIM + "\u2592" + RESET
             elif dist == _BAR_FALLOFF_LIGHT:
-                bar += AMBER_DIM + "\u2591" + RESET
+                bar += ROSE_DIM + "\u2591" + RESET
             else:
                 bar += " "
         frames.append(bar)
@@ -92,9 +101,25 @@ def build_knight_rider_frames() -> list[str]:
     return frames
 
 
-def render_frame(logo_lines: list[str], loading_bar: str) -> bytes:
+def left_pad() -> int:
+    """Columns needed to centre the wordmark, matching the C bootstrap's formula.
+
+    The bootstrap frame this animation repaints in place is centred with
+    ``(columns - LILBEE_LOGO_WIDTH) / 2``; diverging here would draw the two
+    stages at different offsets and break the one-continuous-logo illusion.
+    """
+    try:
+        columns = os.get_terminal_size(2).columns
+    except OSError:
+        return 0
+    return max((columns - LOGO_WIDTH) // 2, 0)
+
+
+def render_frame(logo_lines: list[str], loading_bar: str, pad: int = 0) -> bytes:
     """Build a single frame as raw bytes for os.write()."""
-    all_lines = [*logo_lines, "", f"  {loading_bar}"]
+    margin = " " * pad
+    all_lines = [margin + line for line in logo_lines]
+    all_lines += ["", f"{margin}  {loading_bar}"]
     return ("\n".join(all_lines) + "\n").encode()
 
 
@@ -114,60 +139,71 @@ def clear_screen(frame_height: int) -> bytes:
     return move_up_and_clear(frame_height) + SHOW_CURSOR.encode()
 
 
-def _read_eof(pipe_fd: int) -> bool:
-    """Try to read one byte: returns True if EOF, False if data available."""
+def _read_signal(pipe_fd: int) -> PipeSignal:
+    """Read one byte: EOF/error means CLOSED, the takeover byte means TAKEOVER."""
     try:
-        return len(os.read(pipe_fd, 1)) == 0
+        data = os.read(pipe_fd, 1)
     except OSError:
-        return True
+        return PipeSignal.CLOSED
+    if data == TAKEOVER_BYTE:
+        return PipeSignal.TAKEOVER
+    return PipeSignal.CLOSED if len(data) == 0 else PipeSignal.OPEN
 
 
-def _pipe_closed_win32(pipe_fd: int) -> bool:  # pragma: no cover  Windows-only
-    """Win32 pipe-EOF check using PeekNamedPipe."""
+def _poll_pipe_win32(pipe_fd: int) -> PipeSignal:  # pragma: no cover  Windows-only
+    """Win32 pipe poll using PeekNamedPipe."""
     import ctypes
     import msvcrt
 
     try:
         handle = msvcrt.get_osfhandle(pipe_fd)  # type: ignore[attr-defined]
     except OSError:
-        return True  # bad fd, pipe is gone
+        return PipeSignal.CLOSED  # bad fd, pipe is gone
     avail = ctypes.c_ulong(0)
     if not ctypes.windll.kernel32.PeekNamedPipe(  # type: ignore[attr-defined]
         handle, None, 0, None, ctypes.byref(avail), None
     ):
-        return True
+        return PipeSignal.CLOSED
     if avail.value == 0:
-        return False
-    return _read_eof(pipe_fd)
+        return PipeSignal.OPEN
+    return _read_signal(pipe_fd)
 
 
-def _pipe_closed_posix(pipe_fd: int) -> bool:  # pragma: no cover  POSIX-only
-    """POSIX pipe-EOF check using select."""
+def _poll_pipe_posix(pipe_fd: int) -> PipeSignal:  # pragma: no cover  POSIX-only
+    """POSIX pipe poll using select."""
     try:
         readable, _, _ = select.select([pipe_fd], [], [], 0)
     except (ValueError, OSError):
-        return True
+        return PipeSignal.CLOSED
     if not readable:
-        return False
-    return _read_eof(pipe_fd)
+        return PipeSignal.OPEN
+    return _read_signal(pipe_fd)
 
 
-def pipe_closed(pipe_fd: int) -> bool:
-    """Check if the pipe has been closed (EOF) without blocking."""
+def poll_pipe(pipe_fd: int) -> PipeSignal:
+    """Check the control pipe without blocking."""
     if sys.platform == "win32":
-        return _pipe_closed_win32(pipe_fd)  # pragma: no cover  Windows-only
-    return _pipe_closed_posix(pipe_fd)  # pragma: no cover  POSIX-only
+        return _poll_pipe_win32(pipe_fd)  # pragma: no cover  Windows-only
+    return _poll_pipe_posix(pipe_fd)  # pragma: no cover  POSIX-only
 
 
 def animation_loop(pipe_fd: int) -> None:
-    """Run the animation, exiting when the pipe signals EOF."""
+    """Run the animation, exiting when the pipe signals EOF or takeover.
+
+    A plain EOF (``splash.stop()``, parent death) clears the frame and
+    restores the cursor so the shell gets a clean terminal back. A takeover
+    byte (``splash.dismiss()``) means Textual owns the terminal: exit without
+    writing a single byte more.
+    """
     fd = 2  # stderr
 
     logo_frames = build_logo_frames()
     knight_frames = build_knight_rider_frames()
+    pad = left_pad()
     frame_height = len(BEE_LINES) + 2
 
     got_signal = False
+    pipe_signal = PipeSignal.OPEN
 
     if sys.platform != "win32":  # pragma: no cover - POSIX-only SIGTERM handler
 
@@ -177,37 +213,52 @@ def animation_loop(pipe_fd: int) -> None:
 
         signal.signal(signal.SIGTERM, handle_term)
 
+    def should_stop() -> bool:
+        nonlocal pipe_signal
+        if pipe_signal is PipeSignal.OPEN:
+            pipe_signal = poll_pipe(pipe_fd)
+        return got_signal or pipe_signal is not PipeSignal.OPEN
+
     for _ in range(int(STARTUP_DELAY / POLL_INTERVAL)):
-        if got_signal or pipe_closed(pipe_fd):
-            return
+        if should_stop():
+            return  # nothing drawn yet, nothing to clean up
         time.sleep(POLL_INTERVAL)
 
     try:
         os.write(fd, HIDE_CURSOR.encode())
-        frame_idx = 0
-        knight_idx = 0
-
-        while not got_signal and not pipe_closed(pipe_fd):
-            logo = logo_frames[frame_idx % len(logo_frames)]
-            knight = knight_frames[knight_idx % len(knight_frames)]
-            rendered = render_frame(logo, knight)
-            os.write(fd, rendered)
-
-            for _ in range(int(FRAME_INTERVAL / POLL_INTERVAL)):
-                if got_signal or pipe_closed(pipe_fd):
-                    break
-                time.sleep(POLL_INTERVAL)
-
-            if not got_signal and not pipe_closed(pipe_fd):
-                os.write(fd, move_up_and_clear(frame_height))  # pragma: no cover
-
-            frame_idx += 1
-            knight_idx += 1
+        _animate_frames(fd, logo_frames, knight_frames, pad, frame_height, should_stop)
     except OSError:
         pass  # parent closed the splash pipe; just stop drawing
     finally:
-        with contextlib.suppress(OSError):
-            os.write(fd, clear_screen(frame_height))
+        if pipe_signal is not PipeSignal.TAKEOVER:
+            with contextlib.suppress(OSError):
+                os.write(fd, clear_screen(frame_height))
+
+
+def _animate_frames(
+    fd: int,
+    logo_frames: list[list[str]],
+    knight_frames: list[str],
+    pad: int,
+    frame_height: int,
+    should_stop: Callable[[], bool],
+) -> None:
+    """Draw pulse/sweep frames until *should_stop* reports a stop condition."""
+    frame_idx = 0
+    while not should_stop():
+        logo = logo_frames[frame_idx % len(logo_frames)]
+        knight = knight_frames[frame_idx % len(knight_frames)]
+        os.write(fd, render_frame(logo, knight, pad))
+
+        for _ in range(int(FRAME_INTERVAL / POLL_INTERVAL)):
+            if should_stop():
+                break
+            time.sleep(POLL_INTERVAL)
+
+        if not should_stop():
+            os.write(fd, move_up_and_clear(frame_height))  # pragma: no cover
+
+        frame_idx += 1
 
 
 def main() -> None:

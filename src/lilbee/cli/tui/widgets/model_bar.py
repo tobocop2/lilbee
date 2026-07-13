@@ -305,6 +305,7 @@ class ModelPickerButton(Static, can_focus=True):
         self.app.push_screen(modal, self._on_picker_dismissed)
 
     def _on_picker_dismissed(self, ref: str | None) -> None:
+        self._focus_chat_prompt()
         if ref is not None and ref == getattr(cfg, self._key):
             return
         # Chat swaps reset services in _commit_after_change -> apply_model_change,
@@ -316,6 +317,14 @@ class ModelPickerButton(Static, can_focus=True):
             on_done=self._commit_after_change,
             reload_worker=self._scope != "chat",
         )
+
+    def _focus_chat_prompt(self) -> None:
+        """Hand focus back to the chat prompt; parking it on this pill dead-ends."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = self.app.screen
+        if isinstance(screen, ChatScreen):  # the model bar is also hosted off-chat
+            screen.focus_prompt()
 
     def _commit_after_change(self) -> None:
         """Repaint the label, then run the chat-screen side effect for chat swaps.
@@ -565,13 +574,23 @@ class ModelBar(Widget, can_focus=False):
             opts = scope_to_options.get(row.scope, [])
             fingerprint = tuple((o.label, o.ref) for o in opts)
             if self._options_cache.get(row.scope) != fingerprint:
-                row.query_one(ModelPickerButton).set_options(opts)
+                try:
+                    row.query_one(ModelPickerButton).set_options(opts)
+                except NoMatches:
+                    # The scan can land while a row is still composing; the next
+                    # scan repopulates against the mounted picker.
+                    continue
                 self._options_cache[row.scope] = fingerprint
         self._refresh_cloud_warning()
 
     def _refresh_cloud_warning(self) -> None:
         """Show a warning if the active chat model routes to a cloud provider."""
-        warning = self.query_one(f"#{_CLOUD_WARNING_ID}", Static)
+        try:
+            warning = self.query_one(f"#{_CLOUD_WARNING_ID}", Static)
+        except NoMatches:
+            # A scan worker can finish before compose mounts the warning row;
+            # the next refresh runs against the mounted bar.
+            return
         label = _cloud_provider_label(cfg.chat_model)
         if label is None:
             warning.remove_class("-visible")

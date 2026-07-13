@@ -92,6 +92,22 @@ class TestBuildSwapConfig:
             _mid(WorkerRole.RERANK),
         }
 
+    def test_co_tenant_group_evicts_between_its_members(self) -> None:
+        # swap=True is what makes llama-swap unload chat to load vision, and back.
+        cfg = json.loads(
+            build_swap_config(
+                [
+                    _launch(WorkerRole.CHAT, ["/bin/llama-server"]),
+                    _launch(WorkerRole.VISION, ["/bin/llama-server"]),
+                ],
+                {_mid(WorkerRole.CHAT): 1, _mid(WorkerRole.VISION): 2},
+                swap=True,
+            )
+        )
+        (group,) = cfg["groups"].values()
+        assert group["swap"] is True
+        assert set(group["members"]) == {_mid(WorkerRole.CHAT), _mid(WorkerRole.VISION)}
+
     def test_command_carries_explicit_port_and_role_argv(self) -> None:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server", "--jinja"])])
         cmd = cfg["models"][_mid(WorkerRole.CHAT)]["cmd"]
@@ -147,6 +163,13 @@ class TestBuildSwapConfig:
         cfg = _config([_launch(WorkerRole.CHAT, ["/bin/llama-server"])])
         assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 0
 
+    def test_ttl_seconds_flows_to_every_member(self) -> None:
+        """llama-swap's ttl is in seconds; a warm fleet unloads idle weights after it."""
+        launches = [_launch(WorkerRole.CHAT, ["/bin/llama-server"])]
+        ports = {launch.model_id: _BASE_PORT + i for i, launch in enumerate(launches)}
+        cfg = json.loads(build_swap_config(launches, ports, ttl_seconds=900))
+        assert cfg["models"][_mid(WorkerRole.CHAT)]["ttl"] == 900
+
 
 class TestHealthCheckTimeoutScaling:
     def test_small_model_gets_the_floor(self) -> None:
@@ -186,3 +209,29 @@ class TestHealthCheckTimeoutScaling:
 
         weights = 300 * 1024**3
         assert cold_load_timeout_s(weights) == weights // swap_config_mod._COLD_LOAD_BYTES_PER_S
+
+
+class TestWarmTtlSeconds:
+    def test_off_pins_zero_regardless_of_ttl(self, monkeypatch) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.provider import _warm_ttl_seconds
+
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+        assert _warm_ttl_seconds() == 0
+
+    def test_warm_converts_minutes_to_llama_swap_seconds(self, monkeypatch) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.provider import _warm_ttl_seconds
+
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+        assert _warm_ttl_seconds() == 900
+
+    def test_warm_with_zero_ttl_keeps_weights_forever(self, monkeypatch) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet.provider import _warm_ttl_seconds
+
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 0)
+        assert _warm_ttl_seconds() == 0

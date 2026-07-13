@@ -17,6 +17,24 @@ PRODUCT_VERSION="${PRODUCT_VERSION:?PRODUCT_VERSION is required (int-tuple, e.g.
 # it so litestar gets the real module. Idempotent.
 uv pip uninstall python-multipart >/dev/null 2>&1 || true
 
+# Nuitka's onefile bootstrap CRC32s every cached file on every launch, which costs
+# seconds of pure CPU before Python starts and cannot be covered by our splash.
+# The patch adds a stamp fast path and renders the lilbee wordmark plus a real
+# progress bar while unpacking. --forward under `set -e` fails the build if a
+# Nuitka upgrade moves the source, rather than silently shipping a slow binary.
+NUITKA_ROOT=$(uv run --no-sync python -c "import nuitka, pathlib; print(pathlib.Path(nuitka.__file__).parent.parent)")
+BOOTSTRAP_PATCH="$PWD/tools/wheel-build/onefile-bootstrap-lilbee.patch"
+if ! patch --forward --dry-run -p1 -d "$NUITKA_ROOT" <"$BOOTSTRAP_PATCH" >/dev/null 2>&1; then
+    if patch --reverse --dry-run -p1 -d "$NUITKA_ROOT" <"$BOOTSTRAP_PATCH" >/dev/null 2>&1; then
+        echo "onefile bootstrap patch already applied"
+    else
+        echo "ERROR: onefile bootstrap patch does not apply to Nuitka at $NUITKA_ROOT" >&2
+        exit 1
+    fi
+else
+    patch --forward -p1 -d "$NUITKA_ROOT" <"$BOOTSTRAP_PATCH"
+fi
+
 # Bundle en_core_web_sm so concept extraction works in the frozen binary.
 # It is loaded by name (spacy.load), never imported, so the Nuitka run below
 # pulls in the package, its model data, and its distribution metadata.
@@ -96,6 +114,7 @@ uv run --no-sync python -m nuitka \
     --mode=onefile \
     --user-plugin=tools/wheel-build/playwright_node_verbatim.py \
     --no-deployment-flag=self-execution \
+    --onefile-as-archive \
     --onefile-cache-mode=cached \
     --onefile-tempdir-spec='{CACHE_DIR}/lilbee/{VERSION}' \
     --product-name=lilbee \

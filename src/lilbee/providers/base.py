@@ -444,9 +444,9 @@ class LLMProvider(Protocol):
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. No-op default.
 
-        The fleet engine stops a llama-server mid-generation by client
-        disconnect (the caller closes the active stream), so there is no abort
-        flag to flip; SDK and routing wrappers have nothing to interrupt here.
+        The fleet engine severs its live chat streams (llama-server stops
+        generating when the connection drops); the SDK wrapper has nothing to
+        interrupt here.
         """
         return
 
@@ -498,6 +498,15 @@ class LLMProvider(Protocol):
         providers without a managed context (SDK wrappers) advertise nothing.
         """
         return None
+
+    def warm_pending(self) -> bool:
+        """Whether a warm has been requested and has not finished.
+
+        True from the moment ``warm_up_pool`` accepts a warm until its background
+        work ends, so a surface can hold before the first phase is stamped. Default
+        ``False``: providers without managed servers never warm.
+        """
+        return False
 
     def warm_progress(self) -> WarmProgress | None:
         """Snapshot of the chat model's cold-load progress, or None when idle.

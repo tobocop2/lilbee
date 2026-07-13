@@ -28,10 +28,12 @@ from textual.widgets import Footer, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
 # since it's used in multiple methods.
+from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.settings_map import SETTINGS_MAP
+from lilbee.app.setup_state import needs_setup
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
@@ -65,8 +67,8 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
-from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import WorkerRole
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
 from lilbee.retrieval.query.history_window import windowed_history
@@ -122,8 +124,16 @@ _CRAWL_FLAG_RENDER = "--render"
 # event loop.
 _MODEL_SWAP_WORKER = "model_swap_reset"
 
-# Cadence for polling whether the chat model is still warming on a cold start.
-_WARM_POLL_INTERVAL_S = 0.3
+
+def _engine_status_text(snapshot: WarmProgress) -> str:
+    """One status line for an engine-load snapshot: byte progress or the phase."""
+    if snapshot.phase is WarmPhase.READING_WEIGHTS and snapshot.bytes_total:
+        from lilbee.catalog.formatting import display_label_for_ref
+
+        name = display_label_for_ref(snapshot.model_ref) if snapshot.model_ref else ""
+        pct = snapshot.bytes_done * 100 // snapshot.bytes_total
+        return f"{msg.ENGINE_READING_WEIGHTS.format(name=name)} {pct}%"
+    return msg.ENGINE_LOADING
 
 
 def _parse_add_paths(args: str) -> list[Path]:
@@ -184,10 +194,6 @@ class ChatScreen(Screen[None]):
     # True while a placement apply/clear reloads the fleet (from the Fleet drawer);
     # holds chat submissions so they don't race the reload into a 429.
     reloading_placement: reactive[bool] = reactive(False)
-    # True while the chat model is warming on a cold start. Disables the input and
-    # holds submits until the model can serve, so a prompt can't land on a not-yet-warm
-    # fleet and render an error inside a chat bubble; cleared on the ready transition.
-    chat_warming: reactive[bool] = reactive(False)
 
     HELP = (
         "# Chat\n\n"
@@ -271,6 +277,12 @@ class ChatScreen(Screen[None]):
         self._history_index: int = -1
         self._tail_scroll_y: float = 0.0
         self._auto_follow: bool = True
+        # The warm tip is worth one toast per session, on the first prompt that
+        # has to wait out a cold engine load.
+        self._warm_tip_shown: bool = False
+        # The bubble receiving the in-flight response, so a cancel can leave a
+        # visible note in it instead of letting the turn die silently.
+        self._active_assistant: AssistantMessage | None = None
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -324,13 +336,11 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
         self.app.settings_changed_signal.subscribe(self, self._on_settings_changed)
         self._setup_check_worker()
-        self._poll_chat_warming()
-        self.set_interval(_WARM_POLL_INTERVAL_S, self._poll_chat_warming)
 
     @work(thread=True, name="chat_setup_check", exit_on_error=False)
     def _setup_check_worker(self) -> None:
-        """Run ``_needs_setup`` off the UI thread; push the wizard if needed."""
-        if not self._needs_setup():
+        """Run ``needs_setup`` off the UI thread; push the wizard if needed."""
+        if not needs_setup():
             return
         call_from_thread(self, self._push_setup_wizard)
 
@@ -359,34 +369,6 @@ class ChatScreen(Screen[None]):
             else:
                 self._chat_log.focus()
 
-    def _needs_setup(self) -> bool:
-        """True when the setup wizard should run: fresh data dir or unresolved models.
-
-        Remote-prefixed refs (ollama/lm_studio/API) are validated against
-        current state instead of probed on disk: an ``ollama/`` ref whose
-        litellm extra is missing or whose server is down is unusable and
-        must route the user to setup, not be assumed live.
-        """
-        if not cfg.lancedb_dir.is_dir():
-            log.debug("_needs_setup: lancedb_dir missing (%s)", cfg.lancedb_dir)
-            return True
-        from lilbee.modelhub.model_manager import ValidationResult, validate_persisted_model
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.engine_params import resolve_model_path
-
-        for label, model in (("chat", cfg.chat_model), ("embedding", cfg.embedding_model)):
-            if parse_model_ref(model).is_remote:
-                if validate_persisted_model(model) != ValidationResult.OK:
-                    log.debug("_needs_setup: remote %s model %r not usable", label, model)
-                    return True
-                continue
-            try:
-                resolve_model_path(model)
-            except (ProviderError, KeyError, ValueError) as exc:
-                log.debug("_needs_setup: %s model %r unresolved: %s", label, model, exc)
-                return True
-        return False
-
     def _embedding_ready(self) -> bool:
         """Quick check if the embedding model resolves (no network calls)."""
         return is_model_available(cfg.embedding_model, get_services().provider)
@@ -413,13 +395,24 @@ class ChatScreen(Screen[None]):
         self._chat_input.focus()
         self._update_input_style()
 
+    def focus_prompt(self) -> None:
+        """Return focus to the chat input in INSERT mode.
+
+        Called when a modal (the model picker) closes: the next act is typing
+        a prompt, so focus must not stay parked on the widget that opened it.
+        """
+        self._enter_insert_mode()
+
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
-        inp = self._chat_input
-        if self._insert_mode:
-            inp.remove_class("normal-mode")
-        else:
-            inp.add_class("normal-mode")
+        # Lifecycle interleaves (an installed-but-swapped-away screen during
+        # app teardown) can invoke this before or after the input exists.
+        with contextlib.suppress(NoMatches):
+            inp = self._chat_input
+            if self._insert_mode:
+                inp.remove_class("normal-mode")
+            else:
+                inp.add_class("normal-mode")
         self._update_mode_indicator()
 
     def _update_mode_indicator(self) -> None:
@@ -443,8 +436,9 @@ class ChatScreen(Screen[None]):
                 event.stop()
             return
         if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select / picker button handle Enter / i / a / o itself.
-            if isinstance(self.focused, (Select, ModelPickerButton)):
+            # Let a focused Select / picker button handle Enter itself; i/a/o
+            # mean nothing to those widgets, so they always return to INSERT.
+            if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
                 return
             if self._focus_in_fleet_drawer():
                 return
@@ -548,11 +542,6 @@ class ChatScreen(Screen[None]):
             return True
         if self.reloading_placement:
             self.notify(msg.FLEET_RELOADING, severity="warning", timeout=3)
-            return True
-        if self.chat_warming:
-            # The model is still warming; hold the prompt (input keeps the typed text)
-            # rather than firing it into a not-warm fleet and erroring in a bubble.
-            self.notify(msg.CHAT_WARMING, severity="warning", timeout=3)
             return True
         if self.streaming:
             # Only one chat message may be in flight at a time; surface a toast
@@ -726,16 +715,25 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(copied)))
 
     def _cmd_cancel(self, _args: str) -> None:
-        for worker in self.workers:
-            worker.cancel()
+        # _cancel_inflight_stream already cancels every screen worker, so the
+        # two branches each cancel everything exactly once.
+        if self.streaming:
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
+        else:
+            for worker in self.workers:
+                worker.cancel()
         self.notify(msg.CMD_CANCEL)
 
     def _cmd_clear(self, _args: str) -> None:
-        for worker in self.workers:
-            worker.cancel()
+        if self.streaming:
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
+        else:
+            for worker in self.workers:
+                worker.cancel()
         self.streaming = False
         chat_log = self._chat_log
         chat_log.remove_children()
+        self._active_assistant = None
         with self._history_lock:
             self._history.clear()
         self.notify(msg.CMD_CLEAR)
@@ -1252,6 +1250,7 @@ class ChatScreen(Screen[None]):
         # The assistant bubble owns its own ThinkingHeader animator until
         # the first reasoning or content token swaps it out.
         assistant_msg = AssistantMessage()
+        self._active_assistant = assistant_msg
         log.mount(assistant_msg)
         log.scroll_end(animate=False)
         # A fresh turn always follows its own answer, even if the user had
@@ -1296,6 +1295,8 @@ class ChatScreen(Screen[None]):
         sources: list[str] = []
         stream: Any = None
         try:
+            if not self._await_chat_engine(widget):
+                return
             with self._history_lock:
                 history_snapshot = self._history[:-1]
             stream = get_services().searcher.ask_stream(
@@ -1307,12 +1308,87 @@ class ChatScreen(Screen[None]):
                 call_from_thread(self, self._on_embedding_mismatch, exc, question, widget)
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
-            with contextlib.suppress(Exception):
-                call_from_thread(self, widget.append_content, msg.STREAM_ERROR.format(error=exc))
+            # A deliberate cancel severs the transport, which surfaces here as a
+            # stream error; the cancel already wrote its note into the bubble.
+            if not self._stream_worker_cancelled():
+                with contextlib.suppress(Exception):
+                    call_from_thread(
+                        self, widget.append_content, msg.STREAM_ERROR.format(error=exc)
+                    )
         finally:
             close_stream(stream)
             self._finalize_stream(widget, sources, response_parts)
             call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
+
+    @staticmethod
+    def _stream_worker_cancelled() -> bool:
+        """Whether the calling stream worker was cancelled; False off-worker."""
+        try:
+            return _get_worker().is_cancelled
+        except NoActiveWorker:
+            return False
+
+    def _await_chat_engine(self, widget: AssistantMessage) -> bool:
+        """Hold the stream until the engine can serve, painting the load into *widget*.
+
+        The default lifecycle loads the engine on demand, so the first prompt of
+        a session usually lands here: the answer bubble's thinking row carries the
+        live load phase instead of the input locking up. Worker thread. Returns
+        False once the wait was cancelled or the load failed, with any failure
+        already rendered into the bubble.
+        """
+        from lilbee.app.placement import (
+            chat_engine_ready,
+            chat_warm_error,
+            request_engine_warm,
+            wait_chat_ready,
+        )
+
+        # Build the container if nothing holds it (a settings change resets it);
+        # readiness is probed via peek_services, which never builds, so without
+        # this a prompt sent into the gap would report a dead engine instead of
+        # lazily rebuilding the way ask_stream always has.
+        get_services()
+        if chat_engine_ready():
+            return True
+        # A failed boot warm leaves nothing in flight; this restarts the engine
+        # so the prompt waits out a fresh load instead of bouncing.
+        request_engine_warm()
+        self._show_warm_tip_once()
+        worker = _get_worker()
+
+        def _paint(snapshot: WarmProgress) -> None:
+            with contextlib.suppress(Exception):
+                call_from_thread(self, widget.set_thinking_status, _engine_status_text(snapshot))
+
+        # Label the wait before the chat warm stamps its first phase: another
+        # role loading first (embed on a cold start) leaves the tracker silent
+        # for many seconds, and a bare scanner reads as a hang.
+        with contextlib.suppress(Exception):
+            call_from_thread(self, widget.set_thinking_status, msg.ENGINE_LOADING)
+        if wait_chat_ready(on_progress=_paint, should_abort=lambda: worker.is_cancelled):
+            with contextlib.suppress(Exception):
+                call_from_thread(self, widget.set_thinking_status, "")
+            return True
+        if worker.is_cancelled:
+            return False
+        error = chat_warm_error()
+        text = (
+            f"{msg.ENGINE_LOAD_FAILED.format(error=error)}\n{msg.ENGINE_FAILED_HINT}"
+            if error is not None
+            else msg.ENGINE_NOT_READY
+        )
+        with contextlib.suppress(Exception):
+            call_from_thread(self, widget.append_content, text)
+        return False
+
+    def _show_warm_tip_once(self) -> None:
+        """Toast the keep-warm tip on the session's first cold-engine wait. Worker thread."""
+        if cfg.keep_engine_warm or self._warm_tip_shown:
+            return
+        self._warm_tip_shown = True
+        with contextlib.suppress(Exception):
+            call_from_thread(self, self.notify, msg.ENGINE_WARM_TIP, timeout=8)
 
     def _maybe_extract_memories(self, question: str, answer: str) -> None:
         """Spawn auto-extraction for the finished turn, when enabled and idle.
@@ -1537,19 +1613,23 @@ class ChatScreen(Screen[None]):
     def action_cancel_stream(self) -> None:
         """Cancel an in-flight chat stream. Bound to Ctrl+C from INSERT mode."""
         if self.streaming:
-            self._cancel_inflight_stream()
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
 
-    def _cancel_inflight_stream(self) -> None:
-        """Stop the streaming Textual worker AND interrupt its inference call.
+    def _cancel_inflight_stream(self, note: str) -> None:
+        """Stop the streaming worker, sever its inference call, and say so.
 
-        Cancelling the Textual worker alone unwinds the producer task but
-        does not reach into the chat subprocess; the worker subprocess
-        keeps generating until ``Services.cancel_inference()`` flips its
-        abort flag (or sets the in-process Event in fallback mode).
+        The worker cancel is cooperative and only observed between tokens, so
+        ``cancel_inference`` severs the in-flight stream's transport to unblock
+        a reader stuck in a socket read. *note* lands in the answer bubble: a
+        cancelled turn must say it was cancelled, not die silently while the
+        user waits for an answer that will never arrive.
         """
-        get_services().cancel_inference()
         for worker in self.workers:
             worker.cancel()
+        get_services().cancel_inference()
+        bubble = self._active_assistant
+        if bubble is not None and bubble.is_mounted:
+            bubble.append_content(note)
         self.streaming = False
 
     def apply_model_change(self) -> None:
@@ -1572,7 +1652,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.CHAT_MODEL_SWITCHING, severity="warning", timeout=3)
             return
         if self.streaming:
-            self.action_cancel_stream()
+            self._cancel_inflight_stream(msg.STREAM_CANCELLED_MODEL_SWITCH)
         self.swapping_model = True
         self.app.notify(msg.MODEL_SWAP_APPLYING)
         self._reload_chat_model_worker()
@@ -1585,7 +1665,7 @@ class ChatScreen(Screen[None]):
         because the unblock can fire (via ``call_from_thread`` or a bubbled
         message) after the user navigated away and the input is no longer mounted.
         """
-        busy = self.swapping_model or self.reloading_placement or self.chat_warming
+        busy = self.swapping_model or self.reloading_placement
         with contextlib.suppress(NoMatches):
             self._chat_input.disabled = busy
             if not busy and self._insert_mode:
@@ -1596,15 +1676,6 @@ class ChatScreen(Screen[None]):
 
     def watch_reloading_placement(self, reloading: bool) -> None:
         self._apply_input_busy_state()
-
-    def watch_chat_warming(self, warming: bool) -> None:
-        self._apply_input_busy_state()
-
-    def _poll_chat_warming(self) -> None:
-        """Track whether the chat model is still warming so input stays held until ready."""
-        from lilbee.app.placement import active_chat_warm_progress
-
-        self.chat_warming = active_chat_warm_progress() is not None
 
     def on_fleet_body_placement_reloading(self, event: FleetBody.PlacementReloading) -> None:
         """Hold chat submissions while the Fleet drawer reloads the fleet."""

@@ -372,6 +372,33 @@ def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
     assert set(refs) == {WorkerRole.EMBED}
 
 
+def test_server_model_inputs_skips_sdk_routed_roles(monkeypatch, caplog) -> None:
+    """A remote-ref role gets no local server plan and no misleading warning.
+
+    Regression: a cloud chat model (API key set) was fed to the local planner,
+    which warned 'is not installed' and left chat unplaced, so the chat surface
+    reported an engine error for a model that never needed the engine.
+    """
+    import logging
+
+    monkeypatch.setattr(
+        planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
+    )
+    monkeypatch.setattr(cfg, "chat_model", "gemini/gemini-2.0-flash")
+    monkeypatch.setattr(cfg, "reranker_model", "ollama/bge-reranker")
+    monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+    with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+        _inputs, refs, _res, skipped = planning_mod._server_model_inputs(
+            (WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK)
+        )
+    assert WorkerRole.CHAT not in refs
+    assert WorkerRole.CHAT not in skipped
+    assert WorkerRole.RERANK not in refs  # ollama-managed server, not the fleet's
+    assert WorkerRole.RERANK not in skipped
+    assert WorkerRole.EMBED in refs
+    assert "is not installed" not in caplog.text
+
+
 def test_server_model_inputs_reserves_search_before_chat_on_shared_host(monkeypatch) -> None:
     # The blocker fix: on a shared-memory host, chat is sized against the budget
     # minus the embed+rerank footprint so a large chat can never starve search.
@@ -980,6 +1007,45 @@ class TestBuildFleetWiring:
         # Chat is excluded (it sizes its own weights); two embed replicas stack on card 0.
         assert reserved == {0: 6 * _GB, 1: 2 * _GB}
 
+    def test_non_chat_reservation_excludes_chats_co_tenants(self) -> None:
+        # A co-tenant vision is evicted while chat is resident, so its VRAM must not
+        # be held back from the chat shard's KV; only the pinned embed is reserved.
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(
+            instances, inputs, frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        )
+        assert reserved == {0: 3 * _GB}
+
+    def test_non_chat_reservation_charges_a_co_tenant_group_without_chat(self) -> None:
+        # A vision/rerank swap group that excludes chat runs behind its own process
+        # and can be resident beside a chat shard, so its members are charged (not
+        # treated as chat's to reclaim); only chat itself is excluded.
+        instances = [
+            InstancePlan(role=WorkerRole.CHAT, devices=(0,)),
+            InstancePlan(role=WorkerRole.VISION, devices=(0,)),
+            InstancePlan(role=WorkerRole.RERANK, devices=(0,)),
+            InstancePlan(role=WorkerRole.EMBED, devices=(0,)),
+        ]
+        inputs = [
+            ModelPlacementInput(WorkerRole.CHAT, 40 * _GB),
+            ModelPlacementInput(WorkerRole.VISION, 6 * _GB),
+            ModelPlacementInput(WorkerRole.RERANK, 2 * _GB),
+            ModelPlacementInput(WorkerRole.EMBED, 3 * _GB),
+        ]
+        reserved = planning_mod._non_chat_reservation(
+            instances, inputs, frozenset({WorkerRole.VISION, WorkerRole.RERANK})
+        )
+        assert reserved == {0: (6 + 2 + 3) * _GB}
+
     def test_launch_for_pinned_multi_card_chat_runs_one_slot(self, tmp_path, monkeypatch) -> None:
         # A cfg.num_ctx pin skips the fit, but a multi-card chat still serves one slot
         # so --ctx-size matches the single-sequence footprint the planner reserved.
@@ -1203,7 +1269,43 @@ class TestBuildFleetWiring:
         )
         sentinel = MagicMock()
         monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: sentinel)
-        assert planning_mod.plan_all_launches() == [sentinel]
+        assert planning_mod.plan_all_launches() == planning_mod.FleetPlan((sentinel,))
+
+    def test_plan_launches_reports_co_tenant_roles(self, monkeypatch, caplog) -> None:
+        # Co-tenancy changes how the box behaves (one model resident at a time), so it
+        # is stated in the log rather than being inferred from a silent plan.
+        import logging
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod,
+            "_server_model_inputs",
+            lambda *_roles, **_kw: (
+                [ModelPlacementInput(WorkerRole.CHAT, 5 * _GB)],
+                {WorkerRole.CHAT: "ref", WorkerRole.VISION: "vref"},
+                0,
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            planning_mod,
+            "plan_placement",
+            lambda inputs, devices, *, estimate_peak, unified_budget=None, **_kw: Placement(
+                instances=(InstancePlan(WorkerRole.CHAT, (0,)),),
+                unplaceable_roles=(),
+                co_tenants=frozenset({WorkerRole.CHAT, WorkerRole.VISION}),
+            ),
+        )
+        monkeypatch.setattr(planning_mod, "_launch_for", lambda *a, **kw: MagicMock())
+
+        with caplog.at_level(logging.INFO):
+            plan = planning_mod.plan_all_launches()
+
+        assert plan.co_tenants == frozenset({WorkerRole.CHAT, WorkerRole.VISION})
+        assert "chat, vision" in caplog.text
+        assert "only one is resident" in caplog.text
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
@@ -1359,6 +1461,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--cont-batching",
     "--jinja",
     "--no-mmap",
+    "--no-prefill-assistant",
     "--reasoning-format",
     "--embeddings",
     "--pooling",
@@ -1597,3 +1700,186 @@ class TestPlanProbe:
         monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 5 * _GB)
         assert planning_mod._plan_available_memory() == 7 * _GB
         assert planning_mod._plan_free_system_memory() == 5 * _GB
+
+
+class TestPlacementFindingsLog:
+    """plan_launches tells the user about tight and unservable placements."""
+
+    def test_tight_role_logs_a_memory_is_tight_warning(self, caplog) -> None:
+        import logging
+
+        placement = Placement(
+            instances=(InstancePlan(role=WorkerRole.VISION, devices=(0,)),),
+            unplaceable_roles=(),
+            tight_roles={WorkerRole.VISION: int(4.1 * _GB)},
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
+        assert "Memory is tight for the vision model org/ocr.gguf" in caplog.text
+        assert "4.1 GiB" in caplog.text
+        assert "will still load on demand" in caplog.text
+
+    def test_unplaceable_shared_memory_role_still_warns_it_gets_no_server(self, caplog) -> None:
+        import logging
+
+        placement = Placement(
+            instances=(),
+            unplaceable_roles=(WorkerRole.CHAT,),
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod._log_placement_findings(placement, {WorkerRole.CHAT: "org/chat.gguf"})
+        assert "will not be served" in caplog.text
+
+    def test_tiny_shortfall_never_reads_as_zero(self, caplog) -> None:
+        import logging
+
+        placement = Placement(
+            instances=(InstancePlan(role=WorkerRole.VISION, devices=(0,)),),
+            unplaceable_roles=(),
+            tight_roles={WorkerRole.VISION: 10 * 1024 * 1024},
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.planning"):
+            planning_mod._log_placement_findings(placement, {WorkerRole.VISION: "org/ocr.gguf"})
+        assert "0.0 GiB" not in caplog.text
+        assert "0.1 GiB" in caplog.text
+
+
+class TestSizingFailureFallsBackToFileSize:
+    """A model the estimator cannot size is enrolled at its weight bytes, so the
+    load, not the estimator, decides. Weight bytes are also a physics bound:
+    weights alone exceeding total VRAM refuses with a clear message."""
+
+    @pytest.fixture
+    def _sizing_boom(self, tmp_path, monkeypatch):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        model = tmp_path / "unsizable.gguf"
+        model.write_bytes(b"G" * 4096)
+
+        def boom(role, ref, **_k):
+            if role is WorkerRole.CHAT:
+                raise ProviderError(
+                    "unexpected estimator output",
+                    provider="llama-server",
+                    kind=ProviderErrorKind.SERVER,
+                )
+            return ModelPlacementInput(role, 512)
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", boom)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/unsizable.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        return model
+
+    def test_unsizable_model_enrolls_at_its_file_size(self, _sizing_boom, caplog) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=24 * _GB)
+        by_role = {i.role: i for i in inputs}
+        assert by_role[WorkerRole.CHAT].est_vram_bytes == 4096
+        assert "Using its file size" in caplog.text
+
+    def test_weights_beyond_total_vram_refuse_with_a_clear_message(
+        self, _sizing_boom, caplog
+    ) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=1024)
+        assert WorkerRole.CHAT not in {i.role for i in inputs}
+        assert "weights alone" in caplog.text
+
+    def test_weights_bound_stands_down_under_partial_offload(
+        self, _sizing_boom, monkeypatch, caplog
+    ) -> None:
+        import logging
+
+        monkeypatch.setattr(cfg, "n_gpu_layers", 10)
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=1024)
+        assert WorkerRole.CHAT in {i.role for i in inputs}
+        assert "weights alone" not in caplog.text
+
+    def test_unresolvable_file_still_skips(self, tmp_path, monkeypatch, caplog) -> None:
+        import logging
+
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def boom(role, ref, **_k):
+            raise ProviderError(
+                "unexpected estimator output",
+                provider="llama-server",
+                kind=ProviderErrorKind.SERVER,
+            )
+
+        def no_path(_r):
+            raise ProviderError(
+                "no file", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+            )
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", boom)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", no_path)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/ghost.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "")
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs()
+        assert inputs == []
+        assert "could not size" in caplog.text
+
+    def test_unsizable_vision_model_counts_its_mmproj(self, tmp_path, monkeypatch, caplog) -> None:
+        import logging
+
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        model = tmp_path / "vl.gguf"
+        model.write_bytes(b"G" * 4096)
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"G" * 1024)
+
+        def boom(role, ref, **_k):
+            if role is WorkerRole.VISION:
+                raise ProviderError(
+                    "unexpected estimator output",
+                    provider="llama-server",
+                    kind=ProviderErrorKind.SERVER,
+                )
+            return ModelPlacementInput(role, 512)
+
+        monkeypatch.setattr(planning_mod, "_estimate_role", boom)
+        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr(cfg, "chat_model", "org/repo/chat.gguf")
+        monkeypatch.setattr(cfg, "embedding_model", "org/repo/embed.gguf")
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/vl.gguf")
+        with caplog.at_level(logging.WARNING):
+            inputs, _refs, _res, _skipped = planning_mod._server_model_inputs(total_vram=24 * _GB)
+        by_role = {i.role: i for i in inputs}
+        assert by_role[WorkerRole.VISION].est_vram_bytes == 4096 + 1024
+
+    def test_fit_slots_returns_single_slot_when_estimator_fails(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        def boom(*_a, **_k):
+            raise ProviderError(
+                "unparseable", provider="llama-server", kind=ProviderErrorKind.SERVER
+            )
+
+        monkeypatch.setattr(planning_mod, "estimate_instance_footprint", boom)
+        slots = planning_mod._fit_slots(
+            4,
+            WorkerRole.CHAT,
+            tmp_path / "m.gguf",
+            2048,
+            mmproj_path=None,
+            unified=False,
+            budget=8 * _GB,
+        )
+        assert slots == 1

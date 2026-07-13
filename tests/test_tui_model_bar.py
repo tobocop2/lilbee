@@ -399,14 +399,15 @@ class _ChatTestApp(LilbeeAppHost):
 @pytest.fixture
 def _seeded_models(monkeypatch):
     """Pre-populate chat/embedding and skip the SetupWizard pop so the bar is reachable."""
-    from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.core.config import cfg
 
     monkeypatch.setattr(cfg, "chat_model", "fake/chat-model")
     monkeypatch.setattr(cfg, "embedding_model", "fake/embed-model")
     monkeypatch.setattr(cfg, "vision_model", "")
     monkeypatch.setattr(cfg, "reranker_model", "")
-    monkeypatch.setattr(ChatScreen, "_needs_setup", lambda self: False)
+    from lilbee.cli.tui.screens import chat as chat_screen_mod
+
+    monkeypatch.setattr(chat_screen_mod, "needs_setup", lambda: False)
 
 
 async def test_chat_screen_mounts_with_bar_present(_seeded_models) -> None:
@@ -446,3 +447,32 @@ async def test_apply_model_pick_embed_with_chunks_pushes_confirm() -> None:
             await pilot.pause()
             assert isinstance(app.screen, ConfirmDialog)
             mock_apply.assert_not_called()
+
+
+async def test_picker_enter_selects_first_row_and_arrows_reach_the_list() -> None:
+    """Open -> arrows -> Enter works from the auto-focused search input."""
+    from lilbee.cli.tui.screens.model_picker import ModelPickerModal
+    from lilbee.cli.tui.widgets.model_bar import ModelOption
+    from lilbee.cli.tui.widgets.model_list import ModelList
+
+    app = LilbeeAppHost()
+    async with app.run_test(size=(90, 30)) as pilot:
+        picked: list[str | None] = []
+        modal = ModelPickerModal(
+            scope="chat",
+            options=[
+                ModelOption(label="model-a", ref="hf:org/a"),
+                ModelOption(label="model-b", ref="hf:org/b"),
+            ],
+        )
+        app.push_screen(modal, picked.append)
+        await pilot.pause()
+        ml = modal.query_one("#picker-list", ModelList)
+        assert ml.highlighted == 0  # default highlight: Enter is never a no-op
+        await pilot.press("down")
+        assert ml.highlighted == 1
+        await pilot.press("up")
+        assert ml.highlighted == 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert picked == ["hf:org/a"]

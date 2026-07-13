@@ -46,7 +46,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -66,7 +66,7 @@ def _isolated_cfg(tmp_path):
     cfg.chat_model = TEST_LOCAL_REF
     cfg.embedding_model = TEST_EMBED_REF
     cfg.chunk_size = 512
-    # Simulate "already-initialized" state so ChatScreen._needs_setup()
+    # Simulate "already-initialized" state so needs_setup()
     # doesn't push the SetupWizard during tests that exercise chat.
     cfg.lancedb_dir.mkdir(parents=True, exist_ok=True)
     yield
@@ -99,7 +99,7 @@ def _patch_chat_setup():
     from lilbee.cli.tui.widgets.model_bar import ModelBar
 
     with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -2020,6 +2020,7 @@ async def test_reset_all_publishes_signals_on_lilbee_app():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.push_screen(SettingsScreen())
         await pilot.pause()
@@ -2407,7 +2408,8 @@ async def test_app_mounts_chat_screen():
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        assert isinstance(app.screen, ChatScreen)
+        chat = await await_chat(app, _pilot)
+        assert isinstance(chat, ChatScreen)
 
 
 async def test_app_title_has_model():
@@ -2415,6 +2417,7 @@ async def test_app_title_has_model():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         assert TEST_LOCAL_REF in app.title
 
 
@@ -2424,6 +2427,7 @@ async def test_app_cycle_theme():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         # Cycle starts from whatever theme on_mount restored, not from
         # index 0, so the next theme is the one AFTER the active theme.
         start_idx = DARK_THEMES.index(app.theme)
@@ -2442,6 +2446,7 @@ async def test_app_toggle_lilbee_path_flips_setting():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         start = cfg.show_lilbee_path
         app.action_toggle_lilbee_path()
         assert cfg.show_lilbee_path is not start
@@ -2454,6 +2459,7 @@ async def test_app_set_theme():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         app.set_theme("dracula")
         assert app.theme == "dracula"
         app.set_theme("nonexistent-theme-xyz")
@@ -2466,6 +2472,7 @@ async def test_app_switch_to_catalog():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         with (
             patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
             patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
@@ -2480,6 +2487,7 @@ async def test_app_switch_to_status():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         app.switch_view("Status")
         await _pilot.pause()
         from lilbee.cli.tui.screens.status import StatusScreen
@@ -2492,6 +2500,7 @@ async def test_app_switch_to_settings():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         app.switch_view("Settings")
         await _pilot.pause()
         from lilbee.cli.tui.screens.settings import SettingsScreen
@@ -2504,6 +2513,7 @@ async def test_app_push_help():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         app.action_push_help()
         await _pilot.pause()
         assert app.screen.query("HelpPanel")
@@ -2701,6 +2711,7 @@ async def test_chat_slash_theme_with_arg():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/theme dracula")
             mock_notify.assert_called_once()
@@ -2712,6 +2723,7 @@ async def test_chat_slash_theme_no_arg():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/theme")
             mock_notify.assert_called_once()
@@ -3250,17 +3262,19 @@ async def test_chat_cancel_stream_while_streaming():
 
 
 async def testapply_model_change_cancels_stream_when_streaming():
-    """apply_model_change cancels the stream and spawns the off-thread reload."""
+    """apply_model_change cancels the stream with the model-switch note."""
+    from lilbee.cli.tui import messages as msg
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         screen.streaming = True
         with (
-            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "_cancel_inflight_stream") as mock_cancel,
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
-            mock_cancel.assert_called_once()
+            mock_cancel.assert_called_once_with(msg.STREAM_CANCELLED_MODEL_SWITCH)
             mock_worker.assert_called_once()
 
 
@@ -3272,7 +3286,7 @@ async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming
         screen = app.screen
         screen.streaming = False
         with (
-            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(screen, "_cancel_inflight_stream") as mock_cancel,
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
             patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
         ):
@@ -3281,6 +3295,35 @@ async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming
             mock_worker.assert_called_once()
             # The reload runs in the worker, not inline on the event loop.
             mock_get.assert_not_called()
+
+
+async def test_cancel_stream_writes_a_note_into_the_bubble():
+    """A cancelled turn says so in its bubble instead of dying silently."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        bubble = MagicMock()
+        bubble.is_mounted = True
+        screen._active_assistant = bubble
+        screen.streaming = True
+        screen.action_cancel_stream()
+        bubble.append_content.assert_called_once_with(msg.STREAM_CANCELLED)
+        assert screen.streaming is False
+
+
+async def test_cancel_stream_severs_the_inference_transport():
+    """The cancel reaches the provider so a blocked SSE read unblocks."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        screen._active_assistant = None
+        screen.streaming = True
+        services = MagicMock()
+        with patch("lilbee.cli.tui.screens.chat.get_services", return_value=services):
+            screen.action_cancel_stream()
+        services.cancel_inference.assert_called_once_with()
 
 
 async def test_apply_model_change_ignores_reentry_while_swapping():
@@ -3457,10 +3500,16 @@ async def test_chat_vim_j_k_skips_in_insert_mode():
 
 
 async def test_chat_needs_setup_false_when_models_exist():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False):
-            assert not app.screen._needs_setup()
+    """Resolvable models must leave the chat screen up, with no setup wizard."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.cli.tui.screens.setup import SetupWizard
+
+    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False):
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ChatScreen)
+            assert not isinstance(app.screen, SetupWizard)
 
 
 async def test_chat_refresh_model_bar():
@@ -3921,6 +3970,7 @@ async def test_command_provider_discover():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -3935,6 +3985,7 @@ async def test_command_provider_search():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -3947,6 +3998,7 @@ async def test_command_provider_search_no_match():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -3959,6 +4011,7 @@ async def test_command_provider_set_model():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -3974,6 +4027,7 @@ async def test_command_provider_open_wiki_action():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -3992,6 +4046,7 @@ async def test_command_provider_retry_skipped_action(tmp_path):
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -4006,6 +4061,7 @@ async def test_command_provider_delete_doc(mock_svc):
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
@@ -4026,6 +4082,7 @@ async def test_command_provider_action_sync():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -4039,6 +4096,7 @@ async def test_command_provider_action_version():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -4054,13 +4112,12 @@ async def test_command_provider_action_version():
 async def test_command_provider_action_reset_pushes_confirm():
     """Palette 'Reset knowledge base' invokes ChatScreen.request_reset (the public entry)."""
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
-        chat = next(s for s in app.screen_stack if isinstance(s, ChatScreen))
+        chat = await await_chat(app, pilot)
         with patch.object(chat, "request_reset") as mock_reset:
             provider = LilbeeCommandProvider(app.screen, match_style=None)
             provider._action_reset()
@@ -4074,6 +4131,7 @@ async def test_command_provider_action_reset_no_chat_screen():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -4093,6 +4151,7 @@ async def test_command_provider_model_commands():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -4110,6 +4169,7 @@ async def test_command_provider_model_commands_error():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -4126,6 +4186,7 @@ async def test_command_provider_document_commands(mock_svc):
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         mock_svc.store.get_sources.return_value = [
@@ -4144,6 +4205,7 @@ async def test_command_provider_document_commands_error(mock_svc):
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         mock_svc.store.get_sources.side_effect = Exception("no store")
@@ -4159,6 +4221,7 @@ async def test_command_provider_document_commands_empty_name(mock_svc):
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         mock_svc.store.get_sources.return_value = [{"source": ""}]
@@ -6060,7 +6123,7 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
 
 
 async def test_chat_needs_setup_true_pushes_wizard():
-    """Verify _needs_setup=True pushes SetupWizard on mount."""
+    """Verify needs_setup() returning True pushes SetupWizard on mount."""
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -6074,7 +6137,7 @@ async def test_chat_needs_setup_true_pushes_wizard():
             self.push_screen(ChatScreen())
 
     app = SetupTestApp()
-    with patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=True):
+    with patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=True):
         async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()
             assert isinstance(app.screen, SetupWizard)
@@ -7504,6 +7567,7 @@ async def test_app_nav_prev_cycles_views():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert app.active_view == "Chat"
 
@@ -7524,6 +7588,7 @@ async def test_app_nav_next_cycles_views():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert app.active_view == "Chat"
 
@@ -7544,6 +7609,7 @@ async def test_app_nav_switches_all_views():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
 
         app.switch_view("Chat")
@@ -7610,6 +7676,7 @@ async def test_task_center_pop_screen():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         app.push_screen(TaskCenter())
         await pilot.pause()
         app.screen.action_go_back()
@@ -7621,6 +7688,7 @@ async def test_chat_input_history_up_down():
     """Up/down arrows cycle through input history when input focused."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         inp = app.screen.query_one("#chat-input")
         inp.focus()
         await pilot.pause()
@@ -7823,6 +7891,7 @@ async def test_app_switch_to_tasks():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         app.switch_view("Tasks")
         await pilot.pause()
         assert isinstance(app.screen, TaskCenter)
@@ -7834,6 +7903,7 @@ async def test_chat_mode_indicator_shows_normal():
     cfg.embedding_model = TEST_EMBED_REF
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
 
@@ -8100,6 +8170,7 @@ async def test_settings_group_titles_present():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         app.push_screen(SettingsScreen())
         await pilot.pause()
         titles = app.screen.query("Tab")
@@ -9424,6 +9495,7 @@ class TestWikiCoverageEdgeCases:
         _create_wiki_page(wiki_root, "summaries", "test", "Test")
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
             app.switch_view("Wiki")
             await pilot.pause()
             from lilbee.cli.tui.screens.wiki import WikiScreen
@@ -10915,6 +10987,7 @@ async def test_app_action_quit_when_streaming():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, ChatScreen)
@@ -10931,6 +11004,7 @@ async def test_app_action_quit_routes_to_wizard_cancel():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         wizard = SetupWizard()
         with _patch_setup_scan(), _patch_setup_ram(16.0):
@@ -10954,6 +11028,7 @@ async def test_action_quit_calls_cancel_inference_before_exit():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         parent = MagicMock()
 
@@ -10997,6 +11072,7 @@ async def test_no_force_quit_attribute():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert not hasattr(app, "_force_quit")
 
@@ -11012,6 +11088,7 @@ async def test_action_quit_no_double_ctrl_c_window():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # No state should track press timing any more.
         assert not hasattr(app, "last_quit_time")
@@ -11063,6 +11140,7 @@ async def test_app_switch_view_unknown():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Nonexistent")
         await pilot.pause()
@@ -11077,6 +11155,7 @@ async def test_app_switch_view_chat_when_already_chat():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
         app.switch_view("Chat")
@@ -11091,6 +11170,7 @@ async def test_app_switch_view_non_chat():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
         await pilot.pause()
@@ -11110,6 +11190,7 @@ async def test_command_provider_action_setup():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
@@ -11459,6 +11540,7 @@ async def test_chat_cmd_wiki_navigates_to_wiki_screen():
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
         await _pilot.pause()
         with (
             patch("lilbee.cli.tui.screens.chat.cfg") as mock_cfg,
@@ -13008,3 +13090,35 @@ class TestWikiSafeCoerce:
         assert _safe_int(3) == 3
         assert _safe_int(None) == 0
         assert _safe_int("lots", default=0) == 0
+
+
+async def test_picker_dismiss_returns_focus_to_the_prompt():
+    """Closing the model picker must not park focus on the pill."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen.action_enter_normal_mode()
+        await pilot.pause()
+        pill = screen.query(ModelPickerButton).first()
+        pill._on_picker_dismissed(None)  # Esc/cancel path
+        await pilot.pause()
+        assert screen._insert_mode is True
+        assert app.focused is screen._chat_input
+
+
+async def test_i_returns_to_insert_even_when_the_pill_has_focus():
+    """i/a/o always return to INSERT; only Enter is deferred to the pill."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen.action_enter_normal_mode()
+        await pilot.pause()
+        screen.query(ModelPickerButton).first().focus()
+        await pilot.pause()
+        await pilot.press("i")
+        await pilot.pause()
+        assert screen._insert_mode is True

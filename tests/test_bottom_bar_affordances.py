@@ -15,7 +15,7 @@ from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.setup import SetupWizard
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 _TEST_LOCAL_LABEL = display_label_for_ref(TEST_LOCAL_REF)
@@ -60,7 +60,7 @@ def _mock_services():
 def _patch_chat_setup():
     with (
         mock.patch(
-            "lilbee.cli.tui.screens.chat.ChatScreen._needs_setup",
+            "lilbee.cli.tui.screens.chat.needs_setup",
             return_value=False,
         ),
         mock.patch(
@@ -93,6 +93,7 @@ async def test_view_tabs_hides_model_pill_on_chat(_patch_chat_setup) -> None:
     cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert isinstance(app.screen, ChatScreen)
         tabs = app.screen.query_one(ViewTabs)
@@ -105,6 +106,7 @@ async def test_view_tabs_renders_active_chat_model_on_settings(_patch_chat_setup
     cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -124,6 +126,7 @@ async def test_view_tabs_refreshes_model_pill_on_settings_change(_patch_chat_set
     cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -151,6 +154,7 @@ async def test_view_tabs_ignores_non_model_settings_changes(_patch_chat_setup) -
     cfg.chat_model = TEST_LOCAL_REF
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         await pilot.press("escape")
         await pilot.pause()
@@ -275,6 +279,7 @@ async def test_cycle_theme_persists_to_config(_patch_chat_setup) -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         before = app.theme
 
@@ -293,6 +298,7 @@ async def test_set_theme_persists_to_config(_patch_chat_setup) -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
 
         app.set_theme("dracula")
@@ -309,6 +315,7 @@ async def test_app_restores_persisted_theme_on_startup(_patch_chat_setup) -> Non
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         assert app.theme == "nord"
 
@@ -319,6 +326,7 @@ async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) ->
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # Falls back to the module-level default, not the bad value.
         from lilbee.cli.tui.app import _DEFAULT_THEME
@@ -333,6 +341,7 @@ async def test_sync_theme_index_handles_non_dark_theme(_patch_chat_setup) -> Non
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         # Pick any Textual theme that is intentionally NOT in DARK_THEMES.
         non_dark = next(

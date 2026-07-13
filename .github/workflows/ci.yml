@@ -124,16 +124,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
-        exclude:
-          # Windows 3.11 integration hits the original ProactorEventLoop
-          # subprocess-transport teardown flake that PR #145 fixed for 3.12+.
-          # 3.11's asyncio internals release transports differently and the
-          # shared-loop fix doesn't fully cover them; the test suite passes
-          # cleanly (119 tests) but pytest crashes on stdout.flush() during
-          # exit. Re-enable once Python 3.11 reaches end-of-life or the
-          # 3.11 cleanup path is patched upstream.
-          - os: windows-latest
-            python-version: "3.11"
     steps:
       - uses: actions/checkout@v7
 
@@ -218,22 +208,20 @@ jobs:
 
       - name: Install llama-swap + gguf-parser (engine helpers)
         shell: bash
-        env:
-          # Keep in sync with tools/wheel-build/build_llama_server.sh.
-          LLAMA_SWAP_VERSION: v223
-          GGUF_PARSER_REF: main
         run: |
           set -euxo pipefail
+          # Shared pins with tools/wheel-build/build_llama_server.sh.
+          source engine-versions.env
           helperdir="${HOME}/engine-helpers"
           mkdir -p "${helperdir}"
           exe=""
           if [ "${{ runner.os }}" = "Windows" ]; then exe=".exe"; fi
           work="$(mktemp -d)"
-          git clone -q --depth 1 --branch "${LLAMA_SWAP_VERSION}" \
+          git clone -q --depth 1 --branch "${ENGINE_LLAMA_SWAP_VERSION}" \
             https://github.com/mostlygeek/llama-swap.git "${work}/llama-swap"
           ( cd "${work}/llama-swap" && go build -trimpath -o "${helperdir}/llama-swap${exe}" . )
           # gguf-parser's CLI lives under a nested go.mod in cmd/gguf-parser.
-          git clone -q --depth 1 --branch "${GGUF_PARSER_REF}" \
+          git clone -q --depth 1 --branch "${ENGINE_GGUF_PARSER_REF}" \
             https://github.com/gpustack/gguf-parser-go.git "${work}/gguf-parser-go"
           ( cd "${work}/gguf-parser-go/cmd/gguf-parser" && go build -trimpath -o "${helperdir}/gguf-parser${exe}" . )
           if command -v cygpath >/dev/null 2>&1; then

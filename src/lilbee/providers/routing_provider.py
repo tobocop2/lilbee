@@ -21,7 +21,7 @@ from lilbee.providers.base import (
 )
 from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
-from lilbee.providers.roles import OcrBackend, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, OcrBackend, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 from lilbee.vision import PageText
 
@@ -325,10 +325,24 @@ class RoutingProvider(LLMProvider):
             self._local.reload_placement(wait=wait)
 
     def role_ready(self, role: WorkerRole) -> bool:
-        """Native readiness without building; True when no local engine exists yet."""
+        """Whether *role* can serve a request right now.
+
+        A role whose configured ref routes to the SDK backend needs no local
+        server, so it is always ready; the local fleet's readiness is
+        irrelevant to it. Native refs report the fleet's readiness without
+        building one (True when no local engine exists yet).
+        """
+        if self._role_routes_remote(role):
+            return True
         if self._local is None:
             return True
         return self._local.role_ready(role)
+
+    @staticmethod
+    def _role_routes_remote(role: WorkerRole) -> bool:
+        """Whether *role*'s configured model ref dispatches to the SDK backend."""
+        ref = str(getattr(cfg, ROLE_REGISTRY[role].config_field))
+        return bool(ref) and parse_model_ref(ref).is_remote
 
     def max_concurrent_chats(self) -> int:
         """Chat concurrency of the local engine; 1 until one exists."""
@@ -341,6 +355,10 @@ class RoutingProvider(LLMProvider):
         if self._local is None:
             return None
         return self._local.served_chat_ctx()
+
+    def warm_pending(self) -> bool:
+        """Forward to the native side; the SDK side never warms."""
+        return self._get_local().warm_pending()
 
     def warm_progress(self) -> WarmProgress | None:
         """Cold-load progress of the local engine, or None when none exists yet."""

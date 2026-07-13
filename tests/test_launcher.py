@@ -79,6 +79,34 @@ def test_shell_completion_skips_splash(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_app.assert_called_once()
 
 
+def test_help_flag_skips_splash(monkeypatch: pytest.MonkeyPatch, _no_completion_env: None) -> None:
+    """``lilbee chat --help`` prints and exits before the TUI, so animating
+    through it would mangle the help text."""
+    fake_app, start_spy, _ = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lilbee", "chat", "--help"])
+
+    launcher.main()
+
+    start_spy.assert_not_called()
+    fake_app.assert_called_once()
+
+
+def test_successful_launch_leaves_the_splash_to_run_tui(
+    monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
+) -> None:
+    """The splash animates through the CLI dispatch and the TUI stack's own
+    imports; stopping it at import time re-opens seconds of blank terminal on
+    a cold disk. run_tui dismisses it right before Textual takes over."""
+    fake_app, start_spy, stop_spy = _patch_app_and_splash(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["lilbee"])
+
+    launcher.main()
+
+    start_spy.assert_called_once()
+    fake_app.assert_called_once()
+    stop_spy.assert_not_called()
+
+
 def test_app_import_failure_stops_splash(
     monkeypatch: pytest.MonkeyPatch, _no_completion_env: None
 ) -> None:

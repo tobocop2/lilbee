@@ -1,13 +1,13 @@
 """FleetProvider: the local llama-server engine for every role.
 
-On first use it plans GPU placement and starts one llama-swap process per
-configured role (chat/embed/rerank/vision), each fronting that role's
-llama-server(s); each call routes to its role's proxy by replica model id.
-Per-role processes let a reload restart only the roles whose launches changed,
-so a placement or model change never unloads an untouched role's model. There
-is no in-process fallback, so a missing role surfaces a user-facing
-``ProviderError``. Model management (list/show/capabilities) reads the registry
-and GGUF headers directly and needs no running server.
+On first use it plans GPU placement and starts one llama-swap process per swap
+group, each fronting that group's llama-server(s); each call routes to its role's
+proxy by replica model id. Per-group processes let a reload restart only the
+groups whose launches changed, so a placement or model change never unloads an
+untouched group's model. There is no in-process fallback, so a missing role
+surfaces a user-facing ``ProviderError``. Model management
+(list/show/capabilities) reads the registry and GGUF headers directly and needs no
+running server. See docs/architecture.md for swap tenancy.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 
@@ -33,16 +34,24 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
     retry_on_busy,
 )
+from lilbee.providers.fleet.groups import SwapGroup, group_for
+from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
-from lilbee.providers.fleet.swap_manager import SwapManager, reap_stale, sweep_owned
+from lilbee.providers.fleet.swap_manager import (
+    SwapManager,
+    _SwapState,
+    find_detached_state,
+    reap_stale,
+    sweep_owned,
+)
 from lilbee.providers.fleet.windowing import window_messages
-from lilbee.providers.roles import WorkerRole, configured_model_message
-from lilbee.providers.warm_progress import WarmProgress, WarmProgressTracker
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
+from lilbee.providers.warm_progress import WarmPhase, WarmProgress, WarmProgressTracker
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     from lilbee.providers.base import (
         ChatMessage,
@@ -53,7 +62,6 @@ if TYPE_CHECKING:
         OcrBackend,
         PageText,
     )
-    from lilbee.providers.fleet.launch import InstanceLaunch
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
@@ -106,14 +114,26 @@ def _request_timeout_s(weights_bytes: int) -> float:
     )
 
 
-def _launches_by_role(
-    launches: list[InstanceLaunch],
-) -> dict[WorkerRole, tuple[InstanceLaunch, ...]]:
-    """Group a plan's launches by role, replica order preserved within each role."""
+def _launches_by_group(
+    plan: planning.FleetPlan,
+) -> dict[SwapGroup, tuple[InstanceLaunch, ...]]:
+    """Group a plan's launches by swap group, replica order preserved within each group.
+
+    Co-tenant roles land in one group, so llama-swap evicts between them rather
+    than holding both resident.
+    """
+    grouped: dict[SwapGroup, list[InstanceLaunch]] = {}
+    for launch in plan.launches:
+        grouped.setdefault(group_for(launch.role, plan.co_tenants), []).append(launch)
+    return {group: tuple(group_launches) for group, group_launches in grouped.items()}
+
+
+def _by_role(launches: list[InstanceLaunch]) -> dict[WorkerRole, list[InstanceLaunch]]:
+    """Split one group's launches per role, replica order preserved."""
     grouped: dict[WorkerRole, list[InstanceLaunch]] = {}
     for launch in launches:
         grouped.setdefault(launch.role, []).append(launch)
-    return {role: tuple(role_launches) for role, role_launches in grouped.items()}
+    return grouped
 
 
 def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
@@ -177,6 +197,66 @@ def _no_healthy_replica_error() -> ProviderError:
         provider=_PROVIDER_NAME,
         kind=ProviderErrorKind.CONNECTION,
     )
+
+
+# Env vars a launch pins its devices with, one per backend (Metal has none).
+_VISIBLE_DEVICE_ENV_VARS = (
+    "CUDA_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "GGML_VK_VISIBLE_DEVICES",
+    "ONEAPI_DEVICE_SELECTOR",
+)
+
+
+def _role_device_sets(
+    launches: Iterable[InstanceLaunch],
+) -> dict[WorkerRole, frozenset[str]]:
+    """Backend-qualified device tokens each role's launches pin, by role.
+
+    A role's set is the union across its replicas. Roles whose launches carry
+    no visibility env (Metal, or an unpinned backend) are absent: without
+    pinning there is no proof of sharing, so they keep the concurrent warm.
+    """
+    sets: dict[WorkerRole, set[str]] = {}
+    for launch in launches:
+        for var in _VISIBLE_DEVICE_ENV_VARS:
+            value = launch.env_overrides.get(var)
+            if value:
+                sets.setdefault(launch.role, set()).update(
+                    f"{var}={part.strip()}" for part in value.split(",")
+                )
+    return {role: frozenset(tokens) for role, tokens in sets.items()}
+
+
+def _warm_chains(
+    warm_roles: list[WorkerRole], device_sets: dict[WorkerRole, frozenset[str]]
+) -> list[list[WorkerRole]]:
+    """Group *warm_roles* into chains warmed sequentially; chains run in parallel.
+
+    Roles with overlapping device sets land in one chain, merged transitively.
+    Within a chain chat goes last: it sizes its KV against the headroom the
+    settled residents leave, so it must not race their loads. A role with no
+    device set shares nothing provable and gets its own chain.
+    """
+    chains: list[tuple[set[str], list[WorkerRole]]] = []
+    ordered = sorted(warm_roles, key=lambda r: (r is WorkerRole.CHAT, list(WorkerRole).index(r)))
+    for role in ordered:
+        tokens = device_sets.get(role)
+        if not tokens:
+            chains.append((set(), [role]))
+            continue
+        merged_tokens, merged_roles = set(tokens), [role]
+        kept: list[tuple[set[str], list[WorkerRole]]] = []
+        for chain_tokens, chain_roles in chains:
+            if chain_tokens & merged_tokens:
+                merged_tokens |= chain_tokens
+                merged_roles = chain_roles + merged_roles
+            else:
+                kept.append((chain_tokens, chain_roles))
+        kept.append((merged_tokens, merged_roles))
+        chains = kept
+    return [roles for _tokens, roles in chains]
 
 
 def _warm_role(role: WorkerRole, client: LlamaServerClient) -> None:
@@ -455,18 +535,53 @@ def _ocr_deadline(per_page_timeout_s: float | None) -> float | None:
     return None if budget is None else time.monotonic() + budget
 
 
+_ROLE_TO_MODEL_FIELD = {role: field for field, role in MODEL_FIELD_TO_ROLE.items()}
+
+
+def _configured_model_for(role: WorkerRole) -> str:
+    """The cfg model ref for *role*, empty when the role is unset."""
+    field = _ROLE_TO_MODEL_FIELD.get(role)
+    return getattr(cfg, field) or "" if field else ""
+
+
+def _adoptable_launches(state: _SwapState) -> list[InstanceLaunch] | None:
+    """Decode a detached fleet's launches when it matches this build and config."""
+    if state.lilbee_version != _pkg_version("lilbee"):
+        return None
+    try:
+        launches = [InstanceLaunch.from_state(item) for item in state.launches]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not launches:
+        return None
+    if any(launch.model != _configured_model_for(launch.role) for launch in launches):
+        return None
+    return launches
+
+
+def _warm_ttl_seconds() -> int:
+    """llama-swap idle-unload timer: the user's warm ttl, or 0 when warm is off."""
+    if not cfg.keep_engine_warm:
+        return 0
+    return cfg.engine_idle_ttl_minutes * 60
+
+
 class FleetProvider:
     """Routes every role to the managed llama-server fleet (a fleet-of-one on one box)."""
 
     def __init__(self) -> None:
-        # One llama-swap per placed role, so restarting one role's servers (a
-        # placement or per-role model change) never unloads another role's.
-        self._swaps: dict[WorkerRole, SwapManager] = {}
+        # One llama-swap per placed group, so restarting one group's servers (a
+        # placement or per-role model change) never unloads another group's. A
+        # co-tenant group holds chat and vision, which evict each other on load.
+        self._swaps: dict[SwapGroup, SwapManager] = {}
+        # The group each placed role runs in, so a role's clients and its swap
+        # process can be reached from the role alone.
+        self._role_group: dict[WorkerRole, SwapGroup] = {}
         # The launches each running group was started with, kept so a reload can
-        # diff the fresh plan against what is running and restart only the roles
+        # diff the fresh plan against what is running and restart only the groups
         # whose launches actually changed. Launch argv is port-free (ports are
         # injected at config render), so the comparison is stable across starts.
-        self._launches: dict[WorkerRole, tuple[InstanceLaunch, ...]] = {}
+        self._launches: dict[SwapGroup, tuple[InstanceLaunch, ...]] = {}
         # Latched once shutdown runs. A discarded provider (reset_services swaps
         # in a new one) can still have an in-flight warm-up or reload daemon
         # thread; without this latch that thread could start a llama-swap after
@@ -502,6 +617,9 @@ class FleetProvider:
         # Granular cold-load progress for the chat role, streamed to a launcher so
         # the user sees real read/engine-load progress instead of a frozen spinner.
         self._warm_tracker = WarmProgressTracker()
+        # The engine's own reason a role's model failed to warm, so the launcher and
+        # the TUI report the real cause instead of a generic "did not load".
+        self._warm_errors: dict[WorkerRole, str] = {}
         # Single-flight guard for the off-thread warm-up: True from the moment a
         # warm thread is dispatched until it finishes, so a second warm_up_pool
         # never starts a second swap and double-allocates GPU memory.
@@ -547,85 +665,164 @@ class FleetProvider:
             # A dead owner's surviving llama-swap holds VRAM; reap it before the
             # snapshot so the cards are actually free for this fleet (and the
             # context sizer reads true clean-box memory).
-            reap_stale(cfg.data_dir)
-            try:
-                # Snapshot the clean box; this plan and every later reload size
-                # ctx, slots, and budgets against it (a live probe under a loaded
-                # fleet would report our own residency as unavailable). Inside the
-                # try: capturing resolves the engine binary, and a binary-less
-                # host must serve nothing, not raise.
-                planning.capture_plan_probe()
-                launches = planning.plan_all_launches()
-            except ProviderError:
-                log.debug("Engine binary unavailable; no swap started")
-                return False
-            if not launches:
-                return False  # no installed/configured model -> serve nothing, spawn nothing
-            by_role = _launches_by_role(launches)
-            started: dict[WorkerRole, SwapManager] = {}
-            try:
-                for role, role_launches in by_role.items():
-                    swap = SwapManager(cfg.data_dir, role.value)
-                    swap.start(list(role_launches))
-                    started[role] = swap
-            except BaseException:
-                for swap in started.values():
-                    swap.shutdown()
-                raise
-            with self._lock:
-                for role, swap in started.items():
-                    self._adopt_role(role, swap, list(by_role[role]))
-            return True
+            if self._reap_and_maybe_adopt(cfg.data_dir):
+                return True
+            return self._plan_and_spawn(cfg.data_dir)
 
-    def _adopt_role(
-        self, role: WorkerRole, swap: SwapManager, launches: list[InstanceLaunch]
+    def _plan_and_spawn(self, data_dir: Path) -> bool:
+        """Plan placement against the clean box and start one swap per group.
+
+        Caller holds the build lock. False when the engine binary is missing or
+        nothing is installed/configured, so the provider serves nothing.
+        """
+        try:
+            # Snapshot the clean box; this plan and every later reload size
+            # ctx, slots, and budgets against it (a live probe under a loaded
+            # fleet would report our own residency as unavailable). Inside the
+            # try: capturing resolves the engine binary, and a binary-less
+            # host must serve nothing, not raise.
+            planning.capture_plan_probe()
+            plan = planning.plan_all_launches()
+        except ProviderError:
+            log.debug("Engine binary unavailable; no swap started")
+            plan = None
+        if plan is None or not plan.launches:
+            # No engine binary, or no installed/configured model: serve nothing.
+            return False
+        by_group = _launches_by_group(plan)
+        started: dict[SwapGroup, SwapManager] = {}
+        try:
+            for group, group_launches in by_group.items():
+                swap = SwapManager(data_dir, group)
+                swap.start(list(group_launches), ttl_seconds=_warm_ttl_seconds())
+                started[group] = swap
+        except BaseException:
+            for swap in started.values():
+                swap.shutdown()
+            raise
+        with self._lock:
+            for group, swap in started.items():
+                self._adopt_group(group, swap, list(by_group[group]))
+        return True
+
+    def _reap_and_maybe_adopt(self, data_dir: Path) -> bool:
+        """Reap dead fleets (sparing warm ones), then adopt a matching warm fleet."""
+        reap_stale(data_dir, keep_detached=cfg.keep_engine_warm)
+        return cfg.keep_engine_warm and self._try_adopt_detached(data_dir)
+
+    def _try_adopt_detached(self, data_dir: Path) -> bool:
+        """Bind to a warm detached fleet when it matches this version and config.
+
+        All or nothing: any unhealthy group, version drift, undecodable launch
+        record, or a configured role the detached fleet does not serve reaps the
+        leftovers and falls back to a fresh spawn. Caller holds the build lock.
+        """
+        found = [
+            (group, *hit)
+            for group in SwapGroup
+            if (hit := find_detached_state(data_dir, group)) is not None
+        ]
+        if not found:
+            return False
+        adopted: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]] = {}
+        for group, state, state_path in found:
+            launches = _adoptable_launches(state)
+            swap = SwapManager(data_dir, group)
+            if launches is None or not swap.adopt(state, state_path):
+                self._abandon_adoption(adopted, data_dir)
+                return False
+            adopted[group] = (swap, launches)
+        served = {launch.role for _, launches in adopted.values() for launch in launches}
+        configured = {role for role in WorkerRole if _configured_model_for(role)}
+        if not configured <= served:
+            self._abandon_adoption(adopted, data_dir)
+            return False
+        with self._lock:
+            for group, (swap, launches) in adopted.items():
+                self._adopt_group(group, swap, launches)
+        log.info("Adopted the warm engine fleet left by a previous session")
+        return True
+
+    @staticmethod
+    def _abandon_adoption(
+        adopted: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]], data_dir: Path
     ) -> None:
-        """Record *role*'s freshly started swap and build its client pool.
+        """Stop half-adopted swaps and reap every remaining detached fleet."""
+        for swap, _launches in adopted.values():
+            swap.shutdown()
+        reap_stale(data_dir)
+
+    def _adopt_group(
+        self, group: SwapGroup, swap: SwapManager, launches: list[InstanceLaunch]
+    ) -> None:
+        """Record *group*'s freshly started swap and build a client pool per role.
 
         Caller holds ``self._lock``. Each launch (one per replica) becomes a client
         keyed by its replica model id against this group's own proxy endpoint;
         the chat launch carries the slots/ctx so the capacity and served context
         come from the launch, not a probe.
         """
-        # Retire the role's previous clients (a reload re-adopts over an existing
-        # pool): closing them now would error a reader still mid-call on an old
-        # client snapshot, and never closing leaks an httpx pool per replica.
-        old_clients = list(self._clients.get(role, []))
-        self._swaps[role] = swap
-        self._launches[role] = tuple(launches)
+        self._swaps[group] = swap
+        self._launches[group] = tuple(launches)
         endpoint = swap.endpoint()
-        # token_cap truncates oversize embed/rerank inputs to the per-slot context
-        # (the in-process backstop); the longer timeout covers a cold upstream load.
-        self._clients[role] = [
-            LlamaServerClient(
-                endpoint,
-                launch.model_id,
-                token_cap=launch.token_cap,
-                timeout=_request_timeout_s(launch.weights_bytes),
-                rerank_mode=launch.rerank_mode,
-                inline_reasoning=role is WorkerRole.CHAT,
-            )
-            for launch in launches
-        ]
-        if role is WorkerRole.CHAT:
-            chat = launches[0]
-            self._chat_slots = chat.slots
-            self._chat_ctx = chat.ctx
-        self._retire_clients(old_clients)
+        for role, role_launches in _by_role(launches).items():
+            # Retire the role's previous clients (a reload re-adopts over an existing
+            # pool): closing them now would error a reader still mid-call on an old
+            # client snapshot, and never closing leaks an httpx pool per replica.
+            old_clients = list(self._clients.get(role, []))
+            self._role_group[role] = group
+            # token_cap truncates oversize embed/rerank inputs to the per-slot context
+            # (the in-process backstop); the longer timeout covers a cold upstream load.
+            self._clients[role] = [
+                LlamaServerClient(
+                    endpoint,
+                    launch.model_id,
+                    token_cap=launch.token_cap,
+                    timeout=_request_timeout_s(launch.weights_bytes),
+                    rerank_mode=launch.rerank_mode,
+                    inline_reasoning=role is WorkerRole.CHAT,
+                )
+                for launch in role_launches
+            ]
+            if role is WorkerRole.CHAT:
+                self._chat_slots = role_launches[0].slots
+                self._chat_ctx = role_launches[0].ctx
+            self._retire_clients(old_clients)
 
-    def _drop_role(self, role: WorkerRole) -> SwapManager | None:
-        """Forget *role*'s swap/launches/clients; return the swap for teardown.
+    def _swap_for(self, role: WorkerRole) -> SwapManager | None:
+        """The swap process serving *role*, or None when the role has no server.
 
-        Caller holds ``self._lock``. The role's clients are retired (closed at a
-        later reload or shutdown, never while a reader could still hold one) and
-        the chat capacity falls back to its defaults when chat itself is dropped.
+        Caller holds ``self._lock``.
         """
-        swap = self._swaps.pop(role, None)
-        self._launches.pop(role, None)
-        self._retire_clients(self._clients.pop(role, []))
-        if role is WorkerRole.CHAT:
-            self._chat_slots = 1
-            self._chat_ctx = None
+        group = self._role_group.get(role)
+        return None if group is None else self._swaps.get(group)
+
+    def _role_launches(self, role: WorkerRole) -> tuple[InstanceLaunch, ...]:
+        """*role*'s launch snapshot, empty when it has no server.
+
+        A co-tenant group holds more than one role's launches, so the group's
+        snapshot is filtered down to this role's replicas.
+        """
+        group = self._role_group.get(role)
+        if group is None:
+            return ()
+        return tuple(launch for launch in self._launches.get(group, ()) if launch.role is role)
+
+    def _drop_group(self, group: SwapGroup) -> SwapManager | None:
+        """Forget *group*'s swap/launches and every member role's clients.
+
+        Caller holds ``self._lock``. Member clients are retired (closed at a later
+        reload or shutdown, never while a reader could still hold one) and the chat
+        capacity falls back to its defaults when chat's group is dropped.
+        """
+        swap = self._swaps.pop(group, None)
+        self._launches.pop(group, None)
+        for role in [r for r, g in self._role_group.items() if g is group]:
+            del self._role_group[role]
+            self._retire_clients(self._clients.pop(role, []))
+            if role is WorkerRole.CHAT:
+                self._chat_slots = 1
+                self._chat_ctx = None
         return swap
 
     def _retire_clients(self, old_clients: list[LlamaServerClient]) -> None:
@@ -661,7 +858,7 @@ class FleetProvider:
         self._ensure_fleet()
         with self._lock:
             clients = self._clients.get(role)
-            swap = self._swaps.get(role)
+            swap = self._swap_for(role)
         if not clients and swap is not None and not swap.is_live():
             self._rebuild_role(role)
             with self._lock:
@@ -691,7 +888,7 @@ class FleetProvider:
         is up or while the role's upstream is still loading.
         """
         with self._lock:
-            swap = self._swaps.get(role)
+            swap = self._swap_for(role)
         return swap is not None and swap.role_ready(role)
 
     def max_concurrent_chats(self) -> int:
@@ -702,14 +899,24 @@ class FleetProvider:
         client connects, so the real capacity is in effect by the first chat).
         """
         with self._lock:
-            if WorkerRole.CHAT not in self._swaps:
+            if WorkerRole.CHAT not in self._role_group:
                 return 1
             return self._chat_slots
 
     def served_chat_ctx(self) -> int | None:
         """Per-slot context the chat server runs with, or None if not up."""
         with self._lock:
-            return self._chat_ctx if WorkerRole.CHAT in self._swaps else None
+            return self._chat_ctx if WorkerRole.CHAT in self._role_group else None
+
+    def warm_pending(self) -> bool:
+        """Whether a requested warm is still running.
+
+        The tracker only stamps a phase once the chat role starts loading, which is
+        seconds after the swap is spawned, so ``warm_progress`` alone cannot tell a
+        not-yet-started warm from no warm at all.
+        """
+        with self._lock:
+            return self._warming
 
     def warm_progress(self) -> WarmProgress | None:
         """Live cold-load progress for the chat role, or None before warm begins."""
@@ -744,6 +951,23 @@ class FleetProvider:
 
                 sweep_owned(cfg.data_dir)
 
+    def _detach_swap(self) -> None:
+        """Terminal shutdown with keep_engine_warm on: mark and leave the fleet running.
+
+        Latches like ``_shutdown_swap`` so a discarded provider's in-flight warm
+        cannot spawn an orphan, but the running swaps are handed to the next
+        launch instead of being stopped, and no ownership sweep runs.
+        """
+        with self._build_lock:
+            with self._lock:
+                swaps = dict(self._swaps)
+                launches = dict(self._launches)
+                self._shut_down = True
+            self._drop_swap_refs()
+            for group, swap in swaps.items():
+                payload = [launch.to_state() for launch in launches.get(group, ())]
+                swap.detach(payload)
+
     def _drop_swap_refs(self) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""
         with self._lock:
@@ -752,10 +976,14 @@ class FleetProvider:
             clients.extend(self._retiring_clients)
             self._swaps = {}
             self._launches = {}
+            self._role_group = {}
             self._clients = {}
             self._retiring_clients = []
             self._chat_slots = 1
             self._chat_ctx = None
+            # A torn-down fleet's load failures describe servers that no longer
+            # exist; the next warm records its own.
+            self._warm_errors = {}
         # Full teardown: the next build starts from a clean box, so it must
         # re-snapshot memory rather than plan against this boot's probe.
         planning.clear_plan_probe()
@@ -769,8 +997,8 @@ class FleetProvider:
         a live engine is never abandoned unstopped.
         """
         with self._build_lock, self._lock:
-            for role in [r for r, swap in self._swaps.items() if not swap.running]:
-                self._drop_role(role)
+            for group in [g for g, swap in self._swaps.items() if not swap.running]:
+                self._drop_group(group)
 
     def _require_configured_model(
         self, model: str | None, configured: str, role: WorkerRole
@@ -932,7 +1160,7 @@ class FleetProvider:
         card that fit fewer slots than requested reports the smaller real number,
         so the fan-out never queues more pages than the servers can serve.
         """
-        launches = self._launches.get(WorkerRole.VISION)
+        launches = self._role_launches(WorkerRole.VISION)
         if not launches:
             return None
         return max(1, sum(launch.slots for launch in launches))
@@ -947,7 +1175,7 @@ class FleetProvider:
         drop it between two reads).
         """
         clients = self._require_clients(WorkerRole.VISION)
-        launches = self._launches.get(WorkerRole.VISION)
+        launches = self._role_launches(WorkerRole.VISION)
         if launches and len(launches) == len(clients):
             return [
                 _VisionReplica(client, max(1, launch.slots))
@@ -1162,10 +1390,18 @@ class FleetProvider:
         Runs on a daemon thread with no caller to catch failures, so a startup
         error is logged and swallowed: a role that can't load surfaces a
         user-facing ProviderError on the next call, not a thread traceback.
+
+        The tracker is stamped STARTING before the fleet spawn so surfaces
+        show the engine coming up from the first moment (spawn plus health
+        check takes seconds and previously reported nothing), and stamped
+        ERROR with the real reason when the warm fails before the chat warm
+        proper begins.
         """
         try:
+            self._warm_tracker.begin(str(cfg.chat_model))
             self._ensure_fleet()
             self._preload_roles()
+            self._clear_warm_if_chat_never_ran()
         except Exception as exc:
             if isinstance(exc, RuntimeError) and sys.is_finalizing():
                 # A fast CLI exit can tear down the interpreter while this daemon
@@ -1180,9 +1416,34 @@ class FleetProvider:
                 # from.
                 log.warning("Engine warm-up failed; roles will load on first use: %s", exc)
                 log.debug("Engine warm-up failure detail.", exc_info=True)
+            self._fail_warm_unless_ready(str(exc))
         finally:
             with self._lock:
                 self._warming = False
+
+    def _fail_warm_unless_ready(self, message: str) -> None:
+        """Stamp the warm tracker ERROR unless the chat warm already finished.
+
+        A failure in a later role's preload must not clobber a chat warm that
+        reached READY; every earlier failure leaves the tracker mid-phase,
+        where surfaces would spin forever and the prompt path could not name
+        the reason.
+        """
+        snapshot = self._warm_tracker.snapshot()
+        if snapshot is None or snapshot.phase is not WarmPhase.READY:
+            self._warm_tracker.fail(message)
+
+    def _clear_warm_if_chat_never_ran(self) -> None:
+        """Drop the early STARTING stamp when no chat role was placed to warm.
+
+        ``_warm_chat_role`` always ends in READY or ERROR when it runs; a
+        snapshot still on STARTING after a successful preload means the plan
+        had no chat instances (model not installed), and leaving it would spin
+        the warm line forever.
+        """
+        snapshot = self._warm_tracker.snapshot()
+        if snapshot is not None and snapshot.phase is WarmPhase.STARTING:
+            self._warm_tracker.clear()
 
     def _preload_roles(self, roles: frozenset[WorkerRole] | None = None) -> None:
         """Issue a cheap request per replica so llama-swap loads each upstream now.
@@ -1194,8 +1455,12 @@ class FleetProvider:
         :meth:`_warm_chat_role` so a launcher gets granular progress. *roles*
         narrows the warm to just those roles (a reload warms only what restarted).
 
-        Roles warm concurrently: chat is the long pole (a large model's load
-        dominates), so the light roles load alongside it instead of before it.
+        Roles on separate devices warm concurrently: chat is the long pole (a
+        large model's load dominates), so the light roles load alongside it
+        instead of before it. Roles whose launches pin overlapping devices warm
+        one at a time instead, chat last: two engines loading into the same
+        card at once race each other for VRAM, and the loser's first load can
+        OOM even though both fit once settled.
         """
         with self._lock:
             pools = {
@@ -1204,33 +1469,75 @@ class FleetProvider:
                 if roles is None or role in roles
             }
             on_spawning, on_spawned = self._on_spawning, self._on_spawned
-
-        def _warm_one(role: WorkerRole, clients: list[LlamaServerClient]) -> None:
-            if on_spawning is not None:
-                on_spawning(role)
-            if role is WorkerRole.CHAT:
-                self._warm_chat_role(clients)
-            else:
-                self._warm_role_clients(role, clients)
-            if on_spawned is not None:
-                on_spawned(role)
+            device_sets = _role_device_sets(
+                launch for launches in self._launches.values() for launch in launches
+            )
 
         if not pools:
             return
-        with ThreadPoolExecutor(max_workers=len(pools), thread_name_prefix="fleet-preload") as pool:
-            futures = [pool.submit(_warm_one, role, clients) for role, clients in pools.items()]
+        listeners = (on_spawning, on_spawned)
+        chains = _warm_chains(list(pools), device_sets)
+        with ThreadPoolExecutor(
+            max_workers=len(chains), thread_name_prefix="fleet-preload"
+        ) as pool:
+            futures = [pool.submit(self._warm_chain, chain, pools, listeners) for chain in chains]
             for future in futures:
                 future.result()
 
+    def _warm_chain(
+        self,
+        chain: list[WorkerRole],
+        pools: dict[WorkerRole, list[LlamaServerClient]],
+        listeners: tuple[Callable[[WorkerRole], None] | None, Callable[[WorkerRole], None] | None],
+    ) -> None:
+        """Warm *chain*'s roles one at a time; every role gets its attempt.
+
+        An unexpected error warming one role (a listener blowing up) must not rob
+        the roles behind it of their warm, so the first error is re-raised only
+        after the chain finishes.
+        """
+        on_spawning, on_spawned = listeners
+        first_exc: Exception | None = None
+        for role in chain:
+            try:
+                if on_spawning is not None:
+                    on_spawning(role)
+                if role is WorkerRole.CHAT:
+                    self._warm_chat_role(pools[role])
+                else:
+                    self._warm_role_clients(role, pools[role])
+                if on_spawned is not None:
+                    on_spawned(role)
+            except Exception as exc:
+                first_exc = first_exc or exc
+        if first_exc is not None:
+            raise first_exc
+
     def _warm_role_clients(self, role: WorkerRole, clients: list[LlamaServerClient]) -> bool:
-        """Warm every replica of *role*; return whether at least one loaded."""
+        """Warm every replica of *role*; return whether at least one loaded.
+
+        A replica that fails to load is reported at warning level with the engine's
+        own message (an unsupported architecture, a corrupt file). Warm-up stays
+        best-effort, but the failure must not be silent: the role then serves
+        nothing, and a caller that never reaches it would otherwise see only an
+        unexplained empty answer.
+        """
         warmed = False
+        self._warm_errors.pop(role, None)
         for client in clients:
             try:
                 _warm_role(role, client)
                 warmed = True
-            except Exception:
-                log.debug("Warm-up request for %s failed.", role.value, exc_info=True)
+            except Exception as exc:
+                self._warm_errors[role] = str(exc)
+                log.warning(
+                    "The %s model failed to load: %s",
+                    role.value,
+                    exc,
+                    exc_info=log.isEnabledFor(logging.DEBUG),
+                )
+        if warmed:
+            self._warm_errors.pop(role, None)
         return warmed
 
     def _warm_chat_role(self, clients: list[LlamaServerClient]) -> None:
@@ -1251,7 +1558,14 @@ class FleetProvider:
             if warmed:
                 self._warm_tracker.ready()
             else:
-                self._warm_tracker.fail("The chat model did not finish loading.")
+                self._warm_tracker.fail(self._chat_load_failure())
+
+    def _chat_load_failure(self) -> str:
+        """The engine's own reason the chat model did not load, when it gave one."""
+        reason = self._warm_errors.get(WorkerRole.CHAT)
+        if not reason:
+            return "The chat model did not finish loading."
+        return f"The chat model did not load: {reason}"
 
     def _prewarm_chat_weights(self) -> None:
         """Page the chat model's GGUF shards into the OS cache, reporting byte progress.
@@ -1296,12 +1610,17 @@ class FleetProvider:
                 log.debug("Prewarm read of %s stopped early.", shard, exc_info=True)
 
     def cancel_inference(self) -> None:
-        """No-op: a llama-server stops generating when its client disconnects.
+        """Sever every in-flight chat stream so its blocked reader unwinds.
 
-        The caller (the TUI chat worker) triggers that disconnect by closing the
-        active stream, so there is no in-process abort flag to flip here.
+        A cooperative worker cancel cannot reach a thread blocked in a socket
+        read, and the reader's own close runs only when its worker unwinds, so
+        the disconnect must happen here. Retired clients are swept too: a
+        model-swap reload retires a busy client before the cancel lands.
         """
-        return
+        with self._lock:
+            clients = [*self._clients.get(WorkerRole.CHAT, ()), *self._retiring_clients]
+        for client in clients:
+            client.abort_streams()
 
     def reload_role(self, role: WorkerRole, *, wait: bool = False) -> None:
         """Apply a model/settings change for *role* with current cfg.
@@ -1395,16 +1714,16 @@ class FleetProvider:
                 self._reload_pending = False
 
     def _reload_pass(self, force: frozenset[WorkerRole] = frozenset()) -> None:
-        """One re-plan from current cfg, restarting only the roles that changed.
+        """One re-plan from current cfg, restarting only the groups that changed.
 
-        The fresh plan is diffed per role against the launches each running group
-        was started with; a role restarts only when its launches differ (covers
-        added and removed roles too), so an untouched role's loaded model stays
-        resident through a placement or per-role model change. *force* adds roles
-        to the restart set even when their plan is unchanged (dead-swap recovery).
-        Changed groups stop before the new ones start, so the planned VRAM is
-        actually free when the new servers spawn. Runs under the build lock so a
-        racing shutdown/build can't interleave with the restart and leak a live
+        The fresh plan is diffed per swap group against the launches each running
+        group was started with; a group restarts only when its launches differ
+        (covers added and removed groups too), so an untouched group's loaded model
+        stays resident through a placement or per-role model change. *force* adds a
+        role's group to the restart set even when its plan is unchanged (dead-swap
+        recovery). Changed groups stop before the new ones start, so the planned
+        VRAM is actually free when the new servers spawn. Runs under the build lock
+        so a racing shutdown/build can't interleave with the restart and leak a live
         llama-swap holding GPU memory.
         """
         from lilbee.core.config import cfg
@@ -1418,36 +1737,37 @@ class FleetProvider:
                 running = set(self._swaps)
                 old = dict(self._launches)
             # Reap dead owners' swaps before re-planning, same as the first build.
-            reap_stale(cfg.data_dir)
+            reap_stale(cfg.data_dir, keep_detached=cfg.keep_engine_warm)
             if not running:
                 # Nothing loaded (a resurrect after a failed pass): the box is
                 # clean, so refresh the plan snapshot like a first build would.
                 planning.capture_plan_probe()
-            new = _launches_by_role(planning.plan_all_launches())
-            # A role restarts when its launches changed OR its running/planned
+            plan = planning.plan_all_launches()
+            new = _launches_by_group(plan)
+            # A group restarts when its launches changed OR its running/planned
             # presence disagrees (covers a group the new plan drops or adds).
             changed = {
-                role
-                for role in running | set(new)
-                if (role in running) != (role in new) or old.get(role, ()) != new.get(role, ())
+                group
+                for group in running | set(new)
+                if (group in running) != (group in new) or old.get(group, ()) != new.get(group, ())
             }
-            changed |= set(force)
-            # Stop phase: free the changed roles' VRAM before their replacements
-            # (or another role's grown plan) spawn against it.
-            for role in sorted(changed, key=lambda r: r.value):
+            changed |= {group_for(role, plan.co_tenants) for role in force}
+            # Stop phase: free the changed groups' VRAM before their replacements
+            # (or another group's grown plan) spawn against it.
+            for group in sorted(changed, key=lambda g: g.value):
                 with self._lock:
-                    swap = self._drop_role(role)
+                    swap = self._drop_group(group)
                 if swap is not None:
                     swap.shutdown()
-            # Start phase: spawn the changed roles present in the new plan.
+            # Start phase: spawn the changed groups present in the new plan.
             restarted: list[WorkerRole] = []
-            for role in sorted(changed & set(new), key=lambda r: r.value):
-                role_launches = list(new[role])
-                swap = SwapManager(cfg.data_dir, role.value)
-                swap.start(role_launches)
+            for group in sorted(changed & set(new), key=lambda g: g.value):
+                group_launches = list(new[group])
+                swap = SwapManager(cfg.data_dir, group)
+                swap.start(group_launches, ttl_seconds=_warm_ttl_seconds())
                 with self._lock:
-                    self._adopt_role(role, swap, role_launches)
-                restarted.append(role)
+                    self._adopt_group(group, swap, group_launches)
+                restarted.extend(_by_role(group_launches))
         if restarted:
             # Load the restarted roles' models off-thread (llama-swap spawns an
             # upstream on its first request): the reload returns once the proxies
@@ -1492,4 +1812,7 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
+        if cfg.keep_engine_warm:
+            self._detach_swap()
+            return
         self._shutdown_swap()

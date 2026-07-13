@@ -50,11 +50,37 @@
   "url": "https://lilbee.sh/",
   "downloadUrl": "https://pypi.org/project/lilbee/",
   "license": "https://github.com/tobocop2/lilbee/blob/main/LICENSE",
-  "softwareVersion": "0.6.66b",
+  "softwareVersion": "0.6.90b",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "programmingLanguage": "Python",
   "author": { "@type": "Person", "name": "Tobias Perelstein", "url": "https://github.com/tobocop2" },
   "codeRepository": "https://github.com/tobocop2/lilbee"
+}
+</script>
+
+<!-- WebSite JSON-LD: names the site for search engines. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": "lilbee",
+  "url": "https://lilbee.sh/",
+  "description": "A local AI search engine that runs the models and searches your files, code, and the web, with answers that cite the source."
+}
+</script>
+
+<!-- FAQPage JSON-LD: the questions people ask before they install. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "What is lilbee?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee is a local AI search engine. It runs the models, indexes your files, code, and crawled web pages, and answers your questions in plain English with a citation to the exact source. It is one program, with no separate model server or vector database to set up." } },
+    { "@type": "Question", "name": "Is it really one program?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee. You install one thing and reach it as a terminal app, a command-line tool, an MCP server, a web API, or a Python library." } },
+    { "@type": "Question", "name": "Is lilbee a model manager? Do I need Ollama or LM Studio?", "acceptedAnswer": { "@type": "Answer", "text": "lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, or CUDA, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead." } },
+    { "@type": "Question", "name": "Does my data leave my machine?", "acceptedAnswer": { "@type": "Answer", "text": "No. Your files stay on disk and search runs locally. lilbee uses a cloud model only when you pick one." } },
+    { "@type": "Question", "name": "What can I search?", "acceptedAnswer": { "@type": "Answer", "text": "Files and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types." } }
+  ]
 }
 </script>
 
@@ -66,7 +92,7 @@
   <main class="main">
 
     <div class="topstrip">
-      <div><span class="badge">lilbee</span> <span>v0.6.66b</span></div>
+      <div><span class="badge">lilbee</span> <span>v0.6.90b</span></div>
       <div>
         <span class="pill">MIT License</span>
         <span class="pill">100% coverage</span>
@@ -102,23 +128,42 @@
       <div class="tutorial">
         <div class="tutorial-watch"><a class="tutorial-cta" href="tutorial/">▶&nbsp; watch the full tutorial reel</a></div>
         <div class="tutorialtabs" role="tablist" aria-label="Tutorial reel">
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-whatis"   aria-controls="tutorial-pane-whatis"   aria-selected="true"  tabindex="0">what is lilbee</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-setup"    aria-controls="tutorial-pane-setup"    aria-selected="false" tabindex="-1">first run</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-tour"     aria-controls="tutorial-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-chat"     aria-controls="tutorial-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawl"    aria-controls="tutorial-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawlsite" aria-controls="tutorial-pane-crawlsite" aria-selected="false" tabindex="-1">crawl a site</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-catalog"  aria-controls="tutorial-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-ollama"   aria-controls="tutorial-pane-ollama"   aria-selected="false" tabindex="-1">ollama</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-lmstudio" aria-controls="tutorial-pane-lmstudio" aria-selected="false" tabindex="-1">lm studio</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-settings" aria-controls="tutorial-pane-settings" aria-selected="false" tabindex="-1">settings</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-palette"  aria-controls="tutorial-pane-palette"  aria-selected="false" tabindex="-1">palette</button>
-          <div class="tutorialtabs-break" aria-hidden="true"></div>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-agent"    aria-controls="tutorial-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-pdf"      aria-controls="tutorial-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
-          <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
+          <div class="tutorialtabs-row">
+            <span class="tutorialtabs-group" aria-hidden="true">TUI</span>
+            <div class="tutorialtabs-chips">
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-whatis"   aria-controls="tutorial-pane-whatis"   aria-selected="true"  tabindex="0">what is lilbee</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-setup"    aria-controls="tutorial-pane-setup"    aria-selected="false" tabindex="-1">first run</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-startup"  aria-controls="tutorial-pane-startup"  aria-selected="false" tabindex="-1">startup</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-tour"     aria-controls="tutorial-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-chat"     aria-controls="tutorial-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawl"    aria-controls="tutorial-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawlsite" aria-controls="tutorial-pane-crawlsite" aria-selected="false" tabindex="-1">crawl a site</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-catalog"  aria-controls="tutorial-pane-catalog"  aria-selected="false" tabindex="-1">catalog</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-settings" aria-controls="tutorial-pane-settings" aria-selected="false" tabindex="-1">settings</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-palette"  aria-controls="tutorial-pane-palette"  aria-selected="false" tabindex="-1">palette</button>
+            </div>
+          </div>
+          <div class="tutorialtabs-row">
+            <span class="tutorialtabs-group" aria-hidden="true">models &amp; GPUs</span>
+            <div class="tutorialtabs-chips">
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gpuauto"  aria-controls="tutorial-pane-gpuauto"  aria-selected="false" tabindex="-1">gpu: auto</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-gpumanual" aria-controls="tutorial-pane-gpumanual" aria-selected="false" tabindex="-1">gpu: manual</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-ollama"   aria-controls="tutorial-pane-ollama"   aria-selected="false" tabindex="-1">ollama</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-lmstudio" aria-controls="tutorial-pane-lmstudio" aria-selected="false" tabindex="-1">lm studio</button>
+            </div>
+          </div>
+          <div class="tutorialtabs-row">
+            <span class="tutorialtabs-group" aria-hidden="true">agents</span>
+            <div class="tutorialtabs-chips">
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-agent"    aria-controls="tutorial-pane-agent"    aria-selected="false" tabindex="-1">agent: code</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-pdf"      aria-controls="tutorial-pane-pdf"      aria-selected="false" tabindex="-1">agent: pdf</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-index"    aria-controls="tutorial-pane-index"    aria-selected="false" tabindex="-1">agent: index</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-godot"    aria-controls="tutorial-pane-godot"    aria-selected="false" tabindex="-1">agent: godot</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchoc" aria-controls="tutorial-pane-launchoc" aria-selected="false" tabindex="-1">launch: opencode</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-launchhm" aria-controls="tutorial-pane-launchhm" aria-selected="false" tabindex="-1">launch: hermes</button>
+            </div>
+          </div>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-whatis" aria-labelledby="tutorial-tab-whatis">
@@ -133,6 +178,13 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-setup.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">First run: a setup wizard pulls a chat model and an embedder, then drops you straight into chat.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-startup" aria-labelledby="tutorial-tab-startup" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/cold-start.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">A cold start, end to end: the one-time unpack behind the wordmark, chat on screen in seconds, and the first answer showing the engine load inside its own bubble.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-tour" aria-labelledby="tutorial-tab-tour" hidden>
@@ -231,6 +283,34 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/mcp-godot.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">Same shape against the full Godot class reference (810 XMLs, pre-indexed). Cited codegen for a procedural level generator.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchoc" aria-labelledby="tutorial-tab-launchoc" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-opencode.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption"><code>lilbee launch opencode</code> opens opencode on a local model with lilbee configured. It adds a <code>lilbee launch status</code> subcommand to lilbee's own source, runs it, and writes a test that passes.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-launchhm" aria-labelledby="tutorial-tab-launchhm" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/agent-launcher-hermes.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption"><code>lilbee launch hermes</code> does the same for hermes: launched on a local model, it adds a <code>lilbee launch list</code> subcommand and lands a passing test.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpuauto" aria-labelledby="tutorial-tab-gpuauto" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-auto.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Automatic placement: lilbee spreads the models across every GPU on its own — one big chat model tensor-split across all the cards, the embedder copied to each — then answers a grounded question while the per-card load bars move live.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-gpumanual" aria-labelledby="tutorial-tab-gpumanual" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/placement-manual.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Manual placement: press <code>ctrl+g</code> for the drawer, pin each role to the cards you want — split, copy, or a single pinned instance — preview the fit, then chat against that exact fleet.</p>
         </div>
 
       </div>
@@ -711,6 +791,29 @@
     <section>
       <h2 class="label">a note on answers</h2>
       <p class="note">Answers are only as good as the model you pick and the settings behind it. lilbee ships sane defaults, but exposes <strong>50+ settings</strong> you can tune: search, the answers, how your files get read.</p>
+    </section>
+
+    <section>
+      <h2 class="label">use it for</h2>
+      <div class="links">
+        <a href="model-manager/"><span class="num">[1]</span><span>Model manager</span><span class="dots">·······································</span><span class="desc">run &amp; manage models</span></a>
+        <a href="local-rag/"><span class="num">[2]</span><span>Local RAG</span><span class="dots">·······································</span><span class="desc">your docs, cited</span></a>
+        <a href="code-search/"><span class="num">[3]</span><span>Code search</span><span class="dots">·······································</span><span class="desc">ask your codebase</span></a>
+        <a href="mcp/"><span class="num">[4]</span><span>MCP server</span><span class="dots">·······································</span><span class="desc">for your agent</span></a>
+        <a href="gpu/"><span class="num">[5]</span><span>Will it fit your GPU</span><span class="dots">·······································</span><span class="desc">vram, multi-gpu</span></a>
+        <a href="vs/"><span class="num">[6]</span><span>How it compares</span><span class="dots">·······································</span><span class="desc">vs ollama, lm studio, vllm</span></a>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="label">questions</h2>
+      <div class="faq">
+        <details><summary>What is lilbee?</summary><p>lilbee is a local AI search engine. It runs the models, indexes your files, code, and crawled web pages, and answers your questions in plain English with a citation to the exact source. It is one program, with no separate model server or vector database to set up.</p></details>
+        <details><summary>Is it really one program?</summary><p>Yes. The model runtime (llama.cpp) and the vector index (LanceDB) run inside lilbee. You install one thing and reach it as a terminal app, a command-line tool, an MCP server, a web API, or a Python library.</p></details>
+        <details><summary>Is lilbee a model manager? Do I need Ollama or LM Studio?</summary><p>lilbee is a complete model manager on its own. It browses Hugging Face, downloads models, gives each one a role, and runs them on your GPU across Metal, Vulkan, or CUDA, and it places large models across multiple GPUs. You do not need a separate model runner. If you already use Ollama or LM Studio, you can point lilbee at them instead.</p></details>
+        <details><summary>Does my data leave my machine?</summary><p>No. Your files stay on disk and search runs locally. lilbee uses a cloud model only when you pick one.</p></details>
+        <details><summary>What can I search?</summary><p>Files and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types.</p></details>
+      </div>
     </section>
 
     <section>

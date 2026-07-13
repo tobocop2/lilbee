@@ -19,7 +19,7 @@ from lilbee.app.services import set_services
 from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,7 @@ def _mock_services():
 @pytest.fixture(autouse=True)
 def _patch_chat_setup():
     with (
-        patch("lilbee.cli.tui.screens.chat.ChatScreen._needs_setup", return_value=False),
+        patch("lilbee.cli.tui.screens.chat.needs_setup", return_value=False),
         patch(
             "lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready",
             return_value=False,
@@ -212,6 +212,7 @@ async def test_action_open_tasks_switches_to_task_center() -> None:
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
         await pilot.pause()
         app.action_open_tasks()
         await pilot.pause()
