@@ -525,31 +525,9 @@ class ChatScreen(Screen[None]):
             # submitting whatever empty / stale text the input still holds.
             self._enter_insert_mode()
             return
-        if self._reject_submit_when_busy():
-            return
-        if self._dismiss_overlay_on_submit():
-            return
         text = event.value.strip()
-        if not text:
+        if not self._ready_to_submit(text):
             return
-        if text.startswith("/"):
-            if text.split()[0].lower() not in self._command_handlers:
-                # Keep the draft so a typo (or a stale leading slash) can be
-                # fixed in place instead of retyped.
-                self.notify(msg.CMD_UNKNOWN.format(cmd=text.split()[0].lower()), severity="warning")
-                return
-        else:
-            pending = self._pending_required_model_download()
-            if pending is not None:
-                # Keep the typed prompt in the input so the user can submit
-                # it again once the download finishes, instead of forcing
-                # them to retype.
-                self.notify(
-                    msg.CHAT_MODEL_DOWNLOADING.format(name=pending),
-                    severity="warning",
-                    timeout=5,
-                )
-                return
         event.chat_input.value = ""
         self._input_history.append(text)
         self._history_index = -1
@@ -558,6 +536,30 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
+    def _ready_to_submit(self, text: str) -> bool:
+        """Gate a submit: busy, consumed, empty, and keep-the-draft cases say no."""
+        if self._reject_submit_when_busy() or self._dismiss_overlay_on_submit() or not text:
+            return False
+        if text.startswith("/"):
+            cmd = text.split()[0].lower()
+            if cmd not in self._command_handlers:
+                # Keep the draft so a typo (or a stale leading slash) can be
+                # fixed in place instead of retyped.
+                self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
+                return False
+            return True
+        pending = self._pending_required_model_download()
+        if pending is not None:
+            # Keep the typed prompt in the input so the user can submit it
+            # again once the download finishes, instead of retyping it.
+            self.notify(
+                msg.CHAT_MODEL_DOWNLOADING.format(name=pending),
+                severity="warning",
+                timeout=5,
+            )
+            return False
+        return True
 
     def _reject_submit_when_busy(self) -> bool:
         """Toast and reject a submit while a swap is loading or a stream is in flight.

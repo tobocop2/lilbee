@@ -11,10 +11,9 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.content import Content
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
-
-from textual.content import Content
 
 from lilbee.app.services import get_services
 from lilbee.app.settings import _is_settable

@@ -101,6 +101,42 @@ async def test_empty_notifies(store, notes):
         assert msg.MEMORIES_EMPTY in notes
 
 
+async def test_empty_state_line_shown_when_no_memories(store):
+    from textual.widgets import Static
+
+    app = MemoriesTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        empty = app.screen.query_one("#memories-empty", Static)
+        assert empty.has_class("-visible")
+        assert str(empty.render()) == msg.MEMORIES_EMPTY_STATE
+
+
+async def test_empty_state_line_hidden_when_memories_exist(store):
+    from textual.widgets import Static
+
+    store.get_memories.return_value = [_row("uses rust")]
+    app = MemoriesTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert not app.screen.query_one("#memories-empty", Static).has_class("-visible")
+
+
+async def test_filter_with_no_matches_says_no_matches(store):
+    from textual.widgets import Input, Static
+
+    store.get_memories.return_value = [_row("uses rust")]
+    app = MemoriesTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        search = app.screen.query_one("#memories-search", Input)
+        search.value = "zzz"
+        await pilot.pause()
+        empty = app.screen.query_one("#memories-empty", Static)
+        assert empty.has_class("-visible")
+        assert str(empty.render()) == msg.MEMORIES_NO_MATCHES
+
+
 async def test_disabled_notifies(store, notes):
     cfg.memory_enabled = False
     app = MemoriesTestApp()

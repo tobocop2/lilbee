@@ -7,7 +7,7 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Center, VerticalScroll
+from textual.containers import Center, Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Input, Label, Static
 
@@ -82,7 +82,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
                 id="crawl-depth-input",
             )
             yield Static("", id="crawl-error")
-            with Center():
+            with Center(), Horizontal(id="crawl-buttons"):
                 yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
                 yield Button(msg.CRAWL_DIALOG_CANCEL, variant="default", id="crawl-cancel")
 

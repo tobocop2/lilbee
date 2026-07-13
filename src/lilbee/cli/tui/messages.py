@@ -360,6 +360,10 @@ MEMORIES_COLUMN_TEXT = "Memory"
 MEMORIES_FLAG_YES = "yes"
 MEMORIES_FLAG_NO = "no"
 MEMORIES_SEARCH_PLACEHOLDER = "Filter memories..."
+MEMORIES_EMPTY_STATE = (
+    "Memories are notes lilbee keeps about you between chats. Use /remember to save one."
+)
+MEMORIES_NO_MATCHES = "No memories match this filter."
 MEMORIES_DELETE_CONFIRM_TITLE = "Delete memory?"
 MEMORIES_DELETE_CONFIRM_MESSAGE = "Delete this memory? This cannot be undone."
 MEMORIES_DELETED = "Deleted memory"

@@ -749,6 +749,43 @@ class TestModelBar:
             assert app.query_one("#model-pick-chat", ModelPickerButton) is not None
             assert app.query_one("#model-pick-embed", ModelPickerButton) is not None
 
+    async def test_mode_toggle_visible_at_80_columns(self) -> None:
+        """At 80 cols the Search/Chat toggle still renders fully inside the screen."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.vision_model = ""
+        cfg.reranker_model = ""
+        app = _ModelBarApp()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            toggle = app.query_one(ChatModeToggle)
+            assert toggle.display
+            assert toggle.region.width > 0
+            assert toggle.region.right <= 80
+
+    async def test_narrow_bar_hides_disabled_roles_wide_shows_them(self) -> None:
+        """Disabled role pills drop out at narrow widths and return on wide bars."""
+        from lilbee.cli.tui.widgets.model_bar import RoleRow
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.vision_model = ""
+        cfg.reranker_model = ""
+        app = _ModelBarApp()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            off_rows = [row for row in app.query(RoleRow) if row.has_class("-off")]
+            assert off_rows
+            assert all(row.region.width == 0 for row in off_rows)
+        app = _ModelBarApp()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            off_rows = [row for row in app.query(RoleRow) if row.has_class("-off")]
+            assert off_rows
+            assert all(row.region.width > 0 for row in off_rows)
+
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
@@ -5422,6 +5459,17 @@ class CrawlDialogTestApp(LilbeeAppHost):
         from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog
 
         self.push_screen(CrawlDialog(), self.results.append)
+
+
+async def test_crawl_dialog_buttons_render_side_by_side():
+    """Crawl and Cancel sit on one row, like ConfirmDialog's yes/no pills."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 40)) as pilot:
+        await pilot.pause()
+        submit = app.screen.query_one("#crawl-submit", Button)
+        cancel = app.screen.query_one("#crawl-cancel", Button)
+        assert submit.region.y == cancel.region.y
+        assert submit.region.x < cancel.region.x
 
 
 async def test_crawl_dialog_button_focus_uses_themed_highlight():

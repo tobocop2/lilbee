@@ -2092,6 +2092,18 @@ async def test_status_screen_has_collapsible_sections(mock_svc):
         assert len(sections) == 4
 
 
+async def test_status_screen_sections_start_expanded(mock_svc):
+    """All four sections open expanded so the screen shows content immediately."""
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Collapsible
+
+        await pilot.pause()
+        sections = list(app.screen.query(Collapsible))
+        assert len(sections) == 4
+        assert all(not section.collapsed for section in sections)
+
+
 async def test_status_screen_config_shows_models(mock_svc):
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3063,6 +3075,18 @@ async def test_chat_slash_set_enum_mismatch_lists_choices():
             app.screen._cmd_set("reranker_type bogus")
             mock_notify.assert_called_once()
             assert "one of" in mock_notify.call_args[0][0]
+
+
+async def test_chat_slash_set_downstream_validation_error_stays_human():
+    """A cross-field validation error surfaces its own human message."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("chunk_size 10")
+            mock_notify.assert_called_once()
+            message = mock_notify.call_args[0][0]
+            assert "chunk_size" in message
+            assert "Traceback" not in message
 
 
 async def test_chat_slash_set_no_value():

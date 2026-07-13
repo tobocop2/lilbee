@@ -182,7 +182,47 @@ class TestArgHintWidgetAsync:
             assert hint.display is False
 
 
+def test_render_row_wraps_help_with_hanging_indent() -> None:
+    """Wrapped help lines stay in the description column, never the name column."""
+    from lilbee.cli.tui.widgets.slash_command_catalog import (
+        _ROW_NAME_COLUMN_WIDTH,
+        _render_row,
+    )
+
+    cmd = next(c for c in COMMANDS if c.name == "/model")
+    lines = _render_row(cmd, width=64).plain.splitlines()
+    assert len(lines) > 1
+    for continuation in lines[1:]:
+        assert continuation.startswith(" " * _ROW_NAME_COLUMN_WIDTH)
+    assert all(len(line) <= 64 for line in lines)
+
+
+def test_render_row_short_help_stays_single_line() -> None:
+    from lilbee.cli.tui.widgets.slash_command_catalog import _render_row
+
+    cmd = next(c for c in COMMANDS if c.name == "/quit")
+    assert "\n" not in _render_row(cmd, width=64).plain
+
+
 class TestSlashCommandCatalogAsync:
+    async def test_rows_never_leak_help_into_name_column(self) -> None:
+        """At the modal's real width every wrapped help line keeps the hanging indent."""
+        from lilbee.cli.tui.widgets.slash_command_catalog import _ROW_NAME_COLUMN_WIDTH
+
+        app = _CatalogOnlyApp()
+        async with app.run_test(size=(90, 30)) as pilot:
+            await pilot.pause()
+            ol = app.screen.query_one("#catalog-list", OptionList)
+            width = ol.scrollable_content_region.width
+            for i in range(ol.option_count):
+                opt = ol.get_option_at_index(i)
+                if opt.id is None:
+                    continue
+                lines = str(opt.prompt).splitlines()
+                assert all(len(line) <= width for line in lines)
+                for continuation in lines[1:]:
+                    assert continuation.startswith(" " * _ROW_NAME_COLUMN_WIDTH)
+
     async def test_lists_every_registry_command(self) -> None:
         app = _CatalogOnlyApp()
         async with app.run_test() as pilot:
