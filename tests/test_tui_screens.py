@@ -4214,8 +4214,9 @@ async def test_command_provider_single_delete_entry_regardless_of_index_size(moc
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
         cmds = provider._get_commands()
-        delete_cmds = [c for c in cmds if "delete" in c[0].lower()]
-        assert len(delete_cmds) == 1
+        assert [c[0] for c in cmds].count("Delete document") == 1
+        # No per-file entries are materialized for the 10k indexed sources.
+        assert not any("doc-" in c[0] for c in cmds)
         # Palette cost stays constant: the store is never asked for sources.
         mock_svc.store.get_sources.assert_not_called()
 

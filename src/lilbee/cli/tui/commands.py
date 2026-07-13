@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING, Any, cast
 from textual.command import Hit, Hits, Provider
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
 from lilbee.core.config import cfg
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
 
 
 class LilbeeCommandProvider(Provider):
@@ -65,8 +67,34 @@ class LilbeeCommandProvider(Provider):
             ("Quit", "Exit lilbee", app.action_quit),
         ]
 
+        commands.extend(self._slash_commands())
         commands.extend(self._model_commands())
         return commands
+
+    def _slash_commands(self) -> list[tuple[str, str, Any]]:
+        """One palette entry per slash command, mirroring the chat surface."""
+        return [
+            (cmd.name, cmd.help_text, lambda c=cmd: self._run_slash_command(c))
+            for cmd in COMMANDS
+        ]
+
+    def _run_slash_command(self, cmd: SlashCommand) -> None:
+        """Run *cmd* through Chat: dispatch it, or prefill it when it needs arguments."""
+        app = self._app
+        chat = self._chat_screen()
+        if chat is None:
+            app.notify(f"Open Chat to run {cmd.name}")
+            return
+        app.switch_view("Chat")
+        if cmd.args_hint.startswith("<"):
+            chat.prefill_prompt(f"{cmd.name} ")
+        else:
+            chat.run_command(cmd.name)
+
+    def _chat_screen(self) -> ChatScreen | None:
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        return next((s for s in self._app.screen_stack if isinstance(s, ChatScreen)), None)
 
     def _model_commands(self) -> list[tuple[str, str, Any]]:
         """Generate commands for installed models."""
@@ -99,15 +127,7 @@ class LilbeeCommandProvider(Provider):
 
     def _action_delete_document(self) -> None:
         """Jump to Chat with /delete prefilled; Tab there completes file names."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        app = self._app
-        chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
-        if chat is None:
-            app.notify("Open Chat to delete a document")
-            return
-        app.switch_view("Chat")
-        chat.prefill_prompt("/delete ")
+        self._run_slash_command(get_command("/delete"))
 
     def _action_sync(self) -> None:
         self._app.action_run_sync()

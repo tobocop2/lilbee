@@ -1112,6 +1112,103 @@ class TestCompletionOpenAndAcceptAsync:
             assert not overlay.is_visible
 
 
+def test_get_command_returns_exact_entry_and_raises_on_unknown():
+    from lilbee.cli.tui.command_registry import get_command
+
+    assert get_command("/crawl").handler == "_cmd_crawl"
+    with pytest.raises(KeyError):
+        get_command("/nope")
+
+
+class TestPaletteSlashCommandsAsync:
+    """Every slash command is reachable from the Ctrl+P command palette."""
+
+    async def test_palette_lists_every_registry_command(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            provider = LilbeeCommandProvider(app.screen, match_style=None)
+            labels = [c[0] for c in provider._get_commands()]
+            for cmd in COMMANDS:
+                assert cmd.name in labels
+
+    async def test_optional_arg_command_runs_immediately(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        """/version needs no argument, so picking it dispatches through chat."""
+        from lilbee.cli.tui.command_registry import get_command
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.screen
+            provider = LilbeeCommandProvider(app.screen, match_style=None)
+            with mock.patch.object(chat, "notify") as notify:
+                provider._run_slash_command(get_command("/version"))
+                await pilot.pause()
+            assert "lilbee" in notify.call_args[0][0]
+
+    async def test_required_arg_command_prefills_prompt(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        """/remove requires a name, so picking it lands in the prompt instead."""
+        from lilbee.cli.tui.command_registry import get_command
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.screen
+            provider = LilbeeCommandProvider(app.screen, match_style=None)
+            provider._run_slash_command(get_command("/remove"))
+            await pilot.pause()
+            chat_input = chat.query_one("#chat-input")
+            assert chat_input.value == "/remove "
+            assert chat_input.has_focus
+
+    async def test_slash_command_without_chat_screen_notifies(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        from lilbee.cli.tui.command_registry import get_command
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            provider = LilbeeCommandProvider(app.screen, match_style=None)
+            fake_app = mock.MagicMock()
+            fake_app.screen_stack = []
+            with mock.patch.object(
+                LilbeeCommandProvider,
+                "_app",
+                new_callable=mock.PropertyMock,
+                return_value=fake_app,
+            ):
+                provider._run_slash_command(get_command("/crawl"))
+            fake_app.notify.assert_called_once()
+            assert "chat" in fake_app.notify.call_args[0][0].lower()
+
+    async def test_run_command_rejected_while_streaming(
+        self, _mock_resolve, _mock_services
+    ) -> None:
+        """run_command respects the busy gate like a prompt-submitted command."""
+        app = _ChatHostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.screen
+            chat.streaming = True
+            await pilot.pause()
+            with mock.patch.object(chat, "notify") as notify:
+                chat.run_command("/version")
+            notify.assert_called_once()
+            assert notify.call_args[0][0] == msg.CHAT_BUSY
+
+
 def test_setting_options_exclude_non_settable_keys():
     """Autocomplete offers only settable keys (wiki_dir is read-only)."""
     from lilbee.cli.tui.widgets.autocomplete import _setting_options

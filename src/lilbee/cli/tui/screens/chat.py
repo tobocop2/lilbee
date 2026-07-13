@@ -412,6 +412,12 @@ class ChatScreen(Screen[None]):
         chat_input.move_cursor(chat_input.document.end)
         self.focus_prompt()
 
+    def run_command(self, text: str) -> None:
+        """Dispatch *text* as a slash command, as if submitted from the prompt."""
+        if self._reject_submit_when_busy():
+            return
+        self._handle_slash(text)
+
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
         # Lifecycle interleaves (an installed-but-swapped-away screen during

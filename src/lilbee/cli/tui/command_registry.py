@@ -150,6 +150,14 @@ def build_dispatch_dict() -> dict[str, str]:
     return dispatch
 
 
+def get_command(name: str) -> SlashCommand:
+    """Return the registry entry whose name is exactly *name* (aliases excluded)."""
+    for cmd in COMMANDS:
+        if cmd.name == name:
+            return cmd
+    raise KeyError(name)
+
+
 def completion_names() -> tuple[str, ...]:
     """All command names including aliases, for tab completion."""
     names: list[str] = []
