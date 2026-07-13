@@ -123,11 +123,11 @@ class TestAssistantMessageAsync:
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
-            am.set_thinking_status("Loading engine")
+            am.set_thinking_status("Warming up the model")
             header = am._thinking_header
             assert header is not None
             header._tick()
-            assert "Loading engine" in str(_frame_content(header._frame, header._detail))
+            assert "Warming up the model" in str(_frame_content(header._frame, header._detail))
             # A dismissed header makes the setter a no-op, not a crash.
             am._dismiss_thinking_header()
             am.set_thinking_status("gone")
@@ -502,7 +502,7 @@ class TestTaskBar:
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
         assert "starting" in starting and "▓" in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert "loading engine" in loading and ("▓" in loading or "░" in loading)
+        assert "almost ready" in loading and ("▓" in loading or "░" in loading)
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )
@@ -531,7 +531,7 @@ class TestTaskBar:
             await pilot.pause()
             bar = app.query_one(TaskBar)
             warm = bar._warm_line()
-            assert warm.startswith("loading chat · ")
+            assert warm.startswith("warming up chat · ")
             assert "reading weights 25%" in warm and "▓" in warm
             bar._refresh_display()
             await pilot.pause()
@@ -5388,6 +5388,23 @@ class CrawlDialogTestApp(LilbeeAppHost):
         from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog
 
         self.push_screen(CrawlDialog(), self.results.append)
+
+
+async def test_crawl_dialog_button_focus_uses_themed_highlight():
+    """Focused dialog buttons pick up the app's focus styling, not reverse video."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        for button_id in ("#crawl-submit", "#crawl-cancel"):
+            button = app.screen.query_one(button_id, Button)
+            unfocused_rails = (button.styles.border_top, button.styles.border_bottom)
+            button.focus()
+            await pilot.pause()
+            text_style = button.styles.text_style
+            assert text_style is None or text_style.reverse is not True
+            # Focus rides the border rails (the theme's focus language), so at
+            # least one rail color must change from the resting state.
+            assert (button.styles.border_top, button.styles.border_bottom) != unfocused_rails
 
 
 async def test_crawl_dialog_submit_valid():

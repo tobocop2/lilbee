@@ -133,7 +133,9 @@ def _engine_status_text(snapshot: WarmProgress) -> str:
         name = display_label_for_ref(snapshot.model_ref) if snapshot.model_ref else ""
         pct = snapshot.bytes_done * 100 // snapshot.bytes_total
         return f"{msg.ENGINE_READING_WEIGHTS.format(name=name)} {pct}%"
-    return msg.ENGINE_LOADING
+    if snapshot.phase is WarmPhase.LOADING_ENGINE:
+        return msg.ENGINE_ALMOST_READY
+    return msg.ENGINE_WARMING
 
 
 def _parse_add_paths(args: str) -> list[Path]:
@@ -402,6 +404,13 @@ class ChatScreen(Screen[None]):
         a prompt, so focus must not stay parked on the widget that opened it.
         """
         self._enter_insert_mode()
+
+    def prefill_prompt(self, text: str) -> None:
+        """Fill the prompt with *text* and focus it, cursor at the end."""
+        chat_input = self._chat_input
+        chat_input.text = text
+        chat_input.move_cursor(chat_input.document.end)
+        self.focus_prompt()
 
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
@@ -1365,7 +1374,7 @@ class ChatScreen(Screen[None]):
         # role loading first (embed on a cold start) leaves the tracker silent
         # for many seconds, and a bare scanner reads as a hang.
         with contextlib.suppress(Exception):
-            call_from_thread(self, widget.set_thinking_status, msg.ENGINE_LOADING)
+            call_from_thread(self, widget.set_thinking_status, msg.ENGINE_WARMING)
         if wait_chat_ready(on_progress=_paint, should_abort=lambda: worker.is_cancelled):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")

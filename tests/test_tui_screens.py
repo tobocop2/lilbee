@@ -4056,24 +4056,41 @@ async def test_command_provider_retry_skipped_action(tmp_path):
         assert load_skip_markers(tmp_path) == {}
 
 
-async def test_command_provider_delete_doc(mock_svc):
+async def test_command_provider_delete_document_prefills_prompt(mock_svc):
+    """Palette 'Delete document' lands in Chat with /delete ready to complete."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._action_delete_document()
+        await pilot.pause()
+        assert chat._chat_input.text == "/delete "
+        assert chat._chat_input.has_focus
+
+
+async def test_command_provider_delete_document_no_chat_screen():
+    """Palette delete falls back to notify when ChatScreen isn't in the stack."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await await_chat(app, _pilot)
-        # Re-inject mock after mount (model bar events may call reset_services)
-        set_services(mock_svc)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch(
-            "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
-        ) as mock_invalidate:
-            provider._delete_doc("notes.md")
-        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
-        # Palette delete invalidates the doc cache like the chat /delete path.
-        mock_invalidate.assert_called_once()
+        # Stand-in app whose screen_stack contains no ChatScreen.
+        fake_app = MagicMock()
+        fake_app.screen_stack = []
+        with patch.object(
+            LilbeeCommandProvider, "_app", new_callable=PropertyMock, return_value=fake_app
+        ):
+            provider._action_delete_document()
+        fake_app.notify.assert_called_once()
+        assert "chat" in fake_app.notify.call_args[0][0].lower()
 
 
 async def test_command_provider_action_sync():
@@ -4181,7 +4198,8 @@ async def test_command_provider_model_commands_error():
             assert cmds == []
 
 
-async def test_command_provider_document_commands(mock_svc):
+async def test_command_provider_single_delete_entry_regardless_of_index_size(mock_svc):
+    """The palette carries one delete command and never enumerates the index."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -4190,46 +4208,16 @@ async def test_command_provider_document_commands(mock_svc):
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         mock_svc.store.get_sources.return_value = [
-            {"filename": "notes.md", "source": "notes.md"},
+            {"filename": f"doc-{i}.md", "source": f"doc-{i}.md"} for i in range(10_000)
         ]
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        cmds = provider._document_commands()
-        assert len(cmds) == 1
-        assert "notes.md" in cmds[0][0]
-
-
-async def test_command_provider_document_commands_error(mock_svc):
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await await_chat(app, _pilot)
-        # Re-inject mock after mount (model bar events may call reset_services)
-        set_services(mock_svc)
-        mock_svc.store.get_sources.side_effect = Exception("no store")
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        cmds = provider._document_commands()
-        assert cmds == []
-
-
-async def test_command_provider_document_commands_empty_name(mock_svc):
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await await_chat(app, _pilot)
-        # Re-inject mock after mount (model bar events may call reset_services)
-        set_services(mock_svc)
-        mock_svc.store.get_sources.return_value = [{"source": ""}]
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        cmds = provider._document_commands()
-        assert cmds == []
+        cmds = provider._get_commands()
+        delete_cmds = [c for c in cmds if "delete" in c[0].lower()]
+        assert len(delete_cmds) == 1
+        # Palette cost stays constant: the store is never asked for sources.
+        mock_svc.store.get_sources.assert_not_called()
 
 
 class CatalogTestApp(LilbeeAppHost):

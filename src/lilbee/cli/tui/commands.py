@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from textual.command import Hit, Hits, Provider
 
-from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 
@@ -51,6 +50,11 @@ class LilbeeCommandProvider(Provider):
                 "Re-attempt files that failed a previous sync",
                 self._action_retry_skipped,
             ),
+            (
+                "Delete document",
+                "Remove a file from the index (Tab completes names)",
+                self._action_delete_document,
+            ),
             ("Open wiki", "Browse and generate wiki pages", self._action_open_wiki),
             ("Show version", "Display lilbee version", self._action_version),
             (
@@ -62,7 +66,6 @@ class LilbeeCommandProvider(Provider):
         ]
 
         commands.extend(self._model_commands())
-        commands.extend(self._document_commands())
         return commands
 
     def _model_commands(self) -> list[tuple[str, str, Any]]:
@@ -84,24 +87,6 @@ class LilbeeCommandProvider(Provider):
 
         return commands
 
-    def _document_commands(self) -> list[tuple[str, str, Any]]:
-        """Generate commands for indexed documents."""
-        commands: list[tuple[str, str, Any]] = []
-        try:
-            for src in get_services().store.get_sources():
-                name = src.get("filename", src.get("source", ""))
-                if name:
-                    commands.append(
-                        (
-                            f"Delete document → {name}",
-                            f"Remove {name} from index",
-                            lambda n=name: self._delete_doc(n),
-                        )
-                    )
-        except Exception:
-            log.debug("Failed to list documents", exc_info=True)
-        return commands
-
     def _set_model(self, attr: str, value: str) -> None:
         # Route through LilbeeApp.set_active_model so model-bar / scope chip
         # / status bar subscribers (settings_changed_signal) refresh.
@@ -112,17 +97,17 @@ class LilbeeCommandProvider(Provider):
         if attr == "chat_model":
             app.title = msg.app_title(value)
 
-    def _delete_doc(self, name: str) -> None:
-        from lilbee.app.ingest import remove_documents_durably
-        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
+    def _action_delete_document(self) -> None:
+        """Jump to Chat with /delete prefilled; Tab there completes file names."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
 
-        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
-        # non-destructive delete; the file stays on disk).
-        remove_documents_durably([name])
-        # Invalidate the document cache like the chat /delete path, so the
-        # deleted file stops being offered by autocomplete and the palette.
-        invalidate_document_cache()
-        self.screen.app.notify(msg.CMD_DELETE_SUCCESS.format(name=name))
+        app = self._app
+        chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
+        if chat is None:
+            app.notify("Open Chat to delete a document")
+            return
+        app.switch_view("Chat")
+        chat.prefill_prompt("/delete ")
 
     def _action_sync(self) -> None:
         self._app.action_run_sync()

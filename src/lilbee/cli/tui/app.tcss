@@ -1,5 +1,23 @@
 /* lilbee TUI layout — colors come from Textual's built-in theme system */
 
+/* Textual's stock Button focus is bold-reverse: a flat light block with the
+ * label inverted into a dark box. Use the app's focus language instead:
+ * $primary border rails and a slight lift, like every other focused control. */
+Button.-style-default:focus {
+    text-style: bold;
+    background-tint: $foreground 10%;
+    border-top: tall $primary;
+    border-bottom: tall $primary;
+}
+
+/* A $primary rail is invisible on the $primary face, so the primary variant
+ * signals focus with a stronger lift plus its light rail on both edges. */
+Button.-style-default.-primary:focus {
+    background-tint: $foreground 25%;
+    border-top: tall $primary-lighten-3;
+    border-bottom: tall $primary-lighten-3;
+}
+
 ListView {
     height: 1fr;
 }

@@ -130,7 +130,8 @@ CHAT_STACK_FAILED = "lilbee could not load its chat screen: {error}"
 # Engine-load status painted into the pending answer while a prompt waits on a
 # cold engine, and the failure that wait can end in.
 ENGINE_READING_WEIGHTS = "Reading {name} weights"
-ENGINE_LOADING = "Loading engine"
+ENGINE_WARMING = "Warming up the model"
+ENGINE_ALMOST_READY = "Almost ready"
 ENGINE_LOAD_FAILED = "The engine failed to load: {error}"
 ENGINE_FAILED_HINT = "Open Catalog or Settings to pick a different model."
 ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
@@ -472,10 +473,10 @@ TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
 TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
 # Cold-start chat warm line: phase (and byte % while paging weights) so the held
 # input reads as "loading", not "stuck".
-TASKBAR_WARM = "loading chat · {detail}"
+TASKBAR_WARM = "warming up chat · {detail}"
 TASKBAR_WARM_STARTING = "starting"
 TASKBAR_WARM_READING = "reading weights {pct}%"
-TASKBAR_WARM_LOADING = "loading engine"
+TASKBAR_WARM_LOADING = "almost ready"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
