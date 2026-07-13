@@ -19,7 +19,11 @@ from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
-from lilbee.retrieval.query.searcher import EMPTY_LIBRARY, SEARCH_NEEDS_EMBEDDER
+from lilbee.retrieval.query.searcher import (
+    EMPTY_LIBRARY,
+    GROUNDED_REFUSAL,
+    SEARCH_NEEDS_EMBEDDER,
+)
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -103,7 +107,6 @@ async def search(
     results = await asyncio.to_thread(
         get_services().searcher.search, q, top_k=top_k, chunk_type=chunk_type
     )
-    results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     return group(results)
 
 
@@ -384,12 +387,26 @@ async def chat(
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # message ask returns instead of silently answering off-corpus.
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
-    if not _retrieval_off(searcher, top_k):
-        # Count-shaped questions get the exact-scan answer, mirroring ask_raw.
+    if _retrieval_off(searcher, top_k):
+        # Chat-only mode or an explicit top_k:0 pure-LLM call.
+        sources: list[SearchChunk] = []
+        messages = searcher.direct_messages(question, history)
+    else:
+        # Grounded turn: run the same ladder as ask_raw so the two HTTP
+        # surfaces cannot drift (empty library, count routing, refusal).
+        if searcher.library_empty():
+            return AskResponse(answer=EMPTY_LIBRARY, sources=[], cited_sources=[])
         direct = searcher.route_direct_answer(question)
         if direct is not None:
             return AskResponse(answer=direct, sources=[], cited_sources=[])
-    sources, messages = _build_chat_messages(question, history, top_k, chunk_type)
+        rag = searcher.build_rag_context(
+            question, top_k=top_k or 0, history=history, chunk_type=chunk_type
+        )
+        if rag is None:
+            # Refuse like every sibling surface; the old fallback silently
+            # answered off-corpus with nothing telling the caller so.
+            return AskResponse(answer=GROUNDED_REFUSAL, sources=[], cited_sources=[])
+        sources, messages = rag
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
@@ -707,29 +724,6 @@ def _resolve_stream_context(
         return [], None, [sse_error("No relevant documents found.")]
     results, messages = rag
     return results, messages, []
-
-
-def _build_chat_messages(
-    question: str,
-    history: list[ChatMessage],
-    top_k: int | None,
-    chunk_type: ChunkType | None,
-) -> tuple[list[SearchChunk], list[ChatMessage]]:
-    """Run retrieval and return (sources, message_list).
-
-    Empty ``sources`` plus a direct-chat message list when retrieval is
-    disabled or returns nothing; otherwise the augmented prompt from
-    ``Searcher.build_rag_context``.
-    """
-    searcher = get_services().searcher
-    if _retrieval_off(searcher, top_k):
-        return [], searcher.direct_messages(question, history)
-    rag = searcher.build_rag_context(
-        question, top_k=top_k or 0, history=history, chunk_type=chunk_type
-    )
-    if rag is None:
-        return [], searcher.direct_messages(question, history)
-    return rag
 
 
 _CANONICAL_ROLE_BY_WIRE: dict[str, Literal["user", "assistant", "tool"]] = {

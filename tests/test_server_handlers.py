@@ -737,6 +737,30 @@ def _canonical_text_stream(texts):
 
 
 class TestChat:
+    async def test_empty_library_returns_add_content_guidance(self, mock_svc):
+        """/api/chat matches its streaming twin and ask_raw: an empty library
+        answers with the add-content guidance, never a silent ungrounded
+        reply the caller can't distinguish from a grounded one."""
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        mock_svc.searcher.library_empty.return_value = True
+        result = await handlers.chat("anything", [])
+        assert result.answer == EMPTY_LIBRARY
+        assert result.sources == []
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        mock_svc.searcher.direct_messages.assert_not_called()
+
+    async def test_empty_retrieval_refuses_grounded(self, mock_svc):
+        """Search mode with no usable sources refuses like every sibling
+        surface instead of silently answering off-corpus."""
+        from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL
+
+        mock_svc.searcher.build_rag_context.return_value = None
+        result = await handlers.chat("q", [])
+        assert result.answer == GROUNDED_REFUSAL
+        assert result.sources == []
+        mock_svc.searcher.direct_messages.assert_not_called()
+
     async def test_direct_answer_routes_before_retrieval(self, mock_svc):
         """A count question answered by the exact scan must short-circuit the
         HTTP chat path exactly as it does ask_raw: same router, no LLM."""
@@ -823,42 +847,6 @@ class TestChat:
         result = await handlers.chat("q", [])
         assert len(result.sources) == 1
         assert [s.source for s in result.cited_sources] == [result.sources[0].source]
-
-    async def test_retrieval_ran_but_no_context_falls_back_to_direct_chat(
-        self, mock_svc, monkeypatch
-    ):
-        """Search mode + ``build_rag_context`` returning None (no relevant docs)
-        falls back to a direct-chat turn: retrieval was attempted, the answer
-        still comes back, and the response carries no sources."""
-        from lilbee.server.chat_dispatch.canonical import (
-            CanonicalResponse,
-            CanonicalUsage,
-            StopReason,
-            TextBlock,
-        )
-
-        captured = []
-
-        def _fake_dispatch(req):
-            captured.append(req)
-            return CanonicalResponse(
-                id="msg_test",
-                model=req.model,
-                content=[TextBlock(text="direct answer")],
-                stop_reason=StopReason.END_TURN,
-                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
-            )
-
-        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
-        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
-        # Retrieval runs (search mode) but finds nothing -> build_rag_context None.
-        mock_svc.searcher.build_rag_context.return_value = None
-        result = await handlers.chat("anything", [])
-        # build_rag_context WAS consulted (retrieval not skipped) yet returned None.
-        assert mock_svc.searcher.build_rag_context.call_args is not None
-        assert result.answer == "direct answer"
-        assert result.sources == []  # direct-chat fallback carries no sources
-        assert len(captured) == 1
 
     async def test_top_k_zero_skips_retrieval(self, mock_svc, monkeypatch):
         """bb-szm: an explicit top_k:0 is a pure-LLM call -- retrieval is
@@ -3915,6 +3903,7 @@ class TestOptionInjectionBoundary:
         # chat() routes through canonical dispatch (not ask_raw): injected
         # endpoint/credential keys must never reach the dispatched request, while
         # a legitimate generation option (temperature) still flows through.
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
         with patch("lilbee.server.handlers.rag.dispatch_chat") as mock_dispatch:
             mock_dispatch.return_value = MagicMock(content=[])
             await handlers.chat("q", history=[], options=dict(_INJECTED_OPTIONS))

@@ -79,8 +79,9 @@ and **Chat**. F3 flips it.
 - **Search** (default). Every prompt goes through document retrieval first.
   Relevant chunks are passed to the chat model as context, and the
   reply ends with a Sources block of clickable citations. If retrieval finds
-  nothing, lilbee falls through to a chat-only answer for that single prompt
-  and shows a one-time toast so you know the answer wasn't backed by your files.
+  nothing usable, lilbee says so plainly instead of answering from the
+  model's general knowledge; switch to Chat mode when you want an
+  off-corpus answer.
 - **Chat.** Retrieval is skipped entirely; the model answers directly from
   whatever it already knows. Useful for conversational follow-ups that don't
   need your library, or for talking to a model when you haven't indexed
@@ -725,7 +726,8 @@ The ones most users set at least once.
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_OCR_TIMEOUT` | `300` | Per-page vision OCR timeout in seconds (`0` = no limit) |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
+| `LILBEE_RAG_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG (search-mode) answers |
+| `LILBEE_GENERAL_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for chat-mode (ungrounded) answers |
 | `LILBEE_SHOW_REASONING` | `false` | Show the model's `<think>` reasoning tokens in chat output. Useful with Qwen3, DeepSeek-R1, and other reasoning models |
 | `LILBEE_HF_TOKEN` | *(none)* | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Same token can be persisted via the `System` tab in `/settings` (stored in plain text at `config.toml`). `HF_TOKEN` env var also accepted |
 
@@ -736,20 +738,27 @@ something feels off.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_TOP_K` | `8` | Number of retrieval results returned |
-| `LILBEE_MAX_DISTANCE` | `0.65` | Cosine distance cutoff. Lower = stricter filtering, fewer but more relevant results. `1.0` disables filtering |
-| `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs. diversity balance (1.0 = pure relevance, 0.0 = pure diversity). Raise for factual lookups, lower for exploratory queries |
-| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `3` | Max chunks from a single source document in the top-K. Prevents one big file from dominating results |
+| `LILBEE_TOP_K` | `12` | Number of retrieval results returned |
+| `LILBEE_MAX_DISTANCE` | `0.75` | Cosine distance cutoff for rows without keyword support. Lower = stricter filtering. `0` disables filtering |
+| `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs. diversity balance on the vector-only fallback path (no effect on the default hybrid search) |
+| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `5` | Max chunks from a single source document in the top-K. Prevents one big file from dominating results |
 | `LILBEE_QUERY_EXPANSION_COUNT` | `3` | LLM-generated query variants per search. `0` disables expansion entirely for faster queries |
 | `LILBEE_RERANKER_MODEL` | *(none)* | GGUF cross-encoder reranker for a precision pass over top results. See [Cross-encoder reranking](#cross-encoder-reranking) |
 | `LILBEE_RERANK_CANDIDATES` | `60` | Candidates to rerank when a reranker is configured |
 | `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
-| `LILBEE_ADAPTIVE_THRESHOLD` | `false` | When too few results pass `LILBEE_MAX_DISTANCE`, widen the threshold step by step. Useful on small or noisy corpora |
+| `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Widen the distance threshold step by step when too few results pass, on the vector-only fallback path (no effect on the default hybrid search) |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
-| `LILBEE_MAX_CONTEXT_SOURCES` | `6` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_MAX_CONTEXT_SOURCES` | `8` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
+| `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
+| `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |
+| `LILBEE_MEMORY_DEDUP_DISTANCE` | `0.05` | Cosine distance under which a new memory is a duplicate |
+| `LILBEE_WIKI_CLUSTERER` | `embedding` | Wiki topic clusterer backend (`embedding` or `graph`) |
+| `LILBEE_WIKI_CLUSTERER_K` | `0` | Fixed wiki cluster count (`0` = choose automatically) |
+| `LILBEE_CHAT_MODE` | `search` | Default answer mode: `search` (grounded) or `chat` (ungrounded) |
 
 ### Ingestion and chunking
 
@@ -903,7 +912,7 @@ searching for "CI/CD" because those concepts co-occur frequently.
 ```bash
 export LILBEE_CONCEPT_GRAPH=true              # enable (default: true when deps installed)
 export LILBEE_CONCEPT_BOOST_WEIGHT=0.3        # how much concept overlap matters (0.0-1.0)
-export LILBEE_CONCEPT_MAX_PER_CHUNK=10        # max concepts extracted per chunk
+export LILBEE_CONCEPT_MAX_PER_CHUNK=5         # max concepts extracted per chunk (default)
 ```
 
 The graph is built automatically during `lilbee sync`. No extra commands

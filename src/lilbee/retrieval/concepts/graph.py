@@ -183,10 +183,6 @@ class ConceptGraph:
                     # RRF score, whose whole range is ~0.017, the same 0.3
                     # default swamped hybrid ranking outright.)
                     r.score = min(1.0, r.score + boost)
-                elif r.relevance_score is not None:
-                    r.relevance_score = r.relevance_score + boost
-                elif r.distance is not None:
-                    r.distance = max(self._config.concept_boost_floor, r.distance - boost)
             boosted.append(r)
         return boosted
 

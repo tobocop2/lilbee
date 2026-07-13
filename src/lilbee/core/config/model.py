@@ -100,7 +100,7 @@ class Config(BaseSettings):
     # refuses instead of feeding noise as context. On the fused reciprocal-rank
     # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
-    adaptive_threshold: bool = Field(default=False)
+    adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(
         default=DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
     )
@@ -597,9 +597,6 @@ class Config(BaseSettings):
 
     # Weight of concept overlap boost relative to vector similarity.
     concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
-
-    # Floor on post-boost distance to stop weak boosts from promoting marginal hits.
-    concept_boost_floor: float = ConfigField(default=0.05, ge=0.0, writable=True)
 
     # Max noun-phrase concepts extracted per chunk.
     concept_max_per_chunk: int = ConfigField(default=5, ge=1, writable=True)

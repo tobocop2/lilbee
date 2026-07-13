@@ -27,8 +27,8 @@ from lilbee.retrieval.query.formatting import (
     unique_sources,
 )
 from lilbee.retrieval.query.searcher import (
-    _GROUNDED_REFUSAL,
     EMPTY_LIBRARY,
+    GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
 )
 from tests.conftest import make_citation
@@ -312,22 +312,15 @@ class TestSortByRelevance:
         sorted_results = sort_by_relevance(results)
         assert [r.source for r in sorted_results] == ["high.pdf", "mid.pdf", "low.pdf"]
 
-    def test_sorts_legacy_rows_by_relevance_score(self):
+    def test_scoreless_rows_sort_last(self):
+        """Rows the store never produced (no canonical score) sort behind
+        every scored row instead of resurrecting per-arm comparisons."""
         results = [
-            _make_result(source="low.pdf", distance=None, score=None, relevance_score=0.2),
-            _make_result(source="high.pdf", distance=None, score=None, relevance_score=0.9),
-            _make_result(source="mid.pdf", distance=None, score=None, relevance_score=0.5),
+            _make_result(source="unscored.pdf", distance=None, score=None, relevance_score=0.9),
+            _make_result(source="scored.pdf", score=0.1, distance=None),
         ]
         sorted_results = sort_by_relevance(results)
-        assert [r.source for r in sorted_results] == ["high.pdf", "mid.pdf", "low.pdf"]
-
-    def test_sorts_legacy_rows_by_distance(self):
-        results = [
-            _make_result(source="far.pdf", distance=0.9, score=None),
-            _make_result(source="near.pdf", distance=0.1, score=None),
-        ]
-        sorted_results = sort_by_relevance(results)
-        assert [r.source for r in sorted_results] == ["near.pdf", "far.pdf"]
+        assert [r.source for r in sorted_results] == ["scored.pdf", "unscored.pdf"]
 
 
 class TestDiversifySources:
@@ -496,6 +489,25 @@ class TestSearchContext:
         get_services().searcher.search("my question")
         mock_svc.store.search.assert_called_once()
         assert mock_svc.store.search.call_args[1]["chunk_type"] is None
+
+    def test_far_vector_only_rows_filtered_at_search(self, mock_svc):
+        """search() applies the max_distance rule itself, so every surface
+        (CLI, HTTP, MCP, library API) inherits one filter instead of each
+        re-implementing its own copy."""
+        near = _make_result(source="a.md", distance=0.2)
+        far = _make_result(source="b.md", distance=1.4)
+        mock_svc.store.search.return_value = [near, far]
+        results = get_services().searcher.search("q")
+        assert [r.source for r in results] == ["a.md"]
+
+    def test_far_row_with_lexical_support_survives_search(self, mock_svc):
+        """A both-arm row keeps its standing past max_distance: dropping it
+        on vector distance alone would re-bury exactly the identifier hits
+        rank fusion exists to preserve."""
+        far_supported = _make_result(source="b.md", distance=1.4, bm25_score=12.0)
+        mock_svc.store.search.return_value = [far_supported]
+        results = get_services().searcher.search("q")
+        assert [r.source for r in results] == ["b.md"]
 
     def test_expansion_merges_results(self, mock_svc):
         original = _make_result(source="a.md", chunk_index=0)
@@ -860,7 +872,7 @@ class TestAskRaw:
         never called, and sources stay empty."""
         mock_svc.store.search.return_value = []
         result = get_services().searcher.ask_raw("anything")
-        assert result.answer == _GROUNDED_REFUSAL
+        assert result.answer == GROUNDED_REFUSAL
         assert result.sources == []
         assert result.cited_sources == []
         mock_svc.provider.chat.assert_not_called()
@@ -920,7 +932,7 @@ class TestAsk:
         """ask() surfaces the grounded refusal verbatim, with no Sources block (bb-0i0)."""
         mock_svc.store.search.return_value = []
         answer = get_services().searcher.ask("anything")
-        assert answer == _GROUNDED_REFUSAL
+        assert answer == GROUNDED_REFUSAL
         assert "Sources:" not in answer
         mock_svc.provider.chat.assert_not_called()
 
@@ -974,7 +986,7 @@ class TestAskStream:
         mock_svc.store.search.return_value = []
         stream_tokens = list(get_services().searcher.ask_stream("anything"))
         combined = "".join(st.content for st in stream_tokens)
-        assert combined == _GROUNDED_REFUSAL
+        assert combined == GROUNDED_REFUSAL
         assert "Sources:" not in combined
         mock_svc.provider.chat.assert_not_called()
 
@@ -1687,7 +1699,10 @@ class TestSearchContextIntegration:
         """HyDE results not seen in normal search are added with their canonical
         score discounted by hyde_weight; distance provenance stays untouched."""
         normal_result = _make_result(source="normal.md", chunk_index=0)
-        hyde_only_result = _make_result(source="hyde.md", chunk_index=0, distance=0.8)
+        # Under cfg.max_distance (0.75): search() now applies the shared
+        # relevance cutoff, and a far vector-only HyDE row is filtered like
+        # any other unsupported far row.
+        hyde_only_result = _make_result(source="hyde.md", chunk_index=0, distance=0.6)
         mock_svc.store.search.side_effect = [
             [normal_result],
             [hyde_only_result],
@@ -1704,8 +1719,8 @@ class TestSearchContextIntegration:
             assert "normal.md" in sources
             assert "hyde.md" in sources
             hyde_r = next(r for r in results if r.source == "hyde.md")
-            assert hyde_r.score == pytest.approx((1.0 - 0.8) * 0.5)
-            assert hyde_r.distance == pytest.approx(0.8)
+            assert hyde_r.score == pytest.approx((1.0 - 0.6) * 0.5)
+            assert hyde_r.distance == pytest.approx(0.6)
         finally:
             cfg.query_expansion_count = 3
             cfg.hyde = False
@@ -2782,7 +2797,7 @@ class TestAskRawChatMode:
         try:
             mock_svc.store.search.return_value = []
             result = get_services().searcher.ask_raw("question")
-            assert result.answer == _GROUNDED_REFUSAL
+            assert result.answer == GROUNDED_REFUSAL
             assert result.sources == []
             mock_svc.provider.chat.assert_not_called()
         finally:
@@ -2870,10 +2885,10 @@ class TestFilterResults:
         filtered = filter_results(results, max_distance=0.9)
         assert [r.source for r in filtered] == ["close.pdf"]
 
-    def test_drops_low_relevance_score(self):
+    def test_drops_low_canonical_score(self):
         results = [
-            _make_result(source="good.pdf", distance=None, relevance_score=0.8),
-            _make_result(source="bad.pdf", distance=None, relevance_score=0.01, chunk_index=1),
+            _make_result(source="good.pdf", distance=None, score=0.8),
+            _make_result(source="bad.pdf", distance=None, score=0.01, chunk_index=1),
         ]
         filtered = filter_results(results, max_distance=0.9, min_relevance_score=0.05)
         assert len(filtered) == 1
@@ -2920,28 +2935,22 @@ class TestRelevanceWeight:
         r = _make_result(distance=0.3, relevance_score=None)
         assert _relevance_weight(r) == pytest.approx(0.7)
 
-    def test_relevance_score_based(self):
-        r = _make_result(distance=None, relevance_score=0.8)
-        assert _relevance_weight(r) == pytest.approx(0.8)
-
-    def test_neither_returns_default(self):
-        r = _make_result(distance=None, relevance_score=None)
+    def test_scoreless_row_returns_default(self):
+        r = _make_result(distance=None, score=None)
         assert _relevance_weight(r) == pytest.approx(0.5)
 
-    def test_canonical_score_takes_priority(self):
-        r = _make_result(distance=0.3, relevance_score=0.9, score=0.6)
+    def test_canonical_score_is_authoritative(self):
+        r = _make_result(distance=0.3, score=0.6)
         assert _relevance_weight(r) == pytest.approx(0.6)
 
-    def test_legacy_relevance_score_beats_distance(self):
+    def test_scoreless_row_ignores_other_signals(self):
+        """The pre-score per-arm arithmetic is gone: a row without the
+        canonical score weighs neutrally even when legacy fields are set."""
         r = _make_result(distance=0.3, relevance_score=0.9, score=None)
-        assert _relevance_weight(r) == pytest.approx(0.9)
+        assert _relevance_weight(r) == pytest.approx(0.5)
 
-    def test_legacy_distance_inverts_when_only_signal(self):
-        r = _make_result(distance=0.3, relevance_score=None, score=None)
-        assert _relevance_weight(r) == pytest.approx(0.7)
-
-    def test_clamps_high_relevance(self):
-        r = _make_result(distance=None, relevance_score=1.5)
+    def test_clamps_high_score(self):
+        r = _make_result(distance=None, score=1.5)
         assert _relevance_weight(r) == pytest.approx(1.0)
 
     def test_clamps_negative_distance(self):
