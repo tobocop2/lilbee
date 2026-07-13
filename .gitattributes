@@ -1,0 +1,2 @@
+# Sourced by bash on every platform; a CRLF checkout would embed \r in the pins.
+engine-versions.env text eol=lf
