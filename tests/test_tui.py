@@ -386,6 +386,37 @@ class TestChatScreenAsync:
                 mock_send.assert_not_called()
 
 
+class TestStatusStorageEntities:
+    def test_storage_panel_shows_entities_when_enabled(self):
+        from lilbee.app.status import EntityStatus
+        from lilbee.cli.tui.screens.status import _build_storage_content
+        from lilbee.core.config import cfg
+
+        old_flag = cfg.entity_extraction
+        cfg.entity_extraction = True
+        try:
+            with mock.patch(
+                "lilbee.app.status.entity_status",
+                return_value=EntityStatus(types=["part_number"], rows=4),
+            ):
+                content = _build_storage_content(doc_count=1)
+        finally:
+            cfg.entity_extraction = old_flag
+        assert "4 extracted (part_number)" in content.plain
+
+    def test_storage_panel_omits_entities_when_off(self):
+        from lilbee.cli.tui.screens.status import _build_storage_content
+        from lilbee.core.config import cfg
+
+        old_flag = cfg.entity_extraction
+        cfg.entity_extraction = False
+        try:
+            content = _build_storage_content(doc_count=1)
+        finally:
+            cfg.entity_extraction = old_flag
+        assert "extracted" not in content.plain
+
+
 class TestCatalogRefreshGuards:
     def test_unmounted_refreshes_are_noops(self):
         """A scheduled refresh landing while the screen is composing or being
@@ -415,9 +446,7 @@ class TestCatalogScreenAsync:
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_quit(self, mock_catalog: mock.MagicMock) -> None:
-        """`q` dismisses the catalog (Escape no longer dismisses; see
-        action_dismiss_filter).
-        """
+        """`q` leaves the catalog for the Chat view."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -913,11 +942,11 @@ class TestSlashSuggester:
 
 
 class TestContextAwareQuit:
-    """Test that action_quit cancels tasks/stream before quitting."""
+    """Test that action_quit cancels foreground work but never background tasks."""
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_quit_cancels_active_task(self, mock_catalog: mock.MagicMock) -> None:
-        """Ctrl+C cancels active TaskBar task when one exists."""
+    async def test_quit_exits_despite_active_task(self, mock_catalog: mock.MagicMock) -> None:
+        """Ctrl+C exits on the first press even with a background task running."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -928,10 +957,10 @@ class TestContextAwareQuit:
             task_bar = app.task_bar
             task_bar.add_task("Test download", "download")
             task_bar.queue.advance()
-            await app.action_quit()
-            await pilot.pause()
-            # Task should have been cancelled, app still running
-            assert app.is_running
+            with mock.patch.object(app, "exit") as mock_exit:
+                await app.action_quit()
+                await pilot.pause()
+            mock_exit.assert_called_once()
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_quit_cancels_streaming(self, mock_catalog: mock.MagicMock) -> None:

@@ -21,6 +21,7 @@ on:
     paths:
       - uv.lock
       - pyproject.toml
+      - engine-versions.env
       - tools/wheel-build/**
       - .github/workflows/flatpak-validate.yml
 

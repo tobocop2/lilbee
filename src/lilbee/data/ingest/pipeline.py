@@ -7,7 +7,7 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import Callable, Coroutine, Iterable, Iterator
+from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -122,6 +122,47 @@ async def _rebuild_concept_clusters() -> None:
         await to_ingest_thread(cg.rebuild_clusters)
     except Exception:
         log.warning("Concept cluster rebuild failed", exc_info=True)
+
+
+async def _build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
+    """Extract typed entities for ingested chunks. None when the mode is off.
+
+    Gated twice: the ``entity_extraction`` config flag, and a schema already
+    induced into the index; absent either, syncs cost nothing. Extraction
+    failures degrade to no rows for the file, mirroring concept extraction.
+    """
+    config = active_config()
+    if not config.entity_extraction or not records:
+        return None
+    from lilbee.retrieval.entities import ExtractorKind, extract_entities, load_schema
+
+    schema = load_schema(get_services().store)
+    if schema is None:
+        return None
+    nlp = None
+    if any(t.kind is ExtractorKind.SPACY for t in schema.types):
+        from lilbee.retrieval.concepts import concepts_available
+        from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
+
+        if concepts_available():
+            try:
+                nlp = _ensure_spacy_model()
+            except ImportError:
+                log.warning("spaCy model unavailable; spacy-kind entity types skipped")
+    provider = None
+    if any(t.kind is ExtractorKind.LLM for t in schema.types):
+        provider = get_services().provider
+    try:
+        return await to_ingest_thread(
+            extract_entities,
+            cast("list[Mapping[str, Any]]", records),
+            schema,
+            provider=provider,
+            nlp=nlp,
+        )
+    except Exception:
+        log.warning("Entity extraction failed for %s", source_name, exc_info=True)
+        return None
 
 
 async def _build_concept_records(
@@ -493,6 +534,13 @@ async def sync(
 
         await incremental_update(set(added) | set(updated) | set(removed))
 
+    # Entity lifecycle: induce-once, extract, and re-apply edited schemas.
+    # Runs every sync (cheap no-op when off or up to date) so flipping the
+    # setting on takes effect without any separate operation.
+    from lilbee.retrieval.entities.lifecycle import ensure_entities
+
+    await to_ingest_thread(ensure_entities, cancel)
+
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor the failed/skipped lists was dropped without
     # a signal. Surface it loudly instead of letting a whole dataset vanish quietly.
@@ -645,6 +693,7 @@ async def ingest_batch(
                     page_texts_out=page_texts,
                 )
                 concept_records = await _build_concept_records(records, name)
+                entity_rows = await _build_entity_records(records, name)
                 on_progress(
                     EventType.FILE_DONE,
                     FileDoneEvent(file=name, status="ok", chunks=len(records)),
@@ -661,6 +710,7 @@ async def ingest_batch(
                     page_texts=page_texts,
                     stat=entry.stat,
                     concept_records=concept_records,
+                    entity_rows=entity_rows,
                 )
             except (asyncio.CancelledError, TaskCancelledError) as exc:
                 # TaskCancelledError is the TUI's cooperative cancel signal raised
@@ -990,6 +1040,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
     ]
     _retry_after_lock_timeout(lambda: store.write_chunks_batch(items))
     _flush_concept_records(buffer)
+    _flush_entity_rows(buffer)
 
 
 def _flush_concept_records(buffer: list[_IngestResult]) -> None:
@@ -1007,6 +1058,22 @@ def _flush_concept_records(buffer: list[_IngestResult]) -> None:
         get_services().concepts.write_concept_records(ConceptRecords.merged(batches))
     except Exception:
         log.warning("Concept indexing failed for %d-file batch", len(batches), exc_info=True)
+
+
+def _flush_entity_rows(buffer: list[_IngestResult]) -> None:
+    """Write the flush unit's buffered entity rows in one batched pass.
+
+    Runs after the chunk write, which also performed the per-source deletes,
+    so replacement never leaves a source's stale entity rows behind. A write
+    failure is logged and never fails the files, matching concept semantics.
+    """
+    rows = [row for r in buffer if r.entity_rows for row in r.entity_rows]
+    if not rows:
+        return
+    try:
+        get_services().store.add_entities(rows)
+    except Exception:
+        log.warning("Entity indexing failed for a %d-row batch", len(rows), exc_info=True)
 
 
 def _purge_emptied_sources(names: list[str]) -> None:

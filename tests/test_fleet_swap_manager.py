@@ -85,7 +85,7 @@ class TestStart:
         mgr = SwapManager(tmp_path, _GROUP)
         mgr.start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
         # Config was written and the endpoint is live.
-        config = json.loads((tmp_path / "llama-swap-chat.json").read_text())
+        config = json.loads(mgr._config_path.read_text())
         assert mgr.endpoint().startswith("http://127.0.0.1:")
         # Each member got its own freshly allocated port, distinct from the proxy's.
         member_ports = {
@@ -1069,8 +1069,9 @@ class TestOrphanServerReaping:
     ) -> None:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
-        config = json.loads((tmp_path / "llama-swap-chat.json").read_text())
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT), _launch(WorkerRole.EMBED)])
+        config = json.loads(mgr._config_path.read_text())
         expected = sorted(
             int(entry["cmd"].rsplit(" ", 1)[-1]) for entry in config["models"].values()
         )
@@ -1267,8 +1268,8 @@ class TestPerGroupNaming:
         embed.start([_launch(WorkerRole.EMBED)])
         # Each group runs against its own config, so stopping one group's fleet
         # (keyed on config-path identity) can never touch the other's servers.
-        assert (tmp_path / "llama-swap-chat.json").exists()
-        assert (tmp_path / "llama-swap-embed.json").exists()
+        assert (tmp_path / sm._config_filename(os.getpid(), "chat")).exists()
+        assert (tmp_path / sm._config_filename(os.getpid(), "embed")).exists()
         state_names = {path.name for path in tmp_path.glob("llama-swap.state.*")}
         assert sm._state_filename(os.getpid(), "chat") in state_names
         assert sm._state_filename(os.getpid(), "embed") in state_names
@@ -1277,22 +1278,45 @@ class TestPerGroupNaming:
         assert sm._state_owner_pid("llama-swap.state.chat.123.json") == 123
         assert sm._state_owner_pid(".llama-swap.state.embed.456.json.tmp") == 456
 
+    def test_config_owner_pid_parses_and_rejects_legacy(self) -> None:
+        assert sm._config_owner_pid("llama-swap-chat.123.json") == 123
+        assert sm._config_owner_pid("llama-swap-embed.456.json") == 456
+        # A pid-less legacy name has no owner pid.
+        assert sm._config_owner_pid("llama-swap-chat.json") is None
+
+    def test_reap_removes_dead_owner_configs_keeps_live_and_legacy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pid = os.getpid()
+        live = tmp_path / sm._config_filename(pid, "chat")
+        legacy = tmp_path / "llama-swap-embed.json"
+        dead = tmp_path / sm._config_filename(pid + 1, "chat")
+        for path in (live, legacy, dead):
+            path.write_text("{}")
+        monkeypatch.setattr(sm.psutil, "pid_exists", lambda p: p == pid)
+        sm._clean_stale_configs(tmp_path)
+        assert live.exists()  # this owner is alive
+        assert legacy.exists()  # pid-less name is left alone
+        assert not dead.exists()  # dead owner's orphan config removed
+
 
 class TestSweepOwned:
-    def test_sweeps_every_group_config_present(
+    def test_sweeps_only_this_owners_group_configs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         swept: list[Path] = []
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: swept.append(cfg))
-        (tmp_path / "llama-swap-chat.json").write_text("{}")
-        (tmp_path / "llama-swap-embed.json").write_text("{}")
-        # State files match "llama-swap*" but not the group-config glob: never swept.
+        pid = os.getpid()
+        (tmp_path / sm._config_filename(pid, "chat")).write_text("{}")
+        (tmp_path / sm._config_filename(pid, "embed")).write_text("{}")
+        # A sibling lilbee's config (a different owner pid) must never be swept here.
+        (tmp_path / sm._config_filename(pid + 1, "chat")).write_text("{}")
+        # State files share the "llama-swap" stem but not the config glob: never swept.
         (tmp_path / "llama-swap.state.chat.1.json").write_text("{}")
         sm.sweep_owned(tmp_path)
-        assert [path.name for path in swept] == [
-            "llama-swap-chat.json",
-            "llama-swap-embed.json",
-        ]
+        assert sorted(path.name for path in swept) == sorted(
+            [sm._config_filename(pid, "chat"), sm._config_filename(pid, "embed")]
+        )
 
     def test_noop_when_no_group_configs_exist(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

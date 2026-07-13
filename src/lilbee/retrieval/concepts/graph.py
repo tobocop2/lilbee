@@ -177,7 +177,13 @@ class ConceptGraph:
             if overlap > 0:
                 boost = (overlap / len(query_set)) * self._config.concept_boost_weight
                 r = r.model_copy()
-                if r.relevance_score is not None:
+                if r.score is not None:
+                    # Canonical [0, 1] space: the boost weight is directly
+                    # comparable to an arm's fusion weight. (Added to a raw
+                    # RRF score, whose whole range is ~0.017, the same 0.3
+                    # default swamped hybrid ranking outright.)
+                    r.score = min(1.0, r.score + boost)
+                elif r.relevance_score is not None:
                     r.relevance_score = r.relevance_score + boost
                 elif r.distance is not None:
                     r.distance = max(self._config.concept_boost_floor, r.distance - boost)

@@ -53,6 +53,8 @@ def mock_svc():
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
     store.add_chunks.return_value = 0
+    # No entity schema induced unless a test persists one.
+    store.entity_schema_state.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = [0.1] * 768
     embedder.embed_batch.return_value = []
@@ -103,6 +105,17 @@ class TestStatus:
         result = runner.invoke(app, ["status"])
         assert "Chat model:" in result.output
         assert "Embeddings:" in result.output
+
+    def test_status_shows_entities_when_enabled(self):
+        cfg.entity_extraction = True
+        result = runner.invoke(app, ["status"])
+        assert "entities extracted" in result.output
+        assert "schema pending" in result.output
+
+    def test_status_hides_entities_when_off(self):
+        cfg.entity_extraction = False
+        result = runner.invoke(app, ["status"])
+        assert "entities extracted" not in result.output
 
     def test_status_shows_ocr_when_enabled(self):
         cfg.enable_ocr = True

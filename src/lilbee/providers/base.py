@@ -51,6 +51,11 @@ class LLMOptions(BaseModel):
     presence_penalty: float | None = None
     num_ctx: int | None = None
     stop: list[str] | None = None
+    # Thinking-template control for structured internal calls (schema
+    # induction and similar): a small thinking model can burn its whole
+    # token budget inside <think> and emit nothing. llama-server maps this
+    # to chat_template_kwargs; hosted-API translators drop it.
+    think: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only non-None values as a dict."""

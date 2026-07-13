@@ -123,11 +123,11 @@ class TestAssistantMessageAsync:
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
-            am.set_thinking_status("Loading engine")
+            am.set_thinking_status("Warming up the model")
             header = am._thinking_header
             assert header is not None
             header._tick()
-            assert "Loading engine" in str(_frame_content(header._frame, header._detail))
+            assert "Warming up the model" in str(_frame_content(header._frame, header._detail))
             # A dismissed header makes the setter a no-op, not a crash.
             am._dismiss_thinking_header()
             am.set_thinking_status("gone")
@@ -502,7 +502,7 @@ class TestTaskBar:
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
         assert "starting" in starting and "▓" in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert "loading engine" in loading and ("▓" in loading or "░" in loading)
+        assert "almost ready" in loading and ("▓" in loading or "░" in loading)
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )
@@ -531,7 +531,7 @@ class TestTaskBar:
             await pilot.pause()
             bar = app.query_one(TaskBar)
             warm = bar._warm_line()
-            assert warm.startswith("loading chat · ")
+            assert warm.startswith("warming up chat · ")
             assert "reading weights 25%" in warm and "▓" in warm
             bar._refresh_display()
             await pilot.pause()
@@ -748,6 +748,43 @@ class TestModelBar:
             await pilot.pause()
             assert app.query_one("#model-pick-chat", ModelPickerButton) is not None
             assert app.query_one("#model-pick-embed", ModelPickerButton) is not None
+
+    async def test_mode_toggle_visible_at_80_columns(self) -> None:
+        """At 80 cols the Search/Chat toggle still renders fully inside the screen."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.vision_model = ""
+        cfg.reranker_model = ""
+        app = _ModelBarApp()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            toggle = app.query_one(ChatModeToggle)
+            assert toggle.display
+            assert toggle.region.width > 0
+            assert toggle.region.right <= 80
+
+    async def test_narrow_bar_hides_disabled_roles_wide_shows_them(self) -> None:
+        """Disabled role pills drop out at narrow widths and return on wide bars."""
+        from lilbee.cli.tui.widgets.model_bar import RoleRow
+
+        cfg.chat_model = TEST_LOCAL_REF
+        cfg.embedding_model = TEST_EMBED_REF
+        cfg.vision_model = ""
+        cfg.reranker_model = ""
+        app = _ModelBarApp()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            off_rows = [row for row in app.query(RoleRow) if row.has_class("-off")]
+            assert off_rows
+            assert all(row.region.width == 0 for row in off_rows)
+        app = _ModelBarApp()
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            off_rows = [row for row in app.query(RoleRow) if row.has_class("-off")]
+            assert off_rows
+            assert all(row.region.width > 0 for row in off_rows)
 
     async def test_chat_mode_toggle_renders_search_when_embedding_ready(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
@@ -2561,12 +2598,46 @@ class TestGetCompletions:
         r = get_completions("/model ")
         assert "qwen3:8b" in r
 
+    @mock.patch(
+        "lilbee.modelhub.models.list_installed_models",
+        return_value=[
+            "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf",
+            "bartowski/SmolLM2-360M-Instruct-GGUF/SmolLM2-360M-Instruct-Q4_K_M.gguf",
+        ],
+    )
+    def test_model_arg_substring_matches_display_words(self, _mock: mock.MagicMock) -> None:
+        """Typing a model's human name must match even mid-ref (no HF org needed)."""
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        r = get_completions("/model smol")
+        assert r == ["bartowski/SmolLM2-360M-Instruct-GGUF/SmolLM2-360M-Instruct-Q4_K_M.gguf"]
+
+    @mock.patch(
+        "lilbee.modelhub.models.list_installed_models",
+        return_value=["qwen3:8b", "abc-qwen-mix:1b"],
+    )
+    def test_model_arg_prefix_matches_rank_first(self, _mock: mock.MagicMock) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        r = get_completions("/model qwen")
+        assert r == ["qwen3:8b", "abc-qwen-mix:1b"]
+
     def test_slash_prefix_includes_aliases(self) -> None:
         """/cat expands via the /catalog alias for /models."""
         from lilbee.cli.tui.widgets.autocomplete import get_completions
 
         r = get_completions("/cat")
         assert "/catalog" in r
+
+    def test_command_option_prompt_carries_help_text(self) -> None:
+        """Dropdown rows for commands show the registry help beside the name."""
+        from lilbee.cli.tui.widgets.autocomplete import _option_prompt
+
+        prompt = str(_option_prompt("/crawl"))
+        assert "/crawl" in prompt
+        assert "Crawl a URL" in prompt
+        # Non-command options (model names, paths) stay bare.
+        assert str(_option_prompt("qwen3:8b")) == "qwen3:8b"
 
     def test_unknown_command_arg_returns_empty(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import get_completions
@@ -3422,7 +3493,7 @@ class TestSetupWizard:
 
         ref = "unsloth/embeddinggemma-300M-qat-GGUF/embeddinggemma-300M-qat-Q8_0.gguf"
         row = _installed_name_to_row(ref, "embedding")
-        assert row.name == "embeddinggemma 300M"
+        assert row.name == "Embeddinggemma 300M"
         assert row.quant == "Q8_0"
         assert row.ref == ref
 
@@ -5388,6 +5459,34 @@ class CrawlDialogTestApp(LilbeeAppHost):
         from lilbee.cli.tui.widgets.crawl_dialog import CrawlDialog
 
         self.push_screen(CrawlDialog(), self.results.append)
+
+
+async def test_crawl_dialog_buttons_render_side_by_side():
+    """Crawl and Cancel sit on one row, like ConfirmDialog's yes/no pills."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 40)) as pilot:
+        await pilot.pause()
+        submit = app.screen.query_one("#crawl-submit", Button)
+        cancel = app.screen.query_one("#crawl-cancel", Button)
+        assert submit.region.y == cancel.region.y
+        assert submit.region.x < cancel.region.x
+
+
+async def test_crawl_dialog_button_focus_uses_themed_highlight():
+    """Focused dialog buttons pick up the app's focus styling, not reverse video."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        for button_id in ("#crawl-submit", "#crawl-cancel"):
+            button = app.screen.query_one(button_id, Button)
+            unfocused_rails = (button.styles.border_top, button.styles.border_bottom)
+            button.focus()
+            await pilot.pause()
+            text_style = button.styles.text_style
+            assert text_style is None or text_style.reverse is not True
+            # Focus rides the border rails (the theme's focus language), so at
+            # least one rail color must change from the resting state.
+            assert (button.styles.border_top, button.styles.border_bottom) != unfocused_rails
 
 
 async def test_crawl_dialog_submit_valid():

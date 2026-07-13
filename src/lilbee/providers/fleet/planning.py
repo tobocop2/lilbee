@@ -1196,6 +1196,10 @@ class FleetPlan:
 
     launches: tuple[InstanceLaunch, ...]
     co_tenants: frozenset[WorkerRole] = frozenset()
+    # Configured roles left unplaced because their model isn't installed (role ->
+    # ref), so the warm path can fail a not-installed chat with a named reason
+    # instead of spinning the warm line forever.
+    skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
 
 
 def _log_placement_findings(placement: Placement, model_refs: dict[WorkerRole, str]) -> None:
@@ -1238,7 +1242,7 @@ def plan_launches(
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
 
     unified_budget = _unified_memory_budget(devices)
-    inputs, model_refs, reservation, _ = _server_model_inputs(
+    inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(
         roles,
         unified_budget=unified_budget,
         device_count=len(devices),
@@ -1262,6 +1266,7 @@ def plan_launches(
             for plan in placement.instances
         ),
         co_tenants=placement.co_tenants,
+        skipped_not_installed=skipped_not_installed,
     )
 
 

@@ -73,6 +73,10 @@ def mock_svc():
     # Default to the grounded retrieval path; mode/embedder tests flip these.
     searcher.skip_retrieval.return_value = False
     searcher.search_unavailable.return_value = False
+    # The library has content unless an empty-library test flips this.
+    searcher.library_empty.return_value = False
+    # No direct (count-scan) answer unless a test routes one explicitly.
+    searcher.route_direct_answer.return_value = None
     services = make_mock_services(searcher=searcher)
     # chat_dispatch validates cfg.chat_model against the registry.
     chat_manifest = MagicMock()
@@ -237,6 +241,28 @@ class TestStatus:
         assert result.sources == []
         assert result.total_chunks == 0
 
+    async def test_status_carries_entities_section(self):
+        """The entity section must survive the StatusResponse mapping; a
+        missing field there silently drops it from the HTTP surface."""
+        from lilbee.app.status import EntityStatus, StatusConfig, StatusResult
+
+        mock_status = StatusResult(
+            config=StatusConfig(
+                documents_dir="docs",
+                data_dir="data",
+                chat_model="test:latest",
+                embedding_model="embed:latest",
+            ),
+            sources=[],
+            total_chunks=0,
+            entities=EntityStatus(types=["part_number"], rows=3),
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
+            result = await handlers.status()
+        assert result.entities is not None
+        assert result.entities.types == ["part_number"]
+        assert result.entities.rows == 3
+
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
         cfg.vision_model = ""
@@ -371,6 +397,17 @@ class TestAskStream:
         parsed = json.loads(non_empty[0].split("data: ")[1].strip())
         assert "No relevant documents found" in parsed["message"]
 
+    async def test_direct_answer_streams_before_retrieval(self, mock_svc):
+        """Count questions stream the exact-scan answer, mirroring
+        Searcher.ask_stream, instead of hedging through top-k RAG."""
+        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        events = [e async for e in handlers.ask_stream("how many documents mention x?")]
+        non_empty = [e for e in events if e]
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert "Exact scan: 3 documents." in token_event
+        assert any(e.startswith("event: done") for e in non_empty)
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_yields_token_sources_done(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter(["answer"])
@@ -405,6 +442,22 @@ class TestAskStream:
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
+
+    async def test_empty_library_streams_add_content_guidance(self, mock_svc):
+        """With nothing indexed, the ask stream points the user at adding content
+        as a normal answer token (not an SSE error), and never builds RAG context,
+        so every ask surface surfaces the empty library the same way."""
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        mock_svc.searcher.library_empty.return_value = True
+        events = [e async for e in handlers.ask_stream("say hello")]
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        non_empty = [e for e in events if e]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in non_empty]
+        assert "error" not in event_types
+        assert event_types[-1] == "done"
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert json.loads(token_event.split("data: ")[1].strip())["token"] == EMPTY_LIBRARY
 
     async def test_search_mode_no_embedder_refuses(self, mock_svc):
         """Search mode with no embedder refuses by streaming the refusal as a normal
@@ -458,6 +511,78 @@ class TestAskStream:
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
         payload = json.loads(sources_event.split("data: ")[1].strip())
         assert [s["source"] for s in payload] == ["cited.md"]
+
+    async def test_model_sources_block_suppressed_in_grounded_stream(self, mock_svc):
+        """A model that appends its own Sources block must not double up with the
+        authoritative SOURCES event: no token frame carries the model's list."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.provider.chat.return_value = iter(
+            ["Grounded answer [1].", "\n\nSources:\n- invented.md"]
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "invented.md" not in token_text
+        assert "Sources:" not in token_text
+        assert "Grounded answer [1]." in token_text
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["real.md"]
+
+    async def test_grounded_stream_releases_held_back_final_line(self, mock_svc):
+        """The citation filter holds the last line until the stream ends; the
+        flushed tail must still be emitted as a token before SOURCES."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.provider.chat.return_value = iter(["First line [1].\n", "Held final line."])
+        events = [e async for e in handlers.ask_stream("question")]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "First line [1].\nHeld final line." in token_text
+
+    async def test_grounded_stream_forwards_reasoning_tokens(self, mock_svc, monkeypatch):
+        """With show_reasoning on, reasoning content streams on the reasoning
+        channel and stays out of the answer (and the citation filter)."""
+        monkeypatch.setattr(cfg, "show_reasoning", True)
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.provider.chat.return_value = iter(["<think>pondering</think>", "answer [1]"])
+        events = [e async for e in handlers.ask_stream("question")]
+        reasoning_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: reasoning")
+        )
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "pondering" in reasoning_text
+        assert "answer [1]" in token_text
+        assert "pondering" not in token_text
+
+    async def test_ungrounded_stream_leaves_model_sources_intact(self, mock_svc):
+        """Chat mode has no authoritative list, so a model Sources block streams
+        verbatim (matching CLI direct streaming) rather than being stripped."""
+        mock_svc.searcher.skip_retrieval.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        mock_svc.provider.chat.return_value = iter(["Answer.", "\n\nSources:\n- x.md"])
+        events = [e async for e in handlers.ask_stream("q")]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "Sources:" in token_text
+        assert "x.md" in token_text
 
     async def test_unknown_error_yields_internal_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -612,6 +737,15 @@ def _canonical_text_stream(texts):
 
 
 class TestChat:
+    async def test_direct_answer_routes_before_retrieval(self, mock_svc):
+        """A count question answered by the exact scan must short-circuit the
+        HTTP chat path exactly as it does ask_raw: same router, no LLM."""
+        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        result = await handlers.chat("how many documents mention kerosene?", [])
+        assert result.answer == "Exact scan: 3 documents."
+        assert result.sources == []
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_passes_history(self, mock_svc, monkeypatch):
         from lilbee.server.chat_dispatch.canonical import (
             CanonicalResponse,
@@ -826,6 +960,14 @@ class TestChatStream:
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
 
+    async def test_direct_answer_streams_before_retrieval(self, mock_svc):
+        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        events = [e async for e in handlers.chat_stream("how many documents mention x?", [])]
+        non_empty = [e for e in events if e]
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert "Exact scan: 3 documents." in token_event
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_yields_events_with_history(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         monkeypatch.setattr(
@@ -902,6 +1044,46 @@ class TestChatStream:
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
         payload = json.loads(sources_event.split("data: ")[1].strip())
         assert [s["source"] for s in payload] == ["a.md", "b.md"]
+
+    async def test_model_sources_block_suppressed_in_grounded_stream(self, mock_svc, monkeypatch):
+        """A model Sources block in chat streaming is dropped so it doesn't double
+        up with the authoritative SOURCES event."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat_stream",
+            lambda req: _canonical_text_stream(["Grounded [1].", "\n\nSources:\n- invented.md"]),
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "invented.md" not in token_text
+        assert "Sources:" not in token_text
+        assert "Grounded [1]." in token_text
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["real.md"]
+
+    async def test_chat_stream_releases_held_back_final_line(self, mock_svc, monkeypatch):
+        """The chat SSE path also flushes the filter's held-back tail as a token."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat_stream",
+            lambda req: _canonical_text_stream(["First line [1].\n", "Held final line."]),
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "First line [1].\nHeld final line." in token_text
 
     async def test_emits_warming_event_when_chat_cold(self, mock_svc, monkeypatch):
         mock_svc.provider.role_ready.return_value = False
@@ -3831,6 +4013,7 @@ class TestRunLlmStreamCancel:
                 cancel,
                 error_holder,
                 [],
+                None,
             )
         # Should have None sentinel
         items = []
@@ -3880,6 +4063,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             events = self._drain(queue)
@@ -3916,6 +4100,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             assert mock_provider.chat.call_count == 1
@@ -3957,6 +4142,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             assert mock_provider.chat.call_count == 1
@@ -3992,6 +4178,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             events = self._drain(queue)

@@ -743,6 +743,7 @@ something feels off.
 | `LILBEE_QUERY_EXPANSION_COUNT` | `3` | LLM-generated query variants per search. `0` disables expansion entirely for faster queries |
 | `LILBEE_RERANKER_MODEL` | *(none)* | GGUF cross-encoder reranker for a precision pass over top results. See [Cross-encoder reranking](#cross-encoder-reranking) |
 | `LILBEE_RERANK_CANDIDATES` | `60` | Candidates to rerank when a reranker is configured |
+| `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
 | `LILBEE_ADAPTIVE_THRESHOLD` | `false` | When too few results pass `LILBEE_MAX_DISTANCE`, widen the threshold step by step. Useful on small or noisy corpora |
@@ -816,11 +817,15 @@ reason the defaults are the defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 confidence threshold above which query expansion is skipped (90th-percentile sigmoid-normalized score) |
-| `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Minimum score gap between top-1 and top-2 for expansion to skip (ensures the match is unambiguous) |
+| `LILBEE_EXPANSION_SKIP_THRESHOLD` | `0.8` | BM25 confidence above which query expansion is skipped; confidence is `s / (s + 5)`, so 0.8 = raw score 20 |
+| `LILBEE_EXPANSION_SKIP_GAP` | `0.15` | Minimum relative raw-score gap between top-1 and top-2, `(top - second) / top`, for expansion to skip |
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Filter expansion variants whose embedding drifts too far from the original query |
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
-| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Extra candidates to retrieve before MMR reranking |
+| `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Vector-only candidate pool as a multiple of top_k, feeding MMR reranking |
+| `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities for exact count answers; fully automatic at sync (schema induced from the corpus, stored inside the index, and re-induced as the library grows) |
+| `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
+| `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |
+| `LILBEE_INTENT_ROUTING` | `true` | Route document-name lookups to exact retrieval and count questions to a full-corpus scan |
 
 ## Optional extras
 
@@ -1073,10 +1078,11 @@ the top results. Unlike the extras above, no extra install is required;
 reranking is off by default and turns on as soon as you set
 `LILBEE_RERANKER_MODEL` (or pick a reranker from `/settings`).
 
-**What it does:** After the hybrid search pipeline (BM25 + vector + RRF)
-returns candidates, a GGUF cross-encoder scores each `(query, chunk)` pair and
-results are blended with position-aware weights. Top-ranked candidates keep
-more of the original ranking; lower-ranked candidates trust the reranker more.
+**What it does:** After hybrid search (BM25 and vector arms fused into one
+canonical relevance score) returns candidates, a GGUF cross-encoder scores
+each `(query, chunk)` pair and results are blended with position-aware
+weights. Top-ranked candidates keep more of the original ranking;
+lower-ranked candidates trust the reranker more.
 
 **When to use it:** When you need high-precision answers and are willing to
 trade roughly 200 to 500 ms per query. Most useful with large candidate sets
@@ -1089,7 +1095,7 @@ export LILBEE_RERANKER_MODEL="bge-reranker-v2-m3"   # any GGUF reranker
 export LILBEE_RERANK_CANDIDATES=20                  # how many candidates to rerank
 ```
 
-Without a reranker set, hybrid search + MMR already provides good results for
+Without a reranker set, fused hybrid search already provides good results for
 most use cases.
 
 Based on: Nogueira & Cho 2019 (Passage Re-ranking with BERT), Burges et al.

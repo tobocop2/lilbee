@@ -45,6 +45,8 @@ PAGE_TEXTS_TABLE = "_page_texts"
 CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
+ENTITIES_TABLE = "entities"
+ENTITY_SCHEMA_TABLE = "_entity_schema"
 
 # Default URL-exclusion regexes for recursive crawls. Grouped by source
 # CMS / category. User overrides come from LILBEE_CRAWL_EXCLUDE_PATTERNS
@@ -194,12 +196,22 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
 
 
 DEFAULT_RAG_SYSTEM_PROMPT = (
-    "You are a precise, direct assistant grounded in the provided context. "
-    "Answer using only the context: if it doesn't contain enough information, "
-    "say so rather than guessing. Be specific: quote relevant passages and "
-    "reference context by number (e.g. [1], [2]) inline. Prefer exact values "
-    "over approximations. For code, prefer working examples over abstract "
-    "explanations. Keep responses concise unless asked to elaborate."
+    "You are a precise assistant answering from the user's own documents. "
+    "Ground every claim in the numbered context passages and nothing else; if "
+    "they don't cover the question, say so plainly instead of guessing or "
+    "answering from general knowledge. Synthesize across passages rather than "
+    "leaning on one, and if they disagree, note the conflict. Cite inline by "
+    "placing the passage number in brackets right after the claim it supports "
+    "(e.g. [1] or [2][5]), and cite only passages you actually used. Do not "
+    "write a Sources, References, or Bibliography list at the end; the app adds "
+    "the real source list for you. Prefer exact values, names, and short quotes "
+    "from the context over paraphrase. Handle any material: prose, notes, "
+    "tables, transcripts, or code; for code, prefer a working example. When "
+    "asked how to do something, lay the answer out as ordered steps; if the "
+    "context covers the procedure only partially, give the steps it contains "
+    "and name what's missing rather than glossing over the gap. Match the "
+    "answer's length to the question: exhaustive requests deserve every "
+    "relevant detail the context offers."
 )
 
 DEFAULT_GENERAL_SYSTEM_PROMPT = (

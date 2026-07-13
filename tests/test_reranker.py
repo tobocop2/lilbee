@@ -18,6 +18,7 @@ def _reset():
     snapshot = {
         "reranker_model": cfg.reranker_model,
         "rerank_candidates": cfg.rerank_candidates,
+        "rerank_blend": cfg.rerank_blend,
     }
     yield
     for key, value in snapshot.items():
@@ -54,6 +55,38 @@ def _patch_provider(rerank_fn):
     provider.rerank.side_effect = rerank_fn
     services = mock.MagicMock(provider=provider)
     return mock.patch("lilbee.app.services.get_services", return_value=services)
+
+
+class TestPureOrderRerank:
+    def test_blend_off_applies_pure_cross_encoder_order(self, reranker):
+        """With rerank_blend off, ordering follows the reranker scores alone;
+        a strong fusion hit at the top no longer resists demotion."""
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_blend = False
+        results = [
+            _chunk("fusion_top.md", "strong hybrid hit", distance=0.05),
+            _chunk("mid.md", "middling", distance=0.5),
+            _chunk("reranker_pick.md", "cross-encoder favourite", distance=0.9),
+        ]
+        with _patch_provider(lambda q, docs: [0.1, 0.5, 0.9]):
+            reranked = reranker.rerank("query", results)
+        assert [r.source for r in reranked] == ["reranker_pick.md", "mid.md", "fusion_top.md"]
+        # rerank_score carries the normalized reranker score, unblended.
+        assert reranked[0].rerank_score == pytest.approx(1.0)
+        assert reranked[-1].rerank_score == pytest.approx(0.0)
+
+    def test_blend_on_keeps_position_aware_default(self, reranker):
+        """Default behavior unchanged: the top fusion hit resists demotion."""
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_blend = True
+        results = [
+            _chunk("fusion_top.md", "strong hybrid hit", distance=0.05),
+            _chunk("mid.md", "middling", distance=0.5),
+            _chunk("reranker_pick.md", "cross-encoder favourite", distance=0.9),
+        ]
+        with _patch_provider(lambda q, docs: [0.1, 0.5, 0.9]):
+            reranked = reranker.rerank("query", results)
+        assert reranked[0].source == "fusion_top.md"
 
 
 class TestRerank:

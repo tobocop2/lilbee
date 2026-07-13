@@ -123,6 +123,9 @@ class CleanedChunk(BaseModel):
     distance: float | None = None
     relevance_score: float | None = None
     rerank_score: float | None = None
+    # Canonical [0, 1] relevance from retrieval fusion; the ranking signal
+    # HTTP clients should sort and threshold on (relevance_score is legacy).
+    score: float | None = None
     page_start: int = 0
     page_end: int = 0
     line_start: int = 0
@@ -160,6 +163,13 @@ class StatusConfigInfo(BaseModel):
     enable_ocr: bool | None = None
 
 
+class StatusEntityInfo(BaseModel):
+    """Entity-extraction section of a status response (present when enabled)."""
+
+    types: list[str]
+    rows: int
+
+
 class StatusResponse(BaseModel):
     """Response for GET /api/status."""
 
@@ -167,6 +177,7 @@ class StatusResponse(BaseModel):
     config: StatusConfigInfo
     sources: list[StatusSourceInfo]
     total_chunks: int
+    entities: StatusEntityInfo | None = None
 
 
 class HealthResponse(BaseModel):

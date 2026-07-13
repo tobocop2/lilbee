@@ -129,6 +129,13 @@ def _build_storage_content(doc_count: int) -> Content:
         _kv_line("Data dir", _collapse_home(cfg.data_dir)),
         _kv_line("Models dir", _collapse_home(cfg.models_dir)),
     ]
+    if cfg.entity_extraction:
+        from lilbee.app.status import entity_status
+
+        section = entity_status()
+        if section is not None:
+            names = ", ".join(section.types) or "schema pending"
+            lines.append(_kv_line("Entities", f"{section.rows} extracted ({names})"))
     return Content("\n").join(lines)
 
 
@@ -195,7 +202,12 @@ class StatusScreen(Screen[None]):
         # cost of mounting all four under a single VerticalScroll spiked
         # screen-switch latency to ~1s on cold caches.
         yield VerticalScroll(
-            Collapsible(Static(id="config-info"), title="Configuration", id="config-section"),
+            Collapsible(
+                Static(id="config-info"),
+                title="Configuration",
+                id="config-section",
+                collapsed=False,
+            ),
             id="status-scroll",
         )
         with BottomBars():
@@ -221,10 +233,23 @@ class StatusScreen(Screen[None]):
         await scroll.mount_all(
             [
                 Collapsible(
-                    DataTable(id="docs-table"), title=msg.STATUS_DOCS_TITLE, id="docs-section"
+                    DataTable(id="docs-table"),
+                    title=msg.STATUS_DOCS_TITLE,
+                    id="docs-section",
+                    collapsed=False,
                 ),
-                Collapsible(Static(id="arch-info"), title="Model Architecture", id="arch-section"),
-                Collapsible(Static(id="storage-info"), title="Storage", id="storage-section"),
+                Collapsible(
+                    Static(id="arch-info"),
+                    title="Model Architecture",
+                    id="arch-section",
+                    collapsed=False,
+                ),
+                Collapsible(
+                    Static(id="storage-info"),
+                    title="Storage",
+                    id="storage-section",
+                    collapsed=False,
+                ),
             ]
         )
         self._sections_mounted = True
@@ -381,7 +406,7 @@ class StatusScreen(Screen[None]):
         self.query_one("#status-scroll", VerticalScroll).scroll_up()
 
     def action_jump_top(self) -> None:
-        self.query_one("#status-scroll", VerticalScroll).scroll_home()
+        self.query_one("#status-scroll", VerticalScroll).scroll_home(animate=False)
 
     def action_jump_bottom(self) -> None:
-        self.query_one("#status-scroll", VerticalScroll).scroll_end()
+        self.query_one("#status-scroll", VerticalScroll).scroll_end(animate=False)

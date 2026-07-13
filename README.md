@@ -7,7 +7,7 @@
   </a>
 </p>
 
-<p align="center"><strong>Run and manage local AI models, and search everything you own with them, all in one program.</strong></p>
+<p align="center"><strong>The whole local AI stack in one executable: it runs and manages the models, and searches everything you own with them.</strong></p>
 
 <p align="center"><a href="https://lilbee.sh/">Project site</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/tutorial">Tutorial reels</a> &nbsp;·&nbsp; <a href="https://pypi.org/project/lilbee/">PyPI</a> &nbsp;·&nbsp; <a href="https://obsidian.lilbee.sh/">Obsidian plugin</a> &nbsp;·&nbsp; <a href="https://lilbee.sh/api/">REST API</a> &nbsp;·&nbsp; <a href="https://web.libera.chat/#lilbee">Chat (#lilbee)</a></p>
 
@@ -45,13 +45,13 @@
   <a href="https://github.com/tobocop2/lilbee#install"><img src="https://img.shields.io/badge/Scoop-bucket-555555?logo=windows&logoColor=white" alt="Scoop bucket"></a>
 </p>
 
-A batteries-included local search engine you can talk to: it runs the AI models, indexes your files and code, crawls the web, and plugs into your coding agent, so there's nothing else to install or set up. Ask in plain English; every answer cites the file and line. It is local RAG, done for you: the retrieval and the model both run on your own machine.
+lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, [launches your coding agents on local models](#launch-your-coding-agent-on-local-models), and hands any [MCP-aware agent](#a-reference-for-ai-agents) cited answers from everything you've indexed. The same engine backs the [Obsidian community plugin](https://obsidian.lilbee.sh/), so your vault gets all of it without a terminal. Ask in plain English. No containers, no networking, nothing else to install or set up.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
 It's all one program: no separate model server, [vector database](#built-on), or container to stand up. lilbee runs the models and keeps the index itself. Reach it as a terminal app, CLI, Model Context Protocol server, HTTP API, or Python library. Close it and it's gone, or run it as a service to keep it warm. Everything runs on your computer; it uses a cloud model only when you pick one.
 
-Models are no different: lilbee has its own model manager and multi-GPU fleet, built on llama.cpp, so one executable does everything (browse Hugging Face, download a model, give it a role, run it on Metal / Vulkan / CUDA). Battle-tested managers are always supported too. If you already use [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai), point lilbee at your existing setup and skip its native model support if you prefer.
+Models are no different: lilbee has its own model manager and multi-GPU fleet, built on llama.cpp, so one executable does everything (browse Hugging Face, download a model, give it a role, run it on Metal / Vulkan / CUDA). You don't need [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) at all: the [model families lilbee runs](#tested-model-families) are the architectures behind most of the 190,000+ GGUF repos on Hugging Face, verified per family on real GPUs. If you already use them, point lilbee at your existing setup and keep your models.
 
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial).
 
@@ -101,7 +101,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It ranks every result by how well it answers you, so the best match comes back first. 50+ knobs to [tune from the Settings screen](docs/usage.md#settings-screen) or hand to your agent, with sane defaults if you'd rather not.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
 - **A model too big for one card runs across all of them.** lilbee sizes each role with gguf-parser and tensor-splits your chat model across the fewest GPUs that fit, placing the embedder, reranker, and vision models alongside it behind a load-balancing router. It happens automatically, or you can pin each role to the cards you choose. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
-- **Already on Ollama or LM Studio? Keep them.** Managing models for you is the default, but lilbee also works with both, so you never have to switch model managers. Their models show up in the same catalog and role pickers, alongside lilbee's own.
+- **Already on Ollama or LM Studio? Keep them.** You don't need either one: lilbee's own manager handles everything, across the same [model families](#tested-model-families) they run. But lilbee also works with both, so you never have to switch. Their models show up in the same catalog and role pickers, alongside lilbee's own.
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up.
@@ -237,12 +237,12 @@ Retrieval returns things that make sense on their own, not fragments cut through
 
 Chat, embedding, vision, and reranking models are installed and switched from inside the terminal: browse the catalog, pull a model, pick a role. Retrieval and generation expose 50+ settings (chunk size, search strictness, reranker depth, and more), editable from the TUI, env vars, or a project-local config file. Sane defaults.
 
-<details>
-<summary><b>Model families tested end to end on real GPUs, per role. Click to expand.</b></summary>
-
 ### Tested model families
 
-One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method.
+One representative per architecture family, pulled with `lilbee model pull` and run through the full pipeline (index, search, answer; OCR for vision) on consumer hardware. [docs/tested-models.md](docs/tested-models.md) has the details and method. Between them, these families are the architectures behind most of the 190,000+ GGUF model repos on Hugging Face: if a model's family is listed, its variants and quants are expected to work.
+
+<details>
+<summary><b>The family tables, per role. Click to expand.</b></summary>
 
 **Vision** (all on a single 12 GB card, projector fetched by the pull itself):
 
@@ -333,7 +333,7 @@ You can also place it by hand. The placement editor pins each role to the cards 
 
 ![sweep through every TUI screen](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tour.gif)
 
-`Ctrl+P` opens the Textual command palette, `?` toggles the keybinding cheat sheet, `/help` opens the slash-command catalog. Every action lilbee can take is reachable from one of those three.
+`Ctrl+P` opens the Textual command palette, `?` on an empty prompt (or `F1` anywhere) toggles the keybinding cheat sheet, `/help` opens the slash-command catalog. Every action lilbee can take is reachable from one of those three.
 
 ![command palette, keybinding cheat sheet, slash-command catalog](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-palette.gif)
 

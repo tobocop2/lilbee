@@ -2092,6 +2092,18 @@ async def test_status_screen_has_collapsible_sections(mock_svc):
         assert len(sections) == 4
 
 
+async def test_status_screen_sections_start_expanded(mock_svc):
+    """All four sections open expanded so the screen shows content immediately."""
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        from textual.widgets import Collapsible
+
+        await pilot.pause()
+        sections = list(app.screen.query(Collapsible))
+        assert len(sections) == 4
+        assert all(not section.collapsed for section in sections)
+
+
 async def test_status_screen_config_shows_models(mock_svc):
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -2726,8 +2738,10 @@ async def test_chat_slash_theme_no_arg():
         await await_chat(app, _pilot)
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._handle_slash("/theme")
-            mock_notify.assert_called_once()
-            assert "Themes:" in mock_notify.call_args[0][0]
+            await _pilot.pause()
+            mock_notify.assert_not_called()
+        # No-arg /theme lands in the prompt with the theme dropdown open.
+        assert app.screen.query_one("#chat-input").value == "/theme "
 
 
 async def test_chat_slash_delete_with_match(mock_svc):
@@ -2761,6 +2775,25 @@ async def test_chat_slash_delete_not_found(mock_svc):
             await _pilot.pause()
             mock_notify.assert_called_once()
             assert "Not found" in mock_notify.call_args[0][0]
+
+
+async def test_chat_slash_delete_not_found_suggests_near_match(mock_svc):
+    """A miss that is a substring of exactly one indexed name offers it back."""
+    mock_svc.store.get_sources.return_value = [
+        {"filename": "qa-corpus/tested-models.md", "source": "qa-corpus/tested-models.md"},
+        {"filename": "qa-corpus/usage.md", "source": "qa-corpus/usage.md"},
+    ]
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("tested")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+            mock_notify.assert_called_once()
+            message = mock_notify.call_args[0][0]
+            assert "Not found" in message
+            assert "qa-corpus/tested-models.md" in message
 
 
 async def test_chat_slash_delete_no_arg(mock_svc):
@@ -3024,12 +3057,36 @@ async def test_chat_slash_set_unknown_key():
 
 
 async def test_chat_slash_set_invalid_value():
+    """A type mismatch reads as human copy, never a raw Python exception."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_set("top_k not-a-number")
             mock_notify.assert_called_once()
-            assert "Invalid value" in mock_notify.call_args[0][0]
+            message = mock_notify.call_args[0][0]
+            assert "whole number" in message
+            assert "invalid literal" not in message
+
+
+async def test_chat_slash_set_enum_mismatch_lists_choices():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("reranker_type bogus")
+            mock_notify.assert_called_once()
+            assert "one of" in mock_notify.call_args[0][0]
+
+
+async def test_chat_slash_set_downstream_validation_error_stays_human():
+    """A cross-field validation error surfaces its own human message."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("chunk_size 10")
+            mock_notify.assert_called_once()
+            message = mock_notify.call_args[0][0]
+            assert "chunk_size" in message
+            assert "Traceback" not in message
 
 
 async def test_chat_slash_set_no_value():
@@ -3037,11 +3094,11 @@ async def test_chat_slash_set_no_value():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         # top_k is writable but int-typed; empty string fails int() conversion
-        # and surfaces as CMD_SET_INVALID, covering the no-value branch.
+        # and surfaces as the human type hint, covering the no-value branch.
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_set("top_k")
             mock_notify.assert_called_once()
-            assert "Invalid value" in mock_notify.call_args[0][0]
+            assert "whole number" in mock_notify.call_args[0][0]
 
 
 async def test_chat_slash_set_readonly_key():
@@ -3706,18 +3763,28 @@ async def test_chat_tab_completes_alias_prefix():
         assert inp.value == "/catalog"
 
 
-async def test_chat_accept_on_enter_with_no_highlight_hides():
-    """Enter on a visible overlay whose highlight is None hides it and falls through to submit."""
+async def test_chat_dismiss_overlay_on_submit_never_consumes_a_message():
+    """Enter on a visible overlay hides it and falls through to submit."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
+        app.screen._set_input("hello")
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         overlay.show_completions(["a", "b"])
-        with patch.object(overlay, "get_current", return_value=None):
-            consumed = app.screen._accept_overlay_selection_on_enter()
+        consumed = app.screen._dismiss_overlay_on_submit()
         assert consumed is False
         assert not overlay.is_visible
+
+
+async def test_chat_dismiss_overlay_on_submit_consumes_bare_slash():
+    """Submitting a lone slash clears it instead of dispatching an unknown command."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        app.screen._set_input("/")
+        consumed = app.screen._dismiss_overlay_on_submit()
+        assert consumed is True
+        assert app.screen.query_one("#chat-input").value == ""
 
 
 async def test_chat_completion_value_preserves_windows_directory():
@@ -3746,12 +3813,8 @@ async def test_chat_completion_value_preserves_posix_directory():
         )
 
 
-async def test_chat_accept_on_enter_falls_through_for_full_windows_path():
-    """A fully-typed backslash /add path must not be consumed by the overlay.
-
-    The highlighted completion (basename) rebuilds to the same full path, so
-    Enter falls through to submit the command rather than re-filling the input.
-    """
+async def test_chat_enter_falls_through_for_full_windows_path():
+    """A fully-typed backslash /add path must never be consumed or rewritten."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
@@ -3761,8 +3824,9 @@ async def test_chat_accept_on_enter_falls_through_for_full_windows_path():
         overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
         app.screen._completion_origin = full_path
         overlay.show_completions(["quantum_test.md"])
-        consumed = app.screen._accept_overlay_selection_on_enter()
+        consumed = app.screen._dismiss_overlay_on_submit()
         assert consumed is False
+        assert app.screen.query_one("#chat-input").value == full_path
 
 
 async def test_chat_send_message():
@@ -4021,6 +4085,26 @@ async def test_command_provider_set_model():
             assert "ollama/new-model:latest" in app.title
 
 
+async def test_command_provider_set_model_toast_uses_display_label():
+    """The model-switch toast shows the display label, not the raw GGUF ref."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        ref = "unsloth/SmolLM2-360M-Instruct-GGUF/SmolLM2-360M-Instruct-Q8_0.gguf"
+        with (
+            patch("lilbee.app.settings.persistent_settings.update_values"),
+            patch.object(app, "notify") as mock_notify,
+        ):
+            provider._set_model("chat_model", ref)
+        toast = mock_notify.call_args[0][0]
+        assert toast == "chat_model: SmolLM2 360M"
+
+
 async def test_command_provider_open_wiki_action():
     """Palette 'Open wiki' action switches to the Wiki view."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -4056,24 +4140,77 @@ async def test_command_provider_retry_skipped_action(tmp_path):
         assert load_skip_markers(tmp_path) == {}
 
 
-async def test_command_provider_delete_doc(mock_svc):
+async def test_command_provider_delete_document_prefills_prompt(mock_svc):
+    """Palette 'Delete document' lands in Chat with /delete ready to complete."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._action_delete_document()
+        await pilot.pause()
+        assert chat._chat_input.text == "/delete "
+        assert chat._chat_input.has_focus
+
+
+async def test_command_provider_delete_document_prefills_from_other_view():
+    """A required-arg palette command lands back in Chat with the prompt filled."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        app.switch_view("Status")
+        await pilot.pause()
+        assert not isinstance(app.screen, ChatScreen)
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._action_delete_document()
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert chat._chat_input.text == "/delete "
+
+
+async def test_command_provider_slash_command_navigates_to_catalog():
+    """A palette command whose handler navigates must actually switch views."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.command_registry import get_command
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._run_slash_command(get_command("/models"))
+        await pilot.pause()
+        assert app.active_view == "Catalog"
+
+
+async def test_command_provider_delete_document_no_chat_screen():
+    """Palette delete falls back to notify when ChatScreen isn't in the stack."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await await_chat(app, _pilot)
-        # Re-inject mock after mount (model bar events may call reset_services)
-        set_services(mock_svc)
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch(
-            "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
-        ) as mock_invalidate:
-            provider._delete_doc("notes.md")
-        mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
-        # Palette delete invalidates the doc cache like the chat /delete path.
-        mock_invalidate.assert_called_once()
+        # Stand-in app that has no chat screen installed yet.
+        fake_app = MagicMock()
+        fake_app.chat_screen.return_value = None
+        with patch.object(
+            LilbeeCommandProvider, "_app", new_callable=PropertyMock, return_value=fake_app
+        ):
+            provider._action_delete_document()
+        fake_app.notify.assert_called_once()
+        assert "chat" in fake_app.notify.call_args[0][0].lower()
 
 
 async def test_command_provider_action_sync():
@@ -4135,9 +4272,9 @@ async def test_command_provider_action_reset_no_chat_screen():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        # Stand-in app whose screen_stack contains no ChatScreen.
+        # Stand-in app that has no chat screen installed yet.
         fake_app = MagicMock()
-        fake_app.screen_stack = []
+        fake_app.chat_screen.return_value = None
         with patch.object(
             LilbeeCommandProvider, "_app", new_callable=PropertyMock, return_value=fake_app
         ):
@@ -4181,7 +4318,8 @@ async def test_command_provider_model_commands_error():
             assert cmds == []
 
 
-async def test_command_provider_document_commands(mock_svc):
+async def test_command_provider_single_delete_entry_regardless_of_index_size(mock_svc):
+    """The palette carries one delete command and never enumerates the index."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -4190,46 +4328,17 @@ async def test_command_provider_document_commands(mock_svc):
         # Re-inject mock after mount (model bar events may call reset_services)
         set_services(mock_svc)
         mock_svc.store.get_sources.return_value = [
-            {"filename": "notes.md", "source": "notes.md"},
+            {"filename": f"doc-{i}.md", "source": f"doc-{i}.md"} for i in range(10_000)
         ]
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        cmds = provider._document_commands()
-        assert len(cmds) == 1
-        assert "notes.md" in cmds[0][0]
-
-
-async def test_command_provider_document_commands_error(mock_svc):
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await await_chat(app, _pilot)
-        # Re-inject mock after mount (model bar events may call reset_services)
-        set_services(mock_svc)
-        mock_svc.store.get_sources.side_effect = Exception("no store")
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        cmds = provider._document_commands()
-        assert cmds == []
-
-
-async def test_command_provider_document_commands_empty_name(mock_svc):
-    from lilbee.cli.tui.app import LilbeeApp
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await await_chat(app, _pilot)
-        # Re-inject mock after mount (model bar events may call reset_services)
-        set_services(mock_svc)
-        mock_svc.store.get_sources.return_value = [{"source": ""}]
-        from lilbee.cli.tui.commands import LilbeeCommandProvider
-
-        provider = LilbeeCommandProvider(app.screen, match_style=None)
-        cmds = provider._document_commands()
-        assert cmds == []
+        cmds = provider._get_commands()
+        assert [c[0] for c in cmds].count("Delete document") == 1
+        # No per-file entries are materialized for the 10k indexed sources.
+        assert not any("doc-" in c[0] for c in cmds)
+        # Palette cost stays constant: the store is never asked for sources.
+        mock_svc.store.get_sources.assert_not_called()
 
 
 class CatalogTestApp(LilbeeAppHost):
@@ -10981,7 +11090,7 @@ async def test_task_center_go_back_invokes_switch_view():
 
 
 async def test_app_action_quit_when_streaming():
-    """action_quit cancels stream instead of exiting when streaming."""
+    """action_quit cancels the stream instead of exiting, and says how to quit."""
     from lilbee.cli.tui.app import LilbeeApp
     from lilbee.cli.tui.screens.chat import ChatScreen
 
@@ -10992,9 +11101,34 @@ async def test_app_action_quit_when_streaming():
         screen = app.screen
         assert isinstance(screen, ChatScreen)
         screen.streaming = True
-        with patch.object(screen, "action_cancel_stream") as mock_cancel:
+        with (
+            patch.object(screen, "action_cancel_stream") as mock_cancel,
+            patch.object(app, "notify") as mock_notify,
+        ):
             await app.action_quit()
             mock_cancel.assert_called_once()
+        # The two-step is discoverable: the cancel toast says how to quit.
+        assert any("Ctrl+C" in str(c.args[0]) for c in mock_notify.call_args_list)
+
+
+async def test_app_action_quit_ignores_background_tasks():
+    """A background task in the task bar must not swallow the first Ctrl+C."""
+    from lilbee.cli.tui.app import LilbeeApp
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        await pilot.pause()
+        app.task_bar.add_task("Warming chat model", "warm", indeterminate=True)
+        await pilot.pause()
+        assert not app.task_bar.queue.is_empty
+        with (
+            patch.object(app, "exit") as mock_exit,
+            patch.object(type(app.task_bar), "cancel_task") as mock_cancel,
+        ):
+            await app.action_quit()
+        mock_exit.assert_called_once()
+        mock_cancel.assert_not_called()
 
 
 async def test_app_action_quit_routes_to_wizard_cancel():

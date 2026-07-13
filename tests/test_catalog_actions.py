@@ -1,5 +1,5 @@
 """Coverage for new catalog actions: select_tab, cycle_source, toggle_drawer,
-on_key digit intercept, dismiss_filter, discover-rail population edges."""
+on_key digit intercept, Esc back-navigation, discover-rail population edges."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
+from lilbee.catalog.models import CatalogResult
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_grouping import for_you_sort_key, row_cache_signature
@@ -20,6 +21,24 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.runtime.hardware import FitChip, FitLevel
 from tests._lilbee_app_test_host import LilbeeAppHost
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test in this module may reach the network.
+
+    CatalogScreen's mount kicks off fetch workers (HF catalog pages, remote
+    model classification, frontier discovery). A live HF result resolving
+    mid-test raced a test's patched screen and fed a MagicMock into the search
+    filter, a timing-dependent CI flake. Empty results keep every path local;
+    tests that need rows inject them directly.
+    """
+    monkeypatch.setattr(
+        "lilbee.cli.tui.screens.catalog.get_catalog",
+        lambda *a, **k: CatalogResult(total=0, limit=0, offset=0, models=[], has_more=False),
+    )
+    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.classify_all_remote_models", lambda: [])
+    monkeypatch.setattr("lilbee.modelhub.model_manager.discover_api_models", lambda: {})
 
 
 def _row(
@@ -45,6 +64,23 @@ def _row(
 class _CatalogTestApp(LilbeeAppHost):
     def compose(self) -> ComposeResult:
         yield CatalogScreen()
+
+
+def _fake_tabs_query_one(screen: CatalogScreen, fake_tabs: object):
+    """A ``query_one`` substitute faking only the ``#catalog-tabs`` strip.
+
+    Faking every query poisons unrelated lookups: a mount-time fetch worker
+    resolving mid-test re-renders rows and reads the search input through
+    ``query_one``, and a MagicMock search needle blows up row matching.
+    """
+    real_query_one = screen.query_one
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#catalog-tabs":
+            return fake_tabs
+        return real_query_one(selector, *args, **kwargs)
+
+    return query_one
 
 
 async def test_action_select_tab_switches_active_tab() -> None:
@@ -202,7 +238,7 @@ async def test_action_toggle_drawer_flips_collapsed_class() -> None:
         assert drawer.has_class("-collapsed")
 
 
-async def test_dismiss_filter_closes_revealed_bar_when_unfocused() -> None:
+async def test_escape_closes_revealed_bar_when_unfocused() -> None:
     """Esc closes an open filter even when focus has raced off the Input."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -245,16 +281,37 @@ async def test_go_back_closes_revealed_bar_when_unfocused() -> None:
         assert pilot.app.query_one(CatalogScreen) is screen
 
 
-async def test_action_dismiss_filter_no_op_outside_input() -> None:
-    """Esc outside the filter Input must not dismiss; the screen stays put."""
+async def test_escape_without_filter_switches_to_chat() -> None:
+    """Esc with no filter open leaves the catalog for the Chat view, like q."""
+    from unittest.mock import patch
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
-        # Focus the toggle (NOT the filter Input).
-        screen.action_dismiss_filter()
+        screen._activation_settled = True
+        assert not screen._filter_open
+        with patch.object(pilot.app, "switch_view") as switch:
+            await pilot.press("escape")
+            await pilot.pause()
+            switch.assert_called_once_with("Chat")
+
+
+async def test_escape_with_open_filter_stays_on_catalog() -> None:
+    """The first Esc only collapses the filter; it must not leave the screen."""
+    from unittest.mock import patch
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Screen still mounted.
-        assert pilot.app.query_one(CatalogScreen) is screen
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        await pilot.press("slash")
+        await pilot.pause()
+        assert screen._filter_open
+        with patch.object(pilot.app, "switch_view") as switch:
+            await pilot.press("escape")
+            await pilot.pause()
+            switch.assert_not_called()
+        assert not screen._filter_open
 
 
 def test_row_cache_signature_keys_frontier_rows_as_uninstalled() -> None:
@@ -390,7 +447,7 @@ async def test_action_select_tab_idempotent_when_already_active() -> None:
         assert tabs.active == "rerank"
 
 
-async def test_action_dismiss_filter_clears_input_value() -> None:
+async def test_escape_on_open_filter_clears_input_value() -> None:
     """Esc on an open filter clears its value and hides the box."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -557,7 +614,7 @@ async def test_activate_initial_tab_retries_while_tab_strip_mounts(monkeypatch) 
             ],
         )
         rescheduled: list[object] = []
-        monkeypatch.setattr(screen, "query_one", lambda *_a, **_k: fake_tabs)
+        monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
         monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
         budget = screen._activation_retries
         screen._activate_initial_tab()  # must not raise
@@ -582,7 +639,7 @@ async def test_activate_initial_tab_retry_budget_exhausts(monkeypatch) -> None:
             side_effect=["discover", ValueError("No Tab with id '--content-tab-chat'")],
         )
         rescheduled: list[object] = []
-        monkeypatch.setattr(screen, "query_one", lambda *_a, **_k: fake_tabs)
+        monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
         monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
         # The post-activation boot fetches are exercised elsewhere; the fake
         # TabbedContent would otherwise leak into their tab-id parsing.

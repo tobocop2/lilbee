@@ -97,6 +97,7 @@ def _make_result(
     chunk="some text",
     distance=0.5,
     relevance_score=None,
+    score=None,
 ) -> SearchChunk:
     return SearchChunk(
         source=source,
@@ -109,6 +110,7 @@ def _make_result(
         chunk_index=chunk_index,
         distance=distance,
         relevance_score=relevance_score,
+        score=score,
         vector=[0.1],
     )
 
@@ -508,6 +510,21 @@ class TestBoostResults:
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
         assert boosted[0].relevance_score > 0.8
+
+    def test_boost_canonical_score_bounded(self, cg, mock_svc):
+        """Boost applies in canonical [0, 1] score space and clamps at 1.0."""
+        results = [
+            _make_result(chunk_index=0, score=0.5),
+            _make_result(chunk_index=1, score=0.95),
+        ]
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
+            {"concept": "python"},
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        boosted = cg.boost_results(results, ["python"])
+        assert boosted[0].score == pytest.approx(0.5 + cfg.concept_boost_weight)
+        assert boosted[1].score == 1.0
 
     def test_boost_results_no_overlap(self, cg, mock_svc):
         results = [_make_result(distance=0.5, chunk_index=0)]

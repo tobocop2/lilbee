@@ -66,7 +66,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_theme",
         aliases=(),
         args_hint="[name]",
-        help_text="Switch theme (no arg lists themes)",
+        help_text="Switch theme (no arg opens the theme list)",
         has_arg_completion=True,
     ),
     SlashCommand(
@@ -148,6 +148,14 @@ def build_dispatch_dict() -> dict[str, str]:
         for alias in cmd.aliases:
             dispatch[alias] = cmd.handler
     return dispatch
+
+
+def get_command(name: str) -> SlashCommand:
+    """Return the registry entry whose name is exactly *name* (aliases excluded)."""
+    for cmd in COMMANDS:
+        if cmd.name == name:
+            return cmd
+    raise KeyError(name)
 
 
 def completion_names() -> tuple[str, ...]:

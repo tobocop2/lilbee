@@ -18,8 +18,8 @@ from lilbee.core.results import DocumentResult, group
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
-from lilbee.retrieval.query.formatting import cited_subset
-from lilbee.retrieval.query.searcher import SEARCH_NEEDS_EMBEDDER
+from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
+from lilbee.retrieval.query.searcher import EMPTY_LIBRARY, SEARCH_NEEDS_EMBEDDER
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -150,6 +150,34 @@ def _chat_warming_events() -> list[str]:
     return [sse_event(SseEvent.WARMING, {"role": WorkerRole.CHAT.value})]
 
 
+def _put_answer_token(
+    content: str,
+    put: Callable[[str | None], None],
+    cite_filter: StreamingCitationFilter | None,
+    answer_parts: list[str],
+) -> None:
+    """Filter one streamed answer chunk (dropping a model Sources block on
+    grounded turns), record it, and push it to the SSE queue."""
+    token = cite_filter.feed(content) if cite_filter else content
+    if token:
+        answer_parts.append(token)
+        put(sse_event(SseEvent.TOKEN, {"token": token}))
+
+
+def _put_answer_tail(
+    put: Callable[[str | None], None],
+    cite_filter: StreamingCitationFilter | None,
+    answer_parts: list[str],
+) -> None:
+    """Release any answer text the filter held back once the stream ends."""
+    if cite_filter is None:
+        return
+    tail = cite_filter.flush()
+    if tail:
+        answer_parts.append(tail)
+        put(sse_event(SseEvent.TOKEN, {"token": tail}))
+
+
 def _run_llm_stream(
     messages: list[ChatMessage],
     opts: dict[str, Any] | None,
@@ -157,11 +185,15 @@ def _run_llm_stream(
     cancel: threading.Event,
     error_holder: list[BaseException],
     answer_parts: list[str],
+    cite_filter: StreamingCitationFilter | None,
 ) -> None:
     """Forward tokens from the cap-aware chat orchestrator into the SSE queue.
 
     Answer tokens (not reasoning) are also accumulated into *answer_parts* so the
-    caller can feed the finished answer to auto-extraction.
+    caller can feed the finished answer to auto-extraction. When *cite_filter* is
+    set (grounded turns), answer tokens pass through it so a model-generated
+    ``Sources:`` block never reaches the client alongside the authoritative
+    SOURCES event; ungrounded turns pass ``None`` and stream verbatim.
     """
     try:
         events = stream_chat_with_cap(
@@ -183,14 +215,15 @@ def _run_llm_stream(
                         {"token": CAP_NOTICE_TEMPLATE.format(chars=event.cap_chars)},
                     )
                 )
+            elif event.is_reasoning:
+                if event.content:
+                    put(sse_event(SseEvent.REASONING, {"token": event.content}))
             elif event.content:
-                kind = SseEvent.REASONING if event.is_reasoning else SseEvent.TOKEN
-                if kind is SseEvent.TOKEN:
-                    answer_parts.append(event.content)
-                put(sse_event(kind, {"token": event.content}))
+                _put_answer_token(event.content, put, cite_filter, answer_parts)
     except Exception as exc:
         error_holder.append(exc)
     finally:
+        _put_answer_tail(put, cite_filter, answer_parts)
         put(None)
 
 
@@ -221,6 +254,33 @@ async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator
     yield sse_event(SseEvent.MEMORY_EXTRACTED, event.model_dump(mode="json"))
 
 
+def _mismatch_detail(exc: EmbeddingModelMismatchError) -> str | None:
+    """The index's persisted embedder when dims match, so a client can offer to
+    adopt it; None when they don't match and adoption wouldn't help."""
+    return exc.persisted_model if exc.dims_match else None
+
+
+async def _emit_sources_and_memories(
+    question: str,
+    answer_parts: list[str],
+    sources: list[SearchChunk],
+) -> AsyncGenerator[str, None]:
+    """Emit the trailing SOURCES event, ``done``, and any memory-extracted event.
+
+    SOURCES carries the cited subset (what the answer referenced), falling back to
+    the full retrieved set when the answer cited nothing, mirroring
+    ``Searcher.ask_stream``. Auto-extraction trails ``done`` so clients that stop
+    at ``done`` are unaffected; the memories are stored regardless.
+    """
+    answer = "".join(answer_parts)
+    cited = cited_subset(answer, sources)
+    source_list = cited if cited else sources
+    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in source_list])
+    yield sse_done({})
+    async for event in _emit_extracted_memories(question, answer):
+        yield event
+
+
 async def _stream_rag_response(
     question: str,
     history: list[ChatMessage] | None = None,
@@ -248,30 +308,27 @@ async def _stream_rag_response(
         yield sse_event(SseEvent.SOURCES, [])
         yield sse_done({})
         return
-    if searcher.skip_retrieval():
-        # Chat mode with an embedder present: answer ungrounded, mirroring ask_raw.
-        results: list[SearchChunk] = []
-        messages = searcher.direct_messages(question, history)
-    else:
-        try:
-            rag = searcher.build_rag_context(
-                question, top_k=top_k, history=history, chunk_type=chunk_type
-            )
-        except EmbeddingModelMismatchError as mismatch:
-            # detail carries the index's embedder so the client can offer to adopt it.
-            detail = mismatch.persisted_model if mismatch.dims_match else None
-            yield sse_error(str(mismatch), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
-            return
-        if rag is None:
-            yield sse_error("No relevant documents found.")
-            return
-        results, messages = rag
+    results, messages, preempt = _resolve_stream_context(
+        searcher,
+        question,
+        history,
+        top_k,
+        chunk_type,
+        retrieval_off=searcher.skip_retrieval(),
+    )
+    for frame in preempt:
+        yield frame
+    if messages is None:
+        return
 
     opts = _resolve_generation_options(options) or cfg.generation_options()
 
     sse = SseStream()
     error_holder: list[BaseException] = []
     answer_parts: list[str] = []
+    # Only grounded turns append an authoritative SOURCES event, so only they
+    # need a model-generated Sources block suppressed.
+    cite_filter = StreamingCitationFilter() if results else None
 
     executor_fut = sse.loop.run_in_executor(
         None,
@@ -282,6 +339,7 @@ async def _stream_rag_response(
         sse.cancel,
         error_holder,
         answer_parts,
+        cite_filter,
     )
     task = asyncio.ensure_future(executor_fut)
     async for event in sse.drain(task, "RAG stream"):
@@ -299,17 +357,7 @@ async def _stream_rag_response(
     # Ensure executor thread has finished before yielding final events
     await executor_fut
 
-    # SOURCES carries the cited subset (what the answer referenced), falling back
-    # to the full retrieved set when the answer carries no inline citations.
-    # Mirrors Searcher.ask_stream's ``used if used else results``.
-    cited = cited_subset("".join(answer_parts), results)
-    source_list = cited if cited else results
-    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in source_list])
-    yield sse_done({})
-
-    # Auto-extraction (and its notification) trails ``done`` so clients that stop
-    # at ``done`` are unaffected; the memories are stored regardless.
-    async for event in _emit_extracted_memories(question, "".join(answer_parts)):
+    async for event in _emit_sources_and_memories(question, answer_parts, results):
         yield event
 
 
@@ -336,6 +384,11 @@ async def chat(
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # message ask returns instead of silently answering off-corpus.
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
+    if not _retrieval_off(searcher, top_k):
+        # Count-shaped questions get the exact-scan answer, mirroring ask_raw.
+        direct = searcher.route_direct_answer(question)
+        if direct is not None:
+            return AskResponse(answer=direct, sources=[], cited_sources=[])
     sources, messages = _build_chat_messages(question, history, top_k, chunk_type)
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
@@ -370,6 +423,43 @@ def chat_stream(
     )
 
 
+def _resolve_chat_stream_context(
+    searcher: Searcher,
+    question: str,
+    history: list[ChatMessage],
+    top_k: int | None,
+    chunk_type: ChunkType | None,
+) -> tuple[list[str], tuple[list[SearchChunk], list[ChatMessage]] | None]:
+    """Resolve the leading SSE frames and the (sources, messages) for a chat
+    stream. When the second element is None the turn can't proceed: emit the
+    frames (a clean refusal or error) and stop. Otherwise emit the frames
+    (warming) and stream the answer grounded in the returned sources."""
+    frames = list(_chat_warming_events())
+    if searcher.search_unavailable():
+        # Search mode with no embedder can't ground; refuse cleanly with the same
+        # token the ask stream emits instead of silently answering off-corpus.
+        frames += [
+            sse_event(SseEvent.TOKEN, {"token": SEARCH_NEEDS_EMBEDDER}),
+            sse_event(SseEvent.SOURCES, []),
+            sse_done({}),
+        ]
+        return frames, None
+    # Retrieval itself is resolved by the shared helper, so the chat stream
+    # routes empty libraries and count questions exactly like the ask stream.
+    sources, messages, preempt = _resolve_stream_context(
+        searcher,
+        question,
+        history,
+        top_k,
+        chunk_type,
+        retrieval_off=_retrieval_off(searcher, top_k),
+    )
+    frames += preempt
+    if messages is None:
+        return frames, None
+    return frames, (sources, messages)
+
+
 async def _stream_chat_response(
     question: str,
     history: list[ChatMessage],
@@ -378,51 +468,25 @@ async def _stream_chat_response(
     chunk_type: ChunkType | None,
 ) -> AsyncGenerator[str, None]:
     """Drive ``dispatch_chat_stream`` and emit reasoning/token/sources/done SSE events."""
-    for warming in _chat_warming_events():
-        yield warming
-
-    searcher = get_services().searcher
-    if searcher.search_unavailable():
-        # Search mode with no embedder can't ground; refuse cleanly with the same
-        # token the ask stream emits instead of silently answering off-corpus.
-        yield sse_event(SseEvent.TOKEN, {"token": SEARCH_NEEDS_EMBEDDER})
-        yield sse_event(SseEvent.SOURCES, [])
-        yield sse_done({})
+    frames, ctx = _resolve_chat_stream_context(
+        get_services().searcher, question, history, top_k, chunk_type
+    )
+    for frame in frames:
+        yield frame
+    if ctx is None:
         return
-    if _retrieval_off(searcher, top_k):
-        # Chat-only mode, no embedder, or an explicit top_k:0 pure-LLM call:
-        # answer directly with no RAG context.
-        sources: list[SearchChunk] = []
-        messages = searcher.direct_messages(question, history)
-    else:
-        try:
-            rag = searcher.build_rag_context(
-                question, top_k=top_k or 0, history=history, chunk_type=chunk_type
-            )
-        except EmbeddingModelMismatchError as exc:
-            # detail carries the index's embedder so the client can offer to adopt it.
-            detail = exc.persisted_model if exc.dims_match else None
-            yield sse_error(str(exc), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
-            return
-        if rag is None:
-            yield sse_error("No relevant documents found.")
-            return
-        sources, messages = rag
+    sources, messages = ctx
 
     req = _build_canonical_request(messages, options)
     answer_parts: list[str] = []
+    # Only grounded turns append an authoritative SOURCES event, so only they
+    # need a model-generated Sources block suppressed.
+    cite_filter = StreamingCitationFilter() if sources else None
     try:
         async for event in _cap_aware_chat_events(req):
-            if (
-                isinstance(event, StreamToken)
-                and not event.is_reasoning
-                # The reasoning-exhausted notice is streamed to the client but is
-                # not a real answer: keep it out of answer_parts so it seeds no
-                # memory and isn't treated as a citation source (bb-cpu).
-                and event.content != REASONING_EXHAUSTED_NOTICE
-            ):
-                answer_parts.append(event.content)
-            yield _sse_for_chat_event(event)
+            frame = _chat_answer_frame(event, cite_filter, answer_parts)
+            if frame:
+                yield frame
     except Exception as exc:
         raw = str(exc)
         code, user_message = _classify_stream_error(exc)
@@ -430,15 +494,12 @@ async def _stream_chat_response(
         yield sse_error(user_message, code=code, detail=raw if code else None)
         return
 
-    # SOURCES carries the cited subset (what the answer referenced), falling back
-    # to the full retrieved set when the answer carries no inline citations.
-    # Mirrors Searcher.ask_stream's ``used if used else results``.
-    cited = cited_subset("".join(answer_parts), sources)
-    source_list = cited if cited else sources
-    yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in source_list])
-    yield sse_done({})
-    async for mem_event in _emit_extracted_memories(question, "".join(answer_parts)):
-        yield mem_event
+    tail_frame = _chat_answer_tail_frame(cite_filter, answer_parts)
+    if tail_frame:
+        yield tail_frame
+
+    async for frame in _emit_sources_and_memories(question, answer_parts, sources):
+        yield frame
 
 
 async def _cap_aware_chat_events(
@@ -533,6 +594,50 @@ def _sse_for_chat_event(event: StreamToken | CapNotice) -> str:
     return sse_event(kind, {"token": event.content})
 
 
+def _chat_answer_frame(
+    event: StreamToken | CapNotice,
+    cite_filter: StreamingCitationFilter | None,
+    answer_parts: list[str],
+) -> str:
+    """Render the SSE frame for one chat event and record answer text, dropping a
+    model Sources block on grounded turns. Returns '' when nothing should emit.
+
+    The reasoning-exhausted notice streams to the client but is not a real
+    answer, so it is left out of *answer_parts*: it seeds no memory and is not
+    treated as a citation source.
+    """
+    is_answer = (
+        isinstance(event, StreamToken)
+        and not event.is_reasoning
+        and event.content != REASONING_EXHAUSTED_NOTICE
+    )
+    if not is_answer:
+        return _sse_for_chat_event(event)
+    content = cast("StreamToken", event).content
+    if cite_filter is None:
+        answer_parts.append(content)
+        return _sse_for_chat_event(event)
+    shown = cite_filter.feed(content)
+    if not shown:
+        return ""
+    answer_parts.append(shown)
+    return sse_event(SseEvent.TOKEN, {"token": shown})
+
+
+def _chat_answer_tail_frame(
+    cite_filter: StreamingCitationFilter | None,
+    answer_parts: list[str],
+) -> str:
+    """SSE frame releasing any answer text the filter held back, or '' if none."""
+    if cite_filter is None:
+        return ""
+    tail = cite_filter.flush()
+    if not tail:
+        return ""
+    answer_parts.append(tail)
+    return sse_event(SseEvent.TOKEN, {"token": tail})
+
+
 def _text_from_event(event: Any) -> str:
     """Return the text payload of a canonical event, or '' if not a text delta."""
     if isinstance(event, ContentBlockDelta) and isinstance(event.delta, TextDelta):
@@ -548,6 +653,60 @@ def _retrieval_off(searcher: Searcher, top_k: int | None) -> bool:
     normally. Chat-only mode or a missing embedder also bypass.
     """
     return top_k == 0 or searcher.skip_retrieval()
+
+
+def _resolve_stream_context(
+    searcher: Searcher,
+    question: str,
+    history: list[ChatMessage] | None,
+    top_k: int | None,
+    chunk_type: ChunkType | None,
+    *,
+    retrieval_off: bool,
+) -> tuple[list[SearchChunk], list[ChatMessage] | None, list[str]]:
+    """Resolve retrieval for a streaming handler: (sources, messages, preempt).
+
+    Non-empty ``preempt`` frames are emitted verbatim; ``messages`` of ``None``
+    means the stream ends after them (a direct exact-scan answer or an error).
+    Shared by the ask and chat streams so the two paths cannot drift: both
+    route count questions to the exact scan, surface an embedder mismatch as
+    a coded SSE error, and report empty retrieval the same way.
+    """
+    if retrieval_off:
+        return [], searcher.direct_messages(question, history), []
+    if searcher.library_empty():
+        # Nothing indexed yet: point the user at adding content instead of
+        # reporting an empty search, matching Searcher.ask_stream.
+        frames = [
+            sse_event(SseEvent.TOKEN, {"token": EMPTY_LIBRARY}),
+            sse_event(SseEvent.SOURCES, []),
+            sse_done({}),
+        ]
+        return [], None, frames
+    direct = searcher.route_direct_answer(question)
+    if direct is not None:
+        frames = [
+            sse_event(SseEvent.TOKEN, {"token": direct}),
+            sse_event(SseEvent.SOURCES, []),
+            sse_done({}),
+        ]
+        return [], None, frames
+    try:
+        rag = searcher.build_rag_context(
+            question, top_k=top_k or 0, history=history, chunk_type=chunk_type
+        )
+    except EmbeddingModelMismatchError as mismatch:
+        # detail carries the index's embedder so the client can offer to adopt it.
+        frame = sse_error(
+            str(mismatch),
+            code=SseErrorCode.INDEX_EMBEDDER_MISMATCH,
+            detail=_mismatch_detail(mismatch),
+        )
+        return [], None, [frame]
+    if rag is None:
+        return [], None, [sse_error("No relevant documents found.")]
+    results, messages = rag
+    return results, messages, []
 
 
 def _build_chat_messages(

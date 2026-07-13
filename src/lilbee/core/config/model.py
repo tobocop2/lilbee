@@ -95,11 +95,10 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
-    # Floor for hybrid-search relevance scores (0.0 = no filtering). lilbee
-    # surfaces LanceDB's raw RRF sum, not a normalized score: with K=60 a
-    # chunk ranked first in both the vector and FTS lists tops out near
-    # 1/61 + 1/61 ~= 0.033, so any positive floor above that silently drops
-    # every result. Keep this at 0.0 unless the RRF scores are normalized first.
+    # Abstention floor against the canonical [0, 1] relevance score
+    # (0.0 = no filtering). When every retrieved chunk falls below it, ask
+    # refuses instead of feeding noise as context. On the fused reciprocal-rank
+    # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = Field(default=False)
     rag_system_prompt: str = ConfigField(
@@ -141,6 +140,12 @@ class Config(BaseSettings):
     # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
     # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.
     ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
+    # Opt-in typed entity extraction (an entities table for exact counting
+    # and cross-referencing). Fully automatic: sync induces a schema from the
+    # corpus and extracts across the index; new files extract at ingest. Off
+    # by default: the corpus-scale pass costs real compute and most vaults
+    # never need it.
+    entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
     # Size chunk budgets (chunk_size/chunk_overlap) in real tokens from the
@@ -194,13 +199,27 @@ class Config(BaseSettings):
     # (Carbonell & Goldstein 1998).
     mmr_lambda: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
-    # Extra candidates retrieved for MMR reranking (multiplies top_k).
+    # Vector-only search retrieves this many candidates per final result so
+    # MMR reranking has a pool to diversify from. Hybrid search ignores it:
+    # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
     ann_index_threshold: int = ConfigField(default=50_000, ge=0, writable=True)
+
+    # Condense a follow-up question into a standalone retrieval query using
+    # the chat history (one LLM call; skipped when there is no history).
+    # Without it, "what about his brother?" is embedded and BM25-matched
+    # with its pronouns.
+    history_rewrite: bool = ConfigField(default=True, writable=True)
+
+    # Route questions by shape before top-k retrieval: a question naming a
+    # document resolves to that document's chunks; a count-shaped question
+    # runs a full-corpus scan (a count is a corpus property top-k cannot
+    # answer). Unrecognized shapes take the topical path unchanged.
+    intent_routing: bool = ConfigField(default=True, writable=True)
 
     # LLM-generated alternative queries for expansion. 0 disables.
     query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
@@ -219,10 +238,11 @@ class Config(BaseSettings):
     # Min cosine similarity between question and variant embeddings.
     expansion_similarity_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
-    # Sigmoid-normalized BM25 score above which query expansion is skipped.
+    # Saturating BM25 confidence (s / (s + 5)) above which query expansion is
+    # skipped; 0.8 corresponds to a raw BM25 score of 20.
     expansion_skip_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
 
-    # Min BM25 top-1 vs top-2 gap to skip expansion.
+    # Min relative BM25 top-1 vs top-2 gap ((top - second) / top) to skip expansion.
     expansion_skip_gap: float = Field(default=0.15, ge=0.0, le=1.0)
 
     # Chunks included in LLM context after adaptive selection.
@@ -279,6 +299,11 @@ class Config(BaseSettings):
 
     # Candidate count sent to the reranker.
     rerank_candidates: int = ConfigField(default=60, ge=1, writable=True, public=True)
+
+    # Blend reranker scores with the retrieval fusion signal (position-aware).
+    # Off = the cross-encoder's own ordering stands unblended, which isolates
+    # the reranker's effect when measuring it.
+    rerank_blend: bool = ConfigField(default=True, writable=True, public=True)
 
     # Date-range filter; only fires when a temporal keyword is detected.
     temporal_filtering: bool = ConfigField(default=True, writable=True)
@@ -376,13 +401,16 @@ class Config(BaseSettings):
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
 
     # Leave the engine fleet running on quit so the next launch adopts it warm.
-    # Off is the on-demand default: the engine loads per launch and frees VRAM
-    # on close.
+    # On keeps the engine resident: it never idle-unloads and survives app close
+    # for the next launch to adopt. Off (default) is on-demand: the engine loads
+    # per launch, releases its weights after an idle window, and reloads on the
+    # next prompt.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before a warm fleet unloads its weights (llama-swap ttl), so
-    # a warm engine never holds VRAM past this window. 0 keeps weights loaded
-    # forever. Read only when keep_engine_warm is on.
+    # Idle minutes before an on-demand (not-warm) fleet unloads its weights
+    # (llama-swap ttl), so it never holds VRAM past this window. 0 keeps weights
+    # loaded until the app tears the fleet down. Read only when keep_engine_warm
+    # is off (a warm fleet stays resident regardless).
     engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with
