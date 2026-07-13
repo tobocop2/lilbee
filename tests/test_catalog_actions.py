@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
+from lilbee.catalog.models import CatalogResult
 from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_grouping import for_you_sort_key, row_cache_signature
@@ -20,6 +21,24 @@ from lilbee.cli.tui.screens.catalog_utils import (
 )
 from lilbee.runtime.hardware import FitChip, FitLevel
 from tests._lilbee_app_test_host import LilbeeAppHost
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test in this module may reach the network.
+
+    CatalogScreen's mount kicks off fetch workers (HF catalog pages, remote
+    model classification, frontier discovery). A live HF result resolving
+    mid-test raced a test's patched screen and fed a MagicMock into the search
+    filter, a timing-dependent CI flake. Empty results keep every path local;
+    tests that need rows inject them directly.
+    """
+    monkeypatch.setattr(
+        "lilbee.cli.tui.screens.catalog.get_catalog",
+        lambda *a, **k: CatalogResult(total=0, limit=0, offset=0, models=[], has_more=False),
+    )
+    monkeypatch.setattr("lilbee.cli.tui.screens.catalog.classify_all_remote_models", lambda: [])
+    monkeypatch.setattr("lilbee.modelhub.model_manager.discover_api_models", lambda: {})
 
 
 def _row(
