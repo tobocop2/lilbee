@@ -74,14 +74,19 @@ rebuilds. The full pipeline (diagram, gates, per-manager channel matrix) is in
 [architecture.md](architecture.md#release-pipeline).
 
 ```bash
-make release                                 # bump version, tag, push; CI builds once, enters dev
-gh workflow run verify-release.yml -f tag=vX # fires automatically after a green candidate too
-make promote TAG=vX CHANNEL=beta             # verified tag -> beta surfaces
-make promote TAG=vX CHANNEL=stable           # beta-soaked tag -> PyPI + stable surfaces
+make release                          # bump version, tag, push; CI builds once, enters dev
+make release-status                   # where each channel points + recent promotions
+make release-verify TAG=vX            # run the promotion gate (also fires automatically)
+make promote TAG=vX CHANNEL=beta      # verified tag -> beta surfaces
+make promote TAG=vX CHANNEL=stable    # beta-soaked tag -> PyPI + stable surfaces
 ```
 
-Rollback is promoting an older tag again. To promote past a flaky verify run,
-re-dispatch `promote.yml` with `force=skip-verify`.
+Any tag can be promoted, so rollback is promoting an older tag again, and
+`FORCE=1` skips the verify/soak gates for a flaky-QA emergency. Every publish
+leg is also individually re-runnable from the command line when one flakes:
+`release-publish-pypi`, `release-publish-packages` (optionally scoped with
+`CHANNEL=`/`MANAGERS=`), `release-publish-docker`, `release-publish-cuda`, and
+`release-attach RUN_ID=... TAG=...` for a stranded candidate run.
 
 ## License
 

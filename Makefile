@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release promote release-status release-verify release-publish-pypi release-publish-packages release-publish-docker release-publish-cuda release-attach docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/
@@ -60,11 +60,43 @@ publish: build  ## Build and upload to PyPI
 release:  ## Bump to the next version, tag, and push; CI builds once and enters the dev channel
 	bash scripts/release.sh
 
-promote:  ## Move a tag up a channel (make promote TAG=v0.6.91 CHANNEL=beta|stable); gated on a green verify-release run
+promote:  ## Move a tag up a channel (TAG=v0.6.91 CHANNEL=dev|beta|stable [FORCE=1 to skip the verify gate])
 	@[ -n "$(TAG)" ] || { echo "promote: TAG=v... required"; exit 1; }
-	@case "$(CHANNEL)" in beta|stable) ;; *) echo "promote: CHANNEL must be beta or stable"; exit 1;; esac
-	gh workflow run promote.yml --repo tobocop2/lilbee -f tag=$(TAG) -f channel=$(CHANNEL)
-	@echo "promote: dispatched $(TAG) -> $(CHANNEL); watch: gh run list --repo tobocop2/lilbee --workflow=promote.yml"
+	@case "$(CHANNEL)" in dev|beta|stable) ;; *) echo "promote: CHANNEL must be dev, beta, or stable"; exit 1;; esac
+	gh workflow run promote.yml --repo tobocop2/lilbee -f tag=$(TAG) -f channel=$(CHANNEL) $(if $(FORCE),-f force=skip-verify)
+	@echo "promote: dispatched $(TAG) -> $(CHANNEL); watch: gh run watch --repo tobocop2/lilbee \$$(gh run list --repo tobocop2/lilbee --workflow=promote.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+
+release-status:  ## Show where each channel points and the recent promotions
+	@echo "channel pointers (origin/main packaging/channels.json):"; \
+	gh api repos/tobocop2/lilbee/contents/packaging/channels.json?ref=main --jq .content | base64 -d | \
+	  jq -r 'to_entries[] | "  \(.key)\t\(.value.tag // "-")\t\(.value.promoted_at // "")"'; \
+	echo "recent promote runs:"; \
+	gh run list --repo tobocop2/lilbee --workflow=promote.yml --limit 5
+
+release-verify:  ## Run the verify-release gate against a tag's release assets (TAG=v...)
+	@[ -n "$(TAG)" ] || { echo "release-verify: TAG=v... required"; exit 1; }
+	gh workflow run verify-release.yml --repo tobocop2/lilbee -f tag=$(TAG)
+
+release-publish-pypi:  ## (Re)upload a tag's wheel + sdist to PyPI from its GH release (TAG=v...)
+	@[ -n "$(TAG)" ] || { echo "release-publish-pypi: TAG=v... required"; exit 1; }
+	gh workflow run publish.yml --repo tobocop2/lilbee -f tag=$(TAG)
+
+release-publish-packages:  ## (Re)point package manifests at a tag (TAG=v... [CHANNEL=beta|stable] [MANAGERS=homebrew,scoop,...])
+	@[ -n "$(TAG)" ] || { echo "release-publish-packages: TAG=v... required"; exit 1; }
+	gh workflow run publish-packages.yml --repo tobocop2/lilbee -f tag=$(TAG) \
+	  $(if $(CHANNEL),-f channel=$(CHANNEL)) $(if $(MANAGERS),-f managers=$(MANAGERS))
+
+release-publish-docker:  ## (Re)push docker tags for a tag (TAG=v... [CHANNEL=dev|beta|stable])
+	@[ -n "$(TAG)" ] || { echo "release-publish-docker: TAG=v... required"; exit 1; }
+	gh workflow run publish-docker.yml --repo tobocop2/lilbee -f tag=$(TAG) $(if $(CHANNEL),-f channel=$(CHANNEL))
+
+release-publish-cuda:  ## (Re)run the CUDA packaging fan-out for a tag (TAG=v...)
+	@[ -n "$(TAG)" ] || { echo "release-publish-cuda: TAG=v... required"; exit 1; }
+	gh workflow run publish-cuda-packages.yml --repo tobocop2/lilbee -f tag=$(TAG)
+
+release-attach:  ## Re-attach a stranded RC run's artifacts to a release (RUN_ID=... TAG=v...)
+	@[ -n "$(RUN_ID)" ] && [ -n "$(TAG)" ] || { echo "release-attach: RUN_ID=... TAG=v... required"; exit 1; }
+	gh workflow run attach-release-artifacts.yml --repo tobocop2/lilbee -f run_id=$(RUN_ID) -f tag=$(TAG)
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	uv run python -c "\
