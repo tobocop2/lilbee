@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -28,8 +29,15 @@ class CatalogGroup:
 # Visual layout constants for ``_render_row``: align the command name +
 # args column at this width, with at least this much gutter before the
 # help text starts. Picked to fit the longest /set <key> <value> entry.
+# Help text wraps at the row width with a hanging indent so wrapped
+# lines stay in the description column; the fallback width matches the
+# option area of the default 70-col modal before layout has run.
 _ROW_NAME_COLUMN_WIDTH = 28
 _ROW_HELP_GUTTER_MIN = 2
+_ROW_HELP_MIN_WIDTH = 16
+_ROW_FALLBACK_WIDTH = 64
+# Horizontal padding the .option-list--option rule adds around each row.
+_ROW_OPTION_PADDING = 2
 
 
 CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
@@ -132,6 +140,10 @@ class SlashCommandCatalog(ModalScreen[str | None]):
                 self.dismiss(opt.id)
                 return
 
+    def on_resize(self) -> None:
+        """Re-render rows so help wrapping tracks the option list's width."""
+        self._rebuild(self.query_one("#catalog-filter", Input).value)
+
     def _rebuild(self, query: str) -> None:
         ol = self.query_one("#catalog-list", OptionList)
         ol.clear_options()
@@ -139,9 +151,15 @@ class SlashCommandCatalog(ModalScreen[str | None]):
         if not groups:
             ol.add_option(Option(msg.SLASH_CATALOG_NO_MATCH, id=None, disabled=True))
             return
-        first_runnable = _populate_options(ol, groups)
+        first_runnable = _populate_options(ol, groups, _row_width(ol))
         if first_runnable is not None:
             ol.highlighted = first_runnable
+
+
+def _row_width(ol: OptionList) -> int:
+    """Usable text width of one option row, before layout the fallback width."""
+    width = ol.scrollable_content_region.width - _ROW_OPTION_PADDING
+    return width if width > 0 else _ROW_FALLBACK_WIDTH
 
 
 def _filter_groups(query: str) -> list[tuple[str, list[SlashCommand]]]:
@@ -159,7 +177,9 @@ def _filter_groups(query: str) -> list[tuple[str, list[SlashCommand]]]:
     return out
 
 
-def _populate_options(ol: OptionList, groups: list[tuple[str, list[SlashCommand]]]) -> int | None:
+def _populate_options(
+    ol: OptionList, groups: list[tuple[str, list[SlashCommand]]], width: int
+) -> int | None:
     """Add header + command rows for each group, return the first runnable row index."""
     first_runnable: int | None = None
     for title, commands in groups:
@@ -167,7 +187,7 @@ def _populate_options(ol: OptionList, groups: list[tuple[str, list[SlashCommand]
         for cmd in commands:
             if first_runnable is None:
                 first_runnable = ol.option_count
-            ol.add_option(Option(_render_row(cmd), id=cmd.name))
+            ol.add_option(Option(_render_row(cmd, width), id=cmd.name))
     return first_runnable
 
 
@@ -175,10 +195,16 @@ def _render_header(title: str) -> Content:
     return Content.styled(title, "bold $primary")
 
 
-def _render_row(cmd: SlashCommand) -> Content:
-    name_part = Content.styled(f"  {cmd.name}", "$success bold")
-    args_part = Content.styled(f" {cmd.args_hint}", "$text-muted") if cmd.args_hint else Content("")
-    visible_len = len(f"  {cmd.name}") + (len(f" {cmd.args_hint}") if cmd.args_hint else 0)
-    pad = " " * max(_ROW_HELP_GUTTER_MIN, _ROW_NAME_COLUMN_WIDTH - visible_len)
-    help_part = Content.styled(f"{pad}{cmd.help_text}", "$text-muted")
+def _render_row(cmd: SlashCommand, width: int) -> Content:
+    """One row at *width* cols: name + args column, help with a hanging indent."""
+    lead = f"  {cmd.name}"
+    args = f" {cmd.args_hint}" if cmd.args_hint else ""
+    help_col = max(_ROW_NAME_COLUMN_WIDTH, len(lead) + len(args) + _ROW_HELP_GUTTER_MIN)
+    help_width = max(_ROW_HELP_MIN_WIDTH, width - help_col)
+    wrapped = textwrap.wrap(cmd.help_text, help_width) or [""]
+    first_pad = " " * (help_col - len(lead) - len(args))
+    help_block = first_pad + ("\n" + " " * help_col).join(wrapped)
+    name_part = Content.styled(lead, "$success bold")
+    args_part = Content.styled(args, "$text-muted") if args else Content("")
+    help_part = Content.styled(help_block, "$text-muted")
     return Content.assemble(name_part, args_part, help_part)

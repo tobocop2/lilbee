@@ -88,6 +88,7 @@ CMD_DELETE_NO_DOCS = "No documents indexed"
 CMD_DELETE_READ_FAILED = "Could not read the document list"
 CMD_DELETE_USAGE = "Documents: {names}\nUsage: /delete <filename>"
 CMD_DELETE_NOT_FOUND = "Not found: {name}"
+CMD_DELETE_SUGGESTION = "Did you mean {name}?"
 CMD_DELETE_SUCCESS = "Deleted {name}"
 CMD_REMEMBER_USAGE = "Usage: /remember <text>  (prefix with 'pref:' for a preference)"
 CMD_REMEMBER_SUCCESS = "Remembered ({kind})."
@@ -113,6 +114,8 @@ TASK_NAME_REBUILD = "Rebuild index"
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
 CMD_SET_SUCCESS = "{key} = {value}"
 CMD_SET_INVALID = "Invalid value for {key}: {error}"
+CMD_SET_TYPE_HINT = "{key} needs {kind}"
+CMD_SET_CHOICES = "{key} must be one of {choices}"
 CMD_SET_READONLY = "{key} is read-only; use the Models screen"
 CMD_MODEL_SET = "Model set to {name}"
 # Shown while a model swap's fleet reload runs off the event loop, so the swap
@@ -130,7 +133,8 @@ CHAT_STACK_FAILED = "lilbee could not load its chat screen: {error}"
 # Engine-load status painted into the pending answer while a prompt waits on a
 # cold engine, and the failure that wait can end in.
 ENGINE_READING_WEIGHTS = "Reading {name} weights"
-ENGINE_LOADING = "Loading engine"
+ENGINE_WARMING = "Warming up the model"
+ENGINE_ALMOST_READY = "Almost ready"
 ENGINE_LOAD_FAILED = "The engine failed to load: {error}"
 ENGINE_FAILED_HINT = "Open Catalog or Settings to pick a different model."
 ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
@@ -142,7 +146,7 @@ CMD_REMOVE_SUCCESS = "Removed {name}"
 CMD_REMOVE_FAILED = "Failed to remove {name}"
 CMD_CANCEL = "Cancelled active operations"
 CMD_CLEAR = "Conversation cleared"
-CMD_THEME_LIST = "Themes: {names}"
+CMD_THEME_UNKNOWN = "No theme called {name}. Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
 TASK_NAME_CRAWL = "Crawl {url}"
 STREAM_ERROR = "\n\n*Error: {error}*"
@@ -356,6 +360,10 @@ MEMORIES_COLUMN_TEXT = "Memory"
 MEMORIES_FLAG_YES = "yes"
 MEMORIES_FLAG_NO = "no"
 MEMORIES_SEARCH_PLACEHOLDER = "Filter memories..."
+MEMORIES_EMPTY_STATE = (
+    "Memories are notes lilbee keeps about you between chats. Use /remember to save one."
+)
+MEMORIES_NO_MATCHES = "No memories match this filter."
 MEMORIES_DELETE_CONFIRM_TITLE = "Delete memory?"
 MEMORIES_DELETE_CONFIRM_MESSAGE = "Delete this memory? This cannot be undone."
 MEMORIES_DELETED = "Deleted memory"
@@ -370,7 +378,7 @@ MEMORIES_FLAG_FAILED = "Update failed: {error}"
 WIKI_TYPE_HEADINGS: dict[str, str] = {
     kind.value: label for kind, label in _WIKI_TYPE_HEADINGS.items()
 }
-APP_CANCELLED = "Cancelled"
+APP_QUIT_AGAIN_HINT = "Answer cancelled. Press Ctrl+C again to quit."
 SETUP_WELCOME = "Welcome to lilbee"
 SETUP_SUBTITLE = "Pick a chat model and an embedding model to get started."
 SETUP_INTRO = (
@@ -388,7 +396,7 @@ INSTALLED_CARD_HINT = "D / ⌫ to delete"
 # Architecture compatibility pill labels (catalog row).
 # SUPPORTED renders nothing to keep the row visually quiet for the common case.
 COMPAT_PILL_UNSUPPORTED = "unsupported"
-COMPAT_PILL_UNKNOWN = "?"
+COMPAT_PILL_UNKNOWN = "untested"
 
 # Architecture compatibility copy for the catalog detail view + confirm modal.
 COMPAT_DETAIL_SENTENCE_SUPPORTED = "Supported by your llama.cpp build."
@@ -472,10 +480,10 @@ TASKBAR_STARTING_WORKER = "Starting {labels} worker..."
 TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
 # Cold-start chat warm line: phase (and byte % while paging weights) so the held
 # input reads as "loading", not "stuck".
-TASKBAR_WARM = "loading chat · {detail}"
+TASKBAR_WARM = "warming up chat · {detail}"
 TASKBAR_WARM_STARTING = "starting"
 TASKBAR_WARM_READING = "reading weights {pct}%"
-TASKBAR_WARM_LOADING = "loading engine"
+TASKBAR_WARM_LOADING = "almost ready"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"

@@ -78,6 +78,16 @@ class ChatInput(TextArea):
             return False
         return super().check_consume_key(key, character)
 
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "question_mark" and not self.text:
+            # An empty prompt can't be mid-typing, so ? opens the help panel;
+            # with any text present it stays a literal character.
+            event.prevent_default()
+            event.stop()
+            await self.app.run_action("push_help")
+            return
+        await super()._on_key(event)
+
     def action_submit(self) -> None:
         # Enter is a priority binding; when a drawer toggle holds focus, yield so
         # Enter reaches that widget instead of submitting the prompt.

@@ -40,6 +40,18 @@ RoleRow ModelPickerButton:focus {
     text-style: bold;
 }
 
+ModelBar.-narrow RoleRow.-off {
+    display: none;
+}
+
+ModelBar.-narrow RoleRow ModelPickerButton {
+    max-width: 12;
+}
+
+ModelBar.-narrow #chat-mode-toggle {
+    dock: right;
+}
+
 ModelBar #chat-mode-toggle {
     width: auto;
     height: 1;

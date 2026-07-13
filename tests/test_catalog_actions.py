@@ -1,5 +1,5 @@
 """Coverage for new catalog actions: select_tab, cycle_source, toggle_drawer,
-on_key digit intercept, dismiss_filter, discover-rail population edges."""
+on_key digit intercept, Esc back-navigation, discover-rail population edges."""
 
 from __future__ import annotations
 
@@ -202,7 +202,7 @@ async def test_action_toggle_drawer_flips_collapsed_class() -> None:
         assert drawer.has_class("-collapsed")
 
 
-async def test_dismiss_filter_closes_revealed_bar_when_unfocused() -> None:
+async def test_escape_closes_revealed_bar_when_unfocused() -> None:
     """Esc closes an open filter even when focus has raced off the Input."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -245,16 +245,37 @@ async def test_go_back_closes_revealed_bar_when_unfocused() -> None:
         assert pilot.app.query_one(CatalogScreen) is screen
 
 
-async def test_action_dismiss_filter_no_op_outside_input() -> None:
-    """Esc outside the filter Input must not dismiss; the screen stays put."""
+async def test_escape_without_filter_switches_to_chat() -> None:
+    """Esc with no filter open leaves the catalog for the Chat view, like q."""
+    from unittest.mock import patch
+
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
-        # Focus the toggle (NOT the filter Input).
-        screen.action_dismiss_filter()
+        screen._activation_settled = True
+        assert not screen._filter_open
+        with patch.object(pilot.app, "switch_view") as switch:
+            await pilot.press("escape")
+            await pilot.pause()
+            switch.assert_called_once_with("Chat")
+
+
+async def test_escape_with_open_filter_stays_on_catalog() -> None:
+    """The first Esc only collapses the filter; it must not leave the screen."""
+    from unittest.mock import patch
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        # Screen still mounted.
-        assert pilot.app.query_one(CatalogScreen) is screen
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        await pilot.press("slash")
+        await pilot.pause()
+        assert screen._filter_open
+        with patch.object(pilot.app, "switch_view") as switch:
+            await pilot.press("escape")
+            await pilot.pause()
+            switch.assert_not_called()
+        assert not screen._filter_open
 
 
 def test_row_cache_signature_keys_frontier_rows_as_uninstalled() -> None:
@@ -390,7 +411,7 @@ async def test_action_select_tab_idempotent_when_already_active() -> None:
         assert tabs.active == "rerank"
 
 
-async def test_action_dismiss_filter_clears_input_value() -> None:
+async def test_escape_on_open_filter_clears_input_value() -> None:
     """Esc on an open filter clears its value and hides the box."""
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()

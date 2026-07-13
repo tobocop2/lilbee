@@ -415,9 +415,7 @@ class TestCatalogScreenAsync:
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_catalog_quit(self, mock_catalog: mock.MagicMock) -> None:
-        """`q` dismisses the catalog (Escape no longer dismisses; see
-        action_dismiss_filter).
-        """
+        """`q` leaves the catalog for the Chat view."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -913,11 +911,11 @@ class TestSlashSuggester:
 
 
 class TestContextAwareQuit:
-    """Test that action_quit cancels tasks/stream before quitting."""
+    """Test that action_quit cancels foreground work but never background tasks."""
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
-    async def test_quit_cancels_active_task(self, mock_catalog: mock.MagicMock) -> None:
-        """Ctrl+C cancels active TaskBar task when one exists."""
+    async def test_quit_exits_despite_active_task(self, mock_catalog: mock.MagicMock) -> None:
+        """Ctrl+C exits on the first press even with a background task running."""
         mock_catalog.return_value = _EMPTY_CATALOG
         from lilbee.cli.tui.app import LilbeeApp
 
@@ -928,10 +926,10 @@ class TestContextAwareQuit:
             task_bar = app.task_bar
             task_bar.add_task("Test download", "download")
             task_bar.queue.advance()
-            await app.action_quit()
-            await pilot.pause()
-            # Task should have been cancelled, app still running
-            assert app.is_running
+            with mock.patch.object(app, "exit") as mock_exit:
+                await app.action_quit()
+                await pilot.pause()
+            mock_exit.assert_called_once()
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_quit_cancels_streaming(self, mock_catalog: mock.MagicMock) -> None:
