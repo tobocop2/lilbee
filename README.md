@@ -51,7 +51,7 @@ A batteries-included local search engine you can talk to: it runs the AI models,
 
 It's all one program: no separate model server, [vector database](#built-on), or container to stand up. lilbee runs the models and keeps the index itself. Reach it as a terminal app, CLI, Model Context Protocol server, HTTP API, or Python library. Close it and it's gone, or run it as a service to keep it warm. Everything runs on your computer; it uses a cloud model only when you pick one.
 
-Models are no different: lilbee has its own model manager and multi-GPU fleet, built on llama.cpp, so one executable does everything (browse Hugging Face, download a model, give it a role, run it on Metal / Vulkan / CUDA). Battle-tested managers are always supported too. If you already use [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai), point lilbee at your existing setup and skip its native model support if you prefer.
+Models are no different: lilbee has its own model manager and multi-GPU fleet, built on llama.cpp, so one executable does everything (browse Hugging Face, download a model, give it a role, run it on Metal / Vulkan / CUDA). You don't need [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) at all. If you already use them, point lilbee at your existing setup and keep your models.
 
 > **Tutorial reel:** every demo on this page (and the extras) as a real video player at [**lilbee.sh/tutorial**](https://lilbee.sh/tutorial).
 
@@ -101,7 +101,7 @@ CLI, the HTTP API, env vars, and `config.toml` are there for scripting, headless
 - **A sophisticated [search engine](docs/architecture.md#search-pipeline) on top, built on published research.** It ranks every result by how well it answers you, so the best match comes back first. 50+ knobs to [tune from the Settings screen](docs/usage.md#settings-screen) or hand to your agent, with sane defaults if you'd rather not.
 - **It brings and runs the models itself.** Browse Hugging Face, pull a model, give it a role (chat, embedding, vision, reranking); lilbee runs it on Metal, Vulkan, or CUDA. You never point it at a server you set up.
 - **A model too big for one card runs across all of them.** lilbee sizes each role with gguf-parser and tensor-splits your chat model across the fewest GPUs that fit, placing the embedder, reranker, and vision models alongside it behind a load-balancing router. It happens automatically, or you can pin each role to the cards you choose. [Run a model bigger than one card](#run-a-model-bigger-than-one-card).
-- **Already on Ollama or LM Studio? Keep them.** Managing models for you is the default, but lilbee also works with both, so you never have to switch model managers. Their models show up in the same catalog and role pickers, alongside lilbee's own.
+- **Already on Ollama or LM Studio? Keep them.** You don't need either one: lilbee's own manager handles everything. But lilbee also works with both, so you never have to switch. Their models show up in the same catalog and role pickers, alongside lilbee's own.
 - **Your hardware, put to work.** Your machine can do a lot more than you're using it for. lilbee runs local models on hardware you already own, no cloud account required.
 - **Per-project libraries.** Keep one library for everything, or give each project its own.
 - **One install, many surfaces.** TUI, CLI, [MCP server](#agent-integration), [REST API](https://lilbee.sh/api/), and Python library. Nothing to stand up.
