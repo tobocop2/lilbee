@@ -55,28 +55,28 @@ class TestSchemaPersistence:
         return Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb_test"}))
 
     def test_round_trip(self, store):
-        save_schema(EntitySchema(types=[PART, PERSON]), store)
+        save_schema(EntitySchema(types=[PART, PERSON]), store, applied=False, source_count=1)
         loaded = load_schema(store)
         assert loaded is not None
         assert [t.name for t in loaded.types] == ["part_number", "person"]
         state = store.entity_schema_state()
         assert state is not None
-        assert state[1] is False  # saved but not yet applied
+        assert state["applied"] is False  # saved but not yet applied
 
     def test_never_induced_reads_none(self, store):
         assert store.entity_schema_state() is None
         assert load_schema(store) is None
 
     def test_unreadable_row_reads_none(self, store):
-        store.save_entity_schema("{not json", applied=False)
+        store.save_entity_schema("{not json", applied=False, source_count=1)
         assert load_schema(store) is None
 
     def test_mark_applied_flips_state(self, store):
-        save_schema(EntitySchema(types=[PART]), store)
+        save_schema(EntitySchema(types=[PART]), store, applied=False, source_count=1)
         store.mark_entity_schema_applied()
         state = store.entity_schema_state()
         assert state is not None
-        assert state[1] is True
+        assert state["applied"] is True
 
     def test_mark_applied_without_schema_is_a_noop(self, store):
         store.mark_entity_schema_applied()
@@ -87,13 +87,13 @@ class TestSchemaPersistence:
         from lilbee.core.config import ENTITY_SCHEMA_TABLE
         from lilbee.data.store.types import ENTITY_SCHEMA_DELETE_ALL_PREDICATE
 
-        save_schema(EntitySchema(types=[PART]), store)
+        save_schema(EntitySchema(types=[PART]), store, applied=False, source_count=1)
         store.clear_table(ENTITY_SCHEMA_TABLE, ENTITY_SCHEMA_DELETE_ALL_PREDICATE)
         assert store.entity_schema_state() is None
 
     def test_save_overwrites_the_single_row(self, store):
-        save_schema(EntitySchema(types=[PART]), store)
-        save_schema(EntitySchema(types=[PERSON]), store)
+        save_schema(EntitySchema(types=[PART]), store, applied=False, source_count=1)
+        save_schema(EntitySchema(types=[PERSON]), store, applied=False, source_count=1)
         loaded = load_schema(store)
         assert loaded is not None
         assert [t.name for t in loaded.types] == ["person"]

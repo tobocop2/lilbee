@@ -7,8 +7,16 @@ extracts across the whole index; later runs extract new files at ingest
 persisted inside the index, so it travels with the data and there is
 nothing for the user to manage.
 
+The taxonomy keeps up with the corpus on its own. A library that grows a
+new kind of document would otherwise keep answering with the type set
+induced on day one, so sync re-induces from a fresh sample once the corpus
+has grown materially since the schema was written, and unions in any type
+the schema has never seen. Re-induction that proposes nothing new costs one
+sampled chat call and no extraction pass.
+
 Extraction is idempotent: every full pass clears previously extracted
-rows first, so an interrupted pass can never double-count.
+rows first, so an interrupted pass, or a schema that gained a type, can
+never double-count.
 """
 
 from __future__ import annotations
@@ -26,17 +34,30 @@ from lilbee.retrieval.entities.extractor import (
 from lilbee.retrieval.entities.schema import (
     EntitySchema,
     ExtractorKind,
-    load_schema,
+    merge_schemas,
+    parse_schema,
     save_schema,
 )
 
 if TYPE_CHECKING:
     from lilbee.data.store import Store
+    from lilbee.data.store.types import EntitySchemaState
 
 log = logging.getLogger(__name__)
 
 # Chunks per extraction batch during a full pass; bounds the working set.
 _BACKFILL_BATCH = 2000
+
+# Corpus growth that makes the induced taxonomy worth revisiting, as a
+# multiple of the document count at induction. Half again as many documents
+# is enough to have introduced a family the first sample never saw; smaller
+# ratios would re-induce on ordinary drip-feed additions, whose new files are
+# already extracted at ingest under the existing schema.
+_REINDUCE_GROWTH_FACTOR = 1.5
+# Below this many documents, growth ratios are meaningless (2 -> 3 documents
+# is 1.5x): a corpus this small re-induces on any growth, since the first
+# sample necessarily saw very little.
+_REINDUCE_MIN_SOURCES = 10
 
 
 def ensure_entities(cancel: threading.Event | None = None) -> None:
@@ -53,19 +74,75 @@ def ensure_entities(cancel: threading.Event | None = None) -> None:
     from lilbee.app.services import get_services
 
     store = get_services().store
-    schema = load_schema(store)
-    if schema is None:
+    # One read of the schema row: it carries the taxonomy, whether a full
+    # pass ever completed under it, and the corpus size it was induced from.
+    state = store.entity_schema_state()
+    schema = parse_schema(state) if state is not None else None
+    if state is None or schema is None:
         # Never induced (or the persisted row is unreadable): induce afresh.
         schema = _induce(store)
         if schema is None:
             return
     else:
-        state = store.entity_schema_state()
-        if state is not None and state[1]:
-            return  # induced and fully applied; new files were covered at ingest
-        log.info("Entity extraction pass incomplete; redoing the full pass")
+        evolved = _evolve(store, schema, state)
+        if evolved is not None:
+            schema = evolved
+        elif state["applied"]:
+            return  # up to date; new files were covered at ingest
+        else:
+            log.info("Entity extraction pass incomplete; redoing the full pass")
     if _full_pass(store, schema, cancel):
         store.mark_entity_schema_applied()
+
+
+def _evolve(store: Store, schema: EntitySchema, state: EntitySchemaState) -> EntitySchema | None:
+    """The schema grown to cover a drifted corpus, or ``None`` to leave it be.
+
+    Returns a schema only when re-induction actually found a type the
+    current one lacks, so a corpus that grew without changing character
+    costs one chat call and no extraction pass. The new document count is
+    recorded either way, so a re-induction that adds nothing does not run
+    again on the next sync.
+    """
+    from lilbee.app.services import get_services
+
+    sources = store.count_sources()
+    at_induction = state["source_count"]
+    if not _corpus_drifted(at_induction, sources):
+        return None
+    # A drifted corpus has chunks to sample by construction; an empty sample
+    # would fall through to induce_schema, which declines it like any other
+    # unusable input, so it needs no separate branch here.
+    texts = _sample_chunks(store, INDUCTION_SAMPLE_SIZE)
+    induced = induce_schema(texts, get_services().provider)
+    if induced is None:
+        log.warning("Entity schema re-induction produced nothing usable; retrying next sync")
+        return None
+    merged = merge_schemas(schema, induced)
+    if len(merged.types) == len(schema.types):
+        # Nothing new: record the corpus size so this does not re-run, and
+        # leave the applied flag alone (extraction is already current).
+        save_schema(schema, store, applied=state["applied"], source_count=sources)
+        log.info("Corpus grew but the entity taxonomy still fits; no re-extraction")
+        return None
+    added = [t.name for t in merged.types[len(schema.types) :]]
+    log.info(
+        "Corpus grew from %d to %d documents; entity schema gained %s. Re-extracting",
+        at_induction,
+        sources,
+        ", ".join(added),
+    )
+    save_schema(merged, store, applied=False, source_count=sources)
+    return merged
+
+
+def _corpus_drifted(at_induction: int, now: int) -> bool:
+    """Whether the corpus has grown enough to revisit the taxonomy."""
+    if now <= at_induction:
+        return False
+    if at_induction < _REINDUCE_MIN_SOURCES:
+        return True
+    return now >= at_induction * _REINDUCE_GROWTH_FACTOR
 
 
 def _induce(store: Store) -> EntitySchema | None:
@@ -80,7 +157,7 @@ def _induce(store: Store) -> EntitySchema | None:
     if schema is None:
         log.warning("Entity schema induction produced nothing usable; retrying next sync")
         return None
-    save_schema(schema, store, applied=False)
+    save_schema(schema, store, applied=False, source_count=store.count_sources())
     log.info("Induced entity schema (%d types); extracting across the index", len(schema.types))
     return schema
 

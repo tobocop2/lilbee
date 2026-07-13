@@ -806,6 +806,17 @@ Turning the setting on is the whole interaction; sync runs the lifecycle:
    rows first, so an interrupted pass never double-counts. New files
    extract at ingest. If no chat model is available for induction, sync
    logs it and retries next time; nothing fails.
+3. **Evolution** (later syncs): a library that grows a new kind of document
+   would otherwise keep answering with the taxonomy induced on day one, so
+   the schema row records how many documents the index held at induction,
+   and once the corpus has grown materially past that (half again as many,
+   or any growth at all while the corpus is tiny) sync re-induces from a
+   fresh sample and unions in types the schema has never seen. A type is
+   identified by what it *extracts*, not the name a model gave it, so a
+   rename of a known pattern adds nothing. Re-induction that finds nothing
+   new costs one sampled chat call, records the new size, and skips the
+   extraction pass; one that adds a type re-extracts under replace
+   semantics, so counts never double.
 
 Query-time effects: "how many distinct X" answers with exact distinct counts,
 and "how many X per Y" groups by chunk co-occurrence, both computed by full

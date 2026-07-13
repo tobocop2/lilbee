@@ -1919,10 +1919,12 @@ class TestTypedAggregates:
                 EntityType(name="depot", kind=ExtractorKind.SPACY, pattern="GPE"),
             ]
         )
-        mock_svc.store.entity_schema_state.return_value = (
-            json.dumps(schema.model_dump(mode="json")),
-            True,
-        )
+        mock_svc.store.entity_schema_state.return_value = {
+            "schema_json": json.dumps(schema.model_dump(mode="json")),
+            "applied": True,
+            "source_count": 1,
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }
         return schema
 
     def test_distinct_count_answers_exactly(self, mock_svc, part_schema):

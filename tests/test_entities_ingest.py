@@ -15,10 +15,12 @@ from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind
 
 def _persist_schema(services, schema):
     """Stub the mock store's persisted schema state."""
-    services.store.entity_schema_state.return_value = (
-        json.dumps(schema.model_dump(mode="json")),
-        True,
-    )
+    services.store.entity_schema_state.return_value = {
+        "schema_json": json.dumps(schema.model_dump(mode="json")),
+        "applied": True,
+        "source_count": 1,
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
 
 
 @pytest.fixture()

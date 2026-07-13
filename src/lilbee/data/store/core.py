@@ -58,6 +58,7 @@ from .types import (
     ChunkWrite,
     CitationRecord,
     EmbeddingModelMismatchError,
+    EntitySchemaState,
     MemoryKind,
     MemoryRow,
     PageTextRecord,
@@ -710,13 +711,11 @@ class Store:
             table.add(records)
             return len(records)
 
-    def entity_schema_state(self) -> tuple[str, bool] | None:
-        """The persisted entity schema as ``(json, applied)``, or ``None``.
+    def entity_schema_state(self) -> EntitySchemaState | None:
+        """The persisted entity schema row, or ``None`` when never induced.
 
         The schema is machine state induced from the corpus and lives inside
-        the index, so it travels with the data. ``applied`` records whether a
-        full extraction pass completed under this schema; an interrupted pass
-        leaves it False and the next sync redoes the (idempotent) pass.
+        the index, so it travels with the data.
         """
         table = self.open_table(ENTITY_SCHEMA_TABLE)
         if table is None:
@@ -726,9 +725,14 @@ class Store:
             return None
         # One row by contract; take the newest if a rewrite ever left a stale one.
         row = max(rows, key=lambda r: r["updated_at"])
-        return str(row["schema_json"]), bool(row["applied"])
+        return EntitySchemaState(
+            schema_json=str(row["schema_json"]),
+            applied=bool(row["applied"]),
+            source_count=int(row["source_count"]),
+            updated_at=str(row["updated_at"]),
+        )
 
-    def save_entity_schema(self, schema_json: str, *, applied: bool) -> None:
+    def save_entity_schema(self, schema_json: str, *, applied: bool, source_count: int) -> None:
         """Overwrite the single persisted entity schema row."""
         with self._write_lock():
             db = self.get_db()
@@ -739,6 +743,7 @@ class Store:
                     {
                         "schema_json": schema_json,
                         "applied": applied,
+                        "source_count": source_count,
                         "updated_at": datetime.now(UTC).isoformat(),
                     }
                 ]
@@ -749,7 +754,9 @@ class Store:
         state = self.entity_schema_state()
         if state is None:
             return
-        self.save_entity_schema(state[0], applied=True)
+        self.save_entity_schema(
+            state["schema_json"], applied=True, source_count=state["source_count"]
+        )
 
     def entity_value_counts(self, entity_type: str) -> tuple[int, int]:
         """(mentions, distinct normalized values) for one entity type.

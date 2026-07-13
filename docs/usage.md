@@ -822,7 +822,7 @@ reason the defaults are the defaults.
 | `LILBEE_EXPANSION_GUARDRAILS` | `true` | Filter expansion variants whose embedding drifts too far from the original query |
 | `LILBEE_EXPANSION_SIMILARITY_THRESHOLD` | `0.5` | Minimum query-variant cosine similarity to survive the guardrail |
 | `LILBEE_CANDIDATE_MULTIPLIER` | `3` | Vector-only candidate pool as a multiple of top_k, feeding MMR reranking |
-| `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities for exact count answers; fully automatic at sync (schema induced on first run and stored inside the index) |
+| `LILBEE_ENTITY_EXTRACTION` | `false` | Extract typed entities for exact count answers; fully automatic at sync (schema induced from the corpus, stored inside the index, and re-induced as the library grows) |
 | `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
 | `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |
 | `LILBEE_INTENT_ROUTING` | `true` | Route document-name lookups to exact retrieval and count questions to a full-corpus scan |

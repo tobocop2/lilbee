@@ -21,6 +21,7 @@ def _entity_schema_state_schema() -> pa.Schema:
         [
             pa.field("schema_json", pa.utf8()),
             pa.field("applied", pa.bool_()),
+            pa.field("source_count", pa.int32()),
             pa.field("updated_at", pa.utf8()),
         ]
     )

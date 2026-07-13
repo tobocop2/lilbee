@@ -88,6 +88,22 @@ META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
 ENTITY_SCHEMA_DELETE_ALL_PREDICATE = "updated_at IS NOT NULL"
 
 
+class EntitySchemaState(TypedDict):
+    """Single-row state of the induced entity schema.
+
+    ``applied`` records whether a full extraction pass completed under this
+    schema; an interrupted pass leaves it False so the next sync redoes the
+    (idempotent) pass. ``source_count`` is how many documents the index held
+    when the schema was induced, which is what the next sync compares against
+    to decide the corpus has drifted far enough to re-induce.
+    """
+
+    schema_json: str
+    applied: bool
+    source_count: int
+    updated_at: str
+
+
 class SearchScope(StrEnum):
     """What the user wants to search over.
 

@@ -18,7 +18,12 @@ import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from lilbee.retrieval.entities.schema import EntitySchema, EntityType, ExtractorKind
+from lilbee.retrieval.entities.schema import (
+    EntitySchema,
+    EntityType,
+    ExtractorKind,
+    extractor_key,
+)
 from lilbee.retrieval.reasoning import strip_reasoning
 
 if TYPE_CHECKING:
@@ -131,9 +136,8 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
                 continue
         # Small models sometimes propose several names for one extractor
         # (three types sharing a regex triple the table with identical rows);
-        # the first name wins. LLM kinds have no pattern, so they dedupe by
-        # description instead.
-        key = (entity_type.kind, entity_type.pattern.strip() or entity_type.description.strip())
+        # the first name wins.
+        key = extractor_key(entity_type)
         if key in seen_extractors:
             log.warning("Dropping induced type %s: duplicate extractor", entity_type.name)
             continue

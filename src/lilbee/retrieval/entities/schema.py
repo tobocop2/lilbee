@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
     from lilbee.data.store import Store
+    from lilbee.data.store.types import EntitySchemaState
 
 log = logging.getLogger(__name__)
 
@@ -112,27 +113,66 @@ class EntitySchema(BaseModel):
         return None
 
 
-def load_schema(store: Store) -> EntitySchema | None:
-    """Read the persisted schema from the index, or ``None`` when never induced.
+def extractor_key(entity_type: EntityType) -> tuple[ExtractorKind, str]:
+    """What a type actually extracts, ignoring the name it was given.
 
-    An unparseable row is logged and read as ``None`` so the lifecycle
-    re-induces automatically instead of failing sync.
+    Two types with the same kind and the same pattern (or, for LLM kinds,
+    the same description) find the same mentions, so they are the same type
+    wearing different names. Induction dedupes by this, and schema evolution
+    uses it to tell a genuinely new type from a rename of a known one.
     """
-    state = store.entity_schema_state()
-    if state is None:
-        return None
-    schema_json, _applied = state
+    signature = entity_type.pattern.strip() or entity_type.description.strip()
+    return entity_type.kind, signature.casefold()
+
+
+def merge_schemas(existing: EntitySchema, induced: EntitySchema) -> EntitySchema:
+    """Existing types plus any genuinely new ones from *induced*.
+
+    Union, not replace: existing types keep their names and positions so
+    answers stay stable across a re-induction, and a type the fresh sample
+    happens not to cover is never silently dropped (the documents it was
+    induced from are still in the index). Only extractors the schema has
+    never seen are appended.
+    """
+    known = {extractor_key(t) for t in existing.types}
+    known_names = {t.name for t in existing.types}
+    additions = [
+        t for t in induced.types if extractor_key(t) not in known and t.name not in known_names
+    ]
+    if not additions:
+        return existing
+    return EntitySchema(types=[*existing.types, *additions])
+
+
+def parse_schema(state: EntitySchemaState) -> EntitySchema | None:
+    """The schema carried by a persisted row, or ``None`` when unreadable.
+
+    Unreadable is logged, not raised: a corrupt row is machine state gone
+    wrong, so the lifecycle re-induces automatically instead of failing sync.
+    """
     try:
-        return EntitySchema.model_validate_json(schema_json)
+        return EntitySchema.model_validate_json(state["schema_json"])
     except Exception:
         log.warning("Persisted entity schema is unreadable; re-inducing", exc_info=True)
         return None
 
 
-def save_schema(schema: EntitySchema, store: Store, *, applied: bool = False) -> None:
-    """Persist the schema into the index (stable key order)."""
+def load_schema(store: Store) -> EntitySchema | None:
+    """Read the persisted schema from the index, or ``None`` when never induced."""
+    state = store.entity_schema_state()
+    return parse_schema(state) if state is not None else None
+
+
+def save_schema(schema: EntitySchema, store: Store, *, applied: bool, source_count: int) -> None:
+    """Persist the schema into the index (stable key order).
+
+    ``source_count`` is the document count the schema was induced from, and
+    is the baseline the next sync compares against to decide the corpus has
+    drifted; it is required so a save can never silently record a baseline
+    of zero, which would read as a tiny corpus and re-induce every sync.
+    """
     payload = json.dumps(schema.model_dump(mode="json"), sort_keys=True)
-    store.save_entity_schema(payload, applied=applied)
+    store.save_entity_schema(payload, applied=applied, source_count=source_count)
 
 
 def _entities_schema(dim_unused: int | None = None) -> pa.Schema:
