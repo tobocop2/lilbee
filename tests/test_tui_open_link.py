@@ -43,11 +43,17 @@ class TestOpenerArgv:
 
 class TestOpenLocalFile:
     def test_opens_decoded_path_with_platform_opener(self, monkeypatch):
+        # url2pathname's separator style varies by host OS, so assert the two
+        # behaviors that matter (opener choice, %20 decoded) not the literal path.
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "darwin")
         run = mock.Mock()
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.subprocess.run", run)
         open_local_file("file:///Users/t/My%20Docs/doc.md")
-        assert run.call_args.args[0] == ["open", "/Users/t/My Docs/doc.md"]
+        opener, path = run.call_args.args[0]
+        assert opener == "open"
+        assert "My Docs" in path
+        assert path.endswith("doc.md")
+        assert "%20" not in path
 
     def test_unknown_platform_falls_back_to_webbrowser(self, monkeypatch):
         monkeypatch.setattr("lilbee.cli.tui.screens.chat_helpers.sys.platform", "win32")
