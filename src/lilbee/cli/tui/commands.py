@@ -15,7 +15,6 @@ log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.chat import ChatScreen
 
 
 class LilbeeCommandProvider(Provider):
@@ -74,27 +73,25 @@ class LilbeeCommandProvider(Provider):
     def _slash_commands(self) -> list[tuple[str, str, Any]]:
         """One palette entry per slash command, mirroring the chat surface."""
         return [
-            (cmd.name, cmd.help_text, lambda c=cmd: self._run_slash_command(c))
-            for cmd in COMMANDS
+            (cmd.name, cmd.help_text, lambda c=cmd: self._run_slash_command(c)) for cmd in COMMANDS
         ]
 
     def _run_slash_command(self, cmd: SlashCommand) -> None:
         """Run *cmd* through Chat: dispatch it, or prefill it when it needs arguments."""
         app = self._app
-        chat = self._chat_screen()
+        chat = app.chat_screen()
         if chat is None:
             app.notify(f"Open Chat to run {cmd.name}")
             return
-        app.switch_view("Chat")
         if cmd.args_hint.startswith("<"):
-            chat.prefill_prompt(f"{cmd.name} ")
+            # Needs an argument: land in the chat prompt for Tab completion.
+            app.switch_view("Chat")
+            chat.insert_slash_command(cmd.name)
         else:
+            # Complete as-is: dispatch like a submitted prompt. Handlers that
+            # navigate call switch_view themselves, and switch_view no-ops
+            # while another switch is in flight, so don't pre-switch to Chat.
             chat.run_command(cmd.name)
-
-    def _chat_screen(self) -> ChatScreen | None:
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        return next((s for s in self._app.screen_stack if isinstance(s, ChatScreen)), None)
 
     def _model_commands(self) -> list[tuple[str, str, Any]]:
         """Generate commands for installed models."""
@@ -161,11 +158,4 @@ class LilbeeCommandProvider(Provider):
 
     def _action_reset(self) -> None:
         """Trigger /reset from the palette so the ConfirmDialog flow fires."""
-        from lilbee.cli.tui.screens.chat import ChatScreen
-
-        app = self._app
-        chat = next((s for s in app.screen_stack if isinstance(s, ChatScreen)), None)
-        if chat is None:
-            app.notify("Open Chat to run /reset")
-            return
-        chat.request_reset()
+        self._run_slash_command(get_command("/reset"))

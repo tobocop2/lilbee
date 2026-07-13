@@ -96,9 +96,12 @@ class _ChatHostApp(LilbeeAppHost):
         yield from ()
 
     def on_mount(self) -> None:
+        from lilbee.cli.tui.app import _CHAT_SCREEN_NAME
         from lilbee.cli.tui.screens.chat import ChatScreen
 
-        self.push_screen(ChatScreen())
+        # Install under the production name so app.chat_screen() resolves.
+        self.install_screen(ChatScreen(), name=_CHAT_SCREEN_NAME)
+        self.push_screen(_CHAT_SCREEN_NAME)
 
 
 class TestArgHintHelper:
@@ -1182,7 +1185,7 @@ class TestPaletteSlashCommandsAsync:
             await pilot.pause()
             provider = LilbeeCommandProvider(app.screen, match_style=None)
             fake_app = mock.MagicMock()
-            fake_app.screen_stack = []
+            fake_app.chat_screen.return_value = None
             with mock.patch.object(
                 LilbeeCommandProvider,
                 "_app",

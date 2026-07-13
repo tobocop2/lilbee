@@ -405,13 +405,6 @@ class ChatScreen(Screen[None]):
         """
         self._enter_insert_mode()
 
-    def prefill_prompt(self, text: str) -> None:
-        """Fill the prompt with *text* and focus it, cursor at the end."""
-        chat_input = self._chat_input
-        chat_input.text = text
-        chat_input.move_cursor(chat_input.document.end)
-        self.focus_prompt()
-
     def run_command(self, text: str) -> None:
         """Dispatch *text* as a slash command, as if submitted from the prompt."""
         if self._reject_submit_when_busy():

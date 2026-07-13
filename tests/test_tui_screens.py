@@ -4072,6 +4072,42 @@ async def test_command_provider_delete_document_prefills_prompt(mock_svc):
         assert chat._chat_input.has_focus
 
 
+async def test_command_provider_delete_document_prefills_from_other_view():
+    """A required-arg palette command lands back in Chat with the prompt filled."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        app.switch_view("Status")
+        await pilot.pause()
+        assert not isinstance(app.screen, ChatScreen)
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._action_delete_document()
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert chat._chat_input.text == "/delete "
+
+
+async def test_command_provider_slash_command_navigates_to_catalog():
+    """A palette command whose handler navigates must actually switch views."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.command_registry import get_command
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
+        provider._run_slash_command(get_command("/models"))
+        await pilot.pause()
+        assert app.active_view == "Catalog"
+
+
 async def test_command_provider_delete_document_no_chat_screen():
     """Palette delete falls back to notify when ChatScreen isn't in the stack."""
     from lilbee.cli.tui.app import LilbeeApp
@@ -4082,9 +4118,9 @@ async def test_command_provider_delete_document_no_chat_screen():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        # Stand-in app whose screen_stack contains no ChatScreen.
+        # Stand-in app that has no chat screen installed yet.
         fake_app = MagicMock()
-        fake_app.screen_stack = []
+        fake_app.chat_screen.return_value = None
         with patch.object(
             LilbeeCommandProvider, "_app", new_callable=PropertyMock, return_value=fake_app
         ):
@@ -4152,9 +4188,9 @@ async def test_command_provider_action_reset_no_chat_screen():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        # Stand-in app whose screen_stack contains no ChatScreen.
+        # Stand-in app that has no chat screen installed yet.
         fake_app = MagicMock()
-        fake_app.screen_stack = []
+        fake_app.chat_screen.return_value = None
         with patch.object(
             LilbeeCommandProvider, "_app", new_callable=PropertyMock, return_value=fake_app
         ):
