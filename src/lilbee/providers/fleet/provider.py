@@ -560,8 +560,15 @@ def _adoptable_launches(state: _SwapState) -> list[InstanceLaunch] | None:
 
 
 def _warm_ttl_seconds() -> int:
-    """llama-swap idle-unload timer: the user's warm ttl, or 0 when warm is off."""
-    if not cfg.keep_engine_warm:
+    """llama-swap idle-unload timer in seconds for the spawned fleet.
+
+    ``keep_engine_warm`` keeps the fleet resident: ttl 0, so llama-swap never
+    idle-unloads it. With warm off the engine is on-demand and releases its
+    weights after ``engine_idle_ttl_minutes`` of inactivity to free VRAM; the
+    next prompt reloads transparently. A ttl of 0 there disables the idle unload
+    entirely (weights stay until the app tears the fleet down).
+    """
+    if cfg.keep_engine_warm:
         return 0
     return cfg.engine_idle_ttl_minutes * 60
 
