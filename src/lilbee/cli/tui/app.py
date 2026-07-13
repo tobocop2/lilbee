@@ -30,6 +30,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
+    from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
 log = logging.getLogger(__name__)
@@ -419,15 +420,14 @@ class LilbeeApp(App[None]):
             self._theme_index = 0
 
     async def action_quit(self) -> None:
-        """Context-aware Ctrl+C: cancel active task > cancel stream > quit."""
+        """Context-aware Ctrl+C: cancel the foreground operation, else quit.
+
+        Only operations the user is actively watching (the setup wizard, an
+        in-flight chat stream) get the cancel-first treatment; a background
+        task like an engine warm or a sync never swallows a quit.
+        """
         get_services().cancel_inference()
 
-        if not self.task_bar.queue.is_empty:
-            active = self.task_bar.queue.active_task
-            if active:
-                self.task_bar.cancel_task(active.task_id)
-                self.notify(msg.APP_CANCELLED)
-                return
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.screens.setup import SetupWizard
 
@@ -437,6 +437,7 @@ class LilbeeApp(App[None]):
             return
         if isinstance(screen, ChatScreen) and screen.streaming:
             screen.action_cancel_stream()
+            self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
         self.exit()
 
@@ -578,6 +579,15 @@ class LilbeeApp(App[None]):
         if isinstance(self.screen, ChatScreen):
             self.screen.action_focus_commands()
 
+    def chat_screen(self) -> ChatScreen | None:
+        """The installed chat screen, or None before the startup gate installs it."""
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        try:
+            return cast("ChatScreen", self.get_screen(_CHAT_SCREEN_NAME, ChatScreen))
+        except KeyError:
+            return None
+
     def action_run_sync(self) -> None:
         """Trigger an explicit document sync from any screen (S key).
 
@@ -591,9 +601,8 @@ class LilbeeApp(App[None]):
         if isinstance(self.screen, ChatScreen):
             self.screen._run_sync()
             return
-        try:
-            chat = self.get_screen(_CHAT_SCREEN_NAME, ChatScreen)
-        except KeyError:
+        chat = self.chat_screen()
+        if chat is None:
             return
 
         # switch_view drops the request outright while its re-entrancy guard is

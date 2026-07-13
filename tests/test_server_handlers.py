@@ -512,6 +512,78 @@ class TestAskStream:
         payload = json.loads(sources_event.split("data: ")[1].strip())
         assert [s["source"] for s in payload] == ["cited.md"]
 
+    async def test_model_sources_block_suppressed_in_grounded_stream(self, mock_svc):
+        """A model that appends its own Sources block must not double up with the
+        authoritative SOURCES event: no token frame carries the model's list."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.provider.chat.return_value = iter(
+            ["Grounded answer [1].", "\n\nSources:\n- invented.md"]
+        )
+        events = [e async for e in handlers.ask_stream("question")]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "invented.md" not in token_text
+        assert "Sources:" not in token_text
+        assert "Grounded answer [1]." in token_text
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["real.md"]
+
+    async def test_grounded_stream_releases_held_back_final_line(self, mock_svc):
+        """The citation filter holds the last line until the stream ends; the
+        flushed tail must still be emitted as a token before SOURCES."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.provider.chat.return_value = iter(["First line [1].\n", "Held final line."])
+        events = [e async for e in handlers.ask_stream("question")]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "First line [1].\nHeld final line." in token_text
+
+    async def test_grounded_stream_forwards_reasoning_tokens(self, mock_svc, monkeypatch):
+        """With show_reasoning on, reasoning content streams on the reasoning
+        channel and stays out of the answer (and the citation filter)."""
+        monkeypatch.setattr(cfg, "show_reasoning", True)
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        mock_svc.provider.chat.return_value = iter(["<think>pondering</think>", "answer [1]"])
+        events = [e async for e in handlers.ask_stream("question")]
+        reasoning_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: reasoning")
+        )
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "pondering" in reasoning_text
+        assert "answer [1]" in token_text
+        assert "pondering" not in token_text
+
+    async def test_ungrounded_stream_leaves_model_sources_intact(self, mock_svc):
+        """Chat mode has no authoritative list, so a model Sources block streams
+        verbatim (matching CLI direct streaming) rather than being stripped."""
+        mock_svc.searcher.skip_retrieval.return_value = True
+        mock_svc.searcher.direct_messages.return_value = [{"role": "user", "content": "q"}]
+        mock_svc.provider.chat.return_value = iter(["Answer.", "\n\nSources:\n- x.md"])
+        events = [e async for e in handlers.ask_stream("q")]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "Sources:" in token_text
+        assert "x.md" in token_text
+
     async def test_unknown_error_yields_internal_error(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.side_effect = RuntimeError("model missing")
@@ -972,6 +1044,46 @@ class TestChatStream:
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
         payload = json.loads(sources_event.split("data: ")[1].strip())
         assert [s["source"] for s in payload] == ["a.md", "b.md"]
+
+    async def test_model_sources_block_suppressed_in_grounded_stream(self, mock_svc, monkeypatch):
+        """A model Sources block in chat streaming is dropped so it doesn't double
+        up with the authoritative SOURCES event."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat_stream",
+            lambda req: _canonical_text_stream(["Grounded [1].", "\n\nSources:\n- invented.md"]),
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "invented.md" not in token_text
+        assert "Sources:" not in token_text
+        assert "Grounded [1]." in token_text
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["real.md"]
+
+    async def test_chat_stream_releases_held_back_final_line(self, mock_svc, monkeypatch):
+        """The chat SSE path also flushes the filter's held-back tail as a token."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "real.md", "chunk_index": 0})
+        mock_svc.searcher.build_rag_context.return_value = ([cited], [])
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat_stream",
+            lambda req: _canonical_text_stream(["First line [1].\n", "Held final line."]),
+        )
+        events = [e async for e in handlers.chat_stream("q", [])]
+        token_text = "".join(
+            json.loads(e.split("data: ")[1].strip())["token"]
+            for e in events
+            if e and e.startswith("event: token")
+        )
+        assert "First line [1].\nHeld final line." in token_text
 
     async def test_emits_warming_event_when_chat_cold(self, mock_svc, monkeypatch):
         mock_svc.provider.role_ready.return_value = False
@@ -3901,6 +4013,7 @@ class TestRunLlmStreamCancel:
                 cancel,
                 error_holder,
                 [],
+                None,
             )
         # Should have None sentinel
         items = []
@@ -3950,6 +4063,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             events = self._drain(queue)
@@ -3986,6 +4100,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             assert mock_provider.chat.call_count == 1
@@ -4027,6 +4142,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             assert mock_provider.chat.call_count == 1
@@ -4062,6 +4178,7 @@ class TestReasoningCapHandling:
                     cancel,
                     error_holder,
                     [],
+                    None,
                 )
 
             events = self._drain(queue)

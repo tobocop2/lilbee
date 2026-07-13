@@ -140,7 +140,7 @@ async def test_await_engine_paints_progress_then_proceeds(_warming_services):
         ):
             assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
         painted = [c.args[0] for c in widget.set_thinking_status.call_args_list]
-        assert painted[0] == msg.ENGINE_LOADING  # labelled before the first snapshot
+        assert painted[0] == msg.ENGINE_WARMING  # labelled before the first snapshot
         assert _engine_status_text(snapshot) in painted
         assert painted[-1] == ""  # the status clears once the engine is ready
 
@@ -234,9 +234,12 @@ def test_engine_status_text_reports_bytes_or_phase():
         phase=WarmPhase.READING_WEIGHTS, bytes_done=1, bytes_total=2, model_ref="a/b/c.gguf"
     )
     assert "50%" in _engine_status_text(reading)
-    assert _engine_status_text(WarmProgress(phase=WarmPhase.LOADING_ENGINE)) == msg.ENGINE_LOADING
+    almost = _engine_status_text(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
+    assert almost == msg.ENGINE_ALMOST_READY
     no_bytes = WarmProgress(phase=WarmPhase.READING_WEIGHTS)
-    assert _engine_status_text(no_bytes) == msg.ENGINE_LOADING
+    assert _engine_status_text(no_bytes) == msg.ENGINE_WARMING
+    starting = _engine_status_text(WarmProgress(phase=WarmPhase.STARTING))
+    assert starting == msg.ENGINE_WARMING
 
 
 async def test_await_engine_builds_services_when_none_exist(_warming_services):

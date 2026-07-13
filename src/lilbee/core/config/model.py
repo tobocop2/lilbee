@@ -391,13 +391,16 @@ class Config(BaseSettings):
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
 
     # Leave the engine fleet running on quit so the next launch adopts it warm.
-    # Off is the on-demand default: the engine loads per launch and frees VRAM
-    # on close.
+    # On keeps the engine resident: it never idle-unloads and survives app close
+    # for the next launch to adopt. Off (default) is on-demand: the engine loads
+    # per launch, releases its weights after an idle window, and reloads on the
+    # next prompt.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before a warm fleet unloads its weights (llama-swap ttl), so
-    # a warm engine never holds VRAM past this window. 0 keeps weights loaded
-    # forever. Read only when keep_engine_warm is on.
+    # Idle minutes before an on-demand (not-warm) fleet unloads its weights
+    # (llama-swap ttl), so it never holds VRAM past this window. 0 keeps weights
+    # loaded until the app tears the fleet down. Read only when keep_engine_warm
+    # is off (a warm fleet stays resident regardless).
     engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with

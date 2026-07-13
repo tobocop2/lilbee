@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from lilbee.core.config import cfg
-from lilbee.data.store import CitationRecord, SearchChunk
-from lilbee.retrieval.query.formatting import format_source
+from lilbee.data.store import SearchChunk
 
 _DEFAULT_RELEVANCE_WEIGHT = 0.5
 
@@ -168,25 +167,6 @@ def filter_results(
             continue
         filtered.append(r)
     return filtered
-
-
-def deduplicate_sources(
-    results: list[SearchChunk],
-    max_citations: int = 5,
-    citations_map: dict[str, list[CitationRecord]] | None = None,
-) -> list[str]:
-    """Merge results from same source into deduplicated citation lines."""
-    seen: set[str] = set()
-    citation_lines: list[str] = []
-    for r in results:
-        cits = (citations_map or {}).get(r.source)
-        line = format_source(r, citations=cits)
-        if line not in seen:
-            seen.add(line)
-            citation_lines.append(line)
-            if len(citation_lines) >= max_citations:
-                break
-    return citation_lines
 
 
 def _sort_key(r: SearchChunk) -> float:

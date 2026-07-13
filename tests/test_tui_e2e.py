@@ -2476,8 +2476,8 @@ class TestAppQuit:
                 await pilot.pause()
                 mock_exit.assert_called_once()
 
-    async def test_quit_cancels_active_task_first(self, _mock_resolve):
-        """Ctrl+C with active task cancels it instead of exiting."""
+    async def test_quit_exits_despite_active_task(self, _mock_resolve):
+        """Ctrl+C quits on the first press; a background task never swallows it."""
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
@@ -2489,7 +2489,7 @@ class TestAppQuit:
             with mock.patch.object(app, "exit") as mock_exit:
                 await pilot.press("ctrl+c")
                 await pilot.pause()
-                mock_exit.assert_not_called()
+                mock_exit.assert_called_once()
 
     async def test_quit_cancels_stream_if_on_chat(self, _mock_resolve):
         """Ctrl+C cancels stream before exiting when streaming."""
@@ -2710,8 +2710,9 @@ class TestChatSlashCommands:
             assert app.theme == "monokai"
 
     async def test_cmd_theme_without_name(self, _mock_resolve):
-        """/theme with no args lists themes."""
+        """/theme with no args lands in the prompt with the theme dropdown open."""
         from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -2722,7 +2723,27 @@ class TestChatSlashCommands:
             assert isinstance(screen, ChatScreen)
             screen._handle_slash("/theme")
             await pilot.pause()
-            assert app.screen.is_current
+            assert screen.query_one("#chat-input").value == "/theme "
+            overlay = screen.query_one("#completion-overlay", CompletionOverlay)
+            assert overlay.is_visible
+            assert "monokai" in overlay.options
+
+    async def test_cmd_theme_unknown_name_notifies(self, _mock_resolve):
+        """/theme with a bogus name warns with the valid list instead of raising."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            from lilbee.cli.tui.screens.chat import ChatScreen
+
+            screen = app.screen
+            assert isinstance(screen, ChatScreen)
+            with mock.patch.object(screen, "notify") as mock_notify:
+                screen._handle_slash("/theme not-a-theme")
+                await pilot.pause()
+            mock_notify.assert_called_once()
+            assert "monokai" in mock_notify.call_args[0][0]
 
     async def test_cmd_delete_no_docs(self, _mock_resolve):
         """/delete with no docs shows warning."""
@@ -3144,6 +3165,7 @@ class TestQuestionMarkBehavior:
     """
 
     async def test_question_mark_types_literal_into_focused_chat_input(self, _mock_resolve):
+        """With text in the prompt, ? stays a literal character (no help popup)."""
         from lilbee.cli.tui.app import LilbeeApp
 
         app = LilbeeApp()
@@ -3151,15 +3173,16 @@ class TestQuestionMarkBehavior:
             await await_chat(app, pilot)
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.focus()
+            inp.value = "what is this"
             await pilot.pause()
             assert app.focused is inp
             await pilot.press("?")
             await pilot.pause()
-            assert "?" in inp.value, (
-                f"? must land as a literal character in chat input, got {inp.value!r}"
+            assert inp.value == "what is this?", (
+                f"? must land as a literal character mid-typing, got {inp.value!r}"
             )
             assert not app.screen.query("HelpPanel"), (
-                "? must not open help while the chat input has focus"
+                "? must not open help while the user is mid-typing"
             )
 
     async def test_f1_opens_help_even_with_chat_input_focused(self, _mock_resolve):

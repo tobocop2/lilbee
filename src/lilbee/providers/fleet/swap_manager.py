@@ -40,7 +40,11 @@ _HOST = "127.0.0.1"
 # One llama-swap per swap group: the group name lands in the config filename so
 # each group's processes are identified (and stopped) by their own config path,
 # and a placement change can restart one group without touching the others.
-_CONFIG_FILENAME_TEMPLATE = "llama-swap-{group}.json"
+# Per owner-pid (the last dotted segment, matching the state-file scheme) so two
+# lilbee instances at one data_dir never write the same config file. A shared
+# name let a sibling's write flip the ports/ttl a later restart would re-read.
+_CONFIG_FILENAME_TEMPLATE = "llama-swap-{group}.{pid}.json"
+# Matches every owner's group configs; the per-owner glob narrows to one pid.
 _CONFIG_FILE_GLOB = "llama-swap-*.json"
 # llama-swap's own stdout/stderr (its HTTP access log) is captured to a file under
 # the data root's ``logs/`` (beside server.log etc.) instead of inherited from the
@@ -141,7 +145,7 @@ class SwapManager:
     def __init__(self, data_dir: Path, group: SwapGroup) -> None:
         self._data_dir = data_dir
         self._group = group
-        self._config_path = data_dir / _CONFIG_FILENAME_TEMPLATE.format(group=group.value)
+        self._config_path = data_dir / _config_filename(os.getpid(), group.value)
         self._log_path = data_dir / _LOGS_SUBDIR / _LOG_FILENAME_TEMPLATE.format(group=group.value)
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
@@ -500,6 +504,7 @@ def reap_stale(data_dir: Path, *, keep_detached: bool = False) -> None:
     which role groups exist, when no per-group manager has been built yet.
     """
     _clean_stale_tmp_files(data_dir)
+    _clean_stale_configs(data_dir)
     for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
         state = _load_state(state_path)
         if state is None:
@@ -525,15 +530,30 @@ def _clean_stale_tmp_files(data_dir: Path) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
+def _clean_stale_configs(data_dir: Path) -> None:
+    """Remove per-owner config files whose owner lilbee is gone.
+
+    The swaps themselves are reaped from the state files; these leftover config
+    files are just clutter once their writer pid is dead. A live owner's config
+    (pid still exists) and a pid-less legacy name are left untouched; skipping on
+    pid reuse only leaves harmless clutter, never deletes a live owner's config.
+    """
+    for config_path in data_dir.glob(_CONFIG_FILE_GLOB):
+        owner = _config_owner_pid(config_path.name)
+        if owner is not None and not psutil.pid_exists(owner):
+            config_path.unlink(missing_ok=True)
+
+
 def sweep_owned(data_dir: Path) -> None:
     """Stop every llama-swap this process owns at *data_dir*, across all groups.
 
     The provider's fallback teardown path: when it holds no tracked managers, an
-    in-flight build may still have spawned swaps it never adopted. Each group's
-    config file identifies that group's processes, so every group config present
-    is swept. Cross-run leftovers are ``reap_stale``'s job, not this sweep's.
+    in-flight build may still have spawned swaps it never adopted. Config files
+    are per owner-pid, so this sweeps only this process's group configs; a
+    sibling lilbee's swaps are its own to stop. Cross-run leftovers are
+    ``reap_stale``'s job, not this sweep's.
     """
-    for config_path in sorted(data_dir.glob(_CONFIG_FILE_GLOB)):
+    for config_path in sorted(data_dir.glob(_own_config_glob(os.getpid()))):
         _stop_own_fleet(config_path, ())
 
 
@@ -726,6 +746,25 @@ def _state_owner_pid(name: str) -> int | None:
     """
     stem = name.removeprefix(_STATE_TMP_PREFIX).removesuffix(_STATE_TMP_SUFFIX)
     stem = stem.removeprefix(_STATE_FILENAME_PREFIX).removesuffix(_STATE_FILENAME_SUFFIX)
+    try:
+        return int(stem.rsplit(".", 1)[-1])
+    except ValueError:
+        return None
+
+
+def _config_filename(pid: int, group: str) -> str:
+    """This owner's config filename for *group* (``llama-swap-<group>.<pid>.json``)."""
+    return _CONFIG_FILENAME_TEMPLATE.format(group=group, pid=pid)
+
+
+def _own_config_glob(pid: int) -> str:
+    """Glob matching only *pid*'s per-group config files."""
+    return f"llama-swap-*.{pid}.json"
+
+
+def _config_owner_pid(name: str) -> int | None:
+    """Owner pid embedded in a config filename, ``None`` for a legacy pid-less name."""
+    stem = name.removeprefix("llama-swap-").removesuffix(".json")
     try:
         return int(stem.rsplit(".", 1)[-1])
     except ValueError:

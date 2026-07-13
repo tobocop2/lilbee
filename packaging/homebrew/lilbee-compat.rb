@@ -1,5 +1,5 @@
 class LilbeeCompat < Formula
-  desc "Run local AI models, search your files and code, and crawl the web (pre-Haswell CPU build)"
+  desc "Whole local AI stack in one executable: models, search, crawler (pre-Haswell)"
   homepage "https://github.com/tobocop2/lilbee"
   version "0.0.0"
   license "Elastic-2.0"

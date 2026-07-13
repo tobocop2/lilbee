@@ -41,6 +41,11 @@ CrawlDialog Center {
     margin-top: 1;
 }
 
+CrawlDialog #crawl-buttons {
+    width: auto;
+    height: auto;
+}
+
 CrawlDialog Button {
     margin: 0 1;
 }

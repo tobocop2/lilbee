@@ -36,7 +36,7 @@ from lilbee.catalog import (
     display_label_for_ref,
     extract_quant,
 )
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import apply_active_model
 from lilbee.cli.tui.screens.catalog_utils import (
@@ -54,6 +54,14 @@ from lilbee.modelhub.models import get_system_ram_gb
 log = logging.getLogger(__name__)
 
 SETUP_CHAT_GRID_ID = "setup-chat-grid"
+
+
+def _exact_installed_ref(installed: list[str], ref: str) -> str | None:
+    """The exact installed ref for *ref*, expanding a repo-level ref to its file."""
+    if ref in installed:
+        return ref
+    matches = [r for r in installed if r.startswith(f"{ref}/")]
+    return matches[0] if matches else None
 
 
 def _scan_installed_models() -> tuple[list[str], list[str]]:
@@ -93,6 +101,7 @@ def _installed_name_to_row(name: str, task: str) -> LocalCatalogRow:
         sort_downloads=0,
         sort_size=0.0,
         ref=name,
+        compat=ModelCompat.SUPPORTED,
     )
 
 
@@ -182,8 +191,8 @@ class SetupWizard(Screen[str | None]):
             yield Footer()
 
     def _initial_hint_text(self) -> str:
-        """Return SETUP_RETURN_HINT when both roles already resolve, else SETUP_ENTER_HINT."""
-        if self._chat_installed and self._embed_installed:
+        """Return SETUP_RETURN_HINT only when the configured refs are installed role-correctly."""
+        if cfg.chat_model in self._chat_installed and cfg.embedding_model in self._embed_installed:
             return msg.SETUP_RETURN_HINT
         return msg.SETUP_ENTER_HINT
 
@@ -282,7 +291,18 @@ class SetupWizard(Screen[str | None]):
             return
         pending = _pending_download(card)
         if pending is None:
-            self._apply_selection(task, ref)
+            row = card.row
+            # Only a ref that is already on disk may be written without a
+            # download, and always as the exact installed file ref: featured
+            # rows carry the repo-level ref, which the display label and the
+            # ready check cannot resolve.
+            if row.kind == CatalogRowKind.LOCAL and row.installed:
+                installed = (
+                    self._chat_installed if task == ModelTask.CHAT else self._embed_installed
+                )
+                exact = _exact_installed_ref(installed, ref)
+                if exact is not None:
+                    self._apply_selection(task, exact)
             return
         if pending.ref in self._submitted:
             return
