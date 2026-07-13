@@ -697,8 +697,11 @@ def _resolve_stream_context(
         )
     except EmbeddingModelMismatchError as mismatch:
         # detail carries the index's embedder so the client can offer to adopt it.
-        detail = mismatch.persisted_model if mismatch.dims_match else None
-        frame = sse_error(str(mismatch), code=SseErrorCode.INDEX_EMBEDDER_MISMATCH, detail=detail)
+        frame = sse_error(
+            str(mismatch),
+            code=SseErrorCode.INDEX_EMBEDDER_MISMATCH,
+            detail=_mismatch_detail(mismatch),
+        )
         return [], None, [frame]
     if rag is None:
         return [], None, [sse_error("No relevant documents found.")]
