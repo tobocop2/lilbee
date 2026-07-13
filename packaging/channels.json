@@ -1,0 +1,27 @@
+{
+  "dev": {
+    "tag": "v0.6.90b420.dev719",
+    "promoted_at": "2026-07-13T00:00:00Z",
+    "history": [
+      {
+        "tag": "v0.6.90b420.dev719",
+        "at": "2026-07-13T00:00:00Z"
+      }
+    ]
+  },
+  "beta": {
+    "tag": null,
+    "promoted_at": null,
+    "history": []
+  },
+  "stable": {
+    "tag": "v0.6.90b420.dev719",
+    "promoted_at": "2026-07-13T00:00:00Z",
+    "history": [
+      {
+        "tag": "v0.6.90b420.dev719",
+        "at": "2026-07-13T00:00:00Z"
+      }
+    ]
+  }
+}

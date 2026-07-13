@@ -1,16 +1,34 @@
 name: Publish Packages
 
-# Updates the Homebrew formula, AUR PKGBUILD, and Nix flake to pin a tag's
-# GH-release binaries. Dispatched by publish.yml / emergency-publish.yml
-# (and by hand) once the binaries are attached.
+# Points the package-manager manifests at a tag's GH-release binaries.
+# Dispatched by promote.yml (and by hand) once the binaries are attached.
+# Nothing here rebuilds anything: every job pins existing release assets by
+# hash into a manifest.
+#
+# The channel picks WHICH manifests move:
+#   stable -> the unsuffixed packages users get by default (Formula/lilbee.rb,
+#             bucket/lilbee.json, AUR lilbee, sources.json, flatpak, snap).
+#   beta   -> the -beta variants (Formula/lilbee-beta.rb, bucket/lilbee-beta.json,
+#             AUR lilbee-beta, sources-beta.json). Flatpak has no beta variant:
+#             its OSTree repo would need a second branch/app-id per ring, so
+#             beta flatpak users use docker :beta or the GH release binary.
+# The dev channel never lands here -- dev ships via the GH release and
+# docker :dev, without churning package manifests on every build.
+
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to (re)publish (e.g. v0.6.66b469)."
+        description: "Release tag to (re)publish (e.g. v0.6.91)."
         required: true
-      channels:
-        description: "Channels to publish: 'all' or a comma list of homebrew,aur,nix,flatpak,snap."
+      channel:
+        description: "Channel the tag is being published to; picks the manifest set."
+        required: false
+        type: choice
+        options: [beta, stable]
+        default: stable
+      managers:
+        description: "Package managers to publish: 'all' or a comma list of homebrew,aur,nix,flatpak,snap,scoop."
         required: false
         default: "all"
 
@@ -18,7 +36,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-packages-${{ inputs.tag }}
+  group: publish-packages-${{ inputs.tag }}-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
@@ -27,6 +45,7 @@ jobs:
     outputs:
       tag: ${{ steps.info.outputs.tag }}
       version: ${{ steps.info.outputs.version }}
+      suffix: ${{ steps.info.outputs.suffix }}
       sha_linux: ${{ steps.info.outputs.sha_linux }}
       sha_macos_arm64: ${{ steps.info.outputs.sha_macos_arm64 }}
       sha_macos_x86_64: ${{ steps.info.outputs.sha_macos_x86_64 }}
@@ -34,16 +53,20 @@ jobs:
       sha_windows_cu125: ${{ steps.info.outputs.sha_windows_cu125 }}
       size_linux: ${{ steps.info.outputs.size_linux }}
     steps:
-      - name: Resolve tag and asset digests
+      - name: Resolve tag, channel suffix, and asset digests
         id: info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
         run: |
           set -euo pipefail
           tag="${TAG}"
           version="${tag#v}"
+          # Stable owns the unsuffixed package names; beta publishes -beta variants.
+          suffix=""
+          [ "${CHANNEL}" = "beta" ] && suffix="-beta"
           gh api "/repos/${REPO}/releases/tags/${tag}" \
             --jq '.assets[] | "\(.name)\t\(.digest|sub("sha256:"; ""))\t\(.size)"' > /tmp/assets.tsv
 
@@ -66,6 +89,7 @@ jobs:
           {
             echo "tag=$tag"
             echo "version=$version"
+            echo "suffix=$suffix"
             echo "sha_linux=$sha_linux"
             echo "sha_macos_arm64=$sha_macos_arm64"
             echo "sha_macos_x86_64=$sha_macos_x86_64"
@@ -76,7 +100,7 @@ jobs:
 
   homebrew:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'homebrew')
+    if: inputs.managers == 'all' || contains(inputs.managers, 'homebrew')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -96,27 +120,29 @@ jobs:
       - uses: ./.github/actions/publish-homebrew-formula
         with:
           tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          formula-path: Formula/lilbee.rb
+          formula-path: Formula/lilbee${{ needs.resolve.outputs.suffix }}.rb
           render-args: ${{ steps.args.outputs.value }}
-          commit-message: "lilbee ${{ needs.resolve.outputs.version }}"
+          commit-message: "lilbee${{ needs.resolve.outputs.suffix }} ${{ needs.resolve.outputs.version }}"
 
   aur:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'aur')
+    if: inputs.managers == 'all' || contains(inputs.managers, 'aur')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/publish-aur-package
         with:
-          pkgname: lilbee
-          pkgbuild-dir: packaging/aur/lilbee
+          pkgname: lilbee${{ needs.resolve.outputs.suffix }}
+          pkgbuild-dir: packaging/aur/lilbee${{ needs.resolve.outputs.suffix }}
           version: ${{ needs.resolve.outputs.version }}
           sha-linux: ${{ needs.resolve.outputs.sha_linux }}
           aur-ssh-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
   flatpak:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'flatpak')
+    # Stable-only: see the header. Beta flatpak users use docker :beta or the
+    # GH release binary until the OSTree repo grows per-ring branches.
+    if: inputs.channel == 'stable' && (inputs.managers == 'all' || contains(inputs.managers, 'flatpak'))
     # One writer at a time for the shared OSTree pages repo. The regular, CUDA and
     # compat fan-outs run concurrently and each regenerates the repo's summary and
     # static deltas wholesale, so the rebase-retry the text-file channels use would
@@ -141,7 +167,9 @@ jobs:
 
   snap:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'snap')
+    # The snap is a per-tag release asset (not a moving manifest), so beta and
+    # stable both (re)build it; re-runs clobber the identical artifact.
+    if: inputs.managers == 'all' || contains(inputs.managers, 'snap')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -187,7 +215,7 @@ jobs:
 
   nix-flake:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'nix')
+    if: inputs.managers == 'all' || contains(inputs.managers, 'nix')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -212,14 +240,14 @@ jobs:
           echo "value=${systems}" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/publish-flake-sources
         with:
-          target-file: sources.json
+          target-file: sources${{ needs.resolve.outputs.suffix }}.json
           version: ${{ needs.resolve.outputs.version }}
           systems-json: ${{ steps.sys.outputs.value }}
-          commit-message: "lilbee ${{ needs.resolve.outputs.version }} (flake)"
+          commit-message: "lilbee${{ needs.resolve.outputs.suffix }} ${{ needs.resolve.outputs.version }} (flake)"
 
   scoop:
     needs: resolve
-    if: inputs.channels == 'all' || contains(inputs.channels, 'scoop')
+    if: inputs.managers == 'all' || contains(inputs.managers, 'scoop')
     runs-on: windows-latest
     permissions:
       contents: write
@@ -232,32 +260,34 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
+          SUFFIX: ${{ needs.resolve.outputs.suffix }}
           SHA_WINDOWS: ${{ needs.resolve.outputs.sha_windows }}
           SHA_WINDOWS_CU125: ${{ needs.resolve.outputs.sha_windows_cu125 }}
         run: |
           set -euo pipefail
           [ -n "$SHA_WINDOWS" ] || { echo "lilbee-windows-x86_64.exe missing from release"; exit 1; }
           [ -n "$SHA_WINDOWS_CU125" ] || { echo "lilbee-windows-x86_64-cu125.exe missing from release"; exit 1; }
-          python packaging/tools/render_scoop_manifest.py bucket/lilbee.json \
+          python packaging/tools/render_scoop_manifest.py "bucket/lilbee${SUFFIX}.json" \
             --version "$VERSION" --sha-windows "$SHA_WINDOWS" --sha-windows-cu125 "$SHA_WINDOWS_CU125"
       - name: Install from the rendered manifest and smoke test
         uses: ./.github/actions/validate-scoop-install
         with:
-          manifest-path: bucket/lilbee.json
+          manifest-path: bucket/lilbee${{ needs.resolve.outputs.suffix }}.json
           expected-version: lilbee ${{ needs.resolve.outputs.version }}
       - name: Commit and push the manifest
         shell: bash
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
+          SUFFIX: ${{ needs.resolve.outputs.suffix }}
         run: |
           set -euo pipefail
           git config user.name "lilbee-bot"
           git config user.email "lilbee-bot@users.noreply.github.com"
-          git add bucket/lilbee.json
+          git add "bucket/lilbee${SUFFIX}.json"
           if git diff --cached --quiet; then
             echo "no manifest changes; skipping push"
             exit 0
           fi
-          git commit -m "lilbee ${VERSION} (scoop)"
+          git commit -m "lilbee${SUFFIX} ${VERSION} (scoop)"
           # nix-flake commits to main from a sibling job; rebase-retry on a race.
           bash tools/ci/git_push_retry.sh

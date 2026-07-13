@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Cut a beta release: bump the trailing counter (the .devNNN when the version has
-# one, else the bNNN), commit, tag, and push from main.
-# release-candidate.yml builds the artifacts, publishes to PyPI, and creates the
-# pre-release with generated notes. Once that pipeline is green run
-# `make release-promote` to rewrite the notes as headings and mark it latest.
+# Cut a release: bump pyproject to the next final-form version, commit, tag, and
+# push from main. Versions carry no pre-release markers -- a build's maturity
+# lives in the release channels (packaging/channels.json), not in its version
+# string, so the exact same artifacts can move dev -> beta -> stable untouched.
+# release-candidate.yml builds everything once and enters the dev channel;
+# `make promote TAG=... CHANNEL=beta|stable` moves it up.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -16,17 +17,16 @@ git fetch -q origin main
   || { echo "release: main is not in sync with origin/main" >&2; exit 1; }
 
 cur=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
-case "$cur" in
-  *b[0-9]*) ;;
-  *) echo "release: version '$cur' has no beta (bNNN) segment to bump" >&2; exit 1;;
-esac
-# Bump the last numeric segment: the dev counter when the version carries one
-# (0.6.90b420.dev710 -> .dev711), otherwise the beta counter (0.6.66b507 -> b508).
-# 10# keeps a zero-padded counter out of bash's octal interpretation.
-case "$cur" in
-  *.dev[0-9]*) next="${cur%.dev*}.dev$(( 10#${cur##*.dev} + 1 ))" ;;
-  *)           next="${cur%b*}b$(( 10#${cur##*b} + 1 ))" ;;
-esac
+# A final-form version bumps its last segment (0.6.90 -> 0.6.91). A version
+# still carrying markers from the old scheme graduates to its base version
+# (0.6.90b420.dev719 -> 0.6.90), which PEP 440 orders above all its pre-releases.
+base=$(printf '%s' "$cur" | sed -E 's/(a|b|rc)[0-9].*$//; s/\.dev[0-9]+$//')
+if [ "$base" != "$cur" ]; then
+  next="$base"
+else
+  # 10# keeps a zero-padded counter out of bash's octal interpretation.
+  next="${cur%.*}.$(( 10#${cur##*.} + 1 ))"
+fi
 tag="v${next}"
 echo "release: $cur -> $next ($tag)"
 
@@ -38,5 +38,6 @@ git tag "$tag"
 git push origin main
 git push origin "$tag"
 
-echo "release: pushed ${tag}; release-candidate.yml is building."
-echo "release: when the PyPI publish is green, run 'make release-promote'."
+echo "release: pushed ${tag}; release-candidate.yml is building and will enter the dev channel."
+echo "release: once verify-release is green, run 'make promote TAG=${tag} CHANNEL=beta',"
+echo "release: and after the beta soak, 'make promote TAG=${tag} CHANNEL=stable'."

@@ -81,3 +81,14 @@ jobs:
         with:
           name: sdist
           path: dist/*.tar.gz
+
+      # The sdist lives on the release alongside the wheel: publish.yml uploads
+      # both to PyPI from the release assets at stable promotion, which can
+      # happen long after this run's artifacts expire.
+      - name: Attach sdist to the GH pre-release (call mode)
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$TAG" dist/*.tar.gz --clobber

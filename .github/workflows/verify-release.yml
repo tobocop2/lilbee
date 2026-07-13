@@ -6,8 +6,8 @@ run-name: Verify release ${{ inputs.tag || github.event.workflow_run.head_branch
 # executables and the pip wheel pair) and runs the core-functionality sweep
 # against each one: engine inference (chat + embedding), document ingest,
 # search, a RAG ask, and an http-mode crawl. This is the promotion gate:
-# `make release-promote` refuses to mark a tag latest until this workflow has
-# passed for it. Fires automatically when a Release candidate run finishes
+# promote.yml refuses to move a tag past the dev channel until this workflow
+# has passed for it. Fires automatically when a Release candidate run finishes
 # green on a tag, or on demand for any tag.
 
 on:

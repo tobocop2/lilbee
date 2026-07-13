@@ -455,8 +455,8 @@ closure. These rules exist because each one shipped a broken artifact once.
   Executable cells, the `smoke-wheels` PyPI-channel job, and `verify-release.yml`
   (against the downloadable assets) all run it. `--version`/`--help` passing is
   the "test passes but covers nothing" smell applied to a binary — it does not
-  count as verification, and `make release-promote` refuses to mark a tag latest
-  without a green `verify-release` run.
+  count as verification, and `promote.yml` refuses to move a tag past the dev
+  channel without a green `verify-release` run.
 - **Never `continue-on-error` a smoke or correctness gate.** A swallowed gate is
   how the broken macOS bundle shipped. Skip a gate that genuinely can't run in
   an environment (GPU-driver backends link `libcuda.so.1` / `libamdhip64.so`

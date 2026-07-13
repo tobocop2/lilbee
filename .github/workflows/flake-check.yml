@@ -8,6 +8,8 @@ on:
       - flake.lock
       - sources.json
       - sources-cuda.json
+      - sources-compat.json
+      - sources-beta.json
       - .github/workflows/flake-check.yml
   pull_request:
     paths:
@@ -15,6 +17,8 @@ on:
       - flake.lock
       - sources.json
       - sources-cuda.json
+      - sources-compat.json
+      - sources-beta.json
       - .github/workflows/flake-check.yml
 
 jobs:

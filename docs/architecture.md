@@ -1015,44 +1015,48 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 
 ## Release pipeline
 
-Releases are **build-once, publish-later**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run; QA installs *those* artifacts; publishing is a separate manual step that only downloads and uploads what that run already built. Nothing is rebuilt downstream. The PyPI publish needs only the default wheels + sdist (they finish ~25 min into the run), so it doesn't wait on the executables, the CUDA matrix, or QA — only the downstream packaging fan-out (which consumes the executables on the GH release) waits for those.
+Releases are **build-once, promote-by-pointer**. Pushing a `v*` tag builds every shippable artifact one time inside a single workflow run and attaches them to a GH pre-release. From then on the artifacts are immutable: a release *channel* (`dev` / `beta` / `stable`) is a pointer to a tag, recorded in `packaging/channels.json` on `main`, and promoting a build means moving a pointer and republishing that channel's distribution surfaces from the tag's existing assets. Nothing is ever rebuilt downstream — versions are final-form (`0.6.91`, no `bN`/`.devN` markers), so the exact same binaries flow dev → beta → stable.
 
 ```mermaid
 flowchart TB
     TAG["push tag v*"] --> RC["release-candidate.yml<br/>build wheels + sdist + Vulkan/Metal exes + CUDA exes — once"]
     RC --> PRE["GH pre-release · every artifact attached"]
-    RC --> QA["QA matrix"]
     RC -.-> PAGES["pages.yml · site + wheel index"]
-    RC ==> PUB["publish.yml · manual, no rebuild"]
-    PUB --> PYPI["download wheels + sdist → publish to PyPI"]
-    PYPI --> FAN["fanout-packaging"]
-    FAN --> PKG["Docker · lilbee Homebrew · lilbee AUR · lilbee Nix"]
-    PUB --> CUDAFAN["dispatch-cuda · waits for cu125 Linux on release"]
-    CUDAFAN --> CUDAPKG["publish-cuda-packages.yml<br/>lilbee-cuda Homebrew · AUR · Nix"]
-    EMG["emergency-publish.yml · skip-QA escape hatch"] -.-> PYPI
+    RC --> DEV["promote.yml channel=dev · automatic"]
+    DEV --> DEVOUT["docker :dev/:dev-cuda · channels.json"]
+    RC -.-> VER["verify-release.yml · promotion gate"]
+    VER ==> BETA["make promote CHANNEL=beta"]
+    BETA --> BETAOUT["docker :beta · homebrew/scoop/AUR/nix lilbee-beta"]
+    BETA ==> STABLE["make promote CHANNEL=stable · requires beta soak"]
+    STABLE --> PYPI["publish.yml → PyPI (wheel + sdist from the release)"]
+    STABLE --> STABLEOUT["docker :latest/:cuda · unsuffixed packages · GH release marked latest"]
+    STABLE --> CUDAPKG["publish-cuda-packages.yml<br/>lilbee-cuda Homebrew · AUR · Nix"]
 ```
 
-Thick arrow = the publish path; dotted = triggered/side paths. Timings, what-waits-on-what, and the fan-out's self-skip are in the notes below.
+Thick arrows = the deliberate promotions; dotted = triggered/side paths.
 
 ### Lanes
 
-| Lane | Trigger | Builds | QA | Publishes |
+| Lane | Trigger | Builds | Gate | Publishes |
 |---|---|---|---|---|
-| **Release candidate** | `git push v0.6.66bN` | default wheels, sdist, extra (CUDA) wheels, Vulkan/Metal executables, CUDA executables — once, all in parallel | yes | no (artifacts only); attaches everything to a GH **pre-release** |
-| **Publish to PyPI** | `gh workflow run publish.yml -f tag=v0.6.66bN` | nothing — downloads the RC run's artifacts | n/a — needs only the default wheels (no wait on executables/CUDA/QA) | PyPI, then in parallel: Docker / lilbee Homebrew / AUR / Nix via `fanout-packaging`, and `lilbee-cuda` Homebrew / AUR / Nix via `dispatch-cuda` → `publish-cuda-packages.yml` |
-| **Emergency publish** | `gh workflow run emergency-publish.yml -f tag=... -f confirm=skip-qa` | nothing — downloads the RC run's artifacts | skipped on purpose | same as Publish to PyPI; tolerates an incomplete artifact set |
+| **Release candidate** | `git push v0.6.91` (via `make release`) | default wheels, sdist, extra (CUDA) wheels, Vulkan/Metal executables, CUDA executables — once, all in parallel | lint + tests + per-artifact smoke | attaches everything to a GH **pre-release**, then auto-enters the **dev** channel (docker `:dev`) |
+| **Promote to beta** | `make promote TAG=v0.6.91 CHANNEL=beta` | nothing | green `verify-release.yml` run for the tag | docker `:beta`/`:beta-cuda`, the `-beta` package variants (Homebrew/scoop/AUR/Nix), `channels.json` |
+| **Promote to stable** | `make promote TAG=v0.6.91 CHANNEL=stable` | nothing | green `verify-release.yml` run **and** a prior beta promotion of the tag | PyPI via `publish.yml`, docker `:latest`/`:cuda`, the unsuffixed packages + flatpak, `publish-cuda-packages.yml`, GH release flipped to non-prerelease + latest with headed notes |
+| **Force lane** | re-dispatch `promote.yml` with `force=skip-verify` | nothing | skipped on purpose | same as the target channel; replaces the old `emergency-publish.yml` |
 
-`release-candidate.yml` can also be dispatched manually against a branch/SHA — same build + QA, no pre-release attach, never publishes. That's a dry run.
+`release-candidate.yml` can also be dispatched manually against a branch/SHA — same build, no pre-release attach, never enters a channel. That's a dry run.
 
 `build-cuda-executables.yml` is also dispatchable standalone (`gh workflow run build-cuda-executables.yml -f tag=v...`) to backfill CUDA binaries onto a historical release; in that mode each cell attaches directly to the named release tag instead of relying on `attach-prerelease`.
 
 ### Notes
 
-- **Single build location.** The lilbee wheel (pure Python), sdist, the per-backend `lilbee-engine` wheels, and every executable (Vulkan, Metal, CUDA) are produced only by the `release-candidate.yml` run for the tag. `build-default-wheels.yml` builds the lilbee wheel + sdist, `build-multigpu.yml` builds the engine wheels, `release.yml` the Vulkan/Metal exes, `build-cuda-executables.yml` the CUDA exes. `publish.yml` / `emergency-publish.yml` resolve that run by commit SHA and pull its artifacts; they never invoke a builder. The engine wheels and CUDA executable cells are `continue-on-error` so a slow GPU cell never holds up anything.
-- **PyPI publishes early; the fan-out waits.** `publish.yml` gates on the lilbee wheel + sdist + the three default engine wheels (Vulkan Linux/Win, Metal macOS) being complete in the RC run, then uploads all of them so a plain `pip install lilbee` resolves the engine. The Homebrew/AUR/Nix/Docker fan-out for the default `lilbee` package pins the executables by hash, so `fanout-packaging` self-skips (with a warning) until those assets are attached to the GH release; re-running `publish.yml` then completes the fan-out. The PyPI upload is `skip-existing`, so re-running is safe.
-- **CUDA fan-out is its own lane.** `publish.yml`'s `dispatch-cuda` job runs in parallel with `publish-pypi` (it needs `guard` only, not the PyPI upload), polls the release for `lilbee-linux-x86_64-cu125`, and dispatches `publish-cuda-packages.yml` as soon as that asset attaches. That workflow updates the `lilbee-cuda` Homebrew formula, the `lilbee-cuda` AUR package, and the `sources-cuda.json` flake entry. Vulkan and CUDA fan-outs are fully decoupled: a slow Windows CUDA cell can't stall the `lilbee` Homebrew update, and a PyPI hiccup can't stall the `lilbee-cuda` update.
-- **`sources-cuda.json` is the CUDA flake state.** `publish-packages.yml` rewrites `sources.json` from scratch on every release (the Vulkan/Metal entries); the CUDA flake entry lives in a separate `sources-cuda.json` so the Vulkan publish can't wipe it. `flake.nix` reads both files; the `lilbee-cuda` package output only appears when `sources-cuda.json` lists a system. `flake-check.yml` triggers on either file.
-- **`lilbee` and `lilbee-cuda` are separate Homebrew / AUR / Nix packages.** Both ship a `lilbee` binary; the formula and `PKGBUILD` declare `conflicts_with` / `provides` so users swap between them. The Nix flake exposes them as parallel package outputs (`#default` vs `#lilbee-cuda`).
+- **Single build location.** The lilbee wheel (pure Python), sdist, the per-backend `lilbee-engine` wheels, and every executable (Vulkan, Metal, CUDA) are produced only by the `release-candidate.yml` run for the tag. `build-default-wheels.yml` builds the lilbee wheel + sdist, `build-multigpu.yml` builds the engine wheels, `release.yml` the Vulkan/Metal exes, `build-cuda-executables.yml` the CUDA exes. Everything downstream consumes the GH release's assets; nothing ever invokes a builder. The engine wheels and CUDA executable cells are `continue-on-error` so a slow GPU cell never holds up anything.
+- **Channels are pointers, versions are identity.** `packaging/channels.json` records which tag each channel points at (plus history); `promote.yml` is the only writer. Rollback is promoting an older tag again. Because artifacts bake the version into `--version`, the wheel filename, and `/api/health`, a promotion never renames anything — the stable gate refuses versions carrying PEP 440 pre-release/dev markers, since pip's default resolution would skip them forever.
+- **PyPI is the stable channel.** PyPI has no pointer semantics, so `publish.yml` runs only at stable promotion, downloading the wheel + sdist from the GH release (not from run artifacts, which expire after 90 days — promotion can happen months later). Re-runs are no-ops (`skip-existing` + immutable versions). Dev/beta pip users install the wheel straight off the GH release. Trusted-publisher config pins the `publish.yml` filename and the `pypi` environment; don't rename either, and don't fold it into `promote.yml` as a reusable workflow (the OIDC claim would name the caller).
+- **Per-manager channel matrix.** Docker carries all three rings as moving tags (`:dev`, `:beta`, `:latest`, plus `-cuda` variants). Homebrew, scoop, AUR, and the Nix flake carry beta as `-beta` package variants and stable as the unsuffixed names. Flatpak and the CUDA/compat package variants are stable-only (flatpak's OSTree repo would need a branch per ring); beta users on those surfaces use docker `:beta` or the GH release binary. The snap is a per-tag release asset, rebuilt idempotently at beta and stable.
+- **CUDA fan-out is stable-only.** `promote.yml`'s stable path dispatches `publish-cuda-packages.yml`, which updates the `lilbee-cuda` Homebrew formula, the `lilbee-cuda` AUR package, and the `sources-cuda.json` flake entry. Beta CUDA users get docker `:beta-cuda` and the CUDA executables on the tag's GH release.
+- **`sources-cuda.json` / `sources-beta.json` are separate flake state.** `publish-packages.yml` rewrites `sources.json` from scratch at every stable promotion (the Vulkan/Metal entries); the CUDA and beta flake entries live in `sources-cuda.json` / `sources-beta.json` so the stable publish can't wipe them, and the beta entry pins its own version (beta and stable point at different tags). `flake.nix` reads all of them; the `lilbee-cuda` / `lilbee-beta` package outputs only appear when their sources file lists a system. `flake-check.yml` triggers on any of these files.
+- **`lilbee`, `lilbee-beta`, and `lilbee-cuda` are separate Homebrew / AUR / Nix packages.** All ship a `lilbee` binary; the formulas and `PKGBUILD`s declare `conflicts_with` / `provides` so users swap between them. The Nix flake exposes them as parallel package outputs (`#default` vs `#lilbee-beta` vs `#lilbee-cuda`).
 - **Executable build skips redundant CI.** `release.yml` has a `gate` job that checks whether the `CI` workflow already went green on the same commit (every `main` push runs it). If so it skips the lint + test re-run and goes straight to Nuitka; if not (or if anything is uncertain) it runs them. `skip_tests: true` lets you build past a known-flaky test after eyeballing the failure; lint always gates. `build-cuda-executables.yml` has no such gate (CI cost there is dominated by the CUDA-toolkit install + Nuitka build itself, not the test re-run).
 - **Package versions auto-increment.** `publish-docker.yml`, `publish-packages.yml`, and `publish-cuda-packages.yml` derive the version from the `-f tag=` input (`version = ${tag#v}`), so Docker tags, the Homebrew formulas, the AUR `PKGBUILD`s, and the Nix flake all bump to the new version on their own — no manual edits.
 - **PyPI Trusted Publishing is pinned to filenames.** PyPI's trusted-publisher config keys on the `publish.yml` workflow filename and the `pypi` GitHub environment name. Don't rename either.

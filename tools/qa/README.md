@@ -43,7 +43,8 @@ LILBEE_QA_LANE=l1-source LILBEE_QA_BIN="$(which lilbee)" \
 `.github/workflows/qa-matrix.yml` runs the full matrix:
 - `push` to the `qa-matrix` branch (paths: `tools/qa/**`, `.github/workflows/qa-matrix.yml`)
 - `workflow_dispatch` with optional `lilbee_version`
-- `workflow_call` from `release-candidate.yml` and `emergency-publish.yml` against the
-  freshly-built wheel and binary artifacts of the same run
+- `workflow_dispatch` against a release-candidate run's freshly-built wheel and
+  binary artifacts (pass its run id as `wheel_run_id` / `binary_run_id`)
 
-`release-candidate.yml` gates PyPI publish on this matrix passing.
+Channel promotion (`promote.yml`) gates on `verify-release.yml`, which runs the
+same core-functionality sweep against the downloadable release assets.

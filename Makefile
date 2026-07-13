@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/
@@ -57,25 +57,14 @@ build:
 publish: build  ## Build and upload to PyPI
 	uv publish
 
-release:  ## Bump the beta version, tag, and push; CI builds + publishes
+release:  ## Bump to the next version, tag, and push; CI builds once and enters the dev channel
 	bash scripts/release.sh
 
-release-promote:  ## Rewrite notes as headings and mark a release latest (TAG=... or newest); run after the PyPI publish is green
-	@tag="$(TAG)"; \
-	[ -n "$$tag" ] || tag=$$(gh release list --repo tobocop2/lilbee --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\")))"); \
-	verified=$$(gh run list --repo tobocop2/lilbee --workflow=verify-release.yml --limit 50 --json displayTitle,conclusion -q "[.[] | select(.displayTitle == \"Verify release $$tag\" and .conclusion == \"success\")] | length"); \
-	if [ "$$verified" = "0" ]; then \
-	  echo "REFUSING to promote $$tag: no green 'Verify release' run for it."; \
-	  echo "The verify-release workflow must pass against the release assets first:"; \
-	  echo "  gh workflow run verify-release.yml -f tag=$$tag"; \
-	  exit 1; \
-	fi; \
-	prev=$$(gh release list --repo tobocop2/lilbee --exclude-drafts --limit 30 --json tagName -q "first(.[].tagName | select(startswith(\"v\") and . != \"$$tag\"))"); \
-	echo "release-promote: $$tag (verified; notes diff from $$prev)"; \
-	notes=$$(mktemp); \
-	bash scripts/release_notes.sh tobocop2/lilbee "$$tag" "$$prev" > "$$notes"; \
-	gh release edit "$$tag" --repo tobocop2/lilbee --notes-file "$$notes" --prerelease=false --latest; \
-	rm -f "$$notes"
+promote:  ## Move a tag up a channel (make promote TAG=v0.6.91 CHANNEL=beta|stable); gated on a green verify-release run
+	@[ -n "$(TAG)" ] || { echo "promote: TAG=v... required"; exit 1; }
+	@case "$(CHANNEL)" in beta|stable) ;; *) echo "promote: CHANNEL must be beta or stable"; exit 1;; esac
+	gh workflow run promote.yml --repo tobocop2/lilbee -f tag=$(TAG) -f channel=$(CHANNEL)
+	@echo "promote: dispatched $(TAG) -> $(CHANNEL); watch: gh run list --repo tobocop2/lilbee --workflow=promote.yml"
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	uv run python -c "\

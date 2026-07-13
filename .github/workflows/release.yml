@@ -1,8 +1,8 @@
 name: Release Executables
 
 # Builds the standalone executables and uploads them as run artifacts. It never
-# attaches anything to a release -- callers (release-candidate.yml, publish.yml,
-# emergency-publish.yml) collect the artifacts and decide.
+# attaches anything to a release on its own -- the caller (release-candidate.yml)
+# passes release_tag to attach eagerly, or collects the artifacts and decides.
 on:
   workflow_dispatch:
     inputs:

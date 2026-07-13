@@ -1,12 +1,9 @@
-name: Attach binaries and the lilbee wheel to GH pre-release
-description: "Attach this run's standalone executables and the pure lilbee wheel to a pre-release at the given tag. Caller needs contents:write. (Per-backend engine wheels are attached separately by attach-multigpu.)"
+name: Attach binaries and the lilbee wheel + sdist to GH pre-release
+description: "Attach this run's standalone executables and the pure lilbee wheel + sdist to a pre-release at the given tag. Caller needs contents:write. (Per-backend engine wheels are attached separately by attach-multigpu.)"
 
 inputs:
   tag:
     description: "Tag to attach to (release will be created if missing)."
-    required: true
-  version:
-    description: "PEP 440 version string used to compute prerelease=true."
     required: true
 
 runs:
@@ -20,24 +17,36 @@ runs:
         merge-multiple: true
 
     # The lilbee wheel is pure Python: one platform-independent wheel, also
-    # published to PyPI, so it keeps its canonical filename here.
+    # published to PyPI, so it keeps its canonical filename here. The sdist is
+    # attached too: publish.yml uploads BOTH to PyPI from the release assets at
+    # stable promotion, which can happen long after this run's artifacts expire.
     - name: Download the lilbee wheel
       uses: actions/download-artifact@v4
       with:
         name: wheel-default
         path: lilbee-wheel/
 
+    - name: Download the sdist
+      uses: actions/download-artifact@v4
+      with:
+        name: sdist
+        path: lilbee-sdist/
+
     - name: List release assets
       shell: bash
       run: |
-        ls -lh bins/ lilbee-wheel/
+        ls -lh bins/ lilbee-wheel/ lilbee-sdist/
 
-    - name: Create GH pre-release with binaries and the lilbee wheel
+    - name: Create GH pre-release with binaries and the lilbee wheel + sdist
       uses: softprops/action-gh-release@v3
       with:
         tag_name: ${{ inputs.tag }}
         files: |
           bins/*
           lilbee-wheel/*
+          lilbee-sdist/*
         generate_release_notes: true
-        prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}
+        # Versions are final-form; prerelease-ness comes from the channel, not
+        # the version string. Every build starts as a prerelease and stable
+        # promotion (promote.yml) flips the flag.
+        prerelease: true

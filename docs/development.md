@@ -65,6 +65,24 @@ uv run pytest   # Full suite including RAG accuracy
 - Lazy imports in CLI callbacks
 - No LangChain or other agent frameworks; direct provider calls only
 
+## Releasing
+
+Releases are build-once, promote-by-pointer: every `v*` tag builds all artifacts
+exactly once, and the dev/beta/stable channels are pointers to tags recorded in
+`packaging/channels.json`. Promoting a build republishes existing assets, never
+rebuilds. The full pipeline (diagram, gates, per-manager channel matrix) is in
+[architecture.md](architecture.md#release-pipeline).
+
+```bash
+make release                                 # bump version, tag, push; CI builds once, enters dev
+gh workflow run verify-release.yml -f tag=vX # fires automatically after a green candidate too
+make promote TAG=vX CHANNEL=beta             # verified tag -> beta surfaces
+make promote TAG=vX CHANNEL=stable           # beta-soaked tag -> PyPI + stable surfaces
+```
+
+Rollback is promoting an older tag again. To promote past a flaky verify run,
+re-dispatch `promote.yml` with `force=skip-verify`.
+
 ## License
 
 MIT

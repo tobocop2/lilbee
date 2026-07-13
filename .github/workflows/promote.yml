@@ -1,0 +1,284 @@
+name: Promote release
+
+run-name: Promote ${{ inputs.tag }} to ${{ inputs.channel }}
+
+# The single door for moving a build between release channels. Artifacts are
+# built exactly once per tag by release-candidate.yml and are never rebuilt;
+# a channel (dev / beta / stable) is a pointer to a tag, recorded in
+# packaging/channels.json on main. Promoting moves the pointer and republishes
+# the channel's distribution surfaces from the tag's existing GH-release assets:
+#
+#   dev    -> docker :dev / :dev-cuda. Every release candidate enters dev
+#             automatically (release-candidate.yml dispatches this workflow).
+#   beta   -> docker :beta / :beta-cuda plus the -beta package variants
+#             (homebrew lilbee-beta, scoop lilbee-beta, AUR lilbee-beta,
+#             nix packages.lilbee-beta). Requires a green verify-release run.
+#   stable -> PyPI (publish.yml), docker :latest / :cuda, the unsuffixed
+#             package manifests, the CUDA packages, and the GH release flipped
+#             to non-prerelease + latest with headed notes. Requires a green
+#             verify-release run and a prior beta promotion of the same tag.
+#
+# force="skip-verify" bypasses the verify-release and beta-soak gates for a
+# flaky-QA emergency; it replaces the old emergency-publish.yml lane. Rollback
+# is just promoting an older tag again -- pointers move, artifacts don't.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to promote (e.g. v0.6.91)."
+        required: true
+      channel:
+        description: "Channel the tag should point at."
+        required: true
+        type: choice
+        options: [dev, beta, stable]
+      force:
+        description: 'Type "skip-verify" to promote past a missing/failed verify-release run or beta soak.'
+        required: false
+        default: ""
+
+permissions:
+  contents: write  # channels.json commit + gh release edit
+  actions: write   # dispatch the publish workflows
+
+concurrency:
+  group: promote-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      prev_stable: ${{ steps.channels.outputs.prev_stable }}
+    steps:
+      - uses: actions/checkout@v7   # also the implicit tag-exists check
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Check tag matches pyproject version
+        id: ver
+        shell: bash
+        env:
+          EXPECTED_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
+          if [ "v${VERSION}" != "${EXPECTED_TAG}" ] && [ "${VERSION}" != "${EXPECTED_TAG}" ]; then
+            echo "tag ${EXPECTED_TAG} does not match pyproject.toml version ${VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Stable versions must be final-form
+        if: inputs.channel == 'stable'
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # pip's default resolution skips PEP 440 pre-release/dev versions, so a
+          # stable promotion of one would publish a release pip users never see.
+          if ! printf '%s' "${VERSION}" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+            echo "version ${VERSION} carries pre-release/dev markers; stable requires a final-form version (cut with scripts/release.sh)" >&2
+            exit 1
+          fi
+
+      - name: Release has the promoted assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          gh release view "${TAG}" --repo "${REPO}" --json assets --jq '.assets[].name' > assets.txt
+          required="lilbee-linux-x86_64 lilbee-macos-arm64 lilbee-windows-x86_64.exe"
+          missing=0
+          for a in ${required}; do
+            grep -qxF "$a" assets.txt || { echo "missing from the release: $a"; missing=1; }
+          done
+          # The wheel + sdist are what publish.yml uploads to PyPI at stable.
+          grep -q '^lilbee-.*\.whl$' assets.txt || { echo "missing from the release: lilbee wheel"; missing=1; }
+          if [ "${CHANNEL}" = "stable" ]; then
+            grep -q '^lilbee-.*\.tar\.gz$' assets.txt || { echo "missing from the release: sdist"; missing=1; }
+          fi
+          [ "${missing}" -eq 0 ] || exit 1
+
+      - name: Require a green verify-release run
+        if: inputs.channel != 'dev' && inputs.force != 'skip-verify'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          verified=$(gh run list --repo "${REPO}" --workflow=verify-release.yml --limit 50 \
+            --json displayTitle,conclusion \
+            -q "[.[] | select(.displayTitle == \"Verify release ${TAG}\" and .conclusion == \"success\")] | length")
+          if [ "${verified}" = "0" ]; then
+            echo "no green 'Verify release' run for ${TAG}; run it first:" >&2
+            echo "  gh workflow run verify-release.yml -f tag=${TAG}" >&2
+            echo 'or re-dispatch with force="skip-verify" if you are knowingly promoting past a flaky run.' >&2
+            exit 1
+          fi
+
+      - name: Read channel pointers and require beta soak for stable
+        id: channels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          # The tag's checkout has a stale channels.json; the live pointers are on main.
+          gh api "repos/${REPO}/contents/packaging/channels.json?ref=main" --jq .content | base64 -d > /tmp/channels.json
+          echo "prev_stable=$(jq -r '.stable.tag // ""' /tmp/channels.json)" >> "$GITHUB_OUTPUT"
+          if [ "${CHANNEL}" = "stable" ] && [ "${FORCE}" != "skip-verify" ]; then
+            in_beta=$(jq -r --arg tag "${TAG}" '[.beta.tag, (.beta.history // [])[].tag] | index($tag) != null' /tmp/channels.json)
+            if [ "${in_beta}" != "true" ]; then
+              echo "${TAG} was never promoted to beta; a build soaks in beta before stable." >&2
+              echo 'Promote it to beta first, or re-dispatch with force="skip-verify".' >&2
+              exit 1
+            fi
+          fi
+
+  # Pointer moves first: if a downstream publish leg flakes, the recorded state
+  # still says where each channel points and the leg can be re-run by hand.
+  update-pointer:
+    needs: [guard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Point the channel at the tag
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq --arg ch "${CHANNEL}" --arg tag "${TAG}" --arg ts "${ts}" \
+            '.[$ch] = {tag: $tag, promoted_at: $ts, history: (((.[$ch].history) // []) + [{tag: $tag, at: $ts}])}' \
+            packaging/channels.json > /tmp/channels.json
+          mv /tmp/channels.json packaging/channels.json
+          git config user.name "lilbee-bot"
+          git config user.email "lilbee-bot@users.noreply.github.com"
+          git add packaging/channels.json
+          git commit -m "channel ${CHANNEL} -> ${TAG}"
+          # Sibling publish jobs commit to main too; rebase-retry on a race.
+          bash tools/ci/git_push_retry.sh
+
+  # PyPI is the stable channel: it has no pointer semantics, so the upload of the
+  # already-built wheel + sdist happens here, at stable promotion, not at build
+  # time. publish.yml stays a separate dispatched workflow because PyPI's trusted
+  # publisher is pinned to that filename; this job dispatches it and waits.
+  publish-pypi:
+    needs: [guard, update-pointer]
+    if: inputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch publish.yml and wait for it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run publish.yml --repo "${REPO}" -f tag="${TAG}"
+          # publish.yml's run-name carries the tag, so the poll can't latch onto a
+          # concurrent publish of some other tag.
+          for i in $(seq 1 120); do
+            sleep 15
+            run=$(gh api "repos/${REPO}/actions/workflows/publish.yml/runs?event=workflow_dispatch&created=>=${cutoff}&per_page=20" \
+              --jq "[.workflow_runs[] | select(.display_title | contains(\"${TAG}\"))] | sort_by(.run_started_at) | last")
+            [ -n "${run}" ] && [ "${run}" != "null" ] || continue
+            status=$(echo "${run}" | jq -r .status)
+            if [ "${status}" = "completed" ]; then
+              conclusion=$(echo "${run}" | jq -r .conclusion)
+              url=$(echo "${run}" | jq -r .html_url)
+              echo "publish.yml concluded ${conclusion}: ${url}"
+              [ "${conclusion}" = "success" ] && exit 0
+              exit 1
+            fi
+            echo "publish.yml ${status} (poll ${i}/120)"
+          done
+          echo "publish.yml did not complete within 30 minutes" >&2
+          exit 1
+
+  # Flip the GH release to the stable surface: headed notes, non-prerelease,
+  # latest (this is what `make release-promote` used to do by hand).
+  promote-gh-release:
+    needs: [guard, publish-pypi]
+    if: inputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7   # for scripts/release_notes.sh
+      - name: Rewrite notes and mark latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          PREV: ${{ needs.guard.outputs.prev_stable }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          bash scripts/release_notes.sh "${REPO}" "${TAG}" "${PREV}" > "${notes}"
+          gh release edit "${TAG}" --repo "${REPO}" --notes-file "${notes}" --prerelease=false --latest
+
+  fanout-docker:
+    needs: [guard, update-pointer]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the docker publish for this channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+        run: gh workflow run publish-docker.yml --repo "${REPO}" -f tag="${TAG}" -f channel="${CHANNEL}"
+
+  # Package manifests move at beta (as -beta variants) and stable (unsuffixed).
+  # Stable waits for PyPI so the default install surfaces never advance past a
+  # failed PyPI upload. dev ships via the GH release, docker :dev, and
+  # `pip install` of the release wheel -- no manifest churn per dev build.
+  fanout-packages:
+    needs: [guard, update-pointer, publish-pypi]
+    # publish-pypi is skipped for beta; only a real failure blocks.
+    if: ${{ !cancelled() && inputs.channel != 'dev' && needs.update-pointer.result == 'success' && needs.publish-pypi.result != 'failure' && needs.publish-pypi.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the package publish for this channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ inputs.channel }}
+        run: gh workflow run publish-packages.yml --repo "${REPO}" -f tag="${TAG}" -f channel="${CHANNEL}"
+
+  # The CUDA package variants (homebrew/AUR/nix lilbee-cuda) have no ring
+  # suffixes; they track stable only. Beta CUDA users get docker :beta-cuda and
+  # the CUDA executables on the tag's GH release.
+  fanout-cuda:
+    needs: [guard, publish-pypi]
+    if: inputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the CUDA package publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"

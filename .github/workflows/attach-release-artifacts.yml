@@ -12,10 +12,7 @@ on:
         description: "Release-candidate run id that built the artifacts."
         required: true
       tag:
-        description: "Release tag to attach to (e.g. v0.6.66b494)."
-        required: true
-      version:
-        description: "PEP 440 version controlling the prerelease flag (e.g. 0.6.66b494)."
+        description: "Release tag to attach to (e.g. v0.6.91)."
         required: true
 
 permissions:
@@ -49,8 +46,17 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ github.token }}
 
-      # continue-on-error: a stranded run may not have built the optional
-      # multi-gpu artifacts; attach whatever did build.
+      # continue-on-error: a stranded run may not have built the sdist or the
+      # optional multi-gpu artifacts; attach whatever did build.
+      - name: Download the sdist from the run
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: sdist
+          path: sdist/
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
       - name: Download multi-gpu wheels from the run
         uses: actions/download-artifact@v8
         continue-on-error: true
@@ -78,7 +84,7 @@ jobs:
           PY
 
       - name: List assets
-        run: ls -lh bins/ default-wheels/ multigpu-wheels/ || true
+        run: ls -lh bins/ default-wheels/ sdist/ multigpu-wheels/ || true
 
       - name: Attach to the GH release
         uses: softprops/action-gh-release@v3
@@ -87,6 +93,10 @@ jobs:
           files: |
             bins/*
             default-wheels/*
+            sdist/*
             multigpu-wheels/*
           generate_release_notes: true
-          prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}
+          # Versions are final-form; prerelease-ness comes from the channel, not
+          # the version string. Every build starts as a prerelease and stable
+          # promotion (promote.yml) flips the flag.
+          prerelease: true

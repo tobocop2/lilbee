@@ -1,19 +1,29 @@
 name: Publish Docker Image
 
-# Dispatched by the publish & emergency-publish workflows (and by hand) once
-# the tag's binaries are attached to its GH release.
+# Dispatched by promote.yml (and by hand) once the tag's binaries are attached
+# to its GH release. Always pushes the version-pinned tags; the moving tag it
+# also pushes comes from the channel: dev -> :dev/:dev-cuda, beta ->
+# :beta/:beta-cuda, stable -> :latest/:cuda. Same image bits either way --
+# promotion just adds a pointer.
+
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to (re)publish (e.g. v0.6.66b469)."
+        description: "Release tag to (re)publish (e.g. v0.6.91)."
         required: true
+      channel:
+        description: "Channel the tag is being published to; picks the moving docker tag."
+        required: false
+        type: choice
+        options: [dev, beta, stable]
+        default: stable
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-docker-${{ inputs.tag }}
+  group: publish-docker-${{ inputs.tag }}-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
@@ -25,11 +35,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Resolve version from tag
+      - name: Resolve version and channel tags
         id: info
         env:
           TAG: ${{ inputs.tag }}
-        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          case "$CHANNEL" in
+            stable) echo "alias_cpu=latest" >> "$GITHUB_OUTPUT"; echo "alias_cuda=cuda" >> "$GITHUB_OUTPUT" ;;
+            *)      echo "alias_cpu=${CHANNEL}" >> "$GITHUB_OUTPUT"; echo "alias_cuda=${CHANNEL}-cuda" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -45,7 +61,7 @@ jobs:
             LILBEE_VERSION=${{ steps.info.outputs.version }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/lilbee:latest
+            ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.alias_cpu }}
           push: true
 
       - name: Build & push CUDA image
@@ -57,5 +73,5 @@ jobs:
             LILBEE_VERSION=${{ steps.info.outputs.version }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}-cuda
-            ghcr.io/${{ github.repository_owner }}/lilbee:cuda
+            ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.alias_cuda }}
           push: true

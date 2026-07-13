@@ -180,6 +180,61 @@
           pkgs = mkPkgs system;
         in
         mkCompatLinuxFHS pkgs system;
+
+      # Beta channel: the same binaries as the default package, promoted ahead
+      # of stable (see packaging/channels.json). Kept in sources-beta.json so
+      # the stable publish (which overwrites sources.json) can't wipe it, and
+      # pinned to its own version -- beta and stable point at different tags.
+      betaSources = builtins.fromJSON (builtins.readFile ./sources-beta.json);
+      betaSystems = builtins.attrNames betaSources.systems;
+      hasBeta = system: builtins.elem system betaSystems;
+
+      mkBetaBin =
+        pkgs: system:
+        let
+          entry = betaSources.systems.${system};
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "lilbee-beta";
+          version = betaSources.version;
+          src = pkgs.fetchurl {
+            url = "https://github.com/tobocop2/lilbee/releases/download/v${betaSources.version}/${entry.asset}";
+            inherit (entry) sha256;
+          };
+          dontUnpack = true;
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 $src $out/bin/lilbee
+            runHook postInstall
+          '';
+          meta = mkMeta pkgs;
+        };
+
+      # Same FHS surface as the default build -- the beta binary is the same
+      # Vulkan onefile, just a later tag.
+      mkBetaLinuxFHS =
+        pkgs: system:
+        pkgs.buildFHSEnv {
+          name = "lilbee-beta";
+          targetPkgs =
+            ps: with ps; [
+              stdenv.cc.cc.lib
+              glibc
+              zlib
+              vulkan-loader
+              libGL
+            ];
+          runScript = "${mkBetaBin pkgs system}/bin/lilbee";
+          meta = mkMeta pkgs;
+        };
+
+      mkLilbeeBeta =
+        system:
+        let
+          pkgs = mkPkgs system;
+          isLinux = pkgs.lib.hasSuffix "linux" system;
+        in
+        if isLinux then mkBetaLinuxFHS pkgs system else mkBetaBin pkgs system;
     in
     {
       packages = forAllSystems (
@@ -192,6 +247,9 @@
         }
         // nixpkgs.lib.optionalAttrs (hasCompat system) {
           lilbee-compat = mkLilbeeCompat system;
+        }
+        // nixpkgs.lib.optionalAttrs (hasBeta system) {
+          lilbee-beta = mkLilbeeBeta system;
         }
       );
 
