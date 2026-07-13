@@ -57,10 +57,10 @@ def test_fetch_populates_arch_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.get_cached_arch("acme/test-GGUF") == "qwen3"
 
 
-def test_featured_catalog_models_default_to_unknown_compat() -> None:
-    """TOML-loaded featured entries default to UNKNOWN; probe at pull catches mismatch."""
+def test_featured_catalog_models_are_supported_compat() -> None:
+    """Curated featured entries carry SUPPORTED; the pull-time probe still re-checks arch."""
     from lilbee.catalog.featured import FEATURED_ALL
 
     for entry in FEATURED_ALL:
-        assert entry.compat is ModelCompat.UNKNOWN
+        assert entry.compat is ModelCompat.SUPPORTED
         assert entry.architecture == ""

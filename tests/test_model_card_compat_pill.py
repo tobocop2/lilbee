@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from lilbee.catalog.types import ModelCompat
+from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui.messages import COMPAT_PILL_UNKNOWN, COMPAT_PILL_UNSUPPORTED
 from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
 from lilbee.cli.tui.widgets.model_card import _compat_pill, _render_local
@@ -87,6 +87,72 @@ def test_grid_card_lines_omit_compat_pill_for_supported() -> None:
     joined = "\n".join(line.plain for line in lines)
     assert COMPAT_PILL_UNSUPPORTED not in joined
     assert COMPAT_PILL_UNKNOWN not in joined
+
+
+def test_unknown_pill_text_is_self_explanatory() -> None:
+    """A bare '?' pill explains nothing; the copy must name the state."""
+    assert COMPAT_PILL_UNKNOWN == "untested"
+
+
+def test_featured_entries_carry_supported_compat() -> None:
+    """Curated featured models are known to run; none may render an unknown pill."""
+    from lilbee.catalog import FEATURED_ALL
+
+    assert FEATURED_ALL
+    assert all(m.compat is ModelCompat.SUPPORTED for m in FEATURED_ALL)
+
+
+def test_catalog_to_row_marks_installed_rows_supported() -> None:
+    """An installed model demonstrably runs, whatever the catalog probe said."""
+    from lilbee.catalog.models import CatalogModel
+    from lilbee.cli.tui.screens.catalog_utils import catalog_to_row
+
+    model = CatalogModel(
+        hf_repo="acme/foo-GGUF",
+        gguf_filename="foo-Q8_0.gguf",
+        size_gb=0.5,
+        min_ram_gb=2.0,
+        description="",
+        featured=False,
+        downloads=0,
+        task=ModelTask.CHAT,
+        compat=ModelCompat.UNKNOWN,
+    )
+    assert catalog_to_row(model, installed=True).compat is ModelCompat.SUPPORTED
+    assert catalog_to_row(model, installed=False).compat is ModelCompat.UNKNOWN
+
+
+def test_installed_registry_row_is_supported() -> None:
+    """Wizard/library rows built from an installed registry ref carry SUPPORTED."""
+    from lilbee.cli.tui.screens.setup import _installed_name_to_row
+
+    row = _installed_name_to_row("acme/foo-GGUF/foo-Q8_0.gguf", "chat")
+    assert row.compat is ModelCompat.SUPPORTED
+
+
+def test_remote_row_is_supported() -> None:
+    """Rows for models a live local server reports are running are SUPPORTED."""
+    from lilbee.cli.tui.screens.catalog_utils import remote_to_row
+    from lilbee.modelhub.model_manager import RemoteModel
+
+    rm = RemoteModel(
+        name="llama3:latest",
+        task=ModelTask.CHAT,
+        family="llama",
+        parameter_size="8B",
+        provider="Ollama",
+    )
+    assert remote_to_row(rm).compat is ModelCompat.SUPPORTED
+
+
+def test_variant_row_is_supported() -> None:
+    """Family rows come from the curated featured catalog, so they are SUPPORTED."""
+    from lilbee.catalog import get_families
+    from lilbee.cli.tui.screens.catalog_utils import variant_to_row
+
+    family = get_families()[0]
+    row = variant_to_row(family.variants[0], family, installed=False)
+    assert row.compat is ModelCompat.SUPPORTED
 
 
 def test_native_backend_pill_is_dropped() -> None:

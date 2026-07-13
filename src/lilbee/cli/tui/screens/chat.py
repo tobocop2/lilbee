@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import logging
 import os
 import shlex
@@ -133,7 +134,27 @@ def _engine_status_text(snapshot: WarmProgress) -> str:
         name = display_label_for_ref(snapshot.model_ref) if snapshot.model_ref else ""
         pct = snapshot.bytes_done * 100 // snapshot.bytes_total
         return f"{msg.ENGINE_READING_WEIGHTS.format(name=name)} {pct}%"
-    return msg.ENGINE_LOADING
+    if snapshot.phase is WarmPhase.LOADING_ENGINE:
+        return msg.ENGINE_ALMOST_READY
+    return msg.ENGINE_WARMING
+
+
+_SETTING_TYPE_HINTS: dict[type, str] = {int: "a whole number", float: "a number"}
+
+
+def _setting_type_hint(kind: type) -> str:
+    """Human phrase for what a settings value must be."""
+    return _SETTING_TYPE_HINTS.get(kind, f"a valid {kind.__name__} value")
+
+
+def _closest_source(name: str, known: set[str]) -> str | None:
+    """The indexed name most likely meant by *name*, or None when nothing is close."""
+    low = name.lower()
+    contains = [k for k in known if low in k.lower()]
+    if len(contains) == 1:
+        return contains[0]
+    matches = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.6)
+    return matches[0] if matches else None
 
 
 def _parse_add_paths(args: str) -> list[Path]:
@@ -403,6 +424,12 @@ class ChatScreen(Screen[None]):
         """
         self._enter_insert_mode()
 
+    def run_command(self, text: str) -> None:
+        """Dispatch *text* as a slash command, as if submitted from the prompt."""
+        if self._reject_submit_when_busy():
+            return
+        self._handle_slash(text)
+
     def _update_input_style(self) -> None:
         """Toggle input opacity and mode indicator based on current mode."""
         # Lifecycle interleaves (an installed-but-swapped-away screen during
@@ -443,6 +470,10 @@ class ChatScreen(Screen[None]):
             if self._focus_in_fleet_drawer():
                 return
             self._enter_insert_mode()
+            if event.key == "enter" and inp.value.strip():
+                # Enter meant "send": submit the draft the user Esc'd over
+                # instead of stranding it invisibly in the dimmed input.
+                self._submit_draft(inp, inp.value)
             event.prevent_default()
             event.stop()
             return
@@ -498,30 +529,14 @@ class ChatScreen(Screen[None]):
             # submitting whatever empty / stale text the input still holds.
             self._enter_insert_mode()
             return
-        if self._reject_submit_when_busy():
+        self._submit_draft(event.chat_input, event.value)
+
+    def _submit_draft(self, chat_input: ChatInput, value: str) -> None:
+        """Send *value* as a command or message once the submit gate allows it."""
+        text = value.strip()
+        if not self._ready_to_submit(text):
             return
-        # Enter when the completion dropdown is showing a different
-        # selection than the input itself: accept the highlight first
-        # (matches Tab's cycle-and-insert behavior) instead of submitting
-        # whatever bare prefix the user typed.
-        if self._accept_overlay_selection_on_enter():
-            return
-        text = event.value.strip()
-        if not text:
-            return
-        if not text.startswith("/"):
-            pending = self._pending_required_model_download()
-            if pending is not None:
-                # Keep the typed prompt in the input so the user can submit
-                # it again once the download finishes, instead of forcing
-                # them to retype.
-                self.notify(
-                    msg.CHAT_MODEL_DOWNLOADING.format(name=pending),
-                    severity="warning",
-                    timeout=5,
-                )
-                return
-        event.chat_input.value = ""
+        chat_input.value = ""
         self._input_history.append(text)
         self._history_index = -1
 
@@ -529,6 +544,31 @@ class ChatScreen(Screen[None]):
             self._handle_slash(text)
             return
         self._send_message(text)
+
+
+    def _ready_to_submit(self, text: str) -> bool:
+        """Gate a submit: busy, consumed, empty, and keep-the-draft cases say no."""
+        if self._reject_submit_when_busy() or self._dismiss_overlay_on_submit() or not text:
+            return False
+        if text.startswith("/"):
+            cmd = text.split()[0].lower()
+            if cmd not in self._command_handlers:
+                # Keep the draft so a typo (or a stale leading slash) can be
+                # fixed in place instead of retyped.
+                self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
+                return False
+            return True
+        pending = self._pending_required_model_download()
+        if pending is not None:
+            # Keep the typed prompt in the input so the user can submit it
+            # again once the download finishes, instead of retyping it.
+            self.notify(
+                msg.CHAT_MODEL_DOWNLOADING.format(name=pending),
+                severity="warning",
+                timeout=5,
+            )
+            return False
+        return True
 
     def _reject_submit_when_busy(self) -> bool:
         """Toast and reject a submit while a swap is loading or a stream is in flight.
@@ -564,28 +604,22 @@ class ChatScreen(Screen[None]):
                 return label
         return None
 
-    def _accept_overlay_selection_on_enter(self) -> bool:
-        """Accept the highlighted completion on Enter; True if Enter was consumed.
+    def _dismiss_overlay_on_submit(self) -> bool:
+        """Close the dropdown on Enter; consume only a bare slash, never a message.
 
-        If the input already holds the highlighted candidate (the user cycled
-        to it), Enter falls through to submit. Otherwise the candidate is
-        filled in and Enter is consumed so a second Enter submits.
+        Enter submits exactly what was typed. Tab and the arrow keys are the
+        completion gestures, and a previewed candidate is already in the input,
+        so a highlighted-but-unaccepted suggestion must never rewrite or swallow
+        a submission.
         """
         overlay = self._completion_overlay
-        if not overlay.is_visible:
-            return False
-        display = overlay.get_current()
-        if display is None:
+        if overlay.is_visible:
             overlay.hide()
             self._completion_origin = None
-            return False
-        target = self._completion_value(display)
-        consumed = self._chat_input.value != target
-        if consumed:
-            self._set_input(target)
-        overlay.hide()
-        self._completion_origin = None
-        return consumed
+        if self._chat_input.value.strip() == "/":
+            self._set_input("")
+            return True
+        return False
 
     def _handle_slash(self, text: str) -> None:
         """Dispatch slash commands via the per-instance handler registry."""
@@ -960,12 +994,11 @@ class ChatScreen(Screen[None]):
             return
 
         if name not in known:
-            call_from_thread(
-                self,
-                self.notify,
-                msg.CMD_DELETE_NOT_FOUND.format(name=name),
-                severity="error",
-            )
+            message = msg.CMD_DELETE_NOT_FOUND.format(name=name)
+            suggestion = _closest_source(name, known)
+            if suggestion is not None:
+                message = f"{message}. {msg.CMD_DELETE_SUGGESTION.format(name=suggestion)}"
+            call_from_thread(self, self.notify, message, severity="error")
             return
 
         from lilbee.app.ingest import remove_documents_durably
@@ -1074,9 +1107,11 @@ class ChatScreen(Screen[None]):
 
     def _cmd_model(self, args: str) -> None:
         if args:
+            from lilbee.catalog.formatting import display_label_for_ref
+
             apply_active_model(self.app, "chat_model", args)
             self.app.title = msg.app_title(cfg.chat_model)
-            self.notify(msg.CMD_MODEL_SET.format(name=cfg.chat_model))
+            self.notify(msg.CMD_MODEL_SET.format(name=display_label_for_ref(cfg.chat_model)))
             self.apply_model_change()
             self.refresh_model_bar()
         else:
@@ -1186,7 +1221,20 @@ class ChatScreen(Screen[None]):
             elif defn.nullable and value.lower() in ("none", "null", ""):
                 parsed = None
             else:
-                parsed = defn.type(value)
+                if defn.choices and value not in defn.choices:
+                    self.notify(
+                        msg.CMD_SET_CHOICES.format(key=key, choices=", ".join(defn.choices)),
+                        severity="error",
+                    )
+                    return
+                try:
+                    parsed = defn.type(value)
+                except (ValueError, TypeError):
+                    self.notify(
+                        msg.CMD_SET_TYPE_HINT.format(key=key, kind=_setting_type_hint(defn.type)),
+                        severity="error",
+                    )
+                    return
             # Route through set_setting so settings_changed_signal subscribers
             # (model bar, scope chip, status bar) refresh. The boundary's
             # _invalidate_caches now handles llm_provider service reset.
@@ -1222,12 +1270,18 @@ class ChatScreen(Screen[None]):
         self.app.switch_view("Status")
 
     def _cmd_theme(self, args: str) -> None:
-        if args:
-            self.app.set_theme(args)
-            self.notify(msg.THEME_SET.format(name=args))
-        else:
-            theme_list = msg.CMD_THEME_LIST.format(names=", ".join(DARK_THEMES))
-            self.notify(theme_list, severity="information")
+        if not args:
+            # Land in the prompt with the dropdown listing every theme.
+            self.insert_slash_command("/theme")
+            return
+        if args not in DARK_THEMES:
+            self.notify(
+                msg.CMD_THEME_UNKNOWN.format(name=args, names=", ".join(DARK_THEMES)),
+                severity="warning",
+            )
+            return
+        self.app.set_theme(args)
+        self.notify(msg.THEME_SET.format(name=args))
 
     def _cmd_version(self, _args: str) -> None:
         self.notify(msg.CHAT_VERSION.format(version=get_version()))
@@ -1365,7 +1419,7 @@ class ChatScreen(Screen[None]):
         # role loading first (embed on a cold start) leaves the tracker silent
         # for many seconds, and a bare scanner reads as a hang.
         with contextlib.suppress(Exception):
-            call_from_thread(self, widget.set_thinking_status, msg.ENGINE_LOADING)
+            call_from_thread(self, widget.set_thinking_status, msg.ENGINE_WARMING)
         if wait_chat_ready(on_progress=_paint, should_abort=lambda: worker.is_cancelled):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")
@@ -1594,6 +1648,10 @@ class ChatScreen(Screen[None]):
                 self._set_input(self._completion_origin)
             self._completion_origin = None
             overlay.hide()
+            # Backing out of the command list leaves nothing worth keeping in
+            # a lone slash, and it would hijack the next message as /word.
+            if self._chat_input.value.strip() == "/":
+                self._set_input("")
             return
         if isinstance(self.focused, (Select, ModelPickerButton)):
             # Returning from a model picker should put us back in INSERT

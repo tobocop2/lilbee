@@ -38,7 +38,7 @@ _DOT_GLYPH = "●"
 _WARM_BAR_FILL = "▓"
 _WARM_BAR_TRACK = "░"
 _WARM_BAR_WIDTH = 12
-# Indeterminate sweep (loading engine has no byte signal): a lit window that walks
+# Indeterminate sweep (the engine-load phase has no byte signal): a lit window that walks
 # the track so the bar reads as "working", not stalled. Advanced by the poll tick.
 _WARM_SWEEP_WIDTH = 3
 
