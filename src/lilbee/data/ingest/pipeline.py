@@ -126,8 +126,8 @@ async def _rebuild_concept_clusters() -> None:
 async def _build_entity_records(records: list[ChunkRecord], source_name: str) -> list[dict] | None:
     """Extract typed entities for ingested chunks. None when the mode is off.
 
-    Gated twice: the ``entity_extraction`` config flag, and the presence of a
-    reviewed schema artifact; absent either, syncs cost nothing. Extraction
+    Gated twice: the ``entity_extraction`` config flag, and a schema already
+    induced into the index; absent either, syncs cost nothing. Extraction
     failures degrade to no rows for the file, mirroring concept extraction.
     """
     config = active_config()
@@ -135,7 +135,7 @@ async def _build_entity_records(records: list[ChunkRecord], source_name: str) ->
         return None
     from lilbee.retrieval.entities import ExtractorKind, extract_entities, load_schema
 
-    schema = load_schema(config.data_dir)
+    schema = load_schema(get_services().store)
     if schema is None:
         return None
     nlp = None

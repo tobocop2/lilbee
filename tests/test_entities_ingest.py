@@ -1,6 +1,7 @@
 """Tests for the entity-extraction ingest stage and flush."""
 
 import asyncio
+import json
 from unittest import mock
 
 import pytest
@@ -9,7 +10,15 @@ import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.ingest.pipeline import _build_entity_records, _flush_entity_rows
 from lilbee.data.ingest.types import _IngestResult
-from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind, save_schema
+from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind
+
+
+def _persist_schema(services, schema):
+    """Stub the mock store's persisted schema state."""
+    services.store.entity_schema_state.return_value = (
+        json.dumps(schema.model_dump(mode="json")),
+        True,
+    )
 
 
 @pytest.fixture()
@@ -64,9 +73,9 @@ class TestBuildEntityRecords:
         cfg.entity_extraction = True
         assert asyncio.run(_build_entity_records(_records(), "a.txt")) is None
 
-    def test_extracts_rows_with_reviewed_schema(self, mock_svc):
+    def test_extracts_rows_with_persisted_schema(self, mock_svc):
         cfg.entity_extraction = True
-        save_schema(_part_schema(), cfg.data_dir)
+        _persist_schema(mock_svc, _part_schema())
         rows = asyncio.run(_build_entity_records(_records(), "a.txt"))
         assert rows is not None
         assert {r["normalized_value"] for r in rows} == {"px4471", "px9001"}
@@ -74,7 +83,7 @@ class TestBuildEntityRecords:
 
     def test_extraction_failure_degrades_to_none(self, mock_svc):
         cfg.entity_extraction = True
-        save_schema(_part_schema(), cfg.data_dir)
+        _persist_schema(mock_svc, _part_schema())
         with mock.patch(
             "lilbee.retrieval.entities.extract_entities", side_effect=RuntimeError("boom")
         ):
@@ -97,7 +106,7 @@ class TestExtractorToolWiring:
 
     def test_spacy_types_load_the_model_when_available(self, mock_svc):
         cfg.entity_extraction = True
-        save_schema(self._schema_with({"spacy"}), cfg.data_dir)
+        _persist_schema(mock_svc, self._schema_with({"spacy"}))
         fake_nlp = mock.MagicMock(return_value=mock.MagicMock(ents=[]))
         with (
             mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True),
@@ -109,7 +118,7 @@ class TestExtractorToolWiring:
 
     def test_spacy_model_import_error_degrades(self, mock_svc, caplog):
         cfg.entity_extraction = True
-        save_schema(self._schema_with({"spacy"}), cfg.data_dir)
+        _persist_schema(mock_svc, self._schema_with({"spacy"}))
         with (
             mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True),
             mock.patch(
@@ -124,7 +133,7 @@ class TestExtractorToolWiring:
 
     def test_llm_types_fetch_the_provider(self, mock_svc):
         cfg.entity_extraction = True
-        save_schema(self._schema_with({"llm"}), cfg.data_dir)
+        _persist_schema(mock_svc, self._schema_with({"llm"}))
         mock_svc.provider.chat.return_value = mock.MagicMock(text="{}")
         rows = asyncio.run(_build_entity_records(_records(), "a.txt"))
         assert rows is not None

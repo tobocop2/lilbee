@@ -150,7 +150,8 @@ def entity_status() -> EntityStatus | None:
     from lilbee.core.config import ENTITIES_TABLE
     from lilbee.retrieval.entities import load_schema
 
-    schema = load_schema(cfg.data_dir)
-    table = get_services().store.open_table(ENTITIES_TABLE)
+    store = get_services().store
+    schema = load_schema(store)
+    table = store.open_table(ENTITIES_TABLE)
     rows = table.count_rows() if table is not None else 0
     return EntityStatus(types=[t.name for t in schema.types] if schema else [], rows=rows)

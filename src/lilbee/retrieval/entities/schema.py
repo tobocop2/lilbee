@@ -1,11 +1,11 @@
-"""Typed entity extraction: the schema artifact and the entities table.
+"""Typed entity extraction: the schema model and the entities table.
 
 The extraction taxonomy is induced from the corpus, not fixed: a general NER
 tag set has no notion of the identifier types a specific corpus carries.
 Sync induces a schema from a corpus sample and applies it automatically; the
-JSON artifact it writes is the contract for later tuning: a human (or agent)
-can edit types, patterns, and synonyms after the fact, and the next sync
-detects the edit and re-applies it across the corpus.
+schema is machine state, persisted inside the LanceDB index so it travels
+with the data and needs no management. There is nothing to review or edit:
+if induction quality needs improving, the fix belongs in induction itself.
 """
 
 from __future__ import annotations
@@ -13,14 +13,15 @@ from __future__ import annotations
 import json
 import logging
 from enum import Enum
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pyarrow as pa
 from pydantic import BaseModel, Field, field_validator
 
-log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from lilbee.data.store import Store
 
-SCHEMA_FILENAME = "entity_schema.json"
+log = logging.getLogger(__name__)
 
 
 class ExtractorKind(Enum):
@@ -111,34 +112,27 @@ class EntitySchema(BaseModel):
         return None
 
 
-def schema_path(data_dir: Path) -> Path:
-    """Where the corpus's schema artifact lives."""
-    return data_dir / SCHEMA_FILENAME
+def load_schema(store: Store) -> EntitySchema | None:
+    """Read the persisted schema from the index, or ``None`` when never induced.
 
-
-def load_schema(data_dir: Path) -> EntitySchema | None:
-    """Read the schema artifact, or ``None`` when absent or unreadable.
-
-    Unreadable is logged, not raised: a hand-edited artifact with a typo
-    should degrade to "extraction off" rather than break sync.
+    An unparseable row is logged and read as ``None`` so the lifecycle
+    re-induces automatically instead of failing sync.
     """
-    path = schema_path(data_dir)
-    if not path.is_file():
+    state = store.entity_schema_state()
+    if state is None:
         return None
+    schema_json, _applied = state
     try:
-        return EntitySchema.model_validate_json(path.read_text())
+        return EntitySchema.model_validate_json(schema_json)
     except Exception:
-        log.warning("Entity schema at %s is unreadable; extraction skipped", path, exc_info=True)
+        log.warning("Persisted entity schema is unreadable; re-inducing", exc_info=True)
         return None
 
 
-def save_schema(schema: EntitySchema, data_dir: Path) -> Path:
-    """Write the schema artifact (pretty, stable order) and return its path."""
-    path = schema_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = schema.model_dump(mode="json")
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    return path
+def save_schema(schema: EntitySchema, store: Store, *, applied: bool = False) -> None:
+    """Persist the schema into the index (stable key order)."""
+    payload = json.dumps(schema.model_dump(mode="json"), sort_keys=True)
+    store.save_entity_schema(payload, applied=applied)
 
 
 def _entities_schema(dim_unused: int | None = None) -> pa.Schema:

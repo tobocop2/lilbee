@@ -12,7 +12,6 @@ from lilbee.retrieval.entities.schema import (
     ExtractorKind,
     load_schema,
     save_schema,
-    schema_path,
 )
 
 __all__ = [
@@ -25,5 +24,4 @@ __all__ = [
     "load_schema",
     "normalize_value",
     "save_schema",
-    "schema_path",
 ]

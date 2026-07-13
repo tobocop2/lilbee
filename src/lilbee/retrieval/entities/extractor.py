@@ -116,6 +116,7 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
         log.warning("Entity schema induction returned no parseable JSON")
         return None
     types: list[EntityType] = []
+    seen_extractors: set[tuple[ExtractorKind, str]] = set()
     for raw in payload.get("types", []):
         try:
             entity_type = EntityType.model_validate(raw)
@@ -128,6 +129,15 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
             except re.error:
                 log.warning("Dropping induced type %s: bad regex", entity_type.name)
                 continue
+        # Small models sometimes propose several names for one extractor
+        # (three types sharing a regex triple the table with identical rows);
+        # the first name wins. LLM kinds have no pattern, so they dedupe by
+        # description instead.
+        key = (entity_type.kind, entity_type.pattern.strip() or entity_type.description.strip())
+        if key in seen_extractors:
+            log.warning("Dropping induced type %s: duplicate extractor", entity_type.name)
+            continue
+        seen_extractors.add(key)
         types.append(entity_type)
     return EntitySchema(types=types) if types else None
 

@@ -53,6 +53,8 @@ def mock_svc():
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
     store.add_chunks.return_value = 0
+    # No entity schema induced unless a test persists one.
+    store.entity_schema_state.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = [0.1] * 768
     embedder.embed_batch.return_value = []

@@ -18,6 +18,7 @@ from lilbee.core.config import (
     CHUNKS_TABLE,
     CITATIONS_TABLE,
     ENTITIES_TABLE,
+    ENTITY_SCHEMA_TABLE,
     MEMORIES_TABLE,
     META_TABLE,
     PAGE_TEXTS_TABLE,
@@ -40,8 +41,15 @@ from .lance_helpers import (
     refs_compatible,
 )
 from .ranking import mmr_rerank
-from .schema import _citations_schema, _meta_schema, _page_texts_schema, _sources_schema
+from .schema import (
+    _citations_schema,
+    _entity_schema_state_schema,
+    _meta_schema,
+    _page_texts_schema,
+    _sources_schema,
+)
 from .types import (
+    ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
@@ -701,6 +709,47 @@ class Store:
             table = ensure_table(db, ENTITIES_TABLE, _entities_schema())
             table.add(records)
             return len(records)
+
+    def entity_schema_state(self) -> tuple[str, bool] | None:
+        """The persisted entity schema as ``(json, applied)``, or ``None``.
+
+        The schema is machine state induced from the corpus and lives inside
+        the index, so it travels with the data. ``applied`` records whether a
+        full extraction pass completed under this schema; an interrupted pass
+        leaves it False and the next sync redoes the (idempotent) pass.
+        """
+        table = self.open_table(ENTITY_SCHEMA_TABLE)
+        if table is None:
+            return None
+        rows = table.search().limit(None).to_list()
+        if not rows:
+            return None
+        # One row by contract; take the newest if a rewrite ever left a stale one.
+        row = max(rows, key=lambda r: r["updated_at"])
+        return str(row["schema_json"]), bool(row["applied"])
+
+    def save_entity_schema(self, schema_json: str, *, applied: bool) -> None:
+        """Overwrite the single persisted entity schema row."""
+        with self._write_lock():
+            db = self.get_db()
+            table = ensure_table(db, ENTITY_SCHEMA_TABLE, _entity_schema_state_schema())
+            _safe_delete_unlocked(table, ENTITY_SCHEMA_DELETE_ALL_PREDICATE)
+            table.add(
+                [
+                    {
+                        "schema_json": schema_json,
+                        "applied": applied,
+                        "updated_at": datetime.now(UTC).isoformat(),
+                    }
+                ]
+            )
+
+    def mark_entity_schema_applied(self) -> None:
+        """Record that a full extraction pass completed under the stored schema."""
+        state = self.entity_schema_state()
+        if state is None:
+            return
+        self.save_entity_schema(state[0], applied=True)
 
     def entity_value_counts(self, entity_type: str) -> tuple[int, int]:
         """(mentions, distinct normalized values) for one entity type.

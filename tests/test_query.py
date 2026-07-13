@@ -1903,8 +1903,10 @@ class TestAggregateRoute:
 
 class TestTypedAggregates:
     @pytest.fixture()
-    def part_schema(self, tmp_path):
-        from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind, save_schema
+    def part_schema(self, mock_svc):
+        import json
+
+        from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind
 
         schema = EntitySchema(
             types=[
@@ -1917,11 +1919,11 @@ class TestTypedAggregates:
                 EntityType(name="depot", kind=ExtractorKind.SPACY, pattern="GPE"),
             ]
         )
-        old_dir = cfg.data_dir
-        cfg.data_dir = tmp_path
-        save_schema(schema, tmp_path)
-        yield schema
-        cfg.data_dir = old_dir
+        mock_svc.store.entity_schema_state.return_value = (
+            json.dumps(schema.model_dump(mode="json")),
+            True,
+        )
+        return schema
 
     def test_distinct_count_answers_exactly(self, mock_svc, part_schema):
         mock_svc.store.entity_value_counts.return_value = (57, 12)

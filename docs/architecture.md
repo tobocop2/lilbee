@@ -707,19 +707,19 @@ Turning the setting on is the whole interaction; sync runs the lifecycle:
 
 1. **Induction** (first sync after enabling, cheap): an LLM reads a
    stratified sample of the indexed chunks and proposes the corpus-specific
-   type schema, saved as `entity_schema.json` next to the index. A general
-   NER tag set has no notion of the identifier types a specific corpus
-   carries. The file is a tuning artifact, not a gate: edit a pattern and
-   the next sync detects the change (by digest) and re-extracts.
+   type schema, persisted inside the index alongside the tables it governs.
+   A general NER tag set has no notion of the identifier types a specific
+   corpus carries. The schema is machine state: nothing to review, edit, or
+   keep next to the database, and it travels with the index.
 2. **Extraction** (same sync, then incrementally): each type is found by
    the cheapest extractor that serves it: compiled regex for
    identifier-shaped types, spaCy labels for people/organizations/dates
    (when the `graph` extra's model is available), and an LLM only for types
    neither can catch. The full pass reads chunk text from the store (no
    documents re-ingested, no embeddings recomputed) and always clears prior
-   rows first, so interrupted passes and schema edits never double-count.
-   New files extract at ingest. If no chat model is available for
-   induction, sync logs it and retries next time; nothing fails.
+   rows first, so an interrupted pass never double-counts. New files
+   extract at ingest. If no chat model is available for induction, sync
+   logs it and retries next time; nothing fails.
 
 Query-time effects: "how many distinct X" answers with exact distinct counts,
 and "how many X per Y" groups by chunk co-occurrence, both computed by full

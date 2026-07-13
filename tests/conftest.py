@@ -340,6 +340,8 @@ def _default_provider_mock():
 def _default_store_mock():
     store = MagicMock()
     store.has_chunks.return_value = True
+    # No entity schema induced unless a test persists one.
+    store.entity_schema_state.return_value = None
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []

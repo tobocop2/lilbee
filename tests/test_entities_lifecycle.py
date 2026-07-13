@@ -10,7 +10,7 @@ import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.data.store import Store
 from lilbee.retrieval.entities import EntitySchema, EntityType, ExtractorKind, save_schema
-from lilbee.retrieval.entities.lifecycle import _APPLIED_MARKER, ensure_entities
+from lilbee.retrieval.entities.lifecycle import ensure_entities
 
 
 @pytest.fixture()
@@ -61,6 +61,11 @@ def _part_schema():
     )
 
 
+def _applied(store) -> bool:
+    state = store.entity_schema_state()
+    return state is not None and state[1]
+
+
 _INDUCED_JSON = (
     '{"types": [{"name": "part_number", "kind": "regex", '
     '"pattern": "PX\\\\d{4}", "description": "ids", "synonyms": []}]}'
@@ -76,34 +81,34 @@ class TestEnsureEntities:
 
     def test_first_run_induces_and_extracts(self, isolated):
         """Enabling the setting is the whole interaction: one sync pass
-        induces the schema, saves it, and extracts across the index."""
+        induces the schema, persists it into the index, and extracts."""
         store, services = isolated
         _index_chunks(store, ["part PX4471 shipped", "parts PX9001 and PX4471"])
         services.provider.chat.return_value = SimpleNamespace(text=_INDUCED_JSON)
         ensure_entities()
-        assert (cfg.data_dir / "entity_schema.json").is_file()
-        assert (cfg.data_dir / _APPLIED_MARKER).is_file()
+        assert store.entity_schema_state() is not None
+        assert _applied(store)
         mentions, distinct = store.entity_value_counts("part_number")
         assert (mentions, distinct) == (3, 2)
 
     def test_nothing_indexed_defers_induction(self, isolated):
-        _store, services = isolated
+        store, services = isolated
         ensure_entities()
         services.provider.chat.assert_not_called()
-        assert not (cfg.data_dir / "entity_schema.json").is_file()
+        assert store.entity_schema_state() is None
 
     def test_unusable_induction_retries_next_sync(self, isolated):
         store, services = isolated
         _index_chunks(store, ["part PX4471"])
         services.provider.chat.return_value = SimpleNamespace(text="no json")
         ensure_entities()
-        assert not (cfg.data_dir / "entity_schema.json").is_file()
+        assert store.entity_schema_state() is None
         # Next sync with a working model succeeds.
         services.provider.chat.return_value = SimpleNamespace(text=_INDUCED_JSON)
         ensure_entities()
         assert store.entity_value_counts("part_number") == (1, 1)
 
-    def test_up_to_date_schema_is_a_noop(self, isolated):
+    def test_applied_schema_is_a_noop(self, isolated):
         store, services = isolated
         _index_chunks(store, ["part PX4471"])
         services.provider.chat.return_value = SimpleNamespace(text=_INDUCED_JSON)
@@ -112,27 +117,16 @@ class TestEnsureEntities:
             ensure_entities()
         full_pass.assert_not_called()
 
-    def test_edited_schema_reextracts_without_double_counting(self, isolated):
-        """The manage-after-the-fact path: edit entity_schema.json, the next
-        sync detects the digest change and re-runs a replace-semantics pass."""
-        store, _services = isolated
-        _index_chunks(store, ["part PX4471 near dock D-77"])
-        save_schema(_part_schema(), cfg.data_dir)
+    def test_unreadable_persisted_schema_reinduces(self, isolated):
+        """A corrupt persisted row is machine state gone wrong; the lifecycle
+        replaces it with a freshly induced schema instead of failing sync."""
+        store, services = isolated
+        _index_chunks(store, ["part PX4471"])
+        store.save_entity_schema("{not json", applied=False)
+        services.provider.chat.return_value = SimpleNamespace(text=_INDUCED_JSON)
         ensure_entities()
+        assert _applied(store)
         assert store.entity_value_counts("part_number") == (1, 1)
-        # Edit: add a second type. Digest changes; next sync re-applies.
-        save_schema(
-            EntitySchema(
-                types=[
-                    EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}"),
-                    EntityType(name="dock", kind=ExtractorKind.REGEX, pattern=r"D-\d{2}"),
-                ]
-            ),
-            cfg.data_dir,
-        )
-        ensure_entities()
-        assert store.entity_value_counts("part_number") == (1, 1)  # not doubled
-        assert store.entity_value_counts("dock") == (1, 1)
 
     def test_scoped_config_governs_lifecycle(self, isolated):
         """The library API binds its config via config_scope without touching
@@ -142,7 +136,7 @@ class TestEnsureEntities:
 
         store, _services = isolated
         _index_chunks(store, ["part PX4471"])
-        save_schema(_part_schema(), cfg.data_dir)
+        save_schema(_part_schema(), store)
         scoped = cfg.model_copy()
         cfg.entity_extraction = False  # global says off; the scope says on
         scoped.entity_extraction = True
@@ -153,14 +147,27 @@ class TestEnsureEntities:
     def test_cancelled_pass_restarts_next_sync(self, isolated):
         store, _services = isolated
         _index_chunks(store, ["part PX4471"])
-        save_schema(_part_schema(), cfg.data_dir)
+        save_schema(_part_schema(), store)
         cancelled = threading.Event()
         cancelled.set()
         ensure_entities(cancel=cancelled)
-        assert not (cfg.data_dir / _APPLIED_MARKER).is_file()
+        assert not _applied(store)
         ensure_entities()
-        assert (cfg.data_dir / _APPLIED_MARKER).is_file()
+        assert _applied(store)
         assert store.entity_value_counts("part_number") == (1, 1)
+
+    def test_interrupted_pass_never_double_counts(self, isolated):
+        """The full pass clears prior rows first, so redoing an unapplied
+        schema replaces rows instead of appending duplicates."""
+        store, _services = isolated
+        _index_chunks(store, ["part PX4471"])
+        save_schema(_part_schema(), store)
+        ensure_entities()
+        assert store.entity_value_counts("part_number") == (1, 1)
+        # Simulate an interrupted pass recorded as unapplied: redo replaces.
+        save_schema(_part_schema(), store, applied=False)
+        ensure_entities()
+        assert store.entity_value_counts("part_number") == (1, 1)  # not doubled
 
     def test_spacy_and_llm_kinds_wire_their_tools(self, isolated):
         store, services = isolated
@@ -173,7 +180,7 @@ class TestEnsureEntities:
                     EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}"),
                 ]
             ),
-            cfg.data_dir,
+            store,
         )
         services.provider.chat.return_value = SimpleNamespace(text="{}")
         fake_nlp = mock.MagicMock(return_value=mock.MagicMock(ents=[]))
@@ -196,7 +203,7 @@ class TestEnsureEntities:
                     EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}"),
                 ]
             ),
-            cfg.data_dir,
+            store,
         )
         with (
             mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True),
@@ -211,10 +218,10 @@ class TestEnsureEntities:
         assert any("spaCy model unavailable" in r.message for r in caplog.records)
 
     def test_empty_chunks_table_skips_pass(self, isolated):
-        _store, _services = isolated
-        save_schema(_part_schema(), cfg.data_dir)
+        store, _services = isolated
+        save_schema(_part_schema(), store)
         ensure_entities()
-        assert not (cfg.data_dir / _APPLIED_MARKER).is_file()
+        assert not _applied(store)
 
     def test_emptied_chunks_table_defers_induction(self, isolated):
         """A chunks table whose rows were all removed samples nothing."""
@@ -225,24 +232,6 @@ class TestEnsureEntities:
         ensure_entities()
         services.provider.chat.assert_not_called()
 
-    def test_blank_applied_marker_reads_as_unapplied(self, isolated):
-        """A truncated marker file must trigger a (safe, idempotent) re-pass."""
-        store, _services = isolated
-        _index_chunks(store, ["part PX4471"])
-        save_schema(_part_schema(), cfg.data_dir)
-        (cfg.data_dir / _APPLIED_MARKER).write_text("")
-        ensure_entities()
-        assert store.entity_value_counts("part_number") == (1, 1)
-        assert (cfg.data_dir / _APPLIED_MARKER).read_text().strip()
-
-    def test_missing_schema_digest_never_records_marker(self, isolated):
-        """_record_applied(None) is the no-op guard for a vanished schema file."""
-        from lilbee.retrieval.entities.lifecycle import _record_applied, _schema_digest
-
-        assert _schema_digest() is None
-        _record_applied(None)
-        assert not (cfg.data_dir / _APPLIED_MARKER).is_file()
-
 
 class TestStatusEntities:
     def test_status_reports_types_and_rows(self, isolated):
@@ -250,7 +239,7 @@ class TestStatusEntities:
 
         store, _services = isolated
         _index_chunks(store, ["part PX4471"])
-        save_schema(_part_schema(), cfg.data_dir)
+        save_schema(_part_schema(), store)
         ensure_entities()
         result = gather_status()
         assert result.entities is not None

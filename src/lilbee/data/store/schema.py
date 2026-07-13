@@ -16,6 +16,16 @@ def _meta_schema() -> pa.Schema:
     )
 
 
+def _entity_schema_state_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("schema_json", pa.utf8()),
+            pa.field("applied", pa.bool_()),
+            pa.field("updated_at", pa.utf8()),
+        ]
+    )
+
+
 def _sources_schema() -> pa.Schema:
     return pa.schema(
         [

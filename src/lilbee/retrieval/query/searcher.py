@@ -852,7 +852,7 @@ class Searcher:
         """The honest no-capability answer, naming what IS countable."""
         from lilbee.retrieval.entities import load_schema
 
-        schema = load_schema(self._config.data_dir)
+        schema = load_schema(self._store)
         if schema is not None and schema.types:
             countable = ", ".join(sorted(t.name.replace("_", " ") for t in schema.types))
             return (
@@ -872,7 +872,7 @@ class Searcher:
         nouns don't resolve against the extraction schema."""
         from lilbee.retrieval.entities import load_schema
 
-        schema = load_schema(self._config.data_dir)
+        schema = load_schema(self._store)
         counted = schema.type_for_noun(aggregate.noun) if schema else None
         if schema is None or counted is None:
             return None

@@ -46,6 +46,7 @@ CONCEPT_NODES_TABLE = "concept_nodes"
 CONCEPT_EDGES_TABLE = "concept_edges"
 CHUNK_CONCEPTS_TABLE = "chunk_concepts"
 ENTITIES_TABLE = "entities"
+ENTITY_SCHEMA_TABLE = "_entity_schema"
 
 # Default URL-exclusion regexes for recursive crawls. Grouped by source
 # CMS / category. User overrides come from LILBEE_CRAWL_EXCLUDE_PATTERNS
