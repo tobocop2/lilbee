@@ -1,10 +1,12 @@
 name: Publish Docker Image
 
-# Dispatched by promote.yml (and by hand) once the tag's binaries are attached
-# to its GH release. Always pushes the version-pinned tags; the moving tag it
-# also pushes comes from the channel: dev -> :dev/:dev-cuda, beta ->
-# :beta/:beta-cuda, stable -> :latest/:cuda. Same image bits either way --
-# promotion just adds a pointer.
+# Dispatched by promote.yml (and by hand). Build-once, point-later: the
+# version-pinned images (:X.Y.Z / :X.Y.Z-cuda) are built only if they aren't
+# in ghcr yet (normally at dev entry). Promotions never rebuild -- the channel
+# alias (dev -> :dev/:dev-cuda, beta -> :beta/:beta-cuda, stable ->
+# :latest/:cuda) is stamped onto the existing image's manifest by digest with
+# `docker buildx imagetools create`, so every channel serves bit-identical
+# images and a promotion is a registry-side manifest copy, not a build.
 
 on:
   workflow_dispatch:
@@ -32,6 +34,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/lilbee
     steps:
       - uses: actions/checkout@v7
 
@@ -53,7 +57,27 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
+
+      # Version-pinned tags are write-once: if they already exist (an earlier
+      # channel already published this tag), the build cells below are skipped
+      # and only the alias moves.
+      - name: Check for existing version-pinned images
+        id: exists
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
+        run: |
+          for variant in cpu cuda; do
+            ref="${IMAGE}:${VERSION}"; [ "$variant" = "cuda" ] && ref="${ref}-cuda"
+            if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+              echo "${variant}=true" >> "$GITHUB_OUTPUT"; echo "${ref} already published"
+            else
+              echo "${variant}=false" >> "$GITHUB_OUTPUT"; echo "${ref} not in ghcr; will build"
+            fi
+          done
+
+      - name: Build & push version-pinned image
+        if: steps.exists.outputs.cpu != 'true'
+        uses: docker/build-push-action@v7
         with:
           context: packaging/docker
           file: packaging/docker/Dockerfile
@@ -61,10 +85,10 @@ jobs:
             LILBEE_VERSION=${{ steps.info.outputs.version }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.alias_cpu }}
           push: true
 
-      - name: Build & push CUDA image
+      - name: Build & push version-pinned CUDA image
+        if: steps.exists.outputs.cuda != 'true'
         uses: docker/build-push-action@v7
         with:
           context: packaging/docker
@@ -73,5 +97,20 @@ jobs:
             LILBEE_VERSION=${{ steps.info.outputs.version }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.version }}-cuda
-            ghcr.io/${{ github.repository_owner }}/lilbee:${{ steps.info.outputs.alias_cuda }}
           push: true
+
+      # Resolve each version tag to its digest and copy the manifest to the
+      # channel alias, so the alias can only ever be the pinned image's bits.
+      - name: Point the channel aliases at the version-pinned images
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
+          ALIAS_CPU: ${{ steps.info.outputs.alias_cpu }}
+          ALIAS_CUDA: ${{ steps.info.outputs.alias_cuda }}
+        run: |
+          set -euo pipefail
+          for pair in "${VERSION}:${ALIAS_CPU}" "${VERSION}-cuda:${ALIAS_CUDA}"; do
+            src="${pair%%:*}"; alias="${pair##*:}"
+            digest=$(docker buildx imagetools inspect "${IMAGE}:${src}" --format '{{.Manifest.Digest}}')
+            echo "${IMAGE}:${alias} -> ${IMAGE}:${src} (${digest})"
+            docker buildx imagetools create -t "${IMAGE}:${alias}" "${IMAGE}@${digest}"
+          done
