@@ -27,7 +27,6 @@ from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
-    deduplicate_sources,
     filter_results,
     order_by_fusion,
     prepare_results,
@@ -35,8 +34,10 @@ from lilbee.retrieval.query.dedup import (
 from lilbee.retrieval.query.expansion import EXPANSION_MAX_TOKENS, EXPANSION_PROMPT
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
+    StreamingCitationFilter,
     build_context,
     cited_subset,
+    format_sources_block,
     strip_llm_citations,
 )
 from lilbee.retrieval.query.history_window import estimate_text_tokens
@@ -674,9 +675,7 @@ class Searcher:
         if not result.sources:
             return result.answer
         answer = strip_llm_citations(result.answer)
-        source_list = result.cited_sources if result.cited_sources else result.sources
-        citations = deduplicate_sources(source_list)
-        return f"{answer}\n\nSources:\n" + "\n".join(citations)
+        return f"{answer}{format_sources_block(result.sources)}"
 
     def _stream_direct(
         self,
@@ -725,7 +724,7 @@ class Searcher:
         results, messages = rag
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        answer_parts: list[str] = []
+        cite_filter = StreamingCitationFilter()
         events = stream_chat_with_cap(
             self._provider,
             cast("list[dict[str, Any]]", provider_messages),
@@ -736,16 +735,20 @@ class Searcher:
         )
         try:
             for token in cap_events_as_stream_tokens(events):
-                if not token.is_reasoning:
-                    answer_parts.append(token.content)
-                yield token
+                if token.is_reasoning:
+                    yield token
+                    continue
+                shown = cite_filter.feed(token.content)
+                if shown:
+                    yield StreamToken(content=shown, is_reasoning=False)
         except (ConnectionError, OSError) as exc:
             yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
-        # LLM-generated citation blocks in streamed tokens cannot be
-        # retroactively stripped. The system prompt discourages them; this
-        # only filters the code-appended Sources block to cited chunks.
-        full_answer = "".join(answer_parts)
-        used = cited_subset(full_answer, results)
-        source_list = used if used else results
-        citations = deduplicate_sources(source_list)
-        yield StreamToken(content="\n\nSources:\n" + "\n".join(citations), is_reasoning=False)
+        tail = cite_filter.flush()
+        if tail:
+            yield StreamToken(content=tail, is_reasoning=False)
+        # A model that emits its own trailing Sources block has had it dropped by
+        # the filter above; this authoritative list is numbered to match the
+        # ``[n]`` markers the model used, so every citation resolves to a line.
+        block = format_sources_block(results)
+        if block:
+            yield StreamToken(content=block, is_reasoning=False)
