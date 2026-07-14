@@ -215,7 +215,25 @@ jobs:
           key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
           max-size: '2G'
           # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
+          # warm-executables-cache.yml runs this workflow on main so these saves happen.
           save: ${{ github.ref_type != 'tag' }}
+
+      # Windows has no ccache; Nuitka's own cache (MSVC object caching plus its
+      # dependency-analysis caches) is what cuts the ~4h cold compile. Restored
+      # from main-saved caches (warm-executables-cache.yml) -- tag-scoped saves
+      # are unrestorable, same story as ccache above.
+      - name: Restore Nuitka cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.asset_name }}-
+
+      - name: Point Nuitka at the cache dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "NUITKA_CACHE_DIR=${GITHUB_WORKSPACE}/nuitka-cache" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
@@ -260,6 +278,15 @@ jobs:
           CFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
           CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
+
+      # Save even when the build's smoke test later fails -- the objects are
+      # still valid and make the retry fast. Non-tag only, like ccache.
+      - name: Save Nuitka cache (Windows)
+        if: runner.os == 'Windows' && github.ref_type != 'tag'
+        uses: actions/cache/save@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
 
       # The manylinux container ships no gh CLI; the model-mirror restore below
       # and the release attach at the end both need it.
