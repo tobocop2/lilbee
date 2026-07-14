@@ -329,13 +329,15 @@ class RoutingProvider(LLMProvider):
 
         A role whose configured ref routes to the SDK backend needs no local
         server, so it is always ready; the local fleet's readiness is
-        irrelevant to it. Native refs report the fleet's readiness without
-        building one (True when no local engine exists yet).
+        irrelevant to it. A native ref with no local engine built yet cannot
+        serve a token, so it reports not-ready (without building the engine);
+        health's ``chat_ready`` and the cold-start waits all rely on this
+        being positive readiness, not reachability.
         """
         if self._role_routes_remote(role):
             return True
         if self._local is None:
-            return True
+            return False
         return self._local.role_ready(role)
 
     @staticmethod
