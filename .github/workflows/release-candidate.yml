@@ -40,10 +40,12 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
       tag: ${{ steps.ver.outputs.tag }}
       ref: ${{ steps.ver.outputs.ref }}
+      promoted_from: ${{ steps.promo.outputs.promoted_from }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 2   # promotion detection diffs against the parent commit
       - name: Compute version + tag from pyproject.toml
         id: ver
         shell: bash
@@ -77,6 +79,34 @@ jobs:
             echo "ref=${REF}"
           } >> "$GITHUB_OUTPUT"
 
+      # A promotion (scripts/promote_release.sh, `make promote`) is a tag whose
+      # parent commit is itself a v* tag and whose only change is the version
+      # line in pyproject.toml + uv.lock: the same source re-released under a
+      # new version. Detected semantically rather than declared, so it can't be
+      # spoofed by a commit message; a tag with any other change is a normal
+      # release. create-prerelease uses this to carry the source release's
+      # notes over.
+      - name: Detect same-source promotion
+        id: promo
+        shell: bash
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          promoted_from=""
+          parent=$(git rev-parse -q --verify HEAD^ 2>/dev/null || echo "")
+          if [ -n "${parent}" ]; then
+            # ls-remote instead of fetching all tags; strip annotated-tag ^{} peels.
+            from_tag=$(git ls-remote --tags origin \
+              | awk -v sha="${parent}" '$1 == sha && $2 ~ /^refs\/tags\/v/ && $2 !~ /\^\{\}$/ { sub("refs/tags/", "", $2); print $2; exit }')
+            if [ -n "${from_tag}" ] && [ "${from_tag}" != "${TAG}" ] \
+              && git diff --quiet HEAD^ HEAD -- . ':(exclude)pyproject.toml' ':(exclude)uv.lock'; then
+              promoted_from="${from_tag}"
+              echo "${TAG} is a same-source promotion of ${from_tag}"
+            fi
+          fi
+          echo "promoted_from=${promoted_from}" >> "$GITHUB_OUTPUT"
+
   # Fast fail-first gate: lock consistency, lint, and formatting in a few
   # minutes, so a trivial breakage never burns hours of the executable matrix
   # before surfacing. release.yml still runs its full gate (with tests) behind
@@ -107,6 +137,9 @@ jobs:
 
   # Pre-release shell created up front so every build job can attach its
   # asset the moment it builds instead of waiting for the slowest cell.
+  # A promoted tag starts with the source release's notes under a promotion
+  # banner (the source release itself is never modified); attach-prerelease
+  # skips note generation so the copied notes survive.
   create-prerelease:
     needs: [resolve]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -117,11 +150,24 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
           REPO: ${{ github.repository }}
+          PROMOTED_FROM: ${{ needs.resolve.outputs.promoted_from }}
         run: |
-          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
-            || gh release create "$TAG" --repo "$REPO" --prerelease \
-                 --notes "Release candidate building; executables attach here as each one finishes."
+          set -euo pipefail
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && exit 0
+          notes=$(mktemp)
+          if [ -n "$PROMOTED_FROM" ] \
+            && gh release view "$PROMOTED_FROM" --repo "$REPO" --json body -q .body > "${notes}.src" 2>/dev/null; then
+            {
+              echo "Promoted from [${PROMOTED_FROM}](https://github.com/${REPO}/releases/tag/${PROMOTED_FROM}): the same source, released as ${VERSION}."
+              echo
+              cat "${notes}.src"
+            } > "$notes"
+          else
+            echo "Release candidate building; executables attach here as each one finishes." > "$notes"
+          fi
+          gh release create "$TAG" --repo "$REPO" --prerelease --notes-file "$notes"
 
   build-binaries:
     needs: [resolve, create-prerelease]
@@ -166,6 +212,8 @@ jobs:
         with:
           tag: ${{ needs.resolve.outputs.tag }}
           version: ${{ needs.resolve.outputs.version }}
+          # Promoted tags keep the notes create-prerelease copied over.
+          generate-notes: ${{ needs.resolve.outputs.promoted_from == '' }}
 
   # QA is decoupled from the RC. Run qa-matrix.yml on demand (workflow_dispatch
   # with this run's id passed as wheel_run_id / binary_run_id) when you want
