@@ -97,6 +97,13 @@ class SourceInfo(BaseModel):
     ingested_at: str
 
 
+class EntityStatus(BaseModel):
+    """Entity-extraction section of a status response (present when enabled)."""
+
+    types: list[str]
+    rows: int
+
+
 class StatusResult(BaseModel):
     """Full status response for the knowledge base."""
 
@@ -104,6 +111,7 @@ class StatusResult(BaseModel):
     config: StatusConfig
     sources: list[SourceInfo]
     total_chunks: int
+    entities: EntityStatus | None = None
 
 
 def gather_status() -> StatusResult:
@@ -131,4 +139,19 @@ def gather_status() -> StatusResult:
             for s in sorted_sources
         ],
         total_chunks=total_chunks,
+        entities=entity_status(),
     )
+
+
+def entity_status() -> EntityStatus | None:
+    """Entity types + extracted row count; None while the feature is off."""
+    if not cfg.entity_extraction:
+        return None
+    from lilbee.core.config import ENTITIES_TABLE
+    from lilbee.retrieval.entities import load_schema
+
+    store = get_services().store
+    schema = load_schema(store)
+    table = store.open_table(ENTITIES_TABLE)
+    rows = table.count_rows() if table is not None else 0
+    return EntityStatus(types=[t.name for t in schema.types] if schema else [], rows=rows)

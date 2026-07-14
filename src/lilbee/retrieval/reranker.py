@@ -47,11 +47,11 @@ def _blend_scores(
 ) -> list[ScoredChunk]:
     """Blend fusion scores with reranker scores using position-aware weights.
 
-    Both inputs are already min-max normalized to [0, 1] (``fusion_norms`` within
-    each scoring family, ``norm_scores`` across the reranker scores), so a strong
-    hybrid hit whose raw RRF score is tiny in absolute terms still earns real
-    fusion weight. Each chunk is copied with ``rerank_score`` set to its blended
-    score; the input chunks are left untouched.
+    Both inputs are already min-max normalized to [0, 1] (``fusion_norms``
+    across the pool's canonical scores, ``norm_scores`` across the reranker
+    scores), so the blend weights compare like with like. Each chunk is
+    copied with ``rerank_score`` set to its blended score; the input chunks
+    are left untouched.
     """
     blended: list[ScoredChunk] = []
     for i, (chunk, rerank_score, fusion_norm) in enumerate(
@@ -104,11 +104,19 @@ class Reranker:
             return results
 
         norm_scores = normalize_scores(scores)
-        fusion_norms = compute_fusion_norms(to_rerank)
-        blended = _blend_scores(to_rerank, norm_scores, fusion_norms)
-        blended_sorted = sorted(blended, key=lambda x: x.score, reverse=True)
+        if self._config.rerank_blend:
+            fusion_norms = compute_fusion_norms(to_rerank)
+            scored = _blend_scores(to_rerank, norm_scores, fusion_norms)
+        else:
+            # Pure cross-encoder ordering: no fusion blend, so the reranker's
+            # effect is unattenuated (and measurable in isolation).
+            scored = [
+                ScoredChunk(s, c.model_copy(update={"rerank_score": s}))
+                for s, c in zip(norm_scores, to_rerank, strict=True)
+            ]
+        scored_sorted = sorted(scored, key=lambda x: x.score, reverse=True)
 
-        reranked = [chunk for _, chunk in blended_sorted]
+        reranked = [chunk for _, chunk in scored_sorted]
         return reranked + remainder
 
 

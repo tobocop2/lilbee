@@ -113,7 +113,7 @@ jobs:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
 
   integration:
-    timeout-minutes: 90
+    timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     # Authenticate HF API + model downloads so the runner's shared IP doesn't
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
