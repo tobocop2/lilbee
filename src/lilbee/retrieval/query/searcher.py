@@ -49,11 +49,14 @@ from lilbee.retrieval.query.formatting import (
     strip_llm_citations,
 )
 from lilbee.retrieval.query.intent import (
+    INTENT_CLASSIFY_MAX_TOKENS,
+    INTENT_CLASSIFY_PROMPT,
     AggregateKind,
     AggregateQuery,
     document_references,
     matches_reference,
     parse_aggregate,
+    parse_llm_aggregate,
 )
 from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
@@ -960,10 +963,39 @@ class Searcher:
         if not self._config.intent_routing:
             return None
         aggregate = parse_aggregate(question)
+        if self._config.intent_llm and (
+            aggregate is None or aggregate.kind is AggregateKind.UNSUPPORTED
+        ):
+            # The deterministic patterns found no answerable count shape; let
+            # the chat model classify phrasings (and languages) they miss. A
+            # ``None`` here keeps whatever the patterns concluded, so an LLM
+            # failure can never lose a deterministic decline.
+            aggregate = self._llm_classify_aggregate(question) or aggregate
         if aggregate is None:
             return None
         log.info("Aggregate route: %s for %r", aggregate.kind.value, question)
         return self._answer_aggregate(aggregate)
+
+    def _llm_classify_aggregate(self, question: str) -> AggregateQuery | None:
+        """One short classification call, mapped conservatively to a route.
+
+        Any provider failure or malformed reply means no route -- the same
+        harmless degrade to topical retrieval as a deterministic miss.
+        """
+        prompt = INTENT_CLASSIFY_PROMPT.format(question=question)
+        try:
+            response = self._provider.chat(
+                [{"role": "user", "content": prompt}],
+                stream=False,
+                options={"num_predict": INTENT_CLASSIFY_MAX_TOKENS},
+            )
+        except Exception:
+            log.debug("LLM intent classification failed; using pattern result", exc_info=True)
+            return None
+        parsed = parse_llm_aggregate(strip_reasoning(response.text))
+        if parsed is not None:
+            log.info("LLM intent route: %s for %r", parsed.kind.value, question)
+        return parsed
 
     def skip_retrieval(self) -> bool:
         """Whether this turn should bypass RAG: chat-only mode or no embedder."""

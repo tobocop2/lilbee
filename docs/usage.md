@@ -835,6 +835,7 @@ reason the defaults are the defaults.
 | `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
 | `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |
 | `LILBEE_INTENT_ROUTING` | `true` | Route document-name lookups to exact retrieval and count questions to a full-corpus scan |
+| `LILBEE_INTENT_LLM` | `false` | Classify count questions with the chat model when the fast patterns miss; covers phrasing variants and other languages at the cost of one short LLM call on those turns |
 
 ## Optional extras
 

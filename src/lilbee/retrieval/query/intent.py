@@ -158,3 +158,75 @@ def parse_aggregate(question: str, lang: QueryLanguage | None = None) -> Aggrega
     if lang.total_pattern.search(question):
         return AggregateQuery(AggregateKind.TOTAL_SOURCES)
     return AggregateQuery(AggregateKind.UNSUPPORTED)
+
+
+# --- LLM-backed classification (config-gated; see Searcher.route_direct_answer) ---
+
+# Answer budget for the classification call: one small JSON object.
+INTENT_CLASSIFY_MAX_TOKENS = 96
+
+# The classifier prompt is intentionally language-agnostic about the QUESTION
+# (the model reads any language); only the label vocabulary is fixed.
+INTENT_CLASSIFY_PROMPT = """Classify this question for a document-search engine.
+Respond with ONLY a JSON object, no other text:
+{{"kind": "...", "term": "", "noun": "", "group_noun": ""}}
+
+kind must be exactly one of:
+- "topical": an ordinary question answered by reading passages (the default)
+- "total_sources": asks how many documents/files the collection holds
+- "term_mentions": asks how many documents mention or contain a specific \
+term; put that term in "term"
+- "distinct_type": asks how many distinct entities of some type exist; put \
+the type noun in "noun"
+- "type_association": asks how many X each Y has; put X in "noun" and Y in \
+"group_noun"
+
+When unsure, use "topical".
+
+Question: {question}
+"""
+
+_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+_LLM_KINDS = {
+    "total_sources": AggregateKind.TOTAL_SOURCES,
+    "term_mentions": AggregateKind.TERM_MENTIONS,
+    "distinct_type": AggregateKind.DISTINCT_TYPE,
+    "type_association": AggregateKind.TYPE_ASSOCIATION,
+}
+
+
+def parse_llm_aggregate(text: str) -> AggregateQuery | None:
+    """Map the classifier's reply to a route, or ``None`` for no route.
+
+    Conservative on every axis: anything malformed, unknown, "topical", or
+    missing a required field yields ``None``, which sends the question to
+    ordinary retrieval -- the same harmless degrade as a deterministic miss.
+    ``UNSUPPORTED`` is never produced here; declining is reserved for the
+    deterministic layer, whose patterns prove the question is count-shaped.
+    """
+    import json
+
+    match = _JSON_OBJECT_RE.search(text)
+    if not match:
+        return None
+    try:
+        # A brace-delimited match parses to a dict or raises; no shape check needed.
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    kind = _LLM_KINDS.get(data.get("kind", ""))
+    if kind is None:
+        return None
+    term = str(data.get("term", "") or "").strip()
+    noun = str(data.get("noun", "") or "").strip()
+    group_noun = str(data.get("group_noun", "") or "").strip()
+    required_ok = {
+        AggregateKind.TOTAL_SOURCES: True,
+        AggregateKind.TERM_MENTIONS: bool(term),
+        AggregateKind.DISTINCT_TYPE: bool(noun),
+        AggregateKind.TYPE_ASSOCIATION: bool(noun and group_noun),
+    }[kind]
+    if not required_ok:
+        return None
+    return AggregateQuery(kind, term=term, noun=noun, group_noun=group_noun)

@@ -829,6 +829,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Route document-name lookups to exact retrieval, count questions to a scan",
     ),
+    "intent_llm": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text=(
+            "Classify count questions with the chat model when the fast patterns "
+            "miss (covers phrasing variants and other languages; adds one short "
+            "LLM call to those turns)"
+        ),
+    ),
     "ann_index_threshold": SettingDef(
         int,
         nullable=False,

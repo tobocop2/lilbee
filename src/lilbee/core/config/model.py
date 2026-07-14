@@ -211,6 +211,11 @@ class Config(BaseSettings):
     # answer). Unrecognized shapes take the topical path unchanged.
     intent_routing: bool = ConfigField(default=True, writable=True)
 
+    # Ask the chat model to classify count questions the deterministic
+    # patterns miss (phrasing variants, other languages). Adds one short LLM
+    # call to every turn the patterns don't already route, so it's opt-in.
+    intent_llm: bool = ConfigField(default=False, writable=True)
+
     # LLM-generated alternative queries for expansion. 0 disables.
     query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
 

@@ -1604,6 +1604,82 @@ class TestTemporalFilter:
         assert len(filtered) == 1
 
 
+class TestLlmIntentRouting:
+    """The config-gated LLM classifier: consulted only when the deterministic
+    patterns find nothing answerable, never able to lose a decline, and any
+    failure degrades to ordinary retrieval."""
+
+    _CLASSIFY_JSON = '{"kind": "term_mentions", "term": "blood"}'
+
+    def test_off_by_default_no_llm_call(self, mock_svc):
+        cfg.intent_llm = False
+        answer = get_services().searcher.route_direct_answer("count the books that mention blood")
+        assert answer is None
+        mock_svc.provider.chat.assert_not_called()
+
+    def test_llm_routes_unmatched_phrasing_to_exact_scan(self, mock_svc):
+        cfg.intent_llm = True
+        try:
+            mock_svc.provider.chat.return_value = _text_result(self._CLASSIFY_JSON)
+            mock_svc.store.count_term_mentions.return_value = (12, 5)
+            answer = get_services().searcher.route_direct_answer("how many tomes mention blood?")
+            assert answer is not None
+            assert "5 documents" in answer
+            mock_svc.provider.chat.assert_called_once()
+        finally:
+            cfg.intent_llm = False
+
+    def test_deterministic_hit_skips_llm(self, mock_svc):
+        cfg.intent_llm = True
+        try:
+            mock_svc.store.count_term_mentions.return_value = (12, 5)
+            answer = get_services().searcher.route_direct_answer(
+                "how many documents mention blood?"
+            )
+            assert answer is not None
+            mock_svc.provider.chat.assert_not_called()
+        finally:
+            cfg.intent_llm = False
+
+    def test_llm_failure_degrades_to_retrieval(self, mock_svc):
+        """A failed classification on a pattern-missed question routes nowhere:
+        the question flows to ordinary retrieval, never an error."""
+        cfg.intent_llm = True
+        try:
+            mock_svc.provider.chat.side_effect = RuntimeError("server busy")
+            answer = get_services().searcher.route_direct_answer(
+                "count the books that mention blood"
+            )
+            assert answer is None
+        finally:
+            cfg.intent_llm = False
+
+    def test_llm_failure_keeps_deterministic_decline(self, mock_svc):
+        """A count-shaped question ('how many ...') keeps its precise decline
+        even when the classifier call fails."""
+        cfg.intent_llm = True
+        try:
+            mock_svc.provider.chat.side_effect = RuntimeError("server busy")
+            answer = get_services().searcher.route_direct_answer("how many tomes mention blood?")
+            assert answer is not None
+            assert "count" in answer.lower()
+        finally:
+            cfg.intent_llm = False
+
+    def test_llm_topical_keeps_deterministic_decline(self, mock_svc):
+        """UNSUPPORTED from the patterns survives an LLM 'topical' verdict: the
+        patterns proved the question is count-shaped, so declining precisely
+        beats hedging retrieval."""
+        cfg.intent_llm = True
+        try:
+            mock_svc.provider.chat.return_value = _text_result('{"kind": "topical"}')
+            answer = get_services().searcher.route_direct_answer("how many angels are there here?")
+            assert answer is not None
+            assert "count" in answer.lower()
+        finally:
+            cfg.intent_llm = False
+
+
 class TestSearchStructured:
     def test_term_mode(self, mock_svc):
         mock_svc.store.bm25_probe.return_value = [_make_result()]

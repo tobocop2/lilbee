@@ -83,6 +83,18 @@ def _english_noun_variants(noun: str) -> set[str]:
     return {prefix + form for form in forms}
 
 
+# Nouns that name the corpus's units rather than entities within them. A
+# count over these is a document scan; a count over an entity noun (people,
+# aircraft) needs extracted records and must NOT route to the scan, because
+# the scan answers "N documents", a different question than the one asked.
+_EN_CORPUS_NOUNS = (
+    r"(?:documents|sources|files|pages|chunks|passages|books|novels|texts|works"
+    r"|articles|papers|reports|letters|stories|entries|records|notes|emails"
+    r"|posts|volumes|manuscripts)"
+)
+# "how many of these books ...", "how many of the stories ...".
+_EN_OF_THESE = r"(?:of\s+(?:these|those|the|my|our)\s+)?"
+
 ENGLISH = QueryLanguage(
     code="en",
     doc_ref_pattern=re.compile(
@@ -95,9 +107,9 @@ ENGLISH = QueryLanguage(
     how_many_pattern=re.compile(
         r"^\s*(?:roughly\s+|approximately\s+|about\s+)?how\s+many\b", re.IGNORECASE
     ),
-    # "how many documents/sources/files are there/indexed": corpus totals.
+    # "how many documents/books/sources are there/indexed": corpus totals.
     total_pattern=re.compile(
-        r"how\s+many\s+(?:documents|sources|files|pages|chunks)\s*"
+        r"how\s+many\s+" + _EN_OF_THESE + _EN_CORPUS_NOUNS + r"\s*"
         r"(?:are\s+(?:there|indexed|in\s+the\s+index)|do(?:es)?\s+.*\b(?:index|corpus|vault)\b.*)?[?\s]*$",
         re.IGNORECASE,
     ),
@@ -115,9 +127,12 @@ ENGLISH = QueryLanguage(
         r"(?:\s+(?:are|were|is|exist)\b.*)?[?.\s]*$",
         re.IGNORECASE,
     ),
-    # "how many documents mention/contain/reference X": term-mention counts.
+    # "how many <corpus noun> mention/contain/reference X": term-mention
+    # counts, including "of these/those" phrasing ("how many of these books
+    # mention blood"). Entity nouns deliberately fall through (see
+    # _EN_CORPUS_NOUNS).
     term_mention_pattern=re.compile(
-        r"how\s+many\s+(?:documents|sources|files|pages|chunks|passages)\s+"
+        r"how\s+many\s+" + _EN_OF_THESE + _EN_CORPUS_NOUNS + r"\s+"
         r"(?:mention|mentions|mentioning|contain|contains|containing|reference|references|referencing|discuss|discussing)\s+"
         r"(.+?)[?.\s]*$",
         re.IGNORECASE,
