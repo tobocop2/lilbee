@@ -3755,13 +3755,16 @@ class TestRoutingLifecycleForwarding:
         assert rp.role_ready(WorkerRole.CHAT) is False
         local.role_ready.assert_called_once_with(WorkerRole.CHAT)
 
-    def test_role_ready_true_without_local(self) -> None:
+    def test_role_ready_false_without_local_for_native_ref(self) -> None:
+        from lilbee.core.config import cfg
         from lilbee.providers.roles import WorkerRole
         from lilbee.providers.routing_provider import RoutingProvider
 
-        # No local engine yet: treat as reachable so callers don't show a stuck
-        # warming state before the fleet is ever constructed.
-        assert RoutingProvider().role_ready(WorkerRole.CHAT) is True
+        # No local engine yet means no native ref can serve a token: reporting
+        # ready here let health's chat_ready go true before the engine existed,
+        # and the first /api/chat then 503'd from the backend.
+        cfg.chat_model = "org/repo/chat-Q4_K_M.gguf"
+        assert RoutingProvider().role_ready(WorkerRole.CHAT) is False
 
 
 def test_gguf_scalar_str_array_field_returns_none() -> None:
