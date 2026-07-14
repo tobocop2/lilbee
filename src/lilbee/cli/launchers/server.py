@@ -232,12 +232,18 @@ def _poll_chat_ready(port: int, timeout_s: float) -> bool:
     return False
 
 
-def spawn_server(port: int) -> subprocess.Popen[bytes]:
+def spawn_server(
+    port: int, *, env_overrides: dict[str, str] | None = None
+) -> subprocess.Popen[bytes]:
     """Spawn ``lilbee serve --port <port>`` as a background subprocess.
 
     Prefers the ``lilbee`` binary on PATH so frozen builds (Nuitka standalone)
     spawn the binary directly. Falls back to ``sys.executable -m lilbee`` for
     pip / editable installs where the entry point shims to the same form.
+
+    ``env_overrides`` are layered onto the inherited environment for the child
+    (e.g. ``LILBEE_CHAT_N_CTX_TARGET`` to size the served window for a launched
+    agent); ``None`` inherits the parent environment unchanged.
 
     Stdout/stderr go to ``cfg.data_dir / "logs" / "launcher-serve.log"`` (size
     capped at 5 MB) so a crash mid-session leaves a trace instead of disappearing.
@@ -275,12 +281,17 @@ def spawn_server(port: int) -> subprocess.Popen[bytes]:
         stdout = log_file
         stderr = subprocess.STDOUT
 
+    # None inherits the parent environment; a dict replaces it wholesale, so
+    # merge the overrides onto a copy of os.environ to keep PATH and the rest.
+    child_env = {**os.environ, **env_overrides} if env_overrides else None
+
     try:
         # Only caller-controlled value is the validated integer port; no shell.
         return subprocess.Popen(  # noqa: S603
             cmd,
             stdout=stdout,
             stderr=stderr,
+            env=child_env,
         )
     finally:
         # Popen dups the fd into the child; the parent's handle is no longer
@@ -301,13 +312,18 @@ def stop_spawned_server(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_KILL_GRACE_S)
 
 
-def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | None]:
+def ensure_server_running(
+    *, env_overrides: dict[str, str] | None = None
+) -> tuple[tuple[str, int], subprocess.Popen[bytes] | None]:
     """Return ``(session, spawned_proc)`` for a usable lilbee server.
 
     Reuses an already-running server when its session files are healthy.
     Otherwise spawns a fresh server on a free port. The returned ``spawned_proc``
     is ``None`` when an existing server was reused; the caller is responsible
     for stopping a spawned process when it is done with it.
+
+    ``env_overrides`` reach a freshly spawned child (e.g. a launcher sizing the
+    served window); a reused server keeps whatever window it booted with.
     """
     existing = running_server_session()
     if existing is not None and health_ok(existing[1]):
@@ -317,7 +333,7 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
         # Honor a user-pinned port so a persisted agent config keeps a valid URL;
         # fall back to a free port when unset (0).
         last_port = cfg.server_port or free_port()
-        spawned = _spawn_and_wait(last_port)
+        spawned = _spawn_and_wait(last_port, env_overrides=env_overrides)
         if spawned is not None:
             return _session_for_spawned(spawned), spawned
     typer.secho(
@@ -328,9 +344,11 @@ def ensure_server_running() -> tuple[tuple[str, int], subprocess.Popen[bytes] | 
     raise typer.Exit(1)
 
 
-def _spawn_and_wait(port: int) -> subprocess.Popen[bytes] | None:
+def _spawn_and_wait(
+    port: int, *, env_overrides: dict[str, str] | None = None
+) -> subprocess.Popen[bytes] | None:
     """Spawn a server on *port* and wait for health; None when it never comes up."""
-    spawned = spawn_server(port)
+    spawned = spawn_server(port, env_overrides=env_overrides)
     with console.status(f"Starting lilbee server on port {port}..."):
         healthy = wait_for_health(port)
     if healthy:
