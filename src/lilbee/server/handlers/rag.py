@@ -8,7 +8,7 @@ import dataclasses
 import logging
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 from lilbee.app.memory import auto_extract, auto_extract_enabled
 from lilbee.app.search import clean_result
@@ -23,6 +23,7 @@ from lilbee.retrieval.query.searcher import (
     EMPTY_LIBRARY,
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
+    RagContext,
 )
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
@@ -440,17 +441,37 @@ def chat_stream(
     )
 
 
+class _StreamResolution(NamedTuple):
+    """Retrieval outcome for a streaming turn.
+
+    ``preempt_frames`` are emitted verbatim before anything else; ``messages``
+    of ``None`` means the stream ends after them (a direct exact-scan answer
+    or a clean refusal/error).
+    """
+
+    sources: list[SearchChunk]
+    messages: list[ChatMessage] | None
+    preempt_frames: list[str]
+
+
+class _ChatStreamPlan(NamedTuple):
+    """Leading SSE frames plus the grounded context for a chat stream.
+
+    A ``None`` context means the turn can't proceed: emit the frames (a clean
+    refusal or error) and stop.
+    """
+
+    frames: list[str]
+    context: RagContext | None
+
+
 def _resolve_chat_stream_context(
     searcher: Searcher,
     question: str,
     history: list[ChatMessage],
     top_k: int | None,
     chunk_type: ChunkType | None,
-) -> tuple[list[str], tuple[list[SearchChunk], list[ChatMessage]] | None]:
-    """Resolve the leading SSE frames and the (sources, messages) for a chat
-    stream. When the second element is None the turn can't proceed: emit the
-    frames (a clean refusal or error) and stop. Otherwise emit the frames
-    (warming) and stream the answer grounded in the returned sources."""
+) -> _ChatStreamPlan:
     frames = list(_chat_warming_events())
     if searcher.search_unavailable():
         # Search mode with no embedder can't ground; refuse cleanly with the same
@@ -460,7 +481,7 @@ def _resolve_chat_stream_context(
             sse_event(SseEvent.SOURCES, []),
             sse_done({}),
         ]
-        return frames, None
+        return _ChatStreamPlan(frames, None)
     # Retrieval itself is resolved by the shared helper, so the chat stream
     # routes empty libraries and count questions exactly like the ask stream.
     sources, messages, preempt = _resolve_stream_context(
@@ -473,8 +494,8 @@ def _resolve_chat_stream_context(
     )
     frames += preempt
     if messages is None:
-        return frames, None
-    return frames, (sources, messages)
+        return _ChatStreamPlan(frames, None)
+    return _ChatStreamPlan(frames, RagContext(sources, messages))
 
 
 async def _stream_chat_response(
@@ -680,17 +701,15 @@ def _resolve_stream_context(
     chunk_type: ChunkType | None,
     *,
     retrieval_off: bool,
-) -> tuple[list[SearchChunk], list[ChatMessage] | None, list[str]]:
-    """Resolve retrieval for a streaming handler: (sources, messages, preempt).
+) -> _StreamResolution:
+    """Resolve retrieval for a streaming handler.
 
-    Non-empty ``preempt`` frames are emitted verbatim; ``messages`` of ``None``
-    means the stream ends after them (a direct exact-scan answer or an error).
     Shared by the ask and chat streams so the two paths cannot drift: both
     route count questions to the exact scan, surface an embedder mismatch as
     a coded SSE error, and report empty retrieval the same way.
     """
     if retrieval_off:
-        return [], searcher.direct_messages(question, history), []
+        return _StreamResolution([], searcher.direct_messages(question, history), [])
     if searcher.library_empty():
         # Nothing indexed yet: point the user at adding content instead of
         # reporting an empty search, matching Searcher.ask_stream.
@@ -699,7 +718,7 @@ def _resolve_stream_context(
             sse_event(SseEvent.SOURCES, []),
             sse_done({}),
         ]
-        return [], None, frames
+        return _StreamResolution([], None, frames)
     direct = searcher.route_direct_answer(question)
     if direct is not None:
         frames = [
@@ -707,7 +726,7 @@ def _resolve_stream_context(
             sse_event(SseEvent.SOURCES, []),
             sse_done({}),
         ]
-        return [], None, frames
+        return _StreamResolution([], None, frames)
     try:
         rag = searcher.build_rag_context(
             question, top_k=top_k or 0, history=history, chunk_type=chunk_type
@@ -719,11 +738,11 @@ def _resolve_stream_context(
             code=SseErrorCode.INDEX_EMBEDDER_MISMATCH,
             detail=_mismatch_detail(mismatch),
         )
-        return [], None, [frame]
+        return _StreamResolution([], None, [frame])
     if rag is None:
-        return [], None, [sse_error("No relevant documents found.")]
+        return _StreamResolution([], None, [sse_error("No relevant documents found.")])
     results, messages = rag
-    return results, messages, []
+    return _StreamResolution(results, messages, [])
 
 
 _CANONICAL_ROLE_BY_WIRE: dict[str, Literal["user", "assistant", "tool"]] = {

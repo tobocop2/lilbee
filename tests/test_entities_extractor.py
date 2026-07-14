@@ -16,7 +16,7 @@ from lilbee.retrieval.entities import (
     normalize_value,
     save_schema,
 )
-from lilbee.retrieval.entities.schema import noun_variants
+from lilbee.retrieval.language import noun_variants
 
 
 def _text_result(text):

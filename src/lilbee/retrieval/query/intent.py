@@ -12,6 +12,11 @@ Detection here is deterministic and deliberately conservative: a missed
 route degrades to topical retrieval, which handles the query the way it
 always has, while a false positive would hijack a topical question. Every
 pattern therefore requires an explicit structural cue.
+
+Language-specific patterns live in ``retrieval.language`` packs; the logic
+here consumes the active pack, so another language is an added pack, not an
+edited parser. Only language-neutral shapes (filenames, quoting, token
+splitting) are defined in this module.
 """
 
 from __future__ import annotations
@@ -20,6 +25,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+from lilbee.retrieval.language import QueryLanguage, query_language
 
 
 class AggregateKind(Enum):
@@ -51,15 +58,9 @@ class AggregateQuery:
 # Filename-shaped tokens: a path-ish word with a known document extension.
 # No spaces: a name containing them arrives quoted and the quote pattern
 # catches it; allowing spaces here would swallow leading sentence words.
+# Language-neutral: filenames look the same in every language.
 _FILENAME_RE = re.compile(
     r"[\w.-][\w./-]*\.(?:pdf|md|txt|docx?|rst|html?|epub|csv|py|rs|js|ts|java|go)\b",
-    re.IGNORECASE,
-)
-
-# "document 214", "doc #47", "exhibit 12b", "file 2020-03": a document noun
-# followed by a short identifier.
-_DOC_REF_RE = re.compile(
-    r"\b(?:document|doc|file|exhibit|attachment|report)\s+#?([\w][\w.-]{0,23})\b",
     re.IGNORECASE,
 )
 
@@ -69,55 +70,15 @@ _DOC_REF_RE = re.compile(
 # into a phantom name; double-quoted names may contain apostrophes.
 _QUOTED_RE = re.compile(r"(?<!\w)\"([^\"]{2,80})\"(?!\w)|(?<!\w)'([^']{2,80})'(?!\w)")
 
-# Generic nouns that follow a document noun in topical questions ("the
-# documents mention...", "which document says..."); never identifiers.
-_REF_STOPWORDS = frozenset(
-    {"that", "which", "the", "this", "these", "those", "it", "them", "was", "is", "are"}
-)
 
-_HOW_MANY_RE = re.compile(
-    r"^\s*(?:roughly\s+|approximately\s+|about\s+)?how\s+many\b", re.IGNORECASE
-)
-
-# "how many documents/sources/files are there/indexed": corpus totals.
-_TOTAL_RE = re.compile(
-    r"how\s+many\s+(?:documents|sources|files|pages|chunks)\s*"
-    r"(?:are\s+(?:there|indexed|in\s+the\s+index)|do(?:es)?\s+.*\b(?:index|corpus|vault)\b.*)?[?\s]*$",
-    re.IGNORECASE,
-)
-
-# "how many X is each Y associated with" / "how many X per Y": typed
-# association counts over extracted entities.
-_ASSOCIATION_RE = re.compile(
-    r"how\s+many\s+(.+?)\s+(?:is|are)\s+each\s+(.+?)\s+"
-    r"(?:associated\s+with|linked\s+to|recorded\s+(?:for|against))",
-    re.IGNORECASE,
-)
-_PER_RE = re.compile(r"how\s+many\s+(.+?)\s+per\s+(.+?)[?.\s]*$", re.IGNORECASE)
-
-# "how many distinct/unique X ...": typed distinct counts.
-_DISTINCT_RE = re.compile(
-    r"how\s+many\s+(?:distinct|unique|different)\s+(.+?)"
-    r"(?:\s+(?:are|were|is|exist)\b.*)?[?.\s]*$",
-    re.IGNORECASE,
-)
-
-# "how many documents mention/contain/reference X": term-mention counts.
-_TERM_MENTION_RE = re.compile(
-    r"how\s+many\s+(?:documents|sources|files|pages|chunks|passages)\s+"
-    r"(?:mention|mentions|mentioning|contain|contains|containing|reference|references|referencing|discuss|discussing)\s+"
-    r"(.+?)[?.\s]*$",
-    re.IGNORECASE,
-)
-
-
-def document_references(question: str) -> list[str]:
+def document_references(question: str, lang: QueryLanguage | None = None) -> list[str]:
     """Candidate document identifiers named in *question*, best-first.
 
     Filenames beat quoted names beat "document N" references; all are
     resolved against real source metadata by the caller, so a wrong
     candidate costs one lookup, not a wrong route.
     """
+    lang = lang or query_language()
     candidates: list[str] = []
     for m in _FILENAME_RE.finditer(question):
         candidates.append(m.group(0).strip())
@@ -125,9 +86,9 @@ def document_references(question: str) -> list[str]:
         quoted = (m.group(1) or m.group(2)).strip()
         if quoted:
             candidates.append(quoted)
-    for m in _DOC_REF_RE.finditer(question):
+    for m in lang.doc_ref_pattern.finditer(question):
         ref = m.group(1).strip()
-        if ref.lower() not in _REF_STOPWORDS:
+        if ref.lower() not in lang.ref_stopwords:
             candidates.append(ref)
     seen: set[str] = set()
     unique = []
@@ -165,7 +126,7 @@ def matches_reference(ref: str, filename: str) -> bool:
     return False
 
 
-def parse_aggregate(question: str) -> AggregateQuery | None:
+def parse_aggregate(question: str, lang: QueryLanguage | None = None) -> AggregateQuery | None:
     """Parse a count-shaped question, or ``None`` for anything else.
 
     Only "how many ..." questions qualify; of those, term-mention and
@@ -174,25 +135,26 @@ def parse_aggregate(question: str) -> AggregateQuery | None:
     ``UNSUPPORTED`` so the caller can decline precisely instead of feeding
     the question to top-k retrieval that structurally cannot count.
     """
-    if not _HOW_MANY_RE.search(question):
+    lang = lang or query_language()
+    if not lang.how_many_pattern.search(question):
         return None
-    m = _ASSOCIATION_RE.search(question) or _PER_RE.search(question)
+    m = lang.association_pattern.search(question) or lang.per_pattern.search(question)
     if m:
         return AggregateQuery(
             AggregateKind.TYPE_ASSOCIATION,
             noun=m.group(1).strip(),
             group_noun=m.group(2).strip(),
         )
-    m = _DISTINCT_RE.search(question)
+    m = lang.distinct_pattern.search(question)
     if m:
         return AggregateQuery(AggregateKind.DISTINCT_TYPE, noun=m.group(1).strip())
-    m = _TERM_MENTION_RE.search(question)
+    m = lang.term_mention_pattern.search(question)
     if m:
         term = m.group(1).strip().strip("\"'")
         # Strip a leading article so 'mention the observatory' counts 'observatory'.
-        term = re.sub(r"^(?:the|a|an)\s+", "", term, flags=re.IGNORECASE)
+        term = lang.leading_article_pattern.sub("", term)
         if term:
             return AggregateQuery(AggregateKind.TERM_MENTIONS, term=term)
-    if _TOTAL_RE.search(question):
+    if lang.total_pattern.search(question):
         return AggregateQuery(AggregateKind.TOTAL_SOURCES)
     return AggregateQuery(AggregateKind.UNSUPPORTED)

@@ -6,7 +6,7 @@ import logging
 import threading
 from collections import Counter
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -44,6 +44,14 @@ def _iter_row_batches(table: lancedb.table.Table) -> Iterator[list[dict[str, Any
     """Yield a table's rows as bounded-size lists of dicts."""
     for batch in table.to_arrow().to_batches(max_chunksize=_TABLE_SCAN_BATCH_ROWS):
         yield batch.to_pylist()
+
+
+class _PmiInputs(NamedTuple):
+    """Corpus-wide counts PMI is computed from (see _corpus_pmi_inputs)."""
+
+    cooccurrences: Counter[tuple[str, str]]
+    concept_counts: Counter[str]
+    total_chunks: int
 
 
 class ConceptGraph:
@@ -299,7 +307,7 @@ class ConceptGraph:
 
     def _corpus_pmi_inputs(
         self,
-    ) -> tuple[Counter[tuple[str, str]], Counter[str], int]:
+    ) -> _PmiInputs:
         """Co-occurrence counts, concept document-frequencies, and chunk count,
         all derived from the chunk_concepts table.
 
@@ -316,7 +324,7 @@ class ConceptGraph:
         concept_counts: Counter[str] = Counter()
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if table is None:
-            return cooccurrences, concept_counts, 0
+            return _PmiInputs(cooccurrences, concept_counts, 0)
         per_chunk: dict[tuple[str, int], set[str]] = {}
         for rows in _iter_row_batches(table):
             for row in rows:
@@ -329,7 +337,7 @@ class ConceptGraph:
             for i, a in enumerate(ordered):
                 for b in ordered[i + 1 :]:
                     cooccurrences[(a, b)] += 1
-        return cooccurrences, concept_counts, len(per_chunk)
+        return _PmiInputs(cooccurrences, concept_counts, len(per_chunk))
 
     def rebuild_clusters(self) -> None:
         """Recompute corpus PMI from the chunk_concepts map, re-run Leiden, compact.

@@ -30,6 +30,7 @@ from lilbee.retrieval.query.searcher import (
     EMPTY_LIBRARY,
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
+    QueryMode,
 )
 from tests.conftest import make_citation
 
@@ -1606,39 +1607,40 @@ class TestTemporalFilter:
 class TestSearchStructured:
     def test_term_mode(self, mock_svc):
         mock_svc.store.bm25_probe.return_value = [_make_result()]
-        results = get_services().searcher._search_structured("term", "test query", 5)
+        results = get_services().searcher._search_structured(QueryMode.TERM, "test query", 5)
         assert len(results) == 1
         mock_svc.store.bm25_probe.assert_called_once_with("test query", top_k=5, chunk_type=None)
 
     def test_vec_mode(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        results = get_services().searcher._search_structured("vec", "semantic query", 5)
+        results = get_services().searcher._search_structured(QueryMode.VEC, "semantic query", 5)
         assert len(results) == 1
 
     def test_hyde_mode(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("hypothetical doc")
         mock_svc.store.search.return_value = [_make_result()]
-        results = get_services().searcher._search_structured("hyde", "vague question", 5)
+        results = get_services().searcher._search_structured(QueryMode.HYDE, "vague question", 5)
         assert len(results) == 1
-
-    def test_unknown_mode_returns_empty(self, mock_svc):
-        assert get_services().searcher._search_structured("unknown", "test", 5) == []
 
     def test_term_mode_forwards_chunk_type(self, mock_svc):
         """A ``term:`` query under an explicit scope must keep the scope filter."""
         mock_svc.store.bm25_probe.return_value = [_make_result()]
-        get_services().searcher._search_structured("term", "q", 5, chunk_type=ChunkType.WIKI)
+        get_services().searcher._search_structured(
+            QueryMode.TERM, "q", 5, chunk_type=ChunkType.WIKI
+        )
         assert mock_svc.store.bm25_probe.call_args[1]["chunk_type"] == ChunkType.WIKI
 
     def test_vec_mode_forwards_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        get_services().searcher._search_structured("vec", "q", 5, chunk_type=ChunkType.WIKI)
+        get_services().searcher._search_structured(QueryMode.VEC, "q", 5, chunk_type=ChunkType.WIKI)
         assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
 
     def test_hyde_mode_forwards_chunk_type(self, mock_svc):
         mock_svc.provider.chat.return_value = _text_result("doc")
         mock_svc.store.search.return_value = [_make_result()]
-        get_services().searcher._search_structured("hyde", "q", 5, chunk_type=ChunkType.WIKI)
+        get_services().searcher._search_structured(
+            QueryMode.HYDE, "q", 5, chunk_type=ChunkType.WIKI
+        )
         assert mock_svc.store.search.call_args[1]["chunk_type"] == ChunkType.WIKI
 
 
@@ -2679,7 +2681,7 @@ class TestStructuredQueryWikiRaw:
         cfg.wiki = True
         try:
             mock_svc.store.search.return_value = [_make_result()]
-            get_services().searcher._search_structured("wiki", "test", 5)
+            get_services().searcher._search_structured(QueryMode.WIKI, "test", 5)
             mock_svc.store.search.assert_called_once()
             assert mock_svc.store.search.call_args[1]["chunk_type"] == "wiki"
         finally:
@@ -2687,7 +2689,7 @@ class TestStructuredQueryWikiRaw:
 
     def test_raw_mode_passes_chunk_type(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
-        get_services().searcher._search_structured("raw", "test", 5)
+        get_services().searcher._search_structured(QueryMode.RAW, "test", 5)
         mock_svc.store.search.assert_called_once()
         assert mock_svc.store.search.call_args[1]["chunk_type"] == "raw"
 

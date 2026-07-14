@@ -6,7 +6,8 @@ import logging
 import re
 from collections.abc import Generator
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
@@ -24,7 +25,7 @@ from lilbee.data.store import (
 )
 from lilbee.providers.base import LLMProvider, ProviderError, ProviderErrorKind
 from lilbee.retrieval.embedder import Embedder
-from lilbee.retrieval.entities.schema import noun_variants
+from lilbee.retrieval.language import noun_variants
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
@@ -86,10 +87,19 @@ _KNOWN_ITEM_CANDIDATES = 50
 _KNOWN_ITEM_PROBE_K = 6
 _KNOWN_ITEM_PROBE_MAJORITY = 0.75
 
+
 # Structured-query mode names (the ``mode:`` prefix shortcut). Single source for
 # both the prefix parser and the dispatch in ``_search_structured``. "term"/"vec"/
 # "hyde" pick a retrieval strategy; "wiki"/"raw" are ChunkType scope shortcuts.
-_STRUCTURED_QUERY_MODES = ("term", "vec", "hyde", ChunkType.WIKI.value, ChunkType.RAW.value)
+class QueryMode(StrEnum):
+    """Structured-query prefixes: ``term:``, ``vec:``, ``hyde:``, ``wiki:``, ``raw:``."""
+
+    TERM = "term"
+    VEC = "vec"
+    HYDE = "hyde"
+    WIKI = ChunkType.WIKI.value
+    RAW = ChunkType.RAW.value
+
 
 # Leading list markers models prepend to expansion output despite the prompt:
 # "1.", "2)", "-", "*", "•".
@@ -187,6 +197,20 @@ class AskResult(BaseModel):
     answer: str
     sources: list[SearchChunk]
     cited_sources: list[SearchChunk] = Field(default_factory=list)
+
+
+class StructuredQuery(NamedTuple):
+    """A mode-prefixed query split from its mode (see ``QueryMode``)."""
+
+    mode: QueryMode | None
+    query: str
+
+
+class RagContext(NamedTuple):
+    """Grounded context for one turn: the chunks and the prompt built on them."""
+
+    results: list[SearchChunk]
+    messages: list[ChatMessage]
 
 
 class Searcher:
@@ -408,41 +432,38 @@ class Searcher:
             return None
         return chunk_type
 
-    def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
+    def _parse_structured_query(self, question: str) -> StructuredQuery:
         stripped = question.strip()
-        for mode in _STRUCTURED_QUERY_MODES:
-            prefix = f"{mode}:"
+        for mode in QueryMode:
+            prefix = f"{mode.value}:"
             if stripped.lower().startswith(prefix):
-                return mode, stripped[len(prefix) :].strip()
-        return None, question
+                return StructuredQuery(mode, stripped[len(prefix) :].strip())
+        return StructuredQuery(None, question)
 
     def _search_structured(
         self,
-        mode: str,
+        mode: QueryMode,
         query: str,
         top_k: int,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
-        if mode == "term":
+        if mode is QueryMode.TERM:
             return self._store.bm25_probe(query, top_k=top_k, chunk_type=chunk_type)
-        if mode == "vec":
+        if mode is QueryMode.VEC:
             query_vec = self._embedder.embed_query(query)
             return self._store.search(
                 query_vec, top_k=top_k, query_text=None, chunk_type=chunk_type
             )
-        if mode == "hyde":
+        if mode is QueryMode.HYDE:
             return self._hyde_search(query, top_k, chunk_type=chunk_type)
-        if mode in (ChunkType.WIKI, ChunkType.RAW):
-            # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
-            # Route the prefix-derived type through the same wiki-disabled guard the
-            # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
-            requested = chunk_type if chunk_type is not None else ChunkType(mode)
-            effective = self._normalize_chunk_type(requested)
-            query_vec = self._embedder.embed_query(query)
-            return self._store.search(
-                query_vec, top_k=top_k, query_text=query, chunk_type=effective
-            )
-        return []
+        # QueryMode.WIKI / QueryMode.RAW: a chunk-type scope shortcut.
+        # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
+        # Route the prefix-derived type through the same wiki-disabled guard the
+        # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
+        requested = chunk_type if chunk_type is not None else ChunkType(mode.value)
+        effective = self._normalize_chunk_type(requested)
+        query_vec = self._embedder.embed_query(query)
+        return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=effective)
 
     def select_context(
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
@@ -682,7 +703,7 @@ class Searcher:
         history: list[ChatMessage] | None = None,
         *,
         chunk_type: ChunkType | None = None,
-    ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
+    ) -> RagContext | None:
         """Build RAG context from search results.
 
         ``chunk_type`` restricts the pool to ``"raw"`` or ``"wiki"`` rows;
@@ -727,7 +748,7 @@ class Searcher:
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
-    ) -> tuple[list[SearchChunk], list[ChatMessage]]:
+    ) -> RagContext:
         """Fit *results* to the context budget and assemble the prompt.
 
         Split from build_rag_context so an overflow retry can refit the same
@@ -741,7 +762,7 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return results, messages
+        return RagContext(results, messages)
 
     @staticmethod
     def _budget_tokens(text: str) -> int:
