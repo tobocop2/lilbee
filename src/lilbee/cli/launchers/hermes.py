@@ -60,13 +60,10 @@ def _upsert_env_token(path: Path, token: str) -> None:
 
 
 def warn_hermes_ungrounded() -> None:
-    """State the consequence when hermes could not connect lilbee's MCP search.
+    """Say plainly that hermes will run ungrounded when its MCP search did not connect.
 
-    Without the ``mcp`` extra hermes never calls ``lilbee_search``, so it answers
-    from its own training instead of the indexed docs -- silently, at exit 0. The
-    launcher just wrote the provider config and installed the guidance skill, so a
-    run looks wired up; say plainly that it is not grounded rather than leaving
-    only the buried install hint, so the output is not mistaken for a grounded one.
+    Without the ``mcp`` extra hermes never calls ``lilbee_search`` and answers from
+    its own training, silently at exit 0, so the install hint alone is easy to miss.
     """
     typer.secho(
         "Warning: hermes could not connect lilbee's search (MCP), so it will run "
@@ -144,8 +141,7 @@ class HermesLauncher:
                 mcp_ready = ensure_hermes_http_mcp(
                     self._binary, allow_lazy_installs=allow_lazy, echo=typer.echo
                 )
-                # MCP was requested but could not connect: don't hand off a hermes
-                # that will silently run ungrounded (no lilbee_search) -- say so.
+                # Requested but not connected: don't hand off a silently ungrounded hermes.
                 if not mcp_ready:
                     warn_hermes_ungrounded()
         return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})

@@ -95,9 +95,8 @@ def _mcp_extra_requirements(interpreter: str) -> list[str]:
 def _install_failure_reason(proc: subprocess.CompletedProcess[str]) -> str:
     """A one-line reason a pip install did not make MCP importable, or ``""``.
 
-    The common causes are a pip-less uv/pipx tool environment and an
-    externally-managed environment (PEP 668); both land on the last line of
-    pip's output, which is what we surface.
+    The usual causes (a pip-less tool env, a PEP 668 externally-managed env) land
+    on pip's last output line, which is what we surface.
     """
     text = (proc.stderr or proc.stdout or "").strip()
     if not text:
@@ -113,10 +112,8 @@ def ensure_hermes_http_mcp(
 
     When support is missing: auto-installs hermes's pinned ``[mcp]`` extra into
     hermes's own environment (only if ``allow_lazy_installs``), otherwise echoes
-    hermes's documented install command. When an install runs but does not take,
-    surfaces the reason (a pip-less tool env, an externally-managed environment)
-    so the caller is not left silently ungrounded. Idempotent and cheap when
-    already present."""
+    hermes's documented install command; when an install does not take, surfaces
+    why. Idempotent and cheap when already present."""
     interpreter = hermes_interpreter(binary)
     if interpreter is None:
         echo(MCP_EXTRA_HINT)

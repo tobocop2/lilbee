@@ -25,16 +25,10 @@ LILBEE_TOKEN_ENV_VAR = "LILBEE_TOKEN"  # noqa: S105 (env var name, not a secret)
 _CHAT_CTX_TARGET_ENV_VAR = "LILBEE_CHAT_N_CTX_TARGET"
 
 # Floor on the served chat window for a launched agent. Agent clients open with
-# a large baseline prompt -- system prompt, AGENTS.md, and tool schemas
-# (including lilbee_search) -- and reserve output tokens from the window, so the
-# RAM-derived default (core.system.chat_ctx_target_for_total_bytes tops out at
-# 24576) leaves too little input budget and the first turn overflows before the
-# agent does any work. lilbee_search can also return a large result (a full
-# Godot class XML), which pushed even 32768 over, and hermes refuses a window
-# under 64000 outright, so an agent launch reaches for this floor. The n_ctx
-# picker still clamps it to the model's trained context and the host's VRAM
-# (providers.model_cache.compute_dynamic_ctx never over-allocates), and
-# client_chat_ctx() / warn_if_below_hermes_minimum() warn when it cannot be met.
+# a large baseline prompt (system prompt, tool schemas) and reserve output, so
+# the RAM-derived default (tops out at 24576) overflows on the first turn; hermes
+# also refuses a window under 64000. The picker still clamps to the model's
+# trained context and host VRAM, so this never over-allocates.
 _AGENT_CHAT_CTX_FLOOR = 65536
 
 
@@ -104,11 +98,9 @@ def run_launcher(launcher: Launcher) -> None:
     # here doesn't start a second llama-swap that races the server's for the model
     # port (the loser gets connection-refused). The spawned serve warms its own.
     cfg.worker_pool_eager_start = False
-    # Size the served chat window for the agent's large baseline prompt before the
-    # server spawns. Set it in-process so the warm wait and the client-window
-    # warning use the same target, and pass it to the spawned `lilbee serve` via
-    # its env (LILBEE_ overrides config.toml) so the served window actually grows.
-    # A reused server keeps its own window; client_chat_ctx() then warns if small.
+    # Size the served window for the agent before the server spawns: in-process so
+    # the warm wait and window warning agree, and via the child's env (LILBEE_
+    # overrides config.toml) so the spawned serve actually grows it.
     agent_target = agent_chat_ctx_target(cfg.chat_n_ctx_target)
     cfg.chat_n_ctx_target = agent_target
     (token, port), spawned = ensure_server_running(
