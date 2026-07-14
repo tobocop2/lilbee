@@ -29,10 +29,11 @@ def _zero_to_none(val: int) -> int | None:
 
 
 def _to_excerpt(chunk: SearchChunk) -> Excerpt:
-    if chunk.relevance_score is not None:
-        relevance = chunk.relevance_score
-    else:
-        relevance = 1.0 / (1.0 + (chunk.distance or 0))
+    # The canonical [0, 1] score is what every retrieval path stamps; the
+    # distance fallback (which read keyword-only rows as a perfect 1.0)
+    # covers only hand-built chunks that never went through retrieval.
+    fallback = 1.0 / (1.0 + (chunk.distance or 0))
+    relevance = chunk.score if chunk.score is not None else fallback
     return Excerpt(
         content=chunk.chunk,
         page_start=_zero_to_none(chunk.page_start),

@@ -12,6 +12,7 @@ def _chunk(
     chunk: str = "hello world",
     distance: float | None = 0.5,
     relevance_score: float | None = None,
+    score: float | None = None,
     page_start: int = 0,
     page_end: int = 0,
     line_start: int = 0,
@@ -24,6 +25,7 @@ def _chunk(
         chunk=chunk,
         distance=distance,
         relevance_score=relevance_score,
+        score=score,
         page_start=page_start,
         page_end=page_end,
         line_start=line_start,
@@ -140,15 +142,22 @@ def test_best_relevance_matches_top_excerpt() -> None:
     assert results[0].best_relevance == results[0].excerpts[0].relevance
 
 
-def test_relevance_score_used_directly() -> None:
-    results = group([_chunk(distance=None, relevance_score=0.75)])
+def test_canonical_score_used_directly() -> None:
+    results = group([_chunk(distance=None, score=0.75)])
     assert results[0].excerpts[0].relevance == 0.75
 
 
-def test_hybrid_results_sorted_by_relevance_score() -> None:
+def test_keyword_only_row_is_not_a_perfect_hit() -> None:
+    """A BM25-only row (no distance) must report its canonical score, not the
+    1.0 the old distance fallback produced for every keyword-only match."""
+    results = group([_chunk(distance=None, score=0.5)])
+    assert results[0].excerpts[0].relevance == 0.5
+
+
+def test_hybrid_results_sorted_by_canonical_score() -> None:
     chunks = [
-        _chunk(source="a.md", distance=None, relevance_score=0.3, chunk="low"),
-        _chunk(source="a.md", distance=None, relevance_score=0.9, chunk="high"),
+        _chunk(source="a.md", distance=None, score=0.3, chunk="low"),
+        _chunk(source="a.md", distance=None, score=0.9, chunk="high"),
     ]
     results = group(chunks)
     assert results[0].excerpts[0].content == "high"

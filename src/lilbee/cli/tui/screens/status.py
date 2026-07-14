@@ -129,6 +129,13 @@ def _build_storage_content(doc_count: int) -> Content:
         _kv_line("Data dir", _collapse_home(cfg.data_dir)),
         _kv_line("Models dir", _collapse_home(cfg.models_dir)),
     ]
+    if cfg.entity_extraction:
+        from lilbee.app.status import entity_status
+
+        section = entity_status()
+        if section is not None:
+            names = ", ".join(section.types) or "schema pending"
+            lines.append(_kv_line("Entities", f"{section.rows} extracted ({names})"))
     return Content("\n").join(lines)
 
 

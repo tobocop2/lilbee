@@ -128,9 +128,6 @@ def search(
             raise SystemExit(1) from None
         console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
         raise SystemExit(1) from None
-    # Apply the same relevance cutoff the REST and MCP search paths use, so the
-    # CLI doesn't surface lower-relevance chunks the API would suppress.
-    results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     cleaned = [clean_result(r) for r in results]
 
     if cfg.json_mode:
