@@ -7,7 +7,7 @@ import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.core.config import cfg
-from lilbee.data.store import ChunkType, SearchChunk
+from lilbee.data.store import ChunkType, MemoryRow, SearchChunk
 from lilbee.providers.base import ChatResult, FinishReason
 from lilbee.retrieval.query import (
     Searcher,
@@ -1602,6 +1602,91 @@ class TestTemporalFilter:
         results = [_make_result(source="a.md")]
         filtered = get_services().searcher._apply_temporal_filter(results, "recent")
         assert len(filtered) == 1
+
+
+def _memory_fact(text: str) -> MemoryRow:
+    from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemorySource
+
+    return MemoryRow(
+        id="m1",
+        owner=LOCAL_OWNER,
+        shared=False,
+        kind=MemoryKind.FACT,
+        source=MemorySource.MANUAL,
+        text=text,
+        vector=[0.0],
+        created_at="t",
+        updated_at="t",
+    )
+
+
+class TestMemoryGroundedFallback:
+    """Memory is the user's own ground truth: when retrieval cannot serve
+    (empty library, or nothing relevant) but fact recall hits, the turn
+    answers from memory via the direct prompt instead of a canned message.
+    Reported live: 'what's my name?' with the name in memory returned the
+    empty-library guidance."""
+
+    def _enable_memory(self, mock_svc, facts):
+        cfg.memory_enabled = True
+        mock_svc.store.get_memories.return_value = []
+        mock_svc.store.search_memories.return_value = facts
+        mock_svc.provider.chat.return_value = _text_result("Your name is Tobias.")
+
+    def test_empty_library_with_fact_answers_from_memory(self, mock_svc):
+        self._enable_memory(mock_svc, [_memory_fact("The user's name is Tobias.")])
+        try:
+            mock_svc.store.has_chunks.return_value = False
+            mock_svc.store.search.return_value = []
+            mock_svc.store.bm25_probe.return_value = []
+            result = get_services().searcher.ask_raw("what's my name?")
+            assert result.answer == "Your name is Tobias."
+            assert result.sources == []
+        finally:
+            cfg.memory_enabled = False
+
+    def test_empty_library_without_facts_keeps_guidance(self, mock_svc):
+        self._enable_memory(mock_svc, [])
+        try:
+            mock_svc.store.has_chunks.return_value = False
+            result = get_services().searcher.ask_raw("what's my name?")
+            assert result.answer == EMPTY_LIBRARY
+        finally:
+            cfg.memory_enabled = False
+
+    def test_preferences_alone_do_not_unlock_memory_answers(self, mock_svc):
+        """Always-injected preferences say nothing about answerability; only
+        distance-gated fact recall may bypass the empty-library guidance."""
+        self._enable_memory(mock_svc, [])
+        try:
+            mock_svc.store.get_memories.return_value = [_memory_fact("terse answers")]
+            mock_svc.store.has_chunks.return_value = False
+            result = get_services().searcher.ask_raw("what's my name?")
+            assert result.answer == EMPTY_LIBRARY
+        finally:
+            cfg.memory_enabled = False
+
+    def test_empty_retrieval_with_fact_answers_from_memory(self, mock_svc):
+        self._enable_memory(mock_svc, [_memory_fact("The user's name is Tobias.")])
+        try:
+            mock_svc.store.has_chunks.return_value = True
+            mock_svc.store.search.return_value = []
+            mock_svc.store.bm25_probe.return_value = []
+            result = get_services().searcher.ask_raw("what's my name?")
+            assert result.answer == "Your name is Tobias."
+        finally:
+            cfg.memory_enabled = False
+
+    def test_empty_retrieval_without_facts_refuses(self, mock_svc):
+        self._enable_memory(mock_svc, [])
+        try:
+            mock_svc.store.has_chunks.return_value = True
+            mock_svc.store.search.return_value = []
+            mock_svc.store.bm25_probe.return_value = []
+            result = get_services().searcher.ask_raw("what's my name?")
+            assert result.answer == GROUNDED_REFUSAL
+        finally:
+            cfg.memory_enabled = False
 
 
 class TestLlmIntentRouting:

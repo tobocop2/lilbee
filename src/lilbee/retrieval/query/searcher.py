@@ -737,6 +737,13 @@ class Searcher:
                 results, self._config.max_distance, self._config.min_relevance_score
             )
             if not results:
+                # No relevant documents, but the user's stored memories may
+                # still ground the turn ("what's my name?"): facts recalled
+                # for this question answer via the memory-injected direct
+                # prompt instead of a refusal. Facts only -- always-injected
+                # preferences say nothing about answerability.
+                if self._memory_facts(question):
+                    return RagContext([], self.direct_messages(question, history))
                 return None
             results = prepare_results(results, self._config.diversity_max_per_source)
             if self._config.reranker_model:
@@ -834,21 +841,31 @@ class Searcher:
         if not self._config.memory_enabled:
             return ""
         # The human's answers see their own memories plus any an agent shared.
-        owner_predicate = human_recall_predicate()
         preferences = self._store.get_memories(
-            owner_predicate=owner_predicate,
+            owner_predicate=human_recall_predicate(),
             kind=MemoryKind.PREFERENCE,
         )
-        facts: list[MemoryRow] = []
-        if self._config.memory_top_k > 0 and self._embedder.embedding_available():
-            vector = self._embedder.embed_query(question)
-            facts = self._store.search_memories(
-                vector,
-                owner_predicate=owner_predicate,
-                top_k=self._config.memory_top_k,
-                max_distance=self._config.memory_max_distance,
-            )
+        facts = self._memory_facts(question)
         return format_memory_block(preferences, facts, self._config.memory_token_budget)
+
+    def _memory_facts(self, question: str) -> list[MemoryRow]:
+        """Similarity-recalled facts for *question*, or empty.
+
+        A non-empty result means memory can ground this turn on its own:
+        facts are distance-gated against the question, unlike preferences,
+        which are always injected and say nothing about answerability.
+        """
+        if not self._config.memory_enabled:
+            return []
+        if self._config.memory_top_k <= 0 or not self._embedder.embedding_available():
+            return []
+        vector = self._embedder.embed_query(question)
+        return self._store.search_memories(
+            vector,
+            owner_predicate=human_recall_predicate(),
+            top_k=self._config.memory_top_k,
+            max_distance=self._config.memory_max_distance,
+        )
 
     def _answer_aggregate(self, aggregate: AggregateQuery) -> str:
         """Answer a count-shaped question with an exact full-corpus scan.
@@ -1053,12 +1070,17 @@ class Searcher:
         raw = result.text
         return raw if self._config.show_reasoning else strip_reasoning(raw)
 
-    def _pre_retrieval_answer(self, question: str) -> str | None:
+    def pre_retrieval_answer(self, question: str) -> str | None:
         """The canned answer a grounded turn gives before retrieval runs:
         the empty-library guidance, or a count question's exact scan.
-        ``None`` means retrieval should proceed. One ladder shared by the
-        ask and stream paths so the two cannot drift."""
-        if self.library_empty():
+        ``None`` means retrieval should proceed. One ladder shared by every
+        surface (ask, stream, HTTP) so they cannot drift.
+
+        An empty library with recalled memory facts falls through: memory is
+        the user's own ground truth, so build_rag_context answers from it
+        instead of this method telling the user to add documents.
+        """
+        if self.library_empty() and not self._memory_facts(question):
             return EMPTY_LIBRARY
         return self.route_direct_answer(question)
 
@@ -1077,7 +1099,7 @@ class Searcher:
             return AskResult(answer=SEARCH_NEEDS_EMBEDDER, sources=[])
         if self.skip_retrieval():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
-        pre_answer = self._pre_retrieval_answer(question)
+        pre_answer = self.pre_retrieval_answer(question)
         if pre_answer is not None:
             return AskResult(answer=pre_answer, sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
@@ -1163,7 +1185,7 @@ class Searcher:
         if self.skip_retrieval():
             yield from self._stream_direct(question, history, options)
             return
-        pre_answer = self._pre_retrieval_answer(question)
+        pre_answer = self.pre_retrieval_answer(question)
         if pre_answer is not None:
             yield StreamToken(content=pre_answer, is_reasoning=False)
             return

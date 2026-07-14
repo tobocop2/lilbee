@@ -20,7 +20,6 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
 from lilbee.retrieval.query.searcher import (
-    EMPTY_LIBRARY,
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
     RagContext,
@@ -393,13 +392,11 @@ async def chat(
         sources: list[SearchChunk] = []
         messages = searcher.direct_messages(question, history)
     else:
-        # Grounded turn: run the same ladder as ask_raw so the two HTTP
-        # surfaces cannot drift (empty library, count routing, refusal).
-        if searcher.library_empty():
-            return AskResponse(answer=EMPTY_LIBRARY, sources=[], cited_sources=[])
-        direct = searcher.route_direct_answer(question)
-        if direct is not None:
-            return AskResponse(answer=direct, sources=[], cited_sources=[])
+        # Grounded turn: the searcher's own pre-retrieval ladder (empty
+        # library, count routing, memory-awareness) so surfaces cannot drift.
+        pre_answer = searcher.pre_retrieval_answer(question)
+        if pre_answer is not None:
+            return AskResponse(answer=pre_answer, sources=[], cited_sources=[])
         rag = searcher.build_rag_context(
             question, top_k=top_k or 0, history=history, chunk_type=chunk_type
         )
@@ -710,19 +707,12 @@ def _resolve_stream_context(
     """
     if retrieval_off:
         return _StreamResolution([], searcher.direct_messages(question, history), [])
-    if searcher.library_empty():
-        # Nothing indexed yet: point the user at adding content instead of
-        # reporting an empty search, matching Searcher.ask_stream.
+    # The searcher's own pre-retrieval ladder (empty library, count routing,
+    # memory-awareness), so the stream surfaces cannot drift from ask_raw.
+    pre_answer = searcher.pre_retrieval_answer(question)
+    if pre_answer is not None:
         frames = [
-            sse_event(SseEvent.TOKEN, {"token": EMPTY_LIBRARY}),
-            sse_event(SseEvent.SOURCES, []),
-            sse_done({}),
-        ]
-        return _StreamResolution([], None, frames)
-    direct = searcher.route_direct_answer(question)
-    if direct is not None:
-        frames = [
-            sse_event(SseEvent.TOKEN, {"token": direct}),
+            sse_event(SseEvent.TOKEN, {"token": pre_answer}),
             sse_event(SseEvent.SOURCES, []),
             sse_done({}),
         ]

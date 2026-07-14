@@ -75,7 +75,8 @@ def mock_svc():
     searcher.search_unavailable.return_value = False
     # The library has content unless an empty-library test flips this.
     searcher.library_empty.return_value = False
-    # No direct (count-scan) answer unless a test routes one explicitly.
+    # No pre-retrieval answer (empty library, count scan) unless a test routes one.
+    searcher.pre_retrieval_answer.return_value = None
     searcher.route_direct_answer.return_value = None
     services = make_mock_services(searcher=searcher)
     # chat_dispatch validates cfg.chat_model against the registry.
@@ -400,7 +401,7 @@ class TestAskStream:
     async def test_direct_answer_streams_before_retrieval(self, mock_svc):
         """Count questions stream the exact-scan answer, mirroring
         Searcher.ask_stream, instead of hedging through top-k RAG."""
-        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
         events = [e async for e in handlers.ask_stream("how many documents mention x?")]
         non_empty = [e for e in events if e]
         token_event = next(e for e in non_empty if e.startswith("event: token"))
@@ -449,7 +450,7 @@ class TestAskStream:
         so every ask surface surfaces the empty library the same way."""
         from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
 
-        mock_svc.searcher.library_empty.return_value = True
+        mock_svc.searcher.pre_retrieval_answer.return_value = EMPTY_LIBRARY
         events = [e async for e in handlers.ask_stream("say hello")]
         mock_svc.searcher.build_rag_context.assert_not_called()
         non_empty = [e for e in events if e]
@@ -743,7 +744,7 @@ class TestChat:
         reply the caller can't distinguish from a grounded one."""
         from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
 
-        mock_svc.searcher.library_empty.return_value = True
+        mock_svc.searcher.pre_retrieval_answer.return_value = EMPTY_LIBRARY
         result = await handlers.chat("anything", [])
         assert result.answer == EMPTY_LIBRARY
         assert result.sources == []
@@ -764,7 +765,7 @@ class TestChat:
     async def test_direct_answer_routes_before_retrieval(self, mock_svc):
         """A count question answered by the exact scan must short-circuit the
         HTTP chat path exactly as it does ask_raw: same router, no LLM."""
-        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
         result = await handlers.chat("how many documents mention kerosene?", [])
         assert result.answer == "Exact scan: 3 documents."
         assert result.sources == []
@@ -949,7 +950,7 @@ class TestChatStream:
         assert any("error" in e for e in non_empty)
 
     async def test_direct_answer_streams_before_retrieval(self, mock_svc):
-        mock_svc.searcher.route_direct_answer.return_value = "Exact scan: 3 documents."
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
         events = [e async for e in handlers.chat_stream("how many documents mention x?", [])]
         non_empty = [e for e in events if e]
         token_event = next(e for e in non_empty if e.startswith("event: token"))
