@@ -392,9 +392,16 @@ class LlamaServerClient:
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
         inline_reasoning: bool = False,
+        embed_busy_deadline_s: float | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._model = model
+        # Cold-load budget (seconds) the embed path waits out a still-warming replica
+        # before dropping the input, in place of the short attempt cap. Set on the
+        # EMBED-role client to the same ceiling llama-swap keeps the server alive for,
+        # so a bulk ingest never gives up while the replica is legitimately loading.
+        # None (rerank, chat, vision, self-check) keeps the fixed interactive budget.
+        self._embed_busy_deadline_s = embed_busy_deadline_s
         self._http = http or httpx.Client(
             base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
         )
@@ -900,7 +907,13 @@ class LlamaServerClient:
                 )
             return list(data)
 
-        # Bulk ingest can afford to wait out a cold-start warmup rather than drop files.
+        # Bulk ingest can afford to wait out a cold-start warmup rather than drop
+        # files. With a cold-load deadline (the EMBED-role client) the retry waits
+        # out a still-loading replica for the full budget llama-swap keeps it alive,
+        # instead of dropping the file after the fixed attempt cap; without one the
+        # fixed count bounds an interactive caller.
+        if self._embed_busy_deadline_s is not None:
+            return retry_on_busy(_call, deadline=time.monotonic() + self._embed_busy_deadline_s)
         return retry_on_busy(_call, retries=_EMBED_BUSY_RETRIES)
 
     def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
