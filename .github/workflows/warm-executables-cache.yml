@@ -1,0 +1,29 @@
+name: Warm executables cache
+
+# GitHub scopes cache saves to the creating ref, so caches saved during tag
+# (release) runs are unrestorable by later runs -- and nothing else runs the
+# executable matrix on main, which is why every release compiled cold (Linux
+# ~2h, macOS ~1h15, Windows ~4h). Run release.yml here on main so tag runs
+# restore warm caches instead: ccache on Linux/macOS (its non-tag save
+# condition finally fires) and the Nuitka cache on Windows. Weekly plus on
+# demand; promotions rebuild identical source, so run it before one for a
+# near-fully-cached build. Doubles as pre-tag validation of the executable
+# builds, like warm-engine-cache.yml does for the engine.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC, ahead of the weekly cadence
+  workflow_dispatch:
+
+permissions:
+  contents: write  # release.yml declares it for its eager-attach path; unused here (no release_tag)
+  actions: read
+
+concurrency:
+  group: warm-executables-cache
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
