@@ -657,6 +657,11 @@ class TestEmbeddingMismatchSurfacing:
                 # embedder present (search available, retrieval runs).
                 searcher.search_unavailable.return_value = False
                 searcher.skip_retrieval.return_value = False
+                # The library has content: the empty-library route must pass.
+                searcher.library_empty.return_value = False
+                searcher.pre_retrieval_answer.return_value = None
+                # Not a count question: the direct-answer route must pass.
+                searcher.route_direct_answer.return_value = None
                 searcher.build_rag_context.side_effect = self._mismatch()
                 return [event async for event in make_stream(rag)]
 

@@ -320,6 +320,34 @@ class TestTranslateOptions:
         result = translate_options({}, ref)
         assert result == {}
 
+    def test_api_model_drops_think(self) -> None:
+        """Hosted APIs have no chat_template_kwargs; think never hits the wire."""
+        ref = parse_model_ref("openai/gpt-4o")
+        result = translate_options({"temperature": 0.5, "think": False}, ref)
+        assert result == {"temperature": 0.5}
+
+    def test_local_ref_through_sdk_drops_think(self) -> None:
+        """litellm has no chat_template_kwargs passthrough either."""
+        ref = parse_model_ref(_LOCAL_REF)
+        result = translate_options({"temperature": 0.5, "think": False}, ref)
+        assert "think" not in result
+
+
+class TestChatOptionsThink:
+    def test_think_false_maps_to_template_kwargs(self) -> None:
+        from lilbee.providers.engine_params import chat_options_to_kwargs
+
+        result = chat_options_to_kwargs({"num_predict": 100, "think": False})
+        assert result["max_tokens"] == 100
+        assert result["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "think" not in result
+
+    def test_absent_think_adds_no_template_kwargs(self) -> None:
+        from lilbee.providers.engine_params import chat_options_to_kwargs
+
+        result = chat_options_to_kwargs({"num_predict": 100})
+        assert "chat_template_kwargs" not in result
+
 
 # Options a chat caller can supply; both backends must agree on num_predict and
 # never emit a key the receiving SDK errors on.

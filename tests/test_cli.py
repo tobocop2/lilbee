@@ -53,6 +53,8 @@ def mock_svc():
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
     store.add_chunks.return_value = 0
+    # No entity schema induced unless a test persists one.
+    store.entity_schema_state.return_value = None
     embedder = MagicMock()
     embedder.embed.return_value = [0.1] * 768
     embedder.embed_batch.return_value = []
@@ -103,6 +105,17 @@ class TestStatus:
         result = runner.invoke(app, ["status"])
         assert "Chat model:" in result.output
         assert "Embeddings:" in result.output
+
+    def test_status_shows_entities_when_enabled(self):
+        cfg.entity_extraction = True
+        result = runner.invoke(app, ["status"])
+        assert "entities extracted" in result.output
+        assert "schema pending" in result.output
+
+    def test_status_hides_entities_when_off(self):
+        cfg.entity_extraction = False
+        result = runner.invoke(app, ["status"])
+        assert "entities extracted" not in result.output
 
     def test_status_shows_ocr_when_enabled(self):
         cfg.enable_ocr = True
@@ -1221,19 +1234,18 @@ class TestSearch:
         assert result.exit_code != 0
         assert "must not be empty" in result.output
 
-    def test_search_applies_max_distance_filter(self, mock_svc, monkeypatch):
-        """CLI search drops chunks beyond cfg.max_distance, like REST and MCP."""
-        from lilbee.core.config import cfg
-
-        monkeypatch.setattr(cfg, "max_distance", 0.5)
-        near = _MOCK_SEARCH_RESULTS[0]  # distance 0.25
-        far = _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": "far.pdf", "distance": 0.9})
-        mock_svc.searcher.search.return_value = [near, far]
+    def test_search_returns_searcher_results_unfiltered(self, mock_svc):
+        """The relevance cutoff lives in Searcher.search (with the
+        lexical-support exemption); the CLI must not re-filter on bare
+        distance, which dropped both-arm rows fusion deliberately keeps."""
+        supported = _MOCK_SEARCH_RESULTS[0].model_copy(
+            update={"source": "far-but-lexical.pdf", "distance": 1.4, "bm25_score": 12.0}
+        )
+        mock_svc.searcher.search.return_value = [supported]
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 0
         sources = [r["source"] for r in json.loads(result.output.strip())["results"]]
-        assert "manual.pdf" in sources
-        assert "far.pdf" not in sources
+        assert sources == ["far-but-lexical.pdf"]
 
     def test_search_human_output(self, mock_svc):
         mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS

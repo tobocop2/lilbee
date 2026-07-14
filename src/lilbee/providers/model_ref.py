@@ -170,7 +170,12 @@ def translate_options(options: dict[str, Any], ref: ProviderModelRef) -> dict[st
     it, so dropping it keeps the wire request clean.
     """
     if not ref.is_api:
-        return filter_options(options)
+        filtered = filter_options(options)
+        # litellm has no chat_template_kwargs passthrough; thinking control
+        # only exists on the native llama-server path.
+        filtered.pop("think", None)
+        return filtered
     api_options = normalize_generation_options(options)
     api_options.pop("top_k", None)
+    api_options.pop("think", None)
     return api_options
