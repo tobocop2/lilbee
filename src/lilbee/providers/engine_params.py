@@ -82,8 +82,14 @@ def chat_options_to_kwargs(options: dict[str, Any] | None) -> dict[str, Any]:
     The output keys (``temperature``/``top_p``/``top_k``/``seed``/``max_tokens``/
     ``repeat_penalty``) are accepted by llama-server's OpenAI body. ``top_k`` is
     kept (local llama.cpp honors it), unlike the SDK/API translator which drops it.
+    ``think`` becomes ``chat_template_kwargs.enable_thinking``, which thinking
+    templates honor and others ignore.
     """
-    return normalize_generation_options(options)
+    kwargs = normalize_generation_options(options)
+    think = kwargs.pop("think", None)
+    if think is not None:
+        kwargs["chat_template_kwargs"] = {"enable_thinking": think}
+    return kwargs
 
 
 def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Path:

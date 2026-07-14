@@ -17,6 +17,8 @@ from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
     CHUNKS_TABLE,
     CITATIONS_TABLE,
+    ENTITIES_TABLE,
+    ENTITY_SCHEMA_TABLE,
     MEMORIES_TABLE,
     META_TABLE,
     PAGE_TEXTS_TABLE,
@@ -26,6 +28,7 @@ from lilbee.core.config import (
 from lilbee.core.security import validate_path_within
 from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
+from .fusion import fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
     _chunk_type_predicate,
     _has_fts_index,
@@ -38,8 +41,15 @@ from .lance_helpers import (
     refs_compatible,
 )
 from .ranking import mmr_rerank
-from .schema import _citations_schema, _meta_schema, _page_texts_schema, _sources_schema
+from .schema import (
+    _citations_schema,
+    _entity_schema_state_schema,
+    _meta_schema,
+    _page_texts_schema,
+    _sources_schema,
+)
 from .types import (
+    ENTITY_SCHEMA_DELETE_ALL_PREDICATE,
     META_DELETE_ALL_PREDICATE,
     META_SCHEMA_VERSION,
     READ_CONSISTENCY_INTERVAL,
@@ -48,6 +58,7 @@ from .types import (
     ChunkWrite,
     CitationRecord,
     EmbeddingModelMismatchError,
+    EntitySchemaState,
     MemoryKind,
     MemoryRow,
     PageTextRecord,
@@ -73,32 +84,22 @@ log = logging.getLogger(__name__)
 BATCH_LOCK_TIMEOUT = 120.0
 
 
-def _hybrid_search(
-    table: lancedb.table.Table,
-    query_text: str,
-    query_vector: list[float],
-    top_k: int,
-    chunk_type: ChunkType | None = None,
+def _drop_unsupported_far_rows(
+    results: list[SearchChunk], max_distance: float
 ) -> list[SearchChunk]:
-    """Run hybrid (vector + FTS) search with RRF reranking.
+    """Apply ``max_distance`` to rows whose only signal is the vector arm.
 
-    When ``chunk_type`` is set, the predicate is pushed into the query so
-    the limit applies *after* the type filter. Post-filtering would
-    silently starve wiki-only queries whose matches live past the top-K
-    hybrid window.
+    A row the BM25 arm also matched keeps lexical support regardless of its
+    vector distance; dropping it on distance alone would re-bury exactly the
+    identifier hits rank fusion exists to preserve.
     """
-    from lancedb.rerankers import RRFReranker
-
-    query = (
-        table.search(query_type="hybrid")
-        .vector(query_vector)
-        .text(query_text)
-        .rerank(RRFReranker())
-    )
-    if chunk_type:
-        query = query.where(_chunk_type_predicate(chunk_type))
-    rows = query.limit(top_k).to_list()
-    return [SearchChunk(**r) for r in rows]
+    if max_distance <= 0:
+        return results
+    return [
+        r
+        for r in results
+        if r.bm25_score is not None or r.distance is None or r.distance <= max_distance
+    ]
 
 
 _MAX_THRESHOLD = 1.0
@@ -124,12 +125,17 @@ _PER_SOURCE_TABLES = (
     (CHUNKS_TABLE, "source"),
     (PAGE_TEXTS_TABLE, "source"),
     (CHUNK_CONCEPTS_TABLE, "chunk_source"),
+    (ENTITIES_TABLE, "source"),
 )
 
 # Stat backfills replace this many source rows per locked write: the first
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
 _SOURCE_STAT_BATCH_ROWS = 2000
+
+# Rows per Arrow batch when the aggregate scan walks the whole chunks table;
+# bounds the decoded-text working set while the scan stays columnar.
+_TERM_SCAN_BATCH_ROWS = 20_000
 
 
 def _ann_nprobes(row_count: int) -> int:
@@ -495,7 +501,11 @@ class Store:
             if chunk_type:
                 query = query.where(_chunk_type_predicate(chunk_type))
             rows = query.limit(top_k).to_list()
-            return [SearchChunk(**r) for r in rows]
+            results = [SearchChunk(**r) for r in rows]
+            norms = normalized_bm25([r.bm25_score or 0.0 for r in results])
+            return [
+                r.model_copy(update={"score": norm}) for r, norm in zip(results, norms, strict=True)
+            ]
         except Exception:
             log.debug("BM25 probe failed", exc_info=True)
             return []
@@ -533,20 +543,17 @@ class Store:
 
         if query_text and self._fts_ready:
             try:
-                return _hybrid_search(table, query_text, query_vector, top_k, chunk_type)
+                return self._hybrid_search(
+                    table, query_text, query_vector, top_k, max_distance, chunk_type
+                )
             except Exception:
-                log.debug("Hybrid search failed, falling back to vector-only", exc_info=True)
+                # Falling back changes recall characteristics for the query;
+                # a corpus-wide FTS breakage must not present as silence.
+                log.warning("Hybrid search failed, falling back to vector-only", exc_info=True)
 
-        candidate_k = top_k * self._config.candidate_multiplier
-        query = table.search(query_vector).metric(_VECTOR_METRIC).limit(candidate_k)
-        if _has_vector_index(table):
-            # IVF_PQ is lossy; probe more partitions and refine against full
-            # vectors so recall stays close to the exact flat scan.
-            nprobes = _ann_nprobes(table.count_rows())
-            query = query.nprobes(nprobes).refine_factor(_ANN_REFINE_FACTOR)
-        if chunk_type:
-            query = query.where(_chunk_type_predicate(chunk_type))
-        rows = query.to_list()
+        rows = self._vector_arm(
+            table, query_vector, top_k * self._config.candidate_multiplier, chunk_type
+        )
         log.debug(
             "Vector search: query=%r, candidates=%d, max_distance=%.2f",
             query_text or "vector-only",
@@ -554,12 +561,80 @@ class Store:
             max_distance,
         )
         if rows:
-            # LanceDB names the similarity column "_distance"; "distance" would
-            # always miss and log 0.
-            distances = [r.get("_distance", 0) for r in rows[:5]]
-            log.debug("Top 5 distances: %s", distances)
-        results = [SearchChunk(**r) for r in rows]
-        return self._filter_and_rerank(results, query_vector, top_k, max_distance)
+            log.debug("Top 5 distances: %s", [r.distance for r in rows[:5]])
+        results = self._filter_and_rerank(rows, query_vector, top_k, max_distance)
+        return [
+            r.model_copy(
+                update={"score": vector_similarity(r.distance) if r.distance is not None else 0.0}
+            )
+            for r in results
+        ]
+
+    def _vector_arm(
+        self,
+        table: lancedb.table.Table,
+        query_vector: list[float],
+        limit: int,
+        chunk_type: ChunkType | None,
+    ) -> list[SearchChunk]:
+        """Vector-arm candidates with the ANN recall recovery applied.
+
+        When ``chunk_type`` is set, the predicate is pushed into the query so
+        the limit applies *after* the type filter; post-filtering would
+        silently starve wiki-only queries whose matches live past the window.
+        """
+        query = table.search(query_vector).metric(_VECTOR_METRIC).limit(limit)
+        if _has_vector_index(table):
+            # IVF_PQ is lossy; probe more partitions and refine against full
+            # vectors so recall stays close to the exact flat scan.
+            query = query.nprobes(_ann_nprobes(table.count_rows()))
+            query = query.refine_factor(_ANN_REFINE_FACTOR)
+        if chunk_type:
+            query = query.where(_chunk_type_predicate(chunk_type))
+        return [SearchChunk(**r) for r in query.to_list()]
+
+    def _fts_arm(
+        self,
+        table: lancedb.table.Table,
+        query_text: str,
+        limit: int,
+        chunk_type: ChunkType | None,
+    ) -> list[SearchChunk]:
+        """BM25-arm candidates."""
+        query = table.search(query_text, query_type="fts").limit(limit)
+        if chunk_type:
+            query = query.where(_chunk_type_predicate(chunk_type))
+        return [SearchChunk(**r) for r in query.to_list()]
+
+    def _hybrid_search(
+        self,
+        table: lancedb.table.Table,
+        query_text: str,
+        query_vector: list[float],
+        top_k: int,
+        max_distance: float,
+        chunk_type: ChunkType | None = None,
+    ) -> list[SearchChunk]:
+        """Dual-arm retrieval fused by reciprocal rank; the fused ordering is final.
+
+        Each arm fetches exactly ``top_k`` rows. Deeper pools measurably hurt
+        rank fusion: rows a single arm is certain about score a fixed 0.5,
+        while rows both arms rank mid-pool accumulate two contributions, so
+        widening the arms floods the fused top-k with both-arm mediocrity and
+        buries single-arm certainty (lexical identifier hits above all).
+
+        No diversity selection runs here either. For lexical queries the
+        relevant passages are often mutually similar (they quote the same
+        identifiers), which is exactly what MMR penalizes: selecting the
+        fused pool through MMR measurably traded relevant lexical hits for
+        diverse off-topic neighbors on graded evaluation.
+        """
+        fused = fuse_arms(
+            self._vector_arm(table, query_vector, top_k, chunk_type),
+            self._fts_arm(table, query_text, top_k, chunk_type),
+        )
+        fused = _drop_unsupported_far_rows(fused, max_distance)
+        return fused[:top_k]
 
     def _filter_and_rerank(
         self,
@@ -619,6 +694,151 @@ class Store:
     def _fixed_filter(self, results: list[SearchChunk], threshold: float) -> list[SearchChunk]:
         """Simple fixed threshold filter - keep only results within distance threshold."""
         return [r for r in results if _get_distance(r) <= threshold]
+
+    def add_entities(self, records: list[dict]) -> int:
+        """Append typed entity rows; creates the table on first write.
+
+        Additive to the store: existing tables and schemas are untouched, and
+        stores without this table behave as if nothing was ever extracted.
+        """
+        if not records:
+            return 0
+        from lilbee.retrieval.entities.schema import _entities_schema
+
+        with self._write_lock():
+            db = self.get_db()
+            table = ensure_table(db, ENTITIES_TABLE, _entities_schema())
+            table.add(records)
+            return len(records)
+
+    def entity_schema_state(self) -> EntitySchemaState | None:
+        """The persisted entity schema row, or ``None`` when never induced.
+
+        The schema is machine state induced from the corpus and lives inside
+        the index, so it travels with the data.
+        """
+        table = self.open_table(ENTITY_SCHEMA_TABLE)
+        if table is None:
+            return None
+        rows = table.search().limit(None).to_list()
+        if not rows:
+            return None
+        # One row by contract; take the newest if a rewrite ever left a stale one.
+        row = max(rows, key=lambda r: r["updated_at"])
+        return EntitySchemaState(
+            schema_json=str(row["schema_json"]),
+            applied=bool(row["applied"]),
+            source_count=int(row["source_count"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def save_entity_schema(self, schema_json: str, *, applied: bool, source_count: int) -> None:
+        """Overwrite the single persisted entity schema row."""
+        with self._write_lock():
+            db = self.get_db()
+            table = ensure_table(db, ENTITY_SCHEMA_TABLE, _entity_schema_state_schema())
+            _safe_delete_unlocked(table, ENTITY_SCHEMA_DELETE_ALL_PREDICATE)
+            table.add(
+                [
+                    {
+                        "schema_json": schema_json,
+                        "applied": applied,
+                        "source_count": source_count,
+                        "updated_at": datetime.now(UTC).isoformat(),
+                    }
+                ]
+            )
+
+    def mark_entity_schema_applied(self) -> None:
+        """Record that a full extraction pass completed under the stored schema."""
+        state = self.entity_schema_state()
+        if state is None:
+            return
+        self.save_entity_schema(
+            state["schema_json"], applied=True, source_count=state["source_count"]
+        )
+
+    def entity_value_counts(self, entity_type: str) -> tuple[int, int]:
+        """(mentions, distinct normalized values) for one entity type.
+
+        Full scan by design: a count is a corpus property. Streaming batches
+        keep memory flat at any corpus size.
+        """
+        table = self.open_table(ENTITIES_TABLE)
+        if table is None:
+            return 0, 0
+        mentions = 0
+        values: set[str] = set()
+        arrow = table.to_arrow().select(["type", "normalized_value"])
+        for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
+            types = batch.column("type").to_pylist()
+            vals = batch.column("normalized_value").to_pylist()
+            for t_, v in zip(types, vals, strict=True):
+                if t_ == entity_type:
+                    mentions += 1
+                    values.add(v)
+        return mentions, len(values)
+
+    def entity_association_counts(self, counted: str, grouped_by: str) -> dict[str, int]:
+        """Distinct *counted*-type values co-occurring with each *grouped_by* value.
+
+        Co-occurrence is per chunk: two entities extracted from the same
+        ``(source, chunk_index)`` are associated. This is the GROUP BY that
+        answers "how many X is each Y associated with".
+        """
+        table = self.open_table(ENTITIES_TABLE)
+        if table is None:
+            return {}
+        per_chunk: dict[tuple[str, int], tuple[set[str], set[str]]] = {}
+        arrow = table.to_arrow().select(["type", "normalized_value", "source", "chunk_index"])
+        for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
+            rows = zip(
+                batch.column("type").to_pylist(),
+                batch.column("normalized_value").to_pylist(),
+                batch.column("source").to_pylist(),
+                batch.column("chunk_index").to_pylist(),
+                strict=True,
+            )
+            for t_, v, src, idx in rows:
+                if t_ not in (counted, grouped_by):
+                    continue
+                counted_vals, group_vals = per_chunk.setdefault((src, idx), (set(), set()))
+                (counted_vals if t_ == counted else group_vals).add(v)
+        associations: dict[str, set[str]] = {}
+        for counted_vals, group_vals in per_chunk.values():
+            for group_value in group_vals:
+                associations.setdefault(group_value, set()).update(counted_vals)
+        return {k: len(v) for k, v in sorted(associations.items())}
+
+    def count_term_mentions(self, term: str) -> tuple[int, int]:
+        """(matching chunks, distinct matching sources) for a case-insensitive
+        substring scan of the WHOLE chunks table.
+
+        This is deliberately a full scan, not a top-k search: a count is a
+        corpus property, and any retrieval shortcut undercounts it. Streaming
+        Arrow batches keeps the working set to one batch of text at a time,
+        so cost is linear in corpus size and memory stays flat.
+        """
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return 0, 0
+        needle = term.lower()
+        chunk_hits = 0
+        sources: set[str] = set()
+        arrow = table.to_arrow().select(["source", "chunk"])
+        for batch in arrow.to_batches(max_chunksize=_TERM_SCAN_BATCH_ROWS):
+            texts = batch.column("chunk").to_pylist()
+            names = batch.column("source").to_pylist()
+            for name, text in zip(names, texts, strict=True):
+                if text and needle in text.lower():
+                    chunk_hits += 1
+                    sources.add(name)
+        return chunk_hits, len(sources)
+
+    def count_chunks(self) -> int:
+        """Total chunks in the store."""
+        table = self.open_table(CHUNKS_TABLE)
+        return table.count_rows() if table is not None else 0
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
         """Return every chunk whose ``source`` equals *source*."""

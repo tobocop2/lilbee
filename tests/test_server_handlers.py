@@ -73,6 +73,11 @@ def mock_svc():
     # Default to the grounded retrieval path; mode/embedder tests flip these.
     searcher.skip_retrieval.return_value = False
     searcher.search_unavailable.return_value = False
+    # The library has content unless an empty-library test flips this.
+    searcher.library_empty.return_value = False
+    # No pre-retrieval answer (empty library, count scan) unless a test routes one.
+    searcher.pre_retrieval_answer.return_value = None
+    searcher.route_direct_answer.return_value = None
     services = make_mock_services(searcher=searcher)
     # chat_dispatch validates cfg.chat_model against the registry.
     chat_manifest = MagicMock()
@@ -237,6 +242,28 @@ class TestStatus:
         assert result.sources == []
         assert result.total_chunks == 0
 
+    async def test_status_carries_entities_section(self):
+        """The entity section must survive the StatusResponse mapping; a
+        missing field there silently drops it from the HTTP surface."""
+        from lilbee.app.status import EntityStatus, StatusConfig, StatusResult
+
+        mock_status = StatusResult(
+            config=StatusConfig(
+                documents_dir="docs",
+                data_dir="data",
+                chat_model="test:latest",
+                embedding_model="embed:latest",
+            ),
+            sources=[],
+            total_chunks=0,
+            entities=EntityStatus(types=["part_number"], rows=3),
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=mock_status):
+            result = await handlers.status()
+        assert result.entities is not None
+        assert result.entities.types == ["part_number"]
+        assert result.entities.rows == 3
+
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
         cfg.vision_model = ""
@@ -371,6 +398,17 @@ class TestAskStream:
         parsed = json.loads(non_empty[0].split("data: ")[1].strip())
         assert "No relevant documents found" in parsed["message"]
 
+    async def test_direct_answer_streams_before_retrieval(self, mock_svc):
+        """Count questions stream the exact-scan answer, mirroring
+        Searcher.ask_stream, instead of hedging through top-k RAG."""
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
+        events = [e async for e in handlers.ask_stream("how many documents mention x?")]
+        non_empty = [e for e in events if e]
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert "Exact scan: 3 documents." in token_event
+        assert any(e.startswith("event: done") for e in non_empty)
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_yields_token_sources_done(self, mock_svc):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
         mock_svc.provider.chat.return_value = iter(["answer"])
@@ -405,6 +443,22 @@ class TestAskStream:
         async for _ in handlers.ask_stream("q", chunk_type="wiki"):
             pass
         assert mock_svc.searcher.build_rag_context.call_args.kwargs.get("chunk_type") == "wiki"
+
+    async def test_empty_library_streams_add_content_guidance(self, mock_svc):
+        """With nothing indexed, the ask stream points the user at adding content
+        as a normal answer token (not an SSE error), and never builds RAG context,
+        so every ask surface surfaces the empty library the same way."""
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        mock_svc.searcher.pre_retrieval_answer.return_value = EMPTY_LIBRARY
+        events = [e async for e in handlers.ask_stream("say hello")]
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        non_empty = [e for e in events if e]
+        event_types = [e.split("\n")[0].replace("event: ", "") for e in non_empty]
+        assert "error" not in event_types
+        assert event_types[-1] == "done"
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert json.loads(token_event.split("data: ")[1].strip())["token"] == EMPTY_LIBRARY
 
     async def test_search_mode_no_embedder_refuses(self, mock_svc):
         """Search mode with no embedder refuses by streaming the refusal as a normal
@@ -684,6 +738,39 @@ def _canonical_text_stream(texts):
 
 
 class TestChat:
+    async def test_empty_library_returns_add_content_guidance(self, mock_svc):
+        """/api/chat matches its streaming twin and ask_raw: an empty library
+        answers with the add-content guidance, never a silent ungrounded
+        reply the caller can't distinguish from a grounded one."""
+        from lilbee.retrieval.query.searcher import EMPTY_LIBRARY
+
+        mock_svc.searcher.pre_retrieval_answer.return_value = EMPTY_LIBRARY
+        result = await handlers.chat("anything", [])
+        assert result.answer == EMPTY_LIBRARY
+        assert result.sources == []
+        mock_svc.searcher.build_rag_context.assert_not_called()
+        mock_svc.searcher.direct_messages.assert_not_called()
+
+    async def test_empty_retrieval_refuses_grounded(self, mock_svc):
+        """Search mode with no usable sources refuses like every sibling
+        surface instead of silently answering off-corpus."""
+        from lilbee.retrieval.query.searcher import GROUNDED_REFUSAL
+
+        mock_svc.searcher.build_rag_context.return_value = None
+        result = await handlers.chat("q", [])
+        assert result.answer == GROUNDED_REFUSAL
+        assert result.sources == []
+        mock_svc.searcher.direct_messages.assert_not_called()
+
+    async def test_direct_answer_routes_before_retrieval(self, mock_svc):
+        """A count question answered by the exact scan must short-circuit the
+        HTTP chat path exactly as it does ask_raw: same router, no LLM."""
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
+        result = await handlers.chat("how many documents mention kerosene?", [])
+        assert result.answer == "Exact scan: 3 documents."
+        assert result.sources == []
+        mock_svc.searcher.build_rag_context.assert_not_called()
+
     async def test_passes_history(self, mock_svc, monkeypatch):
         from lilbee.server.chat_dispatch.canonical import (
             CanonicalResponse,
@@ -761,42 +848,6 @@ class TestChat:
         result = await handlers.chat("q", [])
         assert len(result.sources) == 1
         assert [s.source for s in result.cited_sources] == [result.sources[0].source]
-
-    async def test_retrieval_ran_but_no_context_falls_back_to_direct_chat(
-        self, mock_svc, monkeypatch
-    ):
-        """Search mode + ``build_rag_context`` returning None (no relevant docs)
-        falls back to a direct-chat turn: retrieval was attempted, the answer
-        still comes back, and the response carries no sources."""
-        from lilbee.server.chat_dispatch.canonical import (
-            CanonicalResponse,
-            CanonicalUsage,
-            StopReason,
-            TextBlock,
-        )
-
-        captured = []
-
-        def _fake_dispatch(req):
-            captured.append(req)
-            return CanonicalResponse(
-                id="msg_test",
-                model=req.model,
-                content=[TextBlock(text="direct answer")],
-                stop_reason=StopReason.END_TURN,
-                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
-            )
-
-        monkeypatch.setattr(_rag_h, "dispatch_chat", _fake_dispatch)
-        monkeypatch.setattr(cfg, "chat_mode", ChatMode.SEARCH.value)
-        # Retrieval runs (search mode) but finds nothing -> build_rag_context None.
-        mock_svc.searcher.build_rag_context.return_value = None
-        result = await handlers.chat("anything", [])
-        # build_rag_context WAS consulted (retrieval not skipped) yet returned None.
-        assert mock_svc.searcher.build_rag_context.call_args is not None
-        assert result.answer == "direct answer"
-        assert result.sources == []  # direct-chat fallback carries no sources
-        assert len(captured) == 1
 
     async def test_top_k_zero_skips_retrieval(self, mock_svc, monkeypatch):
         """bb-szm: an explicit top_k:0 is a pure-LLM call -- retrieval is
@@ -897,6 +948,14 @@ class TestChatStream:
         events = [e async for e in handlers.chat_stream("test", [])]
         non_empty = [e for e in events if e]
         assert any("error" in e for e in non_empty)
+
+    async def test_direct_answer_streams_before_retrieval(self, mock_svc):
+        mock_svc.searcher.pre_retrieval_answer.return_value = "Exact scan: 3 documents."
+        events = [e async for e in handlers.chat_stream("how many documents mention x?", [])]
+        non_empty = [e for e in events if e]
+        token_event = next(e for e in non_empty if e.startswith("event: token"))
+        assert "Exact scan: 3 documents." in token_event
+        mock_svc.searcher.build_rag_context.assert_not_called()
 
     async def test_yields_events_with_history(self, mock_svc, monkeypatch):
         mock_svc.searcher.build_rag_context.return_value = _rag_return()
@@ -3845,6 +3904,7 @@ class TestOptionInjectionBoundary:
         # chat() routes through canonical dispatch (not ask_raw): injected
         # endpoint/credential keys must never reach the dispatched request, while
         # a legitimate generation option (temperature) still flows through.
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()
         with patch("lilbee.server.handlers.rag.dispatch_chat") as mock_dispatch:
             mock_dispatch.return_value = MagicMock(content=[])
             await handlers.chat("q", history=[], options=dict(_INJECTED_OPTIONS))

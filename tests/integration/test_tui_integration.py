@@ -10,6 +10,8 @@ Run with:
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 from textual.app import ComposeResult
 from textual.widgets import DataTable, Footer
@@ -20,6 +22,24 @@ from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 pytestmark = pytest.mark.slow
+
+# A test that runs a REAL task-bar worker (a crawl, a sync) owns that thread
+# and must outwait its teardown; sized for Windows runners, where browser
+# shutdown alone can take tens of seconds.
+_TASK_WORKER_JOIN_S = 120.0
+
+
+def _join_task_workers() -> None:
+    """Join every live task-bar worker this test started.
+
+    The UI signals (sync flag, task-bar state) flip before the worker
+    thread's tail finishes (crawler/browser teardown); returning while it
+    runs trips the conftest leak guard, whose short grace is meant for
+    mocked no-op targets, not a real crawl.
+    """
+    for thread in threading.enumerate():
+        if thread.name.startswith("task-"):
+            thread.join(timeout=_TASK_WORKER_JOIN_S)
 
 
 class _IntegrationChatApp(LilbeeAppHost):
@@ -315,6 +335,7 @@ class TestCrawlAndSync:
             results = get_services().searcher.search("bioluminescent jellyfish luciferin")
             assert len(results) > 0, "Expected crawled content to be searchable"
         finally:
+            _join_task_workers()
             server.clear()
             server.stop()
 

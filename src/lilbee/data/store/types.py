@@ -84,6 +84,25 @@ META_SCHEMA_VERSION = 1
 # coupling the deletion to any specific column's value domain.
 META_DELETE_ALL_PREDICATE = "schema_version IS NOT NULL"
 
+# Same, for the single-row ``_entity_schema`` table.
+ENTITY_SCHEMA_DELETE_ALL_PREDICATE = "updated_at IS NOT NULL"
+
+
+class EntitySchemaState(TypedDict):
+    """Single-row state of the induced entity schema.
+
+    ``applied`` records whether a full extraction pass completed under this
+    schema; an interrupted pass leaves it False so the next sync redoes the
+    (idempotent) pass. ``source_count`` is how many documents the index held
+    when the schema was induced, which is what the next sync compares against
+    to decide the corpus has drifted far enough to re-induce.
+    """
+
+    schema_json: str
+    applied: bool
+    source_count: int
+    updated_at: str
+
 
 class SearchScope(StrEnum):
     """What the user wants to search over.
@@ -114,9 +133,11 @@ def scope_to_chunk_type(scope: SearchScope | str | None) -> ChunkType | None:
 
 class SearchChunk(BaseModel):
     """A search result from LanceDB.
-    Hybrid results have ``relevance_score`` set (higher = better).
-    Vector-only results have ``distance`` set (lower = better).
-    Reranked results have ``rerank_score`` set (higher = better).
+    Every store search path sets ``score``: canonical [0, 1] relevance,
+    higher = better. Ranking, filtering, and selection compare only this
+    field; the arm-specific fields below it are provenance.
+    Vector-arm rows carry ``distance``; FTS-arm rows carry ``bm25_score``;
+    reranked rows additionally carry ``rerank_score`` (higher = better).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -139,14 +160,20 @@ class SearchChunk(BaseModel):
     chunk_index: int
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
-    # Hybrid rows carry an RRF ``_relevance_score`` (small fusion-scale magnitude,
-    # higher = better) that filtering and ranking compare across results.
+    # Legacy ``_relevance_score`` passthrough. No store path populates it and
+    # no ranking code reads it; it survives only as a display-compatible field
+    # for rows produced by external LanceDB rerankers.
     relevance_score: float | None = Field(None, validation_alias="_relevance_score")
     # FTS/BM25-only rows carry a raw, unbounded ``_score``. It lives in its own
-    # field so it never contaminates the fusion-scale ``relevance_score``; only the
-    # confidence-based expansion-skip reads it (sigmoid-squashed to [0, 1]).
+    # field so it never contaminates the canonical ``score``; the
+    # confidence-based expansion-skip reads it (squashed to [0, 1]), and the
+    # relevance filter treats its presence as lexical support.
     bm25_score: float | None = Field(None, validation_alias="_score")
     rerank_score: float | None = None
+    # Canonical relevance in [0, 1], set by the store on every search path:
+    # normalized reciprocal-rank fusion on the hybrid path, clamped cosine
+    # similarity on vector-only, list-normalized BM25 on FTS-only probes.
+    score: float | None = None
 
 
 class SourceRecord(TypedDict):

@@ -18,6 +18,7 @@ def _reset():
     snapshot = {
         "reranker_model": cfg.reranker_model,
         "rerank_candidates": cfg.rerank_candidates,
+        "rerank_blend": cfg.rerank_blend,
     }
     yield
     for key, value in snapshot.items():
@@ -33,6 +34,9 @@ def reranker():
 def _chunk(
     source: str, chunk: str, distance: float = 0.5, relevance: float | None = None
 ) -> SearchChunk:
+    """Store-contract row: ``relevance`` is the canonical fusion score
+    (defaulting to the distance-derived similarity, like the store)."""
+    score = relevance if relevance is not None else max(0.0, min(1.0, 1.0 - distance))
     return SearchChunk(
         source=source,
         content_type="text",
@@ -44,7 +48,7 @@ def _chunk(
         chunk_index=0,
         vector=[0.1],
         distance=distance,
-        relevance_score=relevance,
+        score=score,
     )
 
 
@@ -54,6 +58,38 @@ def _patch_provider(rerank_fn):
     provider.rerank.side_effect = rerank_fn
     services = mock.MagicMock(provider=provider)
     return mock.patch("lilbee.app.services.get_services", return_value=services)
+
+
+class TestPureOrderRerank:
+    def test_blend_off_applies_pure_cross_encoder_order(self, reranker):
+        """With rerank_blend off, ordering follows the reranker scores alone;
+        a strong fusion hit at the top no longer resists demotion."""
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_blend = False
+        results = [
+            _chunk("fusion_top.md", "strong hybrid hit", distance=0.05),
+            _chunk("mid.md", "middling", distance=0.5),
+            _chunk("reranker_pick.md", "cross-encoder favourite", distance=0.9),
+        ]
+        with _patch_provider(lambda q, docs: [0.1, 0.5, 0.9]):
+            reranked = reranker.rerank("query", results)
+        assert [r.source for r in reranked] == ["reranker_pick.md", "mid.md", "fusion_top.md"]
+        # rerank_score carries the normalized reranker score, unblended.
+        assert reranked[0].rerank_score == pytest.approx(1.0)
+        assert reranked[-1].rerank_score == pytest.approx(0.0)
+
+    def test_blend_on_keeps_position_aware_default(self, reranker):
+        """Default behavior unchanged: the top fusion hit resists demotion."""
+        cfg.reranker_model = _RERANKER_MODEL
+        cfg.rerank_blend = True
+        results = [
+            _chunk("fusion_top.md", "strong hybrid hit", distance=0.05),
+            _chunk("mid.md", "middling", distance=0.5),
+            _chunk("reranker_pick.md", "cross-encoder favourite", distance=0.9),
+        ]
+        with _patch_provider(lambda q, docs: [0.1, 0.5, 0.9]):
+            reranked = reranker.rerank("query", results)
+        assert reranked[0].source == "fusion_top.md"
 
 
 class TestRerank:
@@ -89,15 +125,15 @@ class TestRerank:
             reranked = reranker.rerank("test", results)
         assert reranked[0].chunk == "exact match"
 
-    def test_mixed_cohort_does_not_demote_strong_hybrid_top(self, reranker):
-        """RRF (hybrid) and cosine-distance (HyDE) signals are normalized within
-        their own family, so a HyDE chunk cannot displace a leading hybrid hit just
-        because 1-distance is numerically larger than a tiny RRF score."""
+    def test_mixed_pool_does_not_demote_strong_hybrid_top(self, reranker):
+        """Hybrid and HyDE rows share the canonical score scale, and the
+        position-aware blend still protects a leading hybrid hit from a
+        cross-encoder that favours a down-weighted HyDE row."""
         cfg.reranker_model = _RERANKER_MODEL
         results = [
-            _chunk("hybrid_top.md", "exact match", relevance=0.05),
-            _chunk("hybrid_low.md", "weaker hybrid", relevance=0.03),
-            _chunk("hyde.md", "hyde recall", distance=0.4, relevance=None),
+            _chunk("hybrid_top.md", "exact match", relevance=0.5),
+            _chunk("hybrid_low.md", "weaker hybrid", relevance=0.4),
+            _chunk("hyde.md", "hyde recall", distance=0.4, relevance=0.42),
         ]
         # The cross-encoder favours the HyDE chunk; the hybrid top must still win.
         with _patch_provider(lambda query, cands: [0.5, 0.5, 0.9]):

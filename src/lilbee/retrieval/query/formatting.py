@@ -14,7 +14,13 @@ CONTEXT_TEMPLATE = """Context:
 Question: {question}"""
 
 
-_CITE_REF_RE = re.compile(r"\[(\d+)\]")
+# Bracketed citation groups: [1], [1, 2], [1-3], [1, 3-5]. Models mix all of
+# these despite being asked for single [n] markers; matching only [n] made
+# cited_sources under-count and fed JSON consumers false-negative grounding.
+_CITE_GROUP_RE = re.compile(r"\[(\d+(?:\s*[-,]\s*\d+)*)\]")
+_CITE_RANGE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
+# Ranges wider than this are page spans or line numbers, not citation lists.
+_MAX_CITE_RANGE = 32
 
 # An LLM-generated citation block: a "Sources:"/"References:"/... heading line
 # followed by a list (bullets, arrows, "[1]" or "1." numbering). Requiring the
@@ -111,6 +117,17 @@ def _format_citation(citation: CitationRecord) -> str:
     return f"    → {source_display}"
 
 
+def _location_suffix(result: SearchChunk) -> str:
+    """The page or line span of a chunk, or empty when neither applies."""
+    if result.content_type == "pdf":
+        ps, pe = result.page_start, result.page_end
+        return f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
+    if result.content_type == "code":
+        ls, le = result.line_start, result.line_end
+        return f"line {ls}" if ls == le else f"lines {ls}-{le}"
+    return ""
+
+
 def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
     """Format a source as a clickable, readable citation: a ``[label](file-url)``
     markdown link plus any page/line locator. Web docs render as ``host · slug``;
@@ -138,14 +155,32 @@ def unique_sources(results: list[SearchChunk]) -> list[SearchChunk]:
     return out
 
 
+def _context_header(result: SearchChunk) -> str:
+    """One-line provenance for a context block: source name plus location.
+
+    Without it the answering model sees bare numbered text: it cannot
+    attribute a claim to a named document, notice two chunks share a source,
+    or confirm it is reading the document the user asked about.
+    """
+    location = _location_suffix(result)
+    if location:
+        return f"{result.source}, {location}"
+    return result.source
+
+
 def build_context(results: list[SearchChunk]) -> str:
     """Number each passage by its source file, not its position, so citation
     numbers are stable while streaming and map 1:1 to the Sources block. Passages
-    from the same file share a number."""
+    from the same file share a number.
+
+    Each block carries a provenance header: without it the answering model sees
+    bare numbered text and cannot attribute a claim to a named document, notice
+    two passages share a source, or confirm it is reading the document asked for.
+    """
     order: dict[str, int] = {}
     for r in results:
         order.setdefault(r.source, len(order) + 1)
-    return "\n\n".join(f"[{order[r.source]}] {r.chunk}" for r in results)
+    return "\n\n".join(f"[{order[r.source]}] ({_context_header(r)})\n{r.chunk}" for r in results)
 
 
 def format_sources_block(
@@ -169,17 +204,50 @@ def format_sources_block(
 
 
 def _extract_cited_indices(text: str) -> set[int]:
-    """Extract [N] citation references from LLM answer text."""
-    return {int(m.group(1)) for m in _CITE_REF_RE.finditer(text)}
+    """Extract citation references from LLM answer text: [1], [1, 2], [1-3]."""
+    indices: set[int] = set()
+    for m in _CITE_GROUP_RE.finditer(text):
+        group = m.group(1)
+        remainder = _CITE_RANGE_RE.sub("", group)
+        for start, end in _CITE_RANGE_RE.findall(group):
+            lo, hi = int(start), int(end)
+            if lo <= hi <= lo + _MAX_CITE_RANGE:
+                indices.update(range(lo, hi + 1))
+        indices.update(int(n) for n in re.findall(r"\d+", remainder))
+    return indices
+
+
+def _identifier_shaped(stem: str) -> bool:
+    """Whether a filename stem is distinctive enough to match in prose.
+
+    A stem carrying a digit or a separator ("survey_report", "ARC-00000482")
+    only appears in an answer when the model names the document; a bare word
+    stem ("notes") collides with ordinary prose and cannot be trusted.
+    """
+    return any(c.isdigit() or c in "_-" for c in stem)
 
 
 def cited_subset(answer: str, sources: list[SearchChunk]) -> list[SearchChunk]:
-    """The sources the answer actually cited via [n] markers, where n indexes the
-    unique sources (matching ``build_context``/``format_sources_block``). Empty if
-    none cited."""
+    """The sources the answer actually referenced, in order (empty if none).
+
+    ``[n]`` markers are the primary signal, and ``n`` indexes the unique sources
+    (matching ``build_context``/``format_sources_block``). Name mentions count
+    too: context blocks show the model each source's name, and models often
+    attribute by name ("according to survey_report.pdf") instead of by marker,
+    which otherwise reads as an ungrounded answer to JSON consumers.
+    """
     uniq = unique_sources(sources)
     cited = _extract_cited_indices(answer)
-    return [uniq[i - 1] for i in sorted(cited) if 1 <= i <= len(uniq)]
+    picked = {i - 1 for i in cited if 1 <= i <= len(uniq)}
+    lowered = answer.lower()
+    for i, source in enumerate(uniq):
+        if i in picked:
+            continue
+        name = Path(source.source).name.lower()
+        stem = Path(source.source).stem
+        if name in lowered or (_identifier_shaped(stem) and stem.lower() in lowered):
+            picked.add(i)
+    return [uniq[i] for i in sorted(picked)]
 
 
 def _stream_safe_prefix(text: str) -> str:
