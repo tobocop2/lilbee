@@ -59,6 +59,22 @@ def _upsert_env_token(path: Path, token: str) -> None:
         path.chmod(0o600)
 
 
+def warn_hermes_ungrounded() -> None:
+    """Say plainly that hermes will run ungrounded when its MCP search did not connect.
+
+    Without the ``mcp`` extra hermes never calls ``lilbee_search`` and answers from
+    its own training, silently at exit 0, so the install hint alone is easy to miss.
+    """
+    typer.secho(
+        "Warning: hermes could not connect lilbee's search (MCP), so it will run "
+        "WITHOUT grounding -- it will not call lilbee_search and its answers come "
+        "from its own training, not your indexed docs. Install hermes's mcp extra "
+        "(shown above) and relaunch to ground it.",
+        err=True,
+        fg=typer.colors.YELLOW,
+    )
+
+
 def warn_if_below_hermes_minimum(chat_ctx: int | None) -> None:
     """Tell the user up front when hermes will reject the window lilbee serves."""
     if chat_ctx is None or chat_ctx >= _HERMES_MIN_CTX:
@@ -122,9 +138,12 @@ class HermesLauncher:
                 allow_lazy = bool(
                     (config.get(_SECURITY_KEY) or {}).get(_ALLOW_LAZY_INSTALLS_KEY, True)
                 )
-                ensure_hermes_http_mcp(
+                mcp_ready = ensure_hermes_http_mcp(
                     self._binary, allow_lazy_installs=allow_lazy, echo=typer.echo
                 )
+                # Requested but not connected: don't hand off a silently ungrounded hermes.
+                if not mcp_ready:
+                    warn_hermes_ungrounded()
         return ([], {**os.environ, LILBEE_TOKEN_ENV_VAR: token})
 
 
