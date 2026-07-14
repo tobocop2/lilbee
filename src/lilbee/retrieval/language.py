@@ -38,6 +38,11 @@ class QueryLanguage:
     term_mention_pattern: re.Pattern[str]
     # Leading article stripped from a counted term ("the observatory").
     leading_article_pattern: re.Pattern[str]
+    # Known-item question shapes ("summarize X", "what is X about"): each
+    # captures a candidate document title, resolved token-exactly against
+    # source names by the caller. Shapes, not vocabulary: a wrong candidate
+    # costs one lookup, never a wrong route.
+    known_item_patterns: tuple[re.Pattern[str], ...]
     # Spelling variants of a noun phrase (singular/plural) for entity-type
     # matching; morphology is the most language-specific piece of all.
     noun_variants: Callable[[str], set[str]]
@@ -138,6 +143,15 @@ ENGLISH = QueryLanguage(
         re.IGNORECASE,
     ),
     leading_article_pattern=re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE),
+    known_item_patterns=(
+        re.compile(r"^\s*(?:please\s+)?summari[sz]e\s+(.+?)[?.!\s]*$", re.IGNORECASE),
+        re.compile(r"^\s*(?:please\s+)?describe\s+(.+?)[?.!\s]*$", re.IGNORECASE),
+        re.compile(r"^\s*what\s+is\s+(.+?)\s+about[?.!\s]*$", re.IGNORECASE),
+        re.compile(
+            r"^\s*(?:give\s+me\s+)?(?:a\s+|an\s+)?(?:summary|overview)\s+of\s+(.+?)[?.!\s]*$",
+            re.IGNORECASE,
+        ),
+    ),
     noun_variants=_english_noun_variants,
 )
 

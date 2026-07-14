@@ -25,7 +25,7 @@ from lilbee.data.store import (
 )
 from lilbee.providers.base import LLMProvider, ProviderError, ProviderErrorKind
 from lilbee.retrieval.embedder import Embedder
-from lilbee.retrieval.language import noun_variants
+from lilbee.retrieval.language import noun_variants, query_language
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
@@ -55,8 +55,10 @@ from lilbee.retrieval.query.intent import (
     AggregateQuery,
     document_references,
     matches_reference,
+    matches_title,
     parse_aggregate,
     parse_llm_aggregate,
+    title_candidates,
 )
 from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
@@ -652,15 +654,44 @@ class Searcher:
         """
         for ref in document_references(question):
             filename = self._resolve_reference_filename(ref)
-            if filename is None:
-                continue
-            chunks = self._store.get_chunks_by_source(filename)
-            if not chunks:
-                continue
-            chunks.sort(key=lambda c: c.chunk_index)
-            log.info("Known-item route: %r resolved to %s", ref, filename)
-            return [c.model_copy(update={"score": 1.0}) for c in chunks]
+            chunks = self._document_chunks(filename)
+            if chunks:
+                log.info("Known-item route: %r resolved to %s", ref, filename)
+                return chunks
+        # No explicit reference: a known-item question shape may name the
+        # document by its human title ("summarize Frankenstein" against
+        # Frankenstein.txt), which has no filename, quote, or number cue.
+        for title in title_candidates(question):
+            filename = self._resolve_title_filename(title)
+            chunks = self._document_chunks(filename)
+            if chunks:
+                log.info("Known-item title route: %r resolved to %s", title, filename)
+                return chunks
         return []
+
+    def _document_chunks(self, filename: str | None) -> list[SearchChunk]:
+        """A resolved document's chunks in document order at full confidence,
+        or empty for no resolution. Relevance is established by the name
+        match, not similarity, hence the canonical 1.0."""
+        if filename is None:
+            return []
+        chunks = self._store.get_chunks_by_source(filename)
+        chunks.sort(key=lambda c: c.chunk_index)
+        return [c.model_copy(update={"score": 1.0}) for c in chunks]
+
+    def _resolve_title_filename(self, title: str) -> str | None:
+        """The one source whose stem *title* names token-exactly, or ``None``.
+
+        The article-stripped title pre-filters candidates by substring, then
+        the token-exact stem comparison decides; only a unique winner routes,
+        so shared titles fall back to topical retrieval.
+        """
+        stripped = query_language().leading_article_pattern.sub("", title.strip())
+        candidates = self._store.get_sources(search=stripped, limit=_KNOWN_ITEM_CANDIDATES)
+        matches = [s for s in candidates if matches_title(title, s["filename"])]
+        if len(matches) == 1:
+            return str(matches[0]["filename"])
+        return None
 
     def _resolve_reference_filename(self, ref: str) -> str | None:
         """The one source *ref* names, or ``None`` when nothing resolves uniquely.

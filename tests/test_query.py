@@ -1890,6 +1890,75 @@ class TestSearchContextIntegration:
             cfg.hyde_weight = 0.7
 
 
+class TestKnownItemTitleRoute:
+    """Human titles resolve like filenames (repro: 'summarize Frankenstein'
+    on a corpus of '<Title>.txt' novels ran topical top-k and pulled a stray
+    chunk from another book). A known-item shape plus a token-exact stem
+    match routes; anything else stays topical."""
+
+    def _source(self, filename):
+        return {"filename": filename, "file_hash": "h", "ingested_at": "", "chunk_count": 2}
+
+    def _index(self, mock_svc, filenames):
+        sources = [self._source(f) for f in filenames]
+
+        def get_sources(search=None, limit=None, offset=0):
+            if not search:
+                return sources[:limit]
+            return [s for s in sources if search.lower() in s["filename"].lower()][:limit]
+
+        mock_svc.store.get_sources.side_effect = get_sources
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source=filenames[0], chunk="opening", chunk_index=0),
+            _make_result(source=filenames[0], chunk="ending", chunk_index=1),
+        ]
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "summarize Frankenstein",
+            "Summarize Frankenstein.",
+            "what is Frankenstein about?",
+            "give me a summary of Frankenstein",
+            "describe frankenstein",
+        ],
+    )
+    def test_title_shapes_resolve_the_document(self, mock_svc, question):
+        self._index(mock_svc, ["Frankenstein.txt", "The Prince.txt"])
+        results = get_services().searcher.search(question)
+        assert [r.chunk for r in results] == ["opening", "ending"]
+        assert all(r.score == 1.0 for r in results)
+        mock_svc.store.search.assert_not_called()
+
+    def test_leading_article_matches_stem(self, mock_svc):
+        self._index(mock_svc, ["The Prince.txt", "Frankenstein.txt"])
+        results = get_services().searcher.search("summarize the prince")
+        assert results
+        mock_svc.store.get_chunks_by_source.assert_called_once_with("The Prince.txt")
+
+    def test_topical_question_mentioning_a_title_word_is_not_hijacked(self, mock_svc):
+        """No known-item shape means no title route, even when a document
+        stem appears in the question."""
+        self._index(mock_svc, ["Storms.txt"])
+        mock_svc.store.search.return_value = [_make_result(source="Storms.txt")]
+        get_services().searcher.search("how do storms form near the coast?")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
+    def test_partial_title_does_not_resolve(self, mock_svc):
+        """'summarize the report' against 'Annual Report 2020.txt' is not a
+        token-exact stem match; the turn stays topical."""
+        self._index(mock_svc, ["Annual Report 2020.txt"])
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher.search("summarize the report")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
+    def test_ambiguous_title_falls_back_to_topical(self, mock_svc):
+        self._index(mock_svc, ["Notes.txt", "notes.md"])
+        mock_svc.store.search.return_value = [_make_result()]
+        get_services().searcher.search("summarize notes")
+        mock_svc.store.get_chunks_by_source.assert_not_called()
+
+
 class TestKnownItemRoute:
     def _source(self, filename):
         return {"filename": filename, "file_hash": "h", "ingested_at": "", "chunk_count": 2}

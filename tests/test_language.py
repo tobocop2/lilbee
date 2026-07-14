@@ -26,6 +26,7 @@ SPANISH_LIKE = QueryLanguage(
         r"cu[aá]ntos\s+documentos\s+mencionan\s+(.+?)[?\s]*$", re.IGNORECASE
     ),
     leading_article_pattern=re.compile(r"^(?:el|la|los|las)\s+", re.IGNORECASE),
+    known_item_patterns=(re.compile(r"^\s*resume\s+(.+?)[?\s]*$", re.IGNORECASE),),
     noun_variants=lambda noun: {noun.strip().lower()},
 )
 
@@ -58,6 +59,12 @@ class TestPackDrivenParsing:
     def test_foreign_pack_doc_references(self):
         refs = document_references("resume el documento 214", SPANISH_LIKE)
         assert refs == ["214"]
+
+    def test_foreign_pack_title_candidates(self):
+        from lilbee.retrieval.query.intent import title_candidates
+
+        assert title_candidates("resume Don Quijote", SPANISH_LIKE) == ["Don Quijote"]
+        assert title_candidates("summarize Don Quijote", SPANISH_LIKE) == []
 
     def test_foreign_pack_association(self):
         parsed = parse_aggregate("cuántos vuelos tiene cada persona?", SPANISH_LIKE)

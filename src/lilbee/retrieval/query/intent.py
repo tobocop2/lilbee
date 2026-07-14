@@ -126,6 +126,41 @@ def matches_reference(ref: str, filename: str) -> bool:
     return False
 
 
+def title_candidates(question: str, lang: QueryLanguage | None = None) -> list[str]:
+    """Document-title candidates from known-item question shapes.
+
+    "summarize Frankenstein" yields "Frankenstein"; a question with no
+    known-item shape yields nothing, so topical questions that merely
+    mention a title word never reach title resolution.
+    """
+    lang = lang or query_language()
+    candidates = []
+    for pattern in lang.known_item_patterns:
+        m = pattern.match(question)
+        if m:
+            title = m.group(1).strip().strip("\"'")
+            if title:
+                candidates.append(title)
+    return candidates
+
+
+def matches_title(title: str, filename: str, lang: QueryLanguage | None = None) -> bool:
+    """Whether *filename*'s stem is the document *title* names, token-exactly.
+
+    Leading articles are stripped from both sides so "the prince" matches
+    "The Prince.txt" and "Prince.txt" alike; every remaining token must
+    match, so "the report" never resolves "Annual Report 2020.txt".
+    """
+    lang = lang or query_language()
+
+    def tokens(text: str) -> list[str]:
+        stripped = lang.leading_article_pattern.sub("", text.strip())
+        return [t for t in _TOKEN_SPLIT_RE.split(stripped.lower()) if t]
+
+    title_tokens = tokens(title)
+    return bool(title_tokens) and title_tokens == tokens(Path(filename).stem)
+
+
 def parse_aggregate(question: str, lang: QueryLanguage | None = None) -> AggregateQuery | None:
     """Parse a count-shaped question, or ``None`` for anything else.
 
