@@ -146,6 +146,17 @@ CMD_REMOVE_SUCCESS = "Removed {name}"
 CMD_REMOVE_FAILED = "Failed to remove {name}"
 CMD_CANCEL = "Cancelled active operations"
 CMD_CLEAR = "Conversation cleared"
+SESSIONS_COUNT = "{count} saved"
+SESSIONS_EMPTY = "No saved conversations yet."
+SESSIONS_FILTER_PLACEHOLDER = "Filter conversations…"
+SESSIONS_RENAME_PLACEHOLDER = "New name…  enter saves, esc cancels"
+SESSIONS_ROW_META = "{count} msgs · {model}"
+SESSIONS_RESUMED = "Resumed · {title}"
+SESSIONS_NEW = "Started a new chat"
+SESSIONS_DELETED = "Deleted · {title}"
+SESSIONS_DELETE_CONFIRM_TITLE = "Delete session"
+SESSIONS_DELETE_CONFIRM = "Delete “{title}”? This cannot be undone."
+SESSIONS_HINT = "↵ resume   ^n new   ^r rename   ^d delete   esc close"
 CMD_THEME_UNKNOWN = "No theme called {name}. Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
 TASK_NAME_CRAWL = "Crawl {url}"
@@ -414,6 +425,7 @@ COMPAT_MODAL_BODY = (
 DEFAULT_VIEW = "Chat"
 WIKI_VIEW = "Wiki"
 FLEET_VIEW = "Fleet"
+SESSIONS_VIEW = "Sessions"
 FLEET_TITLE = "Placement"
 FLEET_STATE_AUTO = "auto"
 FLEET_STATE_MANUAL = "manual"
@@ -458,6 +470,7 @@ ALL_NAV_VIEWS: tuple[str, ...] = (
     "Tasks",
     WIKI_VIEW,
     FLEET_VIEW,
+    SESSIONS_VIEW,
 )
 
 

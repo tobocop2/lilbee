@@ -1310,6 +1310,9 @@ class ChatScreen(Screen[None]):
             return
         self.app.switch_view("Wiki")
 
+    def _cmd_sessions(self, _args: str) -> None:
+        self.app.action_toggle_sessions()
+
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
         from textual.css.query import NoMatches
@@ -1390,6 +1393,17 @@ class ChatScreen(Screen[None]):
         if session.meta.model_ref and session.meta.model_ref != cfg.chat_model:
             apply_active_model(self.app, "chat_model", session.meta.model_ref)
         self._chat_log.scroll_end(animate=False)
+        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
+
+    @property
+    def session_id(self) -> str | None:
+        """The saved session this conversation persists to, or None before the first turn."""
+        return self._session_id
+
+    def start_new_conversation(self) -> None:
+        """Clear the conversation and open a fresh session on the next turn."""
+        self._reset_conversation()
+        self.notify(msg.SESSIONS_NEW)
 
     def _render_restored_message(self, message: SessionMessage) -> None:
         """Mount a completed message widget for a resumed turn."""
@@ -1993,7 +2007,9 @@ class ChatScreen(Screen[None]):
     def action_complete_next(self) -> None:
         """Ctrl+N: preview the next match, opening the dropdown if it is closed (vim ``<C-n>``)."""
         if not self._chat_input.has_focus:
-            return
+            # Not a completion here; skip so an open overlay (e.g. the sessions
+            # drawer) can bind Ctrl+N instead of this priority binding eating it.
+            raise SkipAction()
         if self._completion_overlay.is_visible or self._open_completions():
             self._preview_next()
 

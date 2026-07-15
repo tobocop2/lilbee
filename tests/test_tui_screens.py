@@ -7929,7 +7929,9 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
         chat_btn = screen.query_one("#model-pick-chat", ModelPickerButton)
         chat_btn.focus()
         await pilot.pause()
-        screen.action_complete_next()
+        # Ctrl+N is not a completion when the input is unfocused: the action skips
+        # (no focus move) so an overlay like the sessions drawer can bind it.
+        await pilot.press("ctrl+n")
         await pilot.pause()
         assert chat_btn.has_focus
 
