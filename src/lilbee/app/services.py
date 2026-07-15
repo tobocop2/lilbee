@@ -27,8 +27,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from lilbee.sessions import SessionStore
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -46,9 +44,21 @@ if TYPE_CHECKING:
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
+    from lilbee.sessions import SessionStore
 
 
 _SIGNAL_EXIT_BASE = 128
+
+
+def _default_session_store() -> SessionStore:
+    """Build the file-backed session store, importing it lazily.
+
+    ``lilbee.sessions`` pulls in the config/catalog import chain, so importing it
+    at this module's top would form a cycle during CLI config load.
+    """
+    from lilbee.sessions import SessionStore
+
+    return SessionStore()
 
 
 @dataclass
@@ -84,7 +94,7 @@ class Services:
     crawler_semaphore: asyncio.Semaphore | None
     crawler_sync_state: CrawlerSyncState
     known_models: KnownModelCache
-    session_store: SessionStore = field(default_factory=SessionStore)
+    session_store: SessionStore = field(default_factory=_default_session_store)
 
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. Idempotent.
@@ -210,7 +220,6 @@ def build_services(
         crawler_semaphore=crawler_semaphore,
         crawler_sync_state=crawler_sync_state,
         known_models=known_models,
-        session_store=SessionStore(),
     )
 
 
