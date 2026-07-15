@@ -197,6 +197,33 @@ def test_embed_rides_out_cold_start_past_interactive_budget(monkeypatch) -> None
     assert calls["n"] == warmup + 1
 
 
+def test_embed_with_cold_load_deadline_rides_out_more_429s_than_attempt_cap(monkeypatch) -> None:
+    # An EMBED client built with a cold-load deadline waits out the embedder's full
+    # warm even when the replica 429s more times than the fixed attempt cap tolerates:
+    # llama-swap keeps the still-loading server alive for the whole cold-load budget,
+    # so ingest must not give up (and drop the file) before that budget passes.
+    from lilbee.providers.fleet.client import _EMBED_BUSY_RETRIES
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    # Pin the clock so the deadline never actually passes: the retry rides out the
+    # warmup on the deadline branch, never on the attempt count.
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
+    warmup = _EMBED_BUSY_RETRIES + 5  # more 429s than the fixed attempt cap tolerates
+    calls = {"n": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= warmup:
+            return httpx.Response(429, json={"error": "warming"})
+        return httpx.Response(200, json={"data": [{"embedding": [0.3]}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient("http://gpu0", "test-model", http=http, embed_busy_deadline_s=600.0)
+    client._needs_alternation = False
+    assert client.embed(["x"]) == [[0.3]]
+    assert calls["n"] == warmup + 1
+
+
 def test_retry_on_busy_deadline_retries_past_attempt_cap(monkeypatch) -> None:
     # Under deep-queue contention the queue drains far slower than the fixed
     # attempt budget, so a deadline-bound retry must keep waiting past
