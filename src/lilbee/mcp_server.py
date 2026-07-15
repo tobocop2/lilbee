@@ -13,6 +13,7 @@ import re
 import threading
 import uuid
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
@@ -61,7 +62,7 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
-from lilbee.sessions import SessionMeta, SessionNotFoundError, TitleSource
+from lilbee.sessions import SessionNotFoundError, TitleSource
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
@@ -446,23 +447,11 @@ def list_documents() -> dict[str, Any]:
     }
 
 
-def _session_meta_dict(meta: SessionMeta) -> dict[str, Any]:
-    return {
-        "id": meta.id,
-        "title": meta.title,
-        "created_at": meta.created_at,
-        "updated_at": meta.updated_at,
-        "model_ref": meta.model_ref,
-        "scope": meta.scope,
-        "message_count": meta.message_count,
-    }
-
-
 @_tool
 def sessions_list() -> dict[str, Any]:
     """List saved chat sessions (past conversations), newest first."""
     metas = get_services().session_store.list()
-    return {"sessions": [_session_meta_dict(meta) for meta in metas], "total": len(metas)}
+    return {"sessions": [asdict(meta) for meta in metas], "total": len(metas)}
 
 
 @_tool
@@ -473,7 +462,7 @@ def session_get(session_id: str) -> dict[str, Any]:
     except SessionNotFoundError as exc:
         return _error(str(exc))
     return {
-        "meta": _session_meta_dict(session.meta),
+        "meta": asdict(session.meta),
         "messages": [
             {
                 "role": message.role.value,

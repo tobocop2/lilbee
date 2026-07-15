@@ -84,7 +84,14 @@ from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
 )
-from lilbee.sessions import MessageRole, SessionMessage, TitleSource, derive_title
+from lilbee.sessions import (
+    MessageRole,
+    SessionMessage,
+    SessionNotFoundError,
+    SessionStore,
+    TitleSource,
+    derive_title,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
@@ -1359,24 +1366,35 @@ class ChatScreen(Screen[None]):
         """
         return scope_to_chunk_type(self._current_scope_value())
 
+    def _open_session(self, store: SessionStore, first_text: str) -> str:
+        """Create the active session, auto-title it, and return its id."""
+        session_id = store.create(model_ref=cfg.chat_model, scope=self._current_scope_value())
+        store.set_title(session_id, derive_title(first_text), TitleSource.AUTO)
+        self._session_id = session_id
+        return session_id
+
     def _persist_user_turn(self, text: str) -> None:
         """Open a session on the first turn (auto-titled), then append the message."""
         store = get_services().session_store
-        if self._session_id is None:
-            self._session_id = store.create(
-                model_ref=cfg.chat_model, scope=self._current_scope_value()
-            )
-            store.set_title(self._session_id, derive_title(text), TitleSource.AUTO)
-        store.add_message(self._session_id, SessionMessage(role=MessageRole.USER, content=text))
+        session_id = self._session_id or self._open_session(store, text)
+        message = SessionMessage(role=MessageRole.USER, content=text)
+        try:
+            store.add_message(session_id, message)
+        except SessionNotFoundError:
+            # The active session was deleted mid-chat (e.g. from the drawer);
+            # open a fresh one so auto-save keeps working instead of crashing.
+            store.add_message(self._open_session(store, text), message)
 
     def _persist_assistant_turn(self, content: str, sources: list[str]) -> None:
         """Append the assistant turn to the active session. Worker thread."""
         if self._session_id is None:
             return
-        get_services().session_store.add_message(
-            self._session_id,
-            SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=tuple(sources)),
-        )
+        # A concurrent delete of the active session must not crash the worker.
+        with contextlib.suppress(SessionNotFoundError):
+            get_services().session_store.add_message(
+                self._session_id,
+                SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=tuple(sources)),
+            )
 
     def resume_session(self, session_id: str) -> None:
         """Load a saved session into the chat view and make it the active one."""
@@ -1385,11 +1403,14 @@ class ChatScreen(Screen[None]):
         self._session_id = session_id
         for message in session.messages:
             self._render_restored_message(message)
+        # Render every message to the log, but window what feeds the prompt: a
+        # long resumed session must not overflow a small model's context on the
+        # first turn (the searcher uses history as-is; only chat windows it).
+        loaded: list[ChatMessage] = [
+            {"role": message.role.value, "content": message.content} for message in session.messages
+        ]
         with self._history_lock:
-            self._history = [
-                {"role": message.role.value, "content": message.content}
-                for message in session.messages
-            ]
+            self._history = self._window_history(loaded)
         self._restore_session_model(session.meta.model_ref)
         self._chat_log.scroll_end(animate=False)
         self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
@@ -1696,14 +1717,19 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning")
 
     def _trim_history(self) -> None:
-        """Window history to a token budget. Caller must hold _history_lock.
+        """Window history to a token budget in place. Caller must hold _history_lock."""
+        self._history[:] = self._window_history(self._history)
 
-        The budget is a fraction of ``cfg.chat_n_ctx_target`` so the
-        assembled prompt (system + history + RAG + user) stays under the
-        loaded model's ``n_ctx`` regardless of how many turns have run.
+    @staticmethod
+    def _window_history(history: list[ChatMessage]) -> list[ChatMessage]:
+        """Drop oldest turns until history fits the per-turn token budget.
+
+        The budget is a fraction of ``cfg.chat_n_ctx_target`` so the assembled
+        prompt (system + history + RAG + user) stays under the loaded model's
+        ``n_ctx`` regardless of how many turns have run or were resumed.
         """
         budget = int(cfg.chat_n_ctx_target * _HISTORY_TOKEN_BUDGET_FRACTION)
-        self._history[:] = windowed_history(self._history, max_tokens=budget)
+        return windowed_history(history, max_tokens=budget)
 
     def _scroll_to_bottom(self) -> None:
         log_widget = self._chat_log

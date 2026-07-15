@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import NoReturn
 
@@ -12,7 +13,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
-from lilbee.sessions import SessionMeta, SessionStore, TitleSource
+from lilbee.sessions import SessionStore, TitleSource
 
 sessions_app = typer.Typer(
     name="sessions",
@@ -26,18 +27,6 @@ _id_argument = typer.Argument(..., help="Session id, or a unique prefix of it.")
 
 def _store() -> SessionStore:
     return SessionStore()
-
-
-def _meta_dict(meta: SessionMeta) -> dict[str, object]:
-    return {
-        "id": meta.id,
-        "title": meta.title,
-        "created_at": meta.created_at,
-        "updated_at": meta.updated_at,
-        "model_ref": meta.model_ref,
-        "scope": meta.scope,
-        "message_count": meta.message_count,
-    }
 
 
 def _fail(message: str) -> NoReturn:
@@ -67,7 +56,7 @@ def list_cmd(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     metas = _store().list()
     if cfg.json_mode:
-        json_output({"sessions": [_meta_dict(meta) for meta in metas]})
+        json_output({"sessions": [asdict(meta) for meta in metas]})
         return
     if not metas:
         console.print("No saved sessions.")
@@ -98,7 +87,7 @@ def show_cmd(
     if cfg.json_mode:
         json_output(
             {
-                "meta": _meta_dict(session.meta),
+                "meta": asdict(session.meta),
                 "messages": [
                     {"role": m.role.value, "content": m.content, "sources": list(m.sources)}
                     for m in session.messages

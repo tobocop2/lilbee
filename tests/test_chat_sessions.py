@@ -67,6 +67,28 @@ async def test_turns_append_to_the_same_session(sessions):
         assert session.messages[1].sources == ("manual.pdf",)
 
 
+async def test_user_turn_recovers_if_active_session_deleted(sessions):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen._persist_user_turn("first")
+        first_id = screen._session_id
+        sessions.delete(first_id)  # deleted from the drawer / another surface
+        screen._persist_user_turn("second")  # must not raise
+        assert screen._session_id != first_id
+        assert len(sessions.list()) == 1
+
+
+async def test_assistant_turn_swallows_deleted_session(sessions):
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen._persist_user_turn("q")
+        sessions.delete(screen._session_id)  # gone mid-stream
+        screen._persist_assistant_turn("a", [])  # must not raise
+        assert sessions.list() == []
+
+
 async def test_assistant_persist_is_noop_without_a_session(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -108,6 +130,25 @@ async def test_resume_loads_history_and_renders(sessions):
         ]
         assert len(screen.query(UserMessage)) == 1
         assert len(screen.query(AssistantMessage)) == 1
+
+
+async def test_resume_windows_history_for_a_small_context(sessions):
+    cfg.chat_n_ctx_target = 512  # budget = 256 tokens after the 0.5 fraction
+    session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
+    long_text = "x" * 1200  # ~300 tokens each, over the whole budget on its own
+    for i in range(6):
+        role = MessageRole.USER if i % 2 == 0 else MessageRole.ASSISTANT
+        sessions.add_message(session_id, SessionMessage(role=role, content=long_text))
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(session_id)
+        await pilot.pause()
+        # The whole conversation renders in the log...
+        rendered = len(screen.query(UserMessage)) + len(screen.query(AssistantMessage))
+        assert rendered == 6
+        # ...but the prompt history is windowed so a small model won't overflow.
+        assert len(screen._history) < 6
 
 
 async def test_resume_restores_a_different_model_when_installed(sessions):
