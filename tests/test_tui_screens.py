@@ -7682,6 +7682,10 @@ async def test_app_nav_prev_cycles_views():
 
         app.action_nav_prev()
         await pilot.pause()
+        assert app.active_view == "Sessions"
+
+        app.action_nav_prev()
+        await pilot.pause()
         assert app.active_view == "Fleet"
 
         app.action_nav_prev()
