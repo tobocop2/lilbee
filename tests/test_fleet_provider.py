@@ -345,6 +345,37 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
     assert captured["rerank_mode"] is RerankMode.LLM
 
 
+def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> None:
+    # The EMBED client waits out a still-warming replica for the full cold-load
+    # budget (so a cold-start burst never drops files); rerank/chat/vision keep the
+    # short interactive attempt cap (deadline None).
+    from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+
+    weights = 6_000_000_000
+    launches = [
+        _fake_launch(WorkerRole.EMBED, weights_bytes=weights),
+        _fake_launch(WorkerRole.RERANK, weights_bytes=weights),
+    ]
+    for launch in launches:
+        launch.rerank_mode = None
+    captured: dict[WorkerRole, object] = {}
+
+    def _capture(_endpoint, model, **kw):
+        captured[model] = kw.get("embed_busy_deadline_s")
+        return _fake_client()
+
+    for launch in launches:
+        launch.model_id = launch.role
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+    )
+    FleetProvider()._ensure_fleet()
+    assert captured[WorkerRole.EMBED] == cold_load_timeout_s(weights)
+    assert captured[WorkerRole.RERANK] is None
+
+
 def test_embed_without_server_raises() -> None:
     from lilbee.providers.base import ProviderError
 
