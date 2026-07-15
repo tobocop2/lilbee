@@ -34,6 +34,9 @@ def reranker():
 def _chunk(
     source: str, chunk: str, distance: float = 0.5, relevance: float | None = None
 ) -> SearchChunk:
+    """Store-contract row: ``relevance`` is the canonical fusion score
+    (defaulting to the distance-derived similarity, like the store)."""
+    score = relevance if relevance is not None else max(0.0, min(1.0, 1.0 - distance))
     return SearchChunk(
         source=source,
         content_type="text",
@@ -45,7 +48,7 @@ def _chunk(
         chunk_index=0,
         vector=[0.1],
         distance=distance,
-        relevance_score=relevance,
+        score=score,
     )
 
 
@@ -122,15 +125,15 @@ class TestRerank:
             reranked = reranker.rerank("test", results)
         assert reranked[0].chunk == "exact match"
 
-    def test_mixed_cohort_does_not_demote_strong_hybrid_top(self, reranker):
-        """RRF (hybrid) and cosine-distance (HyDE) signals are normalized within
-        their own family, so a HyDE chunk cannot displace a leading hybrid hit just
-        because 1-distance is numerically larger than a tiny RRF score."""
+    def test_mixed_pool_does_not_demote_strong_hybrid_top(self, reranker):
+        """Hybrid and HyDE rows share the canonical score scale, and the
+        position-aware blend still protects a leading hybrid hit from a
+        cross-encoder that favours a down-weighted HyDE row."""
         cfg.reranker_model = _RERANKER_MODEL
         results = [
-            _chunk("hybrid_top.md", "exact match", relevance=0.05),
-            _chunk("hybrid_low.md", "weaker hybrid", relevance=0.03),
-            _chunk("hyde.md", "hyde recall", distance=0.4, relevance=None),
+            _chunk("hybrid_top.md", "exact match", relevance=0.5),
+            _chunk("hybrid_low.md", "weaker hybrid", relevance=0.4),
+            _chunk("hyde.md", "hyde recall", distance=0.4, relevance=0.42),
         ]
         # The cross-encoder favours the HyDE chunk; the hybrid top must still win.
         with _patch_provider(lambda query, cands: [0.5, 0.5, 0.9]):

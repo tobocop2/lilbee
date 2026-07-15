@@ -4,9 +4,11 @@ import pytest
 
 from lilbee.retrieval.query.intent import (
     AggregateKind,
+    AggregateQuery,
     document_references,
     matches_reference,
     parse_aggregate,
+    parse_llm_aggregate,
 )
 
 
@@ -42,6 +44,95 @@ class TestDocumentReferences:
 
     def test_generic_noun_after_document_is_not_a_reference(self):
         assert document_references("is there a document that lists the deliveries?") == []
+
+
+class TestTermMentionPhrasings:
+    """Natural corpus-noun phrasings must route to the exact scan (bb repro:
+    'how many of these books mention blood?' declined while the answer was a
+    pure scan). Entity nouns (people, aircraft) must NOT route here: the scan
+    counts documents, which would answer a different question than asked."""
+
+    @pytest.mark.parametrize(
+        ("question", "term"),
+        [
+            ("how many of these books mention blood?", "blood"),
+            ("how many books mention blood?", "blood"),
+            ("how many novels mention a wedding?", "wedding"),
+            ("how many of those texts reference the sea?", "sea"),
+            ("how many works discuss whaling", "whaling"),
+            ("how many of the stories contain a storm?", "storm"),
+            ("how many articles mention Paris?", "Paris"),
+        ],
+    )
+    def test_corpus_noun_phrasings_route_to_exact_scan(self, question, term):
+        parsed = parse_aggregate(question)
+        assert parsed is not None
+        assert parsed.kind is AggregateKind.TERM_MENTIONS
+        assert parsed.term == term
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "how many people mention blood?",
+            "how many characters mention the king?",
+        ],
+    )
+    def test_entity_nouns_do_not_route_to_document_counts(self, question):
+        parsed = parse_aggregate(question)
+        assert parsed is not None
+        assert parsed.kind is AggregateKind.UNSUPPORTED
+
+
+class TestParseLlmAggregate:
+    """The LLM classifier's reply parser: strict on shape, conservative on
+    anything unexpected (None means no route, so retrieval proceeds)."""
+
+    def test_term_mentions(self):
+        parsed = parse_llm_aggregate('{"kind": "term_mentions", "term": "blood"}')
+        assert parsed == AggregateQuery(AggregateKind.TERM_MENTIONS, term="blood")
+
+    def test_total_sources(self):
+        parsed = parse_llm_aggregate('{"kind": "total_sources"}')
+        assert parsed == AggregateQuery(AggregateKind.TOTAL_SOURCES)
+
+    def test_distinct_type(self):
+        parsed = parse_llm_aggregate('{"kind": "distinct_type", "noun": "people"}')
+        assert parsed == AggregateQuery(AggregateKind.DISTINCT_TYPE, noun="people")
+
+    def test_type_association(self):
+        parsed = parse_llm_aggregate(
+            '{"kind": "type_association", "noun": "flights", "group_noun": "person"}'
+        )
+        assert parsed == AggregateQuery(
+            AggregateKind.TYPE_ASSOCIATION, noun="flights", group_noun="person"
+        )
+
+    def test_topical_is_no_route(self):
+        assert parse_llm_aggregate('{"kind": "topical"}') is None
+
+    def test_json_embedded_in_prose(self):
+        parsed = parse_llm_aggregate('Sure! {"kind": "term_mentions", "term": "war"} there.')
+        assert parsed == AggregateQuery(AggregateKind.TERM_MENTIONS, term="war")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "not json at all",
+            '{"kind": }',
+            '{"kind": "banana"}',
+            '{"kind": "term_mentions"}',
+            '{"kind": "term_mentions", "term": ""}',
+            '{"kind": "distinct_type"}',
+            '{"kind": "type_association", "noun": "flights"}',
+            '{"kind": 3}',
+            "",
+        ],
+    )
+    def test_anything_malformed_is_no_route(self, text):
+        assert parse_llm_aggregate(text) is None
+
+    def test_llm_never_returns_unsupported(self):
+        assert parse_llm_aggregate('{"kind": "unsupported"}') is None
 
 
 class TestMatchesReference:

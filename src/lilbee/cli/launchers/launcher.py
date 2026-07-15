@@ -20,6 +20,22 @@ from lilbee.providers.model_ref import with_configured_remote_chat
 # references it (opencode `{env:...}`, hermes `${...}`) so no literal lands on disk.
 LILBEE_TOKEN_ENV_VAR = "LILBEE_TOKEN"  # noqa: S105 (env var name, not a secret)
 
+# Config key the spawned `lilbee serve` reads for its working chat window; a
+# LILBEE_ env var overrides config.toml, so the launcher raises it per launch.
+_CHAT_CTX_TARGET_ENV_VAR = "LILBEE_CHAT_N_CTX_TARGET"
+
+# Floor on the served chat window for a launched agent. Agent clients open with
+# a large baseline prompt (system prompt, tool schemas) and reserve output, so
+# the RAM-derived default (tops out at 24576) overflows on the first turn; hermes
+# also refuses a window under 64000. The picker still clamps to the model's
+# trained context and host VRAM, so this never over-allocates.
+_AGENT_CHAT_CTX_FLOOR = 65536
+
+
+def agent_chat_ctx_target(configured: int) -> int:
+    """Lift a configured chat-context target to the agent floor, never lowering a larger one."""
+    return max(configured, _AGENT_CHAT_CTX_FLOOR)
+
 
 class Launcher(Protocol):
     """A third-party AI client that lilbee knows how to launch."""
@@ -82,7 +98,14 @@ def run_launcher(launcher: Launcher) -> None:
     # here doesn't start a second llama-swap that races the server's for the model
     # port (the loser gets connection-refused). The spawned serve warms its own.
     cfg.worker_pool_eager_start = False
-    (token, port), spawned = ensure_server_running()
+    # Size the served window for the agent before the server spawns: in-process so
+    # the warm wait and window warning agree, and via the child's env (LILBEE_
+    # overrides config.toml) so the spawned serve actually grows it.
+    agent_target = agent_chat_ctx_target(cfg.chat_n_ctx_target)
+    cfg.chat_n_ctx_target = agent_target
+    (token, port), spawned = ensure_server_running(
+        env_overrides={_CHAT_CTX_TARGET_ENV_VAR: str(agent_target)}
+    )
     # Everything after the spawn runs under the finally so a raise from prepare()
     # (e.g. the user declining opencode setup) or the warm wait can't leak the
     # spawned `lilbee serve` process.

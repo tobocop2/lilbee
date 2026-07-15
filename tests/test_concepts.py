@@ -490,26 +490,19 @@ class TestWriteConceptRecords:
 
 
 class TestBoostResults:
-    def test_boost_results_with_overlap(self, cg, mock_svc):
+    def test_boost_scoreless_row_is_untouched(self, cg, mock_svc):
+        """A hand-built row without the canonical score has nothing to boost
+        in; the pre-score per-arm adjustments are gone with the code that
+        produced such rows."""
         results = [_make_result(distance=0.5, chunk_index=0)]
-        mock_table = MagicMock()
-        mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"},
-            {"concept": "ml"},
-        ]
-        mock_svc.store.open_table.return_value = mock_table
-        boosted = cg.boost_results(results, ["python", "java"])
-        assert boosted[0].distance < 0.5
-
-    def test_boost_results_relevance_score(self, cg, mock_svc):
-        results = [_make_result(distance=None, relevance_score=0.8, chunk_index=0)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"concept": "python"},
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
-        assert boosted[0].relevance_score > 0.8
+        assert boosted[0].distance == 0.5
+        assert boosted[0].score is None
 
     def test_boost_canonical_score_bounded(self, cg, mock_svc):
         """Boost applies in canonical [0, 1] score space and clamps at 1.0."""
@@ -563,9 +556,10 @@ class TestBoostResults:
         boosted = cg.boost_results([], ["python"])
         assert boosted == []
 
-    def test_boost_respects_floor(self, cg, mock_svc):
-        """Concept boost cannot reduce distance below concept_boost_floor."""
-        results = [_make_result(distance=0.1, chunk_index=0)]
+    def test_boost_raises_score_and_leaves_distance_alone(self, cg, mock_svc):
+        """The boost lives in canonical score space; the provenance distance
+        is evidence of what the vector arm saw and must not be rewritten."""
+        results = [_make_result(distance=0.1, chunk_index=0, score=0.4)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             {"concept": "python"},
@@ -573,7 +567,9 @@ class TestBoostResults:
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python", "ml"])
-        assert boosted[0].distance >= cfg.concept_boost_floor
+        assert boosted[0].score > results[0].score
+        assert boosted[0].score <= 1.0
+        assert boosted[0].distance == results[0].distance
 
 
 class TestExpandQuery:

@@ -8,6 +8,10 @@ inputs:
   version:
     description: "PEP 440 version string used to compute prerelease=true."
     required: true
+  generate-notes:
+    description: "Regenerate GitHub release notes ('true'/'false'). Promoted tags pass false to keep the notes copied from the source release."
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -39,5 +43,5 @@ runs:
         files: |
           bins/*
           lilbee-wheel/*
-        generate_release_notes: true
+        generate_release_notes: ${{ inputs.generate-notes == 'true' }}
         prerelease: ${{ contains(inputs.version, 'a') || contains(inputs.version, 'b') || contains(inputs.version, 'rc') }}

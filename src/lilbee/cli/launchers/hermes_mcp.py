@@ -92,6 +92,19 @@ def _mcp_extra_requirements(interpreter: str) -> list[str]:
     return reqs or ["mcp"]
 
 
+def _install_failure_reason(proc: subprocess.CompletedProcess[str]) -> str:
+    """A one-line reason a pip install did not make MCP importable, or ``""``.
+
+    The usual causes (a pip-less tool env, a PEP 668 externally-managed env) land
+    on pip's last output line, which is what we surface.
+    """
+    text = (proc.stderr or proc.stdout or "").strip()
+    if not text:
+        return ""
+    last = text.splitlines()[-1].strip()
+    return f"hermes's pip could not install the mcp extra (exit {proc.returncode}): {last}"
+
+
 def ensure_hermes_http_mcp(
     binary: str, *, allow_lazy_installs: bool, echo: Callable[[str], None]
 ) -> bool:
@@ -99,7 +112,8 @@ def ensure_hermes_http_mcp(
 
     When support is missing: auto-installs hermes's pinned ``[mcp]`` extra into
     hermes's own environment (only if ``allow_lazy_installs``), otherwise echoes
-    hermes's documented install command. Idempotent and cheap when already present."""
+    hermes's documented install command; when an install does not take, surfaces
+    why. Idempotent and cheap when already present."""
     interpreter = hermes_interpreter(binary)
     if interpreter is None:
         echo(MCP_EXTRA_HINT)
@@ -112,16 +126,21 @@ def ensure_hermes_http_mcp(
         return False
     echo("Setting up hermes MCP support (installing hermes's mcp extra)...")
     try:
-        subprocess.run(  # noqa: S603 - hermes's own resolved interpreter, fixed argv
+        proc = subprocess.run(  # noqa: S603 - hermes's own resolved interpreter, fixed argv
             [interpreter, "-m", "pip", "install", *_mcp_extra_requirements(interpreter)],
             capture_output=True,
+            text=True,
             check=False,
         )
-    except OSError:
+    except OSError as exc:
+        echo(f"Could not run hermes's pip to install the mcp extra: {exc}")
         echo(MCP_EXTRA_HINT)
         return False
     if has_http_mcp(interpreter):
         echo("hermes MCP support ready.")
         return True
+    reason = _install_failure_reason(proc)
+    if reason:
+        echo(reason)
     echo(MCP_EXTRA_HINT)
     return False

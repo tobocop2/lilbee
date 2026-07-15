@@ -165,38 +165,45 @@ class TestSearch:
         assert call_kwargs["chunk_type"] is None
         assert any("unknown scope" in record.message for record in caplog.records)
 
-    def test_filters_irrelevant_results(self, mock_svc):
-        """Results with distance > max_distance are excluded."""
-        cfg.max_distance = 0.8
+    def test_returns_searcher_results_unfiltered(self, mock_svc):
+        """The relevance cutoff lives in Searcher.search (with the
+        lexical-support exemption); MCP must not re-filter on bare distance,
+        which dropped both-arm rows the fusion layer deliberately keeps."""
         mock_svc.searcher.search.return_value = [
             SearchChunk(
-                source="good.md",
+                source="far-but-lexical.md",
                 content_type="text",
                 page_start=0,
                 page_end=0,
                 line_start=0,
                 line_end=0,
-                chunk="relevant",
+                chunk="PX4471 spotted",
                 chunk_index=0,
                 vector=[0.1],
-                distance=0.5,
-            ),
-            SearchChunk(
-                source="bad.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="irrelevant",
-                chunk_index=0,
-                vector=[0.1],
-                distance=0.95,
+                distance=1.4,
+                bm25_score=12.0,
             ),
         ]
-        results = search("test")
-        assert len(results) == 1
-        assert results[0]["source"] == "good.md"
+        results = search("PX4471")
+        assert [r["source"] for r in results] == ["far-but-lexical.md"]
+
+    def test_embedder_mismatch_returns_structured_error(self, mock_svc):
+        """An agent gets the same adoptable-embedder fields the HTTP 409
+        carries, not just prose it would have to parse."""
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        mock_svc.searcher.search.side_effect = EmbeddingModelMismatchError(
+            persisted_model="orgA/repoA/modelA.gguf",
+            persisted_dim=768,
+            current_model="orgB/repoB/modelB.gguf",
+            current_dim=768,
+        )
+        result = search("q")
+        assert result["code"] == "INDEX_EMBEDDER_MISMATCH"
+        assert result["persisted_model"] == "orgA/repoA/modelA.gguf"
+        assert result["persisted_dim"] == 768
+        assert result["adoptable"] is True
+        assert "modelA" in result["error"]
 
     def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
         """settings_set top_k must govern search calls that omit the arg."""
