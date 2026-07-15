@@ -27,6 +27,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from lilbee.sessions import SessionStore
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -82,6 +84,7 @@ class Services:
     crawler_semaphore: asyncio.Semaphore | None
     crawler_sync_state: CrawlerSyncState
     known_models: KnownModelCache
+    session_store: SessionStore = field(default_factory=SessionStore)
 
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. Idempotent.
@@ -207,6 +210,7 @@ def build_services(
         crawler_semaphore=crawler_semaphore,
         crawler_sync_state=crawler_sync_state,
         known_models=known_models,
+        session_store=SessionStore(),
     )
 
 

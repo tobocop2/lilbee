@@ -14,6 +14,7 @@ from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
+from lilbee.sessions import MessageRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -656,3 +657,57 @@ class PlacementSpecBody(BaseModel):
     """Request body for placement routes that accept a manual spec."""
 
     spec: dict[str, dict[str, object]] | None = None
+
+
+class SessionMetaItem(BaseModel):
+    """A session's metadata in a list or detail response."""
+
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    model_ref: str
+    scope: str
+    message_count: int
+
+
+class SessionListResponse(BaseModel):
+    """Body for ``GET /api/sessions``."""
+
+    sessions: list[SessionMetaItem]
+
+
+class SessionMessageItem(BaseModel):
+    """One message in a session transcript."""
+
+    role: MessageRole
+    content: str
+    sources: list[str]
+    ts: str
+
+
+class SessionDetailResponse(BaseModel):
+    """Body for ``GET /api/sessions/{session_id}``: metadata plus transcript."""
+
+    meta: SessionMetaItem
+    messages: list[SessionMessageItem]
+
+
+class SessionRenameRequest(BaseModel):
+    """Request body for ``PATCH /api/sessions/{session_id}``."""
+
+    title: str
+
+
+class SessionRenameResponse(BaseModel):
+    """Outcome of a rename."""
+
+    id: str
+    title: str
+
+
+class SessionDeleteResponse(BaseModel):
+    """Outcome of a delete."""
+
+    id: str
+    deleted: bool

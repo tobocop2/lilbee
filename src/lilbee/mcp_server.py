@@ -61,6 +61,7 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
+from lilbee.sessions import SessionMeta, SessionNotFoundError, TitleSource
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
@@ -443,6 +444,66 @@ def list_documents() -> dict[str, Any]:
         ],
         "total": len(sources),
     }
+
+
+def _session_meta_dict(meta: SessionMeta) -> dict[str, Any]:
+    return {
+        "id": meta.id,
+        "title": meta.title,
+        "created_at": meta.created_at,
+        "updated_at": meta.updated_at,
+        "model_ref": meta.model_ref,
+        "scope": meta.scope,
+        "message_count": meta.message_count,
+    }
+
+
+@_tool
+def sessions_list() -> dict[str, Any]:
+    """List saved chat sessions (past conversations), newest first."""
+    metas = get_services().session_store.list()
+    return {"sessions": [_session_meta_dict(meta) for meta in metas], "total": len(metas)}
+
+
+@_tool
+def session_get(session_id: str) -> dict[str, Any]:
+    """Return a saved session's metadata and full transcript; resume by continuing it."""
+    try:
+        session = get_services().session_store.get(session_id)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {
+        "meta": _session_meta_dict(session.meta),
+        "messages": [
+            {
+                "role": message.role.value,
+                "content": message.content,
+                "sources": list(message.sources),
+                "ts": message.ts,
+            }
+            for message in session.messages
+        ],
+    }
+
+
+@_tool
+def session_rename(session_id: str, title: str) -> dict[str, Any]:
+    """Rename a saved session."""
+    try:
+        get_services().session_store.set_title(session_id, title, TitleSource.CUSTOM)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {"id": session_id, "title": title}
+
+
+@_tool
+def session_delete(session_id: str) -> dict[str, Any]:
+    """Delete a saved session."""
+    try:
+        get_services().session_store.delete(session_id)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {"id": session_id, "deleted": True}
 
 
 @_tool
