@@ -68,7 +68,12 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
+from lilbee.data.store import (
+    ChunkType,
+    EmbeddingModelMismatchError,
+    SearchScope,
+    scope_to_chunk_type,
+)
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -79,6 +84,7 @@ from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
 )
+from lilbee.sessions import MessageRole, SessionMessage, TitleSource, derive_title
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
@@ -286,6 +292,10 @@ class ChatScreen(Screen[None]):
         super().__init__()
         self._history: list[ChatMessage] = []
         self._history_lock = threading.Lock()
+        # The saved session this conversation persists to. None until the first
+        # user turn creates one; reset to None on /clear so the next turn opens a
+        # fresh session.
+        self._session_id: str | None = None
         self._insert_mode: bool = True
         # Count of programmatic input edits whose (async) Changed events should
         # not re-filter the dropdown. The setter posts Changed after our flag
@@ -759,18 +769,26 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_CANCEL)
 
     def _cmd_clear(self, _args: str) -> None:
+        self._reset_conversation()
+        self.notify(msg.CMD_CLEAR)
+
+    def _reset_conversation(self) -> None:
+        """Cancel any stream, empty the log and history, and drop the active session.
+
+        The current session is already persisted, so dropping the id just makes the
+        next user turn open a fresh one.
+        """
         if self.streaming:
             self._cancel_inflight_stream(msg.STREAM_CANCELLED)
         else:
             for worker in self.workers:
                 worker.cancel()
         self.streaming = False
-        chat_log = self._chat_log
-        chat_log.remove_children()
+        self._chat_log.remove_children()
         self._active_assistant = None
         with self._history_lock:
             self._history.clear()
-        self.notify(msg.CMD_CLEAR)
+        self._session_id = None
 
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
@@ -1314,16 +1332,12 @@ class ChatScreen(Screen[None]):
 
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
+        self._persist_user_turn(text)
         self.streaming = True
         self._stream_response(text, assistant_msg, self._current_chunk_type())
 
-    def _current_chunk_type(self) -> ChunkType | None:
-        """Translate the ScopeChip selection into a ``chunk_type`` arg.
-
-        Returns ``None`` for "both" (no filter) and the raw/wiki ``ChunkType``
-        otherwise. Defaults to ``None`` when the ScopeChip isn't mounted
-        (e.g. test apps that compose the screen without it).
-        """
+    def _current_scope_value(self) -> str:
+        """The ScopeChip's selection, or "both" when the chip isn't mounted."""
         from textual.css.query import NoMatches
 
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
@@ -1331,8 +1345,62 @@ class ChatScreen(Screen[None]):
         try:
             chip = self.query_one("#scope-chip", ScopeChip)
         except NoMatches:
-            return None
-        return scope_to_chunk_type(chip.scope)
+            return SearchScope.BOTH.value
+        return chip.scope
+
+    def _current_chunk_type(self) -> ChunkType | None:
+        """Translate the ScopeChip selection into a ``chunk_type`` arg.
+
+        Returns ``None`` for "both" (no filter) and the raw/wiki ``ChunkType``
+        otherwise.
+        """
+        return scope_to_chunk_type(self._current_scope_value())
+
+    def _persist_user_turn(self, text: str) -> None:
+        """Open a session on the first turn (auto-titled), then append the message."""
+        store = get_services().session_store
+        if self._session_id is None:
+            self._session_id = store.create(
+                model_ref=cfg.chat_model, scope=self._current_scope_value()
+            )
+            store.set_title(self._session_id, derive_title(text), TitleSource.AUTO)
+        store.add_message(self._session_id, SessionMessage(role=MessageRole.USER, content=text))
+
+    def _persist_assistant_turn(self, content: str, sources: list[str]) -> None:
+        """Append the assistant turn to the active session. Worker thread."""
+        if self._session_id is None:
+            return
+        get_services().session_store.add_message(
+            self._session_id,
+            SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=tuple(sources)),
+        )
+
+    def resume_session(self, session_id: str) -> None:
+        """Load a saved session into the chat view and make it the active one."""
+        session = get_services().session_store.get(session_id)
+        self._reset_conversation()
+        self._session_id = session_id
+        for message in session.messages:
+            self._render_restored_message(message)
+        with self._history_lock:
+            self._history = [
+                {"role": message.role.value, "content": message.content}
+                for message in session.messages
+            ]
+        if session.meta.model_ref and session.meta.model_ref != cfg.chat_model:
+            apply_active_model(self.app, "chat_model", session.meta.model_ref)
+        self._chat_log.scroll_end(animate=False)
+
+    def _render_restored_message(self, message: SessionMessage) -> None:
+        """Mount a completed message widget for a resumed turn."""
+        log = self._chat_log
+        if message.role == MessageRole.USER:
+            log.mount(UserMessage(message.content))
+            return
+        assistant_msg = AssistantMessage()
+        log.mount(assistant_msg)
+        assistant_msg.append_content(message.content)
+        assistant_msg.finish(list(message.sources))
 
     @work(thread=True)
     def _stream_response(
@@ -1582,6 +1650,7 @@ class ChatScreen(Screen[None]):
             with self._history_lock:
                 self._history.append({"role": "assistant", "content": full_response})
                 self._trim_history()
+            self._persist_assistant_turn(full_response, sources)
         call_from_thread(self, widget.finish, sources)
         call_from_thread(self, self._scroll_to_bottom)
         if (
