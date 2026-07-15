@@ -99,6 +99,16 @@ def derive_title(text: str) -> str:
     return first
 
 
+def _message_from_event(event: dict[str, Any], ts: str) -> SessionMessage:
+    """Reconstruct one message from its ``message`` event line."""
+    return SessionMessage(
+        role=MessageRole(event["role"]),
+        content=event["content"],
+        sources=tuple(event.get("sources", [])),
+        ts=ts,
+    )
+
+
 class SessionStore:
     """Reads and appends session logs under ``cfg.data_dir/sessions``.
 
@@ -216,14 +226,7 @@ class SessionStore:
             elif event_type == SessionEventType.TITLE:
                 title = event["title"]
             elif event_type == SessionEventType.MESSAGE:
-                messages.append(
-                    SessionMessage(
-                        role=MessageRole(event["role"]),
-                        content=event["content"],
-                        sources=tuple(event.get("sources", [])),
-                        ts=ts,
-                    )
-                )
+                messages.append(_message_from_event(event, ts))
         meta = SessionMeta(
             id=session_id,
             title=title,

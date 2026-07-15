@@ -19,7 +19,7 @@ from lilbee.sessions.store import (
     SessionStore,
     TitleSource,
     derive_title,
-)
+)  # SESSIONS_DIRNAME / UNTITLED_SESSION_TITLE are internal, imported from the submodule
 
 
 class _FakeClock:

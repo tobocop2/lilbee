@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 from lilbee.sessions.store import (
-    SESSIONS_DIRNAME,
-    UNTITLED_SESSION_TITLE,
     MessageRole,
     Session,
-    SessionEventType,
     SessionMessage,
     SessionMeta,
     SessionNotFoundError,
@@ -17,11 +14,8 @@ from lilbee.sessions.store import (
 )
 
 __all__ = [
-    "SESSIONS_DIRNAME",
-    "UNTITLED_SESSION_TITLE",
     "MessageRole",
     "Session",
-    "SessionEventType",
     "SessionMessage",
     "SessionMeta",
     "SessionNotFoundError",

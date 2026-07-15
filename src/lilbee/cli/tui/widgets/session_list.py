@@ -126,6 +126,8 @@ class SessionListPanel(Vertical):
 
     def _selected(self) -> SessionMeta | None:
         item = self.query_one("#sessions-list", ListView).highlighted_child
+        # highlighted_child is typed ListItem | None; every row we add is a
+        # SessionRow, so narrow to read its meta.
         return item.meta if isinstance(item, SessionRow) else None
 
     @on(Input.Changed, "#sessions-filter")
