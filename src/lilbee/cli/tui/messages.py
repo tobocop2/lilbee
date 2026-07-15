@@ -152,6 +152,9 @@ SESSIONS_FILTER_PLACEHOLDER = "Filter conversations…"
 SESSIONS_RENAME_PLACEHOLDER = "New name…  enter saves, esc cancels"
 SESSIONS_ROW_META = "{count} msgs · {model}"
 SESSIONS_RESUMED = "Resumed · {title}"
+SESSIONS_MODEL_UNAVAILABLE = (
+    "This conversation used {model}, which isn't installed. Keeping {current}."
+)
 SESSIONS_NEW = "Started a new chat"
 SESSIONS_DELETED = "Deleted · {title}"
 SESSIONS_DELETE_CONFIRM_TITLE = "Delete session"

@@ -1390,10 +1390,27 @@ class ChatScreen(Screen[None]):
                 {"role": message.role.value, "content": message.content}
                 for message in session.messages
             ]
-        if session.meta.model_ref and session.meta.model_ref != cfg.chat_model:
-            apply_active_model(self.app, "chat_model", session.meta.model_ref)
+        self._restore_session_model(session.meta.model_ref)
         self._chat_log.scroll_end(animate=False)
         self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
+
+    def _restore_session_model(self, model_ref: str) -> None:
+        """Switch to the session's chat model if it is still installed.
+
+        A conversation records the model it used, but that model may have been
+        deleted since. Restoring a missing ref would be rejected by the model
+        boundary with a scary error, so only switch when the model is installed;
+        otherwise keep the current model and say the original is gone.
+        """
+        if not model_ref or model_ref == cfg.chat_model:
+            return
+        if get_services().registry.is_installed(model_ref):
+            apply_active_model(self.app, "chat_model", model_ref)
+        else:
+            self.notify(
+                msg.SESSIONS_MODEL_UNAVAILABLE.format(model=model_ref, current=cfg.chat_model),
+                severity="warning",
+            )
 
     @property
     def session_id(self) -> str | None:

@@ -110,12 +110,27 @@ async def test_resume_loads_history_and_renders(sessions):
         assert len(screen.query(AssistantMessage)) == 1
 
 
-async def test_resume_restores_a_different_model(sessions):
+async def test_resume_restores_a_different_model_when_installed(sessions):
     session_id = sessions.create(model_ref="other/model:latest", scope="both")
     sessions.add_message(session_id, SessionMessage(role=MessageRole.USER, content="q"))
+    get_services().registry.is_installed.return_value = True
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         with patch.object(app, "set_active_model") as mock_set:
             screen.resume_session(session_id)
         mock_set.assert_called_once_with("chat_model", "other/model:latest")
+
+
+async def test_resume_keeps_current_model_when_session_model_is_gone(sessions):
+    session_id = sessions.create(model_ref="deleted/model:latest", scope="both")
+    sessions.add_message(session_id, SessionMessage(role=MessageRole.USER, content="q"))
+    get_services().registry.is_installed.return_value = False  # model was deleted
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with patch.object(app, "set_active_model") as mock_set:
+            screen.resume_session(session_id)
+        mock_set.assert_not_called()  # never point chat at a missing model
+        assert screen.session_id == session_id  # the conversation still loaded
+        assert screen._history[0] == {"role": "user", "content": "q"}
