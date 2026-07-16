@@ -697,8 +697,15 @@ class Searcher:
     def _summarize_batch(self, batch: list[ChatMessage], previous_summary: str) -> str:
         """Fold one batch of dropped turns into *previous_summary*.
 
-        Returns *previous_summary* unchanged on any failure: keeping the older,
-        less complete notes beats dropping those turns on the floor.
+        A batch that overflows the model's window is split in half and each half
+        folded on its own, rather than failed: the sizing upstream works from a
+        token estimate, an estimate always has a tail, and the cost of the tail
+        here is not a slow call but stranded turns -- they were already dropped
+        from history by the time this runs. Halving is feedback where the
+        estimate is a guess, and it terminates: depth is log2 of the batch.
+
+        Returns *previous_summary* unchanged on any other failure: keeping the
+        older, less complete notes beats dropping those turns on the floor.
         """
         transcript = "\n".join(f"{m['role']}: {m['content']}" for m in batch)
         previous = f"Earlier notes:\n{previous_summary}\n\n" if previous_summary.strip() else ""
@@ -736,6 +743,15 @@ class Searcher:
             if reasoning:
                 return reasoning
             log.warning("History compaction returned nothing; keeping the previous summary")
+        except ProviderError as exc:
+            if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW and len(batch) > 1:
+                mid = len(batch) // 2
+                first = self._summarize_batch(batch[:mid], previous_summary)
+                second = self._summarize_batch(batch[mid:], "")
+                merged = "\n".join(part for part in (first, second) if part.strip())
+                if merged.strip():
+                    return merged
+            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
         except Exception:
             # Not debug: the caller strands these turns and tells the user they
             # were dropped, so the reason has to be in the log by default or the

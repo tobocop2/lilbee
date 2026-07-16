@@ -87,6 +87,48 @@ def test_a_non_native_reasoning_model_recovers_the_reasoning() -> None:
     assert result.stranded == 0
 
 
+def test_an_overflowing_batch_splits_instead_of_stranding() -> None:
+    """The live failure, pinned: batch sizing works from a token estimate, the
+    estimate ran under the server's real count, and the summarize call itself
+    overflowed the window -- stranding every turn it was preserving. Overflow
+    must halve and retry, not fail."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    provider = MagicMock()
+    calls: list[int] = []
+
+    def chat(messages, *, stream=False, options=None):
+        # Refuse anything above a tiny window, as the real preflight does.
+        content = messages[0]["content"]
+        calls.append(len(content))
+        if len(content) > 2000:
+            raise ProviderError(
+                "too big", provider="fleet", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+            )
+        return MagicMock(text="notes for a slice")
+
+    provider.chat.side_effect = chat
+    result = _searcher(provider).summarize_history(_msgs(8, size=600), "")
+    assert result.stranded == 0, "overflow must split, not strand"
+    assert result.condensed == 8
+    assert result.summary
+    assert len(calls) > 1, "the oversized call must have been retried in halves"
+
+
+def test_a_single_message_overflow_still_fails_safe() -> None:
+    """One message too big for the window cannot be split further; it strands
+    with the warning rather than recursing forever."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    provider = MagicMock()
+    provider.chat.side_effect = ProviderError(
+        "too big", provider="fleet", kind=ProviderErrorKind.CONTEXT_OVERFLOW
+    )
+    result = _searcher(provider).summarize_history(_msgs(1, size=99999), "")
+    assert result.condensed == 0
+    assert result.stranded == 1
+
+
 def test_summarizes_a_small_backlog_in_one_call() -> None:
     provider = _provider("they compared torque specs")
     cfg.chat_n_ctx_target = 8192
