@@ -181,7 +181,9 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ![/add a PDF, watch the Task Center, ask a cited question](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-add.gif)
 
-![chat with an indexed PDF manual: a cited markdown table extracted from the source](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
+Ask it something with a real answer at stake and you get the answer, not a paraphrase of the question. Here the trailer is too heavy for the car: lilbee says so, gives the weight it *is* rated for, and cites the page it read that on. The panel on the right is the GPU doing it, on this machine.
+
+![ask whether a car can tow a 3,500 lb boat trailer; lilbee says no, gives the real limits, and cites the manual page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.gif)
 
 ### Already using an MCP-aware agent? Hand setup to it.
 
