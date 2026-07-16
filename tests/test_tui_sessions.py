@@ -90,6 +90,7 @@ async def test_drawer_filters_by_title(sessions):
         await pilot.pause()
         rows = drawer.query(SessionRow)
         assert len(rows) == 1
+        assert rows.first().meta.title == "Board email"
 
 
 # --- the sessions_enabled toggle -----------------------------------------
@@ -151,7 +152,6 @@ async def test_disabled_does_not_persist(sessions, monkeypatch) -> None:
         screen._persist_user_turn("this must not be saved")
         assert screen._session_id is None
         assert sessions.list() == []
-        assert rows.first().meta.title == "Board email"
 
 
 async def test_filtering_does_not_re_read_the_store(sessions):
