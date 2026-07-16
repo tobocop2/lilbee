@@ -180,6 +180,12 @@ class StatusResponse(BaseModel):
     entities: StatusEntityInfo | None = None
 
 
+class ShutdownResponse(BaseModel):
+    """Response for /api/shutdown."""
+
+    status: Literal["shutting_down"]
+
+
 class HealthResponse(BaseModel):
     """Response for /api/health."""
 

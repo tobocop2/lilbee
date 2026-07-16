@@ -7,11 +7,14 @@ handled by LanceDB's built-in MVCC via ``read_consistency_interval`` in
 data dir.
 """
 
+import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from filelock import FileLock
@@ -27,6 +30,8 @@ LOCK_TIMEOUT = 30.0
 # restart handoff before a new `lilbee serve` gives up on the data dir.
 SERVER_LOCK_TIMEOUT = 10.0
 _SERVER_LOCK_NAME = "server.lock"
+_SCOPE_LOCK_NAME = "server.scope.lock"
+_SCOPE_OWNER_NAME = "server.scope.owner.json"
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -62,6 +67,57 @@ def acquire_server_lock(data_dir: Path, timeout: float = SERVER_LOCK_TIMEOUT) ->
     except FileLockTimeout:
         return None
     return lock
+
+
+@dataclass(frozen=True)
+class ScopeOwner:
+    """Identity of the server holding a scope lock, for messages and take-over."""
+
+    data_dir: str
+    pid: int
+
+
+@dataclass(frozen=True)
+class ScopeHold:
+    """A held scope lock plus its owner sidecar; release removes both."""
+
+    lock: FileLock
+    owner_path: Path
+
+    def release(self) -> None:
+        """Remove the owner sidecar, then free the scope for the next server."""
+        self.owner_path.unlink(missing_ok=True)
+        self.lock.release()
+
+
+def acquire_scope_lock(
+    scope_dir: Path, data_dir: Path, timeout: float = SERVER_LOCK_TIMEOUT
+) -> ScopeHold | None:
+    """Hold the one-server-per-scope lock, or None when a live server owns the scope.
+
+    The scope is a directory shared by several would-be servers (the Obsidian
+    plugin's shared root). Like the data-dir lock, the OS releases it the moment
+    the holder exits. The owner sidecar names the holder so a refused starter
+    can report, or gracefully take over from, the server that owns the scope.
+    """
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(scope_dir / _SCOPE_LOCK_NAME)
+    try:
+        lock.acquire(timeout=timeout)
+    except FileLockTimeout:
+        return None
+    owner_path = scope_dir / _SCOPE_OWNER_NAME
+    owner_path.write_text(json.dumps({"data_dir": str(data_dir), "pid": os.getpid()}))
+    return ScopeHold(lock, owner_path)
+
+
+def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
+    """The scope's recorded owner, or None when absent or unreadable."""
+    try:
+        payload = json.loads((scope_dir / _SCOPE_OWNER_NAME).read_text())
+        return ScopeOwner(data_dir=str(payload["data_dir"]), pid=int(payload["pid"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 @contextmanager

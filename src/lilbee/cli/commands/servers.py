@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,10 +19,26 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.commands.serve_logging import setup_server_log_file, setup_server_logging
 from lilbee.core.config import cfg
-from lilbee.runtime.lock import SERVER_LOCK_TIMEOUT, acquire_server_lock
+from lilbee.runtime.lock import (
+    SERVER_LOCK_TIMEOUT,
+    acquire_scope_lock,
+    acquire_server_lock,
+    read_scope_owner,
+)
 
 if TYPE_CHECKING:
     import uvicorn
+
+
+SCOPE_ENV = "LILBEE_EXCLUSIVE_SCOPE"
+"""A directory that at most one server may serve at a time (a plugin's shared root)."""
+
+LOCK_REFUSAL_EXIT_CODE = 3
+"""Exit code for a start refused because another live server holds a lock.
+
+Distinct from a generic failure so a supervisor can tell "another server owns
+this" apart from a crash without parsing output.
+"""
 
 
 def port_file() -> Path:
@@ -107,17 +124,37 @@ def serve(
 
     setup_server_logging()
 
+    # One managed server per scope: the plugin passes its shared root here so a
+    # second vault's server cannot start while another vault's is serving it.
+    scope_hold = None
+    scope_env = os.environ.get(SCOPE_ENV)
+    if scope_env:
+        scope_dir = Path(scope_env)
+        scope_hold = acquire_scope_lock(scope_dir, cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+        if scope_hold is None:
+            owner = read_scope_owner(scope_dir)
+            serving = f" It is serving {owner.data_dir}." if owner else ""
+            message = (
+                f"Another lilbee server is already running for this installation.{serving}"
+                " Stop it or wait for it to exit, then retry."
+            )
+            logging.getLogger(__name__).error(message)
+            console.print(message)
+            raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
+
     # One server per data dir: a second instance would overwrite server.port
     # and spawn a second engine fleet against the same models and vector store.
     server_lock = acquire_server_lock(cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
     if server_lock is None:
+        if scope_hold is not None:
+            scope_hold.release()
         message = (
             "Another lilbee server is already running for this data directory. "
             "Stop it or wait for it to exit, then retry."
         )
         logging.getLogger(__name__).error(message)
         console.print(message)
-        raise typer.Exit(1)
+        raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
 
     import uvicorn
 
@@ -134,6 +171,8 @@ def serve(
         asyncio.run(_run_server(server, config, cfg.server_host))
     finally:
         server_lock.release()
+        if scope_hold is not None:
+            scope_hold.release()
 
 
 def mcp_cmd(

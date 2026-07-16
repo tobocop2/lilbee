@@ -1,5 +1,6 @@
 """Tests for write locking and file locking."""
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -10,7 +11,9 @@ from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     LockTimeoutError,
     _lock_path,
+    acquire_scope_lock,
     acquire_server_lock,
+    read_scope_owner,
     server_lock_path,
     write_lock,
 )
@@ -194,3 +197,41 @@ class TestServerLock:
         lock = acquire_server_lock(missing, timeout=0.1)
         assert lock is not None
         lock.release()
+
+
+class TestScopeLock:
+    def test_acquire_writes_owner_sidecar(self, tmp_path: Path):
+        hold = acquire_scope_lock(tmp_path, tmp_path / "vaults" / "a", timeout=0.1)
+        assert hold is not None
+        owner = read_scope_owner(tmp_path)
+        assert owner is not None
+        assert owner.data_dir == str(tmp_path / "vaults" / "a")
+        assert owner.pid == os.getpid()
+        hold.release()
+
+    def test_second_acquire_refused_and_owner_readable(self, tmp_path: Path):
+        holder = acquire_scope_lock(tmp_path, tmp_path / "vaults" / "a", timeout=0.1)
+        assert holder is not None
+        assert acquire_scope_lock(tmp_path, tmp_path / "vaults" / "b", timeout=0.05) is None
+        owner = read_scope_owner(tmp_path)
+        assert owner is not None and owner.data_dir.endswith("a")
+        holder.release()
+
+    def test_release_removes_owner_sidecar_and_frees_the_scope(self, tmp_path: Path):
+        first = acquire_scope_lock(tmp_path, tmp_path / "vaults" / "a", timeout=0.1)
+        assert first is not None
+        first.release()
+        assert read_scope_owner(tmp_path) is None
+        second = acquire_scope_lock(tmp_path, tmp_path / "vaults" / "b", timeout=0.05)
+        assert second is not None
+        second.release()
+
+    def test_corrupt_owner_sidecar_reads_as_none(self, tmp_path: Path):
+        (tmp_path / "server.scope.owner.json").write_text("not json{{{")
+        assert read_scope_owner(tmp_path) is None
+
+    def test_acquire_creates_missing_scope_dir(self, tmp_path: Path):
+        missing = tmp_path / "shared" / "root"
+        hold = acquire_scope_lock(missing, tmp_path / "data", timeout=0.1)
+        assert hold is not None
+        hold.release()

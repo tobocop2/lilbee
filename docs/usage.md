@@ -608,7 +608,13 @@ lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1
 
 One server runs per data dir: a second `lilbee serve` against the same
 `--data-dir` waits up to ten seconds for the first to exit, then stops with an
-error instead of competing for the port file and the model engine.
+error (exit code 3) instead of competing for the port file and the model engine. A supervisor
+that manages several data dirs (the Obsidian plugin's shared root) can pass
+`LILBEE_EXCLUSIVE_SCOPE=<dir>` to extend the same guarantee across all of them;
+the refusal then names the data dir the running server is serving. To replace a
+running server, ask it to stop with `POST /api/shutdown` (token-authed): it
+shuts down exactly as an external SIGTERM would, and its locks release the
+moment it exits.
 
 The surface covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
@@ -810,6 +816,7 @@ Only relevant when running the HTTP server.
 |----------|---------|-------------|
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
 | `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
+| `LILBEE_EXCLUSIVE_SCOPE` | *(none)* | Directory that at most one server may serve at a time, on top of the per-data-dir lock. A second `lilbee serve` pointed at the same scope waits up to ten seconds, then exits with an error naming the data dir the running server is serving. Managed supervisors set this (the Obsidian plugin passes its shared root) |
 | `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
 | `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |

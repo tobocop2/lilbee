@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from litestar import Response, get, patch
+from litestar import Response, get, patch, post
 from litestar.exceptions import NotFoundException, ValidationException
 from litestar.response import Stream
+from litestar.status_codes import HTTP_202_ACCEPTED
 from pydantic import ValidationError
 
 from lilbee.server import handlers
@@ -16,6 +17,7 @@ from lilbee.server.models import (
     ConfigResponse,
     ConfigUpdateResponse,
     HealthResponse,
+    ShutdownResponse,
     SourceContentResponse,
     StatusResponse,
 )
@@ -40,6 +42,12 @@ async def warm_stream_route() -> Stream:
 async def status_route() -> StatusResponse:
     """Current configuration, indexed document sources, and chunk counts."""
     return await handlers.status()
+
+
+@post("/api/shutdown", status_code=HTTP_202_ACCEPTED)
+async def shutdown_route() -> ShutdownResponse:
+    """Gracefully stop the server, exactly as an external SIGTERM would."""
+    return await handlers.shutdown()
 
 
 @get("/api/config")

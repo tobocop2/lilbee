@@ -391,7 +391,7 @@ class TestServeSingleton:
                 result = runner.invoke(app, ["serve"])
         finally:
             holder.release()
-        assert result.exit_code == 1
+        assert result.exit_code == 3
         assert "already running" in result.output
         mock_asyncio_run.assert_not_called()
 
@@ -408,5 +408,97 @@ class TestServeSingleton:
         result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
         reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()
+
+
+class TestServeExclusiveScope:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_exits_when_the_scope_is_held(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        tmp_path,
+        monkeypatch,
+    ):
+        from lilbee.runtime.lock import acquire_scope_lock
+
+        mock_create_app.return_value = "fake_app"
+        scope = tmp_path / "shared-root"
+        holder = acquire_scope_lock(scope, tmp_path / "other-vault", timeout=0.1)
+        assert holder is not None
+        monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
+        try:
+            with mock.patch("lilbee.cli.commands.servers.SERVER_LOCK_TIMEOUT", 0.05):
+                result = runner.invoke(app, ["serve"])
+        finally:
+            holder.release()
+        assert result.exit_code == 3
+        assert "already running" in result.output
+        assert "other-vault" in result.output
+        mock_asyncio_run.assert_not_called()
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_holds_then_releases_the_scope(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        tmp_path,
+        monkeypatch,
+    ):
+        from lilbee.runtime.lock import acquire_scope_lock, read_scope_owner
+
+        mock_create_app.return_value = "fake_app"
+        scope = tmp_path / "shared-root"
+        monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+        assert read_scope_owner(scope) is None
+        reacquired = acquire_scope_lock(scope, cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()
+
+
+class TestServeScopeReleasedOnDataDirRefusal:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_data_dir_refusal_frees_the_scope(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        tmp_path,
+        monkeypatch,
+    ):
+        from lilbee.runtime.lock import acquire_scope_lock, acquire_server_lock
+
+        mock_create_app.return_value = "fake_app"
+        scope = tmp_path / "shared-root"
+        monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
+        data_dir_holder = acquire_server_lock(cfg.data_dir, timeout=0.1)
+        assert data_dir_holder is not None
+        try:
+            with mock.patch("lilbee.cli.commands.servers.SERVER_LOCK_TIMEOUT", 0.05):
+                result = runner.invoke(app, ["serve"])
+        finally:
+            data_dir_holder.release()
+        assert result.exit_code == 3
+        assert "data directory" in result.output
+        mock_asyncio_run.assert_not_called()
+        # The scope acquired before the refusal must not stay held.
+        reacquired = acquire_scope_lock(scope, cfg.data_dir, timeout=0.05)
         assert reacquired is not None
         reacquired.release()

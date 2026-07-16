@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
+import signal
+import threading
 import time
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -78,11 +81,17 @@ from lilbee.server.models import (
     GpuInfoResponse,
     HealthResponse,
     PlacementResponse,
+    ShutdownResponse,
     StatusResponse,
 )
 
 if TYPE_CHECKING:
     from lilbee.providers.base import LLMProvider
+
+log = logging.getLogger(__name__)
+
+# Delay before the API-requested SIGTERM, so the 202 response flushes first.
+_SHUTDOWN_DELAY_S = 0.2
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
 # bar advances smoothly without busy-spinning.
@@ -119,6 +128,19 @@ async def health() -> HealthResponse:
         chat_status=_chat_status(provider),
         chat_ctx=provider.served_chat_ctx(),
     )
+
+
+async def shutdown() -> ShutdownResponse:
+    """Deliver SIGTERM to this process shortly after the response flushes.
+
+    Routes through the same hard-exit path as an external SIGTERM, so the fleet
+    teardown and shutdown logging behave identically however the stop arrives.
+    """
+    log.info("Shutdown requested via the API")
+    timer = threading.Timer(_SHUTDOWN_DELAY_S, signal.raise_signal, args=(signal.SIGTERM,))
+    timer.daemon = True
+    timer.start()
+    return ShutdownResponse(status="shutting_down")
 
 
 async def warm_stream() -> AsyncGenerator[str, None]:
