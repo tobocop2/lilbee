@@ -323,22 +323,40 @@ jobs:
           path: C:\ollama
           key: ollama-bin-${{ runner.os }}-v1
 
+      # KEEP_ALIVE=-1 pins loaded models in memory: the litellm tests run well
+      # past ollama's 5-minute default unload, and a cold reload plus first
+      # generation on a loaded runner overruns the request timeout ("Couldn't
+      # reach the provider ... or it timed out"). The warm-up calls pay the
+      # load cost here, where nothing is timing the request.
       - name: Start Ollama and pull models (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          nohup ollama serve > /dev/null 2>&1 &
-          sleep 3
+          OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > /dev/null 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS localhost:11434/api/version >/dev/null 2>&1 && break
+            sleep 1
+          done
           ollama pull qwen3:0.6b
           ollama pull nomic-embed-text
+          ollama run qwen3:0.6b "warm up" >/dev/null
+          curl -fsS localhost:11434/api/embed \
+            -d '{"model":"nomic-embed-text","input":"warm up"}' >/dev/null
 
       - name: Start Ollama and pull models (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $env:OLLAMA_KEEP_ALIVE = "-1"
           Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden
-          Start-Sleep -Seconds 5
+          foreach ($i in 1..30) {
+            try { Invoke-RestMethod "http://localhost:11434/api/version" | Out-Null; break }
+            catch { Start-Sleep -Seconds 1 }
+          }
           & C:\ollama\ollama.exe pull qwen3:0.6b
           & C:\ollama\ollama.exe pull nomic-embed-text
+          & C:\ollama\ollama.exe run qwen3:0.6b "warm up" | Out-Null
+          Invoke-RestMethod -Method Post -Uri "http://localhost:11434/api/embed" `
+            -Body '{"model":"nomic-embed-text","input":"warm up"}' | Out-Null
 
       - name: Restore GGUF models from release mirror
         id: ci-models
