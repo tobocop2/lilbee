@@ -9,9 +9,12 @@ from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.server.auth import is_read_only
 from lilbee.server.routes.sessions import (
+    session_add_message_route,
+    session_create_route,
     session_delete_route,
     session_get_route,
     session_rename_route,
+    session_set_summary_route,
     sessions_list_route,
 )
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
@@ -86,6 +89,64 @@ class TestGet:
         assert client.get("/api/sessions/nope").status_code == 404
 
 
+class TestGetSummary:
+    def test_summary_is_on_the_wire(self, client, store):
+        """A resumed client needs what compaction folded the old turns into."""
+        session_id = _seed(store)
+        store.set_summary(session_id, "earlier: torque is 85 Nm")
+        body = client.get(f"/api/sessions/{session_id}").json()
+        assert body["summary"] == "earlier: torque is 85 Nm"
+
+    def test_summary_defaults_empty(self, client, store):
+        session_id = _seed(store)
+        assert client.get(f"/api/sessions/{session_id}").json()["summary"] == ""
+
+
+class TestCreate:
+    def test_creates_and_returns_detail(self, client, store):
+        resp = client.post("/api/sessions", json={"model_ref": "qwen3-4b", "scope": "both"})
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["meta"]["model_ref"] == "qwen3-4b"
+        assert body["messages"] == []
+        # the new session is now listable
+        assert any(s["id"] == body["meta"]["id"] for s in client.get("/api/sessions").json()["sessions"])
+
+
+class TestAppendMessage:
+    def test_appends_a_turn(self, client, store):
+        session_id = _seed(store)
+        resp = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "and the head bolts?", "sources": []},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["messages"][-1]["content"] == "and the head bolts?"
+        assert body["meta"]["message_count"] == 3
+
+    def test_unknown_id_404(self, client):
+        resp = client.post(
+            "/api/sessions/nope/messages", json={"role": "user", "content": "x", "sources": []}
+        )
+        assert resp.status_code == 404
+
+
+class TestSetSummary:
+    def test_sets_summary(self, client, store):
+        session_id = _seed(store)
+        resp = client.put(
+            f"/api/sessions/{session_id}/summary", json={"summary": "folded: 85 Nm"}
+        )
+        assert resp.status_code == 200
+        assert client.get(f"/api/sessions/{session_id}").json()["summary"] == "folded: 85 Nm"
+
+    def test_unknown_id_404(self, client):
+        assert (
+            client.put("/api/sessions/nope/summary", json={"summary": "x"}).status_code == 404
+        )
+
+
 class TestRename:
     def test_renames(self, client, store):
         session_id = _seed(store)
@@ -115,3 +176,7 @@ def test_reads_are_read_only_and_writes_are_not():
     assert is_read_only(session_get_route.fn)
     assert not is_read_only(session_rename_route.fn)
     assert not is_read_only(session_delete_route.fn)
+    # A read-only token must not be able to create, append, or summarize.
+    assert not is_read_only(session_create_route.fn)
+    assert not is_read_only(session_add_message_route.fn)
+    assert not is_read_only(session_set_summary_route.fn)

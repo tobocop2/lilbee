@@ -69,6 +69,24 @@ def test_a_reasoning_model_does_not_strand_every_turn() -> None:
     assert result.stranded == 0, "turns must not be dropped for a summary that was never written"
 
 
+def test_a_non_native_reasoning_model_recovers_the_reasoning() -> None:
+    """think=False reaches only llama-server; other providers strip it.
+
+    Over Ollama, LM Studio, or a cloud API a reasoning model can spend the whole
+    budget inside <think> even with think=False requested, because that provider
+    ignored the flag. The reasoning is a summary of the turns, so it must be
+    recovered rather than the turns stranded for an empty answer.
+    """
+    provider = MagicMock()
+    # An answerless reply, as a provider that could not disable thinking returns.
+    only_reasoning = "<think>They discussed head bolt torque: 30, 60, then 90 deg.</think>"
+    provider.chat.return_value = MagicMock(text=only_reasoning)
+    result = _searcher(provider).summarize_history(_msgs(6), "")
+    assert "90 deg" in result.summary, "the reasoning content is the recovered summary"
+    assert result.condensed > 0
+    assert result.stranded == 0
+
+
 def test_summarizes_a_small_backlog_in_one_call() -> None:
     provider = _provider("they compared torque specs")
     cfg.chat_n_ctx_target = 8192

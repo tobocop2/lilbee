@@ -687,10 +687,39 @@ class SessionMessageItem(BaseModel):
 
 
 class SessionDetailResponse(BaseModel):
-    """Body for ``GET /api/sessions/{session_id}``: metadata plus transcript."""
+    """Body for ``GET /api/sessions/{session_id}``: metadata plus transcript.
+
+    ``summary`` carries what compaction folded the oldest turns into (empty when
+    a conversation has not been compacted). A client that resumes and continues
+    the conversation needs it: without it, it rebuilds history from the raw
+    transcript, re-sending turns the summary had already condensed and risking
+    the context overflow compaction exists to prevent.
+    """
 
     meta: SessionMetaItem
     messages: list[SessionMessageItem]
+    summary: str = ""
+
+
+class SessionCreateRequest(BaseModel):
+    """Request body for ``POST /api/sessions``."""
+
+    model_ref: str
+    scope: str
+
+
+class SessionMessageCreateRequest(BaseModel):
+    """Request body for ``POST /api/sessions/{session_id}/messages``."""
+
+    role: MessageRole
+    content: str
+    sources: list[str] = []
+
+
+class SessionSummaryRequest(BaseModel):
+    """Request body for ``PUT /api/sessions/{session_id}/summary``."""
+
+    summary: str
 
 
 class SessionRenameRequest(BaseModel):

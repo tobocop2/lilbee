@@ -74,6 +74,7 @@ from lilbee.retrieval.reasoning import (
     StreamToken,
     cap_events_as_stream_tokens,
     effective_reasoning_cap,
+    split_reasoning,
     stream_chat_with_cap,
     strip_reasoning,
 )
@@ -724,6 +725,16 @@ class Searcher:
             summary = strip_reasoning(response.text).strip()
             if summary:
                 return summary
+            # think=False disables reasoning only on the native llama-server path;
+            # over Ollama, LM Studio, or a cloud API a reasoning model can still
+            # spend the whole budget inside <think> and leave nothing after the
+            # strip. The reasoning is itself a summary of these turns, so fall
+            # back to it rather than strand them. A non-reasoning model never
+            # reaches here: it emits no <think> block, so the strip above returns
+            # its answer directly.
+            reasoning = split_reasoning(response.text).reasoning.strip()
+            if reasoning:
+                return reasoning
             log.warning("History compaction returned nothing; keeping the previous summary")
         except Exception:
             # Not debug: the caller strands these turns and tells the user they

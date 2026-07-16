@@ -10,14 +10,24 @@ from litestar.exceptions import NotFoundException
 
 from lilbee.app.services import get_services
 from lilbee.server.models import (
+    SessionCreateRequest,
     SessionDeleteResponse,
     SessionDetailResponse,
     SessionListResponse,
+    SessionMessageCreateRequest,
     SessionMessageItem,
     SessionMetaItem,
     SessionRenameResponse,
+    SessionSummaryRequest,
 )
-from lilbee.sessions import Session, SessionMeta, SessionNotFoundError, SessionStore, TitleSource
+from lilbee.sessions import (
+    Session,
+    SessionMessage,
+    SessionMeta,
+    SessionNotFoundError,
+    SessionStore,
+    TitleSource,
+)
 
 
 def _store() -> SessionStore:
@@ -48,6 +58,7 @@ def _detail(session: Session) -> SessionDetailResponse:
             )
             for message in session.messages
         ],
+        summary=session.summary,
     )
 
 
@@ -63,6 +74,37 @@ async def get_session(session_id: str) -> SessionDetailResponse:
     except SessionNotFoundError as exc:
         raise NotFoundException(detail=str(exc)) from exc
     return _detail(session)
+
+
+async def create_session(data: SessionCreateRequest) -> SessionDetailResponse:
+    """Start a new conversation and return it (empty transcript, no summary)."""
+    session_id = _store().create(model_ref=data.model_ref, scope=data.scope)
+    return _detail(_store().get(session_id))
+
+
+async def add_session_message(
+    session_id: str, data: SessionMessageCreateRequest
+) -> SessionDetailResponse:
+    """Append one turn to a conversation and return it, or 404 if unknown."""
+    message = SessionMessage(
+        role=data.role, content=data.content, sources=tuple(data.sources)
+    )
+    try:
+        _store().add_message(session_id, message)
+    except SessionNotFoundError as exc:
+        raise NotFoundException(detail=str(exc)) from exc
+    return _detail(_store().get(session_id))
+
+
+async def set_session_summary(
+    session_id: str, data: SessionSummaryRequest
+) -> SessionDetailResponse:
+    """Replace a conversation's compaction summary, or 404 if unknown."""
+    try:
+        _store().set_summary(session_id, data.summary)
+    except SessionNotFoundError as exc:
+        raise NotFoundException(detail=str(exc)) from exc
+    return _detail(_store().get(session_id))
 
 
 async def rename_session(session_id: str, title: str) -> SessionRenameResponse:

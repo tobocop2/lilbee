@@ -62,7 +62,7 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
-from lilbee.sessions import SessionNotFoundError, TitleSource
+from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
@@ -472,7 +472,45 @@ def session_get(session_id: str) -> dict[str, Any]:
             }
             for message in session.messages
         ],
+        # What compaction folded the older turns into (empty if never compacted).
+        # An agent that resumes and continues the conversation needs it, or it
+        # rebuilds history without what was already condensed.
+        "summary": session.summary,
     }
+
+
+@_tool
+def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
+    """Start a new saved chat session and return its id."""
+    session_id = get_services().session_store.create(model_ref=model_ref, scope=scope)
+    return {"id": session_id, "model_ref": model_ref, "scope": scope}
+
+
+@_tool
+def session_add_message(
+    session_id: str, role: str, content: str, sources: list[str] | None = None
+) -> dict[str, Any]:
+    """Append one turn (role user/assistant, content, optional sources) to a session."""
+    try:
+        message = SessionMessage(
+            role=MessageRole(role), content=content, sources=tuple(sources or ())
+        )
+        get_services().session_store.add_message(session_id, message)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    except ValueError as exc:
+        return _error(f"invalid role {role!r}: {exc}")
+    return {"id": session_id, "added": True}
+
+
+@_tool
+def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
+    """Replace a session's compaction summary (what older turns were folded into)."""
+    try:
+        get_services().session_store.set_summary(session_id, summary)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {"id": session_id, "summary": summary}
 
 
 @_tool

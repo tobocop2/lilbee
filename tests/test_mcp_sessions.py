@@ -6,7 +6,15 @@ import pytest
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
-from lilbee.mcp_server import session_delete, session_get, session_rename, sessions_list
+from lilbee.mcp_server import (
+    session_add_message,
+    session_create,
+    session_delete,
+    session_get,
+    session_rename,
+    session_set_summary,
+    sessions_list,
+)
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
 from tests.conftest import make_mock_services
 
@@ -61,6 +69,44 @@ def test_session_get_returns_transcript(store):
 
 def test_session_get_unknown_errors(store):
     assert "error" in session_get("nope")
+
+
+def test_session_get_carries_the_summary(store):
+    """An agent resuming a compacted conversation needs the summary."""
+    session_id = _seed(store)
+    store.set_summary(session_id, "earlier: torque is 85 Nm")
+    assert session_get(session_id)["summary"] == "earlier: torque is 85 Nm"
+
+
+def test_session_create_then_append_and_read_back(store):
+    """An agent can own a conversation end to end over MCP."""
+    created = session_create(model_ref="qwen3-4b", scope="both")
+    session_id = created["id"]
+    session_add_message(session_id, "user", "what torque?", ["manual.pdf"])
+    session_add_message(session_id, "assistant", "85 Nm.")
+    got = session_get(session_id)
+    assert got["meta"]["model_ref"] == "qwen3-4b"
+    assert [m["content"] for m in got["messages"]] == ["what torque?", "85 Nm."]
+    assert got["messages"][0]["sources"] == ["manual.pdf"]
+
+
+def test_session_add_message_bad_role_errors(store):
+    session_id = _seed(store)
+    assert "error" in session_add_message(session_id, "wizard", "hi")
+
+
+def test_session_add_message_unknown_errors(store):
+    assert "error" in session_add_message("nope", "user", "hi")
+
+
+def test_session_set_summary_round_trips(store):
+    session_id = _seed(store)
+    session_set_summary(session_id, "folded: 85 Nm")
+    assert session_get(session_id)["summary"] == "folded: 85 Nm"
+
+
+def test_session_set_summary_unknown_errors(store):
+    assert "error" in session_set_summary("nope", "x")
 
 
 def test_session_rename(store):

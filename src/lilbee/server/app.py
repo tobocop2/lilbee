@@ -72,9 +72,12 @@ from lilbee.server.routes.search import (
     search_route,
 )
 from lilbee.server.routes.sessions import (
+    session_add_message_route,
+    session_create_route,
     session_delete_route,
     session_get_route,
     session_rename_route,
+    session_set_summary_route,
     sessions_list_route,
 )
 from lilbee.server.routes.setup import (
@@ -177,6 +180,9 @@ def create_app() -> Litestar:
             memories_remove_route,
             sessions_list_route,
             session_get_route,
+            session_create_route,
+            session_add_message_route,
+            session_set_summary_route,
             session_rename_route,
             session_delete_route,
             export_route,
