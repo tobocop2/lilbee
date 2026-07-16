@@ -3933,6 +3933,17 @@ async def _grow_answer(pilot, widget, paragraphs: int):
     await _settle(pilot)
 
 
+async def _reader_scrolls_up(pilot):
+    """Scroll up off the bottom the way the reader does, with the real keys.
+
+    Escape first: in insert mode the input holds focus and takes PgUp itself,
+    which is the point of the mode rather than a binding that missed.
+    """
+    await pilot.press("escape")
+    await pilot.press("pageup")
+    await _settle(pilot)
+
+
 async def test_chat_log_follows_the_answer_as_it_grows():
     """The answer's tail stays in view while it streams.
 
@@ -3960,8 +3971,7 @@ async def test_chat_log_stops_following_when_the_user_scrolls_up():
         log, widget = await _start_turn(pilot, screen)
         await _grow_answer(pilot, widget, 80)
 
-        screen.action_scroll_up()  # the real binding, not a raw scroll_to
-        await _settle(pilot)
+        await _reader_scrolls_up(pilot)
         assert log.scroll_y < log.max_scroll_y, "precondition: the reader scrolled up"
 
         await _grow_answer(pilot, widget, 160)
@@ -3977,12 +3987,10 @@ async def test_chat_log_follows_again_once_the_user_returns_to_the_bottom():
         log, widget = await _start_turn(pilot, screen)
         await _grow_answer(pilot, widget, 80)
 
-        screen.action_scroll_up()
-        await _settle(pilot)
+        await _reader_scrolls_up(pilot)
         assert log.scroll_y < log.max_scroll_y
 
-        screen._insert_mode = False
-        screen.action_vim_scroll_end()  # vim G jumps to the bottom
+        await pilot.press("G")  # vim G jumps to the bottom
         await _settle(pilot)
 
         await _grow_answer(pilot, widget, 160)
@@ -4004,8 +4012,7 @@ async def test_chat_log_does_not_follow_again_from_part_way_back_down():
         await _grow_answer(pilot, widget, 80)
         was_the_bottom = log.max_scroll_y
 
-        screen.action_scroll_up()
-        await _settle(pilot)
+        await _reader_scrolls_up(pilot)
         await _grow_answer(pilot, widget, 160)
         assert log.max_scroll_y > was_the_bottom, "precondition: the answer outgrew that spot"
 
@@ -4027,8 +4034,7 @@ async def test_chat_send_message_follows_the_answer_it_is_about_to_get():
         await _grow_answer(pilot, widget, 80)
 
         # The reader scrolls up during this answer and leaves it there.
-        screen.action_scroll_up()
-        await _settle(pilot)
+        await _reader_scrolls_up(pilot)
         assert log.scroll_y < log.max_scroll_y
 
         # The next question must follow its own answer regardless.
