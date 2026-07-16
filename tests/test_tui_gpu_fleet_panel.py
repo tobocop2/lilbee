@@ -282,23 +282,22 @@ async def test_panel_updates_on_second_tick(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_panel_graceful_on_probe_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failing probe leaves the previous content intact and does not crash.
 
-    The initial on_mount probe returns an empty dict (no devices set yet).
-    The first explicit tick returns good stats with the right labels set.
-    The second explicit tick raises; the panel must keep the previous content.
+    The fake probe answers by the test's current phase, not by call count:
+    the panel's own interval timer can slip extra ticks in between the
+    explicit ones on a slow host, and a counter-keyed fake then hands the
+    good-stats answer to a tick that snapshotted labels before
+    ``set_devices`` ran, rendering the default GPU0 label.
     """
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 
     good_stat = _make_stat(0, utilization_pct=50)
-    probe_calls: list[int] = []
+    probe_phase = {"answer": "empty"}
 
     def _probe(devices: object) -> object:  # type: ignore[no-untyped-def]
-        idx = len(probe_calls)
-        probe_calls.append(idx)
-        if idx == 0:
-            # on_mount probe: no devices registered yet
+        if probe_phase["answer"] == "empty":
             return {}
-        if idx == 1:
+        if probe_phase["answer"] == "good":
             return {0: good_stat}
         raise OSError("nvidia-smi not found")
 
@@ -313,14 +312,16 @@ async def test_panel_graceful_on_probe_exception(monkeypatch: pytest.MonkeyPatch
         panel.set_devices([device], labels={0: "CUDA0"})
         await app.workers.wait_for_complete()
 
-        # First explicit tick returns good stats
+        # Devices and labels are in, so a probe may now answer with stats.
+        probe_phase["answer"] = "good"
         panel._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()
         content_after_good = str(panel.render())
         assert "CUDA0" in content_after_good
 
-        # Second explicit tick raises; content must remain unchanged
+        # Every probe from here on raises; content must remain unchanged.
+        probe_phase["answer"] = "raise"
         panel._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()
