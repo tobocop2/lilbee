@@ -80,9 +80,19 @@ def test_batches_each_fit_the_current_model_window() -> None:
     ctx = 2048
     batches = batch_overflow(dropped, "", ctx_target=ctx)
     assert len(batches) > 1, "a 20k backlog must not be summarized in one 2k call"
+    # `estimate < ctx` is the invariant that shipped a live failure: a batch
+    # estimated at 1728 tokens reached a 2048-token server as ~2666 real tokens
+    # (terse text tokenizes denser than chars/4, and the server adds a chat
+    # template), the call was rejected, and every turn stranded. The real
+    # invariant: even at the worst-case estimate gap, prompt plus reply fits.
+    worst_case_ratio = 1.6
     for batch in batches:
         cost = sum(estimate_tokens(m) for m in batch)
-        assert cost < ctx, f"batch of {cost} tokens does not fit a {ctx} window"
+        real_worst = int(cost * worst_case_ratio) + 320 + 64  # + reply cap + wrapper
+        assert real_worst <= ctx, (
+            f"batch estimated at {cost} could reach the server as {real_worst} "
+            f"tokens and overflow the {ctx} window it is shrinking history for"
+        )
     # every dropped turn is accounted for, none skipped
     assert sum(len(b) for b in batches) == len(dropped)
 

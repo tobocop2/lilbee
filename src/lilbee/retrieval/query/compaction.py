@@ -39,6 +39,12 @@ _SUMMARY_MIN_TOKENS = 64
 
 # Rough cost of the instruction wrapper around a batch transcript.
 _PROMPT_OVERHEAD_TOKENS = 64
+# Fraction of the remaining window a batch may claim, covering the worst-case
+# gap between the chars/4 estimate and the server's real count (terse text
+# tokenizes ~1.6x denser) plus the chat template the server adds. A batch that
+# overflows is not merely slow, it strands its turns: the call fails and they
+# were already dropped from history.
+_ESTIMATE_SAFETY_FRACTION = 0.6
 # Never build a batch smaller than this, however tight the window.
 _MIN_BATCH_TOKENS = 128
 
@@ -193,12 +199,25 @@ def batch_overflow(
     A lone turn larger than a whole batch is truncated rather than sent to
     certain failure: half its text summarized beats the entire turn dropped.
     """
+    # The safety factor exists because estimate_tokens is chars/4, a point
+    # estimate with no error bar: terse text ("q63: head bolt torque?")
+    # tokenizes closer to a token per 2.5 characters, and the server wraps the
+    # prompt in a chat template it also counts. Both errors grow with content,
+    # so a fixed pad cannot absorb them. Measured on a 2048-token window: a
+    # batch sized to the raw room reached the server as ~2666 real tokens, the
+    # call was rejected, and every turn in every batch was stranded -- the
+    # summarize call overflowing the very window it was shrinking history for.
     room = max(
         _MIN_BATCH_TOKENS,
-        ctx_target
-        - summary_cap(ctx_target)
-        - estimate_text_tokens(previous_summary)
-        - _PROMPT_OVERHEAD_TOKENS,
+        int(
+            (
+                ctx_target
+                - summary_cap(ctx_target)
+                - estimate_text_tokens(previous_summary)
+                - _PROMPT_OVERHEAD_TOKENS
+            )
+            * _ESTIMATE_SAFETY_FRACTION
+        ),
     )
     batches: list[list[ChatMessage]] = []
     current: list[ChatMessage] = []
