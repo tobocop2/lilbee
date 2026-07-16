@@ -10305,9 +10305,11 @@ async def test_catalog_grid_leave_up_focuses_previous():
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
             grids[1].focus()
-            await pilot.pause()
+            await pilot.wait_for_scheduled_animations()
             grids[1].post_message(ModelGrid.LeaveUp(grids[1]))
-            await pilot.pause()
+            # The focus move lands with the message and any scroll it starts;
+            # a bare pause reads back mid-flight on a slow host.
+            await pilot.wait_for_scheduled_animations()
             assert screen.focused is not grids[1]
 
 
