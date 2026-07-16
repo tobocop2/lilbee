@@ -73,6 +73,15 @@ def test_show_json(seeded):
     body = json.loads(result.output)
     assert body["messages"][1]["role"] == "assistant"
     assert body["messages"][1]["sources"] == ["manual.pdf"]
+    assert body["summary"] == "", "an uncompacted session reports an empty summary"
+
+
+def test_show_json_carries_the_summary(seeded):
+    """A script resuming from CLI JSON needs what compaction produced."""
+    tmp_path, session_id = seeded
+    SessionStore().set_summary(session_id, "earlier: torque is 85 Nm")
+    result = runner.invoke(app, _args(tmp_path, "show", session_id, json_mode=True))
+    assert json.loads(result.output)["summary"] == "earlier: torque is 85 Nm"
 
 
 def test_rename(seeded):
