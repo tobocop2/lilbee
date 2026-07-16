@@ -139,7 +139,19 @@ jobs:
       - name: Verify extras installed in build venv
         shell: bash
         # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
-        run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
+        # One retry with a purged uv cache: a hardlink-fallback race can leave a
+        # mixed-version package on disk (one litellm's redis_cache.py beside an
+        # older constants.py) that only an import catches. Without the purge the
+        # re-sync relinks the same corrupted cache entries.
+        run: |
+          check() { uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"; }
+          if ! check; then
+            echo "extras import failed; purging the uv cache and re-syncing once"
+            uv cache clean
+            uv sync --reinstall --extra release
+            uv pip install 'nuitka[onefile]>=4.0,<5' pip
+            check
+          fi
 
       # compat cell only: replace the stock lancedb the sync installed with the
       # pre-Haswell build from the private index. --no-deps leaves the rest of the
