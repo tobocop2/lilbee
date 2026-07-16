@@ -27,8 +27,10 @@ log = logging.getLogger(__name__)
 # Default timeout (seconds) for acquiring the write lock
 LOCK_TIMEOUT = 30.0
 # Grace (seconds) for a dying predecessor to release the server lock during a
-# restart handoff before a new `lilbee serve` gives up on the data dir.
-SERVER_LOCK_TIMEOUT = 10.0
+# restart handoff before a new `lilbee serve` gives up. Must exceed the
+# predecessor's worst-case fleet teardown (~4 groups x _STOP_TIMEOUT_S in
+# lilbee.providers.fleet.swap_manager) with margin for process unwind.
+SERVER_LOCK_TIMEOUT = 15.0
 _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"

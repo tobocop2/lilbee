@@ -90,7 +90,13 @@ _HTTP_TIMEOUT_S = 10.0
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
 _BOOT_POLL_S = 0.25
-_STOP_TIMEOUT_S = 10.0
+# Per-group SIGTERM grace before SIGKILL. llama-server holds no persistent
+# state, so an early hard kill is safe, and the budget chain depends on it:
+# the whole fleet (up to four groups, stopped sequentially) must tear down
+# inside a supervisor's stop grace and the server-lock handoff grace
+# (SERVER_LOCK_TIMEOUT in lilbee.runtime.lock), which both assume the full
+# teardown stays near 4x this value.
+_STOP_TIMEOUT_S = 2.5
 # Grace for a llama-server that outlived llama-swap before it is force-killed.
 _ORPHAN_STOP_TIMEOUT_S = 5.0
 # Grace for a SIGKILLed process to exit (and release its VRAM) before the next
