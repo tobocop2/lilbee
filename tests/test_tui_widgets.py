@@ -853,6 +853,27 @@ class TestModelBar:
                 chat_pill = toggle.query_one("#chat-mode-chat", Static)
                 assert "-active" in chat_pill.classes
 
+    async def test_chat_mode_toggle_refresh_survives_pills_not_in_dom(self) -> None:
+        """Regression: on_mount's refresh can run while the composed pills are
+        not yet attached to the DOM; querying for them there raised NoMatches
+        and took the screen down. The refresh reads the references compose
+        created instead, which exist whether or not the DOM does. Pills
+        removed from the DOM stand in for pills not yet attached to it.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ChatModePill, ChatModeToggle
+
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                for pill in list(toggle.query(ChatModePill)):
+                    await pill.remove()
+                toggle.refresh_state()
+                assert toggle._chat_pill is not None
+                assert "-active" in toggle._chat_pill.classes
+
     async def test_chat_mode_toggle_flips_on_click(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
 
