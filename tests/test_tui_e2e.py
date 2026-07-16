@@ -1261,10 +1261,13 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
-                await search.action_submit()
-                await pilot.pause()
-                grid = app.screen.query("#grid-chat ModelGrid").first()
-                assert grid.has_focus
+                # Enter installs the first match; stop the chain before it
+                # spawns a download worker that would outlive the test.
+                with mock.patch.object(app.screen, "_enqueue_download"):
+                    await search.action_submit()
+                    await pilot.pause()
+                    grid = app.screen.query("#grid-chat ModelGrid").first()
+                    assert grid.has_focus
 
     async def test_search_filters_list_view(self, _mock_resolve):
         """Typing in the filter narrows the visible row count in list view."""
@@ -1646,12 +1649,15 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
-                await search.action_submit()
-                for _ in range(10):
-                    await pilot.pause()
-                    if app.screen._list_widget.has_focus:
-                        break
-                assert app.screen._list_widget.has_focus
+                # Enter installs the first match; stop the chain before it
+                # spawns a download worker that would outlive the test.
+                with mock.patch.object(app.screen, "_enqueue_download"):
+                    await search.action_submit()
+                    for _ in range(10):
+                        await pilot.pause()
+                        if app.screen._list_widget.has_focus:
+                            break
+                    assert app.screen._list_widget.has_focus
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """The Chat task tab surfaces the chat featured family as a card.
