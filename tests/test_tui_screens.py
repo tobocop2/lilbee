@@ -3893,6 +3893,18 @@ async def test_chat_input_handler_uses_on_decorator():
     )
 
 
+async def _settle(pilot):
+    """Wait for the bubble to compose, the log to re-lay-out, and the scroll to land.
+
+    A bare ``pause`` covers none of the three, and each one reads back as a
+    plausible number rather than an error: the scroll bindings animate, so
+    ``scroll_y`` samples mid-curve at whatever wall-clock allowed, and a bubble
+    only buffers until ``compose`` hands it a content widget, leaving
+    ``max_scroll_y`` at 0 for an answer grown before that lands.
+    """
+    await pilot.wait_for_scheduled_animations()
+
+
 async def _start_turn(pilot, screen):
     """Ask a question the way the user does, and hand back the log and bubble.
 
@@ -3905,9 +3917,12 @@ async def _start_turn(pilot, screen):
     log = screen.query_one("#chat-log", VerticalScroll)
     with patch.object(screen, "_stream_response"):
         screen._send_message("a question")
-    await pilot.pause()
+    await _settle(pilot)
     widget = screen._active_assistant
     assert widget is not None
+    # Composed, so append_content renders instead of only buffering. Without
+    # this the answer never grows and the scroll assertions all pass vacuously.
+    assert widget._content_widget is not None
     return log, widget
 
 
@@ -3915,7 +3930,7 @@ async def _grow_answer(pilot, widget, paragraphs: int):
     """Render *paragraphs* more of the answer, as a stream's flushes do."""
     widget._last_md_update = 0.0
     widget.append_content("\n\n".join(f"line {i}" for i in range(paragraphs)))
-    await pilot.pause()
+    await _settle(pilot)
 
 
 async def test_chat_log_follows_the_answer_as_it_grows():
@@ -3946,7 +3961,7 @@ async def test_chat_log_stops_following_when_the_user_scrolls_up():
         await _grow_answer(pilot, widget, 80)
 
         screen.action_scroll_up()  # the real binding, not a raw scroll_to
-        await pilot.pause()
+        await _settle(pilot)
         assert log.scroll_y < log.max_scroll_y, "precondition: the reader scrolled up"
 
         await _grow_answer(pilot, widget, 160)
@@ -3963,12 +3978,12 @@ async def test_chat_log_follows_again_once_the_user_returns_to_the_bottom():
         await _grow_answer(pilot, widget, 80)
 
         screen.action_scroll_up()
-        await pilot.pause()
+        await _settle(pilot)
         assert log.scroll_y < log.max_scroll_y
 
         screen._insert_mode = False
         screen.action_vim_scroll_end()  # vim G jumps to the bottom
-        await pilot.pause()
+        await _settle(pilot)
 
         await _grow_answer(pilot, widget, 160)
         assert log.scroll_y == log.max_scroll_y, "following did not resume at the bottom"
@@ -3990,13 +4005,13 @@ async def test_chat_log_does_not_follow_again_from_part_way_back_down():
         was_the_bottom = log.max_scroll_y
 
         screen.action_scroll_up()
-        await pilot.pause()
+        await _settle(pilot)
         await _grow_answer(pilot, widget, 160)
         assert log.max_scroll_y > was_the_bottom, "precondition: the answer outgrew that spot"
 
         # Back to where the bottom used to be -- short of where it is now.
         log.scroll_to(y=was_the_bottom, animate=False)
-        await pilot.pause()
+        await _settle(pilot)
         await _grow_answer(pilot, widget, 160)
 
         assert log.scroll_y < log.max_scroll_y, "following resumed short of the bottom"
@@ -4013,7 +4028,7 @@ async def test_chat_send_message_follows_the_answer_it_is_about_to_get():
 
         # The reader scrolls up during this answer and leaves it there.
         screen.action_scroll_up()
-        await pilot.pause()
+        await _settle(pilot)
         assert log.scroll_y < log.max_scroll_y
 
         # The next question must follow its own answer regardless.
@@ -11573,21 +11588,24 @@ async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
         # the log up to follow it. Anchoring by hand here would mask the bug.
         with patch.object(screen, "_stream_response"):
             screen._send_message("a question")
-        await pilot.pause()
+        await _settle(pilot)
         widget = screen._active_assistant
         assert widget is not None
+        # Composed, so the appends below render rather than silently buffering
+        # and leaving both preconditions to pass against an empty bubble.
+        assert widget._content_widget is not None
 
         # What is rendered mid-stream still fits the pane, so every scroll up to
         # this point is a no-op against a zero-height overflow.
         widget.append_content("intro paragraph")
-        await pilot.pause()
+        await _settle(pilot)
         assert log.max_scroll_y == 0, "precondition: the answer still fits the pane"
         # Hold the debounce open so the rest stays buffered however long the
         # pause above took: a slow host must not quietly turn this into a test
         # of an answer that already overflowed before it finished.
         widget._last_md_update = time.monotonic()
         widget.append_content("\n\n".join(f"answer paragraph {i}" for i in range(300)))
-        await pilot.pause()
+        await _settle(pilot)
         assert log.max_scroll_y == 0, "precondition: the tail is still buffered"
 
         # _finalize_stream runs on the streaming worker thread in production;
@@ -11595,7 +11613,7 @@ async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
         await asyncio.to_thread(
             screen._finalize_stream, widget, ["cv-manual.pdf", "specs.pdf"], ["done"]
         )
-        await pilot.pause()
+        await _settle(pilot)
 
         assert log.scroll_y == log.max_scroll_y, (
             f"answer parked at {log.scroll_y} with the bottom at {log.max_scroll_y}: "
