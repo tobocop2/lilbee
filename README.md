@@ -183,6 +183,10 @@ Point lilbee at a folder of PDFs, notes, ebooks, or code and it builds a searcha
 
 ![chat with an indexed PDF manual: a cited markdown table extracted from the source](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
+Ask it something with a real answer at stake and you get the answer, not a paraphrase of the question. Here it's a vehicle manual, and the trailer is too heavy: lilbee says so, gives the weight it *is* rated for, and cites the page it read that on. The fleet panel on the right is the GPU doing it, on this machine.
+
+![ask whether a car can tow a 3,500 lb boat trailer; lilbee says no, gives the real limits, and cites the manual page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.gif)
+
 ### Already using an MCP-aware agent? Hand setup to it.
 
 If you've already got an MCP-aware coding agent running, it can do the setup: browse the catalog, pull picks, assign them to the embedding / reranker / vision roles, and tune retrieval. No TUI, no config file, no restart. Agents already understand search engines, so the right knobs are obvious to them. See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the workflow and example prompts.
