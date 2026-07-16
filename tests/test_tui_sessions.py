@@ -141,6 +141,34 @@ async def test_disabled_shows_notice_on_the_sessions_tab(sessions, monkeypatch) 
         assert not app.query(SessionsScreen)
 
 
+async def test_the_notice_dismisses_and_never_stacks(sessions, monkeypatch) -> None:
+    """The modal closes by key and by click, and a second ctrl+o never stacks a copy."""
+    from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", False)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.action_toggle_sessions()
+        await pilot.pause()
+        notice = app.screen
+        assert isinstance(notice, NoticeDialog)
+        # A second press while the notice is up must not stack another copy.
+        app.action_toggle_sessions()
+        await pilot.pause()
+        assert app.screen is notice
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, NoticeDialog)
+        # Reopen and close by clicking the pill instead.
+        app.action_toggle_sessions()
+        await pilot.pause()
+        await pilot.click("#notice-dismiss")
+        await pilot.pause()
+        assert not isinstance(app.screen, NoticeDialog)
+
+
 async def test_disabled_does_not_persist(sessions, monkeypatch) -> None:
     """A turn while off is never written to disk; _session_id stays None."""
     from lilbee.core.config import cfg
