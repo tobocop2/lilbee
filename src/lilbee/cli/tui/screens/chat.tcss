@@ -31,13 +31,9 @@ ChatWelcome {
     display: none;
 }
 
-/* Where the model's view of the chat changes. A rule, not a message: nothing was
- * removed from the transcript, so it must not read like a turn. Everything above
- * it is still scrollable; only what the model is sent changed.
- *
- * No content-align: the rich Rule inside centres its own title and draws the line
- * to the full width. The margin is the whole point -- a boundary needs air on
- * both sides or it reads as a caption on the message above it. */
+/* Where the model's view of the chat changes; a rule, not a message. No
+ * content-align (the rich Rule centres itself); the margin keeps it from
+ * reading as a caption on the message above. */
 .compaction-marker {
     width: 100%;
     height: auto;

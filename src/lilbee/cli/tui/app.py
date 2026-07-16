@@ -582,9 +582,7 @@ class LilbeeApp(App[None]):
         # Guard against stacking a second copy if the entry point is hit twice.
         if isinstance(self.screen, NoticeDialog):
             return
-        self.push_screen(
-            NoticeDialog(msg.SESSIONS_DISABLED_TITLE, msg.SESSIONS_DISABLED_MESSAGE)
-        )
+        self.push_screen(NoticeDialog(msg.SESSIONS_DISABLED_TITLE, msg.SESSIONS_DISABLED_MESSAGE))
 
     def action_toggle_sessions(self) -> None:
         """Toggle the Sessions drawer (ctrl+o), or close it if open. No-op on the

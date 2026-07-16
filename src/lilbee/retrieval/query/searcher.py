@@ -32,6 +32,7 @@ from lilbee.retrieval.query.compaction import (
     merge_notes,
     plan_compaction,
     summary_cap,
+    summary_word_budget,
 )
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
@@ -681,10 +682,8 @@ class Searcher:
                 notes.append(note)
                 condensed += len(batch)
             else:
-                # The model could not condense this batch, so those turns are gone
-                # with nothing standing in for them. Count them as stranded, not
-                # condensed: reporting them as summarized would tell the user the
-                # model still knows what it has in fact just lost.
+                # Count what landed, not what was planned: these turns are gone
+                # with nothing standing in for them.
                 stranded += len(batch)
         merged = merge_notes(previous_summary, notes)
         cap = summary_cap(ctx_target)
@@ -697,53 +696,48 @@ class Searcher:
     def _summarize_batch(self, batch: list[ChatMessage], previous_summary: str) -> str:
         """Fold one batch of dropped turns into *previous_summary*.
 
-        A batch that overflows the model's window is split in half and each half
-        folded on its own, rather than failed: the sizing upstream works from a
-        token estimate, an estimate always has a tail, and the cost of the tail
-        here is not a slow call but stranded turns -- they were already dropped
-        from history by the time this runs. Halving is feedback where the
-        estimate is a guess, and it terminates: depth is log2 of the batch.
+        An overflowing batch splits in half and each half folds on its own:
+        batch sizing is estimate-based, and the cost of an estimate miss here
+        is stranded turns, not a slow call. Depth is log2 of the batch.
 
-        Returns *previous_summary* unchanged on any other failure: keeping the
-        older, less complete notes beats dropping those turns on the floor.
+        Returns *previous_summary* unchanged on any other failure: older notes
+        beat dropping the turns on the floor.
         """
         transcript = "\n".join(f"{m['role']}: {m['content']}" for m in batch)
         previous = f"Earlier notes:\n{previous_summary}\n\n" if previous_summary.strip() else ""
-        prompt = COMPACT_PROMPT.format(previous=previous, transcript=transcript)
+        prompt = COMPACT_PROMPT.format(
+            words=summary_word_budget(self._config.chat_n_ctx_target),
+            previous=previous,
+            transcript=transcript,
+        )
         try:
             response = self._provider.chat(
                 [{"role": "user", "content": prompt}],
                 stream=False,
                 options={
                     "num_predict": summary_cap(self._config.chat_n_ctx_target),
-                    # think=False, as every internal utility call here does. A
-                    # thinking model spends the whole num_predict budget
-                    # reasoning, llama.cpp force-closes the block at the limit,
-                    # and strip_reasoning then deletes a syntactically complete
-                    # <think>...</think> in full -- leaving the empty string. The
-                    # turns in the batch are then stranded, having been dropped
-                    # for a summary that was never written.
+                    # A thinking model spends the whole budget in a <think>
+                    # block that llama.cpp force-closes and strip_reasoning
+                    # deletes whole, leaving "" and stranding the batch.
                     "think": False,
-                    # Notes, not prose: the same conversation should fold the
-                    # same way twice.
+                    # Deterministic: the same conversation folds the same way.
                     "temperature": 0,
                 },
             )
             summary = strip_reasoning(response.text).strip()
             if summary:
                 return summary
-            # think=False disables reasoning only on the native llama-server path;
-            # over Ollama, LM Studio, or a cloud API a reasoning model can still
-            # spend the whole budget inside <think> and leave nothing after the
-            # strip. The reasoning is itself a summary of these turns, so fall
-            # back to it rather than strand them. A non-reasoning model never
-            # reaches here: it emits no <think> block, so the strip above returns
-            # its answer directly.
+            # Only the native llama-server path honors think=False; elsewhere a
+            # reasoning model can leave nothing after the strip. Its reasoning
+            # is itself a summary of these turns, so recover it rather than
+            # strand them. Non-reasoning models never reach here.
             reasoning = split_reasoning(response.text).reasoning.strip()
             if reasoning:
                 return reasoning
             log.warning("History compaction returned nothing; keeping the previous summary")
         except ProviderError as exc:
+            # A single message too big for the window cannot split; it falls
+            # through to the warning below.
             if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW and len(batch) > 1:
                 mid = len(batch) // 2
                 first = self._summarize_batch(batch[:mid], previous_summary)
@@ -753,9 +747,8 @@ class Searcher:
                     return merged
             log.warning("History compaction failed; keeping the previous summary", exc_info=True)
         except Exception:
-            # Not debug: the caller strands these turns and tells the user they
-            # were dropped, so the reason has to be in the log by default or the
-            # only account of why is a number on screen.
+            # warning, not debug: the user is told turns were dropped, so the
+            # reason must be in the log by default.
             log.warning("History compaction failed; keeping the previous summary", exc_info=True)
         return previous_summary
 

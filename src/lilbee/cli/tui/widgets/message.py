@@ -76,12 +76,9 @@ class AssistantMessage(Vertical):
     def __init__(self, content: str = "", sources: Sequence[str] = ()) -> None:
         """A live answer bubble, or a finished one restored from a saved session.
 
-        *content* must be given here for a restored turn, never appended after
-        mounting: ``mount()`` is async, so ``compose`` has not run yet and
-        ``append_content``/``finish`` both no-op against a ``_content_widget``
-        that is still None -- the text is dropped and never recovered. Passing it
-        in lets ``compose`` build the widget already populated, which is the same
-        path ``_build_content_widget`` documents for Markdown.
+        A restored turn's *content* must be passed here, not appended after
+        mounting: mount() is async, so compose has not run and appends no-op
+        against a still-None ``_content_widget``, silently dropping the text.
         """
         super().__init__(classes="assistant-message")
         self._reasoning_parts: list[str] = []
@@ -123,10 +120,20 @@ class AssistantMessage(Vertical):
         self.mount(header, before=self._content_widget)
 
     def _show_citations(self, sources: Sequence[str]) -> None:
-        """Render the citation line, or hide it when the turn cited nothing."""
+        """Render the citation pill row, or hide it.
+
+        Hidden when the content already carries its in-text ``Sources:`` list
+        (API clients persist the answer text and the sources array side by
+        side); rendering both stacks two source lists on one bubble, and the
+        in-text list wins because the ``[1]`` citations anchor to it.
+        """
+        # Lazy: formatting transitively imports the store stack, which widget
+        # import must not pay at TUI startup.
+        from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER
+
         if self._citation_widget is None:
             return
-        if sources:
+        if sources and SOURCES_BLOCK_MARKER not in "".join(self._content_parts):
             self._citation_widget.update(_build_citation_content(list(sources)))
         else:
             self._citation_widget.display = False

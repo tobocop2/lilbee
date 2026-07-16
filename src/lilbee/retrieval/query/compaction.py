@@ -22,14 +22,29 @@ from lilbee.retrieval.query.history_window import (
 if TYPE_CHECKING:
     from lilbee.retrieval.query.searcher import ChatMessage
 
+# Kept simple: 0.6B models botch elaborate structured-summary instructions.
+# {words} is filled from summary_word_budget so the ask agrees with the cap.
 COMPACT_PROMPT = (
     "Condense the conversation below into brief factual notes that let an "
     "assistant carry it on. Keep names, numbers, decisions, and anything left "
-    "unresolved; drop pleasantries. Under 150 words. Return ONLY the notes.\n\n"
+    "unresolved; drop pleasantries. Under {words} words. Return ONLY the notes.\n\n"
     "{previous}Conversation:\n{transcript}"
 )
 
-COMPACT_MAX_TOKENS = 320
+# Ceiling on a summary's tokens; ctx/8 governs below it. A tighter ceiling
+# flattens long conversations to a few hundred words even on a 32k window.
+COMPACT_MAX_TOKENS = 1024
+
+
+def summary_word_budget(ctx_target: int) -> int:
+    """The word count the prompt asks for, derived from the token cap.
+
+    Roughly three words per four tokens, so the instruction and ``num_predict``
+    agree: asking for more words than the cap can hold guarantees a truncated
+    final sentence, and asking for far fewer wastes the window.
+    """
+    return summary_cap(ctx_target) * 3 // 4
+
 
 # A summary must never eat the window it exists to protect: at a 2048 target the
 # flat 320-token cap would be a third of the history budget. Scale it down with
@@ -39,11 +54,8 @@ _SUMMARY_MIN_TOKENS = 64
 
 # Rough cost of the instruction wrapper around a batch transcript.
 _PROMPT_OVERHEAD_TOKENS = 64
-# Fraction of the remaining window a batch may claim, covering the worst-case
-# gap between the chars/4 estimate and the server's real count (terse text
-# tokenizes ~1.6x denser) plus the chat template the server adds. A batch that
-# overflows is not merely slow, it strands its turns: the call fails and they
-# were already dropped from history.
+# Fraction of the window a batch may claim: chars/4 under-counts terse text by
+# up to ~1.8x (measured), and an overflowing batch strands its turns.
 _ESTIMATE_SAFETY_FRACTION = 0.6
 # Never build a batch smaller than this, however tight the window.
 _MIN_BATCH_TOKENS = 128
@@ -199,14 +211,9 @@ def batch_overflow(
     A lone turn larger than a whole batch is truncated rather than sent to
     certain failure: half its text summarized beats the entire turn dropped.
     """
-    # The safety factor exists because estimate_tokens is chars/4, a point
-    # estimate with no error bar: terse text ("q63: head bolt torque?")
-    # tokenizes closer to a token per 2.5 characters, and the server wraps the
-    # prompt in a chat template it also counts. Both errors grow with content,
-    # so a fixed pad cannot absorb them. Measured on a 2048-token window: a
-    # batch sized to the raw room reached the server as ~2666 real tokens, the
-    # call was rejected, and every turn in every batch was stranded -- the
-    # summarize call overflowing the very window it was shrinking history for.
+    # Proportional, not a fixed pad: the estimate error and the server-side
+    # chat-template cost both grow with content (a raw-room batch measured
+    # ~2666 real tokens against a 2048 window and stranded every turn).
     room = max(
         _MIN_BATCH_TOKENS,
         int(

@@ -183,6 +183,11 @@ def build_context(results: list[SearchChunk]) -> str:
     return "\n\n".join(f"[{order[r.source]}] ({_context_header(r)})\n{r.chunk}" for r in results)
 
 
+# Grepped by consumers to know an answer carries its own Sources list (the
+# no-results toast; the pill row, which must not stack a second list).
+SOURCES_BLOCK_MARKER = "\n\nSources:\n"
+
+
 def format_sources_block(
     results: list[SearchChunk],
     citations_map: dict[str, list[CitationRecord]] | None = None,
@@ -200,7 +205,7 @@ def format_sources_block(
         f"{i}. {format_source(r, citations=(citations_map or {}).get(r.source))}"
         for i, r in enumerate(sources, 1)
     ]
-    return "\n\nSources:\n\n" + "\n".join(lines)
+    return SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
 
 
 def _extract_cited_indices(text: str) -> set[int]:

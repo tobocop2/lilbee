@@ -488,10 +488,12 @@ def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
 
 @_tool
 def session_add_message(
-    session_id: str, role: str, content: str, sources: list[str] | None = None
+    session_id: str, role: MessageRole, content: str, sources: list[str] | None = None
 ) -> dict[str, Any]:
-    """Append one turn (role user/assistant, content, optional sources) to a session."""
+    """Append one turn to a saved session."""
     try:
+        # Re-coerce: the MCP layer passes the enum, but a raw string still
+        # arrives via direct library calls, and a bad one must error cleanly.
         message = SessionMessage(
             role=MessageRole(role), content=content, sources=tuple(sources or ())
         )
@@ -505,7 +507,7 @@ def session_add_message(
 
 @_tool
 def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
-    """Replace a session's compaction summary (what older turns were folded into)."""
+    """Replace a session's compaction summary."""
     try:
         get_services().session_store.set_summary(session_id, summary)
     except SessionNotFoundError as exc:

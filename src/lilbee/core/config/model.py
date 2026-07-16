@@ -419,15 +419,11 @@ class Config(BaseSettings):
         writable=True,
     )
 
-    # When a conversation outgrows chat_n_ctx_target, condense the older turns
-    # into notes the prompt carries instead of dropping them.
-    #
-    # OFF by default, because it is not free: each firing is a blocking model
-    # call, estimated at 3-8s on a GPU but 19-52s on a CPU-only host, and a pause
-    # that long mid-conversation reads as a hang. The default path costs zero
-    # model calls -- the oldest turns are dropped and the context chip shows the
-    # window filling, so the loss is visible rather than silent. Worth switching
-    # on when the hardware can absorb the call.
+    # Condense turns that outgrow chat_n_ctx_target into carried notes instead
+    # of dropping them. Off: zero model calls; the oldest turns drop and the
+    # context chip shows it. On: each firing blocks on a summarize call
+    # (measured: 1.3-2.5s per 60-turn fold on a datacenter GPU, 0.7-2s on an
+    # 8-core CPU with a 0.6B-4B model).
     chat_compaction: bool = ConfigField(default=False, writable=True)
 
     # Persist conversations and expose the Sessions drawer, tab, and commands.

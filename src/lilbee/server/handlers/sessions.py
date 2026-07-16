@@ -86,9 +86,7 @@ async def add_session_message(
     session_id: str, data: SessionMessageCreateRequest
 ) -> SessionDetailResponse:
     """Append one turn to a conversation and return it, or 404 if unknown."""
-    message = SessionMessage(
-        role=data.role, content=data.content, sources=tuple(data.sources)
-    )
+    message = SessionMessage(role=data.role, content=data.content, sources=tuple(data.sources))
     try:
         _store().add_message(session_id, message)
     except SessionNotFoundError as exc:

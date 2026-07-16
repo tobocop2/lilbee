@@ -79,7 +79,7 @@ from lilbee.data.store import (
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
-from lilbee.retrieval.query import ChatMessage
+from lilbee.retrieval.query import SOURCES_BLOCK_MARKER, ChatMessage
 from lilbee.retrieval.query.compaction import (
     compaction_due,
     foldable,
@@ -323,14 +323,10 @@ class ChatScreen(Screen[None]):
         # The bubble receiving the in-flight response, so a cancel can leave a
         # visible note in it instead of letting the turn die silently.
         self._active_assistant: AssistantMessage | None = None
-        # The question of the turn in flight. A context boundary belongs above
-        # it: compaction runs after the turn is on screen, so mounting the rule
-        # at the end of the log would put it under the question being answered,
-        # reading as though that question had itself fallen out of context.
-        # Outlives its turn, like _active_assistant: the next send overwrites it
-        # and a reset clears it. It must not be cleared when the stream
-        # finalizes, which unblocks the input before it returns and would race
-        # the next turn's question to None.
+        # The live turn's question; a context boundary mounts above it, never
+        # after it. Outlives its turn like _active_assistant (next send
+        # overwrites, reset clears). Never clear it in _finalize_stream: the
+        # input unblocks first, so the clear races the next turn's question.
         self._active_question: UserMessage | None = None
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
@@ -378,10 +374,8 @@ class ChatScreen(Screen[None]):
                 yield ArgHintLine(id="arg-hint")
                 yield ModelBar(id="model-bar")
             yield TaskBar()
-            # The context reading rides the hint band's empty right half rather
-            # than taking a row of its own: it is ambient status like the hint
-            # beside it, and the prompt block was a row taller for four
-            # characters of information.
+            # The context reading shares the hint band instead of costing the
+            # prompt block its own row.
             with Horizontal(id="hint-row"):
                 yield HelpHint(id="help-hint")
                 yield ContextChip(id="context-chip")
@@ -1742,7 +1736,7 @@ class ChatScreen(Screen[None]):
             cfg.chat_mode == ChatMode.SEARCH.value
             and self._embedding_ready()
             and full_response
-            and "\n\nSources:\n" not in full_response
+            and SOURCES_BLOCK_MARKER not in full_response
         ):
             call_from_thread(self, self._notify_no_results)
 
@@ -1775,15 +1769,9 @@ class ChatScreen(Screen[None]):
             summary = self._summary
         budget = self._history_budget()
         if not cfg.chat_compaction:
-            # The default path, and deliberately free: drop exactly what no longer
-            # fits, with no model call at all. Prune to the limit rather than to a
-            # threshold -- dropping costs nothing, so there is no reason to drop
-            # more than necessary. The transcript stays on screen, so without the
-            # marker below the model would just appear to forget it.
-            #
-            # Charge the summary against the same budget: a session compacted on
-            # earlier, faster hardware can carry notes into a run with compaction
-            # switched off.
+            # Default path, deliberately free: prune exactly to the limit, no
+            # model call. The summary is charged against the same budget so a
+            # session compacted on earlier hardware still carries its notes.
             reserved = sum(estimate_tokens(m) for m in summary_messages(summary))
             dropped = overflow(history, max_tokens=max(1, budget - reserved))
             if not dropped:
@@ -1792,10 +1780,7 @@ class ChatScreen(Screen[None]):
                 del self._history[: len(dropped)]
             call_from_thread(self, self._on_history_trimmed, len(dropped))
             return
-        # Compaction on: fire early and clear deep. Folding only the overflow at
-        # the limit would leave the history full, so every later turn would pay a
-        # model call; clearing to notes plus the newest exchanges buys many turns
-        # of headroom for the same one call.
+        # Compaction on: fire early, clear deep (see COMPACT_TRIGGER_FRACTION).
         if not compaction_due(history, summary, max_tokens=budget):
             return
         dropped = foldable(history)
@@ -1850,9 +1835,8 @@ class ChatScreen(Screen[None]):
         as another message. Guarded because the worker can land this after the
         user has navigated off the chat screen.
         """
-        # mount() is async, so a compaction that lands in the same beat as the
-        # question can arrive before the question is really in the log; mounting
-        # before a widget that is not yet a child raises. Appending reads fine.
+        # mount() is async: the anchor may not be in the log yet, and mounting
+        # before a non-child raises. Appending reads fine in that race.
         anchor = self._active_question
         if anchor is not None and not anchor.is_mounted:
             anchor = None

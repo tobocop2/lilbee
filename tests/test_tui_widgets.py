@@ -103,6 +103,35 @@ class TestAssistantMessageAsync:
         assert am._content_widget is not None
         assert am._citation_widget is not None
 
+    async def test_restored_sources_do_not_double_render(self) -> None:
+        """A turn saved by an API client carries the answer text (which already
+        contains its in-text Sources list, with the [1] anchors) AND the
+        structured sources array. Rendering both stacks two source lists on one
+        bubble; the in-text list wins because the citations anchor to it."""
+        from textual.app import App
+
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        answer = "The belt goes 90,000 km [1].\n\nSources:\n\n1. [manual.md](file:///v/manual.md)"
+        both = AssistantMessage(content=answer, sources=("manual.md",))
+        pills_only = AssistantMessage(content="85 Nm.", sources=("manual.md",))
+
+        class _App(App):
+            def compose(self):
+                yield both
+                yield pills_only
+
+        async with _App().run_test() as pilot:
+            await pilot.pause()
+            assert both._citation_widget is not None
+            assert both._citation_widget.display is False, (
+                "content already carries its Sources list; pills must yield"
+            )
+            assert pills_only._citation_widget is not None
+            assert pills_only._citation_widget.display is True, (
+                "structured-only sources still render as pills"
+            )
+
     def test_finishing_a_never_mounted_message_does_not_crash(self) -> None:
         """A turn can end before its bubble reaches the screen.
 

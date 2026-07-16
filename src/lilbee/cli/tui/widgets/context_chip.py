@@ -1,10 +1,7 @@
-"""Live context-window usage, and what compaction is doing about it.
+"""Live context-window usage, and whether a summarize call is in flight.
 
-Two jobs in one chip, because they are the same question from the user's side:
-how much of this conversation can the model still see, and why did it just pause.
-Without the first, the window filling is invisible until turns start vanishing.
-Without the second, compaction is an unexplained freeze -- seconds on a GPU, tens
-of seconds on a CPU-only host, which reads as a hang.
+One chip for both: they are the same question from the user's side -- how much
+can the model still see, and why did it just pause.
 """
 
 from __future__ import annotations
@@ -22,15 +19,10 @@ from lilbee.retrieval.query.compaction import COMPACT_TRIGGER_FRACTION
 
 _CSS_FILE = Path(__file__).with_suffix(".tcss")
 
-# Below this the chip stays quiet: a half-empty window is not news, and a chip
-# that is always shouting is one the eye stops reading.
+# Below this the chip stays quiet: a half-empty window is not news.
 _QUIET_BELOW = 0.5
-# The chip turns amber exactly where compaction decides the window is full, so
-# the warning and the action are the same fact. Duplicating the number here
-# instead would let them drift: lower the trigger and the chip would go amber
-# only after compaction had already fired, which is the gauge lying about the one
-# thing it reports. With compaction off nothing fires, but the same point is
-# still where the oldest turns start being at risk.
+# Linked, not duplicated: amber must mean exactly "where compaction fires",
+# or the gauge lies when the trigger moves.
 _PRESSURE_AT = COMPACT_TRIGGER_FRACTION
 
 
@@ -39,12 +31,9 @@ class ContextChip(Widget):
 
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8")
 
-    # layout=True, not just the default repaint: this chip's width is `auto`, so
-    # its size comes from its text. A repaint redraws inside the box the widget
-    # already has; only a layout recomputes that box. Without this the chip
-    # renders empty at mount (usage 0 -> no text), is measured at zero columns,
-    # and stays invisible forever however much the text changes afterwards.
-    # No watch_ methods either: reactive already does both on change.
+    # layout=True is load-bearing: width is `auto`, and a repaint redraws
+    # inside the already-measured box. Mounted empty (usage 0 -> no text) the
+    # chip measures zero columns and stays invisible without a re-layout.
     usage: reactive[float] = reactive(0.0, layout=True)
     """Fraction of the history budget the conversation currently occupies."""
 
