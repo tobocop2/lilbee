@@ -217,6 +217,54 @@ per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
 from scratch, lint, drafts review, and prune are also available as CLI
 commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 
+## Sessions
+
+Every conversation saves automatically as you chat. There is no save step:
+the first message opens a session, names it after what you asked, and each
+turn is appended as it lands. Quit mid-conversation, come back tomorrow, and
+pick up where you left off.
+
+Three ways in, all keyboard-first:
+
+- **The drawer** (`ctrl+o` or `/sessions`) docks the session list on the left
+  while the chat stays live. Type to filter, `enter` to resume, `^n` for a
+  fresh chat, `^r` to rename, `^d` to delete.
+- **The Sessions tab** is the same list as a full screen, for managing a long
+  backlog.
+- **The shell**: `lilbee sessions list / show / rename / delete` (see
+  [Sessions commands](#sessions-1)).
+
+Resuming restores the whole transcript and switches back to the model the
+conversation used, if it is still installed. If you deleted that model since,
+lilbee keeps your current one and says so instead of failing the resume.
+
+Sessions are plain append-only JSONL files under `<data_dir>/sessions/`, one
+file per conversation — no database, safe to sync or back up like any other
+file. The same surface is available over HTTP and MCP (list, read, create,
+append, rename, delete), so a script or an agent can own a conversation the
+same way the TUI does.
+
+Don't want conversations kept? Turn `sessions_enabled` off in Settings.
+Nothing is written to disk, the `ctrl+o` binding leaves the footer, and the
+Sessions view explains that sessions are off rather than showing an empty
+list.
+
+### When a conversation outgrows the model
+
+A model can only read so much conversation at once. By default, when a chat
+grows past what the model can see, the oldest turns silently stop being sent —
+they stay on screen, and a `context` gauge by the prompt shows the window
+filling before it happens. A quiet rule in the transcript marks the exact
+point where the model's view now begins.
+
+If you'd rather keep the old context than lose it, turn on `chat_compaction`
+in Settings. When the window fills, lilbee folds the oldest turns into a short
+set of notes the model keeps reading, so a long conversation degrades to a
+gist instead of a cliff. The fold is a real model call — the gauge shows
+`condensing…` while it runs — and it costs a moment: with a small model this
+is around a second or two, even on CPU. The transcript on screen and on disk
+is never touched either way; only what the model is sent changes.
+
 ## The engine lifecycle
 
 lilbee loads the model lazily, the way Ollama and LM Studio do: the TUI never
@@ -580,6 +628,19 @@ lilbee memory recall "what language"             # recall facts by relevance
 lilbee memory remove <id>                        # delete a memory by id
 ```
 
+### Sessions
+
+Saved conversations, from the shell. See [Sessions](#sessions) for the full
+model. Ids accept any unique prefix.
+
+```bash
+lilbee sessions list                   # saved conversations, newest first
+lilbee sessions show 3f2a              # print a transcript by id prefix
+lilbee sessions rename 3f2a "Brake specs"
+lilbee sessions delete 3f2a            # asks first; --yes skips the prompt
+lilbee --json sessions show 3f2a       # transcript + compaction summary as JSON
+```
+
 ### Vault and status
 
 ```bash
@@ -609,8 +670,11 @@ lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1
 The surface covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
-configuration (including a defaults endpoint that powers per-setting reset),
-and status/health. The
+saved conversations (`/api/sessions`: list, read, create, append, rename,
+delete, and the compaction summary — everything a client needs to own a
+conversation the way the TUI does; the two reads work with a read-only
+token, writes need a full one), configuration (including a defaults endpoint
+that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the
