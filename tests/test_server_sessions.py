@@ -136,16 +136,12 @@ class TestAppendMessage:
 class TestSetSummary:
     def test_sets_summary(self, client, store):
         session_id = _seed(store)
-        resp = client.put(
-            f"/api/sessions/{session_id}/summary", json={"summary": "folded: 85 Nm"}
-        )
+        resp = client.put(f"/api/sessions/{session_id}/summary", json={"summary": "folded: 85 Nm"})
         assert resp.status_code == 200
         assert client.get(f"/api/sessions/{session_id}").json()["summary"] == "folded: 85 Nm"
 
     def test_unknown_id_404(self, client):
-        assert (
-            client.put("/api/sessions/nope/summary", json={"summary": "x"}).status_code == 404
-        )
+        assert client.put("/api/sessions/nope/summary", json={"summary": "x"}).status_code == 404
 
 
 class TestRename:
