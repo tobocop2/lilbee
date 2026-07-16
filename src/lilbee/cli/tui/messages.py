@@ -536,7 +536,6 @@ MODE_INSERT = "INSERT"
 TASKBAR_HINT = "Press t for Tasks"
 TASKBAR_HINT_INPUT = "Esc then t for Tasks"
 CHAT_REASONING_FINISHED = "reasoning · {tokens} tokens"
-CHAT_SOURCES_LABEL = "sources"
 
 STATUS_DOCS_LOAD_FAILED = "(unable to read store)"
 STATUS_DOCS_EMPTY = "(no documents yet)"
