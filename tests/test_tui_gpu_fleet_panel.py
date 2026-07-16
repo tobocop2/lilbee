@@ -168,6 +168,29 @@ async def test_panel_renders_probe_failure_and_pauses_ticks(
 
 
 @pytest.mark.asyncio
+async def test_panel_keeps_the_failure_when_an_in_flight_probe_lands_late(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stats worker started before the failure landed must not repaint the
+    empty state over the failure message (the set_probe_failed/_apply_stats race)."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_probe_failed("GPU driver did not respond")
+        # Simulate the racing worker's completion callback arriving afterwards.
+        panel._apply_stats({}, {}, {})
+        rendered = str(panel.render())
+        assert "GPU driver did not respond" in rendered
+        assert "no GPUs detected" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_panel_recovers_from_probe_failure_on_set_devices(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -261,6 +261,10 @@ class GpuFleetPanel(Static):
         roles: dict[int, str],
     ) -> None:
         """Update the rendered content with fresh stat data (main thread)."""
+        if self._probe_error is not None:
+            # A stats worker already in flight when the probe failure landed
+            # must not repaint the empty state over the failure message.
+            return
         theme = self._resolve_theme()
         markup = _render_stats(stats, labels, roles, theme, probed=self._probed)
         binary = intel_grant_binary(self._devices, stats)
