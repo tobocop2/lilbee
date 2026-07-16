@@ -15,6 +15,7 @@ from lilbee.app.services import (
     peek_services,
     reset_services,
     set_services,
+    wait_for_hard_exit_teardown,
 )
 
 # The exact signals production installs: (SIGTERM, SIGHUP) on POSIX, SIGTERM alone
@@ -174,3 +175,21 @@ def test_hard_exit_logs_the_received_signal(sig, caplog):
         _join_teardown()
 
     assert any(signal.Signals(sig).name in rec.message for rec in caplog.records)
+
+
+def test_wait_for_hard_exit_teardown_joins_the_running_thread():
+    """serve's lock release must not outrun a signal-driven fleet stop."""
+    finished = threading.Event()
+
+    def slow_teardown() -> None:
+        finished.wait(timeout=5)
+
+    thread = threading.Thread(target=slow_teardown, name="hard-exit-teardown")
+    thread.start()
+    finished.set()
+    wait_for_hard_exit_teardown()
+    assert not thread.is_alive()
+
+
+def test_wait_for_hard_exit_teardown_without_a_teardown_is_a_noop():
+    wait_for_hard_exit_teardown()

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from lilbee.app.services import wait_for_hard_exit_teardown
 from lilbee.cli.app import (
     apply_overrides,
     console,
@@ -170,6 +171,10 @@ def serve(
         server = uvicorn.Server(config)
         asyncio.run(_run_server(server, config, cfg.server_host))
     finally:
+        # A signal-driven shutdown stops the fleet on its own thread; hold the
+        # locks until it finishes so a successor cannot start while this
+        # server's models still occupy memory.
+        wait_for_hard_exit_teardown()
         server_lock.release()
         if scope_hold is not None:
             scope_hold.release()

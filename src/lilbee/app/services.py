@@ -51,6 +51,8 @@ log = logging.getLogger(__name__)
 
 _SIGNAL_EXIT_BASE = 128
 
+_HARD_EXIT_THREAD_NAME = "hard-exit-teardown"
+
 
 @dataclass
 class CrawlerSyncState:
@@ -378,9 +380,20 @@ class _EngineLifecycle:
         """
         del frame
         threading.Thread(
-            target=_teardown_for_signal, args=(signum,), name="hard-exit-teardown"
+            target=_teardown_for_signal, args=(signum,), name=_HARD_EXIT_THREAD_NAME
         ).start()
         raise SystemExit(_SIGNAL_EXIT_BASE + signum)
+
+
+def wait_for_hard_exit_teardown() -> None:
+    """Block until a signal-driven teardown thread (if any) finishes.
+
+    Lets ``serve`` hold its OS locks through the fleet stop, so a successor
+    cannot acquire them while this server's models still occupy memory.
+    """
+    for thread in threading.enumerate():
+        if thread.name == _HARD_EXIT_THREAD_NAME:
+            thread.join()
 
 
 def _teardown_for_signal(signum: int) -> None:
