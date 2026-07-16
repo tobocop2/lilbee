@@ -15,7 +15,6 @@ from textual.widgets import Collapsible, Markdown, Static
 from typing_extensions import override
 
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
 from lilbee.core.config import cfg
 
@@ -79,17 +78,24 @@ class AssistantMessage(Vertical):
         A restored turn's *content* must be passed here, not appended after
         mounting: mount() is async, so compose has not run and appends no-op
         against a still-None ``_content_widget``, silently dropping the text.
+
+        Sources render ONE way: the clickable numbered ``Sources:`` list a live
+        answer carries in its text. A turn arriving with structured *sources*
+        but no in-text list (seeded or written over HTTP/MCP, where the answer
+        text and the sources array are stored side by side) gets the same list
+        synthesized into its content, so a mixed transcript reads uniformly
+        instead of alternating between two citation styles.
         """
         super().__init__(classes="assistant-message")
         self._reasoning_parts: list[str] = []
+        if content and sources:
+            content = _ensure_sources_block(content, sources)
         self._content_parts: list[str] = [content] if content else []
-        self._restored_sources: list[str] = list(sources)
         # A restored turn is finished by definition: it must not raise a spinner.
         self._finished = bool(content)
         self._content_widget: Markdown | Static | None = None
         self._reasoning_widget: Collapsible | None = None
         self._reasoning_static: Static | None = None
-        self._citation_widget: Static | None = None
         self._thinking_header: ThinkingHeader | None = None
         self._last_md_update: float = 0.0
         self._last_reasoning_update: float = 0.0
@@ -100,43 +106,19 @@ class AssistantMessage(Vertical):
         # Built with the restored text (empty for a live turn, which streams in).
         self._content_widget = self._build_content_widget("".join(self._content_parts))
         yield self._content_widget
-        self._citation_widget = Static("", classes="source-citation")
-        yield self._citation_widget
 
     def on_mount(self) -> None:
         """Raise the thinking header, unless this turn is already finished.
 
-        ``compose`` populates ``_content_widget`` before this hook runs.
+        ``compose`` populates ``_content_widget`` before this hook runs. A
+        restored turn's answer is already on screen, so a spinner would claim
+        it is still being written.
         """
-        if self._content_widget is None:
-            return
-        if self._finished:
-            # Restored from a session: the answer is already on screen, so a
-            # spinner would claim it is still being written.
-            self._show_citations(self._restored_sources)
+        if self._content_widget is None or self._finished:
             return
         header = ThinkingHeader()
         self._thinking_header = header
         self.mount(header, before=self._content_widget)
-
-    def _show_citations(self, sources: Sequence[str]) -> None:
-        """Render the citation pill row, or hide it.
-
-        Hidden when the content already carries its in-text ``Sources:`` list
-        (API clients persist the answer text and the sources array side by
-        side); rendering both stacks two source lists on one bubble, and the
-        in-text list wins because the ``[1]`` citations anchor to it.
-        """
-        # Lazy: formatting transitively imports the store stack, which widget
-        # import must not pay at TUI startup.
-        from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER
-
-        if self._citation_widget is None:
-            return
-        if sources and SOURCES_BLOCK_MARKER not in "".join(self._content_parts):
-            self._citation_widget.update(_build_citation_content(list(sources)))
-        else:
-            self._citation_widget.display = False
 
     def _build_content_widget(self, text: str = "") -> Markdown | Static:
         """Create the content widget based on the current rendering mode.
@@ -217,11 +199,15 @@ class AssistantMessage(Vertical):
             self.refresh()
 
     def finish(self, sources: list[str] | None = None) -> None:
-        """Mark response as complete and show citations."""
+        """Mark response as complete, folding any structured *sources* into the
+        answer's own ``Sources:`` list (live RAG answers already carry one)."""
         self._finished = True
         # Always retire the standalone header on finish; the reasoning fold
         # (if mounted) carries the post-stream title.
         self._dismiss_thinking_header()
+        if sources and self._content_parts:
+            joined = _ensure_sources_block("".join(self._content_parts), sources)
+            self._content_parts = [joined]
         if self._content_widget is not None and self._content_parts:
             self._set_content(self._content_widget, "".join(self._content_parts))
             self.refresh()
@@ -232,8 +218,6 @@ class AssistantMessage(Vertical):
             self._reasoning_widget.remove_class(_REASONING_STREAMING_CLASS)
             self._reasoning_widget.title = msg.CHAT_REASONING_FINISHED.format(tokens=token_count)
             self._reasoning_widget.collapsed = True
-
-        self._show_citations(sources or [])
 
     def _mount_reasoning_collapsible(self) -> None:
         """Mount the reasoning Collapsible with the streaming-state class.
@@ -271,10 +255,16 @@ class AssistantMessage(Vertical):
         self._thinking_header = None
 
 
-def _build_citation_content(sources: list[str]) -> Content:
-    """Build a 'sources: pill pill pill' content line from source paths."""
-    parts: list[Content] = [Content.styled(msg.CHAT_SOURCES_LABEL, "$text-muted")]
-    for src in sources:
-        parts.append(Content("  "))
-        parts.append(pill(Path(src).name, "$surface-lighten-2", "$text"))
-    return Content.assemble(*parts)
+def _ensure_sources_block(content: str, sources: Sequence[str]) -> str:
+    """Append the same numbered, clickable ``Sources:`` list a live answer
+    carries, unless *content* already ends in one. One citation rendering
+    everywhere: a transcript mixing TUI-saved and API-saved turns must not
+    alternate styles."""
+    # Lazy: formatting transitively imports the store stack, which widget
+    # import must not pay at TUI startup.
+    from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER, source_markdown_link
+
+    if SOURCES_BLOCK_MARKER in content:
+        return content
+    lines = [f"{i}. {source_markdown_link(s)}" for i, s in enumerate(sources, 1)]
+    return content.rstrip() + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)

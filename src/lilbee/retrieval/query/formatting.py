@@ -128,14 +128,21 @@ def _location_suffix(result: SearchChunk) -> str:
     return ""
 
 
+def source_markdown_link(source: str) -> str:
+    """A bare source name as the same clickable ``[label](file-url)`` markdown a
+    live answer's Sources block uses; the plain label when no path resolves.
+    Public so restored transcripts render sources identically to live ones."""
+    label = _source_label(source)
+    url = _source_file_url(source)
+    return f"[{label}]({url})" if url else label
+
+
 def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
     """Format a source as a clickable, readable citation: a ``[label](file-url)``
     markdown link plus any page/line locator. Web docs render as ``host · slug``;
     wiki chunks append their indented transitive citations.
     """
-    label = _source_label(result.source)
-    url = _source_file_url(result.source)
-    head = f"[{label}]({url})" if url else label
+    head = source_markdown_link(result.source)
     if result.chunk_type is ChunkType.WIKI and citations:
         return "\n".join([head, *(_format_citation(c) for c in citations)])
     return f"{head}{_source_locator(result)}"

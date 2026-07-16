@@ -54,10 +54,6 @@ ChatWelcome {
     height: auto;
 }
 
-.source-citation {
-    padding: 0 1;
-    color: $text-muted;
-}
 
 .section-header {
     text-style: bold underline;
