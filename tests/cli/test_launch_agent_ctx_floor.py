@@ -51,9 +51,7 @@ def _run_launcher_capturing(monkeypatch) -> dict:
     monkeypatch.setattr(launcher_mod, "ensure_server_running", fake_ensure)
     monkeypatch.setattr(launcher_mod, "installed_chat_model_refs", lambda: [])
     monkeypatch.setattr(launcher_mod, "wait_for_chat_warm", lambda _p: True)
-    monkeypatch.setattr(
-        launcher_mod.subprocess, "run", lambda *_a, **_k: MagicMock(returncode=0)
-    )
+    monkeypatch.setattr(launcher_mod.subprocess, "run", lambda *_a, **_k: MagicMock(returncode=0))
 
     fake = MagicMock()
     fake.name = "opencode"
