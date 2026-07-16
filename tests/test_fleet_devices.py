@@ -162,6 +162,7 @@ def test_probe_returns_empty_on_subprocess_failure(monkeypatch: pytest.MonkeyPat
     assert probe.output == ""
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="shell-script fake binary")
 def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
     # End to end through Popen: a real script's stdout is parsed into devices.
     script = tmp_path / "llama-server"
@@ -169,6 +170,15 @@ def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
     script.chmod(0o755)
     probe = probe_devices(script)
     assert [d.index for d in probe.devices] == [0, 1]
+
+
+def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _HealthyProc:
+        def communicate(self, timeout: float | None = None) -> tuple[str, None]:
+            return (_CUDA_LISTING, None)
+
+    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _HealthyProc())
+    assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == _CUDA_LISTING
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -190,7 +200,11 @@ def test_probe_abandons_an_unreapable_child(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A child that survives SIGKILL (uninterruptible driver I/O) is abandoned
-    after a bounded reap instead of blocking the caller forever."""
+    after a bounded reap instead of blocking the caller forever.
+
+    The POSIX group-kill path is forced (repo pattern: simulate the platform)
+    so the same lines are exercised on every CI host, Windows included.
+    """
 
     class _WedgedProc:
         pid = 12345
@@ -199,7 +213,9 @@ def test_probe_abandons_an_unreapable_child(
             raise subprocess.TimeoutExpired(cmd="llama-server", timeout=timeout or 0)
 
     monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _WedgedProc())
+    monkeypatch.setattr(dev_mod.os, "name", "posix")
     monkeypatch.setattr(dev_mod.os, "killpg", lambda *_a: None, raising=False)
+    monkeypatch.setattr(dev_mod.signal, "SIGKILL", 9, raising=False)
     monkeypatch.setattr(dev_mod, "_PROBE_KILL_WAIT_S", 0.01)
     with caplog.at_level("WARNING"), pytest.raises(ProviderError, match="did not respond"):
         probe_devices(Path("/bin/llama-server"), timeout_s=0.01)
