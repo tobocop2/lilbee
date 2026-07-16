@@ -258,7 +258,15 @@ class TestSearch:
         assert any("specs.md" in s for s in sources), f"Expected specs.md in {sources}"
 
 
+@pytest.mark.timeout(300)
 class TestAsk:
+    """Full RAG asks: a sync (embed everything) plus retrieval plus a chat
+    generation, the heaviest work in the suite. The 180s default has been
+    exhausted by a slow virtualized macOS runner mid-teardown with the test
+    itself passing, so these opt in to more headroom; a genuine hang still
+    dies well short of the job timeout.
+    """
+
     def test_ask_known_fact(self, isolated_env, sync_with_docs):
         sync_with_docs()
         result = runner.invoke(app, ["--json", "ask", "What is the oil capacity?"])
