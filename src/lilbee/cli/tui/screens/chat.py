@@ -116,26 +116,17 @@ fraction so the assembled prompt never approaches ``n_ctx`` and the chat
 server never rejects the request for exceeding the context window.
 """
 
-# Auto-follow tolerance, in lines: the user counts as "at the bottom" within
-# this many lines of it, so a tiny stray scroll doesn't disable auto-follow and
-# scrolling back near the bottom re-engages it.
-_AUTO_SCROLL_TAIL_LINES = 5
-
 # Coalesce per-token UI updates into ~50 ms windows. Tiny reasoning models can
 # emit 100+ tokens/sec; one ``call_from_thread`` per token saturates Textual's
 # message queue and makes key events visibly lag.
 _STREAM_FLUSH_INTERVAL = 0.05
 
-# Auto-scroll throttle. ~6 fps so heavy token streams don't peg the renderer.
-_STREAM_SCROLL_INTERVAL = 0.15
-
 
 @dataclass
 class _StreamTimings:
-    """Last-fired monotonic timestamps for the stream flush and auto-scroll."""
+    """Last-fired monotonic timestamp for the stream flush."""
 
     last_flush: float
-    last_scroll: float = 0.0
 
 
 # ``/crawl`` command flags.
@@ -326,8 +317,6 @@ class ChatScreen(Screen[None]):
         self._sync_active: bool = False
         self._input_history: list[str] = []
         self._history_index: int = -1
-        self._tail_scroll_y: float = 0.0
-        self._auto_follow: bool = True
         # The warm tip is worth one toast per session, on the first prompt that
         # has to wait out a cold engine load.
         self._warm_tip_shown: bool = False
@@ -1367,11 +1356,9 @@ class ChatScreen(Screen[None]):
         assistant_msg = AssistantMessage()
         self._active_assistant = assistant_msg
         log.mount(assistant_msg)
-        log.scroll_end(animate=False)
         # A fresh turn always follows its own answer, even if the user had
-        # scrolled up during the previous response.
-        self._auto_follow = True
-        self._tail_scroll_y = 0.0
+        # scrolled up during the previous response and released the anchor.
+        log.anchor()
 
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
@@ -1706,7 +1693,7 @@ class ChatScreen(Screen[None]):
                 break
             try:
                 self._buffer_token(token, reason_buf, content_buf, response_parts)
-                self._maybe_flush_and_scroll(flush, timings)
+                self._maybe_flush(flush, timings)
             except Exception:
                 break  # App shutting down (Ctrl-C) -- stop streaming
         with contextlib.suppress(Exception):
@@ -1726,15 +1713,14 @@ class ChatScreen(Screen[None]):
             response_parts.append(token.content)
             content_buf.append(token.content)
 
-    def _maybe_flush_and_scroll(self, flush: Callable[[], None], timings: _StreamTimings) -> None:
-        """Run *flush* and the auto-scroll on their respective intervals."""
+    def _maybe_flush(self, flush: Callable[[], None], timings: _StreamTimings) -> None:
+        """Run *flush* on its interval. The chat log is anchored, so Textual
+        keeps the answer's tail in view as it grows without a scroll of ours.
+        """
         now = time.monotonic()
         if now - timings.last_flush >= _STREAM_FLUSH_INTERVAL:
             flush()
             timings.last_flush = now
-        if now - timings.last_scroll >= _STREAM_SCROLL_INTERVAL:
-            call_from_thread(self, self._scroll_to_bottom)
-            timings.last_scroll = now
 
     def _finalize_stream(
         self, widget: AssistantMessage, sources: list[str], response_parts: list[str]
@@ -1752,7 +1738,6 @@ class ChatScreen(Screen[None]):
             self._persist_assistant_turn(full_response, sources)
             call_from_thread(self, self._refresh_context_usage)
         call_from_thread(self, widget.finish, sources)
-        call_from_thread(self, self._scroll_to_bottom)
         if (
             cfg.chat_mode == ChatMode.SEARCH.value
             and self._embedding_ready()
@@ -1913,22 +1898,6 @@ class ChatScreen(Screen[None]):
                 msg.CHAT_COMPACTED_STRANDED_TOAST if stranded else msg.CHAT_COMPACTED_TOAST,
                 severity="warning",
             )
-
-    def _scroll_to_bottom(self) -> None:
-        log_widget = self._chat_log
-        # Re-engage auto-follow when the user is at the live bottom; disengage
-        # when they scroll up from where the last auto-scroll parked them. The
-        # disengage test compares against that parked position, not the live
-        # max_scroll_y: content is appended between scroll ticks, so max_scroll_y
-        # races ahead of a parked scroll_y, and a live-gap test would read that
-        # as a scroll-up and stop auto-follow for the rest of the response.
-        if log_widget.scroll_y >= log_widget.max_scroll_y - _AUTO_SCROLL_TAIL_LINES:
-            self._auto_follow = True
-        elif log_widget.scroll_y < self._tail_scroll_y - _AUTO_SCROLL_TAIL_LINES:
-            self._auto_follow = False
-        if self._auto_follow:
-            log_widget.scroll_end(animate=False)
-            self._tail_scroll_y = log_widget.max_scroll_y
 
     def action_scroll_up(self) -> None:
         self._chat_log.scroll_page_up()

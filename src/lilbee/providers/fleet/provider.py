@@ -794,6 +794,14 @@ class FleetProvider:
                     timeout=_request_timeout_s(launch.weights_bytes),
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
+                    # A cold embed replica 429s bulk ingest until its slots load; wait
+                    # out the same cold-load budget llama-swap keeps it alive for so a
+                    # burst never drops files while the server is legitimately warming.
+                    embed_busy_deadline_s=(
+                        cold_load_timeout_s(launch.weights_bytes)
+                        if role is WorkerRole.EMBED
+                        else None
+                    ),
                 )
                 for launch in role_launches
             ]
