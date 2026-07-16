@@ -65,10 +65,16 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
     if found is not None:
         return Path(found)
 
-    raise ProviderError(
-        f"{tool.value} binary not found. {_INSTALL_HINT}",
-        kind=ProviderErrorKind.NOT_FOUND,
+    # Only llama-server carries NOT_FOUND: it marks the engine-less host that
+    # legitimately serves nothing. A missing sibling tool (gguf-parser) must not
+    # take that kind, or the sizing fallback would misreport it as a model that
+    # isn't installed.
+    kind = (
+        ProviderErrorKind.NOT_FOUND
+        if tool is EngineTool.LLAMA_SERVER
+        else ProviderErrorKind.UNKNOWN
     )
+    raise ProviderError(f"{tool.value} binary not found. {_INSTALL_HINT}", kind=kind)
 
 
 def resolve_llama_server() -> Path:

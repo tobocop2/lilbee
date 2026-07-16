@@ -128,6 +128,24 @@ def test_llama_server_raises_with_install_hint_when_not_found(
         resolve_llama_server()
 
 
+def test_missing_llama_server_is_not_found_but_aux_tools_are_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the llama-server resolution carries NOT_FOUND (the quiet engine-less
+    host path). A missing gguf-parser must not, or the sizing fallback would
+    misreport it as a model that isn't installed."""
+    from lilbee.providers.base import ProviderErrorKind
+
+    cfg.llama_server_path = ""
+    monkeypatch.setattr(_WHICH, lambda _name: None)
+    with pytest.raises(ProviderError) as server_exc:
+        resolve_llama_server()
+    assert server_exc.value.kind is ProviderErrorKind.NOT_FOUND
+    with pytest.raises(ProviderError) as parser_exc:
+        resolve_gguf_parser()
+    assert parser_exc.value.kind is ProviderErrorKind.UNKNOWN
+
+
 def test_aux_tools_ignore_llama_server_path_and_use_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
