@@ -160,6 +160,48 @@ SESSIONS_DELETED = "Deleted · {title}"
 SESSIONS_DELETE_CONFIRM_TITLE = "Delete session"
 SESSIONS_DELETE_CONFIRM = "Delete “{title}”? This cannot be undone."
 SESSIONS_HINT = "↵ resume   ^n new   ^r rename   ^d delete   esc close"
+# The context chip: how much of this chat the model can still see.
+#
+# "context", not "memory": lilbee already has a Memory feature (/memories, the
+# Memory settings group), so "memory 85%" reads as though those were 85% full.
+# The jargon was never the problem; the collision was.
+CONTEXT_CHIP_USAGE = "context {percent}%"
+# Only when compaction is off and the window is nearly full: say what is about to
+# happen, not what to do. The user can still act (turn compaction on, or ask the
+# thing they care about now), which is what makes it worth saying at all. With
+# compaction on there is nothing to decide, so the plain percentage stands.
+CONTEXT_CHIP_USAGE_DROPPING = "context {percent}% · dropping soon"
+CONTEXT_CHIP_COMPACTING = "condensing…"
+CONTEXT_CHIP_TOOLTIP = (
+    "How much of this chat still fits in the model's context. Older turns drop out "
+    "when it fills; they stay on screen but the model stops seeing them. Turn on "
+    "chat_compaction in Settings to condense them into a summary instead."
+)
+
+# Rules drawn in the log where the model's view of the chat changes. The
+# transcript above them stays whole and scrollable, so every one of these is
+# about what the model is *sent*, never about deleting anything.
+#
+# One shape for the family -- "N earlier messages <what happened>" -- so a reader
+# learns it once instead of parsing three sentences about one idea. These are
+# titles for a rich Rule, which draws the line out to the full width itself: no
+# dashes belong in the strings.
+CHAT_COMPACTED = "{count} earlier messages condensed to a summary"
+CHAT_TRIMMED = "{count} earlier messages dropped from context"
+# Turns that fell out with no summary standing in for them: this model's context
+# is too small to carry that much conversation, however it is condensed. Say so,
+# or the model just looks like it forgot for no reason.
+CHAT_COMPACTION_STRANDED = "{count} more dropped · too much for this context"
+
+CHAT_COMPACTED_TOAST = "The context filled up, so earlier turns were condensed to keep them."
+CHAT_TRIMMED_TOAST = (
+    "The chat outgrew this model's context, so earlier turns dropped out of what it "
+    "can see. Turn on chat_compaction in Settings to condense them instead."
+)
+CHAT_COMPACTED_STRANDED_TOAST = (
+    "This model's context is too small for the whole conversation. Recent turns were "
+    "condensed; older ones were dropped."
+)
 CMD_THEME_UNKNOWN = "No theme called {name}. Themes: {names}"
 CMD_WIKI_DISABLED = "Wiki is disabled (set wiki = true in settings)"
 TASK_NAME_CRAWL = "Crawl {url}"
@@ -499,7 +541,10 @@ TASKBAR_STARTING_WORKERS = "Starting {labels} workers..."
 TASKBAR_WARM = "warming up chat · {detail}"
 TASKBAR_WARM_STARTING = "starting"
 TASKBAR_WARM_READING = "reading weights {pct}%"
-TASKBAR_WARM_LOADING = "almost ready"
+# Names the phase, like its two siblings above. "almost ready" predicted a
+# finish time the engine has not promised, and was the one phase saying nothing
+# about what is happening.
+TASKBAR_WARM_LOADING = "loading the engine"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"

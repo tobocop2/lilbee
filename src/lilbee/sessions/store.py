@@ -3,8 +3,10 @@
 Each session is one ``<id>.jsonl`` file under ``cfg.data_dir/sessions``. The file
 is a strictly append-only event log: one JSON object per line, appended and
 fsynced, never rewritten. Event types are ``meta`` (first line), ``title``
-(newest wins, so rename appends rather than rewrites), and ``message``. The only
-corruption an append log can suffer is a torn final line, which the reader skips.
+(newest wins, so rename appends rather than rewrites), ``message``, and
+``summary`` (newest wins; compaction's condensed view of the turns that no
+longer fit the prompt). The only corruption an append log can suffer is a torn
+final line, which the reader skips.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ class SessionEventType(StrEnum):
     META = "meta"
     TITLE = "title"
     MESSAGE = "message"
+    SUMMARY = "summary"
 
 
 class MessageRole(StrEnum):
@@ -78,6 +81,12 @@ class Session:
 
     meta: SessionMeta
     messages: tuple[SessionMessage, ...]
+    # Rolling summary of the turns compaction has folded away, empty until the
+    # conversation first outgrows the prompt budget. It lives here rather than on
+    # the meta because only replaying a session needs it: listing does not, and
+    # carrying a paragraph per session would bloat the drawer's hot path and
+    # every HTTP/MCP list payload.
+    summary: str = ""
 
 
 class SessionNotFoundError(Exception):
@@ -119,6 +128,8 @@ class SessionStore:
 
     def __init__(self, clock: Callable[[], datetime] | None = None) -> None:
         self._clock = clock or (lambda: datetime.now(UTC))
+        # path -> (size, mtime, meta) from the last fold of that file; see _meta_for.
+        self._meta_cache: dict[Path, tuple[int, float, SessionMeta]] = {}
 
     @property
     def _dir(self) -> Path:
@@ -193,27 +204,88 @@ class SessionStore:
             {"type": SessionEventType.TITLE, "title": title, "source": source, "ts": self._now()},
         )
 
+    def set_summary(self, session_id: str, summary: str) -> None:
+        """Append a summary event; the newest summary wins on read.
+
+        Compaction folds the oldest turns into a summary once they no longer fit
+        the prompt. The messages themselves stay in the log untouched: the
+        transcript the user scrolls is always complete, and only what is fed to
+        the model is condensed.
+        """
+        self._write_event(
+            self._require(session_id),
+            {"type": SessionEventType.SUMMARY, "summary": summary, "ts": self._now()},
+        )
+
     def delete(self, session_id: str) -> None:
         """Remove a session's file."""
         self._require(session_id).unlink()
 
     def get(self, session_id: str) -> Session:
         """Replay a session's log into its reconstructed view."""
-        return self._fold(session_id, self._require(session_id))
+        meta, messages, summary = self._replay(
+            session_id, self._require(session_id), collect_messages=True
+        )
+        return Session(meta=meta, messages=messages, summary=summary)
 
     def list(self) -> list[SessionMeta]:
-        """All sessions' metadata, newest first."""
+        """All sessions' metadata, newest first.
+
+        Listing replays every event of every session, so it is the one hot path
+        here: the drawer runs it on open. Messages are not materialised (only
+        counted), and each file's meta is memoised against its size and mtime so
+        reopening a vault that has not changed costs one stat() per session.
+        """
         if not self._dir.exists():
             return []
-        metas = [self._fold(path.stem, path).meta for path in self._dir.glob("*.jsonl")]
+        paths = list(self._dir.glob("*.jsonl"))
+        metas = [meta for meta in (self._meta_for(path) for path in paths) if meta is not None]
+        # Drop cache entries for sessions that no longer exist, so a long-lived
+        # store does not pin the meta of every session ever deleted.
+        live = {path for path in paths}
+        self._meta_cache = {p: v for p, v in self._meta_cache.items() if p in live}
         return sorted(metas, key=lambda meta: (meta.updated_at, meta.id), reverse=True)
 
-    def _fold(self, session_id: str, path: Path) -> Session:
+    def _meta_for(self, path: Path) -> SessionMeta | None:
+        """Meta for one session file, reusing the last fold when it is unchanged.
+
+        The log is append-only, so any new event grows the file: size plus mtime
+        is enough to notice a change. A file that grows between the stat and the
+        read is simply re-folded on the next list(), never served stale.
+
+        Returns None when the file goes away underneath us, which is routine: the
+        CLI or another surface can delete a session while the drawer is listing.
+        Reading it instead would raise straight out of list().
+        """
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        cached = self._meta_cache.get(path)
+        if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime:
+            return cached[2]
+        try:
+            meta = self._replay(path.stem, path, collect_messages=False)[0]
+        except OSError:
+            return None
+        self._meta_cache[path] = (stat.st_size, stat.st_mtime, meta)
+        return meta
+
+    def _replay(
+        self, session_id: str, path: Path, *, collect_messages: bool
+    ) -> tuple[SessionMeta, tuple[SessionMessage, ...], str]:
+        """Fold a session's event log into its meta, messages and summary.
+
+        ``collect_messages=False`` is for listing, which needs only the count:
+        building a SessionMessage per message across a whole vault is pure waste.
+        """
         created_at = ""
         model_ref = ""
         scope = ""
         title = UNTITLED_SESSION_TITLE
         updated_at = ""
+        summary = ""
+        message_count = 0
         messages: list[SessionMessage] = []
         for event in self._iter_events(path):
             ts = event.get("ts", "")
@@ -225,8 +297,12 @@ class SessionStore:
                 scope = event["scope"]
             elif event_type == SessionEventType.TITLE:
                 title = event["title"]
+            elif event_type == SessionEventType.SUMMARY:
+                summary = event["summary"]
             elif event_type == SessionEventType.MESSAGE:
-                messages.append(_message_from_event(event, ts))
+                message_count += 1
+                if collect_messages:
+                    messages.append(_message_from_event(event, ts))
         meta = SessionMeta(
             id=session_id,
             title=title,
@@ -234,6 +310,6 @@ class SessionStore:
             updated_at=updated_at,
             model_ref=model_ref,
             scope=scope,
-            message_count=len(messages),
+            message_count=message_count,
         )
-        return Session(meta=meta, messages=tuple(messages))
+        return meta, tuple(messages), summary

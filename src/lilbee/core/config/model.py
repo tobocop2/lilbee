@@ -419,6 +419,17 @@ class Config(BaseSettings):
         writable=True,
     )
 
+    # When a conversation outgrows chat_n_ctx_target, condense the older turns
+    # into notes the prompt carries instead of dropping them.
+    #
+    # OFF by default, because it is not free: each firing is a blocking model
+    # call, estimated at 3-8s on a GPU but 19-52s on a CPU-only host, and a pause
+    # that long mid-conversation reads as a hang. The default path costs zero
+    # model calls -- the oldest turns are dropped and the context chip shows the
+    # window filling, so the loss is visible rather than silent. Worth switching
+    # on when the hardware can absorb the call.
+    chat_compaction: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM

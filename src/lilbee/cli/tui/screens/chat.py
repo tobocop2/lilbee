@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.rule import Rule
 from textual import events, getters, on, work
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.dom import DOMNode
@@ -56,6 +57,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
     path_completion_prefix,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.context_chip import ContextChip
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
@@ -78,7 +80,14 @@ from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
 from lilbee.retrieval.query import ChatMessage
-from lilbee.retrieval.query.history_window import windowed_history
+from lilbee.retrieval.query.compaction import (
+    compaction_due,
+    foldable,
+    overflow,
+    prompt_history,
+    summary_messages,
+)
+from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.progress import (
     EventType,
@@ -298,6 +307,9 @@ class ChatScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._history: list[ChatMessage] = []
+        # Rolling summary of the turns compaction has folded out of _history.
+        # Guarded by _history_lock alongside the turns it stands in for.
+        self._summary = ""
         self._history_lock = threading.Lock()
         # The saved session this conversation persists to. None until the first
         # user turn creates one; reset to None on /clear so the next turn opens a
@@ -322,6 +334,15 @@ class ChatScreen(Screen[None]):
         # The bubble receiving the in-flight response, so a cancel can leave a
         # visible note in it instead of letting the turn die silently.
         self._active_assistant: AssistantMessage | None = None
+        # The question of the turn in flight. A context boundary belongs above
+        # it: compaction runs after the turn is on screen, so mounting the rule
+        # at the end of the log would put it under the question being answered,
+        # reading as though that question had itself fallen out of context.
+        # Outlives its turn, like _active_assistant: the next send overwrites it
+        # and a reset clears it. It must not be cleared when the stream
+        # finalizes, which unblocks the input before it returns and would race
+        # the next turn's question to None.
+        self._active_question: UserMessage | None = None
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -368,7 +389,13 @@ class ChatScreen(Screen[None]):
                 yield ArgHintLine(id="arg-hint")
                 yield ModelBar(id="model-bar")
             yield TaskBar()
-            yield HelpHint(id="help-hint")
+            # The context reading rides the hint band's empty right half rather
+            # than taking a row of its own: it is ambient status like the hint
+            # beside it, and the prompt block was a row taller for four
+            # characters of information.
+            with Horizontal(id="hint-row"):
+                yield HelpHint(id="help-hint")
+                yield ContextChip(id="context-chip")
             yield Footer()
 
     def on_mount(self) -> None:
@@ -793,8 +820,12 @@ class ChatScreen(Screen[None]):
         self.streaming = False
         self._chat_log.remove_children()
         self._active_assistant = None
+        self._active_question = None
         with self._history_lock:
             self._history.clear()
+            # A new conversation inherits nothing, least of all the last one's
+            # summary: carrying it would leak the old chat into the new prompt.
+            self._summary = ""
         self._session_id = None
 
     def _cmd_crawl(self, args: str) -> None:
@@ -1327,7 +1358,9 @@ class ChatScreen(Screen[None]):
         log = self._chat_log
         with contextlib.suppress(NoMatches):
             log.query_one("#chat-welcome", ChatWelcome).remove()
-        log.mount(UserMessage(text))
+        question = UserMessage(text)
+        log.mount(question)
+        self._active_question = question
 
         # The assistant bubble owns its own ThinkingHeader animator until
         # the first reasoning or content token swaps it out.
@@ -1403,15 +1436,19 @@ class ChatScreen(Screen[None]):
         self._session_id = session_id
         for message in session.messages:
             self._render_restored_message(message)
-        # Render every message to the log, but window what feeds the prompt: a
-        # long resumed session must not overflow a small model's context on the
-        # first turn (the searcher uses history as-is; only chat windows it).
+        # Load the whole transcript and the summary it was compacted with. What
+        # does not fit is folded into the summary by _compact_history on the next
+        # turn, off the UI thread; windowing it away here would silently lose the
+        # turns between the stored summary and the window, which is precisely
+        # what a resumed conversation must not do.
         loaded: list[ChatMessage] = [
             {"role": message.role.value, "content": message.content} for message in session.messages
         ]
         with self._history_lock:
-            self._history = self._window_history(loaded)
+            self._history = loaded
+            self._summary = session.summary
         self._restore_session_model(session.meta.model_ref)
+        self._refresh_context_usage()
         self._chat_log.scroll_end(animate=False)
         self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
 
@@ -1449,10 +1486,10 @@ class ChatScreen(Screen[None]):
         if message.role == MessageRole.USER:
             log.mount(UserMessage(message.content))
             return
-        assistant_msg = AssistantMessage()
-        log.mount(assistant_msg)
-        assistant_msg.append_content(message.content)
-        assistant_msg.finish(list(message.sources))
+        # Constructed complete, not appended-to after mounting: mount() is async,
+        # so append_content/finish would both no-op against a content widget that
+        # compose has not built yet, and the answer would render empty.
+        log.mount(AssistantMessage(content=message.content, sources=list(message.sources)))
 
     @work(thread=True)
     def _stream_response(
@@ -1471,8 +1508,12 @@ class ChatScreen(Screen[None]):
         try:
             if not self._await_chat_engine(widget):
                 return
+            self._compact_history()
             with self._history_lock:
-                history_snapshot = self._history[:-1]
+                # [:-1] drops the question, which ask_stream takes separately.
+                recent = self._history[:-1]
+                summary = self._summary
+            history_snapshot = prompt_history(recent, summary, max_tokens=self._history_budget())
             stream = get_services().searcher.ask_stream(
                 question, history=history_snapshot, chunk_type=chunk_type
             )
@@ -1701,8 +1742,10 @@ class ChatScreen(Screen[None]):
         if full_response:
             with self._history_lock:
                 self._history.append({"role": "assistant", "content": full_response})
-                self._trim_history()
+            # No trim here: the next turn compacts before it builds its prompt, so
+            # trimming now would drop turns without folding them into the summary.
             self._persist_assistant_turn(full_response, sources)
+            call_from_thread(self, self._refresh_context_usage)
         call_from_thread(self, widget.finish, sources)
         call_from_thread(self, self._scroll_to_bottom)
         if (
@@ -1716,20 +1759,155 @@ class ChatScreen(Screen[None]):
     def _notify_no_results(self) -> None:
         self.notify(msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning")
 
-    def _trim_history(self) -> None:
-        """Window history to a token budget in place. Caller must hold _history_lock."""
-        self._history[:] = self._window_history(self._history)
-
     @staticmethod
-    def _window_history(history: list[ChatMessage]) -> list[ChatMessage]:
-        """Drop oldest turns until history fits the per-turn token budget.
+    def _history_budget() -> int:
+        """Token budget for everything this conversation carries into the prompt.
 
-        The budget is a fraction of ``cfg.chat_n_ctx_target`` so the assembled
-        prompt (system + history + RAG + user) stays under the loaded model's
-        ``n_ctx`` regardless of how many turns have run or were resumed.
+        A fraction of ``cfg.chat_n_ctx_target`` so the assembled prompt (system +
+        history + RAG + user) stays under the loaded model's ``n_ctx`` regardless
+        of how many turns have run or were resumed.
         """
-        budget = int(cfg.chat_n_ctx_target * _HISTORY_TOKEN_BUDGET_FRACTION)
-        return windowed_history(history, max_tokens=budget)
+        return int(cfg.chat_n_ctx_target * _HISTORY_TOKEN_BUDGET_FRACTION)
+
+    def _compact_history(self) -> None:
+        """Fold turns that no longer fit into the rolling summary. Worker thread only.
+
+        Runs before a prompt is built rather than after a turn lands, so the
+        summary is always current with what is about to be sent, and a resumed
+        conversation compacts what it cannot carry instead of dropping it.
+
+        The summarizing model call is slow, so it happens without the lock held;
+        only the known prefix is removed afterwards, which stays correct if the
+        user sends another turn meanwhile.
+        """
+        with self._history_lock:
+            history = list(self._history)
+            summary = self._summary
+        budget = self._history_budget()
+        if not cfg.chat_compaction:
+            # The default path, and deliberately free: drop exactly what no longer
+            # fits, with no model call at all. Prune to the limit rather than to a
+            # threshold -- dropping costs nothing, so there is no reason to drop
+            # more than necessary. The transcript stays on screen, so without the
+            # marker below the model would just appear to forget it.
+            #
+            # Charge the summary against the same budget: a session compacted on
+            # earlier, faster hardware can carry notes into a run with compaction
+            # switched off.
+            reserved = sum(estimate_tokens(m) for m in summary_messages(summary))
+            dropped = overflow(history, max_tokens=max(1, budget - reserved))
+            if not dropped:
+                return
+            with self._history_lock:
+                del self._history[: len(dropped)]
+            call_from_thread(self, self._on_history_trimmed, len(dropped))
+            return
+        # Compaction on: fire early and clear deep. Folding only the overflow at
+        # the limit would leave the history full, so every later turn would pay a
+        # model call; clearing to notes plus the newest exchanges buys many turns
+        # of headroom for the same one call.
+        if not compaction_due(history, summary, max_tokens=budget):
+            return
+        dropped = foldable(history)
+        if not dropped:
+            # Nothing but the tail, and it alone fills the budget. Folding it
+            # would summarize the very turn being answered; prompt_history windows
+            # it instead.
+            return
+        # Condensing blocks this turn on a model call: seconds on a GPU, tens of
+        # seconds on a CPU-only host. An unannounced pause that long is
+        # indistinguishable from a hang, so say what is happening first.
+        call_from_thread(self, self._set_compacting, True)
+        try:
+            result = get_services().searcher.summarize_history(dropped, summary)
+        finally:
+            call_from_thread(self, self._set_compacting, False)
+        with self._history_lock:
+            del self._history[: len(dropped)]
+            self._summary = result.summary
+        if self._session_id and result.summary:
+            # A summary for a session deleted mid-chat is not worth a crash; the
+            # next user turn reopens one and re-summarizes from there.
+            with contextlib.suppress(SessionNotFoundError):
+                get_services().session_store.set_summary(self._session_id, result.summary)
+        call_from_thread(self, self._on_history_compacted, result.condensed, result.stranded)
+
+    def _set_compacting(self, compacting: bool) -> None:
+        """Flip the chip into (or out of) its condensing state. Main thread only."""
+        with contextlib.suppress(NoMatches):
+            self.query_one("#context-chip", ContextChip).compacting = compacting
+
+    def _refresh_context_usage(self) -> None:
+        """Push current history pressure to the chip. Main thread only.
+
+        Cheap: the same char/4 estimate the windower already uses, over messages
+        that are in memory anyway. Recomputed per turn rather than per keystroke.
+        """
+        with self._history_lock:
+            history = list(self._history)
+            summary = self._summary
+        budget = self._history_budget()
+        used = sum(estimate_tokens(m) for m in history)
+        used += sum(estimate_tokens(m) for m in summary_messages(summary))
+        with contextlib.suppress(NoMatches):
+            self.query_one("#context-chip", ContextChip).usage = used / max(1, budget)
+
+    def _mark_context_boundary(self, *titles: str) -> None:
+        """Draw rules in the log where the model's view of the chat changed.
+
+        A rich Rule, not a hand-drawn "-- text --": it draws the line out to the
+        full width itself, which is what makes it read as a boundary rather than
+        as another message. Guarded because the worker can land this after the
+        user has navigated off the chat screen.
+        """
+        # mount() is async, so a compaction that lands in the same beat as the
+        # question can arrive before the question is really in the log; mounting
+        # before a widget that is not yet a child raises. Appending reads fine.
+        anchor = self._active_question
+        if anchor is not None and not anchor.is_mounted:
+            anchor = None
+        with contextlib.suppress(NoMatches):
+            for title in titles:
+                rule = Static(
+                    Rule(title=title, characters="─", style="dim"),
+                    classes="compaction-marker",
+                )
+                if anchor is None:
+                    self._chat_log.mount(rule)
+                else:
+                    self._chat_log.mount(rule, before=anchor)
+
+    def _on_history_trimmed(self, dropped: int) -> None:
+        """Mark where turns left the model's view with nothing standing in for them.
+
+        The compaction-off path. Same rule as compaction so the log reads
+        consistently, different words because nothing was summarized.
+        """
+        self._refresh_context_usage()
+        self._mark_context_boundary(msg.CHAT_TRIMMED.format(count=dropped))
+        with contextlib.suppress(NoMatches):
+            self.notify(msg.CHAT_TRIMMED_TOAST, severity="warning")
+
+    def _on_history_compacted(self, condensed: int, stranded: int) -> None:
+        """Mark where the model's memory of this conversation turns into a summary.
+
+        Styling lives in chat.tcss under .compaction-marker. Guarded because the
+        worker can land this after the user navigated off the chat screen.
+
+        Stranded turns get their own line: they are gone from the model's view
+        with nothing standing in for them, and a user whose model has forgotten
+        something is owed the reason rather than left to infer it.
+        """
+        self._refresh_context_usage()
+        titles = [msg.CHAT_COMPACTED.format(count=condensed)]
+        if stranded:
+            titles.append(msg.CHAT_COMPACTION_STRANDED.format(count=stranded))
+        self._mark_context_boundary(*titles)
+        with contextlib.suppress(NoMatches):
+            self.notify(
+                msg.CHAT_COMPACTED_STRANDED_TOAST if stranded else msg.CHAT_COMPACTED_TOAST,
+                severity="warning",
+            )
 
     def _scroll_to_bottom(self) -> None:
         log_widget = self._chat_log

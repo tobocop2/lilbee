@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import ClassVar
 
@@ -72,11 +73,22 @@ class AssistantMessage(Vertical):
 
     DEFAULT_CSS: ClassVar[str] = _MESSAGE_CSS
 
-    def __init__(self) -> None:
+    def __init__(self, content: str = "", sources: Sequence[str] = ()) -> None:
+        """A live answer bubble, or a finished one restored from a saved session.
+
+        *content* must be given here for a restored turn, never appended after
+        mounting: ``mount()`` is async, so ``compose`` has not run yet and
+        ``append_content``/``finish`` both no-op against a ``_content_widget``
+        that is still None -- the text is dropped and never recovered. Passing it
+        in lets ``compose`` build the widget already populated, which is the same
+        path ``_build_content_widget`` documents for Markdown.
+        """
         super().__init__(classes="assistant-message")
         self._reasoning_parts: list[str] = []
-        self._content_parts: list[str] = []
-        self._finished = False
+        self._content_parts: list[str] = [content] if content else []
+        self._restored_sources: list[str] = list(sources)
+        # A restored turn is finished by definition: it must not raise a spinner.
+        self._finished = bool(content)
         self._content_widget: Markdown | Static | None = None
         self._reasoning_widget: Collapsible | None = None
         self._reasoning_static: Static | None = None
@@ -88,21 +100,36 @@ class AssistantMessage(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(_SPEAKER_LILBEE, classes="speaker-label")
-        self._content_widget = self._build_content_widget()
+        # Built with the restored text (empty for a live turn, which streams in).
+        self._content_widget = self._build_content_widget("".join(self._content_parts))
         yield self._content_widget
         self._citation_widget = Static("", classes="source-citation")
         yield self._citation_widget
 
     def on_mount(self) -> None:
-        """Mount the thinking header above the content widget.
+        """Raise the thinking header, unless this turn is already finished.
 
         ``compose`` populates ``_content_widget`` before this hook runs.
         """
         if self._content_widget is None:
             return
+        if self._finished:
+            # Restored from a session: the answer is already on screen, so a
+            # spinner would claim it is still being written.
+            self._show_citations(self._restored_sources)
+            return
         header = ThinkingHeader()
         self._thinking_header = header
         self.mount(header, before=self._content_widget)
+
+    def _show_citations(self, sources: Sequence[str]) -> None:
+        """Render the citation line, or hide it when the turn cited nothing."""
+        if self._citation_widget is None:
+            return
+        if sources:
+            self._citation_widget.update(_build_citation_content(list(sources)))
+        else:
+            self._citation_widget.display = False
 
     def _build_content_widget(self, text: str = "") -> Markdown | Static:
         """Create the content widget based on the current rendering mode.
@@ -199,10 +226,7 @@ class AssistantMessage(Vertical):
             self._reasoning_widget.title = msg.CHAT_REASONING_FINISHED.format(tokens=token_count)
             self._reasoning_widget.collapsed = True
 
-        if sources and self._citation_widget is not None:
-            self._citation_widget.update(_build_citation_content(sources))
-        elif self._citation_widget is not None:
-            self._citation_widget.display = False
+        self._show_citations(sources or [])
 
     def _mount_reasoning_collapsible(self) -> None:
         """Mount the reasoning Collapsible with the streaming-state class.

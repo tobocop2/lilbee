@@ -93,6 +93,33 @@ async def test_drawer_filters_by_title(sessions):
         assert rows.first().meta.title == "Board email"
 
 
+async def test_filtering_does_not_re_read_the_store(sessions):
+    """Each keystroke must filter the loaded list, not re-fold every session file.
+
+    list() replays every event of every session, so re-listing per keystroke made
+    typing cost O(vault bytes) on the UI thread: measured at 190ms per keystroke
+    for 300 sessions x 200 messages, i.e. 1.3s to type a 7-character filter.
+    """
+    for i in range(3):
+        _seed(sessions, f"session {i}")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open_drawer(app, pilot)
+        calls = 0
+        real_list = sessions.list
+
+        def counting_list():
+            nonlocal calls
+            calls += 1
+            return real_list()
+
+        with patch.object(sessions, "list", counting_list):
+            for ch in "sess":
+                await pilot.press(ch)
+            await pilot.pause()
+        assert calls == 0, f"filter keystrokes re-read the store {calls} times"
+
+
 async def test_resume_from_drawer_loads_and_closes(sessions):
     session_id = _seed(sessions, "Torque specs")
     app = LilbeeApp()

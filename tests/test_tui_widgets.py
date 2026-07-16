@@ -103,6 +103,20 @@ class TestAssistantMessageAsync:
         assert am._content_widget is not None
         assert am._citation_widget is not None
 
+    def test_finishing_a_never_mounted_message_does_not_crash(self) -> None:
+        """A turn can end before its bubble reaches the screen.
+
+        ``compose`` builds the citation widget, so a bubble that was constructed
+        but never mounted has none. finish() must stay a no-op there rather than
+        take down the TUI on an answer nobody is looking at.
+        """
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        am = AssistantMessage()
+        assert am._citation_widget is None
+        am.finish(["/docs/a.pdf"])  # no compose() ran: nowhere to draw sources
+        assert am._finished
+
     async def test_on_mount_attaches_thinking_header(self) -> None:
         """Mounting the message inserts a sibling ``ThinkingHeader`` above content."""
         from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
@@ -539,7 +553,7 @@ class TestTaskBar:
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
         assert "starting" in starting and "▓" in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert "almost ready" in loading and ("▓" in loading or "░" in loading)
+        assert "loading the engine" in loading and ("▓" in loading or "░" in loading)
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )

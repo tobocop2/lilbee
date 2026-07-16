@@ -4001,30 +4001,46 @@ async def test_chat_auto_scroll_resumes_only_at_live_bottom():
             assert mock_end.call_count == 2
 
 
-async def test_chat_trim_history_drops_oldest_pairs_over_token_budget():
-    """History windows by token budget, dropping oldest user/assistant pairs."""
+async def test_chat_compacts_history_over_token_budget_into_notes():
+    """History over budget is folded into a summary rather than dropped outright.
+
+    Replaces the old _trim_history test: the budget still bounds the prompt, but
+    the turns that fall out now survive as notes the next prompt carries, so the
+    model does not silently forget a conversation the user can still scroll.
+    """
+    from lilbee.app.services import get_services
     from lilbee.core.config import cfg
+    from lilbee.retrieval.query.compaction import CompactionResult
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # Fill history with 20 user/assistant pairs of ~400 chars each (~100 tokens).
-        # With chat_n_ctx_target = 8192 and 50% history budget = 4096 tokens, the
-        # windower should keep ~40 messages worth; far less here so it drops oldest.
         big_content = "x" * 4096  # ~1024 tokens per message
         app.screen._history = [
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"{i}-{big_content}"}
             for i in range(20)
         ]
+        app.screen._summary = ""
         prior_target = cfg.chat_n_ctx_target
-        cfg.chat_n_ctx_target = 8192
+        prior_compaction = cfg.chat_compaction
+        cfg.chat_compaction = True  # off by default; this test is about the on path
+        cfg.chat_n_ctx_target = 8192  # 50% history budget = 4096 tokens
         try:
-            app.screen._trim_history()
+            with patch.object(
+                get_services().searcher,
+                "summarize_history",
+                return_value=CompactionResult(summary="NOTES", condensed=8, stranded=0),
+            ) as summarize:
+                app.screen._compact_history()
         finally:
             cfg.chat_n_ctx_target = prior_target
-        # Some prefix was dropped; the suffix that fits the budget is kept.
+            cfg.chat_compaction = prior_compaction
+        # Some prefix was folded out; the suffix that fits the budget is kept.
         assert len(app.screen._history) < 20
         # Window must start at a user message so the model anchors on a turn.
         assert app.screen._history[0]["role"] == "user"
+        # ...and what fell out became notes rather than nothing.
+        assert app.screen._summary == "NOTES"
+        assert summarize.call_args.args[0], "the dropped prefix is what gets summarized"
         # The newest pair is always retained.
         assert app.screen._history[-1]["content"].startswith("19-")
 

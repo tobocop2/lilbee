@@ -85,6 +85,11 @@ class SessionListPanel(Vertical):
     def __init__(self, *, focus_filter: bool = True) -> None:
         super().__init__()
         self._renaming_id: str | None = None
+        # Sessions as of the last store read, and the live filter text. Reading
+        # the store replays every event of every session, so it happens on mount
+        # and after a mutation only; keystrokes filter this list in memory.
+        self._metas: list[SessionMeta] = []
+        self._query = ""
         # The drawer focuses the filter for immediate type-to-switch. The
         # full-screen tab focuses the list instead, so the nav keys ([ ]) bubble
         # to the app instead of being typed into the filter.
@@ -105,12 +110,25 @@ class SessionListPanel(Vertical):
     def _store(self) -> SessionStore:
         return get_services().session_store
 
-    def refresh_list(self, query: str = "") -> None:
+    def refresh_list(self) -> None:
+        """Re-read the store, then render. For mount and after a mutation.
+
+        The filter text is not a parameter: it lives in _query and survives a
+        reload, so deleting a row leaves the list filtered as the user left it.
+        """
+        self._metas = self._store().list()
+        self._render_rows()
+
+    def _render_rows(self) -> None:
+        """Render rows from the sessions already loaded. Never touches the store.
+
+        Not ``_render``: Textual's Widget defines that as its own visual hook.
+        """
         lv = self.query_one("#sessions-list", ListView)
         lv.clear()
-        needle = query.strip().lower()
+        needle = self._query.strip().lower()
         active_id = self.app.current_session_id()
-        metas = [m for m in self._store().list() if needle in m.title.lower()]
+        metas = [m for m in self._metas if needle in m.title.lower()]
         for meta in metas:
             lv.append(SessionRow(meta, active=meta.id == active_id))
         if metas:
@@ -133,7 +151,8 @@ class SessionListPanel(Vertical):
     @on(Input.Changed, "#sessions-filter")
     def _on_filter(self, event: Input.Changed) -> None:
         if self._renaming_id is None:
-            self.refresh_list(event.value)
+            self._query = event.value
+            self._render_rows()
 
     @on(Input.Submitted, "#sessions-filter")
     def _on_submit(self, _event: Input.Submitted) -> None:

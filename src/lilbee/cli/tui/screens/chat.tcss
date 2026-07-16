@@ -31,6 +31,29 @@ ChatWelcome {
     display: none;
 }
 
+/* Where the model's view of the chat changes. A rule, not a message: nothing was
+ * removed from the transcript, so it must not read like a turn. Everything above
+ * it is still scrollable; only what the model is sent changed.
+ *
+ * No content-align: the rich Rule inside centres its own title and draws the line
+ * to the full width. The margin is the whole point -- a boundary needs air on
+ * both sides or it reads as a caption on the message above it. */
+.compaction-marker {
+    width: 100%;
+    height: auto;
+    margin: 1 0;
+    color: $text-muted;
+}
+
+/* The hint band: help text left, context reading right. $boost here (not only on
+ * HelpHint) so the chip's transparent cells sit on the same band instead of
+ * punching a hole in its right end. */
+#hint-row {
+    width: 100%;
+    height: 1;
+    background: $boost;
+}
+
 .speaker-label {
     height: auto;
 }
