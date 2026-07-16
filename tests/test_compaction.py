@@ -10,6 +10,7 @@ from lilbee.retrieval.query.compaction import (
     prompt_history,
     summary_cap,
     summary_messages,
+    summary_word_budget,
 )
 from lilbee.retrieval.query.history_window import estimate_tokens
 
@@ -67,6 +68,16 @@ def test_summary_cap_scales_down_with_a_small_window() -> None:
     assert summary_cap(32768) == COMPACT_MAX_TOKENS
     assert summary_cap(2048) < COMPACT_MAX_TOKENS
     assert summary_cap(256) >= 64, "still large enough to hold a useful note"
+
+
+def test_the_word_budget_always_fits_the_token_cap() -> None:
+    """The prompt's word ask and num_predict must agree at every window size:
+    asking for more words than the cap holds guarantees a clipped final
+    sentence."""
+    for ctx in (256, 2048, 8192, 32768, 131072):
+        words = summary_word_budget(ctx)
+        assert words <= summary_cap(ctx), f"ctx={ctx}: asked {words} words > cap"
+        assert words >= 48, f"ctx={ctx}: {words} words is too small for a useful note"
 
 
 def test_batches_each_fit_the_current_model_window() -> None:
