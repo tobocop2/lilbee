@@ -107,7 +107,7 @@ def test_assert_devices_noop_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("must not probe off Linux")
 
     monkeypatch.setattr(cuda_runtime.subprocess, "run", _boom)
-    assert_cuda_devices_usable(Path("/bin/llama-server"), [])  # no raise
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [], "")  # no raise
 
 
 def test_assert_devices_passes_when_a_device_enumerated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,7 +116,7 @@ def test_assert_devices_passes_when_a_device_enumerated(monkeypatch: pytest.Monk
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
     device = FleetDevice("CUDA", 0, "gpu", 1, 1)
-    assert_cuda_devices_usable(Path("/bin/llama-server"), [device])  # no raise
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [device], "")  # no raise
 
 
 def test_assert_devices_passes_for_non_cuda_build(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +124,7 @@ def test_assert_devices_passes_for_non_cuda_build(monkeypatch: pytest.MonkeyPatc
     _ldd_returns(monkeypatch, _NO_CUDA)
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
-    assert_cuda_devices_usable(Path("/bin/llama-server"), [])  # no raise
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [], "")  # no raise
 
 
 def test_assert_devices_passes_when_no_nvidia_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,7 +132,7 @@ def test_assert_devices_passes_when_no_nvidia_gpu(monkeypatch: pytest.MonkeyPatc
     _ldd_returns(monkeypatch, _LINKS_CUDA)
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
-    assert_cuda_devices_usable(Path("/bin/llama-server"), [])  # no raise
+    assert_cuda_devices_usable(Path("/bin/llama-server"), [], "")  # no raise
 
 
 def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -143,15 +143,9 @@ def test_assert_devices_raises_with_engine_diagnostic(monkeypatch: pytest.Monkey
     monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
     monkeypatch.setattr(cuda_runtime, "_cuda_wheel_lib_dirs", lambda: [])
     cuda_err = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected"
-
-    def _run(cmd: list[str], *_a: object, **_k: object) -> SimpleNamespace:
-        if "--list-devices" in cmd:
-            return SimpleNamespace(stdout="", stderr=cuda_err + "\n")
-        return SimpleNamespace(stdout=_LINKS_CUDA, stderr="")  # ldd resolves the soname
-
-    monkeypatch.setattr(cuda_runtime.subprocess, "run", _run)
+    _ldd_returns(monkeypatch, _LINKS_CUDA)
     with pytest.raises(ProviderError) as exc:
-        assert_cuda_devices_usable(Path("/bin/llama-server"), [])
+        assert_cuda_devices_usable(Path("/bin/llama-server"), [], cuda_err + "\n")
     message = str(exc.value)
     assert "failed to initialize CUDA" in message  # the engine's own diagnostic, surfaced
     assert "nvidia-smi" in message
@@ -241,32 +235,19 @@ def test_ldd_output_none_when_subprocess_raises(monkeypatch: pytest.MonkeyPatch)
     assert cuda_runtime._ldd_output(Path("/bin/llama-server"), {}) is None
 
 
-def test_device_probe_diagnostic_returns_tail_when_no_error_line(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        cuda_runtime.subprocess,
-        "run",
-        lambda *_a, **_k: SimpleNamespace(stdout="CUDA0: NVIDIA L40 (45 GiB)\n", stderr=""),
-    )
-    out = cuda_runtime._device_probe_diagnostic(Path("/bin/llama-server"), {})
+def test_device_probe_diagnostic_returns_tail_when_no_error_line() -> None:
+    out = cuda_runtime._device_probe_diagnostic("CUDA0: NVIDIA L40 (45 GiB)\n")
     assert "NVIDIA L40" in out  # no error marker -> falls through to the output tail
 
 
-def test_device_probe_diagnostic_when_no_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        cuda_runtime.subprocess,
-        "run",
-        lambda *_a, **_k: SimpleNamespace(stdout="", stderr=""),
+def test_device_probe_diagnostic_picks_the_cuda_error_line() -> None:
+    output = "loading backends\nggml_cuda_init: CUDA error: unknown error\ntrailing noise\n"
+    assert (
+        cuda_runtime._device_probe_diagnostic(output) == "ggml_cuda_init: CUDA error: unknown error"
     )
-    out = cuda_runtime._device_probe_diagnostic(Path("/bin/llama-server"), {})
-    assert out == "(the engine's device probe printed nothing)"
 
 
-def test_device_probe_diagnostic_when_probe_cannot_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _raise(*_a: object, **_k: object) -> None:
-        raise OSError("binary not found")
-
-    monkeypatch.setattr(cuda_runtime.subprocess, "run", _raise)
-    out = cuda_runtime._device_probe_diagnostic(Path("/bin/llama-server"), {})
-    assert out == "(the engine's device probe could not be run)"
+def test_device_probe_diagnostic_when_no_output() -> None:
+    assert (
+        cuda_runtime._device_probe_diagnostic("") == "(the engine's device probe printed nothing)"
+    )

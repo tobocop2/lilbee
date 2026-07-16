@@ -6,7 +6,7 @@ import shutil
 from enum import StrEnum
 from pathlib import Path
 
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, ProviderErrorKind
 
 _INSTALL_HINT = (
     "Reinstall lilbee to get the bundled engine, or set LILBEE_LLAMA_SERVER_PATH "
@@ -65,7 +65,10 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
     if found is not None:
         return Path(found)
 
-    raise ProviderError(f"{tool.value} binary not found. {_INSTALL_HINT}")
+    raise ProviderError(
+        f"{tool.value} binary not found. {_INSTALL_HINT}",
+        kind=ProviderErrorKind.NOT_FOUND,
+    )
 
 
 def resolve_llama_server() -> Path:
