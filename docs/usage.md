@@ -606,6 +606,10 @@ lilbee serve --port 8080               # fixed port
 lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1)
 ```
 
+One server runs per data dir: a second `lilbee serve` against the same
+`--data-dir` waits up to ten seconds for the first to exit, then stops with an
+error instead of competing for the port file and the model engine.
+
 The surface covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),

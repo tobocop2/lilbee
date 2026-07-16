@@ -371,3 +371,42 @@ class TestRunServer:
             asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
 
         fake_server_obj.shutdown.assert_awaited_once()
+
+
+class TestServeSingleton:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_exits_when_another_server_holds_the_lock(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
+        from lilbee.runtime.lock import acquire_server_lock
+
+        mock_create_app.return_value = "fake_app"
+        holder = acquire_server_lock(cfg.data_dir, timeout=0.1)
+        assert holder is not None
+        try:
+            with mock.patch("lilbee.cli.commands.servers.SERVER_LOCK_TIMEOUT", 0.05):
+                result = runner.invoke(app, ["serve"])
+        finally:
+            holder.release()
+        assert result.exit_code == 1
+        assert "already running" in result.output
+        mock_asyncio_run.assert_not_called()
+
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_releases_the_lock_on_exit(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
+        from lilbee.runtime.lock import acquire_server_lock
+
+        mock_create_app.return_value = "fake_app"
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 0
+        reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()

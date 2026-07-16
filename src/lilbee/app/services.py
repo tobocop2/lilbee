@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import signal
 import sys
 import threading
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
 
+
+log = logging.getLogger(__name__)
 
 _SIGNAL_EXIT_BASE = 128
 
@@ -374,8 +377,18 @@ class _EngineLifecycle:
         SystemExit unwinds the main thread.
         """
         del frame
-        threading.Thread(target=reset_services, name="hard-exit-teardown").start()
+        threading.Thread(
+            target=_teardown_for_signal, args=(signum,), name="hard-exit-teardown"
+        ).start()
         raise SystemExit(_SIGNAL_EXIT_BASE + signum)
+
+
+def _teardown_for_signal(signum: int) -> None:
+    """Log the fatal signal, then stop services; runs off the signal handler's thread."""
+    log.info(
+        "Received signal %s; stopping the engine fleet before exit", signal.Signals(signum).name
+    )
+    reset_services()
 
 
 _lifecycle = _EngineLifecycle()

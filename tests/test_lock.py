@@ -10,6 +10,8 @@ from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     LockTimeoutError,
     _lock_path,
+    acquire_server_lock,
+    server_lock_path,
     write_lock,
 )
 
@@ -163,3 +165,32 @@ class TestWriteLock:
         with write_lock(tmp_path, timeout=30.0):
             pass
         assert fake.captured == pytest.approx(8.0, abs=0.5)  # 30 - 22 remaining
+
+
+class TestServerLock:
+    def test_acquire_holds_and_creates_lock_file(self, tmp_path: Path):
+        lock = acquire_server_lock(tmp_path, timeout=0.1)
+        assert lock is not None
+        assert lock.is_locked
+        assert server_lock_path(tmp_path).exists()
+        lock.release()
+
+    def test_second_acquire_refused_while_held(self, tmp_path: Path):
+        holder = acquire_server_lock(tmp_path, timeout=0.1)
+        assert holder is not None
+        assert acquire_server_lock(tmp_path, timeout=0.05) is None
+        holder.release()
+
+    def test_reacquire_after_release(self, tmp_path: Path):
+        first = acquire_server_lock(tmp_path, timeout=0.1)
+        assert first is not None
+        first.release()
+        second = acquire_server_lock(tmp_path, timeout=0.05)
+        assert second is not None
+        second.release()
+
+    def test_acquire_creates_missing_data_dir(self, tmp_path: Path):
+        missing = tmp_path / "nested" / "data"
+        lock = acquire_server_lock(missing, timeout=0.1)
+        assert lock is not None
+        lock.release()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import threading
 from unittest.mock import MagicMock
@@ -157,3 +158,19 @@ def test_install_off_main_thread_is_a_noop():
     thread.start()
     thread.join()
     assert errors == []
+
+
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_hard_exit_logs_the_received_signal(sig, caplog):
+    """server.log must record which signal ended the process, for diagnostics."""
+    _install_stub_services()
+    install_engine_lifecycle_hooks()
+    handler = signal.getsignal(sig)
+    assert callable(handler)
+
+    with caplog.at_level(logging.INFO, logger="lilbee.app.services"):
+        with pytest.raises(SystemExit):
+            handler(sig, None)
+        _join_teardown()
+
+    assert any(signal.Signals(sig).name in rec.message for rec in caplog.records)

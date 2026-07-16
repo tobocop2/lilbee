@@ -18,6 +18,7 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.commands.serve_logging import setup_server_log_file, setup_server_logging
 from lilbee.core.config import cfg
+from lilbee.runtime.lock import SERVER_LOCK_TIMEOUT, acquire_server_lock
 
 if TYPE_CHECKING:
     import uvicorn
@@ -106,18 +107,33 @@ def serve(
 
     setup_server_logging()
 
+    # One server per data dir: a second instance would overwrite server.port
+    # and spawn a second engine fleet against the same models and vector store.
+    server_lock = acquire_server_lock(cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+    if server_lock is None:
+        message = (
+            "Another lilbee server is already running for this data directory. "
+            "Stop it or wait for it to exit, then retry."
+        )
+        logging.getLogger(__name__).error(message)
+        console.print(message)
+        raise typer.Exit(1)
+
     import uvicorn
 
     from lilbee.server import create_app
 
     logging.getLogger("asyncio").setLevel(logging.ERROR)
 
-    app = create_app()
-    # Litestar's app construction reconfigures root logging; re-install the file handler.
-    setup_server_log_file()
-    config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
-    server = uvicorn.Server(config)
-    asyncio.run(_run_server(server, config, cfg.server_host))
+    try:
+        app = create_app()
+        # Litestar's app construction reconfigures root logging; re-install the file handler.
+        setup_server_log_file()
+        config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
+        server = uvicorn.Server(config)
+        asyncio.run(_run_server(server, config, cfg.server_host))
+    finally:
+        server_lock.release()
 
 
 def mcp_cmd(

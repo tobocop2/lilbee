@@ -961,13 +961,20 @@ class FleetProvider:
                 if latch:
                     self._shut_down = True
             self._drop_swap_refs()
-            for swap in swaps.values():
-                swap.shutdown()
-            # Always sweep even when this provider holds no tracked swaps: an
-            # in-flight build may have started groups this thread never adopted,
-            # and the sweep stops every llama-swap this process spawned (keyed
-            # on the per-group config paths), not just tracked handles.
-            if not swaps:
+            if swaps:
+                started = time.monotonic()
+                for swap in swaps.values():
+                    swap.shutdown()
+                log.info(
+                    "Engine fleet stopped (%d group(s)) in %.1fs",
+                    len(swaps),
+                    time.monotonic() - started,
+                )
+            else:
+                # Always sweep even when this provider holds no tracked swaps: an
+                # in-flight build may have started groups this thread never adopted,
+                # and the sweep stops every llama-swap this process spawned (keyed
+                # on the per-group config paths), not just tracked handles.
                 from lilbee.core.config import cfg
 
                 sweep_owned(cfg.data_dir)
@@ -988,6 +995,8 @@ class FleetProvider:
             for group, swap in swaps.items():
                 payload = [launch.to_state() for launch in launches.get(group, ())]
                 swap.detach(payload)
+            if swaps:
+                log.info("Engine fleet left warm for the next launch (%d group(s))", len(swaps))
 
     def _drop_swap_refs(self) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""

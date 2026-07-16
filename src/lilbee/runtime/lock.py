@@ -1,9 +1,10 @@
-"""Write locking for LanceDB access.
+"""Cross-process locks: LanceDB write locking and the server singleton.
 
-Combines an in-process mutex with a cross-process file lock (filelock)
-so separate processes also coordinate writes. Read consistency is handled
-by LanceDB's built-in MVCC via ``read_consistency_interval`` in
-``lilbee.data.store``.
+Write locking combines an in-process mutex with a cross-process file lock
+(filelock) so separate processes also coordinate writes. Read consistency is
+handled by LanceDB's built-in MVCC via ``read_consistency_interval`` in
+``lilbee.data.store``. The server lock makes ``lilbee serve`` a singleton per
+data dir.
 """
 
 import logging
@@ -22,6 +23,10 @@ log = logging.getLogger(__name__)
 
 # Default timeout (seconds) for acquiring the write lock
 LOCK_TIMEOUT = 30.0
+# Grace (seconds) for a dying predecessor to release the server lock during a
+# restart handoff before a new `lilbee serve` gives up on the data dir.
+SERVER_LOCK_TIMEOUT = 10.0
+_SERVER_LOCK_NAME = "server.lock"
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -37,6 +42,26 @@ _write_mutex = threading.Lock()
 
 def _lock_path(lancedb_dir: Path | None) -> Path:
     return (lancedb_dir if lancedb_dir is not None else cfg.lancedb_dir) / ".lock"
+
+
+def server_lock_path(data_dir: Path) -> Path:
+    """Path of the one-server-per-data-dir lock file."""
+    return data_dir / _SERVER_LOCK_NAME
+
+
+def acquire_server_lock(data_dir: Path, timeout: float = SERVER_LOCK_TIMEOUT) -> FileLock | None:
+    """Hold the one-server-per-data-dir lock, or None when a live server owns it.
+
+    The lock is an OS file lock, so the kernel releases it the moment its holder
+    exits, however it died; a crashed or killed server leaves no stale state.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(server_lock_path(data_dir))
+    try:
+        lock.acquire(timeout=timeout)
+    except FileLockTimeout:
+        return None
+    return lock
 
 
 @contextmanager
