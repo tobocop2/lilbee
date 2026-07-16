@@ -326,6 +326,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "longer on a CPU-only machine. Worth turning on if your hardware is quick."
         ),
     ),
+    "sessions_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "On (default): conversations are saved automatically, and you can list, "
+            "resume, rename, and delete them from the Sessions drawer (ctrl+o), the "
+            "Sessions tab, and the /sessions command. Off: nothing is written to disk, "
+            "the ctrl+o binding leaves the footer, and opening the Sessions view shows a "
+            "notice that sessions are turned off. Turn it off if you would rather your "
+            "chats not persist."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,

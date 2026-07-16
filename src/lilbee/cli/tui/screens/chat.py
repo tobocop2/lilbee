@@ -1408,6 +1408,11 @@ class ChatScreen(Screen[None]):
 
     def _persist_user_turn(self, text: str) -> None:
         """Open a session on the first turn (auto-titled), then append the message."""
+        if not cfg.sessions_enabled:
+            # Sessions turned off: the conversation stays live in memory but is
+            # never written to disk. _session_id stays None, so the assistant
+            # turn's persist is a no-op too.
+            return
         store = get_services().session_store
         session_id = self._session_id or self._open_session(store, text)
         message = SessionMessage(role=MessageRole.USER, content=text)

@@ -146,6 +146,11 @@ CMD_REMOVE_SUCCESS = "Removed {name}"
 CMD_REMOVE_FAILED = "Failed to remove {name}"
 CMD_CANCEL = "Cancelled active operations"
 CMD_CLEAR = "Conversation cleared"
+SESSIONS_DISABLED_TITLE = "Sessions are turned off"
+SESSIONS_DISABLED_MESSAGE = (
+    "Conversations are not being saved. Turn sessions on in Settings to list, "
+    "resume, and manage past chats."
+)
 SESSIONS_COUNT = "{count} saved"
 SESSIONS_EMPTY = "No saved conversations yet."
 SESSIONS_FILTER_PLACEHOLDER = "Filter conversations…"

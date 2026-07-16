@@ -90,6 +90,67 @@ async def test_drawer_filters_by_title(sessions):
         await pilot.pause()
         rows = drawer.query(SessionRow)
         assert len(rows) == 1
+
+
+# --- the sessions_enabled toggle -----------------------------------------
+async def test_sessions_on_by_default() -> None:
+    from lilbee.core.config import cfg
+
+    assert cfg.sessions_enabled is True
+
+
+async def test_disabled_hides_the_footer_binding(sessions, monkeypatch) -> None:
+    """check_action returns None so ctrl+o leaves the footer entirely."""
+    from lilbee.core.config import cfg
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        monkeypatch.setattr(cfg, "sessions_enabled", True)
+        assert app.check_action("toggle_sessions", ()) is not None
+        monkeypatch.setattr(cfg, "sessions_enabled", False)
+        assert app.check_action("toggle_sessions", ()) is None
+
+
+async def test_disabled_shows_notice_on_toggle(sessions, monkeypatch) -> None:
+    from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", False)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        app.action_toggle_sessions()
+        await pilot.pause()
+        assert isinstance(app.screen, NoticeDialog)
+        assert not screen.query(SessionsDrawer)
+
+
+async def test_disabled_shows_notice_on_the_sessions_tab(sessions, monkeypatch) -> None:
+    from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", False)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Sessions")
+        await pilot.pause()
+        assert isinstance(app.screen, NoticeDialog)
+        assert not app.query(SessionsScreen)
+
+
+async def test_disabled_does_not_persist(sessions, monkeypatch) -> None:
+    """A turn while off is never written to disk; _session_id stays None."""
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "sessions_enabled", False)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen._persist_user_turn("this must not be saved")
+        assert screen._session_id is None
+        assert sessions.list() == []
         assert rows.first().meta.title == "Board email"
 
 

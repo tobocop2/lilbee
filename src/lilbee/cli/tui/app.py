@@ -458,6 +458,11 @@ class LilbeeApp(App[None]):
         """
         if self._switching:
             return
+        if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
+            # The tab stays visible so the feature is discoverable, but opening it
+            # while off shows why rather than an empty list.
+            self._notify_sessions_disabled()
+            return
         if view_name != "Chat" and get_views().get(view_name) is None:
             return
         self._switching = True
@@ -544,6 +549,11 @@ class LilbeeApp(App[None]):
         # non-priority screen/app bindings see them, so `t` types a literal there.
         if action == "open_tasks" and isinstance(self.focused, (Input, TextArea)):
             return False
+        # None (not False): hide the Sessions binding from the footer entirely
+        # when sessions are off, rather than show it greyed. There is nothing to
+        # toggle, so it should not advertise itself.
+        if action == "toggle_sessions" and not cfg.sessions_enabled:
+            return None
         return super().check_action(action, parameters)
 
     def action_open_tasks(self) -> None:
@@ -564,9 +574,25 @@ class LilbeeApp(App[None]):
             return
         self.screen.mount(FleetDrawer())
 
+    def _notify_sessions_disabled(self) -> None:
+        """Show the modal explaining sessions are off. Every session entry point
+        (ctrl+o, the Sessions tab, /sessions) routes here when disabled."""
+        from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
+
+        # Guard against stacking a second copy if the entry point is hit twice.
+        if isinstance(self.screen, NoticeDialog):
+            return
+        self.push_screen(
+            NoticeDialog(msg.SESSIONS_DISABLED_TITLE, msg.SESSIONS_DISABLED_MESSAGE)
+        )
+
     def action_toggle_sessions(self) -> None:
         """Toggle the Sessions drawer (ctrl+o), or close it if open. No-op on the
-        Sessions tab, which already shows the full list."""
+        Sessions tab, which already shows the full list. Shows a notice when
+        sessions are turned off."""
+        if not cfg.sessions_enabled:
+            self._notify_sessions_disabled()
+            return
         from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 
         drawers = self.screen.query(SessionsDrawer)

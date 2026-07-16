@@ -430,6 +430,11 @@ class Config(BaseSettings):
     # on when the hardware can absorb the call.
     chat_compaction: bool = ConfigField(default=False, writable=True)
 
+    # Persist conversations and expose the Sessions drawer, tab, and commands.
+    # On by default; turning it off stops chats being written to disk, hides the
+    # ctrl+o binding from the footer, and gates the Sessions view behind a notice.
+    sessions_enabled: bool = ConfigField(default=True, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM

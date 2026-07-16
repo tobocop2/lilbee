@@ -110,7 +110,8 @@ class TestCreate:
         assert body["meta"]["model_ref"] == "qwen3-4b"
         assert body["messages"] == []
         # the new session is now listable
-        assert any(s["id"] == body["meta"]["id"] for s in client.get("/api/sessions").json()["sessions"])
+        listed = client.get("/api/sessions").json()["sessions"]
+        assert any(s["id"] == body["meta"]["id"] for s in listed)
 
 
 class TestAppendMessage:
