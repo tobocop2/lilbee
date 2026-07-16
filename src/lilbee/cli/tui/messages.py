@@ -134,7 +134,9 @@ CHAT_STACK_FAILED = "lilbee could not load its chat screen: {error}"
 # cold engine, and the failure that wait can end in.
 ENGINE_READING_WEIGHTS = "Reading {name} weights"
 ENGINE_WARMING = "Warming up the model"
-ENGINE_ALMOST_READY = "Almost ready"
+# Names the phase, like its siblings above; "almost ready" promised a finish
+# time the engine had not committed to (same rename as TASKBAR_WARM_LOADING).
+ENGINE_ALMOST_READY = "Loading the engine"
 ENGINE_LOAD_FAILED = "The engine failed to load: {error}"
 ENGINE_FAILED_HINT = "Open Catalog or Settings to pick a different model."
 ENGINE_NOT_READY = "The engine is not ready yet. Send your prompt again in a moment."
