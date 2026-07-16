@@ -1,6 +1,6 @@
 # HW: 1x NVIDIA GeForce RTX 5090, 32607 MiB | Config LITE: Qwen3-8B Q8 + nomic-embed v1.5 Q4
 # Build: lilbee 0.6.90b420.dev721 + feat/sessions overlay, cu124 | Recorded: 2026-07-16
-# Measured (probe this pod): boot 50s, gen 39s, fold 83s -- see timings.json
+# Measured (probe this pod): boot 50s, gen 38s, fold 80s -- see timings.json
 # Beats: grounded turn auto-saves -> ctrl+o drawer + filter -> resume 240-msg
 # session -> compaction folds it live (rule + toast + context chip) -> cited answer.
 Set Shell "bash"
@@ -26,7 +26,7 @@ Show
 Type "what torque do the head bolts take?"
 Sleep 800ms
 Enter
-Sleep 39s
+Sleep 38s
 Ctrl+O
 Sleep 2s
 Type "engine"
@@ -36,5 +36,5 @@ Sleep 7s
 Type "remind me the belt interval?"
 Sleep 800ms
 Enter
-Sleep 83s
+Sleep 80s
 Sleep 3s
