@@ -835,6 +835,44 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
     assert "exited prematurely" in str(excinfo.value)
 
 
+def test_raise_for_status_bind_race_death_is_transient(monkeypatch) -> None:
+    # A member that died because it lost the pick-then-bind port race is not a
+    # dead server: llama-swap re-spawns it on the next request and the port is
+    # normally free again by then (a passing ephemeral connection took it). The
+    # death must classify as transient so retry_on_busy re-drives the spawn,
+    # instead of CONNECTION which writes the only replica off as unhealthy.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    monkeypatch.setattr(
+        client_mod,
+        "_upstream_failure_tail",
+        lambda resp: "E srv start: couldn't bind HTTP server socket, port: 58425",
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.SERVER
+    assert "couldn't bind HTTP server socket" in str(excinfo.value)
+
+
+def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
+    # Any other exit reason (model load failure, missing CUDA runtime) keeps the
+    # CONNECTION kind, so the failover path still marks the replica unhealthy.
+    import lilbee.providers.fleet.client as client_mod
+    from lilbee.providers.base import ProviderErrorKind
+    from lilbee.providers.fleet.client import _raise_for_status
+
+    monkeypatch.setattr(
+        client_mod,
+        "_upstream_failure_tail",
+        lambda resp: "cudaMalloc failed: out of memory",
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        _raise_for_status(_premature_exit_response())
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
 def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch) -> None:
     # A dead log stream must not mask the original ProviderError.
     import lilbee.providers.fleet.client as client_mod
