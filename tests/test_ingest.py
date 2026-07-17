@@ -2114,6 +2114,8 @@ class TestExtractionConfig:
 
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.get("pdf_options") is None
+        # ChunkingConfig rejects None, so the off path restates xberg's default.
+        assert config["chunking"].table_chunking == "split"
 
     def test_table_extraction_sets_pdf_options_and_table_chunking(self, monkeypatch):
         """The flag turns on xberg table recognition and header-repeating splits."""

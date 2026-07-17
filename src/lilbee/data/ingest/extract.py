@@ -35,7 +35,11 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, PdfConfig, Table
+    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, PdfConfig
+
+    # Typing-only: ExtractedDocument.tables yields the native Table, while the
+    # top-level xberg.Table name resolves to the options-module shim.
+    from xberg._xberg import Table
 
 log = logging.getLogger(__name__)
 
@@ -163,13 +167,19 @@ def _pdf_options() -> PdfConfig | None:
     return PdfConfig(**kwargs)
 
 
-def _layout_options() -> dict[str, Any]:
-    """ExtractionConfig kwargs enabling layout detection, empty when off."""
+def _apply_layout_options(config: ExtractionConfig) -> ExtractionConfig:
+    """Enable layout detection on *config* when configured; unchanged when off.
+
+    Keys are assigned individually because ExtractionConfig is a TypedDict:
+    a ``**`` expansion of a plain dict would not typecheck against it.
+    """
     if not active_config().layout_detection:
-        return {}
+        return config
     from xberg import LayoutDetectionConfig
 
-    return {"layout": LayoutDetectionConfig(), "use_layout_for_markdown": True}
+    config["layout"] = LayoutDetectionConfig()
+    config["use_layout_for_markdown"] = True
+    return config
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
@@ -186,13 +196,14 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # vision backend; scoped to the vision path, since it is a GPU re-OCR lever.
     force_ocr = _ocr_force_requested() and ocr.backend == OcrBackendName.LILBEE_VISION
     if mode is ExtractMode.PAGINATED:
-        return ExtractionConfig(
-            chunking=chunking,
-            pages=PageConfig(extract_pages=True, insert_page_markers=False),
-            ocr=ocr,
-            force_ocr=force_ocr,
-            pdf_options=_pdf_options(),
-            **_layout_options(),
+        return _apply_layout_options(
+            ExtractionConfig(
+                chunking=chunking,
+                pages=PageConfig(extract_pages=True, insert_page_markers=False),
+                ocr=ocr,
+                force_ocr=force_ocr,
+                pdf_options=_pdf_options(),
+            )
         )
     return ExtractionConfig(
         chunking=chunking,
