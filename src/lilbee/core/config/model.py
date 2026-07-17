@@ -154,6 +154,18 @@ class Config(BaseSettings):
     # chunks, so a library must be reindexed. Applies to the plain and heading
     # chunkers; the semantic chunker sizes by characters and ignores it.
     token_sizing: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Index each extracted table as its own chunk: xberg recognizes table
+    # structure during extraction and the markdown serialization is embedded
+    # alongside the prose chunks, so tabular data is retrievable as a unit.
+    # Off by default: recognition costs extraction time, and toggling changes
+    # what gets indexed, so a library must be reindexed.
+    table_extraction: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Layout-aware PDF extraction: xberg's layout detection orders page text
+    # by detected reading order (multi-column PDFs stop interleaving) and the
+    # running header/footer bands are stripped. Off by default: detection runs
+    # an extra model pass per page, and toggling changes extracted text, so a
+    # library must be reindexed.
+    layout_detection: bool = ConfigField(default=False, writable=True, reindex=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)

@@ -137,6 +137,7 @@ def _make_xberg_result(
     num_chunks=1,
     has_pages=False,
     document=None,
+    tables=None,
 ):
     """Build a mock xberg ExtractionResult."""
     chunks = []
@@ -159,6 +160,7 @@ def _make_xberg_result(
     result.chunks = chunks
     result.content = text
     result.document = document
+    result.tables = tables if tables is not None else []
     result.pages = (
         [mock.MagicMock(page_number=i + 1, content=chunks[i].content) for i in range(num_chunks)]
         if has_pages
@@ -167,12 +169,22 @@ def _make_xberg_result(
     return result
 
 
+def _make_table(markdown="| h1 | h2 |\n|---|---|\n| a | b |", page_number=1):
+    """Build a mock xberg Table carrying its markdown serialization."""
+    table = mock.MagicMock()
+    table.markdown = markdown
+    table.page_number = page_number
+    return table
+
+
 def _make_empty_result():
     """Build a mock xberg ExtractionResult with no chunks."""
     result = mock.MagicMock()
     result.chunks = []
     result.content = ""
     result.document = None
+    result.tables = []
+    result.pages = []
     return result
 
 
@@ -2086,6 +2098,186 @@ class TestExtractionConfig:
             config = extraction_config(mode)
             assert config["chunking"].chunker_type == "semantic"
             assert config["chunking"].topic_threshold == pytest.approx(0.42, abs=1e-5)
+
+    def test_table_extraction_off_sets_no_pdf_options(self):
+        """Default config leaves pdf_options unset: exact pre-feature behavior."""
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config.get("pdf_options") is None
+
+    def test_table_extraction_sets_pdf_options_and_table_chunking(self, monkeypatch):
+        """The flag turns on xberg table recognition and header-repeating splits."""
+        from xberg import TableChunkingMode
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config["pdf_options"].extract_tables is True
+        assert config["chunking"].table_chunking == TableChunkingMode.REPEAT_HEADER
+
+    def test_table_extraction_markdown_mode_skips_pdf_options(self, monkeypatch):
+        """Non-paginated formats have no PdfConfig but still chunk tables with headers."""
+        from xberg import TableChunkingMode
+
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        config = extraction_config(ExtractMode.MARKDOWN)
+        assert config.get("pdf_options") is None
+        assert config["chunking"].table_chunking == TableChunkingMode.REPEAT_HEADER
+
+    def test_layout_detection_off_sets_no_layout(self):
+        """Default config leaves layout detection unset: exact pre-feature behavior."""
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config.get("layout") is None
+        assert config.get("pdf_options") is None
+
+    def test_layout_detection_sets_layout_and_reading_order(self, monkeypatch):
+        """The flag enables layout detection, reading order, and margin stripping."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "layout_detection", True)
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config["layout"] is not None
+        assert config["use_layout_for_markdown"] is True
+        pdf = config["pdf_options"]
+        assert pdf.reading_order is True
+        assert pdf.top_margin_fraction == pytest.approx(0.05)
+        assert pdf.bottom_margin_fraction == pytest.approx(0.05)
+        # extract_tables stays at xberg's default (True); table INDEXING is
+        # gated separately by cfg.table_extraction in _document_tables.
+        assert pdf.extract_tables is True
+
+    def test_layout_detection_markdown_mode_unchanged(self, monkeypatch):
+        """Layout detection is visual-format work; non-paginated formats skip it."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "layout_detection", True)
+        config = extraction_config(ExtractMode.MARKDOWN)
+        assert config.get("layout") is None
+        assert config.get("pdf_options") is None
+
+    def test_layout_and_tables_combine_in_one_pdf_config(self, monkeypatch):
+        """Both flags land in the same PdfConfig."""
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        monkeypatch.setattr(cfg, "layout_detection", True)
+        config = extraction_config(ExtractMode.PAGINATED)
+        pdf = config["pdf_options"]
+        assert pdf.extract_tables is True
+        assert pdf.reading_order is True
+
+
+class TestTableChunks:
+    """Table indexing in ingest_document, driven by cfg.table_extraction."""
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_config_off_ignores_tables(self, mock_kf, isolated_env):
+        """With the flag off, result tables are not indexed: current behavior."""
+        mock_kf.return_value = _make_xberg_result(tables=[_make_table()])
+        from lilbee.data.ingest import ingest_document
+        from lilbee.data.store import ChunkType
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records = await ingest_document(f, "test.pdf", "pdf")
+        assert len(records) == 1
+        assert all(r["chunk_type"] == ChunkType.RAW for r in records)
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_tables_indexed_as_table_chunks(self, mock_kf, isolated_env, monkeypatch):
+        """Each table becomes its own chunk: markdown text, page span, TABLE type."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        tables = [
+            _make_table(markdown="| a | b |\n|---|---|\n| 1 | 2 |", page_number=2),
+            _make_table(markdown="| x |\n|---|\n| y |", page_number=5),
+        ]
+        mock_kf.return_value = _make_xberg_result(tables=tables)
+        from lilbee.data.ingest import ingest_document
+        from lilbee.data.store import ChunkType
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records = await ingest_document(f, "test.pdf", "pdf")
+        assert len(records) == 3
+        table_records = [r for r in records if r["chunk_type"] == ChunkType.TABLE]
+        assert len(table_records) == 2
+        assert table_records[0]["chunk"] == tables[0].markdown
+        assert table_records[0]["page_start"] == 2
+        assert table_records[0]["page_end"] == 2
+        assert table_records[1]["page_start"] == 5
+        # Indices continue after the content chunks so (source, chunk_index) stays unique.
+        assert [r["chunk_index"] for r in records] == [0, 1, 2]
+        assert all(r["vector"] for r in table_records)
+        assert all(r["content_type"] == "pdf" for r in table_records)
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_spanning_cell_markdown_passes_through_verbatim(
+        self, mock_kf, isolated_env, monkeypatch
+    ):
+        """xberg's serialization of spanning cells is indexed exactly as produced."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        spanned = "| h1 | h1 | h2 |\n|---|---|---|\n| merged | merged | v |"
+        mock_kf.return_value = _make_xberg_result(tables=[_make_table(markdown=spanned)])
+        from lilbee.data.ingest import ingest_document
+        from lilbee.data.store import ChunkType
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records = await ingest_document(f, "test.pdf", "pdf")
+        assert records[-1]["chunk_type"] == ChunkType.TABLE
+        assert records[-1]["chunk"] == spanned
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_blank_table_markdown_skipped(self, mock_kf, isolated_env, monkeypatch):
+        """A table with no usable serialization contributes no chunk."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        mock_kf.return_value = _make_xberg_result(tables=[_make_table(markdown="   ")])
+        from lilbee.data.ingest import ingest_document
+        from lilbee.data.store import ChunkType
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records = await ingest_document(f, "test.pdf", "pdf")
+        assert len(records) == 1
+        assert records[0]["chunk_type"] == ChunkType.RAW
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_tables_without_text_chunks_still_indexed(
+        self, mock_kf, isolated_env, monkeypatch
+    ):
+        """A document whose only content is tables is not dropped as empty."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "table_extraction", True)
+        doc = _make_empty_result()
+        doc.tables = [_make_table(page_number=1)]
+        mock_kf.return_value = doc
+        from lilbee.data.ingest import ingest_document
+        from lilbee.data.store import ChunkType
+
+        f = isolated_env / "test.pdf"
+        f.write_bytes(b"fake")
+        records = await ingest_document(f, "test.pdf", "pdf")
+        assert len(records) == 1
+        assert records[0]["chunk_type"] == ChunkType.TABLE
+        assert records[0]["chunk_index"] == 0
 
 
 class TestClassifyXbergParityFormats:

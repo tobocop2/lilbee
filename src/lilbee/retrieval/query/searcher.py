@@ -528,8 +528,9 @@ class Searcher:
         """Embed question and search with expansion, HyDE, and concept boost.
         Returns up to top_k*2 candidates for downstream filtering.
 
-        When *chunk_type* is set (``"raw"`` or ``"wiki"``), only chunks of
-        that type are returned. An explicit ``chunk_type`` always wins
+        When *chunk_type* is set (``"raw"`` or ``"wiki"``), only matching
+        chunks are returned (``"raw"`` also covers table chunks). An
+        explicit ``chunk_type`` always wins
         over the ``wiki:``/``raw:`` prefix shortcut in *question* so the
         user-facing scope choice has the final say.
 
@@ -682,8 +683,9 @@ class Searcher:
     ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
         """Build RAG context from search results.
 
-        ``chunk_type`` restricts the pool to ``"raw"`` or ``"wiki"`` rows;
-        ``None`` (default) searches the mixed pool.
+        ``chunk_type`` restricts the pool to ``"raw"`` (which covers table
+        chunks too) or ``"wiki"`` rows; ``None`` (default) searches the
+        mixed pool.
         """
         retrieval_query = question
         if history and self._config.history_rewrite:
