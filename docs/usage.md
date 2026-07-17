@@ -225,35 +225,37 @@ background the moment the app opens. Ask something before it's ready and the
 answer bubble carries the load until your answer streams. Nothing freezes and
 nothing is silently queued.
 
-By default the engine lives and dies with lilbee: launch starts it, quit frees
-all of its memory. That on-demand default is deliberate, no VRAM or RAM is held
-while lilbee is closed, but it means the first answer of a session waits out the
-engine load. If you relaunch lilbee often, opt into a persistent engine in
-Settings:
+One engine serves every lilbee process on the machine: open a second TUI, point
+a coding agent at `lilbee mcp`, or run `lilbee serve` alongside, and they all
+bind to the same loaded models instead of building their own. The engine stops
+when the last lilbee process exits, so the machine is left clean by default; no
+VRAM, RAM, or stray processes are held while nothing is running. Two knobs
+adjust that:
 
-- **Keep engine warm** leaves the engine running when you quit, and the next
-  session's first answer skips the load entirely.
-- **Engine idle ttl minutes** bounds how long idle weights stay in memory,
-  five minutes by default (the same idea as Ollama's keep_alive). The memory
-  frees itself after that many idle minutes; a small proxy process stays behind,
-  a few tens of MB and no VRAM. `0` keeps weights loaded until you stop them.
+- **Keep engine warm** lets the engine outlive lilbee entirely, so the next
+  session's first answer skips the load. Recommended if you relaunch often or
+  use lilbee mainly through coding agents, whose sessions come and go.
+- **Engine idle ttl minutes** bounds how long idle weights stay in memory in
+  every mode, warm included, five minutes by default (the same idea as Ollama's
+  keep_alive). The memory frees itself after that many idle minutes; a small
+  proxy process stays behind, a few tens of MB and no VRAM. `0` keeps weights
+  loaded until the engine stops.
 - **`lilbee engine stop`** frees everything immediately from any terminal, no
-  TUI needed.
+  TUI needed, whichever process started the engine.
 
-Turning the setting off returns to the on-demand default and stops the engine at
-the next opportunity. Both knobs live in the TUI Settings screen,
-MCP `lilbee_settings_set`, the HTTP config API, and `config.toml`. The first
-launch after a reboot is always a cold one.
+Both knobs live in the TUI Settings screen, MCP `lilbee_settings_set`, the HTTP
+config API, and `config.toml`. Changing a model restarts the shared engine from
+whichever surface you did it; other lilbee processes reconnect on their next
+prompt. The first launch after a reboot is always a cold one.
 
-To stop a warm engine without opening the TUI:
+To stop the engine without opening the TUI:
 
 ```bash
 lilbee engine stop
 ```
 
 It reports whether anything was running, frees the GPU immediately, and is safe
-to run at any time. Turning **Keep engine warm** off also cleans the engine up
-at the next launch of any lilbee command.
+to run at any time.
 
 ## Memory
 

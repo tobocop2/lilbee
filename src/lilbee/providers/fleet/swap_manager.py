@@ -515,20 +515,6 @@ def _live_sibling_swap_pids(data_dir: Path) -> set[int]:
     return protected
 
 
-def find_detached_state(data_dir: Path, group: SwapGroup) -> tuple[_SwapState, Path] | None:
-    """The newest detached state for *group*, or None when nothing was left warm."""
-    best: tuple[_SwapState, Path] | None = None
-    for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
-        if f".{group.value}." not in f".{state_path.name}":
-            continue
-        state = _load_state(state_path)
-        if state is None or not state.detached:
-            continue
-        if best is None or (state.created_at or 0) > (best[0].created_at or 0):
-            best = (state, state_path)
-    return best
-
-
 def find_live_state(data_dir: Path, group: SwapGroup) -> _SwapState | None:
     """The newest state record for *group* at *data_dir*, detached or not."""
     best: _SwapState | None = None

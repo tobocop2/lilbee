@@ -291,3 +291,14 @@ class TestMcpMainIntegration:
         ):
             mcp_mod.main()
         assert "MCP pre-warm failed" in caplog.text
+
+
+def test_mcp_parent_death_releases_services_before_hard_exit(monkeypatch):
+    """os._exit skips atexit, so the handler must release engine membership itself."""
+    import lilbee.mcp_server as mcp_mod
+
+    order: list[str] = []
+    monkeypatch.setattr("lilbee.app.services.reset_services", lambda: order.append("reset"))
+    monkeypatch.setattr(mcp_mod.os, "_exit", lambda code: order.append(f"exit:{code}"))
+    mcp_mod._exit_on_parent_death()
+    assert order == ["reset", "exit:0"]

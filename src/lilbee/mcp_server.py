@@ -1207,6 +1207,22 @@ _strip_schema_noise()
 _tune_search_scope_for_corpus()
 
 
+def _exit_on_parent_death() -> None:
+    """Release engine membership, then hard-exit.
+
+    ``os._exit`` skips atexit, so without the explicit release a dying agent
+    host would leave this process's engine membership to the kernel and, when
+    this was the last user, leave the engine itself running until the next
+    lilbee cleanup pass. Stopping it here keeps the machine clean.
+    """
+    from lilbee.app.services import reset_services
+
+    try:
+        reset_services()
+    finally:
+        os._exit(0)
+
+
 def main() -> None:
     """Entry point for the MCP server."""
     # Preload so the first tool call doesn't pay the cold-start cost
@@ -1222,6 +1238,6 @@ def main() -> None:
 
     parent_pid = parse_parent_pid()
     if parent_pid is not None:
-        watch_parent_thread(parent_pid, lambda: os._exit(0))
+        watch_parent_thread(parent_pid, _exit_on_parent_death)
 
     mcp.run()

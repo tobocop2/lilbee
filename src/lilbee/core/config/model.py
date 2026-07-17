@@ -397,15 +397,13 @@ class Config(BaseSettings):
 
     # Leave the engine fleet running on quit so the next launch adopts it warm.
     # On keeps the engine resident: it never idle-unloads and survives app close
-    # for the next launch to adopt. Off (default) is on-demand: the engine loads
-    # per launch, releases its weights after an idle window, and reloads on the
-    # next prompt.
+    # so the next launch binds instantly. Off (default): the engine stops when
+    # the last lilbee process exits, leaving the machine clean.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before an on-demand (not-warm) fleet unloads its weights
-    # (llama-swap ttl), so it never holds VRAM past this window. 0 keeps weights
-    # loaded until the app tears the fleet down. Read only when keep_engine_warm
-    # is off (a warm fleet stays resident regardless).
+    # Idle minutes before the engine unloads its weights (llama-swap ttl), in
+    # every mode: even a persistent engine naps when unused. 0 keeps weights
+    # loaded until the engine stops.
     engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
 
     # Working n_ctx the dynamic picker aims for. Default scales with

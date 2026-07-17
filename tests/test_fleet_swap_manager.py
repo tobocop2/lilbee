@@ -1444,11 +1444,6 @@ class TestDetachAdoptUnits:
         assert mgr.adopt(state, tmp_path / "x.json") is False
         assert mgr._port is None
 
-    def test_find_detached_state_skips_owned_files(self, tmp_path: Path) -> None:
-        owned = tmp_path / sm._state_filename(1, _GROUP.value)
-        owned.write_text(json.dumps({"pid": 2, "detached": False}))
-        assert sm.find_detached_state(tmp_path, _GROUP) is None
-
 
 @pytest.mark.parametrize(
     "leak",
