@@ -67,6 +67,28 @@ class TestFuseArms:
         lexical_row = next(r for r in fused if r.source == "catalog_482.pdf")
         assert lexical_row.score == pytest.approx(0.5)
 
+
+class TestLexicalFusionWeight:
+    """The BM25 arm's fusion weight can be lowered so a strong dense arm dominates."""
+
+    def _lex_row(self, weight: float):
+        vec = [_chunk("noise.md", 0, distance=0.5)]
+        lex = [_chunk("cat.pdf", 0, bm25=35.0)]
+        return next(r for r in fuse_arms(vec, lex, lexical_weight=weight) if r.source == "cat.pdf")
+
+    def test_default_weight_is_the_historical_equal_voice(self):
+        vec = [_chunk("noise.md", 0, distance=0.5)]
+        lex = [_chunk("cat.pdf", 0, bm25=35.0)]
+        default = {r.source: r.score for r in fuse_arms(vec, lex)}
+        explicit = {r.source: r.score for r in fuse_arms(vec, lex, lexical_weight=1.0)}
+        assert default == explicit
+
+    def test_zero_weight_silences_the_lexical_arm(self):
+        assert self._lex_row(0.0).score == pytest.approx(0.0)
+
+    def test_lower_weight_shrinks_the_lexical_contribution(self):
+        assert self._lex_row(0.5).score < self._lex_row(1.0).score
+
     def test_top_lexical_hit_outranks_all_but_the_top_dense_neighbor(self):
         """The pinpoint-document failure mode: an FTS-arm top hit unseen by
         the vector arm must rank above every vector row except at most the

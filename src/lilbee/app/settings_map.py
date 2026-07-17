@@ -829,6 +829,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Title arm weight in rank fusion (1.0 = equal voice with the other arms)",
     ),
+    "lexical_fusion_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="BM25 arm weight in fusion (1.0 = equal to vector; lower to favor dense)",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,

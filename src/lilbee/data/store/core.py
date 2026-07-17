@@ -704,6 +704,7 @@ class Store:
             self._vector_arm(table, query_vector, top_k, chunk_type),
             self._fts_arm(table, query_text, top_k, chunk_type),
             title_rows,
+            lexical_weight=self._config.lexical_fusion_weight,
             title_weight=self._config.title_search_weight,
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)

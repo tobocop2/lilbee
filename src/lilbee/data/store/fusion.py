@@ -7,9 +7,10 @@ in [0, 1] and a row ranked first by every arm scores exactly 1. Rows seen
 by only one arm score that arm's share of the total weight, which still
 places an arm's top hit above every row deep in the other arms: the
 property that keeps a lexical-only identifier match visible next to dense
-neighbors. The vector and chunk-BM25 arms weigh 1 each; the optional
-title arm weighs ``title_weight``, so enabling it rescales the shares
-without leaving the canonical range.
+neighbors. The vector arm weighs 1; the chunk-BM25 arm weighs
+``lexical_weight`` (1.0 = equal voice, lower lets a strong dense arm
+dominate); the optional title arm weighs ``title_weight``. Weights rescale
+the shares without leaving the canonical range.
 
 Rank fusion is deliberate. A convex combination of normalized raw scores
 (``alpha * vector_similarity + (1 - alpha) * normalized_bm25``) was tried
@@ -87,20 +88,22 @@ def fuse_arms(
     fts_rows: list[SearchChunk],
     title_rows: list[SearchChunk] | None = None,
     *,
+    lexical_weight: float = 1.0,
     title_weight: float = 1.0,
 ) -> list[SearchChunk]:
     """Merge the arms into one list scored by reciprocal rank.
 
-    The vector and chunk-FTS arms weigh equally; a non-empty *title_rows* arm
-    joins at *title_weight* relative to them. Rows found by several arms carry
-    every provenance field (``distance`` from the vector arm, ``bm25_score``
-    from the FTS arms). The result is sorted by ``score`` descending and
-    deduplicated on ``(source, chunk_index)``.
+    The vector arm weighs 1; the chunk-FTS (lexical) arm weighs *lexical_weight*
+    relative to it (1.0 = equal voice, lower lets a strong dense arm dominate);
+    a non-empty *title_rows* arm joins at *title_weight*. Rows found by several
+    arms carry every provenance field (``distance`` from the vector arm,
+    ``bm25_score`` from the FTS arms). The result is sorted by ``score``
+    descending and deduplicated on ``(source, chunk_index)``.
     """
-    total_weight = 2.0 + (title_weight if title_rows else 0.0)
+    total_weight = 1.0 + lexical_weight + (title_weight if title_rows else 0.0)
     merged: dict[tuple[str, int], SearchChunk] = {}
     _merge_arm(merged, vector_rows, 1.0 / total_weight)
-    _merge_arm(merged, fts_rows, 1.0 / total_weight)
+    _merge_arm(merged, fts_rows, lexical_weight / total_weight)
     if title_rows:
         _merge_arm(merged, title_rows, title_weight / total_weight)
     return sorted(merged.values(), key=lambda r: r.score or 0.0, reverse=True)
