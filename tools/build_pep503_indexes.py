@@ -49,11 +49,6 @@ WHEEL_FILENAME_RE = re.compile(r"^lilbee_engine-(?P<version>[^-]+)-")
 _PROJECT = "lilbee-engine"
 _DEFAULT_RELEASE_BASE_URL = "https://github.com/tobocop2/lilbee/releases/download"
 
-# Backends whose wheels ship under the default filename (also on PyPI; renaming
-# would break the PyPI pin). Everything else gets a PEP 427 build tag inserted
-# so the GH release can hold every variant without filename collisions.
-_DEFAULT_BACKENDS: frozenset[str] = frozenset({"vulkan", "metal"})
-
 # Wheel filename layout (PEP 427): project-version[-buildtag]-python-abi-platform.whl
 _WHEEL_FILENAME_PARTS_NO_BUILDTAG = 5
 
@@ -76,22 +71,23 @@ def version_from_wheel_filename(name: str) -> str | None:
     return m.group("version") if m else None
 
 
-def build_tag_for_backend(backend: str) -> str | None:
-    """PEP 427 build tag used to disambiguate non-default backend variants."""
-    if backend in _DEFAULT_BACKENDS:
-        return None
+def build_tag_for_backend(backend: str) -> str:
+    """PEP 427 build tag that disambiguates the same-platform engine variants.
+
+    EVERY backend gets one. attach-release-artifacts.yml (and release-candidate.yml)
+    rename every ``lilbee_engine`` wheel to ``...-1.<backend>-...`` with no exception,
+    so all same-platform variants coexist in the GH release's flat namespace. These
+    indexes link those release assets, so they must use the tagged names -- there is
+    no plain (untagged) engine wheel in the release to point at. (An earlier version
+    exempted vulkan/metal as "PyPI defaults that ship plain", but lilbee-engine is
+    not on PyPI at all, so those indexes 404'd for every Mac/Vulkan user.)
+    """
     return f"1.{backend}"
 
 
 def rename_for_release(wheel_name: str, backend: str) -> str:
-    """Return the wheel filename as published on the GH release.
-
-    Default backends (vulkan/metal) keep their original name. Extra backends
-    get a build tag inserted after the version per PEP 427.
-    """
-    build_tag = build_tag_for_backend(backend)
-    if build_tag is None:
-        return wheel_name
+    """Return the wheel filename as published on the GH release: the raw wheel
+    with a ``-1.<backend>-`` build tag inserted after the version, per PEP 427."""
     parts = wheel_name.removesuffix(".whl").split("-")
     if len(parts) != _WHEEL_FILENAME_PARTS_NO_BUILDTAG:
         raise ValueError(
@@ -99,7 +95,7 @@ def rename_for_release(wheel_name: str, backend: str) -> str:
             f"(project-version-python-abi-platform.whl)"
         )
     project, version, python, abi, platform = parts
-    return f"{project}-{version}-{build_tag}-{python}-{abi}-{platform}.whl"
+    return f"{project}-{version}-{build_tag_for_backend(backend)}-{python}-{abi}-{platform}.whl"
 
 
 def collect_wheels(input_dir: Path) -> dict[str, list[Path]]:
