@@ -174,6 +174,22 @@ class TestEnsureFtsIndex:
         assert [c.args[0] for c in create_spy.call_args_list] == ["chunk", "title"]
         # Verify replace was NOT True (would defeat the purpose of incremental)
         assert all(c.kwargs.get("replace") is False for c in create_spy.call_args_list)
+        # Both indexes carry token positions so the lexical arm can serve
+        # phrase queries; without this LanceDB raises on any phrase.
+        assert all(c.kwargs.get("with_position") is True for c in create_spy.call_args_list)
+
+    def test_fts_phrase_query_does_not_fail(self, store):
+        """A multi-word phrase query must return matches, not raise on a missing index.
+
+        lilbee passes raw user query text to the lexical arm, so a quoted phrase
+        reaches LanceDB as a phrase query. Without positional indexing that raises
+        (and bm25_probe swallows it, returning nothing); with positions it matches.
+        """
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        results = store.bm25_probe('"some text"')
+        assert results
+        assert all("some text" in r.chunk for r in results)
 
     def test_bm25_probe_populates_bm25_score(self, store):
         """LanceDB FTS returns rows keyed on ``_score``; the probe must surface it as
