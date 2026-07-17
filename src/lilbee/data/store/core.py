@@ -432,7 +432,10 @@ class Store:
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
                 else:
-                    table.create_fts_index("chunk", replace=False)
+                    # with_position lets the lexical arm serve phrase queries;
+                    # raw user query text can reach LanceDB as a phrase, which
+                    # errors on a positionless index.
+                    table.create_fts_index("chunk", replace=False, with_position=True)
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 self._ensure_title_fts_unlocked(table)
                 self._fts_ready = True
@@ -448,7 +451,7 @@ class Store:
         if _TITLE_COLUMN not in table.schema.names or _has_fts_index(table, _TITLE_COLUMN):
             return
         try:
-            table.create_fts_index(_TITLE_COLUMN, replace=False)
+            table.create_fts_index(_TITLE_COLUMN, replace=False, with_position=True)
             log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
         except Exception:
             log.debug("Title FTS index create failed", exc_info=True)
