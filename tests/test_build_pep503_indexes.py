@@ -29,7 +29,8 @@ _RAW = "lilbee_engine-0.6.90b420.dev721-py3-none-macosx_11_0_arm64.whl"
 
 
 def test_every_backend_gets_a_build_tag() -> None:
-    # No backend is exempt: the release tags them all, so the index must too.
+    # No backend is exempt: the release tags them all (the index links those
+    # tagged release assets), so build_tag_for_backend never returns None.
     for backend in ("metal", "vulkan", "cu124", "cu125", "cu121", "cpu", "rocm"):
         assert bpi.build_tag_for_backend(backend) == f"1.{backend}"
 
@@ -63,4 +64,4 @@ def test_index_href_targets_the_tagged_asset(tmp_path: Path) -> None:
     assert "dev721-1.metal-py3-none-macosx_11_0_arm64.whl" in index
     # the plain (never-uploaded) name must not appear
     assert "dev721-py3-none-macosx_11_0_arm64.whl</a>" not in index
-    assert "dev721-py3-none-macosx_11_0_arm64.whl\"" not in index
+    assert 'dev721-py3-none-macosx_11_0_arm64.whl"' not in index
