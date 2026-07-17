@@ -76,3 +76,6 @@ packaging/snap-compat/payload/
 packaging/snap-cuda/payload/
 # Built engine binaries land here during wheel/executable builds.
 packaging/engine-wheel/lilbee_engine/bin/
+
+# The benchmark deps list is intentionally tracked despite the *.txt rule.
+!evals/benchmark/requirements.txt
