@@ -25,7 +25,7 @@ import httpx
 import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
-from lilbee.providers.fleet.binary import resolve_llama_swap
+from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
@@ -72,6 +72,7 @@ _STATE_KEY_PROXY_PORT = "proxy_port"
 _STATE_KEY_LILBEE_VERSION = "lilbee_version"
 _STATE_KEY_DETACHED = "detached"
 _STATE_KEY_LAUNCHES = "launches"
+_STATE_KEY_ENGINE_PIN = "engine_pin"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
 # reap scan's glob.
 _STATE_TMP_PREFIX = "."
@@ -139,6 +140,7 @@ class _SwapState:
     lilbee_version: str | None = None
     detached: bool = False
     launches: tuple[dict, ...] = ()
+    engine_pin: str | None = None
 
 
 class SwapManager:
@@ -253,6 +255,7 @@ class SwapManager:
             _STATE_KEY_LILBEE_VERSION: _pkg_version("lilbee"),
             _STATE_KEY_DETACHED: detached,
             _STATE_KEY_LAUNCHES: self._launches_payload,
+            _STATE_KEY_ENGINE_PIN: engine_pin(),
         }
         tmp_path = self._state_path.with_name(
             f"{_STATE_TMP_PREFIX}{self._state_path.name}{_STATE_TMP_SUFFIX}"
@@ -642,6 +645,7 @@ def _load_state(path: Path) -> _SwapState | None:
             lilbee_version=payload.get(_STATE_KEY_LILBEE_VERSION),
             detached=bool(payload.get(_STATE_KEY_DETACHED, False)),
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
+            engine_pin=payload.get(_STATE_KEY_ENGINE_PIN),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None
