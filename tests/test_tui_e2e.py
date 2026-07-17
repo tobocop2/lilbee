@@ -1261,10 +1261,13 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
-                await search.action_submit()
-                await pilot.pause()
-                grid = app.screen.query("#grid-chat ModelGrid").first()
-                assert grid.has_focus
+                # Enter installs the first match; stop the chain before it
+                # spawns a download worker that would outlive the test.
+                with mock.patch.object(app.screen, "_enqueue_download"):
+                    await search.action_submit()
+                    await pilot.pause()
+                    grid = app.screen.query("#grid-chat ModelGrid").first()
+                    assert grid.has_focus
 
     async def test_search_filters_list_view(self, _mock_resolve):
         """Typing in the filter narrows the visible row count in list view."""
@@ -1646,12 +1649,15 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
-                await search.action_submit()
-                for _ in range(10):
-                    await pilot.pause()
-                    if app.screen._list_widget.has_focus:
-                        break
-                assert app.screen._list_widget.has_focus
+                # Enter installs the first match; stop the chain before it
+                # spawns a download worker that would outlive the test.
+                with mock.patch.object(app.screen, "_enqueue_download"):
+                    await search.action_submit()
+                    for _ in range(10):
+                        await pilot.pause()
+                        if app.screen._list_widget.has_focus:
+                            break
+                    assert app.screen._list_widget.has_focus
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """The Chat task tab surfaces the chat featured family as a card.
@@ -3573,10 +3579,9 @@ class TestStreamFlushCoalescing:
         def fake_flush() -> None:
             flush_calls.append(None)
 
-        # Past timings: long enough ago that both the flush and the scroll fire.
-        timings = _StreamTimings(last_flush=0.0, last_scroll=0.0)
-        with mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"):
-            ChatScreen._maybe_flush_and_scroll(screen, fake_flush, timings)
+        # A past timing: long enough ago that the flush fires.
+        timings = _StreamTimings(last_flush=0.0)
+        ChatScreen._maybe_flush(screen, fake_flush, timings)
         assert len(flush_calls) == 1
         assert timings.last_flush > 0  # last_flush bumped
 
@@ -3595,8 +3600,7 @@ class TestStreamFlushCoalescing:
 
         # Set timings to 'right now' so the interval check fails.
         now = time.monotonic()
-        timings = _StreamTimings(last_flush=now, last_scroll=now)
-        with mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"):
-            ChatScreen._maybe_flush_and_scroll(screen, fake_flush, timings)
+        timings = _StreamTimings(last_flush=now)
+        ChatScreen._maybe_flush(screen, fake_flush, timings)
         assert flush_calls == []
-        assert timings.last_flush == now and timings.last_scroll == now
+        assert timings.last_flush == now

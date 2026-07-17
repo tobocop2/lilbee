@@ -318,6 +318,43 @@ class TestAssistantMessageAsync:
             assert not isinstance(am._content_widget, Markdown)
             assert am.use_markdown is False
 
+    async def test_append_content_in_plain_text_mode_is_literal(self) -> None:
+        """Streaming into a plain-text message stores the text as literal
+        Content: console-markup-looking answers (``[/path]``) must not parse."""
+        cfg.markdown_rendering = False
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("see [/usr/bin] for details")
+            assert isinstance(am._content_widget, Static)
+            assert "[/usr/bin]" in am._content_widget.content.plain
+
+    async def test_rebuild_content_widget_preserves_text_round_trip(self) -> None:
+        """Toggling markdown off and back on keeps the answer text.
+
+        Regression: the rebuilt Markdown widget was updated before mounting,
+        and Textual's Markdown re-renders from its constructor argument on
+        mount, wiping the pre-mount update and blanking every answer.
+        """
+        from textual.widgets import Markdown
+
+        cfg.markdown_rendering = True
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("The 9C1 arrived in **1986**.")
+            await am.rebuild_content_widget(use_markdown=False)
+            assert isinstance(am._content_widget, Static)
+            assert "1986" in am._content_widget.content.plain
+            await am.rebuild_content_widget(use_markdown=True)
+            await pilot.pause()
+            md = am._content_widget
+            assert isinstance(md, Markdown)
+            assert "1986" in md.source
+            assert list(md.query("MarkdownBlock"))
+
     async def test_rebuild_content_widget_noop_when_no_widget(self) -> None:
         from lilbee.cli.tui.widgets.message import AssistantMessage
 
@@ -815,6 +852,37 @@ class TestModelBar:
                 assert "-disabled" in toggle.classes
                 chat_pill = toggle.query_one("#chat-mode-chat", Static)
                 assert "-active" in chat_pill.classes
+
+    def test_chat_mode_toggle_refresh_before_compose_is_noop(self) -> None:
+        """A refresh on a toggle whose compose has not produced the pills yet
+        returns without touching them."""
+        from lilbee.cli.tui.widgets.model_bar import ChatModeToggle
+
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            toggle = ChatModeToggle()
+            toggle._refresh()
+            assert toggle._search_pill is None and toggle._chat_pill is None
+
+    async def test_chat_mode_toggle_refresh_survives_pills_not_in_dom(self) -> None:
+        """Regression: on_mount's refresh can run while the composed pills are
+        not yet attached to the DOM; querying for them there raised NoMatches
+        and took the screen down. The refresh reads the references compose
+        created instead, which exist whether or not the DOM does. Pills
+        removed from the DOM stand in for pills not yet attached to it.
+        """
+        from lilbee.cli.tui.widgets.model_bar import ChatModePill, ChatModeToggle
+
+        cfg.chat_mode = "chat"
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_available", return_value=True):
+            app = _ModelBarApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                toggle = app.query_one(ChatModeToggle)
+                for pill in list(toggle.query(ChatModePill)):
+                    await pill.remove()
+                toggle.refresh_state()
+                assert toggle._chat_pill is not None
+                assert "-active" in toggle._chat_pill.classes
 
     async def test_chat_mode_toggle_flips_on_click(self) -> None:
         from lilbee.cli.tui.widgets.model_bar import ChatModeToggle

@@ -8,7 +8,7 @@ import dataclasses
 import logging
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 from lilbee.app.memory import auto_extract, auto_extract_enabled
 from lilbee.app.search import clean_result
@@ -19,7 +19,11 @@ from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
-from lilbee.retrieval.query.searcher import EMPTY_LIBRARY, SEARCH_NEEDS_EMBEDDER
+from lilbee.retrieval.query.searcher import (
+    GROUNDED_REFUSAL,
+    SEARCH_NEEDS_EMBEDDER,
+    RagContext,
+)
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
     CAP_NOTICE_TEMPLATE,
@@ -103,7 +107,6 @@ async def search(
     results = await asyncio.to_thread(
         get_services().searcher.search, q, top_k=top_k, chunk_type=chunk_type
     )
-    results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
     return group(results)
 
 
@@ -384,12 +387,24 @@ async def chat(
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # message ask returns instead of silently answering off-corpus.
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
-    if not _retrieval_off(searcher, top_k):
-        # Count-shaped questions get the exact-scan answer, mirroring ask_raw.
-        direct = searcher.route_direct_answer(question)
-        if direct is not None:
-            return AskResponse(answer=direct, sources=[], cited_sources=[])
-    sources, messages = _build_chat_messages(question, history, top_k, chunk_type)
+    if _retrieval_off(searcher, top_k):
+        # Chat-only mode or an explicit top_k:0 pure-LLM call.
+        sources: list[SearchChunk] = []
+        messages = searcher.direct_messages(question, history)
+    else:
+        # Grounded turn: the searcher's own pre-retrieval ladder (empty
+        # library, count routing, memory-awareness) so surfaces cannot drift.
+        pre_answer = searcher.pre_retrieval_answer(question)
+        if pre_answer is not None:
+            return AskResponse(answer=pre_answer, sources=[], cited_sources=[])
+        rag = searcher.build_rag_context(
+            question, top_k=top_k or 0, history=history, chunk_type=chunk_type
+        )
+        if rag is None:
+            # Refuse like every sibling surface; the old fallback silently
+            # answered off-corpus with nothing telling the caller so.
+            return AskResponse(answer=GROUNDED_REFUSAL, sources=[], cited_sources=[])
+        sources, messages = rag
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
@@ -423,17 +438,37 @@ def chat_stream(
     )
 
 
+class _StreamResolution(NamedTuple):
+    """Retrieval outcome for a streaming turn.
+
+    ``preempt_frames`` are emitted verbatim before anything else; ``messages``
+    of ``None`` means the stream ends after them (a direct exact-scan answer
+    or a clean refusal/error).
+    """
+
+    sources: list[SearchChunk]
+    messages: list[ChatMessage] | None
+    preempt_frames: list[str]
+
+
+class _ChatStreamPlan(NamedTuple):
+    """Leading SSE frames plus the grounded context for a chat stream.
+
+    A ``None`` context means the turn can't proceed: emit the frames (a clean
+    refusal or error) and stop.
+    """
+
+    frames: list[str]
+    context: RagContext | None
+
+
 def _resolve_chat_stream_context(
     searcher: Searcher,
     question: str,
     history: list[ChatMessage],
     top_k: int | None,
     chunk_type: ChunkType | None,
-) -> tuple[list[str], tuple[list[SearchChunk], list[ChatMessage]] | None]:
-    """Resolve the leading SSE frames and the (sources, messages) for a chat
-    stream. When the second element is None the turn can't proceed: emit the
-    frames (a clean refusal or error) and stop. Otherwise emit the frames
-    (warming) and stream the answer grounded in the returned sources."""
+) -> _ChatStreamPlan:
     frames = list(_chat_warming_events())
     if searcher.search_unavailable():
         # Search mode with no embedder can't ground; refuse cleanly with the same
@@ -443,7 +478,7 @@ def _resolve_chat_stream_context(
             sse_event(SseEvent.SOURCES, []),
             sse_done({}),
         ]
-        return frames, None
+        return _ChatStreamPlan(frames, None)
     # Retrieval itself is resolved by the shared helper, so the chat stream
     # routes empty libraries and count questions exactly like the ask stream.
     sources, messages, preempt = _resolve_stream_context(
@@ -456,8 +491,8 @@ def _resolve_chat_stream_context(
     )
     frames += preempt
     if messages is None:
-        return frames, None
-    return frames, (sources, messages)
+        return _ChatStreamPlan(frames, None)
+    return _ChatStreamPlan(frames, RagContext(sources, messages))
 
 
 async def _stream_chat_response(
@@ -663,34 +698,25 @@ def _resolve_stream_context(
     chunk_type: ChunkType | None,
     *,
     retrieval_off: bool,
-) -> tuple[list[SearchChunk], list[ChatMessage] | None, list[str]]:
-    """Resolve retrieval for a streaming handler: (sources, messages, preempt).
+) -> _StreamResolution:
+    """Resolve retrieval for a streaming handler.
 
-    Non-empty ``preempt`` frames are emitted verbatim; ``messages`` of ``None``
-    means the stream ends after them (a direct exact-scan answer or an error).
     Shared by the ask and chat streams so the two paths cannot drift: both
     route count questions to the exact scan, surface an embedder mismatch as
     a coded SSE error, and report empty retrieval the same way.
     """
     if retrieval_off:
-        return [], searcher.direct_messages(question, history), []
-    if searcher.library_empty():
-        # Nothing indexed yet: point the user at adding content instead of
-        # reporting an empty search, matching Searcher.ask_stream.
+        return _StreamResolution([], searcher.direct_messages(question, history), [])
+    # The searcher's own pre-retrieval ladder (empty library, count routing,
+    # memory-awareness), so the stream surfaces cannot drift from ask_raw.
+    pre_answer = searcher.pre_retrieval_answer(question)
+    if pre_answer is not None:
         frames = [
-            sse_event(SseEvent.TOKEN, {"token": EMPTY_LIBRARY}),
+            sse_event(SseEvent.TOKEN, {"token": pre_answer}),
             sse_event(SseEvent.SOURCES, []),
             sse_done({}),
         ]
-        return [], None, frames
-    direct = searcher.route_direct_answer(question)
-    if direct is not None:
-        frames = [
-            sse_event(SseEvent.TOKEN, {"token": direct}),
-            sse_event(SseEvent.SOURCES, []),
-            sse_done({}),
-        ]
-        return [], None, frames
+        return _StreamResolution([], None, frames)
     try:
         rag = searcher.build_rag_context(
             question, top_k=top_k or 0, history=history, chunk_type=chunk_type
@@ -702,34 +728,11 @@ def _resolve_stream_context(
             code=SseErrorCode.INDEX_EMBEDDER_MISMATCH,
             detail=_mismatch_detail(mismatch),
         )
-        return [], None, [frame]
+        return _StreamResolution([], None, [frame])
     if rag is None:
-        return [], None, [sse_error("No relevant documents found.")]
+        return _StreamResolution([], None, [sse_error("No relevant documents found.")])
     results, messages = rag
-    return results, messages, []
-
-
-def _build_chat_messages(
-    question: str,
-    history: list[ChatMessage],
-    top_k: int | None,
-    chunk_type: ChunkType | None,
-) -> tuple[list[SearchChunk], list[ChatMessage]]:
-    """Run retrieval and return (sources, message_list).
-
-    Empty ``sources`` plus a direct-chat message list when retrieval is
-    disabled or returns nothing; otherwise the augmented prompt from
-    ``Searcher.build_rag_context``.
-    """
-    searcher = get_services().searcher
-    if _retrieval_off(searcher, top_k):
-        return [], searcher.direct_messages(question, history)
-    rag = searcher.build_rag_context(
-        question, top_k=top_k or 0, history=history, chunk_type=chunk_type
-    )
-    if rag is None:
-        return [], searcher.direct_messages(question, history)
-    return rag
+    return _StreamResolution(results, messages, [])
 
 
 _CANONICAL_ROLE_BY_WIRE: dict[str, Literal["user", "assistant", "tool"]] = {

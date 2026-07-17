@@ -23,10 +23,11 @@ def _capture_popen():
     """Patch Popen to record the stdout/stderr kwargs without spawning."""
     captured: dict = {}
 
-    def fake_popen(cmd, *, stdout, stderr):
+    def fake_popen(cmd, *, stdout, stderr, env=None):
         captured["cmd"] = cmd
         captured["stdout"] = stdout
         captured["stderr"] = stderr
+        captured["env"] = env
         return mock.MagicMock()
 
     with mock.patch.object(server_mod.subprocess, "Popen", side_effect=fake_popen):
@@ -205,7 +206,10 @@ class TestEnsureServerRunningRetries:
 
         assert session == ("tok", 2222)
         assert spawned is second
-        assert spawn.call_args_list == [mock.call(1111), mock.call(2222)]
+        assert spawn.call_args_list == [
+            mock.call(1111, env_overrides=None),
+            mock.call(2222, env_overrides=None),
+        ]
         first.terminate.assert_called_once()
         second.terminate.assert_not_called()
 
@@ -234,7 +238,9 @@ class TestEnsureServerRunningRetries:
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
         monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1, 2, 3]))
         seen: list[int] = []
-        monkeypatch.setattr(server_mod, "_spawn_and_wait", lambda port: seen.append(port) or None)
+        monkeypatch.setattr(
+            server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
+        )
         with pytest.raises(typer.Exit):
             server_mod.ensure_server_running()
         # The pinned port is used every attempt so a persisted URL stays valid.
@@ -247,7 +253,9 @@ class TestEnsureServerRunningRetries:
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
         monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[7, 8, 9]))
         seen: list[int] = []
-        monkeypatch.setattr(server_mod, "_spawn_and_wait", lambda port: seen.append(port) or None)
+        monkeypatch.setattr(
+            server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
+        )
         with pytest.raises(typer.Exit):
             server_mod.ensure_server_running()
         assert seen == [7, 8, 9]

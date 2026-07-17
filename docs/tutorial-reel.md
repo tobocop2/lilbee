@@ -40,6 +40,14 @@ at the exact spot.
 
 ![chat with cited answers](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
 
+## A straight answer, with the page it came from
+
+A customer wants to tow a 3,500 lb boat trailer. The car can't, and lilbee says so: the
+weight it *is* rated for, the combined limit, what to check before towing, and the page
+each of those came from. The fleet panel on the right is the GPU answering.
+
+![ask whether a car can tow a 3,500 lb boat trailer; lilbee says no, gives the real limits, and cites the manual page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.gif)
+
 ## Add files
 
 `/add <path>` copies the file into your library and embeds it. Switching to the Task

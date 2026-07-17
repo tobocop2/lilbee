@@ -104,8 +104,12 @@ class AssistantMessage(Vertical):
         self._thinking_header = header
         self.mount(header, before=self._content_widget)
 
-    def _build_content_widget(self) -> Markdown | Static:
+    def _build_content_widget(self, text: str = "") -> Markdown | Static:
         """Create the content widget based on the current rendering mode.
+
+        *text* must be passed at construction rather than via a later
+        ``update()``: Textual's Markdown re-renders from its constructor
+        argument on mount, discarding any pre-mount update.
 
         ``open_links=False``: clicks route to the chat screen's link handler,
         which opens ``file:`` citations with the OS opener instead of the
@@ -113,12 +117,12 @@ class AssistantMessage(Vertical):
         """
         if self._use_markdown:
             return Markdown(
-                "",
+                text,
                 classes="response-md",
                 parser_factory=_answer_markdown_parser,
                 open_links=False,
             )
-        return Static("", classes="response-md")
+        return Static(Content(text), classes="response-md")
 
     @property
     def use_markdown(self) -> bool:
@@ -131,9 +135,7 @@ class AssistantMessage(Vertical):
             return
         self._use_markdown = use_markdown
         old = self._content_widget
-        new_widget = self._build_content_widget()
-        text = "".join(self._content_parts)
-        self._set_content(new_widget, text)
+        new_widget = self._build_content_widget("".join(self._content_parts))
         await self.mount(new_widget, after=old)
         self._content_widget = new_widget
         await old.remove()

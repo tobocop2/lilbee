@@ -459,11 +459,15 @@ class TestOptionsPassthrough:
             wraps=_resolve_generation_options,
         ) as spy:
             async with AsyncTestClient(create_app()) as client:
+                # top_k 0 takes the deliberate pure-LLM path; with retrieval
+                # on, an empty isolated library now answers EMPTY_LIBRARY
+                # before options are ever resolved.
                 resp = await client.post(
                     "/api/chat",
                     json={
                         "question": "test",
                         "history": [],
+                        "top_k": 0,
                         "options": {"seed": 42},
                     },
                     headers=_auth_headers(),

@@ -54,6 +54,7 @@ from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import (
+    EmbeddingModelMismatchError,
     MemoryKind,
     MemorySource,
     SearchScope,
@@ -193,8 +194,17 @@ def search(
         results = get_services().searcher.search(
             query, top_k=effective_top_k, chunk_type=chunk_type
         )
-        results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
         return [clean_result(r) for r in results]
+    except EmbeddingModelMismatchError as exc:
+        # Structured, like the HTTP 409: an agent can offer to adopt the
+        # index's embedder instead of parsing prose out of a generic error.
+        return {
+            "error": str(exc),
+            "code": "INDEX_EMBEDDER_MISMATCH",
+            "persisted_model": exc.persisted_model,
+            "persisted_dim": exc.persisted_dim,
+            "adoptable": exc.dims_match,
+        }
     except Exception as exc:
         return _error(str(exc))
 

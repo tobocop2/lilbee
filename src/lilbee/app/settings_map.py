@@ -856,6 +856,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Route document-name lookups to exact retrieval, count questions to a scan",
     ),
+    "intent_llm": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text=(
+            "Classify count questions with the chat model when the fast patterns "
+            "miss (covers phrasing variants and other languages; adds one short "
+            "LLM call to those turns)"
+        ),
+    ),
     "ann_index_threshold": SettingDef(
         int,
         nullable=False,
@@ -936,6 +946,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Drop expansions that diverge from the original intent",
     ),
+    "adaptive_threshold": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Widen the distance cutoff when too few results pass (vector-only fallback path)",
+    ),
     "adaptive_threshold_step": SettingDef(
         float,
         nullable=False,
@@ -953,12 +969,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum boost (0-1) the concept graph can add to a chunk's relevance",
-    ),
-    "concept_boost_floor": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.RETRIEVAL,
-        help_text="Minimum cosine similarity needed before the concept graph boosts a chunk",
     ),
     "concept_max_per_chunk": SettingDef(
         int,

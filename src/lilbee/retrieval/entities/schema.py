@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 from pydantic import BaseModel, Field, field_validator
 
+from lilbee.retrieval.language import noun_variants
+
 if TYPE_CHECKING:
     from lilbee.data.store import Store
     from lilbee.data.store.types import EntitySchemaState
@@ -52,46 +54,6 @@ class EntityType(BaseModel):
         if not slug.replace("_", "").isalnum():
             raise ValueError(f"type name must be alphanumeric words: {v!r}")
         return slug
-
-
-# Plural forms the suffix rules below can't produce, mapped both ways.
-_IRREGULAR_PLURALS = {
-    "person": "people",
-    "man": "men",
-    "woman": "women",
-    "child": "children",
-    "foot": "feet",
-    "tooth": "teeth",
-    "mouse": "mice",
-    "goose": "geese",
-}
-_IRREGULAR_SINGULARS = {plural: singular for singular, plural in _IRREGULAR_PLURALS.items()}
-
-
-def noun_variants(noun: str) -> set[str]:
-    """Normalized spelling variants of a noun phrase: itself plus
-    singular/plural forms of its last word ("tail numbers" ~ "tail number",
-    "people" ~ "person"). Over-generated junk forms match nothing; a missed
-    form only fails to resolve, never resolves wrongly.
-    """
-    normalized = " ".join(noun.strip().lower().split())
-    if not normalized:
-        return set()
-    head, _, last = normalized.rpartition(" ")
-    prefix = head + " " if head else ""
-    forms = {last}
-    if last in _IRREGULAR_PLURALS:
-        forms.add(_IRREGULAR_PLURALS[last])
-    if last in _IRREGULAR_SINGULARS:
-        forms.add(_IRREGULAR_SINGULARS[last])
-    if last.endswith("ies") and len(last) > len("ies"):
-        forms.add(last[:-3] + "y")
-    if last.endswith("y"):
-        forms.add(last[:-1] + "ies")
-    if last.endswith(("ses", "xes", "zes", "ches", "shes")):
-        forms.add(last[:-2])
-    forms.add(last[:-1] if last.endswith("s") else last + "s")
-    return {prefix + form for form in forms}
 
 
 class EntitySchema(BaseModel):

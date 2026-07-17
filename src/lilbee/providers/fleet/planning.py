@@ -15,6 +15,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.core.system import is_network_path
 from lilbee.providers import model_cache
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.adapters import (
     LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
@@ -935,15 +936,18 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     """Enumerate devices in the binary's index space, or the Vulkan VRAM probe.
 
     The binary's ``--list-devices`` is authoritative; when it enumerates nothing,
-    fall back to the Vulkan VRAM probe, which reports the same index space.
+    fall back to the Vulkan VRAM probe, which reports the same index space. A
+    probe that times out raises instead (a wedged GPU driver); falling through
+    to the in-process Vulkan probe there could hang this thread unkillably.
     """
     from lilbee.providers.fleet.cuda_runtime import assert_cuda_devices_usable
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
 
-    devices = probe_devices(binary)
+    probe = probe_devices(binary)
+    devices = probe.devices
     # A CUDA build that links a runtime it cannot init a GPU with must fail loud,
     # not silently fall back to CPU (the Vulkan VRAM probe below would mask it).
-    assert_cuda_devices_usable(binary, devices)
+    assert_cuda_devices_usable(binary, devices, probe.output)
     if not devices and model_cache.has_nvidia_gpu():
         log.warning(
             "This host has an NVIDIA GPU but the engine's device probe "
@@ -960,6 +964,10 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
 
 
 _DEVICE_PROBE_TTL_S = 2.0
+# A failed probe is cached much longer than a good one: each retry against a
+# wedged GPU driver costs a full probe timeout, so a per-poll retry would stall
+# every placement read for a minute at a time.
+_DEVICE_PROBE_FAILURE_TTL_S = 60.0
 
 
 class _ReadDeviceCache:
@@ -967,32 +975,45 @@ class _ReadDeviceCache:
 
     Inspecting placement (GET placement/gpus, preview, ``placement show``)
     resolves devices on every call, which spawns a ``llama-server --list-devices``
-    subprocess; a brief TTL collapses a burst of reads onto one probe. The launch
-    path is never served from here -- it sizes against the clean-box plan
-    snapshot below (captured after stale-server reaping).
+    subprocess; a brief TTL collapses a burst of reads onto one probe. A probe
+    failure is cached too (with its own TTL) and re-raised to every read in the
+    window. The launch path is never served from here -- it sizes against the
+    clean-box plan snapshot below (captured after stale-server reaping).
     """
 
-    def __init__(self, ttl_s: float) -> None:
+    def __init__(self, ttl_s: float, failure_ttl_s: float) -> None:
         self._ttl_s = ttl_s
+        self._failure_ttl_s = failure_ttl_s
         self._lock = threading.Lock()
         self._at: float | None = None
         self._devices: list[FleetDevice] | None = None
+        self._failure: ProviderError | None = None
 
     def get(self, binary: Path) -> list[FleetDevice]:
         with self._lock:
-            fresh = self._at is not None and time.monotonic() - self._at < self._ttl_s
+            ttl = self._ttl_s if self._failure is None else self._failure_ttl_s
+            fresh = self._at is not None and time.monotonic() - self._at < ttl
+            if fresh and self._failure is not None:
+                raise self._failure
             if self._devices is None or not fresh:
-                self._devices = resolve_devices(binary)
                 self._at = time.monotonic()
+                try:
+                    self._devices = resolve_devices(binary)
+                except ProviderError as exc:
+                    self._devices = None
+                    self._failure = exc
+                    raise
+                self._failure = None
             return self._devices
 
     def clear(self) -> None:
         with self._lock:
             self._at = None
             self._devices = None
+            self._failure = None
 
 
-_read_device_cache = _ReadDeviceCache(_DEVICE_PROBE_TTL_S)
+_read_device_cache = _ReadDeviceCache(_DEVICE_PROBE_TTL_S, _DEVICE_PROBE_FAILURE_TTL_S)
 
 
 def clear_read_device_cache() -> None:

@@ -259,24 +259,3 @@ class TestRagHandlerHelpers:
 
         with pytest.raises(ValueError, match="Unsupported message role"):
             _canonical_role("system")
-
-    def test_build_chat_messages_falls_back_when_retrieval_skipped(
-        self, services_with_chat_dispatch, monkeypatch
-    ) -> None:
-        from lilbee.core.config.enums import ChatMode
-        from lilbee.server.handlers.rag import _build_chat_messages
-
-        monkeypatch.setattr(cfg, "chat_mode", ChatMode.CHAT.value)
-        sources, msgs = _build_chat_messages("q", [], 0, None)
-        assert sources == []
-        assert msgs[-1] == {"role": "user", "content": "q"}
-
-    def test_build_chat_messages_falls_back_when_rag_returns_none(
-        self, services_with_chat_dispatch
-    ) -> None:
-        from lilbee.server.handlers.rag import _build_chat_messages
-
-        services_with_chat_dispatch.searcher.build_rag_context = MagicMock(return_value=None)
-        sources, msgs = _build_chat_messages("q", [], 0, None)
-        assert sources == []
-        assert msgs[-1] == {"role": "user", "content": "q"}

@@ -143,7 +143,7 @@ def test_launch_opencode_spawns_fresh_server_when_session_files_are_stale(tmp_pa
     fake_proc = MagicMock()
     fake_proc.poll.return_value = None
 
-    def _spawn_and_rewrite_session(_port: int):
+    def _spawn_and_rewrite_session(_port: int, **_kw):
         # Real server would write fresh session files on boot; simulate that
         # so running_server_session() returns the spawned (fresh) port/token.
         _write_server_session()
@@ -514,7 +514,7 @@ def test_launch_opencode_spawns_server_when_none_running():
     fake_proc = MagicMock()
     fake_proc.poll.return_value = None
 
-    def _spawn_and_write(_port: int):
+    def _spawn_and_write(_port: int, **_kw):
         _write_server_session()
         return fake_proc
 

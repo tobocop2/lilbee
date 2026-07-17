@@ -93,30 +93,36 @@ _WARM_POLL_INTERVAL_S = 0.25
 _WARM_STREAM_TIMEOUT_S = 1800.0
 
 
-def _chat_status(provider: LLMProvider) -> Literal["ready", "loading", "not_started", "error"]:
-    """Classify the chat engine's readiness for /api/health.
+def _chat_status(
+    provider: LLMProvider,
+) -> tuple[Literal["ready", "loading", "not_started", "error"], str | None]:
+    """Classify the chat engine's readiness for /api/health, with the error reason.
 
-    ``ready`` once the role serves; ``error`` when warm-up failed; ``loading``
-    while a warm is in flight; ``not_started`` when nothing is warming and the role
-    isn't up (no chat model planned, or chat is swapped out for its co-tenant; the
-    next chat request loads it).
+    ``ready`` once the role serves; ``error`` when warm-up failed (paired with the
+    warm tracker's reason); ``loading`` while a warm is in flight; ``not_started``
+    when nothing is warming and the role isn't up (no chat model planned, or chat
+    is swapped out for its co-tenant; the next chat request loads it).
     """
     if provider.role_ready(WorkerRole.CHAT):
-        return "ready"
+        return "ready", None
     snapshot = provider.warm_progress()
     if snapshot is None:
-        return "not_started"
-    return "error" if snapshot.phase is WarmPhase.ERROR else "loading"
+        return "not_started", None
+    if snapshot.phase is WarmPhase.ERROR:
+        return "error", snapshot.error
+    return "loading", None
 
 
 async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
     provider = get_services().provider
+    chat_status, chat_error = _chat_status(provider)
     return HealthResponse(
         status="ok",
         version=get_version(),
         chat_ready=provider.role_ready(WorkerRole.CHAT),
-        chat_status=_chat_status(provider),
+        chat_status=chat_status,
+        chat_error=chat_error,
         chat_ctx=provider.served_chat_ctx(),
     )
 
