@@ -934,6 +934,24 @@ class FleetProvider:
             )
         return list(clients)
 
+    def _with_rediscover(self, call: Callable[[], _T]) -> _T:
+        """Run *call*; on a connection-kind failure, re-run the ladder once.
+
+        A vanished engine (an owner's config change restarted it, or it died)
+        surfaces as ProviderErrorKind.CONNECTION. Membership is still held, so
+        dropping the swap refs and retrying sends the call through
+        _ensure_fleet, which rediscovers the new proxy ports or rebuilds. One
+        retry only; a second failure surfaces to the caller.
+        """
+        try:
+            return call()
+        except ProviderError as err:
+            if err.kind is not ProviderErrorKind.CONNECTION:
+                raise
+            log.info("Engine unreachable; rediscovering before one retry")
+            self._drop_swap_refs()
+            return call()
+
     def _rebuild_role(self, role: WorkerRole) -> None:
         """Restart just *role*'s dead group (new port) from a fresh plan.
 
@@ -1139,11 +1157,15 @@ class FleetProvider:
         server_options = chat_options_to_kwargs(options) or None
         if stream:
             # generator satisfies ClosableIterator; close() releases the request.
+            # Mid-stream engine restarts surface to the caller as a retry error;
+            # rediscovery covers the next call.
             return client.chat_stream_items(  # type: ignore[return-value]
                 messages, tools=tools, tool_choice=tool_choice, options=server_options
             )
-        return client.chat_result(
-            messages, tools=tools, tool_choice=tool_choice, options=server_options
+        return self._with_rediscover(
+            lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_result(
+                messages, tools=tools, tool_choice=tool_choice, options=server_options
+            )
         )
 
     def chat_with_tools(
@@ -1198,6 +1220,9 @@ class FleetProvider:
         return result.messages
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._with_rediscover(lambda: self._embed_once(texts))
+
+    def _embed_once(self, texts: list[str]) -> list[list[float]]:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.embed(texts))
 
@@ -1345,6 +1370,9 @@ class FleetProvider:
         return pages
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
+        return self._with_rediscover(lambda: self._rerank_once(query, candidates))
+
+    def _rerank_once(self, query: str, candidates: list[str]) -> list[float]:
         clients = self._require_clients(WorkerRole.RERANK)
         return _call_with_failover(clients, lambda client: client.rerank(query, candidates))
 

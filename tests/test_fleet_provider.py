@@ -2135,6 +2135,9 @@ class _FakeReplica:
     def mark_healthy(self) -> None:
         self.healthy = True
 
+    def close(self) -> None:
+        """Rediscovery retires the pool; a real client's close releases httpx."""
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls += 1
         if self.fail is not None:
@@ -2188,14 +2191,17 @@ class TestReplicaHealthRouting:
         p.embed(["b"])  # routed straight to the healthy replica now
         assert dead.calls == dead_calls_after_failover
 
-    def test_all_dead_surfaces_provider_error(self) -> None:
+    def test_all_dead_surfaces_provider_error(self, monkeypatch, tmp_path) -> None:
+        # All replicas dead now triggers one engine rediscovery; when the
+        # rebuild serves nothing (as here), that emptiness is what surfaces.
         import httpx as _httpx
 
         from lilbee.providers.base import ProviderError
 
+        _install_ladder(monkeypatch, tmp_path, launches=[])
         only = _FakeReplica(fail=_httpx.ConnectError("refused"))
         p = _provider_with_clients({WorkerRole.EMBED: [only]})
-        with pytest.raises(ProviderError, match="no healthy replica"):
+        with pytest.raises(ProviderError, match="No embed model server"):
             p.embed(["a"])
 
     def test_vision_ocr_fails_over_to_healthy_replica(self, monkeypatch) -> None:
@@ -3310,3 +3316,77 @@ def test_ladder_rolls_back_earlier_binds_when_a_later_one_fails(
     p._ensure_fleet()
     assert len(swap.binds) == 2  # first bound, second refused
     assert swap.shutdowns_after_bind >= 1  # the earlier bind was rolled back
+
+
+# ── Retry-rediscover: a vanished engine gets one ladder re-run ──────
+
+
+def _embed_launch() -> InstanceLaunch:
+    return InstanceLaunch(
+        role=WorkerRole.EMBED, argv=["/bin/llama-server"], env_overrides={}, model="m-embed"
+    )
+
+
+def _connection_error() -> Exception:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    return ProviderError("refused", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+
+
+def test_connection_failure_rediscovers_once_and_recovers(monkeypatch, tmp_path: Path) -> None:
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.embed.side_effect = _connection_error()
+        else:
+            client.embed.return_value = [[1.0]]
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+    p = FleetProvider()
+    assert p.embed(["hello"]) == [[1.0]]
+    assert len(clients) == 2  # first pool failed, rediscovery built a second
+
+
+def test_persistent_connection_failure_raises_after_one_retry(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError
+
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+    calls: list[int] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        client.embed.side_effect = _connection_error()
+        calls.append(1)
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+    p = FleetProvider()
+    with pytest.raises(ProviderError):
+        p.embed(["hello"])
+    assert len(calls) == 2  # exactly one rediscovery, then the error surfaces
+
+
+def test_non_connection_errors_do_not_rediscover(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+    calls: list[int] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        client.embed.side_effect = ProviderError(
+            "boom", provider="llama-server", kind=ProviderErrorKind.SERVER
+        )
+        calls.append(1)
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+    p = FleetProvider()
+    with pytest.raises(ProviderError):
+        p.embed(["hello"])
+    assert len(calls) == 1  # no ladder re-run for non-connection failures
