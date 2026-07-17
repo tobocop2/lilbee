@@ -22,7 +22,7 @@ from textual.widgets import Input, ListItem, ListView, Static
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.sessions import SessionMeta, SessionStore, TitleSource
+from lilbee.sessions import HUMAN_ORIGINS, SessionMeta, SessionStore, TitleSource
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -116,7 +116,9 @@ class SessionListPanel(Vertical):
         The filter text is not a parameter: it lives in _query and survives a
         reload, so deleting a row leaves the list filtered as the user left it.
         """
-        self._metas = self._store().list()
+        # Agent (MCP) sessions are working state, not conversations; they
+        # never appear here.
+        self._metas = self._store().list(origins=HUMAN_ORIGINS)
         self._render_rows()
 
     def _render_rows(self) -> None:

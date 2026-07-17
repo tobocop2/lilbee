@@ -12,6 +12,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.sessions.store import (
+    HUMAN_ORIGINS,
     SESSIONS_DIRNAME,
     UNTITLED_SESSION_TITLE,
     MessageRole,
@@ -332,8 +333,43 @@ def test_append_without_a_surface_keeps_working(store: SessionStore) -> None:
     assert store.get(sid).meta.message_count == 1
 
 
+def test_human_surfaces_append_to_each_others_sessions(store: SessionStore) -> None:
+    """TUI, HTTP, and CLI are one conversation space: the same person in the
+    terminal, Obsidian, or the shell needs no claim dance between them."""
+    sid = store.create(model_ref="m", scope="both")  # origin: tui
+    store.add_message(
+        sid, SessionMessage(role=MessageRole.USER, content="q"), surface=SessionOrigin.HTTP
+    )
+    store.add_message(
+        sid, SessionMessage(role=MessageRole.USER, content="q"), surface=SessionOrigin.CLI
+    )
+    assert store.get(sid).meta.message_count == 2
+    assert store.get(sid).meta.origin == SessionOrigin.TUI, "no transfer involved"
+
+
+def test_human_surfaces_do_not_append_to_agent_sessions(store: SessionStore) -> None:
+    """The domain boundary cuts both ways: agent working state is not a
+    human surface's to write into without a claim."""
+    sid = store.create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
+    with pytest.raises(SessionOwnershipError):
+        store.add_message(
+            sid, SessionMessage(role=MessageRole.USER, content="q"), surface=SessionOrigin.TUI
+        )
+
+
+def test_list_filters_by_origin(store: SessionStore) -> None:
+    """Surfaces scope their listings: human surfaces never see agent working
+    state, agents never see human conversations."""
+    human = store.create(model_ref="m", scope="both")
+    agent = store.create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
+    assert [m.id for m in store.list(origins=HUMAN_ORIGINS)] == [human]
+    assert [m.id for m in store.list(origins=frozenset({SessionOrigin.MCP}))] == [agent]
+    assert {m.id for m in store.list()} == {human, agent}, "None means everything"
+
+
 def test_transfer_claims_the_session_for_the_new_surface(store: SessionStore) -> None:
-    """Resuming an agent's session in the TUI is the explicit user transfer."""
+    """claim over MCP (or POST /claim back) is the explicit bridge between
+    the human and agent domains."""
     sid = store.create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
     store.transfer(sid, SessionOrigin.TUI)
     assert store.get(sid).meta.origin == SessionOrigin.TUI

@@ -62,7 +62,7 @@ def list_cmd(
         console.print("No saved sessions.")
         return
     table = Table(box=None, pad_edge=False)
-    for column in ("ID", "Title", "Msgs", "Model", "Updated"):
+    for column in ("ID", "Title", "Msgs", "Model", "Origin", "Updated"):
         table.add_column(column, justify="right" if column == "Msgs" else "left")
     for meta in metas:
         table.add_row(
@@ -70,6 +70,7 @@ def list_cmd(
             meta.title,
             str(meta.message_count),
             meta.model_ref,
+            meta.origin.value,
             meta.updated_at[:19],
         )
     console.print(table)

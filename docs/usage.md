@@ -238,9 +238,12 @@ Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
 conversation. No database; back them up or sync them like any other file.
 The same surface exists over HTTP and MCP (list, read, create, append,
 rename, delete), so a script or agent can own a conversation the way the
-TUI does. Sessions belong to the surface that created them: appends from
-another surface are refused until it claims the session, and resuming an
-agent's session in the TUI claims it for you.
+TUI does. The TUI, HTTP server, and CLI are one conversation space: start
+a chat in Obsidian, continue it in the terminal. Agent (MCP) sessions are
+separate: they never appear in your session list, and agents cannot list
+or read yours. The one bridge is explicit: an agent can take over a
+session whose id you hand it (`claim=true`, which moves it to the agent's
+space), and `POST /api/sessions/{id}/claim` brings one back.
 
 To keep nothing, turn `sessions_enabled` off in Settings: nothing is written
 to disk, `ctrl+o` leaves the footer, and the Sessions view says sessions are

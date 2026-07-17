@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from lilbee.sessions.store import (
+    HUMAN_ORIGINS,
     MessageRole,
     Session,
     SessionMessage,
@@ -16,6 +17,7 @@ from lilbee.sessions.store import (
 )
 
 __all__ = [
+    "HUMAN_ORIGINS",
     "MessageRole",
     "Session",
     "SessionMessage",

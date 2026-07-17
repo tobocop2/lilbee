@@ -15,7 +15,7 @@ from lilbee.mcp_server import (
     session_set_summary,
     sessions_list,
 )
-from lilbee.sessions import MessageRole, SessionMessage, TitleSource
+from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, TitleSource
 from tests.conftest import make_mock_services
 
 
@@ -36,8 +36,8 @@ def store():
     svc_mod.set_services(None)
 
 
-def _seed(store) -> str:
-    session_id = store.create(model_ref="gpt-oss-20b", scope="both")
+def _seed(store, origin: SessionOrigin = SessionOrigin.MCP) -> str:
+    session_id = store.create(model_ref="gpt-oss-20b", scope="both", origin=origin)
     store.set_title(session_id, "Torque specs", TitleSource.AUTO)
     store.add_message(session_id, SessionMessage(role=MessageRole.USER, content="what specs?"))
     store.add_message(
@@ -131,10 +131,44 @@ def test_session_delete_unknown_errors(store):
 
 def test_appending_to_a_foreign_session_errors_with_claim_hint(store):
     """An agent must not splice into a TUI conversation; the error names the fix."""
-    session_id = _seed(store)  # origin: tui
+    session_id = _seed(store, origin=SessionOrigin.TUI)
     result = session_add_message(session_id, "user", "spliced")
     assert "claim" in result["error"].lower()
-    assert session_get(session_id)["meta"]["message_count"] == 2, "nothing landed"
+    assert store.get(session_id).meta.message_count == 2, "nothing landed"
+
+
+def test_human_sessions_are_invisible_to_agents(store):
+    """sessions_list scopes to agent-owned sessions: your conversations are
+    not readable by any connected MCP client."""
+    _seed(store, origin=SessionOrigin.TUI)
+    _seed(store, origin=SessionOrigin.HTTP)
+    mine = _seed(store)
+    result = sessions_list()
+    assert [s["id"] for s in result["sessions"]] == [mine]
+    assert result["total"] == 1
+
+
+def test_human_sessions_answer_not_found_so_agents_cannot_probe(store):
+    """Reads and mutations of a human session look identical to a missing id:
+    an agent cannot learn which conversations exist."""
+    session_id = _seed(store, origin=SessionOrigin.TUI)
+    missing = session_get("nope")["error"].replace("'nope'", f"'{session_id}'")
+    assert session_get(session_id)["error"] == missing
+    assert session_rename(session_id, "x")["error"] == missing
+    assert session_set_summary(session_id, "x")["error"] == missing
+    assert session_delete(session_id)["error"] == missing
+    assert store.get(session_id).meta.title == "Torque specs", "nothing changed"
+
+
+def test_claim_makes_a_session_readable_and_removes_it_from_human_space(store):
+    """claim=True is the one bridge: the session becomes the agent's, so it
+    reads over MCP and leaves the human surfaces' lists."""
+    session_id = _seed(store, origin=SessionOrigin.TUI)
+    assert session_add_message(session_id, "user", "mine now", claim=True)["added"] is True
+    assert session_get(session_id)["meta"]["message_count"] == 3
+    assert store.list(origins=frozenset({SessionOrigin.MCP})) and not store.list(
+        origins=frozenset({SessionOrigin.TUI})
+    )
 
 
 def test_claim_flag_transfers_and_appends_atomically(store):

@@ -1421,10 +1421,6 @@ class ChatScreen(Screen[None]):
         """Load a saved session into the chat view and make it the active one."""
         store = get_services().session_store
         session = store.get(session_id)
-        if session.meta.origin is not SessionOrigin.TUI:
-            # Resuming here IS the explicit transfer: the human is taking the
-            # conversation over from an agent surface.
-            store.transfer(session_id, SessionOrigin.TUI)
         self._reset_conversation()
         self._session_id = session_id
         for message in session.messages:

@@ -43,6 +43,19 @@ def test_list_human(seeded):
     assert "Torque specs" in result.output
 
 
+def test_list_is_the_admin_view_and_labels_agent_sessions(seeded):
+    """The CLI lists every origin (it is where stray agent sessions get
+    cleaned up), so each row says whose it is."""
+    from lilbee.sessions import SessionOrigin
+
+    tmp_path, _ = seeded
+    SessionStore().create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
+    result = runner.invoke(app, _args(tmp_path, "list"))
+    assert result.exit_code == 0
+    assert "mcp" in result.output
+    assert "tui" in result.output
+
+
 def test_list_empty(tmp_path):
     (tmp_path / "data").mkdir()
     result = runner.invoke(app, _args(tmp_path, "list"))

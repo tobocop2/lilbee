@@ -18,7 +18,7 @@ from lilbee.server.routes.sessions import (
     session_set_summary_route,
     sessions_list_route,
 )
-from lilbee.sessions import MessageRole, SessionMessage, TitleSource
+from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, TitleSource
 from tests.conftest import make_mock_services
 
 
@@ -51,8 +51,8 @@ def client(store):
     auth_mod.session_manager.cleanup()
 
 
-def _seed(store) -> str:
-    session_id = store.create(model_ref="gpt-oss-20b", scope="both")
+def _seed(store, origin: SessionOrigin = SessionOrigin.TUI) -> str:
+    session_id = store.create(model_ref="gpt-oss-20b", scope="both", origin=origin)
     store.set_title(session_id, "Torque specs", TitleSource.AUTO)
     store.add_message(session_id, SessionMessage(role=MessageRole.USER, content="what specs?"))
     store.add_message(
@@ -187,9 +187,20 @@ def test_reads_are_read_only_and_writes_are_not():
 
 
 class TestOwnership:
-    def test_appending_to_a_tui_session_is_409(self, client, store):
-        """An HTTP client must not splice into a conversation the TUI owns."""
-        session_id = _seed(store)  # store.create default origin: tui
+    def test_appending_to_a_tui_session_succeeds(self, client, store):
+        """TUI, HTTP, and CLI are one conversation space: no claim dance
+        between the plugin and the terminal."""
+        session_id = _seed(store)
+        resp = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "from obsidian", "sources": []},
+        )
+        assert resp.status_code == 201
+        assert store.get(session_id).meta.origin is SessionOrigin.TUI, "no transfer needed"
+
+    def test_appending_to_an_agent_session_is_409(self, client, store):
+        """An HTTP client must not splice into an agent's working state."""
+        session_id = _seed(store, origin=SessionOrigin.MCP)
         resp = client.post(
             f"/api/sessions/{session_id}/messages",
             json={"role": "user", "content": "spliced", "sources": []},
@@ -197,14 +208,22 @@ class TestOwnership:
         assert resp.status_code == 409
         assert "claim" in resp.json()["detail"].lower()
 
-    def test_claim_then_append_succeeds(self, client, store):
-        session_id = _seed(store)
+    def test_claim_brings_an_agent_session_back_to_human_space(self, client, store):
+        session_id = _seed(store, origin=SessionOrigin.MCP)
         assert client.post(f"/api/sessions/{session_id}/claim").status_code == 201
         resp = client.post(
             f"/api/sessions/{session_id}/messages",
             json={"role": "user", "content": "mine now", "sources": []},
         )
         assert resp.status_code == 201
+        assert any(s["id"] == session_id for s in client.get("/api/sessions").json()["sessions"])
+
+    def test_agent_sessions_are_absent_from_the_list(self, client, store):
+        """Agent working state stays out of the human surfaces' lists."""
+        mine = _seed(store)
+        _seed(store, origin=SessionOrigin.MCP)
+        sessions = client.get("/api/sessions").json()["sessions"]
+        assert [s["id"] for s in sessions] == [mine]
 
     def test_http_created_sessions_append_without_claiming(self, client, store):
         created = client.post("/api/sessions", json={"model_ref": "m", "scope": "both"}).json()

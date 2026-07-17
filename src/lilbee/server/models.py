@@ -670,7 +670,8 @@ class SessionMetaItem(BaseModel):
     scope: str
     message_count: int
     origin: str = "tui"
-    """Owning surface (tui / mcp / http / cli); appends from others are 409."""
+    """Owning surface. tui/http/cli are one domain and append freely to each
+    other's sessions; appends across the human/agent (mcp) boundary are 409."""
 
 
 class SessionListResponse(BaseModel):

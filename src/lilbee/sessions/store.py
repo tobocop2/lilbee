@@ -54,6 +54,14 @@ class SessionOrigin(StrEnum):
     CLI = "cli"
 
 
+# The surfaces a human drives directly. Their sessions are one conversation
+# space (start in Obsidian, continue in the TUI); agent sessions are working
+# state and stay out of it unless asked for.
+HUMAN_ORIGINS: frozenset[SessionOrigin] = frozenset(
+    {SessionOrigin.TUI, SessionOrigin.HTTP, SessionOrigin.CLI}
+)
+
+
 class MessageRole(StrEnum):
     """Author of a chat message."""
 
@@ -114,6 +122,19 @@ class SessionNotFoundError(Exception):
     def __init__(self, session_id: str) -> None:
         super().__init__(f"No session with id {session_id!r}")
         self.session_id = session_id
+
+
+def _may_append(surface: SessionOrigin, owner: SessionOrigin) -> bool:
+    """Whether *surface* may append to a session owned by *owner*.
+
+    The human surfaces are one conversation space (the same person in the TUI,
+    Obsidian, or the shell), so they append to each other's sessions freely.
+    Agent sessions are working state: only the agent surface appends to them,
+    and it appends to nothing else without an explicit claim.
+    """
+    if surface is owner:
+        return True
+    return surface in HUMAN_ORIGINS and owner in HUMAN_ORIGINS
 
 
 class SessionOwnershipError(Exception):
@@ -236,7 +257,7 @@ class SessionStore:
         path = self._require(session_id)
         if surface is not None:
             meta = self._meta_for(path)
-            if meta is not None and meta.origin is not surface:
+            if meta is not None and not _may_append(surface, meta.origin):
                 raise SessionOwnershipError(session_id, meta.origin, surface)
         self._write_event(
             path,
@@ -252,9 +273,9 @@ class SessionStore:
     def transfer(self, session_id: str, origin: SessionOrigin) -> None:
         """Append an origin event handing the session to *origin*; newest wins.
 
-        This is the explicit claim: resuming an agent's session in the TUI is
-        the human transferring it, and an agent claims a TUI session only
-        through this call, never implicitly by appending.
+        This is the explicit bridge between the human and agent domains: an
+        agent claims a session whose id the user handed it, and POST /claim
+        brings one back. Never implicit in an append.
         """
         self._write_event(
             self._require(session_id),
@@ -292,8 +313,8 @@ class SessionStore:
         )
         return Session(meta=meta, messages=messages, summary=summary)
 
-    def list(self) -> list[SessionMeta]:
-        """All sessions' metadata, newest first.
+    def list(self, origins: frozenset[SessionOrigin] | None = None) -> list[SessionMeta]:
+        """Sessions' metadata, newest first; *origins* narrows to those surfaces.
 
         Listing replays every event of every session, so it is the one hot path
         here: the drawer runs it on open. Messages are not materialised (only
@@ -304,6 +325,8 @@ class SessionStore:
             return []
         paths = list(self._dir.glob("*.jsonl"))
         metas = [meta for meta in (self._meta_for(path) for path in paths) if meta is not None]
+        if origins is not None:
+            metas = [meta for meta in metas if meta.origin in origins]
         # Drop cache entries for sessions that no longer exist, so a long-lived
         # store does not pin the meta of every session ever deleted.
         live = {path for path in paths}

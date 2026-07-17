@@ -438,15 +438,35 @@ async def test_app_session_helpers_noop_without_chat(sessions):
         await pilot.pause()
 
 
-async def test_resuming_a_foreign_session_claims_it_for_the_tui(sessions) -> None:
-    """Resuming an agent's conversation in the TUI is the explicit transfer:
-    the human takes it over, and the agent must claim it back to append."""
+async def test_agent_sessions_never_appear_in_the_drawer(sessions) -> None:
+    """Agent (MCP) sessions are working state, not conversations: the TUI
+    session list must not show them at all."""
     from lilbee.sessions import SessionOrigin
 
-    sid = sessions.create(model_ref="gpt-oss-20b", scope="both", origin=SessionOrigin.MCP)
+    mine = sessions.create(model_ref="gpt-oss-20b", scope="both")
+    sessions.create(model_ref="gpt-oss-20b", scope="both", origin=SessionOrigin.MCP)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        panel = drawer.query_one(SessionListPanel)
+        assert [meta.id for meta in panel._metas] == [mine]
+
+
+async def test_resuming_an_obsidian_session_keeps_its_origin(sessions) -> None:
+    """TUI, HTTP, and CLI are one conversation space: resuming a session the
+    plugin started needs no ownership transfer, and turns still persist."""
+    from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin
+
+    sid = sessions.create(model_ref="gpt-oss-20b", scope="both", origin=SessionOrigin.HTTP)
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         screen.resume_session(sid)
         await pilot.pause()
-        assert sessions.get(sid).meta.origin is SessionOrigin.TUI
+        assert sessions.get(sid).meta.origin is SessionOrigin.HTTP
+        sessions.add_message(
+            sid,
+            SessionMessage(role=MessageRole.USER, content="from the tui"),
+            surface=SessionOrigin.TUI,
+        )
+        assert sessions.get(sid).meta.message_count == 1

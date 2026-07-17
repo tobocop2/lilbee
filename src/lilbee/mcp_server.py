@@ -64,6 +64,7 @@ from lilbee.data.store import (
 )
 from lilbee.sessions import (
     MessageRole,
+    Session,
     SessionMessage,
     SessionNotFoundError,
     SessionOrigin,
@@ -454,18 +455,30 @@ def list_documents() -> dict[str, Any]:
     }
 
 
+_AGENT_ORIGINS = frozenset({SessionOrigin.MCP})
+
+
+def _require_agent_session(session_id: str) -> Session:
+    """Human conversations are private: foreign ids answer not-found, so an
+    agent cannot even probe which ones exist."""
+    session = get_services().session_store.get(session_id)
+    if session.meta.origin is not SessionOrigin.MCP:
+        raise SessionNotFoundError(session_id)
+    return session
+
+
 @_tool
 def sessions_list() -> dict[str, Any]:
-    """List saved chat sessions, newest first."""
-    metas = get_services().session_store.list()
+    """List the agent's sessions, newest first."""
+    metas = get_services().session_store.list(origins=_AGENT_ORIGINS)
     return {"sessions": [asdict(meta) for meta in metas], "total": len(metas)}
 
 
 @_tool
 def session_get(session_id: str) -> dict[str, Any]:
-    """Return a session's metadata, transcript, and compaction summary."""
+    """Return one agent session: metadata, transcript, summary."""
     try:
-        session = get_services().session_store.get(session_id)
+        session = _require_agent_session(session_id)
     except SessionNotFoundError as exc:
         return _error(str(exc))
     return {
@@ -503,7 +516,7 @@ def session_add_message(
     sources: list[str] | None = None,
     claim: bool = False,
 ) -> dict[str, Any]:
-    """Append one turn; a foreign session errors unless claim=True (ask the user)."""
+    """Append one turn; a foreign session errors unless claim=True (ask first)."""
     store = get_services().session_store
     try:
         # Re-coerce: the MCP layer passes the enum, but a raw string still
@@ -523,8 +536,9 @@ def session_add_message(
 
 @_tool
 def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
-    """Replace a session's compaction summary."""
+    """Replace an agent session's compaction summary."""
     try:
+        _require_agent_session(session_id)
         get_services().session_store.set_summary(session_id, summary)
     except SessionNotFoundError as exc:
         return _error(str(exc))
@@ -533,8 +547,9 @@ def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
 
 @_tool
 def session_rename(session_id: str, title: str) -> dict[str, Any]:
-    """Rename a saved session."""
+    """Rename an agent session."""
     try:
+        _require_agent_session(session_id)
         get_services().session_store.set_title(session_id, title, TitleSource.CUSTOM)
     except SessionNotFoundError as exc:
         return _error(str(exc))
@@ -543,8 +558,9 @@ def session_rename(session_id: str, title: str) -> dict[str, Any]:
 
 @_tool
 def session_delete(session_id: str) -> dict[str, Any]:
-    """Delete a saved session."""
+    """Delete an agent session."""
     try:
+        _require_agent_session(session_id)
         get_services().session_store.delete(session_id)
     except SessionNotFoundError as exc:
         return _error(str(exc))

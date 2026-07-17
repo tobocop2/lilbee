@@ -22,6 +22,7 @@ from lilbee.server.models import (
     SessionSummaryRequest,
 )
 from lilbee.sessions import (
+    HUMAN_ORIGINS,
     Session,
     SessionMessage,
     SessionMeta,
@@ -68,7 +69,9 @@ def _detail(session: Session) -> SessionDetailResponse:
 
 async def list_sessions() -> SessionListResponse:
     """Return every session's metadata, newest first."""
-    return SessionListResponse(sessions=[_meta_item(meta) for meta in _store().list()])
+    return SessionListResponse(
+        sessions=[_meta_item(meta) for meta in _store().list(origins=HUMAN_ORIGINS)]
+    )
 
 
 async def get_session(session_id: str) -> SessionDetailResponse:
