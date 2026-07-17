@@ -752,6 +752,7 @@ something feels off.
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
 | `LILBEE_MAX_CONTEXT_SOURCES` | `8` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_NEIGHBOR_EXPANSION` | `0` | Adjacent chunks pulled in on each side of every retrieved passage and merged into one contiguous excerpt, so a hit that lands mid-argument regains its surrounding text. `0` disables |
 | `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
 | `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
 | `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |

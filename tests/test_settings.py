@@ -195,6 +195,15 @@ class TestRerankerConfig:
         assert "reranker_prompt" in SETTINGS_MAP
         assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
 
+    def test_neighbor_expansion_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["neighbor_expansion"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.group == "Retrieval"
+        assert get_default("neighbor_expansion") == 0
+
 
 class TestReplicaDefaults:
     """embed/vision replica counts default to 0 = auto (one per GPU at placement)."""

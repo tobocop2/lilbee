@@ -243,6 +243,11 @@ class Config(BaseSettings):
     # Chunks included in LLM context after adaptive selection.
     max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
 
+    # Adjacent chunks pulled from the same source on each side of every
+    # selected chunk and merged into one contiguous passage, so a hit that
+    # lands mid-argument regains the text before and after it. 0 disables.
+    neighbor_expansion: int = ConfigField(default=0, ge=0, writable=True)
+
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
 
