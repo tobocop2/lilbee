@@ -19,7 +19,6 @@ from lilbee.providers.fleet import provider as prov_mod
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
-from lilbee.providers.fleet.swap_manager import SwapManager
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _GB = 1024**3
@@ -93,11 +92,21 @@ def _no_real_probe(monkeypatch):
 
 
 def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:
-    """Patch the swap, client, and planner so _ensure_fleet builds controllable fakes."""
+    """Patch the swap, client, planner, and ladder so _ensure_fleet builds fakes.
+
+    The machine slot points at a fresh temp dir, so tests never touch the real
+    per-user engine slot, and stop_engine is inert (fakes own no processes).
+    """
+    import tempfile
+
     swap = swap or _FakeSwap()
+    machine = Path(tempfile.mkdtemp(prefix="lilbee-test-slot-"))
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: swap)
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
+    monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
-    monkeypatch.setattr(prov_mod, "sweep_owned", lambda _data_dir: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
     monkeypatch.setattr(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
@@ -1341,21 +1350,20 @@ def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
     assert starts["n"] == 1  # single-flight: 8 concurrent first-requests start one swap
 
 
-def test_shutdown_tears_down_swap_and_closes_clients() -> None:
+def test_shutdown_drops_refs_and_closes_clients() -> None:
+    # Engine processes are stopped through stop_engine (last-out), never by
+    # signalling tracked swaps: shutdown's provider-side job is refs and clients.
     client = _fake_client()
     p = _provider_with_clients({WorkerRole.CHAT: [client]})
-    swap = next(iter(p._swaps.values()))
     p.shutdown()
-    assert swap.shutdowns == 1
     client.close.assert_called_once()
     assert p._swaps == {}
+    assert p._shut_down is True
 
 
-def test_invalidate_load_cache_drops_swap() -> None:
+def test_invalidate_load_cache_drops_swap_refs() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    swap = next(iter(p._swaps.values()))
     p.invalidate_load_cache()
-    assert swap.shutdowns == 1
     assert p._swaps == {}
 
 
@@ -1804,12 +1812,10 @@ def test_role_ready_reflects_swap_running_state() -> None:
 
 def test_drop_loaded_models_async_tears_down_off_thread() -> None:
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
-    swap = next(iter(p._swaps.values()))
     p.drop_loaded_models_async()
-    # Wait on the actual shutdown rather than ``_swap is None``: the worker clears
-    # the ref before it calls swap.shutdown(), so the latter is the later signal.
-    assert _wait_until(lambda: swap.shutdowns == 1)
-    assert p._swaps == {}
+    # The off-thread worker drops the refs; the engine restart itself goes
+    # through stop_engine on the held dirs (none in this fixture).
+    assert _wait_until(lambda: p._swaps == {})
 
 
 def test_drop_loaded_models_async_noop_without_swap() -> None:
@@ -2568,7 +2574,7 @@ class TestReloadSingleFlight:
             return planning_mod.FleetPlan(())
 
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
-        monkeypatch.setattr(prov_mod, "sweep_owned", lambda _d: None)
+        monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(planning_mod, "plan_all_launches", _slow_plan)
         reloader = threading.Thread(target=p._reload_blocking)
         reloader.start()
@@ -2580,8 +2586,8 @@ class TestReloadSingleFlight:
         gate.set()
         reloader.join(timeout=5.0)
         shutter.join(timeout=5.0)
-        # The reload's stop phase ran first (nothing planned -> group stops), then
-        # the terminal shutdown's sweep; serialized on the build lock either way.
+        # The reload's stop phase ran (nothing planned -> group stops); the
+        # terminal shutdown then dropped refs, serialized on the build lock.
         assert order == ["shutdown"]
         assert p._swaps == {}  # the shutdown's state cleanup still landed
 
@@ -2817,9 +2823,16 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch) -> None:
 
     chat, vision = _fake_launch(WorkerRole.CHAT), _fake_launch(WorkerRole.VISION)
     embed = _fake_launch(WorkerRole.EMBED)
+    import tempfile
+
     monkeypatch.setattr(prov_mod, "SwapManager", _factory)
+    monkeypatch.setattr(
+        prov_mod, "machine_engine_dir", lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-"))
+    )
+    monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
-    monkeypatch.setattr(prov_mod, "sweep_owned", lambda _d: None)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
     monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
     monkeypatch.setattr(
@@ -2911,7 +2924,15 @@ class TestPlanProbeLifecycle:
     """The provider owns the plan snapshot: captured on clean-box builds only."""
 
     def _wire(self, monkeypatch, order: list[str]) -> None:
+        import tempfile
+
         monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: _FakeSwap())
+        monkeypatch.setattr(
+            prov_mod, "machine_engine_dir", lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-"))
+        )
+        monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
+        monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+        monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
         monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: order.append("reap"))
         monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: order.append("capture"))
         monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
@@ -3005,156 +3026,6 @@ class TestWarmErrorsClearedOnTeardown:
         assert "did not finish loading" in p._chat_load_failure()
 
 
-class TestWarmDetachOnShutdown:
-    def _provider_with_fake_swaps(self, count: int = 2):
-        provider = FleetProvider()
-        fakes = []
-        for group in list(SwapGroup)[:count]:
-            fake = MagicMock()
-            provider._swaps[group] = fake
-            fakes.append(fake)
-        return provider, fakes
-
-    def test_warm_shutdown_detaches_and_never_kills(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        provider, fakes = self._provider_with_fake_swaps()
-        provider.shutdown()
-        for fake in fakes:
-            fake.detach.assert_called_once()
-            fake.shutdown.assert_not_called()
-
-    def test_warm_shutdown_still_latches(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        provider, _ = self._provider_with_fake_swaps()
-        provider.shutdown()
-        assert provider._shut_down is True
-
-    def test_default_shutdown_kills_exactly_as_before(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", False)
-        provider, fakes = self._provider_with_fake_swaps()
-        provider.shutdown()
-        for fake in fakes:
-            fake.shutdown.assert_called_once_with()
-            fake.detach.assert_not_called()
-
-    def test_cache_drop_kills_even_when_warm(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        provider, fakes = self._provider_with_fake_swaps()
-        provider._shutdown_swap(latch=False)
-        for fake in fakes:
-            fake.shutdown.assert_called_once_with()
-            fake.detach.assert_not_called()
-
-
-class TestAdoptDetachedFleet:
-    """Adoption binds to a warm fleet only when version, health, and models match."""
-
-    def _detached_fleet(self, tmp_path, **chat_kwargs):
-        """Detached chat + embed groups matching the configured models."""
-        self._detached_state(tmp_path, **chat_kwargs)
-        self._detached_state(
-            tmp_path,
-            group=SwapGroup.EMBED,
-            proxy_port=4199,
-            launches=[
-                InstanceLaunch(
-                    role=WorkerRole.EMBED,
-                    argv=["/bin/llama-server"],
-                    env_overrides={},
-                    model=cfg.embedding_model,
-                ).to_state()
-            ],
-        )
-
-    def _detached_state(
-        self, tmp_path, *, version=None, launches=None, group=SwapGroup.CHAT, proxy_port=4099
-    ):
-        import json as _json
-        from importlib.metadata import version as _pkg_version
-
-        from lilbee.providers.fleet import swap_manager as sm
-
-        payload = {
-            "pid": 999_998,
-            "owner_pid": 999_999,
-            "member_ports": [proxy_port + 1],
-            "proxy_port": proxy_port,
-            "lilbee_version": version or _pkg_version("lilbee"),
-            "detached": True,
-            "launches": launches
-            if launches is not None
-            else [
-                InstanceLaunch(
-                    role=WorkerRole.CHAT,
-                    argv=["/bin/llama-server"],
-                    env_overrides={},
-                    model=cfg.chat_model,
-                    slots=4,
-                    ctx=8192,
-                ).to_state()
-            ],
-        }
-        path = tmp_path / sm._state_filename(999_999, group.value)
-        path.write_text(_json.dumps(payload))
-        return path
-
-    def _adopting_provider(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(cfg, "keep_engine_warm", True)
-        monkeypatch.setattr(cfg, "data_dir", tmp_path)
-        # chat + embed configured (embed can never be empty); optional roles off.
-        monkeypatch.setattr(cfg, "vision_model", "")
-        monkeypatch.setattr(cfg, "reranker_model", "")
-        provider = FleetProvider()
-        monkeypatch.setattr(SwapManager, "_proxy_answers", lambda self: True)
-        return provider
-
-    def test_adopts_a_matching_fleet_without_planning(self, monkeypatch, tmp_path) -> None:
-        self._detached_fleet(tmp_path)
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        planned = MagicMock()
-        monkeypatch.setattr(prov_mod.planning, "plan_all_launches", planned)
-        assert provider._ensure_fleet() is True
-        planned.assert_not_called()
-        assert provider.role_ready is not None  # fleet bound
-        assert provider._chat_slots == 4
-        assert provider._chat_ctx == 8192
-
-    def test_version_drift_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
-        path = self._detached_state(tmp_path, version="0.0.0+stale")  # stale chat
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        assert provider._try_adopt_detached(tmp_path) is False
-        assert not path.exists()
-
-    def test_model_mismatch_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
-        launches = [
-            InstanceLaunch(
-                role=WorkerRole.CHAT,
-                argv=["/bin/llama-server"],
-                env_overrides={},
-                model="somebody/else-GGUF/else.gguf",
-            ).to_state()
-        ]
-        path = self._detached_state(tmp_path, launches=launches)
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        assert provider._try_adopt_detached(tmp_path) is False
-        assert not path.exists()
-
-    def test_dead_proxy_reaps_and_falls_through(self, monkeypatch, tmp_path) -> None:
-        path = self._detached_state(tmp_path)
-        self._detached_fleet(tmp_path)
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        monkeypatch.setattr(SwapManager, "_proxy_answers", lambda self: False)
-        assert provider._try_adopt_detached(tmp_path) is False
-        assert not path.exists()
-
-    def test_missing_configured_role_aborts(self, monkeypatch, tmp_path) -> None:
-        self._detached_state(tmp_path)  # serves CHAT only, but embed is configured
-        provider = self._adopting_provider(monkeypatch, tmp_path)
-        assert provider._try_adopt_detached(tmp_path) is False
-
-
 class TestLaunchStateRoundTrip:
     def test_round_trips_every_field(self) -> None:
         launch = InstanceLaunch(
@@ -3173,36 +3044,269 @@ class TestLaunchStateRoundTrip:
         assert rebuilt == launch
 
 
-class TestAdoptableLaunchGuards:
-    def test_undecodable_launch_record_is_rejected(self, monkeypatch) -> None:
-        from importlib.metadata import version as _pkg_version
+# ── The engine acquisition ladder ───────────────────────────────────
 
-        from lilbee.providers.fleet import swap_manager as sm
 
-        state = sm._SwapState(
-            pid=1,
-            pgid=None,
-            owner_pid=None,
-            owner_created_at=None,
-            lilbee_version=_pkg_version("lilbee"),
-            launches=({"garbage": True},),
+def _engine_state_file(engine_dir: Path, group: str, *, pin: str, model: str, role: str) -> Path:
+    """A live engine's state record as another process would have written it."""
+    import json
+
+    from lilbee.providers.fleet import swap_manager as sm
+
+    engine_dir.mkdir(parents=True, exist_ok=True)
+    path = engine_dir / sm._state_filename(999_999, group)
+    path.write_text(
+        json.dumps(
+            {
+                "pid": 999_998,
+                "member_ports": [4000],
+                "proxy_port": 4100,
+                "launches": [
+                    {
+                        "role": role,
+                        "argv": ["/bin/llama-server"],
+                        "env_overrides": {},
+                        "model": model,
+                    }
+                ],
+                "engine_pin": pin,
+            }
         )
-        assert prov_mod._adoptable_launches(state) is None
+    )
+    return path
 
-    def test_empty_launch_record_is_rejected(self) -> None:
-        from importlib.metadata import version as _pkg_version
 
-        from lilbee.providers.fleet import swap_manager as sm
+class _BindableSwap(_FakeSwap):
+    """A fake swap that can also bind to an existing engine record."""
 
-        state = sm._SwapState(
-            pid=1,
-            pgid=None,
-            owner_pid=None,
-            owner_created_at=None,
-            lilbee_version=_pkg_version("lilbee"),
-            launches=(),
-        )
-        assert prov_mod._adoptable_launches(state) is None
+    def __init__(self) -> None:
+        super().__init__()
+        self.binds: list[object] = []
+        self.bind_result = True
+        self.bound = False
 
-    def test_no_detached_states_means_no_adoption(self, tmp_path) -> None:
-        assert FleetProvider()._try_adopt_detached(tmp_path) is False
+    def bind(self, state) -> bool:
+        self.binds.append(state)
+        if self.bind_result:
+            self.bound = True
+        return self.bind_result
+
+
+def _install_ladder(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    launches: list,
+    swap: _BindableSwap | None = None,
+    pin: str = "pin-a",
+):
+    """Point the ladder at a tmp machine dir with controllable fakes."""
+    swap = swap or _BindableSwap()
+    machine = tmp_path / "machine-slot"
+    built_dirs: list[Path] = []
+
+    def _swap_factory(data_dir, _group):
+        built_dirs.append(Path(data_dir))
+        return swap
+
+    monkeypatch.setattr(prov_mod, "SwapManager", _swap_factory)
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
+    monkeypatch.setattr(prov_mod, "engine_pin", lambda: pin)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(
+        prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
+    )
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
+    )
+    return swap, machine, built_dirs
+
+
+def _chat_launch() -> InstanceLaunch:
+    return InstanceLaunch(
+        role=WorkerRole.CHAT, argv=["/bin/llama-server"], env_overrides={}, model="m-chat"
+    )
+
+
+def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert len(swap.binds) == 1
+    assert swap.started == []  # bound, never built
+
+
+def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.started  # built
+    assert built and built[0] == machine  # into the machine slot
+    users = list((machine / "engine-users").glob("*.lock"))
+    assert len(users) == 1  # holding membership
+
+
+def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.binds == []  # incompatible: never bound
+    assert swap.started  # built instead
+    assert built and built[0] == tmp_path / "root" / "data" / "engine"
+
+
+def test_last_out_stops_the_engine(monkeypatch, tmp_path: Path) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.shutdown()
+    assert stopped == [machine]
+    assert not list((machine / "engine-users").glob("*.lock"))
+
+
+def test_not_last_leaves_the_engine(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    peer = hold_user_lock(machine, pid=555_555)
+    p.shutdown()
+    assert stopped == []
+    peer.release_and_check_last()
+
+
+def test_warm_leaves_the_engine_even_when_last(monkeypatch, tmp_path: Path) -> None:
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.shutdown()
+    assert stopped == []
+
+
+def test_ttl_applies_even_with_warm_on(monkeypatch) -> None:
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
+    assert prov_mod._warm_ttl_seconds() == 420
+
+
+def test_shutdown_latches_regardless_of_warm(monkeypatch, tmp_path: Path) -> None:
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.shutdown()
+    assert p._shut_down is True
+
+
+def test_config_change_restarts_the_engine_but_keeps_membership(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    p.invalidate_load_cache()
+    assert stopped == [machine]  # the shared engine restarts for everyone
+    assert list((machine / "engine-users").glob("*.lock"))  # still a member
+    assert p._shut_down is False  # provider reusable; next use rebuilds
+
+
+def test_ladder_binds_in_the_private_dir_when_machine_is_incompatible(
+    monkeypatch, tmp_path: Path
+) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    private = tmp_path / "root" / "data" / "engine"
+    _engine_state_file(private, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert len(swap.binds) == 1  # bound in the overflow dir
+    assert swap.started == []
+
+
+def test_ladder_returns_false_when_overflow_has_nothing_to_serve(
+    monkeypatch, tmp_path: Path
+) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is False
+    assert swap.binds == [] and swap.started == []
+
+
+def test_ladder_ignores_groups_serving_only_unwanted_models(monkeypatch, tmp_path: Path) -> None:
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    # A pin-matching group serving a model nobody asked for: coexists, no bind.
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-unrelated", role="embed")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.binds == []
+    assert swap.started  # built alongside the coexisting group
+
+
+def test_ladder_rolls_back_earlier_binds_when_a_later_one_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _SecondBindFails(_BindableSwap):
+        def __init__(self) -> None:
+            super().__init__()
+            self.results = [True, False]
+            self.shutdowns_after_bind = 0
+
+        def bind(self, state) -> bool:
+            self.binds.append(state)
+            return self.results.pop(0)
+
+        def shutdown(self) -> None:
+            self.shutdowns_after_bind += 1
+            super().shutdown()
+
+    swap = _SecondBindFails()
+    _swap, machine, _built = _install_ladder(
+        monkeypatch, tmp_path, launches=[], swap=swap, pin="pin-a"
+    )
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "embed": "m-embed"}.get(role.value, ""),
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-embed", role="embed")
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    p._ensure_fleet()
+    assert len(swap.binds) == 2  # first bound, second refused
+    assert swap.shutdowns_after_bind >= 1  # the earlier bind was rolled back

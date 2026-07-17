@@ -1667,3 +1667,43 @@ class TestStopEngine:
         junk.write_text("not json{{{")
         sm.stop_engine(tmp_path)
         assert junk.exists()
+
+
+class TestLiveStateHelpers:
+    def test_find_live_state_returns_the_newest_for_the_group(self, tmp_path: Path) -> None:
+        old = tmp_path / sm._state_filename(111, _GROUP.value)
+        old.write_text(json.dumps({"pid": 1, "member_ports": [], "created_at": 100.0}))
+        new = tmp_path / sm._state_filename(222, _GROUP.value)
+        new.write_text(json.dumps({"pid": 2, "member_ports": [], "created_at": 200.0}))
+        state = sm.find_live_state(tmp_path, _GROUP)
+        assert state is not None and state.pid == 2
+
+    def test_find_live_state_none_when_group_absent(self, tmp_path: Path) -> None:
+        assert sm.find_live_state(tmp_path, _GROUP) is None
+
+    def test_find_live_state_skips_unparseable_files(self, tmp_path: Path) -> None:
+        junk = tmp_path / sm._state_filename(1, _GROUP.value)
+        junk.write_text("not json{{{")
+        assert sm.find_live_state(tmp_path, _GROUP) is None
+
+    def test_state_is_healthy_probes_the_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        state = sm._SwapState(
+            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4100
+        )
+        assert sm.state_is_healthy(state) is True
+
+    def test_state_without_a_port_is_unhealthy(self) -> None:
+        state = sm._SwapState(pid=1, pgid=None, owner_pid=None, owner_created_at=None)
+        assert sm.state_is_healthy(state) is False
+
+    def test_refused_probe_is_unhealthy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http(monkeypatch, _raise_connect_error)
+        state = sm._SwapState(
+            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4100
+        )
+        assert sm.state_is_healthy(state) is False

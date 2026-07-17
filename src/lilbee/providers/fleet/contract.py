@@ -20,9 +20,7 @@ if TYPE_CHECKING:
     from lilbee.providers.roles import WorkerRole
 
 
-def contract_matches(
-    state: _SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str
-) -> bool:
+def contract_matches(state: _SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:
     """Whether the engine behind *state* serves every wanted (role, model) pair.
 
     The engine may serve more roles than asked; the engine build pin must

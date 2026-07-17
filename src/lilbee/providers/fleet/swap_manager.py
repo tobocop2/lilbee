@@ -529,6 +529,33 @@ def find_detached_state(data_dir: Path, group: SwapGroup) -> tuple[_SwapState, P
     return best
 
 
+def find_live_state(data_dir: Path, group: SwapGroup) -> _SwapState | None:
+    """The newest state record for *group* at *data_dir*, detached or not."""
+    best: _SwapState | None = None
+    for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
+        if f".{group.value}." not in f".{state_path.name}":
+            continue
+        state = _load_state(state_path)
+        if state is None:
+            continue
+        if best is None or (state.created_at or 0) > (best.created_at or 0):
+            best = state
+    return best
+
+
+def state_is_healthy(state: _SwapState) -> bool:
+    """Whether the engine behind *state* answers on its recorded proxy port."""
+    if state.proxy_port is None:
+        return False
+    try:
+        resp = httpx.get(
+            f"http://{_HOST}:{state.proxy_port}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S
+        )
+    except (OSError, httpx.HTTPError):
+        return False
+    return resp.status_code < httpx.codes.BAD_REQUEST
+
+
 def stop_engine(data_dir: Path) -> None:
     """Stop every engine the dir's state files record, regardless of liveness.
 

@@ -20,7 +20,6 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
-from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 
@@ -29,25 +28,35 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet import planning
+from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
     is_connection_failure,
     retry_on_busy,
 )
+from lilbee.providers.fleet.contract import contract_matches
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
     SwapManager,
     _SwapState,
-    find_detached_state,
+    find_live_state,
     reap_stale,
-    sweep_owned,
+    state_is_healthy,
+    stop_engine,
 )
 from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, WarmProgressTracker
+from lilbee.runtime.engine_lock import (
+    UserLockHold,
+    build_lock,
+    hold_user_lock,
+    machine_engine_dir,
+    private_engine_dir,
+)
 
 log = logging.getLogger(__name__)
 
@@ -545,32 +554,14 @@ def _configured_model_for(role: WorkerRole) -> str:
     return getattr(cfg, field) or "" if field else ""
 
 
-def _adoptable_launches(state: _SwapState) -> list[InstanceLaunch] | None:
-    """Decode a detached fleet's launches when it matches this build and config."""
-    if state.lilbee_version != _pkg_version("lilbee"):
-        return None
-    try:
-        launches = [InstanceLaunch.from_state(item) for item in state.launches]
-    except (KeyError, TypeError, ValueError):
-        return None
-    if not launches:
-        return None
-    if any(launch.model != _configured_model_for(launch.role) for launch in launches):
-        return None
-    return launches
-
-
 def _warm_ttl_seconds() -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
-    ``keep_engine_warm`` keeps the fleet resident: ttl 0, so llama-swap never
-    idle-unloads it. With warm off the engine is on-demand and releases its
-    weights after ``engine_idle_ttl_minutes`` of inactivity to free VRAM; the
-    next prompt reloads transparently. A ttl of 0 there disables the idle unload
-    entirely (weights stay until the app tears the fleet down).
+    Always ``engine_idle_ttl_minutes``: an idle engine releases its weights and
+    reloads transparently on the next prompt, whether or not it outlives lilbee
+    (``keep_engine_warm``). A ttl of 0 keeps weights resident until the engine
+    is stopped.
     """
-    if cfg.keep_engine_warm:
-        return 0
     return cfg.engine_idle_ttl_minutes * 60
 
 
@@ -590,6 +581,10 @@ class FleetProvider:
         # whose launches actually changed. Launch argv is port-free (ports are
         # injected at config render), so the comparison is stable across starts.
         self._launches: dict[SwapGroup, tuple[InstanceLaunch, ...]] = {}
+        # Engine dirs this provider holds membership in (machine slot and/or
+        # the private overflow), and the dir each running group lives in.
+        self._engine_holds: dict[Path, UserLockHold] = {}
+        self._group_dirs: dict[SwapGroup, Path] = {}
         # Latched once shutdown runs. A discarded provider (reset_services swaps
         # in a new one) can still have an in-flight warm-up or reload daemon
         # thread; without this latch that thread could start a llama-swap after
@@ -674,12 +669,105 @@ class FleetProvider:
                     return False
             from lilbee.core.config import cfg
 
-            # A dead owner's surviving llama-swap holds VRAM; reap it before the
-            # snapshot so the cards are actually free for this fleet (and the
-            # context sizer reads true clean-box memory).
-            if self._reap_and_maybe_adopt(cfg.data_dir):
+            return self._acquire_engine(cfg.data_root)
+
+    def _acquire_engine(self, config_root: Path) -> bool:
+        """The acquisition ladder: bind to a compatible engine, else build one.
+
+        Machine slot first; a slot occupied by an incompatible engine sends the
+        whole build to this config root's private overflow dir. Per-dir the
+        step is all-or-nothing: every configured (role, model) pair bound, or
+        the engine is built fresh. Runs under the cross-process build lock, so
+        two simultaneous starts can never both build, and a departure's
+        stop-if-last (also under the lock) can never race an arrival.
+        """
+        pin = engine_pin()
+        wanted = {(role, model) for role in WorkerRole if (model := _configured_model_for(role))}
+        machine = machine_engine_dir()
+        with build_lock(machine):
+            if wanted and self._bind_all_in_dir(machine, pin, wanted):
+                self._hold_membership(machine)
                 return True
-            return self._plan_and_spawn(cfg.data_dir)
+            if not self._slot_occupied(machine):
+                # A dead engine's leftovers hold VRAM; reap before the probe
+                # so planning sees true free memory.
+                reap_stale(machine)
+                if self._plan_and_spawn(machine):
+                    self._hold_membership(machine)
+                    return True
+                return False
+        private = private_engine_dir(config_root)
+        with build_lock(private):
+            if wanted and self._bind_all_in_dir(private, pin, wanted):
+                self._hold_membership(private)
+                return True
+            reap_stale(private)
+            if self._plan_and_spawn(private):
+                self._hold_membership(private)
+                return True
+            return False
+
+    def _bind_all_in_dir(
+        self, engine_dir: Path, pin: str, wanted: set[tuple[WorkerRole, str]]
+    ) -> bool:
+        """Bind every group needed to cover *wanted*; False leaves nothing bound.
+
+        Groups serving models outside *wanted* coexist untouched; the dir
+        matches only when healthy, pin-equal groups cover every wanted pair.
+        """
+        candidates: list[tuple[SwapGroup, _SwapState, list[InstanceLaunch]]] = []
+        covered: set[tuple[WorkerRole, str]] = set()
+        for group in SwapGroup:
+            state = find_live_state(engine_dir, group)
+            if state is None or not state_is_healthy(state):
+                continue
+            if not contract_matches(state, (), pin):
+                # Pin mismatch or undecodable contract: not bindable by us.
+                continue
+            launches = [InstanceLaunch.from_state(item) for item in state.launches]
+            pairs = {(launch.role, launch.model) for launch in launches} & wanted
+            if not pairs:
+                continue
+            candidates.append((group, state, launches))
+            covered |= pairs
+        if covered != wanted:
+            return False
+        bound: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]] = {}
+        for group, state, launches in candidates:
+            swap = SwapManager(engine_dir, group)
+            if not swap.bind(state):
+                for prior, _launches in bound.values():
+                    prior.shutdown()
+                return False
+            bound[group] = (swap, launches)
+        with self._lock:
+            for group, (swap, launches) in bound.items():
+                self._adopt_group(group, swap, launches)
+                self._group_dirs[group] = engine_dir
+        log.info("Bound to the running engine at %s", engine_dir)
+        return True
+
+    def _reload_dir(self) -> Path:
+        """The engine dir a reload rebuilds into: where our groups already live.
+
+        All this provider's groups share one dir by construction (the ladder is
+        all-or-nothing per dir); an empty provider rebuilds into the machine slot.
+        """
+        with self._lock:
+            dirs = set(self._group_dirs.values())
+        return next(iter(dirs)) if dirs else machine_engine_dir()
+
+    def _slot_occupied(self, engine_dir: Path) -> bool:
+        """Whether any group's engine at *engine_dir* is alive and answering."""
+        return any(
+            (state := find_live_state(engine_dir, group)) is not None and state_is_healthy(state)
+            for group in SwapGroup
+        )
+
+    def _hold_membership(self, engine_dir: Path) -> None:
+        """Record this process as a user of *engine_dir*'s engine."""
+        if engine_dir not in self._engine_holds:
+            self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
 
     def _plan_and_spawn(self, data_dir: Path) -> bool:
         """Plan placement against the clean box and start one swap per group.
@@ -716,54 +804,8 @@ class FleetProvider:
         with self._lock:
             for group, swap in started.items():
                 self._adopt_group(group, swap, list(by_group[group]))
+                self._group_dirs[group] = data_dir
         return True
-
-    def _reap_and_maybe_adopt(self, data_dir: Path) -> bool:
-        """Reap dead fleets (sparing warm ones), then adopt a matching warm fleet."""
-        reap_stale(data_dir, keep_detached=cfg.keep_engine_warm)
-        return cfg.keep_engine_warm and self._try_adopt_detached(data_dir)
-
-    def _try_adopt_detached(self, data_dir: Path) -> bool:
-        """Bind to a warm detached fleet when it matches this version and config.
-
-        All or nothing: any unhealthy group, version drift, undecodable launch
-        record, or a configured role the detached fleet does not serve reaps the
-        leftovers and falls back to a fresh spawn. Caller holds the build lock.
-        """
-        found = [
-            (group, *hit)
-            for group in SwapGroup
-            if (hit := find_detached_state(data_dir, group)) is not None
-        ]
-        if not found:
-            return False
-        adopted: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]] = {}
-        for group, state, state_path in found:
-            launches = _adoptable_launches(state)
-            swap = SwapManager(data_dir, group)
-            if launches is None or not swap.adopt(state, state_path):
-                self._abandon_adoption(adopted, data_dir)
-                return False
-            adopted[group] = (swap, launches)
-        served = {launch.role for _, launches in adopted.values() for launch in launches}
-        configured = {role for role in WorkerRole if _configured_model_for(role)}
-        if not configured <= served:
-            self._abandon_adoption(adopted, data_dir)
-            return False
-        with self._lock:
-            for group, (swap, launches) in adopted.items():
-                self._adopt_group(group, swap, launches)
-        log.info("Adopted the warm engine fleet left by a previous session")
-        return True
-
-    @staticmethod
-    def _abandon_adoption(
-        adopted: dict[SwapGroup, tuple[SwapManager, list[InstanceLaunch]]], data_dir: Path
-    ) -> None:
-        """Stop half-adopted swaps and reap every remaining detached fleet."""
-        for swap, _launches in adopted.values():
-            swap.shutdown()
-        reap_stale(data_dir)
 
     def _adopt_group(
         self, group: SwapGroup, swap: SwapManager, launches: list[InstanceLaunch]
@@ -944,57 +986,54 @@ class FleetProvider:
         return self._warm_tracker.snapshot()
 
     def _shutdown_swap(self, *, latch: bool = True) -> None:
-        """Stop the engine; ``latch=False`` keeps the provider reusable.
+        """Release this process's engine use; ``latch=False`` keeps the provider reusable.
 
         Terminal ``shutdown()`` latches ``_shut_down`` so a discarded provider's
-        in-flight warm/reload thread can't spawn an orphan swap. The cache-drop
-        paths (``invalidate_load_cache``, ``drop_loaded_models_async``) pass
-        ``latch=False``: the provider is retained and the next use must rebuild
-        with the current cfg.
+        in-flight warm/reload thread can't spawn an orphan swap, then releases
+        membership: the engine stops only when this was the last user and
+        persistence was not opted into. The cache-drop paths
+        (``invalidate_load_cache``, ``drop_loaded_models_async``) pass
+        ``latch=False``: a config change restarts the shared engine for every
+        user (they rediscover), and this provider rebuilds on next use.
         """
         # The build lock serializes shutdown against a concurrent reload/build:
         # both mutate self._swaps and the llama-swap processes, so an unserialized
         # loser would overwrite the winner's state and leak a live llama-swap.
         with self._build_lock:
             with self._lock:
-                swaps = dict(self._swaps)
                 if latch:
                     self._shut_down = True
             self._drop_swap_refs()
-            if swaps:
-                started = time.monotonic()
-                for swap in swaps.values():
-                    swap.shutdown()
-                log.info(
-                    "Engine fleet stopped (%d group(s)) in %.1fs",
-                    len(swaps),
-                    time.monotonic() - started,
-                )
+            if latch:
+                self._release_engines()
             else:
-                # Always sweep even when this provider holds no tracked swaps: an
-                # in-flight build may have started groups this thread never adopted,
-                # and the sweep stops every llama-swap this process spawned (keyed
-                # on the per-group config paths), not just tracked handles.
-                from lilbee.core.config import cfg
+                self._restart_engines()
 
-                sweep_owned(cfg.data_dir)
+    def _release_engines(self) -> None:
+        """Drop membership in every used engine dir; stop each engine we leave last.
 
-    def _detach_swap(self) -> None:
-        """Terminal shutdown with keep_engine_warm on: mark and leave the fleet running.
-
-        Latches like ``_shutdown_swap`` so a discarded provider's in-flight warm
-        cannot spawn an orphan, but the running swaps are handed to the next
-        launch instead of being stopped, and no ownership sweep runs.
+        Runs under each dir's cross-process build lock so a departing last user
+        can never race an arriving binder: the arrival either sees the engine
+        (and its bind holds it live) or sees the slot empty and builds.
         """
-        with self._build_lock:
-            with self._lock:
-                swaps = dict(self._swaps)
-                self._shut_down = True
-            self._drop_swap_refs()
-            for swap in swaps.values():
-                swap.detach()
-            if swaps:
-                log.info("Engine fleet left warm for the next launch (%d group(s))", len(swaps))
+        from lilbee.core.config import cfg
+
+        for engine_dir, hold in list(self._engine_holds.items()):
+            with build_lock(engine_dir):
+                last = hold.release_and_check_last()
+                if last and not cfg.keep_engine_warm:
+                    stop_engine(engine_dir)
+                    log.info("Engine stopped at %s (last user out)", engine_dir)
+                elif last:
+                    log.info("Engine left warm at %s (last user out)", engine_dir)
+        self._engine_holds = {}
+
+    def _restart_engines(self) -> None:
+        """A config change stops every used engine; users rediscover and rebuild."""
+        for engine_dir in list(self._engine_holds):
+            with build_lock(engine_dir):
+                stop_engine(engine_dir)
+                log.info("Engine restarted at %s (configuration changed)", engine_dir)
 
     def _drop_swap_refs(self) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""
@@ -1779,7 +1818,6 @@ class FleetProvider:
         so a racing shutdown/build can't interleave with the restart and leak a live
         llama-swap holding GPU memory.
         """
-        from lilbee.core.config import cfg
 
         with self._build_lock:
             with self._lock:
@@ -1789,8 +1827,9 @@ class FleetProvider:
                     return
                 running = set(self._swaps)
                 old = dict(self._launches)
-            # Reap dead owners' swaps before re-planning, same as the first build.
-            reap_stale(cfg.data_dir, keep_detached=cfg.keep_engine_warm)
+            # Reap dead engines in our dirs before re-planning, as a build would.
+            reload_dir = self._reload_dir()
+            reap_stale(reload_dir)
             if not running:
                 # Nothing loaded (a resurrect after a failed pass): the box is
                 # clean, so refresh the plan snapshot like a first build would.
@@ -1816,10 +1855,11 @@ class FleetProvider:
             restarted: list[WorkerRole] = []
             for group in sorted(changed & set(new), key=lambda g: g.value):
                 group_launches = list(new[group])
-                swap = SwapManager(cfg.data_dir, group)
+                swap = SwapManager(reload_dir, group)
                 swap.start(group_launches, ttl_seconds=_warm_ttl_seconds())
                 with self._lock:
                     self._adopt_group(group, swap, group_launches)
+                    self._group_dirs[group] = reload_dir
                 restarted.extend(_by_role(group_launches))
         if restarted:
             # Load the restarted roles' models off-thread (llama-swap spawns an
@@ -1865,7 +1905,4 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
-        if cfg.keep_engine_warm:
-            self._detach_swap()
-            return
         self._shutdown_swap()
