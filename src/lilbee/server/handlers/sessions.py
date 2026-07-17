@@ -6,7 +6,8 @@ container. A missing session id surfaces as a 404.
 
 from __future__ import annotations
 
-from litestar.exceptions import NotFoundException
+from litestar.exceptions import ClientException, NotFoundException
+from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app.services import get_services
 from lilbee.server.models import (
@@ -25,6 +26,8 @@ from lilbee.sessions import (
     SessionMessage,
     SessionMeta,
     SessionNotFoundError,
+    SessionOrigin,
+    SessionOwnershipError,
     SessionStore,
     TitleSource,
 )
@@ -43,6 +46,7 @@ def _meta_item(meta: SessionMeta) -> SessionMetaItem:
         model_ref=meta.model_ref,
         scope=meta.scope,
         message_count=meta.message_count,
+        origin=meta.origin.value,
     )
 
 
@@ -78,7 +82,9 @@ async def get_session(session_id: str) -> SessionDetailResponse:
 
 async def create_session(data: SessionCreateRequest) -> SessionDetailResponse:
     """Start a new conversation and return it (empty transcript, no summary)."""
-    session_id = _store().create(model_ref=data.model_ref, scope=data.scope)
+    session_id = _store().create(
+        model_ref=data.model_ref, scope=data.scope, origin=SessionOrigin.HTTP
+    )
     return _detail(_store().get(session_id))
 
 
@@ -88,7 +94,20 @@ async def add_session_message(
     """Append one turn to a conversation and return it, or 404 if unknown."""
     message = SessionMessage(role=data.role, content=data.content, sources=tuple(data.sources))
     try:
-        _store().add_message(session_id, message)
+        _store().add_message(session_id, message, surface=SessionOrigin.HTTP)
+    except SessionNotFoundError as exc:
+        raise NotFoundException(detail=str(exc)) from exc
+    except SessionOwnershipError as exc:
+        # 409, not 403: the resource exists and the token is fine; the session
+        # is owned elsewhere, and claiming it is the documented resolution.
+        raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
+    return _detail(_store().get(session_id))
+
+
+async def claim_session(session_id: str) -> SessionDetailResponse:
+    """Claim a conversation for the HTTP surface, or 404 if unknown."""
+    try:
+        _store().transfer(session_id, SessionOrigin.HTTP)
     except SessionNotFoundError as exc:
         raise NotFoundException(detail=str(exc)) from exc
     return _detail(_store().get(session_id))

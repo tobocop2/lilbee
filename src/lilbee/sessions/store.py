@@ -21,9 +21,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from filelock import FileLock
+
 from lilbee.core.config import cfg
 
 SESSIONS_DIRNAME = "sessions"
+# Bounds a wedged lock holder; a healthy append holds the lock for milliseconds.
+_APPEND_LOCK_TIMEOUT_S = 10
 UNTITLED_SESSION_TITLE = "Untitled chat"
 TITLE_MAX_LEN = 60
 TITLE_ELLIPSIS = "…"
@@ -36,6 +40,18 @@ class SessionEventType(StrEnum):
     TITLE = "title"
     MESSAGE = "message"
     SUMMARY = "summary"
+    ORIGIN = "origin"
+
+
+class SessionOrigin(StrEnum):
+    """The surface a session belongs to: whoever created it, or was last
+    explicitly transferred to. Appends from any other surface are refused, so
+    an agent cannot splice its turns into a conversation a human owns."""
+
+    TUI = "tui"
+    MCP = "mcp"
+    HTTP = "http"
+    CLI = "cli"
 
 
 class MessageRole(StrEnum):
@@ -73,6 +89,9 @@ class SessionMeta:
     model_ref: str
     scope: str
     message_count: int
+    origin: SessionOrigin = SessionOrigin.TUI
+    """Owning surface. Files written before ownership existed carry no origin;
+    the only writer then was the TUI, so that is the fallback."""
 
 
 @dataclass(frozen=True)
@@ -95,6 +114,19 @@ class SessionNotFoundError(Exception):
     def __init__(self, session_id: str) -> None:
         super().__init__(f"No session with id {session_id!r}")
         self.session_id = session_id
+
+
+class SessionOwnershipError(Exception):
+    """Raised when a surface appends to a session another surface owns."""
+
+    def __init__(self, session_id: str, owner: SessionOrigin, surface: SessionOrigin) -> None:
+        super().__init__(
+            f"Session {session_id!r} belongs to the {owner.value} surface; "
+            f"claim it before appending from {surface.value}."
+        )
+        self.session_id = session_id
+        self.owner = owner
+        self.surface = surface
 
 
 def derive_title(text: str) -> str:
@@ -149,7 +181,14 @@ class SessionStore:
 
     @staticmethod
     def _write_event(path: Path, event: dict[str, Any]) -> None:
-        with path.open("a", encoding="utf-8") as fh:
+        # Per-session lock: two writers on one id (a second process, another
+        # surface) serialize instead of interleaving lines. Appends take
+        # milliseconds, so a blocked writer waits, never fails, under any
+        # realistic contention; the timeout only bounds a wedged holder.
+        with (
+            FileLock(str(path) + ".lock", timeout=_APPEND_LOCK_TIMEOUT_S),
+            path.open("a", encoding="utf-8") as fh,
+        ):
             fh.write(json.dumps(event) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -166,8 +205,8 @@ class SessionStore:
                 except json.JSONDecodeError:
                     continue  # torn final line; skip it
 
-    def create(self, model_ref: str, scope: str) -> str:
-        """Start a new session with a ``meta`` line and return its id."""
+    def create(self, model_ref: str, scope: str, origin: SessionOrigin = SessionOrigin.TUI) -> str:
+        """Start a new session owned by *origin* and return its id."""
         session_id = uuid4().hex
         self._dir.mkdir(parents=True, exist_ok=True)
         now = self._now()
@@ -179,15 +218,28 @@ class SessionStore:
                 "created_at": now,
                 "model_ref": model_ref,
                 "scope": scope,
+                "origin": origin,
                 "ts": now,
             },
         )
         return session_id
 
-    def add_message(self, session_id: str, message: SessionMessage) -> None:
-        """Append one message event to an existing session."""
+    def add_message(
+        self, session_id: str, message: SessionMessage, *, surface: SessionOrigin | None = None
+    ) -> None:
+        """Append one message event to an existing session.
+
+        With *surface* given, the append is refused unless that surface owns the
+        session (see ``transfer``); without it the caller is a library embedder
+        that manages its own store and ownership does not apply.
+        """
+        path = self._require(session_id)
+        if surface is not None:
+            meta = self._meta_for(path)
+            if meta is not None and meta.origin is not surface:
+                raise SessionOwnershipError(session_id, meta.origin, surface)
         self._write_event(
-            self._require(session_id),
+            path,
             {
                 "type": SessionEventType.MESSAGE,
                 "role": message.role,
@@ -195,6 +247,18 @@ class SessionStore:
                 "sources": list(message.sources),
                 "ts": self._now(),
             },
+        )
+
+    def transfer(self, session_id: str, origin: SessionOrigin) -> None:
+        """Append an origin event handing the session to *origin*; newest wins.
+
+        This is the explicit claim: resuming an agent's session in the TUI is
+        the human transferring it, and an agent claims a TUI session only
+        through this call, never implicitly by appending.
+        """
+        self._write_event(
+            self._require(session_id),
+            {"type": SessionEventType.ORIGIN, "origin": origin, "ts": self._now()},
         )
 
     def set_title(self, session_id: str, title: str, source: TitleSource) -> None:
@@ -285,6 +349,7 @@ class SessionStore:
         title = UNTITLED_SESSION_TITLE
         updated_at = ""
         summary = ""
+        origin = SessionOrigin.TUI
         message_count = 0
         messages: list[SessionMessage] = []
         for event in self._iter_events(path):
@@ -295,6 +360,9 @@ class SessionStore:
                 created_at = event["created_at"]
                 model_ref = event["model_ref"]
                 scope = event["scope"]
+                origin = SessionOrigin(event.get("origin", SessionOrigin.TUI))
+            elif event_type == SessionEventType.ORIGIN:
+                origin = SessionOrigin(event["origin"])
             elif event_type == SessionEventType.TITLE:
                 title = event["title"]
             elif event_type == SessionEventType.SUMMARY:
@@ -311,5 +379,6 @@ class SessionStore:
             model_ref=model_ref,
             scope=scope,
             message_count=message_count,
+            origin=origin,
         )
         return meta, tuple(messages), summary

@@ -116,7 +116,11 @@ class TestCreate:
 
 class TestAppendMessage:
     def test_appends_a_turn(self, client, store):
-        session_id = _seed(store)
+        # HTTP-created, so the HTTP surface owns it (a TUI session would 409;
+        # see TestOwnership).
+        session_id = client.post("/api/sessions", json={"model_ref": "m", "scope": "both"}).json()[
+            "meta"
+        ]["id"]
         resp = client.post(
             f"/api/sessions/{session_id}/messages",
             json={"role": "user", "content": "and the head bolts?", "sources": []},
@@ -124,7 +128,7 @@ class TestAppendMessage:
         assert resp.status_code == 201
         body = resp.json()
         assert body["messages"][-1]["content"] == "and the head bolts?"
-        assert body["meta"]["message_count"] == 3
+        assert body["meta"]["message_count"] == 1
 
     def test_unknown_id_404(self, client):
         resp = client.post(
@@ -177,3 +181,35 @@ def test_reads_are_read_only_and_writes_are_not():
     assert not is_read_only(session_create_route.fn)
     assert not is_read_only(session_add_message_route.fn)
     assert not is_read_only(session_set_summary_route.fn)
+
+
+class TestOwnership:
+    def test_appending_to_a_tui_session_is_409(self, client, store):
+        """An HTTP client must not splice into a conversation the TUI owns."""
+        session_id = _seed(store)  # store.create default origin: tui
+        resp = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "spliced", "sources": []},
+        )
+        assert resp.status_code == 409
+        assert "claim" in resp.json()["detail"].lower()
+
+    def test_claim_then_append_succeeds(self, client, store):
+        session_id = _seed(store)
+        assert client.post(f"/api/sessions/{session_id}/claim").status_code == 201
+        resp = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "mine now", "sources": []},
+        )
+        assert resp.status_code == 201
+
+    def test_http_created_sessions_append_without_claiming(self, client, store):
+        created = client.post("/api/sessions", json={"model_ref": "m", "scope": "both"}).json()
+        resp = client.post(
+            f"/api/sessions/{created['meta']['id']}/messages",
+            json={"role": "user", "content": "q", "sources": []},
+        )
+        assert resp.status_code == 201
+
+    def test_claim_unknown_404(self, client):
+        assert client.post("/api/sessions/nope/claim").status_code == 404

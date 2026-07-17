@@ -436,3 +436,17 @@ async def test_app_session_helpers_noop_without_chat(sessions):
             app.new_chat()
             assert app.current_session_id() is None
         await pilot.pause()
+
+
+async def test_resuming_a_foreign_session_claims_it_for_the_tui(sessions) -> None:
+    """Resuming an agent's conversation in the TUI is the explicit transfer:
+    the human takes it over, and the agent must claim it back to append."""
+    from lilbee.sessions import SessionOrigin
+
+    sid = sessions.create(model_ref="gpt-oss-20b", scope="both", origin=SessionOrigin.MCP)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(sid)
+        await pilot.pause()
+        assert sessions.get(sid).meta.origin is SessionOrigin.TUI

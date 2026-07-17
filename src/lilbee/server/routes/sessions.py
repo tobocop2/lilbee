@@ -12,6 +12,7 @@ from litestar import delete, get, patch, post, put
 from lilbee.server.auth import read_only
 from lilbee.server.handlers.sessions import (
     add_session_message,
+    claim_session,
     create_session,
     delete_session,
     get_session,
@@ -57,6 +58,12 @@ async def session_add_message_route(
 ) -> SessionDetailResponse:
     """Append a turn to a conversation."""
     return await add_session_message(session_id, data)
+
+
+@post("/api/sessions/{session_id:str}/claim")
+async def session_claim_route(session_id: str) -> SessionDetailResponse:
+    """Claim a conversation for this surface so it can append."""
+    return await claim_session(session_id)
 
 
 @put("/api/sessions/{session_id:str}/summary")

@@ -127,3 +127,25 @@ def test_session_delete(store):
 
 def test_session_delete_unknown_errors(store):
     assert "error" in session_delete("nope")
+
+
+def test_appending_to_a_foreign_session_errors_with_claim_hint(store):
+    """An agent must not splice into a TUI conversation; the error names the fix."""
+    session_id = _seed(store)  # origin: tui
+    result = session_add_message(session_id, "user", "spliced")
+    assert "claim" in result["error"].lower()
+    assert session_get(session_id)["meta"]["message_count"] == 2, "nothing landed"
+
+
+def test_claim_flag_transfers_and_appends_atomically(store):
+    session_id = _seed(store)
+    assert session_add_message(session_id, "user", "mine now", claim=True) == {
+        "id": session_id,
+        "added": True,
+    }
+    # claimed: further appends need no flag
+    assert session_add_message(session_id, "user", "again")["added"] is True
+
+
+def test_claim_flag_on_unknown_session_errors(store):
+    assert "error" in session_add_message("nope", "user", "x", claim=True)

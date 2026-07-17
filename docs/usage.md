@@ -238,7 +238,9 @@ Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
 conversation. No database; back them up or sync them like any other file.
 The same surface exists over HTTP and MCP (list, read, create, append,
 rename, delete), so a script or agent can own a conversation the way the
-TUI does.
+TUI does. Sessions belong to the surface that created them: appends from
+another surface are refused until it claims the session, and resuming an
+agent's session in the TUI claims it for you.
 
 To keep nothing, turn `sessions_enabled` off in Settings: nothing is written
 to disk, `ctrl+o` leaves the footer, and the Sessions view says sessions are

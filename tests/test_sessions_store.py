@@ -18,6 +18,8 @@ from lilbee.sessions.store import (
     Session,
     SessionMessage,
     SessionNotFoundError,
+    SessionOrigin,
+    SessionOwnershipError,
     SessionStore,
     TitleSource,
     derive_title,
@@ -281,3 +283,101 @@ def test_default_clock_produces_iso_timestamp(tmp_path) -> None:
     session_id = real.create(model_ref="m", scope="both")
     created = real.get(session_id).meta.created_at
     datetime.fromisoformat(created)  # parses without raising
+
+
+# --- surface ownership (sessions belong to the surface that created them) ---
+
+
+def test_origin_is_stamped_at_creation_and_defaults_to_tui(store: SessionStore) -> None:
+    assert store.get(store.create(model_ref="m", scope="both")).meta.origin == SessionOrigin.TUI
+    sid = store.create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
+    assert store.get(sid).meta.origin == SessionOrigin.MCP
+
+
+def test_a_file_without_an_origin_reads_as_tui(store: SessionStore, tmp_path) -> None:
+    """Session files written before ownership existed have no origin field; the
+    only writer back then was the TUI, so that is what they are."""
+    sid = store.create(model_ref="m", scope="both")
+    path = tmp_path / "data" / "sessions" / f"{sid}.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    for line in lines:
+        line.pop("origin", None)
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    assert store.get(sid).meta.origin == SessionOrigin.TUI
+
+
+def test_appending_from_a_foreign_surface_is_refused(store: SessionStore) -> None:
+    """An MCP agent must not splice its turns into a human's TUI conversation."""
+    sid = store.create(model_ref="m", scope="both")  # origin: tui
+    message = SessionMessage(role=MessageRole.USER, content="agent turn")
+    with pytest.raises(SessionOwnershipError) as exc:
+        store.add_message(sid, message, surface=SessionOrigin.MCP)
+    assert exc.value.owner == SessionOrigin.TUI
+    assert store.get(sid).meta.message_count == 0, "the refused turn must not land"
+
+
+def test_appending_from_the_owning_surface_is_allowed(store: SessionStore) -> None:
+    sid = store.create(model_ref="m", scope="both", origin=SessionOrigin.HTTP)
+    store.add_message(
+        sid, SessionMessage(role=MessageRole.USER, content="q"), surface=SessionOrigin.HTTP
+    )
+    assert store.get(sid).meta.message_count == 1
+
+
+def test_append_without_a_surface_keeps_working(store: SessionStore) -> None:
+    """Library callers that predate ownership pass no surface; policy is opt-in
+    at the surface boundaries, not sprung on every embedder."""
+    sid = store.create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
+    store.add_message(sid, SessionMessage(role=MessageRole.USER, content="q"))
+    assert store.get(sid).meta.message_count == 1
+
+
+def test_transfer_claims_the_session_for_the_new_surface(store: SessionStore) -> None:
+    """Resuming an agent's session in the TUI is the explicit user transfer."""
+    sid = store.create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
+    store.transfer(sid, SessionOrigin.TUI)
+    assert store.get(sid).meta.origin == SessionOrigin.TUI
+    store.add_message(
+        sid, SessionMessage(role=MessageRole.USER, content="q"), surface=SessionOrigin.TUI
+    )
+    with pytest.raises(SessionOwnershipError):
+        store.add_message(
+            sid, SessionMessage(role=MessageRole.USER, content="q"), surface=SessionOrigin.MCP
+        )
+
+
+def test_transfer_appends_rather_than_rewrites(store: SessionStore, tmp_path) -> None:
+    sid = store.create(model_ref="m", scope="both")
+    path = tmp_path / "data" / "sessions" / f"{sid}.jsonl"
+    before = path.read_bytes()
+    store.transfer(sid, SessionOrigin.HTTP)
+    assert path.read_bytes().startswith(before), "append-only holds for origin events"
+
+
+def test_concurrent_appends_do_not_interleave(store: SessionStore) -> None:
+    """Two writers on one session id must serialize through the per-session
+    lock: every line lands whole, every message survives."""
+    import threading
+
+    sid = store.create(model_ref="m", scope="both")
+    errors: list[Exception] = []
+
+    def writer(tag: str) -> None:
+        try:
+            for i in range(25):
+                store.add_message(
+                    sid, SessionMessage(role=MessageRole.USER, content=f"{tag}-{i} " + "x" * 400)
+                )
+        except Exception as exc:  # pragma: no cover - failure path
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(t,)) for t in ("a", "b", "c")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    session = store.get(sid)
+    assert session.meta.message_count == 75, "every append must land exactly once"
+    contents = {m.content.split()[0] for m in session.messages}
+    assert contents == {f"{t}-{i}" for t in ("a", "b", "c") for i in range(25)}

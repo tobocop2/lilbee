@@ -62,7 +62,14 @@ from lilbee.data.store import (
     agent_owner,
     scope_to_chunk_type,
 )
-from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
+from lilbee.sessions import (
+    MessageRole,
+    SessionMessage,
+    SessionNotFoundError,
+    SessionOrigin,
+    SessionOwnershipError,
+    TitleSource,
+)
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
@@ -449,14 +456,14 @@ def list_documents() -> dict[str, Any]:
 
 @_tool
 def sessions_list() -> dict[str, Any]:
-    """List saved chat sessions (past conversations), newest first."""
+    """List saved chat sessions, newest first."""
     metas = get_services().session_store.list()
     return {"sessions": [asdict(meta) for meta in metas], "total": len(metas)}
 
 
 @_tool
 def session_get(session_id: str) -> dict[str, Any]:
-    """Return a saved session's metadata and full transcript; resume by continuing it."""
+    """Return a session's metadata, transcript, and compaction summary."""
     try:
         session = get_services().session_store.get(session_id)
     except SessionNotFoundError as exc:
@@ -481,24 +488,33 @@ def session_get(session_id: str) -> dict[str, Any]:
 
 @_tool
 def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
-    """Start a new saved chat session and return its id."""
-    session_id = get_services().session_store.create(model_ref=model_ref, scope=scope)
+    """Start a saved chat session; returns its id."""
+    session_id = get_services().session_store.create(
+        model_ref=model_ref, scope=scope, origin=SessionOrigin.MCP
+    )
     return {"id": session_id, "model_ref": model_ref, "scope": scope}
 
 
 @_tool
 def session_add_message(
-    session_id: str, role: MessageRole, content: str, sources: list[str] | None = None
+    session_id: str,
+    role: MessageRole,
+    content: str,
+    sources: list[str] | None = None,
+    claim: bool = False,
 ) -> dict[str, Any]:
-    """Append one turn to a saved session."""
+    """Append one turn; a foreign session errors unless claim=True (ask the user)."""
+    store = get_services().session_store
     try:
         # Re-coerce: the MCP layer passes the enum, but a raw string still
         # arrives via direct library calls, and a bad one must error cleanly.
         message = SessionMessage(
             role=MessageRole(role), content=content, sources=tuple(sources or ())
         )
-        get_services().session_store.add_message(session_id, message)
-    except SessionNotFoundError as exc:
+        if claim:
+            store.transfer(session_id, SessionOrigin.MCP)
+        store.add_message(session_id, message, surface=SessionOrigin.MCP)
+    except (SessionNotFoundError, SessionOwnershipError) as exc:
         return _error(str(exc))
     except ValueError as exc:
         return _error(f"invalid role {role!r}: {exc}")

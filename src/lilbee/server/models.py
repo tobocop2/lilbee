@@ -669,6 +669,8 @@ class SessionMetaItem(BaseModel):
     model_ref: str
     scope: str
     message_count: int
+    origin: str = "tui"
+    """Owning surface (tui / mcp / http / cli); appends from others are 409."""
 
 
 class SessionListResponse(BaseModel):

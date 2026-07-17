@@ -95,7 +95,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_sessions_list()` | Saved chat sessions, newest first. No LLM call. |
 | `lilbee_session_get(session_id)` | One session's metadata, full transcript, and `summary` — what compaction folded older turns into. Resume by carrying the summary plus the transcript into your own context; ignoring `summary` silently loses what was already condensed. |
 | `lilbee_session_create(model_ref, scope)` | Start a saved session and get its id back. |
-| `lilbee_session_add_message(session_id, role, content, sources)` | Append one turn (`role` = `"user"` / `"assistant"`). This is what lets an agent own a conversation the way the TUI does. |
+| `lilbee_session_add_message(session_id, role, content, sources, claim)` | Append one turn (`role` = `"user"` / `"assistant"`). Sessions belong to the surface that created them: appending to one you don't own (e.g. a TUI conversation) errors unless `claim=true`, which takes it over -- ask the user before claiming their conversation. |
 | `lilbee_session_set_summary(session_id, summary)` | Replace the session's compaction summary after folding history yourself. |
 | `lilbee_session_rename(session_id, title)` | Rename a saved session. |
 | `lilbee_session_delete(session_id)` | Delete a saved session. |

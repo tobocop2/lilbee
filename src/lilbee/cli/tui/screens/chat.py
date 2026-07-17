@@ -97,6 +97,7 @@ from lilbee.sessions import (
     MessageRole,
     SessionMessage,
     SessionNotFoundError,
+    SessionOrigin,
     SessionStore,
     TitleSource,
     derive_title,
@@ -1398,11 +1399,11 @@ class ChatScreen(Screen[None]):
         session_id = self._session_id or self._open_session(store, text)
         message = SessionMessage(role=MessageRole.USER, content=text)
         try:
-            store.add_message(session_id, message)
+            store.add_message(session_id, message, surface=SessionOrigin.TUI)
         except SessionNotFoundError:
             # The active session was deleted mid-chat (e.g. from the drawer);
             # open a fresh one so auto-save keeps working instead of crashing.
-            store.add_message(self._open_session(store, text), message)
+            store.add_message(self._open_session(store, text), message, surface=SessionOrigin.TUI)
 
     def _persist_assistant_turn(self, content: str, sources: list[str]) -> None:
         """Append the assistant turn to the active session. Worker thread."""
@@ -1413,11 +1414,17 @@ class ChatScreen(Screen[None]):
             get_services().session_store.add_message(
                 self._session_id,
                 SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=tuple(sources)),
+                surface=SessionOrigin.TUI,
             )
 
     def resume_session(self, session_id: str) -> None:
         """Load a saved session into the chat view and make it the active one."""
-        session = get_services().session_store.get(session_id)
+        store = get_services().session_store
+        session = store.get(session_id)
+        if session.meta.origin is not SessionOrigin.TUI:
+            # Resuming here IS the explicit transfer: the human is taking the
+            # conversation over from an agent surface.
+            store.transfer(session_id, SessionOrigin.TUI)
         self._reset_conversation()
         self._session_id = session_id
         for message in session.messages:
