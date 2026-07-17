@@ -42,7 +42,6 @@ _CUDA_SONAMES: tuple[str, ...] = ("libcudart.so.12", "libcublas.so.12", "libnvrt
 # Substrings that mark a CUDA init failure in the engine's --list-devices output.
 _CUDA_ERROR_MARKERS: tuple[str, ...] = ("error", "fail", "no cuda")
 _LDD_TIMEOUT_S = 10
-_LIST_DEVICES_TIMEOUT_S = 60
 # How much of the probe output to quote when no specific error line is found.
 _DIAGNOSTIC_TAIL_CHARS = 300
 
@@ -125,20 +124,9 @@ def _links_cuda_runtime(binary: Path, env: dict[str, str]) -> bool:
     return any(soname in out for soname in _CUDA_SONAMES)
 
 
-def _device_probe_diagnostic(binary: Path, env: dict[str, str]) -> str:
-    """The engine's own ``--list-devices`` CUDA error line, or a short tail of its output."""
-    try:
-        proc = subprocess.run(  # noqa: S603 - the resolved llama-server binary
-            [str(binary), "--list-devices"],
-            capture_output=True,
-            text=True,
-            timeout=_LIST_DEVICES_TIMEOUT_S,
-            env=env,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "(the engine's device probe could not be run)"
-    out = f"{proc.stderr}\n{proc.stdout}".strip()
+def _device_probe_diagnostic(probe_output: str) -> str:
+    """The probe's CUDA error line, or a short tail of its output."""
+    out = probe_output.strip()
     for line in out.splitlines():
         lowered = line.lower()
         if "cuda" in lowered and any(marker in lowered for marker in _CUDA_ERROR_MARKERS):
@@ -146,13 +134,14 @@ def _device_probe_diagnostic(binary: Path, env: dict[str, str]) -> str:
     return out[-_DIAGNOSTIC_TAIL_CHARS:] if out else "(the engine's device probe printed nothing)"
 
 
-def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice]) -> None:
+def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice], probe_output: str) -> None:
     """Fail loud when a CUDA build links a runtime it cannot initialize a GPU with.
 
-    *devices* is the engine's own ``--list-devices`` result. When it is empty yet
-    *binary* is a CUDA build and the host has an NVIDIA GPU, the runtime loaded but
-    enumerated no device. The engine's own diagnostic is surfaced and the likely causes
-    are listed (rather than asserting one), so placement does not silently fall to CPU.
+    *devices* and *probe_output* are the engine's own ``--list-devices`` result.
+    When the list is empty yet *binary* is a CUDA build and the host has an NVIDIA
+    GPU, the runtime loaded but enumerated no device. The probe's own diagnostic is
+    surfaced and the likely causes are listed (rather than asserting one), so
+    placement does not silently fall to CPU.
     """
     if not sys.platform.startswith("linux"):
         return
@@ -163,7 +152,7 @@ def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice]) -> None
         return
     if not model_cache.has_nvidia_gpu():
         return
-    diagnostic = _device_probe_diagnostic(binary, env)
+    diagnostic = _device_probe_diagnostic(probe_output)
     raise ProviderError(
         "The engine links the CUDA runtime and this host has an NVIDIA GPU, but it "
         "enumerated no CUDA-capable device, so GPU work would silently fall back to CPU.\n"

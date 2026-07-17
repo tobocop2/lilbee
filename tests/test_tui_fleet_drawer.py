@@ -68,6 +68,34 @@ async def test_ctrl_g_opens_drawer_and_esc_closes(_patched):
 
 
 @pytest.mark.asyncio
+async def test_drawer_renders_probe_failure_instead_of_probing_forever(monkeypatch) -> None:
+    """A placement load failure lands in the GPU panel as a named error (bb-0yf0);
+    the old behavior left 'probing GPUs…' up for the life of the session."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.cli.tui.widgets import gpu_fleet_panel as gfp
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+    from lilbee.providers.base import ProviderError
+
+    def _wedged():  # type: ignore[no-untyped-def]
+        raise ProviderError("The GPU device probe did not respond within 60s")
+
+    monkeypatch.setattr(fbm, "get_placement", _wedged)
+    monkeypatch.setattr(gfp, "probe_gpu_stats", lambda devices: {})
+
+    app = _DrawerApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+g")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        panel = app.screen.query_one(FleetDrawer).query_one(GpuFleetPanel)
+        rendered = str(panel.render())
+        assert "GPU device probe" in rendered
+        assert "probing" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_ctrl_g_toggles_drawer_closed(_patched):
     """A second ctrl+g closes the open drawer rather than stacking another."""
     from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
