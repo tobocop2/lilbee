@@ -755,13 +755,13 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Let the engine outlive lilbee so the next launch starts warm; off stops it when the last lilbee exits",
+        help_text="Let the engine outlive lilbee for warm launches; off stops it on last exit",
     ),
     "engine_idle_ttl_minutes": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Idle minutes before the engine unloads its weights (any mode); 0 keeps them loaded",
+        help_text="Idle minutes before the engine unloads its weights; 0 keeps them loaded",
     ),
     "agent_mcp_enabled": SettingDef(
         bool,
