@@ -966,7 +966,10 @@ class Config(BaseSettings):
             else:
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
-        root = data["data_root"]
+        # data_root may arrive as a raw string (e.g. from LILBEE_DATA_ROOT); the
+        # child-path derivations below use ``/``, so coerce to Path first.
+        root = Path(data["data_root"])
+        data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
         if data.get("data_dir") in (None, _UNSET_PATH):
