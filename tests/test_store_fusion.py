@@ -186,3 +186,59 @@ class TestDropUnsupportedFarRows:
         far_supported = _chunk("identifier.md", 0, distance=1.4, bm25=25.0)
         kept = _drop_unsupported_far_rows([far_unsupported, far_supported], 0.75)
         assert [r.source for r in kept] == ["identifier.md"]
+
+
+class TestTitleArmFusion:
+    """The optional third arm: BM25 over document titles, weight-normalized."""
+
+    def test_top_of_all_three_arms_scores_one(self):
+        fused = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)],
+            [_chunk("a.md", 0, bm25=12.0)],
+            [_chunk("a.md", 0, bm25=3.0)],
+            title_weight=0.5,
+        )
+        assert fused[0].score == pytest.approx(1.0)
+
+    def test_title_only_row_scores_its_weight_share(self):
+        weight = 0.5
+        fused = fuse_arms([], [], [_chunk("t.md", 0, bm25=3.0)], title_weight=weight)
+        assert fused[0].score == pytest.approx(weight / (2.0 + weight))
+
+    def test_empty_title_arm_matches_two_arm_scores(self):
+        """No title rows = the classic two-arm fusion, share-for-share."""
+        vector = [_chunk("a.md", 0, distance=0.3), _chunk("b.md", 0, distance=0.4)]
+        fts = [_chunk("a.md", 0, bm25=12.0)]
+        two_arm = fuse_arms(vector, fts)
+        with_empty_title = fuse_arms(vector, fts, [], title_weight=0.5)
+        assert [(r.source, r.score) for r in two_arm] == [
+            (r.source, r.score) for r in with_empty_title
+        ]
+
+    def test_title_match_counts_as_lexical_support(self):
+        """A row only the title arm matched carries bm25_score, so the
+        distance exemption sees lexical support."""
+        fused = fuse_arms(
+            [_chunk("a.md", 0, distance=1.5)],
+            [],
+            [_chunk("a.md", 0, bm25=4.0)],
+            title_weight=0.5,
+        )
+        assert fused[0].bm25_score == pytest.approx(4.0)
+        assert fused[0].distance == pytest.approx(1.5)
+
+    def test_chunk_arm_bm25_provenance_wins_over_title(self):
+        """When both lexical arms match a row, the first-seen bm25_score is kept."""
+        fused = fuse_arms(
+            [],
+            [_chunk("a.md", 0, bm25=12.0)],
+            [_chunk("a.md", 0, bm25=3.0)],
+            title_weight=0.5,
+        )
+        assert fused[0].bm25_score == pytest.approx(12.0)
+
+    def test_title_weight_scales_contribution(self):
+        low = fuse_arms([], [], [_chunk("t.md", 0, bm25=3.0)], title_weight=0.2)
+        high = fuse_arms([], [], [_chunk("t.md", 0, bm25=3.0)], title_weight=1.0)
+        assert low[0].score < high[0].score
+        assert high[0].score == pytest.approx(1.0 / 3.0)

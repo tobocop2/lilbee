@@ -817,6 +817,18 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
     ),
+    "title_search": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Match queries against document titles as a third hybrid-search arm",
+    ),
+    "title_search_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Title arm weight in rank fusion (1.0 = equal voice with the other arms)",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,

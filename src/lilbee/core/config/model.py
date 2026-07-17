@@ -194,6 +194,15 @@ class Config(BaseSettings):
     # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
+    # Third lexical arm in hybrid search: BM25 over document titles, fused with
+    # the vector and chunk arms so a query naming a document by title surfaces
+    # its chunks. Off by default until the eval harness measures it.
+    title_search: bool = ConfigField(default=False, writable=True)
+
+    # Title arm weight relative to a full arm in rank fusion (1.0 = equal voice
+    # with the vector and chunk arms).
+    title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.

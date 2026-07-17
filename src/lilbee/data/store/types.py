@@ -45,6 +45,19 @@ class SourceType(StrEnum):
     IMPORTED = "imported"
 
 
+class SourceMeta(NamedTuple):
+    """Document-level metadata captured at extraction time.
+
+    ``title`` is always derivable (extraction metadata or the cleaned filename
+    stem); ``authors`` and ``created_at`` are only present when the extractor
+    reports them. Empty strings persist as NULL so old and new rows read alike.
+    """
+
+    title: str = ""
+    authors: str = ""
+    created_at: str = ""
+
+
 class ChunkWrite(NamedTuple):
     """One document's chunks plus its source-table update, for a batched write.
 
@@ -62,6 +75,7 @@ class ChunkWrite(NamedTuple):
     stat: SourceStat | None = None
     page_texts: list[dict] | None = None
     source_type: SourceType = SourceType.DOCUMENT
+    meta: SourceMeta | None = None
 
 
 class ChunkType(StrEnum):
@@ -152,6 +166,10 @@ class SearchChunk(BaseModel):
         """LanceDB rows from before the chunk_type column was added return None."""
         return v if v is not None else ChunkType.RAW
 
+    # Document title at ingest time; None on rows written before the column
+    # existed (or by writers that carry no title, e.g. wiki pages).
+    title: str | None = None
+
     page_start: int
     page_end: int
     line_start: int
@@ -192,6 +210,11 @@ class SourceRecord(TypedDict):
     size_bytes: NotRequired[int]
     mtime_ns: NotRequired[int]
     stat_captured_ns: NotRequired[int]
+    # Extraction-time document metadata; absent or None on rows written
+    # before the columns existed, and None when the extractor reported none.
+    title: NotRequired[str | None]
+    authors: NotRequired[str | None]
+    created_at: NotRequired[str | None]
 
 
 # Sentinel for the stat columns on rows written before they existed (or for

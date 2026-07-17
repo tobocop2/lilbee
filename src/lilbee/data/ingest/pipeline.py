@@ -41,6 +41,7 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_markers,
     write_skip_reasons,
 )
+from lilbee.data.ingest.title import derive_title
 from lilbee.data.ingest.types import (
     ChunkRecord,
     FileChangePlan,
@@ -53,6 +54,7 @@ from lilbee.data.store import (
     ChunkWrite,
     ConceptRecords,
     PageTextRecord,
+    SourceMeta,
     SourceRecord,
     SourceStat,
     SourceStatBackfill,
@@ -198,21 +200,26 @@ async def _produce_records(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
+    meta_out: list[SourceMeta] | None = None,
 ) -> list[ChunkRecord]:
     """Extract, chunk, and embed a single file into store-ready records.
 
     The LanceDB write is deferred: records are returned to the caller and written
     in a batched flush (see :func:`_flush_writes`), so bulk ingest pays one
     write-lock acquisition per batch instead of one per file. The per-page text
-    dataset rows land in ``page_texts_out`` and are written by the same flush.
+    dataset rows land in ``page_texts_out`` and are written by the same flush;
+    the document's metadata (extraction-provided when available, stem-derived
+    title otherwise) lands in ``meta_out`` and stamps every record's ``title``.
     """
     records: list[ChunkRecord]
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
+    meta = SourceMeta(title=derive_title(source_name))
     if content_type == "code":
         records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
     elif path.suffix.lower() == ".md":
         records = await ingest_markdown(path, source_name, on_progress, page_texts_out=page_texts)
     else:
+        extracted_meta: list[SourceMeta] = []
         records = await ingest_document(
             path,
             source_name,
@@ -220,8 +227,15 @@ async def _produce_records(
             quiet=quiet,
             on_progress=on_progress,
             page_texts_out=page_texts,
+            meta_out=extracted_meta,
         )
+        if extracted_meta:
+            meta = extracted_meta[0]
 
+    for record in records:
+        record["title"] = meta.title
+    if meta_out is not None:
+        meta_out.append(meta)
     return records
 
 
@@ -680,6 +694,7 @@ async def ingest_batch(
                 # transaction as the new write (see _flush_writes), so cleanup is
                 # carried on the result rather than run eagerly here.
                 page_texts: list[PageTextRecord] = []
+                meta_out: list[SourceMeta] = []
                 records = await _produce_records(
                     entry.path,
                     name,
@@ -687,6 +702,7 @@ async def ingest_batch(
                     quiet=quiet,
                     on_progress=on_progress,
                     page_texts_out=page_texts,
+                    meta_out=meta_out,
                 )
                 concept_records = await _build_concept_records(records, name)
                 entity_rows = await _build_entity_records(records, name)
@@ -707,6 +723,7 @@ async def ingest_batch(
                     stat=entry.stat,
                     concept_records=concept_records,
                     entity_rows=entity_rows,
+                    meta=meta_out[0] if meta_out else None,
                 )
             except (asyncio.CancelledError, TaskCancelledError) as exc:
                 # TaskCancelledError is the TUI's cooperative cancel signal raised
@@ -1031,6 +1048,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
             needs_cleanup=r.needs_cleanup,
             stat=r.stat,
             page_texts=cast(list[dict], r.page_texts or []),
+            meta=r.meta,
         )
         for r in buffer
     ]
