@@ -1,0 +1,90 @@
+"""The engine's cross-process lifecycle primitives: dirs, build lock, user locks."""
+
+import threading
+from pathlib import Path
+
+import pytest
+
+from lilbee.runtime.engine_lock import (
+    build_lock,
+    hold_user_lock,
+    machine_engine_dir,
+    private_engine_dir,
+)
+
+
+class TestEngineDirs:
+    def test_env_override_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("LILBEE_ENGINE_DIR", str(tmp_path / "slot"))
+        assert machine_engine_dir() == tmp_path / "slot"
+
+    def test_default_is_the_per_user_cache_slot(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("LILBEE_ENGINE_DIR", raising=False)
+        path = machine_engine_dir()
+        assert path.name == "engine"
+        assert path.parent.name == "lilbee"
+
+    def test_private_dir_lives_under_the_config_root(self, tmp_path: Path):
+        assert private_engine_dir(tmp_path) == tmp_path / "data" / "engine"
+
+
+class TestBuildLock:
+    def test_serializes_two_builders(self, tmp_path: Path):
+        order: list[str] = []
+        first_in = threading.Event()
+        release_first = threading.Event()
+
+        def builder(name: str, gate: threading.Event | None) -> None:
+            with build_lock(tmp_path):
+                order.append(f"{name}-in")
+                if gate is not None:
+                    first_in.set()
+                    gate.wait(timeout=5)
+                order.append(f"{name}-out")
+
+        t1 = threading.Thread(target=builder, args=("a", release_first))
+        t2 = threading.Thread(target=builder, args=("b", None))
+        t1.start()
+        first_in.wait(timeout=5)
+        t2.start()
+        release_first.set()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        assert order == ["a-in", "a-out", "b-in", "b-out"]
+
+    def test_creates_the_engine_dir(self, tmp_path: Path):
+        missing = tmp_path / "not" / "yet"
+        with build_lock(missing):
+            assert missing.is_dir()
+
+
+class TestUserLocks:
+    def test_sole_holder_is_last_out(self, tmp_path: Path):
+        hold = hold_user_lock(tmp_path)
+        assert hold.release_and_check_last() is True
+
+    def test_live_peer_means_not_last(self, tmp_path: Path):
+        peer = hold_user_lock(tmp_path, pid=111_111)
+        me = hold_user_lock(tmp_path, pid=222_222)
+        assert me.release_and_check_last() is False
+        assert peer.release_and_check_last() is True
+
+    def test_dead_peer_lock_file_is_cleaned_during_the_check(self, tmp_path: Path):
+        dead = tmp_path / "engine-users" / "999999.lock"
+        dead.parent.mkdir(parents=True, exist_ok=True)
+        dead.touch()  # a lock file whose holder never releases: a dead process
+        me = hold_user_lock(tmp_path)
+        assert me.release_and_check_last() is True
+        assert not dead.exists()
+
+    def test_release_is_idempotent(self, tmp_path: Path):
+        hold = hold_user_lock(tmp_path)
+        assert hold.release_and_check_last() is True
+        assert hold.release_and_check_last() is True
+
+    def test_own_lock_file_is_removed_on_release(self, tmp_path: Path):
+        hold = hold_user_lock(tmp_path, pid=333_333)
+        own = tmp_path / "engine-users" / "333333.lock"
+        assert own.exists()
+        hold.release_and_check_last()
+        assert not own.exists()
