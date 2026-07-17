@@ -9,13 +9,24 @@ fallback when the binary can't enumerate. See docs/architecture.md.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import re
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+log = logging.getLogger(__name__)
+
+_PROVIDER = "llama-server"
 _LIST_DEVICES_TIMEOUT_S = 60.0
+# How long to wait for a killed probe to be reaped before abandoning it: a child
+# wedged in uninterruptible GPU-driver I/O ignores even SIGKILL.
+_PROBE_KILL_WAIT_S = 5.0
 _TOPO_TIMEOUT_S = 15.0
 _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
 # nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
@@ -53,6 +64,14 @@ class FleetDevice:
     name: str
     total_bytes: int
     free_bytes: int
+
+
+@dataclass(frozen=True)
+class DeviceProbe:
+    """The device probe's parsed devices plus its raw output for diagnostics."""
+
+    devices: list[FleetDevice]
+    output: str
 
 
 def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
@@ -123,24 +142,68 @@ def _probe_env() -> dict[str, str]:
     return env
 
 
-def probe_devices(binary: Path) -> list[FleetDevice]:
-    """Parse ``<binary> --list-devices``; ``[]`` when unavailable/unparseable.
+def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -> DeviceProbe:
+    """Parse ``<binary> --list-devices``; empty devices when unavailable/unparseable.
 
     Filtered to a single GPU backend (the highest-ranked one present) so device
-    indices are unambiguous when a build exposes several backends.
+    indices are unambiguous when a build exposes several backends. A probe that
+    does not respond within *timeout_s* raises a ``ProviderError`` naming the
+    stuck probe: that is a wedged GPU driver, not a GPU-less host, and treating
+    it as "no devices" would silently plan a CPU fleet on a GPU box.
     """
     try:
-        proc = subprocess.run(  # noqa: S603 - binary is the resolved llama-server
-            [str(binary), "--list-devices"],
-            capture_output=True,
-            text=True,
-            timeout=_LIST_DEVICES_TIMEOUT_S,
-            env=_probe_env(),
-            check=False,
-        )
+        output = _run_list_devices(binary, timeout_s)
     except (OSError, subprocess.SubprocessError):
-        return []
-    return _select_backend(_parse_devices(proc.stdout + proc.stderr))
+        return DeviceProbe([], "")
+    return DeviceProbe(_select_backend(_parse_devices(output)), output)
+
+
+def _run_list_devices(binary: Path, timeout_s: float) -> str:
+    """Run the probe in its own process group; kill the group and raise on timeout.
+
+    ``subprocess.run``'s timeout path waits indefinitely for the killed child to
+    be reaped, so a probe wedged in uninterruptible GPU-driver I/O would hang the
+    caller forever; this bounds the reap and abandons an unkillable child.
+    """
+    proc = subprocess.Popen(  # noqa: S603 - binary is the resolved llama-server
+        [str(binary), "--list-devices"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=_probe_env(),
+        start_new_session=True,
+    )
+    try:
+        output, _ = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        _kill_probe(proc)
+        raise ProviderError(
+            f"The GPU device probe ({binary.name} --list-devices) did not respond "
+            f"within {timeout_s:.0f}s, so the engine cannot start. The GPU driver "
+            "may be in a bad state: check that 'nvidia-smi' responds, and reboot "
+            "the host if it hangs.",
+            provider=_PROVIDER,
+            kind=ProviderErrorKind.SERVER,
+        ) from None
+    return output or ""
+
+
+def _kill_probe(proc: subprocess.Popen[str]) -> None:
+    """SIGKILL the timed-out probe's process group; abandon it if it cannot be reaped."""
+    if os.name == "posix":
+        # start_new_session made the probe its own group leader.
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    else:  # pragma: no cover - Windows has no process groups to kill
+        proc.kill()
+    try:
+        proc.communicate(timeout=_PROBE_KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        log.warning(
+            "The GPU device probe (pid %d) ignored SIGKILL and was abandoned; "
+            "it is likely stuck in the GPU driver.",
+            proc.pid,
+        )
 
 
 def _parse_devices(text: str) -> list[FleetDevice]:

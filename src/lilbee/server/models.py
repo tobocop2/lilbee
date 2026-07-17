@@ -199,6 +199,10 @@ class HealthResponse(BaseModel):
     so it will not come up on its own) or failed (``error``). Without this a bare
     ``chat_ready:false`` reads the same for "loading" and "hung", which looked like a
     silent hang on a fresh box with no chat model installed."""
+    chat_error: str | None = None
+    """The reason the chat engine failed to come up when ``chat_status`` is
+    ``error`` (e.g. a wedged GPU device probe), so a polling client can report
+    the cause instead of retrying forever."""
     chat_ctx: int | None = None
     """Per-slot context the chat engine serves, so a launcher can tell the client
     its window and the client trims history to fit. None until the engine is up."""
