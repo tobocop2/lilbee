@@ -40,11 +40,9 @@ _HOST = "127.0.0.1"
 # One llama-swap per swap group: the group name lands in the config filename so
 # each group's processes are identified (and stopped) by their own config path,
 # and a placement change can restart one group without touching the others.
-# Per owner-pid (the last dotted segment, matching the state-file scheme) so two
-# lilbee instances at one data_dir never write the same config file. A shared
-# name let a sibling's write flip the ports/ttl a later restart would re-read.
+# The writer pid segment is uniqueness, not ownership: the build lock ensures
+# one builder per engine dir, and reaping cleans dead writers' leftovers.
 _CONFIG_FILENAME_TEMPLATE = "llama-swap-{group}.{pid}.json"
-# Matches every owner's group configs; the per-owner glob narrows to one pid.
 _CONFIG_FILE_GLOB = "llama-swap-*.json"
 # llama-swap's own stdout/stderr (its HTTP access log) is captured to a file under
 # the data root's ``logs/`` (beside server.log etc.) instead of inherited from the
@@ -53,10 +51,10 @@ _CONFIG_FILE_GLOB = "llama-swap-*.json"
 # upstream logs are unaffected (those go to llama-swap's /logs API).
 _LOGS_SUBDIR = "logs"
 _LOG_FILENAME_TEMPLATE = "llama-swap-{group}.log"
-# Cross-run reaping: each owner lilbee writes its own state file (named with its
-# pid) recording its swap's pid/pgid plus the owner's pid and create time, so the
-# next start can kill a dead owner's surviving llama-swap (it holds VRAM
-# otherwise) while leaving a live owner's swap and file alone.
+# Cross-run reaping: each writer's state file (named with its pid for
+# uniqueness) records its swap's pid/pgid, so a later start can stop a dead or
+# unhealthy engine that would otherwise hold VRAM. Health, not ownership,
+# decides sparing.
 _STATE_FILENAME_PREFIX = "llama-swap.state."
 _STATE_FILENAME_SUFFIX = ".json"
 # Also matches the legacy single shared state file ("llama-swap.state.json").

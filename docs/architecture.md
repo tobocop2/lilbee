@@ -605,35 +605,63 @@ flowchart TD
     F -- no --> H
 ```
 
-By default the engine lives and dies with lilbee. With `keep_engine_warm` on,
-terminal shutdown detaches instead: the fleet state file gains a `detached`
-marker (owner-PID state files in `providers/fleet/swap_manager.py`) and the
-next launch adopts the running fleet after a health, version, and model match,
-skipping planning and the load entirely. llama-swap's per-model `ttl`
-(`engine_idle_ttl_minutes`, default five minutes) frees idle GPU memory on its
-own; `lilbee engine stop` frees everything from any terminal. `reap_stale`
-spares detached fleets only while the setting is on, so toggling it off cleans
-up at the next start of any lilbee process.
+The engine is machine-level infrastructure, not a per-process possession. One
+**machine engine slot** per OS user (`~/.cache/lilbee/engine/`,
+`%LOCALAPPDATA%\lilbee\engine` on Windows) holds the running fleet's records;
+every lilbee process acquires its engine through the same ladder, executed
+under a cross-process build lock so two simultaneous starts can never both
+build:
+
+1. **Bind** when the slot's engine is healthy and its contract covers every
+   configured (role, model) pair with an equal **engine pin** (the bundled
+   llama.cpp/llama-swap/gguf-parser versions). A binder spawns nothing and
+   writes nothing: it points its clients at the recorded proxy ports. lilbee
+   version is deliberately not part of the contract; the pin is what
+   correctness depends on, so two lilbee releases sharing a pin share an
+   engine, and differing pins never run on an engine they were not tested
+   against.
+2. **Build** into the empty slot otherwise, from this process's own binaries
+   and plan.
+3. **Overflow** to the config root's private dir (`<root>/data/engine/`) when
+   the slot is occupied by an incompatible engine: two engines exist exactly
+   while two genuinely different model setups are in active use, and the slot
+   promotes to the next builder when it frees.
+
+Engine lifetime is kernel-refcounted membership: each process holds a user
+lock file the OS releases on any death. The last clean exit stops the engine,
+proxy included, leaving the machine clean; `keep_engine_warm` is the explicit
+opt-in for the engine to outlive lilbee. The idle `ttl`
+(`engine_idle_ttl_minutes`, default five minutes) applies in every mode, so
+even a persistent engine releases its weights when unused; `lilbee engine
+stop` frees everything now, whoever started it. Reaping follows one rule that
+can never disagree with binding: an engine answering on its proxy is in use
+and spared; anything else is stopped through its state record.
+
+Two honest costs ride along. A model or placement change restarts the shared
+engine from whichever surface makes it: peers rediscover the new ports with a
+one-shot retry, and a request in flight during the restart surfaces a retry
+error. And the proxy listens on an unauthenticated localhost port, as it
+always has; the machine slot only makes discovery easier.
 
 ```mermaid
 flowchart TD
-    subgraph OFF ["default: on-demand"]
-        q1["quit, kill, or terminal close"] --> s1["engine stopped<br/>GPU memory freed"]
-    end
-    subgraph ON ["keep_engine_warm on"]
-        q2[quit] --> d["fleet keeps running,<br/>state file marked detached"]
-        d --> l2([next launch]) --> ok{"healthy, same lilbee<br/>version, same models?"}
-        ok -- yes --> a["adopt: bind to the running fleet<br/>first answer immediate"]
-        ok -- no --> r["reap it, start fresh"]
-        d --> i["idle past the ttl<br/>default five minutes"] --> u["weights unloaded<br/>GPU memory freed"]
-        t["setting turned off"] --> r
-        e["lilbee engine stop"] --> s2["everything freed now"]
-    end
+    S["lilbee process starts"] --> L["hold user lock<br/>(kernel releases on ANY death)"]
+    L --> Q{"machine slot engine healthy,<br/>models + engine pin match?"}
+    Q -- bind --> B["use its proxy ports<br/>spawn nothing"]
+    Q -- "slot empty" --> BU["build engine in the slot"]
+    Q -- "occupied, incompatible" --> PR["build private engine<br/>in this config root"]
+    B --> X{"clean exit:<br/>last user out?"}
+    BU --> X
+    PR --> X
+    X -- "yes, warm off" --> STOP["stop engine<br/>machine clean"]
+    X -- "no, or warm on" --> LEAVE["engine keeps serving;<br/>idle weights nap after the ttl"]
 ```
 
-There is no background daemon: the only processes that outlive a session are
-the engine's own, and only when the user opted in. A crashed or force-killed
-session's engine is reclaimed at the next launch.
+A SIGKILLed last user cannot run its exit hook: the engine lingers, its models
+nap on the ttl, and the next lilbee run binds to it or cleans it. There is no
+background daemon; the only processes that can outlive a session are the
+engine's own, either because another lilbee still uses them or because the
+user opted into warm.
 
 ### Chat context-window management
 
