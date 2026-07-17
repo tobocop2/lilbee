@@ -49,10 +49,14 @@ WHEEL_FILENAME_RE = re.compile(r"^lilbee_engine-(?P<version>[^-]+)-")
 _PROJECT = "lilbee-engine"
 _DEFAULT_RELEASE_BASE_URL = "https://github.com/tobocop2/lilbee/releases/download"
 
-# Backends whose wheels ship under the default filename (also on PyPI; renaming
-# would break the PyPI pin). Everything else gets a PEP 427 build tag inserted
-# so the GH release can hold every variant without filename collisions.
-_DEFAULT_BACKENDS: frozenset[str] = frozenset({"vulkan", "metal"})
+# EVERY engine wheel on the release carries a ``1.<backend>`` PEP 427 build tag:
+# attach-release-artifacts.yml (and release-candidate.yml) rename every wheel to
+# ``...-1.<backend>-...`` with no exception, so all same-platform variants coexist
+# in the release's flat namespace. There is no plain (untagged) engine wheel to
+# link to -- lilbee-engine ships only via these per-backend indexes, never PyPI.
+# An earlier version exempted vulkan/metal here, which pointed their indexes at
+# untagged filenames that were never uploaded (404 for every Mac/Vulkan user).
+_DEFAULT_BACKENDS: frozenset[str] = frozenset()
 
 # Wheel filename layout (PEP 427): project-version[-buildtag]-python-abi-platform.whl
 _WHEEL_FILENAME_PARTS_NO_BUILDTAG = 5
