@@ -164,6 +164,9 @@ class SwapManager:
         # The serving contract (per-role model/ctx/slots) persisted in every
         # state write, so a guest lilbee can bind to this live fleet.
         self._launches_payload: list[dict] = []
+        # True when this manager uses an engine another process built: it then
+        # never writes state, never reaps, and never signals engine processes.
+        self._bound = False
 
     def start(self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
@@ -318,6 +321,29 @@ class SwapManager:
             state_path.unlink(missing_ok=True)
         return True
 
+    @property
+    def bound(self) -> bool:
+        """Whether this manager rides an engine built by another process."""
+        return self._bound
+
+    def bind(self, state: _SwapState) -> bool:
+        """Use a running engine's proxy without taking any ownership of it.
+
+        Unlike adopt, the engine's own state record stays untouched: the
+        binder writes nothing, and shutdown() merely drops the binding.
+        """
+        if state.proxy_port is None:
+            return False
+        self._port = state.proxy_port
+        self._member_ports = list(state.member_ports)
+        if not self._proxy_answers():
+            self._port = None
+            self._member_ports = []
+            return False
+        self._launches_payload = [dict(launch) for launch in state.launches]
+        self._bound = True
+        return True
+
     def _proxy_answers(self) -> bool:
         """Whether the bound proxy port serves llama-swap's running endpoint."""
         try:
@@ -337,6 +363,13 @@ class SwapManager:
         live sibling lilbee at the same data_dir). Unlinks only this owner's state
         file; another instance's record stays.
         """
+        if self._bound:
+            # Not ours to stop: drop the binding and leave the engine serving.
+            self._bound = False
+            self._port = None
+            self._member_ports = []
+            self._launches_payload = []
+            return
         _stop_own_fleet(self._config_path, tuple(self._member_ports))
         self._state_path.unlink(missing_ok=True)
         self._proc = None

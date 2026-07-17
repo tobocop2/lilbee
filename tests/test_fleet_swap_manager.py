@@ -67,6 +67,10 @@ def _patch_http(monkeypatch: pytest.MonkeyPatch, responder) -> None:
     monkeypatch.setattr(sm.httpx, "get", lambda url, timeout=None: responder(url))
 
 
+def _raise_connect_error(url):
+    raise httpx.ConnectError("refused", request=None)
+
+
 def _launch(role: WorkerRole) -> InstanceLaunch:
     return InstanceLaunch(
         role=role,
@@ -1548,3 +1552,93 @@ class TestEnginePinInState:
         state = sm._load_state(legacy)
         assert state is not None
         assert state.engine_pin is None
+
+
+class TestBindToLiveEngine:
+    """A second lilbee binds to a healthy running engine instead of building one."""
+
+    def _live_state(self, tmp_path: Path, *, pin: str = "pin-a", model: str = "chat-model") -> Path:
+        path = tmp_path / sm._state_filename(999_999, _GROUP.value)
+        payload = _launch(WorkerRole.CHAT).to_state()
+        payload["model"] = model
+        path.write_text(
+            json.dumps(
+                {
+                    "pid": 999_998,
+                    "owner_pid": 999_999,
+                    "member_ports": [4000],
+                    "proxy_port": 4100,
+                    "launches": [payload],
+                    "engine_pin": pin,
+                }
+            )
+        )
+        return path
+
+    def test_binds_to_a_healthy_matching_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        assert mgr.endpoint() == "http://127.0.0.1:4100"
+        assert mgr.bound is True
+
+    def test_bind_refuses_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._SwapState(pid=1, pgid=None, owner_pid=None, owner_created_at=None)
+        assert mgr.bind(state) is False
+        assert mgr.bound is False
+
+    def test_bind_refuses_an_unreachable_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, _raise_connect_error)
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is False
+        assert mgr.bound is False
+
+    def test_bind_never_writes_a_state_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        assert not mgr._state_path.exists()
+        assert state_path.exists()  # the engine's own record is untouched
+
+    def test_bound_shutdown_never_signals_engine_processes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        stopped: list[object] = []
+        monkeypatch.setattr(sm, "_stop_own_fleet", lambda *a: stopped.append(a))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        mgr.shutdown()
+        assert stopped == []
+        assert state_path.exists()
+        assert mgr._port is None  # binding dropped, manager reusable
+
+    def test_bind_carries_the_contract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = self._live_state(tmp_path)
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        state = sm._load_state(state_path)
+        assert state is not None
+        assert mgr.bind(state) is True
+        assert mgr._launches_payload[0]["model"] == "chat-model"
