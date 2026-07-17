@@ -529,6 +529,23 @@ def find_detached_state(data_dir: Path, group: SwapGroup) -> tuple[_SwapState, P
     return best
 
 
+def stop_engine(data_dir: Path) -> None:
+    """Stop every engine the dir's state files record, regardless of liveness.
+
+    The unconditional off switch behind ``lilbee engine stop`` and the
+    last-user-out path: each recorded swap is terminated through its state
+    record (never a Popen handle, so it works on engines this process did
+    not build) and its file removed. Unparseable files are left alone, as
+    in reap_stale: they may be a sibling's in-flight write.
+    """
+    for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
+        state = _load_state(state_path)
+        if state is None:
+            continue
+        _stop_stale_swap(state)
+        state_path.unlink(missing_ok=True)
+
+
 def reap_stale(data_dir: Path, *, keep_detached: bool = False) -> None:
     """Kill every dead owner's surviving llama-swap at *data_dir*.
 

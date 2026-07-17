@@ -1642,3 +1642,28 @@ class TestBindToLiveEngine:
         assert state is not None
         assert mgr.bind(state) is True
         assert mgr._launches_payload[0]["model"] == "chat-model"
+
+
+class TestStopEngine:
+    """The unconditional off switch: stop whatever the dir's state files record."""
+
+    def test_stops_every_recorded_swap_and_unlinks_states(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for group, pid in (("chat", 7001), ("embed", 7002)):
+            path = tmp_path / sm._state_filename(999_999, group)
+            path.write_text(json.dumps({"pid": pid, "member_ports": [4000]}))
+        stopped: list[int] = []
+        monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state.pid))
+        sm.stop_engine(tmp_path)
+        assert sorted(stopped) == [7001, 7002]
+        assert not list(tmp_path.glob(sm._STATE_FILE_GLOB))
+
+    def test_empty_dir_is_a_noop(self, tmp_path: Path) -> None:
+        sm.stop_engine(tmp_path)  # no states, no error
+
+    def test_unparseable_state_is_left_alone(self, tmp_path: Path) -> None:
+        junk = tmp_path / sm._state_filename(1, "chat")
+        junk.write_text("not json{{{")
+        sm.stop_engine(tmp_path)
+        assert junk.exists()

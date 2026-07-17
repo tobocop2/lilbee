@@ -3,7 +3,8 @@
 Sharing keys on what actually matters for correctness: the per-role models and
 the engine build pin. Planner-derived values (ctx, slots) are accepted from the
 running engine's contract, never recomputed for comparison, because they vary
-legitimately with GPU occupancy at plan time.
+legitimately with GPU occupancy at plan time. The wanted side is configured
+(role, model) pairs, not planned launches: binding exists to skip planning.
 """
 
 from __future__ import annotations
@@ -13,14 +14,19 @@ from typing import TYPE_CHECKING
 from lilbee.providers.fleet.launch import InstanceLaunch
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from lilbee.providers.fleet.swap_manager import _SwapState
+    from lilbee.providers.roles import WorkerRole
 
 
-def contract_matches(state: _SwapState, wanted: list[InstanceLaunch], pin: str) -> bool:
-    """Whether the engine behind *state* serves every launch in *wanted*.
+def contract_matches(
+    state: _SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str
+) -> bool:
+    """Whether the engine behind *state* serves every wanted (role, model) pair.
 
-    The engine may serve more roles than asked; every wanted (role, model)
-    pair must be present, and the engine build pin must equal *pin*.
+    The engine may serve more roles than asked; the engine build pin must
+    equal *pin*, and an empty or undecodable served contract never matches.
     """
     if state.engine_pin != pin:
         return False
@@ -33,4 +39,4 @@ def contract_matches(state: _SwapState, wanted: list[InstanceLaunch], pin: str) 
         return False
     if not served:
         return False
-    return all((launch.role, launch.model) in served for launch in wanted)
+    return all(pair in served for pair in wanted)

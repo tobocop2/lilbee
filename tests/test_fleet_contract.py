@@ -26,34 +26,34 @@ def _state(*launches: InstanceLaunch, pin: str = "pin-a") -> _SwapState:
 
 def test_same_models_and_pin_match() -> None:
     state = _state(_launch(WorkerRole.CHAT, "m-chat"), _launch(WorkerRole.EMBED, "m-embed"))
-    wanted = [_launch(WorkerRole.CHAT, "m-chat"), _launch(WorkerRole.EMBED, "m-embed")]
+    wanted = [(WorkerRole.CHAT, "m-chat"), (WorkerRole.EMBED, "m-embed")]
     assert contract_matches(state, wanted, "pin-a") is True
 
 
 def test_pin_mismatch_refuses() -> None:
     state = _state(_launch(WorkerRole.CHAT, "m-chat"), pin="pin-b")
-    assert contract_matches(state, [_launch(WorkerRole.CHAT, "m-chat")], "pin-a") is False
+    assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is False
 
 
 def test_model_mismatch_refuses() -> None:
     state = _state(_launch(WorkerRole.CHAT, "m-other"))
-    assert contract_matches(state, [_launch(WorkerRole.CHAT, "m-chat")], "pin-a") is False
+    assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is False
 
 
 def test_wanted_role_missing_from_engine_refuses() -> None:
     state = _state(_launch(WorkerRole.CHAT, "m-chat"))
-    wanted = [_launch(WorkerRole.CHAT, "m-chat"), _launch(WorkerRole.EMBED, "m-embed")]
+    wanted = [(WorkerRole.CHAT, "m-chat"), (WorkerRole.EMBED, "m-embed")]
     assert contract_matches(state, wanted, "pin-a") is False
 
 
 def test_engine_serving_extra_roles_still_matches() -> None:
     state = _state(_launch(WorkerRole.CHAT, "m-chat"), _launch(WorkerRole.EMBED, "m-embed"))
-    assert contract_matches(state, [_launch(WorkerRole.CHAT, "m-chat")], "pin-a") is True
+    assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is True
 
 
 def test_derived_ctx_difference_does_not_refuse() -> None:
     state = _state(_launch(WorkerRole.CHAT, "m-chat", ctx=8192))
-    assert contract_matches(state, [_launch(WorkerRole.CHAT, "m-chat", ctx=4096)], "pin-a") is True
+    assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is True
 
 
 def test_undecodable_contract_refuses() -> None:
@@ -66,9 +66,9 @@ def test_undecodable_contract_refuses() -> None:
         launches=({"junk": True},),
         engine_pin="pin-a",
     )
-    assert contract_matches(state, [_launch(WorkerRole.CHAT, "m-chat")], "pin-a") is False
+    assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is False
 
 
 def test_empty_engine_contract_refuses() -> None:
     state = _state(pin="pin-a")
-    assert contract_matches(state, [_launch(WorkerRole.CHAT, "m-chat")], "pin-a") is False
+    assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is False
