@@ -1,0 +1,74 @@
+# Preregistration for one lilbee-vs-RAGFlow retrieval benchmark run.
+# Freeze this with `python -m evals.benchmark preregister` before any data
+# moves; the frozen copy carries a fingerprint so the run cannot be re-cut.
+run_id: parity-2026-07
+
+# Both arms share one served embedder and one served generator; only retrieval
+# differs. The judge must differ from the generator so answers are never graded
+# by the model that wrote them (validated at load time).
+models:
+  embedder: qwen3-embedding
+  generator: qwen2.5-72b-instruct
+  generator_swap: mistral-large-2411
+  judge: fable-5
+
+arms:
+  - name: lilbee-parity
+    system: lilbee
+    description: test/retrieval-parity with every parity feature enabled
+    config:
+      title_search: true
+      neighbor_expansion: 2
+      table_extraction: true
+      layout_detection: true
+      intent_llm: true
+  - name: ragflow-default
+    system: ragflow
+    description: RAGFlow DeepDoc pipeline at its defaults
+    config:
+      pipeline: deepdoc
+
+# Passage sets carry native TREC qrels; the document-structured QA sets have
+# their retrieval labels derived from human gold-evidence annotations, marked
+# label_kind: derived and disclosed here.
+datasets:
+  - name: scifact
+    loader: scifact
+    label_kind: native
+    split: test
+  - name: fiqa
+    loader: fiqa
+    label_kind: native
+    split: test
+  - name: nfcorpus
+    loader: nfcorpus
+    label_kind: native
+    split: test
+  - name: hotpotqa
+    loader: hotpotqa
+    label_kind: native
+    split: test
+  - name: trec-covid
+    loader: trec-covid
+    label_kind: native
+    split: test
+  - name: tat-dqa
+    loader: tatdqa
+    label_kind: derived
+    split: test
+  - name: ott-qa
+    loader: ottqa
+    label_kind: derived
+    split: dev
+
+metrics:
+  - nDCG@10
+  - Recall@20
+  - MRR@10
+
+stats:
+  bootstrap_resamples: 10000
+  seed: 20260714
+  alpha: 0.05
+
+temperature: 0.0
