@@ -10,6 +10,7 @@ from lilbee.core.config import cfg
 from lilbee.server.auth import is_read_only
 from lilbee.server.routes.sessions import (
     session_add_message_route,
+    session_claim_route,
     session_create_route,
     session_delete_route,
     session_get_route,
@@ -181,6 +182,8 @@ def test_reads_are_read_only_and_writes_are_not():
     assert not is_read_only(session_create_route.fn)
     assert not is_read_only(session_add_message_route.fn)
     assert not is_read_only(session_set_summary_route.fn)
+    # The takeover operation above all: a read-only token must never claim.
+    assert not is_read_only(session_claim_route.fn)
 
 
 class TestOwnership:
