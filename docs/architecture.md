@@ -91,8 +91,10 @@ What this buys, in order of importance:
   candidate sets flow between stages as in-memory objects instead of round-trips.
 - **Search cannot be "down."** There is no retrieval service to start, health-check,
   version-match, or crash. If the process runs, search works.
-- **Library-first.** `pip install lilbee` yields a self-contained RAG engine (the SQLite
-  philosophy): agents, tests, and scripts query without any running service.
+- **Library-first, CLI-first.** `pip install lilbee` yields a self-contained RAG engine
+  (the SQLite philosophy), and the same property surfaces as one-shot commands: an agent
+  that can run a shell needs no server, no MCP wiring, no daemon: `lilbee search "q"
+  --json` boots, maps the index, runs the full hybrid pipeline, prints, and exits.
 - **Concurrency scales with processes.** Each surface runs retrieval compute on its own
   cores instead of queueing on a shared service's event loop.
 
