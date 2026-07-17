@@ -748,6 +748,8 @@ something feels off.
 | `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
+| `LILBEE_TITLE_SEARCH` | `false` | Match queries against document titles as a third hybrid-search arm, so a query naming a document by title surfaces its chunks |
+| `LILBEE_TITLE_SEARCH_WEIGHT` | `0.5` | Title arm weight in rank fusion (1.0 = equal voice with the vector and text arms) |
 | `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Widen the distance threshold step by step when too few results pass, on the vector-only fallback path (no effect on the default hybrid search) |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |

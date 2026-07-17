@@ -1,12 +1,15 @@
-"""Reciprocal-rank fusion of the vector and BM25 retrieval arms.
+"""Reciprocal-rank fusion of the vector, BM25, and optional title arms.
 
 Each arm contributes ``(K + 1) / (K + rank)`` for the rows it retrieved
 (rank is 1-based, K = 60, the standard RRF constant); a row's canonical
-score is the mean of its two arm contributions, so it lives in [0, 1] and
-a row ranked first by both arms scores exactly 1. Rows seen by only one
-arm score half of that arm's contribution, which still places an arm's
-top hit above every row deep in the other arm: the property that keeps a
-lexical-only identifier match visible next to dense neighbors.
+score is the weight-normalized sum of its arm contributions, so it lives
+in [0, 1] and a row ranked first by every arm scores exactly 1. Rows seen
+by only one arm score that arm's share of the total weight, which still
+places an arm's top hit above every row deep in the other arms: the
+property that keeps a lexical-only identifier match visible next to dense
+neighbors. The vector and chunk-BM25 arms weigh 1 each; the optional
+title arm weighs ``title_weight``, so enabling it rescales the shares
+without leaving the canonical range.
 
 Rank fusion is deliberate. A convex combination of normalized raw scores
 (``alpha * vector_similarity + (1 - alpha) * normalized_bm25``) was tried
@@ -55,28 +58,49 @@ def _rank_weight(rank: int) -> float:
     return (_RRF_K + 1) / (_RRF_K + rank)
 
 
+def _merge_arm(
+    merged: dict[tuple[str, int], SearchChunk],
+    rows: list[SearchChunk],
+    share: float,
+) -> None:
+    """Fold one arm's ranked rows into *merged*, each contributing *share* of its rank weight.
+
+    A lexical row (title or chunk FTS) carries ``bm25_score``; when the row was
+    already seen, that provenance is kept from whichever lexical arm set it
+    first, so the lexical-support exemption applies either way.
+    """
+    for rank, row in enumerate(rows, start=1):
+        key = _key(row)
+        contribution = _rank_weight(rank) * share
+        seen = merged.get(key)
+        if seen is None:
+            merged[key] = row.model_copy(update={"score": contribution})
+        else:
+            update: dict[str, object] = {"score": (seen.score or 0.0) + contribution}
+            if seen.bm25_score is None and row.bm25_score is not None:
+                update["bm25_score"] = row.bm25_score
+            merged[key] = seen.model_copy(update=update)
+
+
 def fuse_arms(
     vector_rows: list[SearchChunk],
     fts_rows: list[SearchChunk],
+    title_rows: list[SearchChunk] | None = None,
+    *,
+    title_weight: float = 1.0,
 ) -> list[SearchChunk]:
-    """Merge the two arms into one list scored by reciprocal rank.
+    """Merge the arms into one list scored by reciprocal rank.
 
-    Both arms weigh equally. Rows found by both arms carry both provenance
-    fields (``distance`` from the vector arm, ``bm25_score`` from the FTS
-    arm). The result is sorted by ``score`` descending and deduplicated on
-    ``(source, chunk_index)``.
+    The vector and chunk-FTS arms weigh equally; a non-empty *title_rows* arm
+    joins at *title_weight* relative to them. Rows found by several arms carry
+    every provenance field (``distance`` from the vector arm, ``bm25_score``
+    from the FTS arms). The result is sorted by ``score`` descending and
+    deduplicated on ``(source, chunk_index)``.
     """
+    total_weight = 2.0 + (title_weight if title_rows else 0.0)
     merged: dict[tuple[str, int], SearchChunk] = {}
-    for rank, row in enumerate(vector_rows, start=1):
-        merged[_key(row)] = row.model_copy(update={"score": _rank_weight(rank) / 2})
-    for rank, row in enumerate(fts_rows, start=1):
-        key = _key(row)
-        lexical = _rank_weight(rank) / 2
-        seen = merged.get(key)
-        if seen is None:
-            merged[key] = row.model_copy(update={"score": lexical})
-        else:
-            merged[key] = seen.model_copy(
-                update={"score": (seen.score or 0.0) + lexical, "bm25_score": row.bm25_score}
-            )
+    _merge_arm(merged, vector_rows, 1.0 / total_weight)
+    _merge_arm(merged, fts_rows, 1.0 / total_weight)
+    if title_rows:
+        _merge_arm(merged, title_rows, title_weight / total_weight)
     return sorted(merged.values(), key=lambda r: r.score or 0.0, reverse=True)

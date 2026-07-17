@@ -86,6 +86,7 @@ def _make_xberg_result(text: str = "Some extracted text. " * 20, num_chunks: int
     result.chunks = chunks
     result.content = text
     result.pages = []
+    result.metadata = mock.Mock(title=None, authors=[], created_at=None)
     return result
 
 

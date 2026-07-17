@@ -15,6 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import active_config
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.ingest.title import source_meta_from_extraction
 from lilbee.data.ingest.trace import ExtractionTrace, trace_extraction, trace_log
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
@@ -25,7 +26,7 @@ from lilbee.data.ingest.types import (
     OcrBackendName,
 )
 from lilbee.data.ingest.vision_ocr_backend import backend_options_for, ocr_request
-from lilbee.data.store import ChunkType, PageTextRecord
+from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -302,13 +303,16 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
+    meta_out: list[SourceMeta] | None = None,
 ) -> list[ChunkRecord]:
     """Extract, chunk, and embed a document in a single xberg pass.
 
     xberg extracts native text and, where a page has none, OCRs it through the
     registered backend (lilbee's vision model, or tesseract). Per-page OCR progress
     is streamed as a running count via ``ocr_request``. ``quiet`` is accepted for
-    pipeline call compatibility.
+    pipeline call compatibility. When ``meta_out`` is given, the document's
+    extraction metadata (title, authors, creation date) is appended for the
+    source row, even when extraction yields no text.
     """
     del quiet
     from lilbee.data.xberg_extract import aextract_document
@@ -330,6 +334,20 @@ async def ingest_document(
         # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
         doc = await aextract_document(path.read_bytes(), filename=path.name, config=config)
     elapsed = time.perf_counter() - started
+
+    # Captured before the empty-result return: a scan's PDF metadata (title,
+    # authors) survives even when extraction yields no text.
+    if meta_out is not None:
+        meta_out.append(
+            source_meta_from_extraction(
+                {
+                    "title": doc.metadata.title,
+                    "authors": doc.metadata.authors,
+                    "created_at": doc.metadata.created_at,
+                },
+                source_name,
+            )
+        )
 
     # One trace line per xberg extraction (filename, timing, counts, OCR pages),
     # plus a dedicated vision line for scanned files -- the diagnostics an xberg

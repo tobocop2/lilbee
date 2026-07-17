@@ -130,11 +130,11 @@ def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     return f"chunk_type = '{escaped}'"
 
 
-def _has_fts_index(table: lancedb.table.Table) -> bool:
-    """Return True when an FTS index on the chunk column already exists."""
+def _has_fts_index(table: lancedb.table.Table, column: str = "chunk") -> bool:
+    """Return True when an FTS index on *column* already exists."""
     try:
         for idx in table.list_indices():
-            if idx.index_type == "FTS" and "chunk" in idx.columns:
+            if idx.index_type == "FTS" and column in idx.columns:
                 return True
     except Exception:
         return False
