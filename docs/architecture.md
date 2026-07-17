@@ -66,6 +66,46 @@ flowchart LR
     INGEST --> HF
 ```
 
+### Process boundaries: engine out of process, retrieval in
+
+lilbee draws exactly one process boundary, and it follows a single rule: **a separate
+process is warranted only where the kernel cannot share the resource through the
+filesystem.**
+
+GPU-resident model weights qualify. VRAM allocations are per-process and a C++ inference
+crash must not take the app down, so the engine runs as external llama-server processes
+behind llama-swap, reached over localhost HTTP. That hop carries streaming token
+generation, where transport cost is irrelevant next to per-token compute.
+
+The retrieval index does not qualify. LanceDB is an embedded, mmap'd columnar store:
+queries execute inside the calling process, reading index pages directly, with results
+arriving as Arrow data rather than serialized payloads. Because the index is plain
+memory-mapped files, the OS page cache already shares it across processes for free: N
+lilbee processes querying the same knowledge base read the same physical pages. In-process
+retrieval is therefore already shared retrieval, with the kernel doing the coordination.
+
+What this buys, in order of importance:
+
+- **No transport noise on the hottest read path.** A search fans into vector distance,
+  FTS, hybrid merge, rerank preparation, MMR, and neighbor expansion; intermediate
+  candidate sets flow between stages as in-memory objects instead of round-trips.
+- **Search cannot be "down."** There is no retrieval service to start, health-check,
+  version-match, or crash. If the process runs, search works.
+- **Library-first.** `pip install lilbee` yields a self-contained RAG engine (the SQLite
+  philosophy): agents, tests, and scripts query without any running service.
+- **Concurrency scales with processes.** Each surface runs retrieval compute on its own
+  cores instead of queueing on a shared service's event loop.
+
+The accepted price is multi-process write coordination: writers serialize through a
+cross-process file lock, readers tolerate a bounded staleness window (LanceDB MVCC with a
+5s read-consistency interval), and full-text freshness for brand-new rows follows the
+writer's index optimize. For a read-heavy, occasionally-written knowledge base this is a
+cheap trade, and it is a deliberate one: lilbee prefers directness on the query path over
+consolidating state behind a service, accepting coordination complexity where that is the
+cost. Surfaces that cannot run in-process (external tools, remote clients) still get the
+full pipeline over HTTP via `/api/search` and friends; in-process is the default for every
+surface that can.
+
 ---
 
 ## Ingestion Pipeline
