@@ -57,6 +57,10 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
     "numpy",
+    # Entity schema patterns are LLM-authored, so their matches need a wall-clock
+    # bound; regex takes a per-match timeout where the stdlib re module cannot.
+    # Already present transitively via tiktoken.
+    "regex",
     # The read side is stdlib tomllib; this is its write half.
     "tomli-w>=1.0",
     "cachetools>=7.1.4",
