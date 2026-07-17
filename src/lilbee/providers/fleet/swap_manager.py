@@ -159,6 +159,9 @@ class SwapManager:
         self._log_file: BinaryIO | None = None
         self._port: int | None = None
         self._member_ports: list[int] = []
+        # The serving contract (per-role model/ctx/slots) persisted in every
+        # state write, so a guest lilbee can bind to this live fleet.
+        self._launches_payload: list[dict] = []
 
     def start(self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
@@ -179,6 +182,7 @@ class SwapManager:
         ports = _pick_free_ports(1 + len(launches))
         member_ports = dict(zip([launch.model_id for launch in launches], ports[1:], strict=True))
         self._member_ports = sorted(member_ports.values())
+        self._launches_payload = [launch.to_state() for launch in launches]
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._config_path.write_text(
             build_swap_config(
@@ -227,7 +231,7 @@ class SwapManager:
             return self._adopted.pid, self._adopted.pgid, self._adopted.created_at
         return None
 
-    def _write_state(self, *, detached: bool = False, launches: list[dict] | None = None) -> None:
+    def _write_state(self, *, detached: bool = False) -> None:
         """Record the swap's pid/pgid/create time, member ports, and our identity.
 
         The write is atomic (tmp file then ``os.replace``) so a sibling's reap
@@ -248,7 +252,7 @@ class SwapManager:
             _STATE_KEY_PROXY_PORT: self._port,
             _STATE_KEY_LILBEE_VERSION: _pkg_version("lilbee"),
             _STATE_KEY_DETACHED: detached,
-            _STATE_KEY_LAUNCHES: launches or [],
+            _STATE_KEY_LAUNCHES: self._launches_payload,
         }
         tmp_path = self._state_path.with_name(
             f"{_STATE_TMP_PREFIX}{self._state_path.name}{_STATE_TMP_SUFFIX}"
@@ -284,9 +288,9 @@ class SwapManager:
         """Whether this manager currently has a spawned llama-swap process."""
         return self._proc is not None
 
-    def detach(self, launches: list[dict]) -> None:
+    def detach(self) -> None:
         """Leave llama-swap running for the next launch to adopt; mark the state file."""
-        self._write_state(detached=True, launches=launches)
+        self._write_state(detached=True)
         self._close_log()
         self._proc = None
 
@@ -305,6 +309,7 @@ class SwapManager:
             self._member_ports = []
             return False
         self._adopted = state
+        self._launches_payload = [dict(launch) for launch in state.launches]
         self._write_state()
         if state_path != self._state_path:
             state_path.unlink(missing_ok=True)

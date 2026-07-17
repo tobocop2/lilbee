@@ -989,12 +989,10 @@ class FleetProvider:
         with self._build_lock:
             with self._lock:
                 swaps = dict(self._swaps)
-                launches = dict(self._launches)
                 self._shut_down = True
             self._drop_swap_refs()
-            for group, swap in swaps.items():
-                payload = [launch.to_state() for launch in launches.get(group, ())]
-                swap.detach(payload)
+            for swap in swaps.values():
+                swap.detach()
             if swaps:
                 log.info("Engine fleet left warm for the next launch (%d group(s))", len(swaps))
 

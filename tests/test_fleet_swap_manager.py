@@ -1402,10 +1402,10 @@ class TestDetachAdoptUnits:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         mgr = SwapManager(tmp_path, _GROUP)
         mgr.start([_launch(WorkerRole.CHAT)])
-        mgr.detach([{"role": "chat"}])
+        mgr.detach()
         state = sm._load_state(mgr._state_path)
         assert state is not None and state.detached is True
-        assert state.launches == ({"role": "chat"},)
+        assert state.launches[0]["role"] == "chat"
         assert proc.terminated is False and proc.killed is False  # never signaled
 
     def test_adopt_rejects_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
@@ -1471,3 +1471,59 @@ def test_owned_swap_scan_skips_processes_that_deny_inspection(monkeypatch, leak)
 
     swaps = swap_manager._swaps_for_config(config_path)
     assert swaps == [visible]
+
+
+class TestLiveStateLaunchContract:
+    """Live state files must carry the serving contract, so a guest lilbee can
+    bind to a running sibling's fleet without reverse-engineering /running."""
+
+    def test_start_records_the_launch_contract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.detached is False
+        assert len(state.launches) == 1
+        assert state.launches[0]["role"] == "chat"
+        assert state.launches[0]["model"] == "chat-model"
+
+    def test_detach_reuses_the_recorded_contract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        mgr.detach()
+        state = sm._load_state(mgr._state_path)
+        assert state is not None and state.detached is True
+        assert state.launches[0]["model"] == "chat-model"
+
+    def test_adopt_carries_the_contract_forward(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        old = tmp_path / sm._state_filename(999_999, _GROUP.value)
+        payload = _launch(WorkerRole.CHAT).to_state()
+        old.write_text(
+            json.dumps(
+                {
+                    "pid": 999_998,
+                    "owner_pid": 999_999,
+                    "member_ports": [4000],
+                    "proxy_port": 4100,
+                    "detached": True,
+                    "launches": [payload],
+                }
+            )
+        )
+        state = sm._load_state(old)
+        assert state is not None
+        mgr = SwapManager(tmp_path, _GROUP)
+        assert mgr.adopt(state, old) is True
+        rewritten = sm._load_state(mgr._state_path)
+        assert rewritten is not None
+        assert rewritten.launches[0]["model"] == "chat-model"
