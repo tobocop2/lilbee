@@ -20,6 +20,7 @@ def _chunk(
     line_start=0,
     line_end=0,
     score=0.9,
+    chunk_type="raw",
 ) -> SearchChunk:
     return SearchChunk(
         source=source,
@@ -32,6 +33,7 @@ def _chunk(
         chunk_index=index,
         vector=[0.1],
         score=score,
+        chunk_type=chunk_type,
     )
 
 
@@ -154,3 +156,27 @@ class TestExpandNeighbors:
         rows = [_chunk(index=2, text="bb"), _chunk(index=5, text="ee")]
         out = expand_neighbors([center], _store_with(rows), radius=2, budget=1000, cost=_cost)
         assert out[0].chunk == "dd\nee"
+
+    def test_table_chunk_is_never_widened(self):
+        # Table chunks take synthetic indices appended after the content
+        # chunks, so their stored neighbors are positionally unrelated text.
+        center = _chunk(index=5, text="| h |\n| a |", chunk_type="table")
+        rows = [
+            _chunk(index=4, text="tail prose"),
+            _chunk(index=6, text="| h2 |", chunk_type="table"),
+        ]
+        store = _store_with(rows)
+        out = expand_neighbors([center], store, radius=1, budget=1000, cost=_cost)
+        assert out == [center]
+        store.get_chunks_by_indices.assert_not_called()
+
+    def test_table_rows_are_never_pulled_as_neighbors(self):
+        # The last content chunk sits right before the appended table indices;
+        # widening it must not splice table markdown onto its prose.
+        center = _chunk(index=4, text="closing prose")
+        rows = [
+            _chunk(index=3, text="earlier prose"),
+            _chunk(index=5, text="| h |\n| a |", chunk_type="table"),
+        ]
+        out = expand_neighbors([center], _store_with(rows), radius=1, budget=1000, cost=_cost)
+        assert out[0].chunk == "earlier prose\nclosing prose"

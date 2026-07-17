@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from lilbee.data.store import ChunkType
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -64,10 +66,15 @@ def expand_neighbors(
     chunk. An index that is itself selected, or already claimed by a
     higher-ranked expansion, is never pulled again, so no passage text is
     duplicated (a document routed whole expands to nothing).
+
+    Table chunks take synthetic indices appended after a source's content
+    chunks, so index adjacency means nothing there: a table passage is never
+    widened, and a table row is never pulled into a prose passage.
     """
     centers: dict[str, set[int]] = {}
     for r in results:
-        centers.setdefault(r.source, set()).add(r.chunk_index)
+        if r.chunk_type is not ChunkType.TABLE:
+            centers.setdefault(r.source, set()).add(r.chunk_index)
     rows = _fetch_neighbor_rows(store, centers, radius)
     if not rows:
         return results
@@ -75,6 +82,9 @@ def expand_neighbors(
     remaining = budget
     expanded: list[SearchChunk] = []
     for r in results:
+        if r.chunk_type is ChunkType.TABLE:
+            expanded.append(r)
+            continue
         widened, spent = _widen(r, rows, claimed[r.source], radius, remaining, cost)
         remaining -= spent
         expanded.append(widened)
@@ -100,7 +110,8 @@ def _fetch_neighbor_rows(
             }
         )
         for row in store.get_chunks_by_indices(source, wanted):
-            rows[(source, row.chunk_index)] = row
+            if row.chunk_type is not ChunkType.TABLE:
+                rows[(source, row.chunk_index)] = row
     return rows
 
 
