@@ -177,6 +177,10 @@ select = [
 # the ASCII look-alikes would break extraction.
 allowed-confusables = ["｜", "▁"]
 
+[tool.ruff.lint.isort]
+# evals/ lives at the repo root, outside the src roots above.
+known-first-party = ["evals"]
+
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
@@ -215,6 +219,10 @@ extend-immutable-calls = ["litestar.params.Body"]
     "PLR2004",
     "N802", "N806", "N818", "N817",
 ]
+# Eval harness (and its tests): seeded random for reproducible sampling and
+# blinding, nothing cryptographic (S311).
+"evals/**/*.py" = ["S311"]
+"tests/evals/**/*.py" = ["S311"]
 # Invokes the trusted `gh` CLI with controlled args to build the compat index.
 "tools/build_compat_index.py" = ["S603", "S607"]
 "conftest.py" = ["S101"]
