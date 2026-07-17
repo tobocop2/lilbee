@@ -104,6 +104,15 @@ class TestEnvVarOverrides:
             assert c.data_dir == tmp_path / "data"
             assert c.lancedb_dir == tmp_path / "data" / "lancedb"
 
+    def test_data_root_env_var_is_coerced_to_path(self, tmp_path):
+        # LILBEE_DATA_ROOT sets the data_root field directly as a string;
+        # deriving the child paths from it must not raise on str / str.
+        with mock.patch.dict(os.environ, {"LILBEE_DATA_ROOT": str(tmp_path)}):
+            c = Config()
+            assert c.data_root == tmp_path
+            assert c.documents_dir == tmp_path / "documents"
+            assert c.data_dir == tmp_path / "data"
+
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)
         env["LILBEE_OLLAMA_BASE_URL"] = "http://box:11434"

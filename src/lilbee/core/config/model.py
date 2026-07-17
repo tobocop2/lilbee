@@ -225,6 +225,13 @@ class Config(BaseSettings):
     # with the vector and chunk arms).
     title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
+    # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
+    # 1.0 keeps the two arms equal (the historical behaviour); lowering it lets
+    # a strong dense embedder dominate on corpora where the lexical arm adds
+    # noise rather than signal. The right value is corpus-dependent and set by
+    # the retrieval benchmark, not guessed here.
+    lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
@@ -1020,7 +1027,10 @@ class Config(BaseSettings):
             else:
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
-        root = data["data_root"]
+        # data_root may arrive as a raw string (e.g. from LILBEE_DATA_ROOT); the
+        # child-path derivations below use ``/``, so coerce to Path first.
+        root = Path(data["data_root"])
+        data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
         if data.get("data_dir") in (None, _UNSET_PATH):
