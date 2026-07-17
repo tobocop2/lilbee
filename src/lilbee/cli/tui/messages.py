@@ -422,6 +422,9 @@ FLEET_STATE_REBUILDING = "rebuilding fleet…"
 FLEET_SINGLE_GPU_NOTE = "One graphics card: everything runs here."
 FLEET_GPU_PROBING = "probing GPUs…"
 FLEET_NO_GPUS = "(no GPUs detected)"
+# Shown when the device probe failed outright (e.g. a wedged GPU driver), so the
+# panel names the problem instead of sitting on the probing placeholder forever.
+FLEET_GPU_PROBE_FAILED = "GPU probe failed: {reason}"
 # Shown for a role that has no placement because its model isn't downloaded, so the
 # empty slot reads as a fixable state instead of "GPU placement is broken".
 FLEET_MODEL_NOT_DOWNLOADED = "{role}: {model} not downloaded, pull it to place it"

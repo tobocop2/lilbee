@@ -11,7 +11,7 @@ GIB = 1024**3
 
 def test_read_device_cache_collapses_repeat_probes(monkeypatch):
     """A burst of reads within the TTL probes the engine once."""
-    cache = planning._ReadDeviceCache(ttl_s=1000)
+    cache = planning._ReadDeviceCache(ttl_s=1000, failure_ttl_s=1000)
     calls = {"n": 0}
 
     def fake(_binary):
@@ -30,7 +30,7 @@ def test_read_device_cache_collapses_repeat_probes(monkeypatch):
 
 def test_read_device_cache_ttl_zero_always_probes(monkeypatch):
     """A zero TTL disables caching (every read re-probes)."""
-    cache = planning._ReadDeviceCache(ttl_s=0)
+    cache = planning._ReadDeviceCache(ttl_s=0, failure_ttl_s=0)
     calls = {"n": 0}
 
     def fake(_binary):

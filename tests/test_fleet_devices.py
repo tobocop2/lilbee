@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import devices as dev_mod
 from lilbee.providers.fleet.devices import (
     FleetDevice,
@@ -101,13 +103,18 @@ class TestNvlinkTopology:
         assert dev_mod.host_lacks_nvlink() is False
 
 
+def _fake_listing(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
+    monkeypatch.setattr(dev_mod, "_run_list_devices", lambda _binary, _timeout: output)
+
+
 def test_probe_parses_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(_CUDA_LISTING))
-    devices = probe_devices(Path("/bin/llama-server"))
-    assert devices == [
+    _fake_listing(monkeypatch, _CUDA_LISTING)
+    probe = probe_devices(Path("/bin/llama-server"))
+    assert probe.devices == [
         FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 3090", 24268 * _MIB, 23500 * _MIB),
         FleetDevice("CUDA", 1, "NVIDIA GeForce RTX 4090", 24564 * _MIB, 24000 * _MIB),
     ]
+    assert probe.output == _CUDA_LISTING
 
 
 def test_probe_drops_cpu_and_keeps_gpu_backend(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,15 +123,15 @@ def test_probe_drops_cpu_and_keeps_gpu_backend(monkeypatch: pytest.MonkeyPatch) 
         "  CPU0: some cpu (64000 MiB)\n"
         "  Vulkan0: NVIDIA (24268 MiB, 23000 MiB free)\n"
     )
-    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(listing))
-    devices = probe_devices(Path("/bin/llama-server"))
+    _fake_listing(monkeypatch, listing)
+    devices = probe_devices(Path("/bin/llama-server")).devices
     # CUDA outranks Vulkan; CPU dropped entirely.
     assert [d.backend for d in devices] == ["CUDA"]
 
 
 def test_probe_defaults_free_to_total_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("  Vulkan0: AMD (16000 MiB)\n"))
-    (device,) = probe_devices(Path("/bin/llama-server"))
+    _fake_listing(monkeypatch, "  Vulkan0: AMD (16000 MiB)\n")
+    (device,) = probe_devices(Path("/bin/llama-server")).devices
     assert device.free_bytes == device.total_bytes == 16000 * _MIB
 
 
@@ -134,23 +141,85 @@ def test_probe_returns_a_single_backend(monkeypatch: pytest.MonkeyPatch) -> None
     listing = (
         "  CUDA0: NVIDIA (24268 MiB, 23000 MiB free)\n  ROCm0: AMD (24268 MiB, 23000 MiB free)\n"
     )
-    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run(listing))
-    backends = {d.backend for d in probe_devices(Path("/bin/llama-server"))}
+    _fake_listing(monkeypatch, listing)
+    backends = {d.backend for d in probe_devices(Path("/bin/llama-server")).devices}
     assert len(backends) == 1
 
 
 def test_probe_returns_empty_when_no_gpu_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     # Only a CPU device listed -> no GPU backend to pin -> empty.
-    monkeypatch.setattr(dev_mod.subprocess, "run", _fake_run("  CPU0: host cpu (64000 MiB)\n"))
-    assert probe_devices(Path("/bin/llama-server")) == []
+    _fake_listing(monkeypatch, "  CPU0: host cpu (64000 MiB)\n")
+    assert probe_devices(Path("/bin/llama-server")).devices == []
 
 
 def test_probe_returns_empty_on_subprocess_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess:
+    def _boom(*_a: object, **_k: object) -> str:
         raise OSError("no such binary")
 
-    monkeypatch.setattr(dev_mod.subprocess, "run", _boom)
-    assert probe_devices(Path("/bin/llama-server")) == []
+    monkeypatch.setattr(dev_mod, "_run_list_devices", _boom)
+    probe = probe_devices(Path("/bin/llama-server"))
+    assert probe.devices == []
+    assert probe.output == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shell-script fake binary")
+def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
+    # End to end through Popen: a real script's stdout is parsed into devices.
+    script = tmp_path / "llama-server"
+    script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{_CUDA_LISTING}EOF\n")
+    script.chmod(0o755)
+    probe = probe_devices(script)
+    assert [d.index for d in probe.devices] == [0, 1]
+
+
+def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _HealthyProc:
+        def communicate(self, timeout: float | None = None) -> tuple[str, None]:
+            return (_CUDA_LISTING, None)
+
+    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _HealthyProc())
+    assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == _CUDA_LISTING
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_probe_timeout_raises_and_kills_the_child(tmp_path: Path) -> None:
+    """A probe wedged past the timeout raises a named error instead of hanging.
+
+    The bug class this pins: on a host with a wedged GPU driver, --list-devices
+    never returns, and treating that as 'no devices' (or waiting forever) turned
+    the whole serve into a silent never-ready fleet (bb-0yf0).
+    """
+    script = tmp_path / "llama-server"
+    script.write_text("#!/bin/sh\nsleep 30\n")
+    script.chmod(0o755)
+    with pytest.raises(ProviderError, match="did not respond"):
+        probe_devices(script, timeout_s=0.2)
+
+
+def test_probe_abandons_an_unreapable_child(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A child that survives SIGKILL (uninterruptible driver I/O) is abandoned
+    after a bounded reap instead of blocking the caller forever.
+
+    The POSIX group-kill path is forced (repo pattern: simulate the platform)
+    so the same lines are exercised on every CI host, Windows included.
+    """
+
+    class _WedgedProc:
+        pid = 12345
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            raise subprocess.TimeoutExpired(cmd="llama-server", timeout=timeout or 0)
+
+    monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _WedgedProc())
+    monkeypatch.setattr(dev_mod.os, "name", "posix")
+    monkeypatch.setattr(dev_mod.os, "killpg", lambda *_a: None, raising=False)
+    monkeypatch.setattr(dev_mod.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(dev_mod, "_PROBE_KILL_WAIT_S", 0.01)
+    with caplog.at_level("WARNING"), pytest.raises(ProviderError, match="did not respond"):
+        probe_devices(Path("/bin/llama-server"), timeout_s=0.01)
+    assert "abandoned" in caplog.text
 
 
 def test_probe_env_sets_pci_bus_order() -> None:
