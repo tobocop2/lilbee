@@ -51,13 +51,12 @@ each of those came from. The fleet panel on the right is the GPU answering.
 
 ## Sessions: leave, come back, keep going
 
-Every conversation saves itself as you chat. `ctrl+o` opens the drawer, a few
-letters filter to the right conversation, and `enter` resumes it — all 240
-messages of it. Then the interesting part: the resumed history is bigger than
-the model's context window, so lilbee folds the older turns into notes the
-model keeps reading, marks the exact spot in the transcript where its view now
-begins, and answers the next question with the manual page cited. Nothing on
-screen is lost; only what the model is sent gets condensed.
+Conversations save automatically. `ctrl+o` opens the drawer, a few letters
+filter, `enter` resumes a 240-message conversation. It no longer fits the
+model's context window, so lilbee folds the older turns into notes the model
+keeps, marks the spot in the transcript where its view now begins, and
+answers the next question with the page cited. The transcript keeps
+everything; only what the model is sent is condensed.
 
 ![resume a 240-message conversation, watch it compact live, keep chatting with citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.gif)
 
