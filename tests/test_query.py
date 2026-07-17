@@ -858,6 +858,74 @@ class TestContextBudget:
         assert "to fit the model context window" in caplog.text
 
 
+class TestNeighborExpansion:
+    """Selected chunks widen with adjacent same-source chunks at answer time."""
+
+    @pytest.fixture(autouse=True)
+    def _restore(self):
+        old = (cfg.neighbor_expansion, cfg.num_ctx)
+        yield
+        cfg.neighbor_expansion, cfg.num_ctx = old
+
+    def test_off_by_default_never_touches_neighbors(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(chunk="core text")]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        result = get_services().searcher.ask_raw("q")
+        assert result.sources[0].chunk == "core text"
+        mock_svc.store.get_chunks_by_indices.assert_not_called()
+
+    def test_widens_the_passage_and_the_prompt(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        mock_svc.store.search.return_value = [_make_result(chunk="core text", chunk_index=2)]
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="before core", chunk_index=1),
+            _make_result(chunk="text after", chunk_index=3),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        result = get_services().searcher.ask_raw("q")
+        assert result.sources[0].chunk == "before core text after"
+        assert result.sources[0].chunk_index == 2
+        prompt = mock_svc.provider.chat.call_args[0][0][-1]["content"]
+        assert "before core text after" in prompt
+
+    def test_widening_keeps_citation_numbering(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        mock_svc.store.search.return_value = [
+            _make_result(source="a.pdf", chunk="alpha", chunk_index=5, distance=0.1),
+            _make_result(source="b.pdf", chunk="beta", chunk_index=0, distance=0.2),
+        ]
+        mock_svc.store.get_chunks_by_indices.return_value = []
+        mock_svc.provider.chat.return_value = _text_result("From [1] and [2].")
+        answer = get_services().searcher.ask("q")
+        assert "1. [a.pdf](file://" in answer
+        assert "2. [b.pdf](file://" in answer
+
+    def test_sources_block_shows_the_widened_page_span(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        mock_svc.store.search.return_value = [
+            _make_result(chunk="core", chunk_index=2, page_start=3, page_end=3)
+        ]
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="prev", chunk_index=1, page_start=2, page_end=2),
+            _make_result(chunk="next", chunk_index=3, page_start=4, page_end=4),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        answer = get_services().searcher.ask("q")
+        assert "pages 2-4" in answer
+
+    def test_tight_budget_sheds_expansion_never_the_original(self, mock_svc):
+        cfg.neighbor_expansion = 1
+        cfg.num_ctx = 1200
+        mock_svc.store.search.return_value = [_make_result(chunk="x" * 300, chunk_index=2)]
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="y" * 300, chunk_index=1),
+            _make_result(chunk="z" * 300, chunk_index=3),
+        ]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        result = get_services().searcher.ask_raw("q")
+        assert result.sources[0].chunk == "x" * 300
+
+
 class TestAskRaw:
     def test_returns_structured_result(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(chunk="oil is 5 quarts")]

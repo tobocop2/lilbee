@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -930,6 +930,34 @@ class Store:
             filtered = arrow_tbl.filter(pc.equal(arrow_tbl["source"], source))
             rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
+
+    def get_chunks_by_indices(self, source: str, indices: Sequence[int]) -> list[SearchChunk]:
+        """Return *source*'s chunks whose ``chunk_index`` is in *indices*.
+
+        Rows come back in ``chunk_index`` order; indices past either end of
+        the document are simply absent from the result.
+        """
+        if not indices:
+            return []
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(source)
+        wanted = ", ".join(str(int(i)) for i in indices)
+        try:
+            predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
+            rows = table.search().where(predicate).limit(None).to_list()
+        except Exception:
+            # Same FTS-enabled query-builder limitation as get_chunks_by_source;
+            # fall through to a pyarrow.compute filter on the Arrow table.
+            log.debug("get_chunks_by_indices search() failed, using Arrow fallback", exc_info=True)
+            arrow_tbl = table.to_arrow()
+            mask = pc.and_(
+                pc.equal(arrow_tbl["source"], source),
+                pc.is_in(arrow_tbl["chunk_index"], value_set=pa.array(list(indices), pa.int32())),
+            )
+            rows = arrow_tbl.filter(mask).to_pylist()
+        return sorted((SearchChunk(**r) for r in rows), key=lambda c: c.chunk_index)
 
     def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
         """Delete the sources' chunks, page texts, and chunk-concept rows.

@@ -902,6 +902,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum unique sources contributing chunks to a single answer",
     ),
+    "neighbor_expansion": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Adjacent chunks merged into each retrieved passage per side (0 = off)",
+    ),
     "diversity_max_per_source": SettingDef(
         int,
         nullable=False,
