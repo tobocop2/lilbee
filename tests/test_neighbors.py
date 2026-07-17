@@ -170,6 +170,20 @@ class TestExpandNeighbors:
         assert out == [center]
         store.get_chunks_by_indices.assert_not_called()
 
+    def test_table_result_is_passed_through_beside_a_widened_prose_result(self):
+        # A prose result with real neighbors keeps the fetch non-empty, so the
+        # main loop runs and must pass the table result through untouched
+        # rather than trying to widen it.
+        prose = _chunk(source="a.pdf", index=2, text="body")
+        table = _chunk(source="a.pdf", index=9, text="| h |\n| a |", chunk_type="table")
+        rows = [
+            _chunk(source="a.pdf", index=1, text="lead"),
+            _chunk(source="a.pdf", index=3, text="tail"),
+        ]
+        out = expand_neighbors([prose, table], _store_with(rows), radius=1, budget=1000, cost=_cost)
+        assert out[0].chunk == "lead\nbody\ntail"
+        assert out[1] is table
+
     def test_table_rows_are_never_pulled_as_neighbors(self):
         # The last content chunk sits right before the appended table indices;
         # widening it must not splice table markdown onto its prose.
