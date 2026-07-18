@@ -26,11 +26,20 @@ from filelock import FileLock
 from lilbee.core.config import cfg
 
 SESSIONS_DIRNAME = "sessions"
+SESSIONS_DISABLED_HINT = (
+    "Sessions are off. Turn them on with /set sessions_enabled true in the TUI, "
+    "settings_set via MCP, or sessions_enabled = true in config.toml."
+)
 # Bounds a wedged lock holder; a healthy append holds the lock for milliseconds.
 _APPEND_LOCK_TIMEOUT_S = 10
 UNTITLED_SESSION_TITLE = "Untitled chat"
 TITLE_MAX_LEN = 60
 TITLE_ELLIPSIS = "…"
+
+
+def sessions_enabled() -> bool:
+    """True when session persistence is switched on (on by default)."""
+    return cfg.sessions_enabled
 
 
 class SessionEventType(StrEnum):

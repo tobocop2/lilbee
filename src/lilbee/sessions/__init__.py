@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from lilbee.sessions.store import (
     HUMAN_ORIGINS,
+    SESSIONS_DISABLED_HINT,
     MessageRole,
     Session,
     SessionMessage,
@@ -14,10 +15,12 @@ from lilbee.sessions.store import (
     SessionStore,
     TitleSource,
     derive_title,
+    sessions_enabled,
 )
 
 __all__ = [
     "HUMAN_ORIGINS",
+    "SESSIONS_DISABLED_HINT",
     "MessageRole",
     "Session",
     "SessionMessage",
@@ -28,4 +31,5 @@ __all__ = [
     "SessionStore",
     "TitleSource",
     "derive_title",
+    "sessions_enabled",
 ]
