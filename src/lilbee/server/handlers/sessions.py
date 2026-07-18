@@ -23,6 +23,7 @@ from lilbee.server.models import (
 )
 from lilbee.sessions import (
     HUMAN_ORIGINS,
+    SESSIONS_DISABLED_HINT,
     Session,
     SessionMessage,
     SessionMeta,
@@ -31,10 +32,18 @@ from lilbee.sessions import (
     SessionOwnershipError,
     SessionStore,
     TitleSource,
+    sessions_enabled,
 )
 
 
+def _require_sessions() -> None:
+    """Raise 404 if session persistence is disabled (on by default)."""
+    if not sessions_enabled():
+        raise NotFoundException(detail=SESSIONS_DISABLED_HINT)
+
+
 def _store() -> SessionStore:
+    _require_sessions()
     return get_services().session_store
 
 

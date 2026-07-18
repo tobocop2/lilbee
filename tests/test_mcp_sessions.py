@@ -183,3 +183,48 @@ def test_claim_flag_transfers_and_appends_atomically(store):
 
 def test_claim_flag_on_unknown_session_errors(store):
     assert "error" in session_add_message("nope", "user", "x", claim=True)
+
+
+# --- the sessions_enabled toggle -----------------------------------------
+
+
+def test_session_tools_refuse_when_sessions_disabled(store):
+    """Every session tool refuses once the toggle goes off mid-process.
+
+    ``_tool_if`` keeps them off the wire when sessions are off at import, but
+    ``sessions_enabled`` is writable at runtime, so a tool registered at start
+    can still be called after the user turns sessions off. Without this each
+    one would keep writing to disk.
+    """
+    session_id = _seed(store)
+    cfg.sessions_enabled = False
+
+    calls = {
+        "sessions_list": lambda: sessions_list(),
+        "session_get": lambda: session_get(session_id),
+        "session_create": lambda: session_create("m"),
+        "session_add_message": lambda: session_add_message(session_id, "user", "x"),
+        "session_set_summary": lambda: session_set_summary(session_id, "s"),
+        "session_rename": lambda: session_rename(session_id, "t"),
+        "session_delete": lambda: session_delete(session_id),
+    }
+    for name, call in calls.items():
+        result = call()
+        assert "error" in result, f"{name} did not refuse"
+        assert "sessions are off" in result["error"].lower(), name
+
+
+def test_disabled_session_tools_write_nothing(store):
+    """The refusal is real: the transcript and the session list are untouched."""
+    session_id = _seed(store)
+    before = len(store.get(session_id).messages)
+    cfg.sessions_enabled = False
+
+    session_add_message(session_id, "user", "should not land")
+    session_rename(session_id, "should not rename")
+    session_delete(session_id)
+    session_create("m")
+
+    cfg.sessions_enabled = True
+    assert len(store.get(session_id).messages) == before
+    assert [meta.id for meta in store.list(origins=(SessionOrigin.MCP,))] == [session_id]
