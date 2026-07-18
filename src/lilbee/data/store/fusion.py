@@ -26,15 +26,50 @@ exactly ``top_k`` rows.
 
 from __future__ import annotations
 
+from statistics import fmean
+
 from .types import SearchChunk
 
 # Standard RRF smoothing constant (Cormack, Clarke & Buettcher 2009).
 _RRF_K = 60
 
+# Adaptive fusion needs a top hit plus at least one field row to measure a margin.
+_MIN_ROWS_FOR_MARGIN = 2
+
 
 def vector_similarity(distance: float) -> float:
     """Cosine distance to canonical [0, 1] similarity (distance spans [0, 2])."""
     return max(0.0, min(1.0, 1.0 - distance))
+
+
+def adaptive_lexical_weight(
+    vector_rows: list[SearchChunk], base_weight: float, margin_scale: float
+) -> float:
+    """Shrink the lexical arm's weight toward zero when the vector arm is
+    confident about this query.
+
+    A *peaked* vector ranking -- a top hit standing well clear of the field --
+    means the dense embedder already located the answer and the lexical arm
+    mostly adds term-match noise (the FiQA case in the retrieval benchmark). A
+    *flat* ranking means dense is unsure and BM25's exact-term matching is worth
+    trusting (NFCorpus, SciFact). The confidence signal is the margin between
+    the top similarity and the mean of the rest, divided by *margin_scale*: at or
+    above that margin the lexical arm is fully silenced, at zero margin it keeps
+    its full *base_weight*, and it scales linearly between. Returns *base_weight*
+    unchanged when there is nothing to measure (fewer than two scored rows) or
+    the feature is disabled (*margin_scale* <= 0).
+    """
+    if margin_scale <= 0:
+        return base_weight
+    sims = sorted(
+        (vector_similarity(r.distance) for r in vector_rows if r.distance is not None),
+        reverse=True,
+    )
+    if len(sims) < _MIN_ROWS_FOR_MARGIN:
+        return base_weight
+    margin = max(0.0, sims[0] - fmean(sims[1:]))
+    confidence = min(1.0, margin / margin_scale)
+    return base_weight * (1.0 - confidence)
 
 
 def normalized_bm25(scores: list[float]) -> list[float]:

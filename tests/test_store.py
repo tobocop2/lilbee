@@ -644,6 +644,17 @@ class TestHybridSearch:
         scores = [r.score for r in results]
         assert all(0.0 <= s <= 1.0 for s in scores)
 
+    def test_adaptive_fusion_gates_the_hybrid_search(self, store, test_config):
+        """With adaptive_fusion on, hybrid search derives the lexical weight per
+        query from the vector arm instead of the fixed config value."""
+        test_config.adaptive_fusion = True
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        query_vec = [0.5] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=3, query_text="chunk number")
+        assert len(results) > 0
+        assert all(r.score is not None and 0.0 <= r.score <= 1.0 for r in results)
+
     def test_fallback_to_vector_when_no_query_text(self, store, test_config):
         records = _make_records()
         store.add_chunks(records)

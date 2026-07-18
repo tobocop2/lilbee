@@ -28,7 +28,7 @@ from lilbee.core.config import (
 from lilbee.core.security import validate_path_within
 from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
-from .fusion import fuse_arms, normalized_bm25, vector_similarity
+from .fusion import adaptive_lexical_weight, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
     _chunk_type_predicate,
     _has_fts_index,
@@ -714,11 +714,18 @@ class Store:
         title_rows: list[SearchChunk] = []
         if self._config.title_search:
             title_rows = self._title_arm(table, query_text, top_k, chunk_type)
+        vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type)
+        lexical_weight = self._config.lexical_fusion_weight
+        if self._config.adaptive_fusion:
+            # Gate the lexical arm per query by how peaked the vector ranking is.
+            lexical_weight = adaptive_lexical_weight(
+                vector_rows, lexical_weight, self._config.adaptive_fusion_margin
+            )
         fused = fuse_arms(
-            self._vector_arm(table, query_vector, top_k, chunk_type),
+            vector_rows,
             self._fts_arm(table, query_text, top_k, chunk_type),
             title_rows,
-            lexical_weight=self._config.lexical_fusion_weight,
+            lexical_weight=lexical_weight,
             title_weight=self._config.title_search_weight,
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)
