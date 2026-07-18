@@ -501,6 +501,31 @@ class TestSearchContext:
         results = get_services().searcher.search("q")
         assert [r.source for r in results] == ["a.md"]
 
+    def test_structural_chunks_filtered_from_results(self, mock_svc):
+        """A TOC the title/table arms surfaced is dropped so it does not dilute
+        context precision, while the real answer passage survives (bb-pkn6)."""
+        toc = _make_result(
+            source="toc.pdf",
+            distance=0.2,
+            chunk="A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n",
+        )
+        real = _make_result(source="body.pdf", distance=0.2, chunk="Real answer prose.")
+        mock_svc.store.search.return_value = [toc, real]
+        results = get_services().searcher.search("q")
+        assert [r.source for r in results] == ["body.pdf"]
+
+    def test_structural_filter_off_keeps_toc(self, mock_svc):
+        """Opting out (filter_structural_chunks=false) keeps every retrieved row."""
+        cfg.filter_structural_chunks = False
+        toc = _make_result(
+            source="toc.pdf",
+            distance=0.2,
+            chunk="A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n",
+        )
+        mock_svc.store.search.return_value = [toc]
+        results = get_services().searcher.search("q")
+        assert [r.source for r in results] == ["toc.pdf"]
+
     def test_far_row_with_lexical_support_survives_search(self, mock_svc):
         """A both-arm row keeps its standing past max_distance: dropping it
         on vector distance alone would re-bury exactly the identifier hits

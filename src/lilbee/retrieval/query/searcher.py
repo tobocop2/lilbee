@@ -71,6 +71,7 @@ from lilbee.retrieval.query.intent import (
 )
 from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.neighbors import expand_neighbors
+from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
     StreamToken,
@@ -623,6 +624,12 @@ class Searcher:
         # HTTP, and MCP copies of a bare distance cutoff dropped both-arm
         # rows the fusion layer deliberately keeps past max_distance.
         results = filter_results(results, self._config.max_distance)
+        # Drop tables-of-contents and cover pages: the title and table arms
+        # surface them, but they never answer a question and only dilute
+        # context precision (bb-pkn6). Filtered from the top_k*2 candidate
+        # buffer, so enough real passages remain for the downstream trim.
+        if self._config.filter_structural_chunks:
+            results = [r for r in results if not is_structural_chunk(r.chunk)]
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:

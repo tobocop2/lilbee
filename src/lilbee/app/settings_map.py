@@ -874,6 +874,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Vector-similarity margin at which adaptive fusion fully silences the BM25 arm",
     ),
+    "filter_structural_chunks": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Drop tables-of-contents and cover pages from search results",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,
