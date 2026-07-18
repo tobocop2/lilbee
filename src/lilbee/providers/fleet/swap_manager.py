@@ -51,10 +51,8 @@ _CONFIG_FILE_GLOB = "llama-swap-*.json"
 # upstream logs are unaffected (those go to llama-swap's /logs API).
 _LOGS_SUBDIR = "logs"
 _LOG_FILENAME_TEMPLATE = "llama-swap-{group}.log"
-# Cross-run reaping: each writer's state file (named with its pid for
-# uniqueness) records its swap's pid/pgid, so a later start can stop a dead or
-# unhealthy engine that would otherwise hold VRAM. Health, not ownership,
-# decides sparing.
+# Each writer's state file records its swap's pid/pgid so a later start can
+# stop a dead or unhealthy engine. Health, not ownership, decides sparing.
 _STATE_FILENAME_PREFIX = "llama-swap.state."
 _STATE_FILENAME_SUFFIX = ".json"
 # Also matches the legacy single shared state file ("llama-swap.state.json").
@@ -88,12 +86,9 @@ _HTTP_TIMEOUT_S = 10.0
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
 _BOOT_POLL_S = 0.25
-# Per-group SIGTERM grace before SIGKILL. llama-server holds no persistent
-# state, so an early hard kill is safe, and the budget chain depends on it:
-# the whole fleet (up to four groups, stopped sequentially) must tear down
-# inside a supervisor's stop grace and the server-lock handoff grace
-# (SERVER_LOCK_TIMEOUT in lilbee.runtime.lock), which both assume the full
-# teardown stays near 4x this value.
+# Per-group SIGTERM grace before SIGKILL. A hard kill is safe (llama-server
+# holds no persistent state), and SERVER_LOCK_TIMEOUT assumes a full
+# four-group teardown stays near 4x this value.
 _STOP_TIMEOUT_S = 2.5
 # Grace for a llama-server that outlived llama-swap before it is force-killed.
 _ORPHAN_STOP_TIMEOUT_S = 5.0

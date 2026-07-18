@@ -1,10 +1,8 @@
 """Decides whether a running engine can serve a lilbee's configuration.
 
-Sharing keys on what actually matters for correctness: the per-role models and
-the engine build pin. Planner-derived values (ctx, slots) are accepted from the
-running engine's contract, never recomputed for comparison, because they vary
-legitimately with GPU occupancy at plan time. The wanted side is configured
-(role, model) pairs, not planned launches: binding exists to skip planning.
+The contract is the per-role models plus the engine build pin. Planner-derived
+values (ctx, slots) are accepted from the running engine, never recomputed:
+they vary legitimately with GPU occupancy at plan time.
 """
 
 from __future__ import annotations

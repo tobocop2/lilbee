@@ -25,15 +25,11 @@ ENGINE_DIR_ENV = "LILBEE_ENGINE_DIR"
 _BUILD_LOCK_NAME = "engine.lock"
 _USERS_DIRNAME = "engine-users"
 _USER_LOCK_SUFFIX = ".lock"
-# A live peer refuses its lock instantly; this poll exists only to make the
-# probe non-blocking, not to wait.
+# Non-blocking probe: a live peer refuses instantly.
 _PROBE_TIMEOUT_S = 0.0
-# Finite so filelock's deadlock detection stays out of the picture: its
-# held-registry is thread-local, and a hold acquired on a worker thread but
-# released on the teardown thread orphans the worker's entry; the next hold
-# on a reused worker would false-positive as a deadlock under an infinite
-# blocking acquire. The pid-named file has no legitimate contender (our own
-# process is singleton-reentrant), so this never actually waits.
+# Finite: infinite acquires trip filelock's thread-local deadlock detection
+# after a cross-thread release. The pid-named file has no live contender, so
+# this never waits in practice.
 _HOLD_TIMEOUT_S = 10.0
 
 
@@ -82,11 +78,9 @@ class UserLockHold:
     def release_and_check_last(self) -> bool:
         """Release this hold and report whether no live peers remain.
 
-        Peer lock files that can be acquired belong to dead processes (the
-        kernel released their locks) and are deleted in passing; any refusal
-        means a live peer. The lock file is only removed once the last hold
-        in this process releases (two providers in one process share the
-        singleton lock). Idempotent: a second call re-runs the peer probe.
+        Idempotent. The lock file is removed when the last in-process hold
+        releases; acquirable peer files belong to dead processes and are
+        deleted in passing.
         """
         if self._lock.is_locked:
             self._lock.release()
@@ -111,31 +105,21 @@ def hold_user_lock(engine_dir: Path, pid: int | None = None) -> UserLockHold:
 def _user_file_lock(path: Path) -> FileLock:
     """One process-wide reentrant lock instance per user-lock path.
 
-    Not thread-local: membership is per-process. The fleet acquires on its
-    warm-up thread while teardown releases on the signal/exit path; a
-    thread-local hold would read as unlocked there, skip its own release,
-    and then mistake its own lock for a live peer. Singleton: two providers
-    in one process (per-instance Lilbee objects) hold the same pid-named
-    file, and on Linux's fcntl locks a second instance would either falsely
-    succeed or trip filelock's deadlock detection; the shared instance
-    counts holds instead.
+    Not thread-local: acquire and release run on different threads.
+    Singleton: two providers in one process hold the same pid-named file,
+    and separate instances over fcntl falsely succeed or trip filelock's
+    deadlock detection.
     """
     return FileLock(path, thread_local=False, is_singleton=True)
 
 
 def live_users_exist(engine_dir: Path) -> bool:
-    """Probe every user lock file; clean the dead, report whether any refused.
-
-    The ladder consults this (under the build lock) to distinguish an engine
-    someone is actively using from leftover spare capacity: an incompatible
-    incumbent with no live users is replaced, never overflowed around.
-    """
+    """Probe every user lock file; clean the dead, report whether any refused."""
     users = _users_dir(engine_dir)
     for path in sorted(users.glob(f"*{_USER_LOCK_SUFFIX}")):
         probe = _user_file_lock(path)
         if probe.is_locked:
-            # Held by this very process (the singleton instance is live):
-            # acquiring would be reentrant and "succeed", so answer directly.
+            # Held by this process; acquiring would reentrantly succeed.
             return True
         try:
             probe.acquire(timeout=_PROBE_TIMEOUT_S)

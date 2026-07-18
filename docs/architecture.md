@@ -68,45 +68,30 @@ flowchart LR
 
 ### Process boundaries: engine out of process, retrieval in
 
-lilbee draws exactly one process boundary, and it follows a single rule: **a separate
-process is warranted only where the kernel cannot share the resource through the
-filesystem.**
+One rule decides every process boundary: **a separate process is warranted only where
+the kernel cannot share the resource through the filesystem.**
 
-GPU-resident model weights qualify. VRAM allocations are per-process and a C++ inference
-crash must not take the app down, so the engine runs as external llama-server processes
-behind llama-swap, reached over localhost HTTP. That hop carries streaming token
-generation, where transport cost is irrelevant next to per-token compute.
+The engine qualifies. VRAM is per-process and a C++ inference crash must not take the
+app down, so llama-server runs externally behind llama-swap over localhost HTTP. The
+hop carries token streaming, where transport cost is noise next to per-token compute.
 
-The retrieval index does not qualify. LanceDB is an embedded, mmap'd columnar store:
-queries execute inside the calling process, reading index pages directly, with results
-arriving as Arrow data rather than serialized payloads. Because the index is plain
-memory-mapped files, the OS page cache already shares it across processes for free: N
-lilbee processes querying the same knowledge base read the same physical pages. In-process
-retrieval is therefore already shared retrieval, with the kernel doing the coordination.
+The retrieval index does not. LanceDB is an embedded mmap'd store: queries read index
+pages in-process, and the OS page cache shares those pages across processes for free.
+In-process retrieval is already shared retrieval.
 
-What this buys, in order of importance:
+What this buys:
 
-- **No transport noise on the hottest read path.** A search fans into vector distance,
-  FTS, hybrid merge, rerank preparation, MMR, and neighbor expansion; intermediate
-  candidate sets flow between stages as in-memory objects instead of round-trips.
-- **Search cannot be "down."** There is no retrieval service to start, health-check,
-  version-match, or crash. If the process runs, search works.
-- **Library-first, CLI-first.** `pip install lilbee` yields a self-contained RAG engine
-  (the SQLite philosophy), and the same property surfaces as one-shot commands: an agent
-  that can run a shell needs no server, no MCP wiring, no daemon: `lilbee search "q"
-  --json` boots, maps the index, runs the full hybrid pipeline, prints, and exits.
-- **Concurrency scales with processes.** Each surface runs retrieval compute on its own
-  cores instead of queueing on a shared service's event loop.
+- **No transport on the hottest read path.** Candidate sets flow between search stages
+  as in-memory objects, not round-trips.
+- **Search cannot be "down."** No retrieval service to start, health-check, or crash.
+- **Library-first, CLI-first.** `lilbee search "q" --json` boots, maps the index, runs
+  the full pipeline, prints, and exits. No server, no daemon.
+- **Concurrency scales with processes**, not a shared service's event loop.
 
-The accepted price is multi-process write coordination: writers serialize through a
-cross-process file lock, readers tolerate a bounded staleness window (LanceDB MVCC with a
-5s read-consistency interval), and full-text freshness for brand-new rows follows the
-writer's index optimize. For a read-heavy, occasionally-written knowledge base this is a
-cheap trade, and it is a deliberate one: lilbee prefers directness on the query path over
-consolidating state behind a service, accepting coordination complexity where that is the
-cost. Surfaces that cannot run in-process (external tools, remote clients) still get the
-full pipeline over HTTP via `/api/search` and friends; in-process is the default for every
-surface that can.
+The price is write coordination: writers serialize through a cross-process file lock
+and readers tolerate a bounded staleness window (LanceDB MVCC, 5s read-consistency).
+Cheap for a read-heavy knowledge base. Surfaces that cannot run in-process still get
+the full pipeline over HTTP via `/api/search`.
 
 ---
 
@@ -581,18 +566,13 @@ touching the running fleet.
 
 ### Startup sequence and engine lifecycle
 
-The TUI opens the way Ollama and LM Studio do: the app is usable within a
-couple of seconds and the model loads in the background. The launcher never
-blocks on the engine; the same amber wordmark carries every stage. The onefile
-bootstrap paints an unpack progress bar (one-time; later launches skip it via
-the extraction stamp), parks the wordmark for the Python start, and the startup
-gate (`cli/tui/screens/startup_gate.py`) holds only while the services
-container builds. Nothing slower than widget mounting runs on the mount path:
-model canonicalization (disk reads, server probes) lives in the gate's boot
-worker, off the event loop. A prompt sent before the engine is ready waits
-inside its own answer bubble, whose thinking row renders the live load phase
-(`wait_chat_ready(on_progress=...)` in `app/placement.py`), byte progress
-included; a failed load lands there with the model hint.
+The TUI opens in a couple of seconds and the model loads in the background,
+the way Ollama and LM Studio do. The startup gate
+(`cli/tui/screens/startup_gate.py`) holds only while the services container
+builds; anything slower than widget mounting (disk reads, server probes) runs
+in the gate's boot worker. A prompt sent before the engine is ready waits in
+its own answer bubble, which renders the live load phase with byte progress
+(`wait_chat_ready(on_progress=...)` in `app/placement.py`).
 
 ```mermaid
 flowchart TD
@@ -605,46 +585,34 @@ flowchart TD
     F -- no --> H
 ```
 
-The engine is machine-level infrastructure, not a per-process possession. One
-**machine engine slot** per OS user (`~/.cache/lilbee/engine/`,
-`%LOCALAPPDATA%\lilbee\engine` on Windows) holds the running fleet's records;
-every lilbee process acquires its engine through the same ladder, executed
-under a cross-process build lock so two simultaneous starts can never both
-build:
+The engine is machine-level infrastructure. One **machine engine slot** per
+OS user (`~/.cache/lilbee/engine/`, `%LOCALAPPDATA%\lilbee\engine` on
+Windows) holds the running fleet's records; every process acquires its engine
+through the same ladder, under a cross-process build lock:
 
-1. **Bind** when the slot's engine is healthy and its contract covers every
-   configured (role, model) pair with an equal **engine pin** (the bundled
-   llama.cpp/llama-swap/gguf-parser versions). A binder spawns nothing and
-   writes nothing: it points its clients at the recorded proxy ports. lilbee
-   version is deliberately not part of the contract; the pin is what
-   correctness depends on, so two lilbee releases sharing a pin share an
-   engine, and differing pins never run on an engine they were not tested
-   against.
-2. **Build** into the empty slot otherwise, from this process's own binaries
-   and plan.
+1. **Bind** when the slot's engine is healthy and its contract (per-role
+   models plus the bundled **engine pin**) covers the configuration. Binders
+   spawn nothing and write nothing. lilbee version is not in the contract:
+   releases sharing a pin share an engine; differing pins never run on a
+   build they were not tested against.
+2. **Build** into the empty slot otherwise. An incompatible incumbent with no
+   live users is replaced in place, so leftovers never poison the slot.
 3. **Overflow** to the config root's private dir (`<root>/data/engine/`) only
-   when the slot's incompatible engine has live users (processes holding user
-   locks on it): two engines exist exactly while two genuinely different model
-   setups are in active use. An incompatible incumbent nobody is using — a
-   fleet built while only some configured models were installed, or another
-   config's idle warm engine — is replaced in the slot instead, so leftovers
-   can never poison the slot for every later arrival.
+   when the slot's incompatible engine is in active use: two engines exist
+   exactly while two different model setups run at once.
 
-Engine lifetime is kernel-refcounted membership: each process holds a user
-lock file the OS releases on any death. The last clean exit stops the engine,
-proxy included, leaving the machine clean; `keep_engine_warm` is the explicit
-opt-in for the engine to outlive lilbee. The idle `ttl`
-(`engine_idle_ttl_minutes`, default five minutes) applies in every mode, so
-even a persistent engine releases its weights when unused; `lilbee engine
-stop` frees everything now, whoever started it. Reaping follows one rule that
-can never disagree with binding: an engine answering on its proxy is in use
-and spared; anything else is stopped through its state record.
+Lifetime is kernel-refcounted membership: each process holds a user lock the
+OS releases on any death, and the last clean exit stops the engine.
+`keep_engine_warm` opts the engine into outliving lilbee; the idle TTL
+(`engine_idle_ttl_minutes`, default five minutes) applies in every mode;
+`lilbee engine stop` frees everything now, whoever started it. Reaping never
+disagrees with binding: an engine answering on its proxy is spared, anything
+else is stopped through its state record.
 
-Two honest costs ride along. A model or placement change restarts the shared
-engine from whichever surface makes it: peers rediscover the new ports with a
-one-shot retry, and a request in flight during the restart surfaces a retry
-error. And the proxy listens on an unauthenticated localhost port, as it
-always has; the machine slot only makes discovery easier.
+Two costs ride along. A model or placement change restarts the shared engine;
+peers rediscover the new ports with a one-shot retry, and an in-flight
+request surfaces a retry error. And the proxy still listens on an
+unauthenticated localhost port; the machine slot only makes discovery easier.
 
 ```mermaid
 flowchart TD

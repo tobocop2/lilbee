@@ -284,10 +284,8 @@ def pull_cmd(
     from lilbee.catalog.types import ModelSource
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    # A download never runs inference. Warming here would spawn a fleet
-    # mid-pull; with only some configured models installed yet, that fleet
-    # serves a partial contract and poisons the machine slot for later
-    # arrivals.
+    # A download never runs inference; a mid-pull fleet would serve a
+    # partial contract.
     cfg.worker_pool_eager_start = False
     src = _parse_source_or_bad_param(source) or ModelSource.NATIVE
     if cfg.json_mode:

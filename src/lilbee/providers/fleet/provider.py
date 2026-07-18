@@ -675,17 +675,12 @@ class FleetProvider:
     def _acquire_engine(self, config_root: Path) -> bool:
         """The acquisition ladder: bind to a compatible engine, else build one.
 
-        Machine slot first; only a slot occupied by an incompatible engine
-        that live processes hold user locks on sends the build to this config
-        root's private overflow dir. An incompatible incumbent nobody is
-        using is spare capacity of the wrong shape (a fleet built while only
-        some configured models were installed, or another config's idle warm
-        engine) and is replaced in place: overflowing around it would poison
-        the slot for every later arrival. Per-dir the step is all-or-nothing:
-        every configured (role, model) pair bound, or the engine is built
-        fresh. Runs under the cross-process build lock, so two simultaneous
-        starts can never both build, and a departure's stop-if-last (also
-        under the lock) can never race an arrival.
+        Machine slot first. An incompatible incumbent with no live users is
+        replaced in place; only one in active use sends the build to the
+        config root's private overflow dir. Per-dir the step is all-or-
+        nothing: every configured (role, model) pair bound, or built fresh.
+        Runs under the cross-process build lock, so two starts never both
+        build and stop-if-last never races an arrival.
         """
         pin = engine_pin()
         wanted = {(role, model) for role in WorkerRole if (model := _configured_model_for(role))}
@@ -696,9 +691,8 @@ class FleetProvider:
                 return True
             occupied = self._slot_occupied(machine)
             if not occupied or not live_users_exist(machine):
-                # Reap first (dead engines' leftovers hold VRAM and reap also
-                # clears orphaned servers), then stop the healthy-but-unused
-                # incumbent if one remains, so planning sees true free memory.
+                # Reap dead leftovers, then stop any unused incumbent, so
+                # planning sees true free VRAM.
                 reap_stale(machine)
                 if occupied:
                     stop_engine(machine)
@@ -713,8 +707,7 @@ class FleetProvider:
                 return True
             reap_stale(private)
             if self._slot_occupied(private) and not live_users_exist(private):
-                # Same replacement rule as the machine slot: never stack a
-                # second fleet on top of an unused incompatible one.
+                # Never stack a second fleet on an unused incompatible one.
                 stop_engine(private)
             if self._plan_and_spawn(private):
                 self._hold_membership(private)
@@ -1214,15 +1207,11 @@ class FleetProvider:
     ) -> list[ChatMessage]:
         """Drop oldest turns so the prompt fits the served context.
 
-        The caller's output reservation (``num_predict``) is honored while the
-        window allows it and clamped to the default generation room otherwise:
-        agent clients size their reservation from their own prompt estimate,
-        which under-counts, and llama-server stops at the context edge anyway,
-        so a greedy reservation must degrade the output room, not kill the
-        turn. Raises ``ProviderError(CONTEXT_OVERFLOW)`` only when the system
+        A ``num_predict`` reservation the window cannot honor is clamped to
+        the default generation room; llama-server stops at the context edge
+        anyway. Raises ``ProviderError(CONTEXT_OVERFLOW)`` only when system
         messages, tools, and the final turn exceed the window even with the
-        clamped reserve; the chat-completions route maps that to a 400
-        ``context_length_exceeded`` rather than a 500.
+        clamped reserve (mapped to a 400 by the chat-completions route).
         """
         # 0/None means the served context is unknown (no chat launch adopted yet);
         # a real per-slot context is always positive, so skip windowing.
