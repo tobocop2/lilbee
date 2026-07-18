@@ -136,6 +136,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/version", "_cmd_version", help_text="Show the lilbee version"),
     SlashCommand("/cancel", "_cmd_cancel", help_text="Cancel any in-flight operations"),
     SlashCommand("/clear", "_cmd_clear", help_text="Clear the conversation"),
+    SlashCommand("/sessions", "_cmd_sessions", help_text="Open the sessions drawer"),
     SlashCommand("/quit", "_cmd_quit", aliases=("/q", "/exit"), help_text="Exit lilbee"),
 )
 

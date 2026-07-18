@@ -22,7 +22,7 @@ import contextlib
 import re
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from lilbee.core.config import cfg
 from lilbee.providers.base import THINK_CLOSE_TAG, THINK_OPEN_TAG, ClosableIterator
@@ -285,7 +285,14 @@ def strip_reasoning(text: str) -> str:
     return _THINK_BLOCK_RE.sub("", text)
 
 
-def split_reasoning(text: str) -> tuple[str, str]:
+class ReasoningSplit(NamedTuple):
+    """A model reply separated into its reasoning and its visible answer."""
+
+    reasoning: str
+    answer: str
+
+
+def split_reasoning(text: str) -> ReasoningSplit:
     """Split a complete string into its reasoning and its answer.
 
     An unterminated ``<think>`` block means the model never reached an answer, so
@@ -297,7 +304,7 @@ def split_reasoning(text: str) -> tuple[str, str]:
         match.group(0).strip().removeprefix(THINK_OPEN_TAG).removesuffix(THINK_CLOSE_TAG).strip()
         for match in _THINK_BLOCK_RE.finditer(text)
     ]
-    return "".join(blocks), strip_reasoning(text)
+    return ReasoningSplit("".join(blocks), strip_reasoning(text))
 
 
 def _could_be_partial(tag: str, buf: str) -> bool:

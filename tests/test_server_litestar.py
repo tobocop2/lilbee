@@ -351,6 +351,21 @@ class TestChatRoute:
         assert "downstream broke" in resp.text
 
     @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_engine_that_cannot_start_returns_503_with_the_reason(self, mock_chat, client):
+        """A fleet that failed to start (e.g. a wedged GPU probe) 503s with the
+        cause instead of answering 2xx with a polite refusal a scripted caller
+        cannot tell from a real answer (bb-0yf0)."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_chat.side_effect = ProviderError(
+            "The GPU device probe (llama-server --list-devices) did not respond within 60s",
+            kind=ProviderErrorKind.SERVER,
+        )
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 503
+        assert "GPU device probe" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
     def test_upstream_auth_error_stays_503(self, mock_chat, client):
         """An upstream AUTH failure keeps the generic 503, never the /v1 401: the
         shipped /api client reads 401/403 as a lilbee session-token failure and
@@ -659,6 +674,7 @@ class TestEmbeddingMismatchSurfacing:
                 searcher.skip_retrieval.return_value = False
                 # The library has content: the empty-library route must pass.
                 searcher.library_empty.return_value = False
+                searcher.pre_retrieval_answer.return_value = None
                 # Not a count question: the direct-answer route must pass.
                 searcher.route_direct_answer.return_value = None
                 searcher.build_rag_context.side_effect = self._mismatch()

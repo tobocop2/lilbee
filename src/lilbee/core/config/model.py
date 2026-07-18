@@ -100,7 +100,7 @@ class Config(BaseSettings):
     # refuses instead of feeding noise as context. On the fused reciprocal-rank
     # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
-    adaptive_threshold: bool = Field(default=False)
+    adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(
         default=DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
     )
@@ -216,6 +216,41 @@ class Config(BaseSettings):
     # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
+    # Third lexical arm in hybrid search: BM25 over document titles, fused with
+    # the vector and chunk arms so a query naming a document by title surfaces
+    # its chunks. Off by default until the eval harness measures it.
+    title_search: bool = ConfigField(default=False, writable=True)
+
+    # Title arm weight relative to a full arm in rank fusion (1.0 = equal voice
+    # with the vector and chunk arms).
+    title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
+    # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
+    # 1.0 keeps the two arms equal (the historical behaviour); lowering it lets
+    # a strong dense embedder dominate on corpora where the lexical arm adds
+    # noise rather than signal. The right value is corpus-dependent and set by
+    # the retrieval benchmark, not guessed here.
+    lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
+
+    # Adaptive fusion: instead of a fixed lexical_fusion_weight, scale the BM25
+    # arm per query by how confident the vector arm is (a peaked dense ranking
+    # downweights lexical, a flat one keeps it). On by default: the retrieval
+    # benchmark found no single fixed weight wins every corpus, and adaptive at
+    # margin 0.15 beat the fixed-weight default on all three BEIR sets tested
+    # (biggest gain on the corpus a fixed lexical arm hurt most). lexical_fusion_
+    # weight is the ceiling the adaptive rule scales down from; adaptive_fusion_
+    # margin is the vector-similarity margin at which the lexical arm is fully
+    # silenced (smaller = more aggressive). Set adaptive_fusion=false to pin the
+    # fixed weight instead.
+    adaptive_fusion: bool = ConfigField(default=True, writable=True)
+    adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
+
+    # Drop tables-of-contents and cover/title pages from search results. The
+    # title and table arms surface these document-structure chunks, which never
+    # answer a question and only dilute context precision. On by default; the
+    # detector is conservative (unambiguous TOCs and cover pages only).
+    filter_structural_chunks: bool = ConfigField(default=True, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
@@ -232,6 +267,11 @@ class Config(BaseSettings):
     # runs a full-corpus scan (a count is a corpus property top-k cannot
     # answer). Unrecognized shapes take the topical path unchanged.
     intent_routing: bool = ConfigField(default=True, writable=True)
+
+    # Ask the chat model to classify count questions the deterministic
+    # patterns miss (phrasing variants, other languages). Adds one short LLM
+    # call to every turn the patterns don't already route, so it's opt-in.
+    intent_llm: bool = ConfigField(default=False, writable=True)
 
     # LLM-generated alternative queries for expansion. 0 disables.
     query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
@@ -259,6 +299,11 @@ class Config(BaseSettings):
 
     # Chunks included in LLM context after adaptive selection.
     max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
+
+    # Adjacent chunks pulled from the same source on each side of every
+    # selected chunk and merged into one contiguous passage, so a hit that
+    # lands mid-argument regains the text before and after it. 0 disables.
+    neighbor_expansion: int = ConfigField(default=0, ge=0, writable=True)
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)
@@ -435,6 +480,18 @@ class Config(BaseSettings):
         ge=512,
         writable=True,
     )
+
+    # Condense turns that outgrow chat_n_ctx_target into carried notes instead
+    # of dropping them. Off: zero model calls; the oldest turns drop and the
+    # context chip shows it. On: each firing blocks on a summarize call
+    # (measured: 1.3-2.5s per 60-turn fold on a datacenter GPU, 0.7-2s on an
+    # 8-core CPU with a 0.6B-4B model).
+    chat_compaction: bool = ConfigField(default=False, writable=True)
+
+    # Persist conversations and expose the Sessions drawer, tab, and commands.
+    # On by default; turning it off stops chats being written to disk, hides the
+    # ctrl+o binding from the footer, and gates the Sessions view behind a notice.
+    sessions_enabled: bool = ConfigField(default=True, writable=True)
 
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
@@ -619,9 +676,6 @@ class Config(BaseSettings):
 
     # Weight of concept overlap boost relative to vector similarity.
     concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
-
-    # Floor on post-boost distance to stop weak boosts from promoting marginal hits.
-    concept_boost_floor: float = ConfigField(default=0.05, ge=0.0, writable=True)
 
     # Max noun-phrase concepts extracted per chunk.
     concept_max_per_chunk: int = ConfigField(default=5, ge=1, writable=True)
@@ -1004,7 +1058,10 @@ class Config(BaseSettings):
             else:
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
-        root = data["data_root"]
+        # data_root may arrive as a raw string (e.g. from LILBEE_DATA_ROOT); the
+        # child-path derivations below use ``/``, so coerce to Path first.
+        root = Path(data["data_root"])
+        data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
         if data.get("data_dir") in (None, _UNSET_PATH):

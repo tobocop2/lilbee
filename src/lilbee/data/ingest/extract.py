@@ -15,6 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import active_config
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.ingest.title import source_meta_from_extraction
 from lilbee.data.ingest.trace import ExtractionTrace, trace_extraction, trace_log
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
@@ -25,7 +26,7 @@ from lilbee.data.ingest.types import (
     OcrBackendName,
 )
 from lilbee.data.ingest.vision_ocr_backend import backend_options_for, ocr_request
-from lilbee.data.store import ChunkType, PageTextRecord
+from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -34,7 +35,11 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, PdfConfig, Table
+    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, PdfConfig
+
+    # Typing-only: ExtractedDocument.tables yields the native Table, while the
+    # top-level xberg.Table name resolves to the options-module shim.
+    from xberg._xberg import Table
 
 log = logging.getLogger(__name__)
 
@@ -162,13 +167,19 @@ def _pdf_options() -> PdfConfig | None:
     return PdfConfig(**kwargs)
 
 
-def _layout_options() -> dict[str, Any]:
-    """ExtractionConfig kwargs enabling layout detection, empty when off."""
+def _apply_layout_options(config: ExtractionConfig) -> ExtractionConfig:
+    """Enable layout detection on *config* when configured; unchanged when off.
+
+    Keys are assigned individually because ExtractionConfig is a TypedDict:
+    a ``**`` expansion of a plain dict would not typecheck against it.
+    """
     if not active_config().layout_detection:
-        return {}
+        return config
     from xberg import LayoutDetectionConfig
 
-    return {"layout": LayoutDetectionConfig(), "use_layout_for_markdown": True}
+    config["layout"] = LayoutDetectionConfig()
+    config["use_layout_for_markdown"] = True
+    return config
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
@@ -185,13 +196,14 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # vision backend; scoped to the vision path, since it is a GPU re-OCR lever.
     force_ocr = _ocr_force_requested() and ocr.backend == OcrBackendName.LILBEE_VISION
     if mode is ExtractMode.PAGINATED:
-        return ExtractionConfig(
-            chunking=chunking,
-            pages=PageConfig(extract_pages=True, insert_page_markers=False),
-            ocr=ocr,
-            force_ocr=force_ocr,
-            pdf_options=_pdf_options(),
-            **_layout_options(),
+        return _apply_layout_options(
+            ExtractionConfig(
+                chunking=chunking,
+                pages=PageConfig(extract_pages=True, insert_page_markers=False),
+                ocr=ocr,
+                force_ocr=force_ocr,
+                pdf_options=_pdf_options(),
+            )
         )
     return ExtractionConfig(
         chunking=chunking,
@@ -302,13 +314,16 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
+    meta_out: list[SourceMeta] | None = None,
 ) -> list[ChunkRecord]:
     """Extract, chunk, and embed a document in a single xberg pass.
 
     xberg extracts native text and, where a page has none, OCRs it through the
     registered backend (lilbee's vision model, or tesseract). Per-page OCR progress
     is streamed as a running count via ``ocr_request``. ``quiet`` is accepted for
-    pipeline call compatibility.
+    pipeline call compatibility. When ``meta_out`` is given, the document's
+    extraction metadata (title, authors, creation date) is appended for the
+    source row, even when extraction yields no text.
     """
     del quiet
     from lilbee.data.xberg_extract import aextract_document
@@ -330,6 +345,20 @@ async def ingest_document(
         # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
         doc = await aextract_document(path.read_bytes(), filename=path.name, config=config)
     elapsed = time.perf_counter() - started
+
+    # Captured before the empty-result return: a scan's PDF metadata (title,
+    # authors) survives even when extraction yields no text.
+    if meta_out is not None:
+        meta_out.append(
+            source_meta_from_extraction(
+                {
+                    "title": doc.metadata.title,
+                    "authors": doc.metadata.authors,
+                    "created_at": doc.metadata.created_at,
+                },
+                source_name,
+            )
+        )
 
     # One trace line per xberg extraction (filename, timing, counts, OCR pages),
     # plus a dedicated vision line for scanned files -- the diagnostics an xberg

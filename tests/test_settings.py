@@ -195,6 +195,15 @@ class TestRerankerConfig:
         assert "reranker_prompt" in SETTINGS_MAP
         assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
 
+    def test_neighbor_expansion_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["neighbor_expansion"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.group == "Retrieval"
+        assert get_default("neighbor_expansion") == 0
+
 
 class TestReplicaDefaults:
     """embed/vision replica counts default to 0 = auto (one per GPU at placement)."""
@@ -518,3 +527,31 @@ class TestUtf8RoundTrip:
         settings.save(tmp_path, {"key": "value", "unicode": "é"})
         result = settings.load(tmp_path)
         assert result["unicode"] == "é"
+
+
+class TestTitleSearchSettings:
+    """The title-arm knobs are exposed on every settings surface."""
+
+    def test_title_search_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["title_search"]
+        assert defn.writable is True
+        assert defn.type is bool
+        assert defn.group == "Retrieval"
+        assert get_default("title_search") is False
+
+    def test_title_search_weight_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["title_search_weight"]
+        assert defn.writable is True
+        assert defn.type is float
+        assert defn.group == "Retrieval"
+        assert get_default("title_search_weight") == 0.5
+
+    def test_title_search_fields_are_writable_for_programmatic_surfaces(self):
+        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
+
+        assert "title_search" in WRITABLE_CONFIG_FIELDS
+        assert "title_search_weight" in WRITABLE_CONFIG_FIELDS

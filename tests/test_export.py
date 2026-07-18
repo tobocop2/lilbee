@@ -263,3 +263,12 @@ class TestImportDataset:
         assert legacy == []  # none of the old per-op unlocked writes were used
         # The atomic write still landed the source as IMPORTED.
         assert store.get_sources()[0]["source_type"] == SourceType.IMPORTED
+
+    async def test_import_stamps_stem_title(self, services):
+        # Imports carry no extraction metadata; the stem-derived title keeps
+        # imported chunks visible to the title search arm.
+        store = services
+        await import_dataset(store, [_page("field_notes.pdf", 1, "page body")])
+        chunks = store.get_chunks_by_source("field_notes.pdf")
+        assert chunks and all(c.title == "field notes" for c in chunks)
+        assert store.get_sources()[0]["title"] == "field notes"

@@ -79,8 +79,9 @@ and **Chat**. F3 flips it.
 - **Search** (default). Every prompt goes through document retrieval first.
   Relevant chunks are passed to the chat model as context, and the
   reply ends with a Sources block of clickable citations. If retrieval finds
-  nothing, lilbee falls through to a chat-only answer for that single prompt
-  and shows a one-time toast so you know the answer wasn't backed by your files.
+  nothing usable, lilbee says so plainly instead of answering from the
+  model's general knowledge; switch to Chat mode when you want an
+  off-corpus answer.
 - **Chat.** Retrieval is skipped entirely; the model answers directly from
   whatever it already knows. Useful for conversational follow-ups that don't
   need your library, or for talking to a model when you haven't indexed
@@ -215,6 +216,52 @@ The wiki is built incrementally during sync (default cap of 20 changed sources
 per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
 from scratch, lint, drafts review, and prune are also available as CLI
 commands (see [Wiki commands](#wiki-1)) and as MCP tools.
+
+## Sessions
+
+Conversations save automatically. The first message opens a session and names
+it after what you asked; each turn is appended as it lands. There is no save
+step.
+
+- **The drawer** (`ctrl+o` or `/sessions`) docks the session list beside the
+  live chat. Type to filter, `enter` resumes, `^n` new chat, `^r` rename,
+  `^d` delete.
+- **The Sessions tab** is the same list full-screen.
+- **The CLI**: `lilbee sessions list / show / rename / delete` (see
+  [Sessions commands](#sessions-1)).
+
+Resuming restores the transcript and switches back to the model the
+conversation used, if it is still installed; otherwise lilbee keeps the
+current model and says so.
+
+Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
+conversation. No database; back them up or sync them like any other file.
+The same surface exists over HTTP and MCP (list, read, create, append,
+rename, delete), so a script or agent can own a conversation the way the
+TUI does. The TUI, HTTP server, and CLI are one conversation space: start
+a chat in Obsidian, continue it in the terminal. Agent (MCP) sessions are
+separate: they never appear in your session list, and agents cannot list
+or read yours. The one bridge is explicit: an agent can take over a
+session whose id you hand it (`claim=true`, which moves it to the agent's
+space), and `POST /api/sessions/{id}/claim` brings one back.
+
+To keep nothing, turn `sessions_enabled` off in Settings: nothing is written
+to disk, `ctrl+o` leaves the footer, and the Sessions view says sessions are
+off instead of showing an empty list.
+
+### When a conversation outgrows the model
+
+By default, turns that no longer fit the model's context window stop being
+sent. They stay on screen; a `context` gauge by the prompt shows the window
+filling, and a rule in the transcript marks where the model's view now
+begins.
+
+To keep the old context instead, turn on `chat_compaction` in Settings. When
+the window fills, lilbee folds the oldest turns into short notes the model
+keeps reading. The fold is a model call (the gauge shows `condensing…` while
+it runs), around a second or two with a small model, even on CPU. Either way
+the transcript on screen and on disk is never touched; only what the model
+is sent changes.
 
 ## The engine lifecycle
 
@@ -579,6 +626,18 @@ lilbee memory recall "what language"             # recall facts by relevance
 lilbee memory remove <id>                        # delete a memory by id
 ```
 
+### Sessions
+
+See [Sessions](#sessions). Ids accept any unique prefix.
+
+```bash
+lilbee sessions list                   # saved conversations, newest first
+lilbee sessions show 3f2a              # print a transcript by id prefix
+lilbee sessions rename 3f2a "Brake specs"
+lilbee sessions delete 3f2a            # asks first; --yes skips the prompt
+lilbee --json sessions show 3f2a       # transcript + compaction summary as JSON
+```
+
 ### Vault and status
 
 ```bash
@@ -608,8 +667,10 @@ lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1
 The surface covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
-configuration (including a defaults endpoint that powers per-setting reset),
-and status/health. The
+saved conversations (`/api/sessions`: list, read, create, append, rename,
+delete, and the compaction summary; reads work with a read-only token,
+writes need a full one), configuration (including a defaults endpoint
+that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the
@@ -725,7 +786,8 @@ The ones most users set at least once.
 | `LILBEE_VISION_MODEL` | *(none)* | Vision OCR model. When set, takes precedence over Tesseract on scanned PDFs and images |
 | `LILBEE_OCR_TIMEOUT` | `300` | Per-page vision OCR timeout in seconds (`0` = no limit) |
 | `LILBEE_LOG_LEVEL` | `WARNING` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `LILBEE_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG answers |
+| `LILBEE_RAG_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for RAG (search-mode) answers |
+| `LILBEE_GENERAL_SYSTEM_PROMPT` | *(built-in)* | Custom system prompt for chat-mode (ungrounded) answers |
 | `LILBEE_SHOW_REASONING` | `false` | Show the model's `<think>` reasoning tokens in chat output. Useful with Qwen3, DeepSeek-R1, and other reasoning models |
 | `LILBEE_HF_TOKEN` | *(none)* | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Same token can be persisted via the `System` tab in `/settings` (stored in plain text at `config.toml`). `HF_TOKEN` env var also accepted |
 
@@ -736,20 +798,34 @@ something feels off.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LILBEE_TOP_K` | `8` | Number of retrieval results returned |
-| `LILBEE_MAX_DISTANCE` | `0.65` | Cosine distance cutoff. Lower = stricter filtering, fewer but more relevant results. `1.0` disables filtering |
-| `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs. diversity balance (1.0 = pure relevance, 0.0 = pure diversity). Raise for factual lookups, lower for exploratory queries |
-| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `3` | Max chunks from a single source document in the top-K. Prevents one big file from dominating results |
+| `LILBEE_TOP_K` | `12` | Number of retrieval results returned |
+| `LILBEE_MAX_DISTANCE` | `0.75` | Cosine distance cutoff for rows without keyword support. Lower = stricter filtering. `0` disables filtering |
+| `LILBEE_MMR_LAMBDA` | `0.5` | Relevance vs. diversity balance on the vector-only fallback path (no effect on the default hybrid search) |
+| `LILBEE_DIVERSITY_MAX_PER_SOURCE` | `5` | Max chunks from a single source document in the top-K. Prevents one big file from dominating results |
 | `LILBEE_QUERY_EXPANSION_COUNT` | `3` | LLM-generated query variants per search. `0` disables expansion entirely for faster queries |
 | `LILBEE_RERANKER_MODEL` | *(none)* | GGUF cross-encoder reranker for a precision pass over top results. See [Cross-encoder reranking](#cross-encoder-reranking) |
 | `LILBEE_RERANK_CANDIDATES` | `60` | Candidates to rerank when a reranker is configured |
 | `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
-| `LILBEE_ADAPTIVE_THRESHOLD` | `false` | When too few results pass `LILBEE_MAX_DISTANCE`, widen the threshold step by step. Useful on small or noisy corpora |
+| `LILBEE_TITLE_SEARCH` | `false` | Match queries against document titles as a third hybrid-search arm, so a query naming a document by title surfaces its chunks |
+| `LILBEE_TITLE_SEARCH_WEIGHT` | `0.5` | Title arm weight in rank fusion (1.0 = equal voice with the vector and text arms) |
+| `LILBEE_LEXICAL_FUSION_WEIGHT` | `1.0` | BM25 arm weight in rank fusion (1.0 = equal to the vector arm; lower it when a strong embedder should dominate a corpus where the lexical arm adds noise) |
+| `LILBEE_ADAPTIVE_FUSION` | `true` | Scale the BM25 arm's weight per query by how confident the vector arm is (a peaked dense ranking downweights lexical, a flat one keeps it) instead of using a fixed `LILBEE_LEXICAL_FUSION_WEIGHT`. That weight becomes the ceiling the adaptive rule scales down from. Set to `false` to pin the fixed weight |
+| `LILBEE_ADAPTIVE_FUSION_MARGIN` | `0.15` | Vector-similarity margin (top hit minus the field) at which adaptive fusion fully silences the BM25 arm; smaller values downweight lexical more aggressively |
+| `LILBEE_FILTER_STRUCTURAL_CHUNKS` | `true` | Drop tables-of-contents and cover/title pages from search results. The title and table arms surface these document-structure chunks, which never answer a question and only dilute context precision. Set to `false` to keep them |
+| `LILBEE_ADAPTIVE_THRESHOLD` | `false` | Widen the distance threshold step by step when too few results pass, on the vector-only fallback path (no effect on the default hybrid search) |
 | `LILBEE_ADAPTIVE_THRESHOLD_STEP` | `0.2` | How much to widen per step when adaptive threshold triggers |
 | `LILBEE_TEMPORAL_FILTERING` | `true` | When the query contains temporal cues ("recent", "last week"), filter results by document date and sort by recency |
-| `LILBEE_MAX_CONTEXT_SOURCES` | `6` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_MAX_CONTEXT_SOURCES` | `8` | Max chunks included in the LLM's RAG context. Raise for more coverage, lower for shorter prompts |
+| `LILBEE_NEIGHBOR_EXPANSION` | `0` | Adjacent chunks pulled in on each side of every retrieved passage and merged into one contiguous excerpt, so a hit that lands mid-argument regains its surrounding text. `0` disables |
+| `LILBEE_EXPANSION_SHORT_QUERY_TOKENS` | `2` | Queries this short (in tokens) skip LLM query expansion |
+| `LILBEE_ANN_INDEX_THRESHOLD` | `50000` | Chunk count above which sync builds the ANN vector index |
+| `LILBEE_MAX_REASONING_CHARS` | `64000` | Cap on a reasoning model's thinking output per answer |
+| `LILBEE_MEMORY_DEDUP_DISTANCE` | `0.05` | Cosine distance under which a new memory is a duplicate |
+| `LILBEE_WIKI_CLUSTERER` | `embedding` | Wiki topic clusterer backend (`embedding` or `graph`) |
+| `LILBEE_WIKI_CLUSTERER_K` | `0` | Fixed wiki cluster count (`0` = choose automatically) |
+| `LILBEE_CHAT_MODE` | `search` | Default answer mode: `search` (grounded) or `chat` (ungrounded) |
 
 ### Ingestion and chunking
 
@@ -828,6 +904,7 @@ reason the defaults are the defaults.
 | `LILBEE_MIN_RELEVANCE_SCORE` | `0.0` | Abstention floor against the canonical [0, 1] relevance score; when every result falls below it, ask refuses instead of answering from noise |
 | `LILBEE_HISTORY_REWRITE` | `true` | Condense follow-up questions into standalone retrieval queries using chat history |
 | `LILBEE_INTENT_ROUTING` | `true` | Route document-name lookups to exact retrieval and count questions to a full-corpus scan |
+| `LILBEE_INTENT_LLM` | `false` | Classify count questions with the chat model when the fast patterns miss; covers phrasing variants and other languages at the cost of one short LLM call on those turns |
 
 ## Optional extras
 
@@ -905,7 +982,7 @@ searching for "CI/CD" because those concepts co-occur frequently.
 ```bash
 export LILBEE_CONCEPT_GRAPH=true              # enable (default: true when deps installed)
 export LILBEE_CONCEPT_BOOST_WEIGHT=0.3        # how much concept overlap matters (0.0-1.0)
-export LILBEE_CONCEPT_MAX_PER_CHUNK=10        # max concepts extracted per chunk
+export LILBEE_CONCEPT_MAX_PER_CHUNK=5         # max concepts extracted per chunk (default)
 ```
 
 The graph is built automatically during `lilbee sync`. No extra commands

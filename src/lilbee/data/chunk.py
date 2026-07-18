@@ -61,15 +61,16 @@ def _semantic_embedding_config() -> EmbeddingConfig:
     return EmbeddingConfig(model=model)
 
 
-def _table_chunking() -> TableChunkingMode | None:
+def _table_chunking() -> TableChunkingMode | str:
     """Header-repeating table splits when table extraction is on, else xberg's default.
 
     REPEAT_HEADER carries the header row into every piece of a long table, so
-    no chunk holds headerless rows.
+    no chunk holds headerless rows. "split" is ChunkingConfig's own default
+    (the field rejects None, so the off path restates it).
     """
     config = active_config()
     if not config.table_extraction:
-        return None
+        return "split"
     from xberg import TableChunkingMode
 
     return TableChunkingMode.REPEAT_HEADER

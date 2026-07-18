@@ -146,10 +146,43 @@ def test_launch_hermes_no_mcp_prunes_stale_entry(tmp_path):
         patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
         patch("lilbee.cli.launchers.server.spawn_server"),
     ):
-        runner.invoke(app, ["launch", "hermes", "--no-mcp"])
+        result = runner.invoke(app, ["launch", "hermes", "--no-mcp"])
     config = _hermes_config(tmp_path)
     assert "lilbee" not in config.get("mcp_servers", {})
     assert "lilbee" in config["providers"]  # provider stays; only MCP removed
+    # --no-mcp is a deliberate opt-out, so no ungrounded warning.
+    assert "without grounding" not in result.stderr.lower()
+
+
+def test_launch_hermes_warns_when_mcp_cannot_connect(tmp_path):
+    """A hermes whose MCP extra will not connect must not launch silently ungrounded."""
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.hermes.shutil.which", return_value="/usr/local/bin/hermes"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.server.spawn_server"),
+        patch("lilbee.cli.launchers.hermes.ensure_hermes_http_mcp", return_value=False),
+    ):
+        result = runner.invoke(app, ["launch", "hermes"])
+    assert result.exit_code == 0  # the launch still proceeds
+    err = result.stderr.lower()
+    assert "without grounding" in err  # names the consequence, not just an install hint
+    assert "lilbee_search" in result.stderr
+
+
+def test_launch_hermes_quiet_when_mcp_connects(tmp_path):
+    _write_server_session()
+    completed = MagicMock(returncode=0)
+    with (
+        patch("lilbee.cli.launchers.hermes.shutil.which", return_value="/usr/local/bin/hermes"),
+        patch("lilbee.cli.launchers.launcher.subprocess.run", return_value=completed),
+        patch("lilbee.cli.launchers.server.spawn_server"),
+        patch("lilbee.cli.launchers.hermes.ensure_hermes_http_mcp", return_value=True),
+    ):
+        result = runner.invoke(app, ["launch", "hermes"])
+    assert result.exit_code == 0
+    assert "without grounding" not in result.stderr.lower()
 
 
 def test_launch_hermes_installs_skill(tmp_path):

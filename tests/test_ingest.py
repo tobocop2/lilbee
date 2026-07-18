@@ -161,6 +161,7 @@ def _make_xberg_result(
     result.content = text
     result.document = document
     result.tables = tables if tables is not None else []
+    result.metadata = mock.Mock(title=None, authors=[], created_at=None)
     result.pages = (
         [mock.MagicMock(page_number=i + 1, content=chunks[i].content) for i in range(num_chunks)]
         if has_pages
@@ -185,6 +186,7 @@ def _make_empty_result():
     result.document = None
     result.tables = []
     result.pages = []
+    result.metadata = mock.Mock(title=None, authors=[], created_at=None)
     return result
 
 
@@ -1140,7 +1142,14 @@ class TestZeroChunkPageTextPersistence:
 
     @staticmethod
     async def _pages_no_chunks(
-        path, source_name, content_type, *, quiet=False, on_progress=None, page_texts_out=None
+        path,
+        source_name,
+        content_type,
+        *,
+        quiet=False,
+        on_progress=None,
+        page_texts_out=None,
+        meta_out=None,
     ):
         if page_texts_out is not None:
             page_texts_out.append(
@@ -2105,6 +2114,8 @@ class TestExtractionConfig:
 
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.get("pdf_options") is None
+        # ChunkingConfig rejects None, so the off path restates xberg's default.
+        assert config["chunking"].table_chunking == "split"
 
     def test_table_extraction_sets_pdf_options_and_table_chunking(self, monkeypatch):
         """The flag turns on xberg table recognition and header-repeating splits."""
@@ -3089,3 +3100,50 @@ class TestIngestDocumentOcrPath:
         f.write_bytes(b"x")
         await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
         assert 1 in seen and 2 in seen  # two per-page running-count ticks
+
+
+class TestTitleStamping:
+    """Every produced record carries the document title; the source row its metadata."""
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_extracted_metadata_flows_to_records_and_source_row(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        result = _make_xberg_result()
+        result.metadata = mock.Mock(
+            title="Extracted Title", authors=["Ada", "Grace"], created_at="2020-01-01"
+        )
+        mock_kf.return_value = result
+        (isolated_env / "report_2021.txt").write_text("body text")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "report_2021.txt")
+        assert item.meta.title == "Extracted Title"
+        assert item.meta.authors == "Ada, Grace"
+        assert item.meta.created_at == "2020-01-01"
+        assert all(r["title"] == "Extracted Title" for r in item.records)
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_missing_metadata_falls_back_to_stem(self, mock_kf, isolated_env, mock_svc):
+        mock_kf.return_value = _make_xberg_result()
+        (isolated_env / "annual_wildlife_survey.txt").write_text("body text")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "annual_wildlife_survey.txt")
+        assert item.meta.title == "annual wildlife survey"
+        assert item.meta.authors == ""
+        assert all(r["title"] == "annual wildlife survey" for r in item.records)
+
+    async def test_markdown_title_derives_from_stem(self, isolated_env, mock_svc):
+        (isolated_env / "meeting_notes.md").write_text("# Heading\n\nSome content here.")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "meeting_notes.md")
+        assert item.meta.title == "meeting notes"
+        assert all(r["title"] == "meeting notes" for r in item.records)

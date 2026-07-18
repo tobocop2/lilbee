@@ -136,6 +136,7 @@
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-startup"  aria-controls="tutorial-pane-startup"  aria-selected="false" tabindex="-1">startup</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-tour"     aria-controls="tutorial-pane-tour"     aria-selected="false" tabindex="-1">tui-tour</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-chat"     aria-controls="tutorial-pane-chat"     aria-selected="false" tabindex="-1">chat</button>
+              <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-sessions" aria-controls="tutorial-pane-sessions" aria-selected="false" tabindex="-1">sessions</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-add"      aria-controls="tutorial-pane-add"      aria-selected="false" tabindex="-1">add files</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawl"    aria-controls="tutorial-pane-crawl"    aria-selected="false" tabindex="-1">crawl</button>
               <button type="button" class="tutorialtab" role="tab" id="tutorial-tab-crawlsite" aria-controls="tutorial-pane-crawlsite" aria-selected="false" tabindex="-1">crawl a site</button>
@@ -199,6 +200,13 @@
             <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
           </div>
           <p class="tutorial-caption">Streaming replies with clickable citations back to the file and line.</p>
+        </div>
+
+        <div class="tutorialpane" role="tabpanel" id="tutorial-pane-sessions" aria-labelledby="tutorial-tab-sessions" hidden>
+          <div class="tutorial-clip">
+            <video src="https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.mp4" controls loop muted autoplay playsinline preload="metadata"></video>
+          </div>
+          <p class="tutorial-caption">Resume a 240-message chat, watch it condense to fit the model, keep asking with citations.</p>
         </div>
 
         <div class="tutorialpane" role="tabpanel" id="tutorial-pane-add" aria-labelledby="tutorial-tab-add" hidden>
@@ -807,6 +815,10 @@
         <div class="cap">
           <h3>remembers what you tell it</h3>
           <p>Turn on memory and lilbee holds onto durable facts about you and how you like your answers, then recalls the relevant ones on later turns, no matter which conversation they came from. Off by default, and it never leaks into your citations.</p>
+        </div>
+        <div class="cap">
+          <h3>conversations that survive</h3>
+          <p>Chats save automatically as plain files, no database. Press <code>ctrl+o</code> and pick a conversation back up where it stopped. When one outgrows the model's context window, lilbee can fold the older turns into notes it keeps reading.</p>
         </div>
       </div>
     </section>

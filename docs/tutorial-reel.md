@@ -4,18 +4,19 @@ Same demos as on [lilbee.sh/](https://lilbee.sh/),
 with the captions long-form and a handful of extras that don't fit in the site's
 tab list.
 
-The ten that match the site reel, in order:
+The eleven that match the site reel, in order:
 
 1. [First run](#first-run)
 2. [TUI tour](#tui-tour)
 3. [Chat with cited answers](#chat-with-cited-answers)
-4. [Add files](#add-files)
-5. [Crawl a URL](#crawl-a-url)
-6. [Model catalog](#model-catalog)
-7. [Settings](#settings)
-8. [GPU placement](#gpu-placement)
-9. [Agent: code (lilbee talking to lilbee)](#agent-code-lilbee-talking-to-lilbee)
-10. [Agent: PDF](#agent-pdf)
+4. [Sessions: leave, come back, keep going](#sessions-leave-come-back-keep-going)
+5. [Add files](#add-files)
+6. [Crawl a URL](#crawl-a-url)
+7. [Model catalog](#model-catalog)
+8. [Settings](#settings)
+9. [GPU placement](#gpu-placement)
+10. [Agent: code (lilbee talking to lilbee)](#agent-code-lilbee-talking-to-lilbee)
+11. [Agent: PDF](#agent-pdf)
 
 Extras: [agent: live indexing](#agent-live-indexing), [agent: Godot codegen against the full class reference](#agent-godot-codegen-against-the-full-class-reference), [command surface](#command-surface).
 
@@ -39,6 +40,25 @@ Ask the Crown Victoria owner's manual; every answer points back to the page. Inl
 at the exact spot.
 
 ![chat with cited answers](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-chat.gif)
+
+## A straight answer, with the page it came from
+
+A customer wants to tow a 3,500 lb boat trailer. The car can't, and lilbee says so: the
+weight it *is* rated for, the combined limit, what to check before towing, and the page
+each of those came from. The fleet panel on the right is the GPU answering.
+
+![ask whether a car can tow a 3,500 lb boat trailer; lilbee says no, gives the real limits, and cites the manual page](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/tui-tow-limits.gif)
+
+## Sessions: leave, come back, keep going
+
+Conversations save automatically. `ctrl+o` opens the drawer, a few letters
+filter, `enter` resumes a 240-message conversation. It no longer fits the
+model's context window, so lilbee folds the older turns into notes the model
+keeps, marks the spot in the transcript where its view now begins, and
+answers the next question with the page cited. The transcript keeps
+everything; only what the model is sent is condensed.
+
+![resume a 240-message conversation, watch it compact live, keep chatting with citations](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/sessions.gif)
 
 ## Add files
 

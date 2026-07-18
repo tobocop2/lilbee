@@ -45,6 +45,19 @@ class SourceType(StrEnum):
     IMPORTED = "imported"
 
 
+class SourceMeta(NamedTuple):
+    """Document-level metadata captured at extraction time.
+
+    ``title`` is always derivable (extraction metadata or the cleaned filename
+    stem); ``authors`` and ``created_at`` are only present when the extractor
+    reports them. Empty strings persist as NULL so old and new rows read alike.
+    """
+
+    title: str = ""
+    authors: str = ""
+    created_at: str = ""
+
+
 class ChunkWrite(NamedTuple):
     """One document's chunks plus its source-table update, for a batched write.
 
@@ -62,6 +75,7 @@ class ChunkWrite(NamedTuple):
     stat: SourceStat | None = None
     page_texts: list[dict] | None = None
     source_type: SourceType = SourceType.DOCUMENT
+    meta: SourceMeta | None = None
 
 
 class ChunkType(StrEnum):
@@ -155,6 +169,10 @@ class SearchChunk(BaseModel):
         """LanceDB rows from before the chunk_type column was added return None."""
         return v if v is not None else ChunkType.RAW
 
+    # Document title at ingest time; None on rows written before the column
+    # existed (or by writers that carry no title, e.g. wiki pages).
+    title: str | None = None
+
     page_start: int
     page_end: int
     line_start: int
@@ -163,13 +181,14 @@ class SearchChunk(BaseModel):
     chunk_index: int
     vector: list[float] = Field(repr=False)
     distance: float | None = Field(None, alias="_distance")
-    # Legacy RRF ``_relevance_score`` (small fusion-scale magnitude, higher =
-    # better). Current store paths no longer populate it; it survives for rows
-    # produced by older code and external LanceDB rerankers.
+    # Legacy ``_relevance_score`` passthrough. No store path populates it and
+    # no ranking code reads it; it survives only as a display-compatible field
+    # for rows produced by external LanceDB rerankers.
     relevance_score: float | None = Field(None, validation_alias="_relevance_score")
     # FTS/BM25-only rows carry a raw, unbounded ``_score``. It lives in its own
-    # field so it never contaminates the fusion-scale ``relevance_score``; only the
-    # confidence-based expansion-skip reads it (sigmoid-squashed to [0, 1]).
+    # field so it never contaminates the canonical ``score``; the
+    # confidence-based expansion-skip reads it (squashed to [0, 1]), and the
+    # relevance filter treats its presence as lexical support.
     bm25_score: float | None = Field(None, validation_alias="_score")
     rerank_score: float | None = None
     # Canonical relevance in [0, 1], set by the store on every search path:
@@ -194,6 +213,11 @@ class SourceRecord(TypedDict):
     size_bytes: NotRequired[int]
     mtime_ns: NotRequired[int]
     stat_captured_ns: NotRequired[int]
+    # Extraction-time document metadata; absent or None on rows written
+    # before the columns existed, and None when the extractor reported none.
+    title: NotRequired[str | None]
+    authors: NotRequired[str | None]
+    created_at: NotRequired[str | None]
 
 
 # Sentinel for the stat columns on rows written before they existed (or for

@@ -650,10 +650,15 @@ class FleetProvider:
             # ctx, slots, and budgets against it (a live probe under a loaded
             # fleet would report our own residency as unavailable). Inside the
             # try: capturing resolves the engine binary, and a binary-less
-            # host must serve nothing, not raise.
+            # host must serve nothing, not raise. Every other planning failure
+            # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
+            # warm tracker and the caller report the real reason instead of a
+            # silent never-ready fleet.
             planning.capture_plan_probe()
             plan = planning.plan_all_launches()
-        except ProviderError:
+        except ProviderError as exc:
+            if exc.kind is not ProviderErrorKind.NOT_FOUND:
+                raise
             log.debug("Engine binary unavailable; no swap started")
             plan = None
         self._skipped_not_installed = dict(plan.skipped_not_installed) if plan else {}
@@ -752,6 +757,14 @@ class FleetProvider:
                     timeout=_request_timeout_s(launch.weights_bytes),
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
+                    # A cold embed replica 429s bulk ingest until its slots load; wait
+                    # out the same cold-load budget llama-swap keeps it alive for so a
+                    # burst never drops files while the server is legitimately warming.
+                    embed_busy_deadline_s=(
+                        cold_load_timeout_s(launch.weights_bytes)
+                        if role is WorkerRole.EMBED
+                        else None
+                    ),
                 )
                 for launch in role_launches
             ]
@@ -1320,7 +1333,7 @@ class FleetProvider:
                 # keep the full traceback at debug: a WARNING carrying exc_info
                 # reads like a crash for a condition the next real call recovers
                 # from.
-                log.warning("Engine warm-up failed; roles will load on first use: %s", exc)
+                log.warning("Engine warm-up failed: %s", exc)
                 log.debug("Engine warm-up failure detail.", exc_info=True)
             self._fail_warm_unless_ready(str(exc))
         finally:

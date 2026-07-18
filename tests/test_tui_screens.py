@@ -3893,138 +3893,196 @@ async def test_chat_input_handler_uses_on_decorator():
     )
 
 
-async def test_chat_scroll_to_bottom():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        from textual.containers import VerticalScroll
+async def _settle(pilot):
+    """Wait for the bubble to compose, the log to re-lay-out, and the scroll to land.
 
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        with patch.object(log, "scroll_end") as mock_end:
-            app.screen._scroll_to_bottom()
-            # scroll_end called only when near bottom (within 5 lines)
-            assert mock_end.called or log.max_scroll_y - log.scroll_y >= 5
+    A bare ``pause`` covers none of the three, and each one reads back as a
+    plausible number rather than an error: the scroll bindings animate, so
+    ``scroll_y`` samples mid-curve at whatever wall-clock allowed, and a bubble
+    only buffers until ``compose`` hands it a content widget, leaving
+    ``max_scroll_y`` at 0 for an answer grown before that lands.
+    """
+    await pilot.wait_for_scheduled_animations()
 
 
-async def test_chat_auto_scroll_stays_pinned_as_content_grows():
-    """Regression: streamed content grows between scroll ticks. scroll_end does
-    not move scroll_y synchronously and Textual keeps scroll_y put as content
-    grows above it, so max_scroll_y races ahead of scroll_y. Auto-follow must
-    stay pinned to the bottom instead of disabling itself once that gap exceeds
-    the tail tolerance.
+async def _start_turn(pilot, screen):
+    """Ask a question the way the user does, and hand back the log and bubble.
+
+    Every following test sets up through here rather than anchoring the log by
+    hand: anchoring in the test is what production is on the hook for, and doing
+    it in the test would hide it going missing.
     """
     from textual.containers import VerticalScroll
 
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        with (
-            patch.object(type(log), "max_scroll_y", new_callable=PropertyMock) as max_y,
-            patch.object(type(log), "scroll_y", new_callable=PropertyMock) as scroll_y,
-            patch.object(log, "scroll_end") as mock_end,
-        ):
-            # Tick 1: user parked at the bottom (10/10), auto-scroll fires.
-            max_y.return_value = 10
-            scroll_y.return_value = 10.0
-            app.screen._scroll_to_bottom()
-            assert mock_end.call_count == 1
-
-            # 70 more lines stream in before the next tick. scroll_y stays at
-            # the parked spot (10) while max_scroll_y races to 80.
-            max_y.return_value = 80
-            scroll_y.return_value = 10.0
-            app.screen._scroll_to_bottom()
-            # Comparing the live gap (80 - 10 = 70 >= 5) would suppress this and
-            # never recover. The user never scrolled up, so we must still follow.
-            assert mock_end.call_count == 2
+    log = screen.query_one("#chat-log", VerticalScroll)
+    with patch.object(screen, "_stream_response"):
+        screen._send_message("a question")
+    await _settle(pilot)
+    widget = screen._active_assistant
+    assert widget is not None
+    # Composed, so append_content renders instead of only buffering. Without
+    # this the answer never grows and the scroll assertions all pass vacuously.
+    assert widget._content_widget is not None
+    return log, widget
 
 
-async def test_chat_auto_scroll_stops_when_user_scrolls_up():
-    """Auto-follow must release the bottom once the user scrolls up to read."""
-    from textual.containers import VerticalScroll
-
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        with (
-            patch.object(type(log), "max_scroll_y", new_callable=PropertyMock) as max_y,
-            patch.object(type(log), "scroll_y", new_callable=PropertyMock) as scroll_y,
-            patch.object(log, "scroll_end") as mock_end,
-        ):
-            # Park at the bottom.
-            max_y.return_value = 80
-            scroll_y.return_value = 80.0
-            app.screen._scroll_to_bottom()
-            assert mock_end.call_count == 1
-
-            # User scrolls well up from the parked bottom; more content arrives.
-            max_y.return_value = 120
-            scroll_y.return_value = 20.0
-            app.screen._scroll_to_bottom()
-            # We must not yank the reader back down.
-            assert mock_end.call_count == 1
+async def _grow_answer(pilot, widget, paragraphs: int):
+    """Render *paragraphs* more of the answer, as a stream's flushes do."""
+    widget._last_md_update = 0.0
+    widget.append_content("\n\n".join(f"line {i}" for i in range(paragraphs)))
+    await _settle(pilot)
 
 
-async def test_chat_auto_scroll_resumes_only_at_live_bottom():
-    """After a scroll-up, auto-follow re-engages only at the live bottom, not at
-    the stale position the previous response was parked at.
+async def _reader_scrolls_up(pilot):
+    """Scroll up off the bottom the way the reader does, with the real keys.
+
+    Escape first: in insert mode the input holds focus and takes PgUp itself,
+    which is the point of the mode rather than a binding that missed.
     """
-    from textual.containers import VerticalScroll
+    await pilot.press("escape")
+    await pilot.press("pageup")
+    await _settle(pilot)
 
+
+async def test_chat_log_follows_the_answer_as_it_grows():
+    """The answer's tail stays in view while it streams.
+
+    Textual anchors the log, so growth re-pins the scroll during the same layout
+    pass that measures it: there is no window in which the view can be left
+    behind a taller document.
+    """
     app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        log = app.screen.query_one("#chat-log", VerticalScroll)
-        with (
-            patch.object(type(log), "max_scroll_y", new_callable=PropertyMock) as max_y,
-            patch.object(type(log), "scroll_y", new_callable=PropertyMock) as scroll_y,
-            patch.object(log, "scroll_end") as mock_end,
-        ):
-            # Park at the bottom (80), then the user scrolls up while more
-            # content streams in and pushes the bottom to 120.
-            max_y.return_value = 80
-            scroll_y.return_value = 80.0
-            app.screen._scroll_to_bottom()
-            assert mock_end.call_count == 1
-            max_y.return_value = 120
-            scroll_y.return_value = 20.0
-            app.screen._scroll_to_bottom()
-            assert mock_end.call_count == 1
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        log, widget = await _start_turn(pilot, app.screen)
 
-            # Scrolling back to the old parked spot (80) must NOT resume: the
-            # live bottom is now 120, so 80 is still 40 lines short.
-            scroll_y.return_value = 80.0
-            app.screen._scroll_to_bottom()
-            assert mock_end.call_count == 1
-
-            # Reaching the live bottom re-engages auto-follow.
-            scroll_y.return_value = 118.0
-            app.screen._scroll_to_bottom()
-            assert mock_end.call_count == 2
+        await _grow_answer(pilot, widget, 40)
+        assert log.scroll_y == log.max_scroll_y
+        await _grow_answer(pilot, widget, 120)
+        assert log.scroll_y == log.max_scroll_y, "the view fell behind the answer"
 
 
-async def test_chat_trim_history_drops_oldest_pairs_over_token_budget():
-    """History windows by token budget, dropping oldest user/assistant pairs."""
+async def test_chat_log_stops_following_when_the_user_scrolls_up():
+    """Scrolling up to read must not be undone by the answer still growing."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log, widget = await _start_turn(pilot, screen)
+        await _grow_answer(pilot, widget, 80)
+
+        await _reader_scrolls_up(pilot)
+        assert log.scroll_y < log.max_scroll_y, "precondition: the reader scrolled up"
+
+        await _grow_answer(pilot, widget, 160)
+        assert log.scroll_y < log.max_scroll_y, "the reader was yanked back down"
+
+
+async def test_chat_log_follows_again_once_the_user_returns_to_the_bottom():
+    """Coming back to the bottom resumes following for the rest of the answer."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log, widget = await _start_turn(pilot, screen)
+        await _grow_answer(pilot, widget, 80)
+
+        await _reader_scrolls_up(pilot)
+        assert log.scroll_y < log.max_scroll_y
+
+        await pilot.press("G")  # vim G jumps to the bottom
+        await _settle(pilot)
+
+        await _grow_answer(pilot, widget, 160)
+        assert log.scroll_y == log.max_scroll_y, "following did not resume at the bottom"
+
+
+async def test_chat_log_does_not_follow_again_from_part_way_back_down():
+    """Scrolling part of the way back is still reading, not catching up.
+
+    Following resumes at the live bottom only. Coming back to where the answer
+    used to end, while it has since grown past that, must not start yanking the
+    reader down again.
+    """
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log, widget = await _start_turn(pilot, screen)
+        await _grow_answer(pilot, widget, 80)
+        was_the_bottom = log.max_scroll_y
+
+        await _reader_scrolls_up(pilot)
+        await _grow_answer(pilot, widget, 160)
+        assert log.max_scroll_y > was_the_bottom, "precondition: the answer outgrew that spot"
+
+        # Back to where the bottom used to be -- short of where it is now.
+        log.scroll_to(y=was_the_bottom, animate=False)
+        await _settle(pilot)
+        await _grow_answer(pilot, widget, 160)
+
+        assert log.scroll_y < log.max_scroll_y, "following resumed short of the bottom"
+
+
+async def test_chat_send_message_follows_the_answer_it_is_about_to_get():
+    """A turn follows its own answer, whatever the previous turn was left at."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log, widget = await _start_turn(pilot, screen)
+        await _grow_answer(pilot, widget, 80)
+
+        # The reader scrolls up during this answer and leaves it there.
+        await _reader_scrolls_up(pilot)
+        assert log.scroll_y < log.max_scroll_y
+
+        # The next question must follow its own answer regardless.
+        _, next_widget = await _start_turn(pilot, screen)
+        await _grow_answer(pilot, next_widget, 160)
+        assert log.scroll_y == log.max_scroll_y, "the new turn did not follow its answer"
+
+
+async def test_chat_compacts_history_over_token_budget_into_notes():
+    """History over budget is folded into a summary rather than dropped outright.
+
+    Replaces the old _trim_history test: the budget still bounds the prompt, but
+    the turns that fall out now survive as notes the next prompt carries, so the
+    model does not silently forget a conversation the user can still scroll.
+    """
+    from lilbee.app.services import get_services
     from lilbee.core.config import cfg
+    from lilbee.retrieval.query.compaction import CompactionResult
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        # Fill history with 20 user/assistant pairs of ~400 chars each (~100 tokens).
-        # With chat_n_ctx_target = 8192 and 50% history budget = 4096 tokens, the
-        # windower should keep ~40 messages worth; far less here so it drops oldest.
         big_content = "x" * 4096  # ~1024 tokens per message
         app.screen._history = [
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"{i}-{big_content}"}
             for i in range(20)
         ]
+        app.screen._summary = ""
         prior_target = cfg.chat_n_ctx_target
-        cfg.chat_n_ctx_target = 8192
+        prior_compaction = cfg.chat_compaction
+        cfg.chat_compaction = True  # off by default; this test is about the on path
+        cfg.chat_n_ctx_target = 8192  # 50% history budget = 4096 tokens
         try:
-            app.screen._trim_history()
+            with patch.object(
+                get_services().searcher,
+                "summarize_history",
+                return_value=CompactionResult(summary="NOTES", condensed=8, stranded=0),
+            ) as summarize:
+                app.screen._compact_history()
         finally:
             cfg.chat_n_ctx_target = prior_target
-        # Some prefix was dropped; the suffix that fits the budget is kept.
+            cfg.chat_compaction = prior_compaction
+        # Some prefix was folded out; the suffix that fits the budget is kept.
         assert len(app.screen._history) < 20
         # Window must start at a user message so the model anchors on a turn.
         assert app.screen._history[0]["role"] == "user"
+        # ...and what fell out became notes rather than nothing.
+        assert app.screen._summary == "NOTES"
+        assert summarize.call_args.args[0], "the dropped prefix is what gets summarized"
         # The newest pair is always retained.
         assert app.screen._history[-1]["content"].startswith("19-")
 
@@ -7682,6 +7740,10 @@ async def test_app_nav_prev_cycles_views():
 
         app.action_nav_prev()
         await pilot.pause()
+        assert app.active_view == "Sessions"
+
+        app.action_nav_prev()
+        await pilot.pause()
         assert app.active_view == "Fleet"
 
         app.action_nav_prev()
@@ -7929,7 +7991,9 @@ async def test_chat_action_complete_next_noop_when_input_unfocused():
         chat_btn = screen.query_one("#model-pick-chat", ModelPickerButton)
         chat_btn.focus()
         await pilot.pause()
-        screen.action_complete_next()
+        # Ctrl+N is not a completion when the input is unfocused: the action skips
+        # (no focus move) so an overlay like the sessions drawer can bind it.
+        await pilot.press("ctrl+n")
         await pilot.pause()
         assert chat_btn.has_focus
 
@@ -10263,9 +10327,11 @@ async def test_catalog_grid_leave_up_focuses_previous():
             if len(grids) < 2:
                 pytest.skip("test requires at least two grids mounted")
             grids[1].focus()
-            await pilot.pause()
+            await pilot.wait_for_scheduled_animations()
             grids[1].post_message(ModelGrid.LeaveUp(grids[1]))
-            await pilot.pause()
+            # The focus move lands with the message and any scroll it starts;
+            # a bare pause reads back mid-flight on a slow host.
+            await pilot.wait_for_scheduled_animations()
             assert screen.focused is not grids[1]
 
 
@@ -11500,7 +11566,8 @@ async def test_chat_notify_no_results_uses_warning_severity():
 
 async def test_chat_finalize_stream_emits_no_results_toast_when_search_finds_nothing():
     """In Search mode, a response without a Sources block triggers the toast."""
-    from unittest.mock import MagicMock
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
 
     from lilbee.core.config import cfg
 
@@ -11511,20 +11578,77 @@ async def test_chat_finalize_stream_emits_no_results_toast_when_search_finds_not
             await _pilot.pause()
             screen = app.screen
             widget = MagicMock()
+            widget.finish = AsyncMock()
             with (
                 patch.object(screen, "_embedding_ready", return_value=True),
-                patch(
-                    "lilbee.cli.tui.screens.chat.call_from_thread",
-                    side_effect=lambda *args, **_kw: (
-                        args[1](*args[2:]) if callable(args[1]) else None
-                    ),
-                ),
                 patch.object(screen, "_notify_no_results") as mock_notify,
             ):
-                screen._finalize_stream(widget, [], ["I couldn't find that in your docs."])
+                # From a worker thread, as the streaming worker calls it: the
+                # real call_from_thread then runs each hop on the main thread.
+                await asyncio.to_thread(
+                    screen._finalize_stream, widget, [], ["I couldn't find that in your docs."]
+                )
+                await _pilot.pause()
                 mock_notify.assert_called_once()
     finally:
         cfg.chat_mode = "search"
+
+
+async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
+    """Regression: the answer must end scrolled to the bottom, citations included.
+
+    A stream's last tokens sit unrendered in the debounce buffer, so ``finish``
+    is what renders the tail and mounts the citations -- and Markdown mounts
+    those blocks asynchronously, after ``finish`` returns. The answer can fit
+    the pane right up until that lands, which is the case that used to strand
+    the citations below the fold with no further stream tick to recover.
+    """
+    import asyncio
+    import time
+
+    from textual.containers import VerticalScroll
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log = screen.query_one("#chat-log", VerticalScroll)
+
+        # Go through the real entry point: it mounts the answer bubble and sets
+        # the log up to follow it. Anchoring by hand here would mask the bug.
+        with patch.object(screen, "_stream_response"):
+            screen._send_message("a question")
+        await _settle(pilot)
+        widget = screen._active_assistant
+        assert widget is not None
+        # Composed, so the appends below render rather than silently buffering
+        # and leaving both preconditions to pass against an empty bubble.
+        assert widget._content_widget is not None
+
+        # What is rendered mid-stream still fits the pane, so every scroll up to
+        # this point is a no-op against a zero-height overflow.
+        widget.append_content("intro paragraph")
+        await _settle(pilot)
+        assert log.max_scroll_y == 0, "precondition: the answer still fits the pane"
+        # Hold the debounce open so the rest stays buffered however long the
+        # pause above took: a slow host must not quietly turn this into a test
+        # of an answer that already overflowed before it finished.
+        widget._last_md_update = time.monotonic()
+        widget.append_content("\n\n".join(f"answer paragraph {i}" for i in range(300)))
+        await _settle(pilot)
+        assert log.max_scroll_y == 0, "precondition: the tail is still buffered"
+
+        # _finalize_stream runs on the streaming worker thread in production;
+        # driving it from one keeps its call_from_thread hops real.
+        await asyncio.to_thread(
+            screen._finalize_stream, widget, ["cv-manual.pdf", "specs.pdf"], ["done"]
+        )
+        await _settle(pilot)
+
+        assert log.scroll_y == log.max_scroll_y, (
+            f"answer parked at {log.scroll_y} with the bottom at {log.max_scroll_y}: "
+            "the tail of the answer is below the fold"
+        )
 
 
 async def test_chat_f5_opens_setup():

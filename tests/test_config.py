@@ -781,6 +781,17 @@ class TestResolveDefaultsValidator:
         with mock.patch.dict(os.environ, env, clear=True):
             assert Config().semantic_chunking is True
 
+    def test_data_root_env_var_is_coerced_to_path(self, tmp_path) -> None:
+        """LILBEE_DATA_ROOT sets the data_root field directly as a string;
+        deriving the child paths from it must not raise on str / str."""
+        env = _clean_env()
+        env["LILBEE_DATA_ROOT"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root == tmp_path
+            assert c.documents_dir == tmp_path / "documents"
+            assert c.data_dir == tmp_path / "data"
+
 
 class TestTopicThresholdConfig:
     def test_default_is_0_75(self, tmp_path) -> None:

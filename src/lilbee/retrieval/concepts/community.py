@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 _MIN_LEIDEN_WEIGHT = 0.01
 # Fixed seed so Leiden returns the same communities for the same edge set;
@@ -44,10 +44,17 @@ def _compute_pmi(
     return pmi
 
 
+class _LeidenResult(NamedTuple):
+    """Leiden output: node -> community id, and node -> weighted degree."""
+
+    partition: dict[str, int]
+    degrees: dict[str, int]
+
+
 def _leiden_partition(
     edge_rows: list[dict[str, Any]],
-) -> tuple[dict[str, int], dict[str, int]]:
-    """Run Leiden clustering on edge rows. Returns (partition, degree_map).
+) -> _LeidenResult:
+    """Run Leiden clustering on edge rows.
     Uses graspologic-native's Rust implementation (Traag et al. 2019,
     "From Louvain to Leiden: guaranteeing well-connected communities").
     """
@@ -62,4 +69,4 @@ def _leiden_partition(
     for row in edge_rows:
         degree_map[row["source"]] += 1
         degree_map[row["target"]] += 1
-    return partition, dict(degree_map)
+    return _LeidenResult(partition, dict(degree_map))

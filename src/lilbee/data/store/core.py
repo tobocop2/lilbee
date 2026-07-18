@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +28,7 @@ from lilbee.core.config import (
 from lilbee.core.security import validate_path_within
 from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
-from .fusion import fuse_arms, normalized_bm25, vector_similarity
+from .fusion import adaptive_lexical_weight, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
     _chunk_type_predicate,
     _has_fts_index,
@@ -64,6 +64,7 @@ from .types import (
     PageTextRecord,
     RemoveResult,
     SearchChunk,
+    SourceMeta,
     SourceRecord,
     SourceStat,
     SourceStatBackfill,
@@ -117,6 +118,14 @@ _ANN_REFINE_FACTOR = 10
 # and ``types.SourceRecord``. Legacy tables that predate these columns are migrated
 # in place with the SOURCE_STAT_UNKNOWN sentinel.
 _SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
+
+# Extraction-metadata columns of ``_sources``; nullable strings, so legacy
+# tables migrate in place with NULL (meaning "extractor reported nothing").
+_SOURCE_META_COLUMNS = ("title", "authors", "created_at")
+
+# Document-title column of the chunks table; nullable so pre-title rows and
+# writers that carry no title (wiki pages) read as NULL.
+_TITLE_COLUMN = "title"
 
 # (table, source column) pairs deleted when a source's rows are replaced. The
 # concept nodes/edges tables carry no source column (corpus-level aggregates),
@@ -218,9 +227,17 @@ class Store:
                 pa.field("line_end", pa.int32()),
                 pa.field("chunk", pa.utf8()),
                 pa.field("chunk_index", pa.int32()),
+                pa.field(_TITLE_COLUMN, pa.utf8()),
                 pa.field("vector", pa.list_(pa.float32(), self._config.embedding_dim)),
             ]
         )
+
+    def _chunks_table(self) -> lancedb.table.Table:
+        """Open/create the chunks table, adding the title column to pre-title tables."""
+        table = ensure_table(self.get_db(), CHUNKS_TABLE, self._chunks_schema())
+        if _TITLE_COLUMN not in table.schema.names:
+            table.add_columns({_TITLE_COLUMN: "CAST(NULL AS STRING)"})
+        return table
 
     def get_meta(self) -> StoreMeta | None:
         """Return the persisted store metadata row, or ``None`` if unset."""
@@ -410,14 +427,46 @@ class Store:
                 return
             try:
                 if _has_fts_index(table):
-                    table.optimize()
-                    log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
+                    # The index exists and already serves queries, so mark hybrid
+                    # ready BEFORE the optimize: optimize() only folds new rows and
+                    # compacts, and on a large corpus it can hit a LanceDB encoding
+                    # bug and raise. Letting that failure fall through would leave
+                    # _fts_ready False and silently drop every query to vector-only.
+                    self._fts_ready = True
+                    try:
+                        # One optimize folds new rows into every index on the
+                        # table, the title index included.
+                        table.optimize()
+                        log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
+                    except Exception:
+                        log.warning(
+                            "FTS optimize() failed; the existing index still serves hybrid search",
+                            exc_info=True,
+                        )
                 else:
-                    table.create_fts_index("chunk", replace=False)
+                    # with_position lets the lexical arm serve phrase queries;
+                    # raw user query text can reach LanceDB as a phrase, which
+                    # errors on a positionless index.
+                    table.create_fts_index("chunk", replace=False, with_position=True)
+                    self._fts_ready = True
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
-                self._fts_ready = True
+                self._ensure_title_fts_unlocked(table)
             except Exception:
                 log.debug("FTS index ensure failed (empty table?)", exc_info=True)
+
+    def _ensure_title_fts_unlocked(self, table: lancedb.table.Table) -> None:
+        """Create the title FTS index when the column exists. Caller holds ``write_lock()``.
+
+        Failure never blocks the chunk index: the title arm feature-detects the
+        index per query, so a store without it simply searches without titles.
+        """
+        if _TITLE_COLUMN not in table.schema.names or _has_fts_index(table, _TITLE_COLUMN):
+            return
+        try:
+            table.create_fts_index(_TITLE_COLUMN, replace=False, with_position=True)
+            log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
+        except Exception:
+            log.debug("Title FTS index create failed", exc_info=True)
 
     def ensure_vector_index(self, *, force: bool = False) -> bool:
         """Build or refresh the ANN vector index when the corpus is large enough.
@@ -473,8 +522,7 @@ class Store:
             if not records:
                 return 0
             _check_vector_dims(records, embedding_dim)
-            db = self.get_db()
-            table = ensure_table(db, CHUNKS_TABLE, self._chunks_schema())
+            table = self._chunks_table()
             table.add(records)
             if self.get_meta() is None:
                 self._write_meta_unlocked(
@@ -498,7 +546,10 @@ class Store:
         if not self._fts_ready:
             return []
         try:
-            query = table.search(query_text, query_type="fts")
+            # Pin the chunk column: once a title FTS index exists, an unpinned
+            # FTS query searches every indexed column, which would silently
+            # widen the probe's semantics.
+            query = table.search(query_text, query_type="fts", fts_columns="chunk")
             if chunk_type:
                 query = query.where(_chunk_type_predicate(chunk_type))
             rows = query.limit(top_k).to_list()
@@ -602,8 +653,32 @@ class Store:
         limit: int,
         chunk_type: ChunkType | None,
     ) -> list[SearchChunk]:
-        """BM25-arm candidates."""
-        query = table.search(query_text, query_type="fts").limit(limit)
+        """BM25-arm candidates over the chunk text.
+
+        The column is pinned: once a title FTS index exists, an unpinned FTS
+        query searches every indexed column, which would double-count title
+        tokens this arm's sibling already scores.
+        """
+        query = table.search(query_text, query_type="fts", fts_columns="chunk").limit(limit)
+        if chunk_type:
+            query = query.where(_chunk_type_predicate(chunk_type))
+        return [SearchChunk(**r) for r in query.to_list()]
+
+    def _title_arm(
+        self,
+        table: lancedb.table.Table,
+        query_text: str,
+        limit: int,
+        chunk_type: ChunkType | None,
+    ) -> list[SearchChunk]:
+        """BM25-arm candidates over the document title column.
+
+        Empty when the store predates the title column or its FTS index: old
+        indexes keep working, the arm simply contributes nothing there.
+        """
+        if not _has_fts_index(table, _TITLE_COLUMN):
+            return []
+        query = table.search(query_text, query_type="fts", fts_columns=_TITLE_COLUMN).limit(limit)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
         return [SearchChunk(**r) for r in query.to_list()]
@@ -630,10 +705,28 @@ class Store:
         identifiers), which is exactly what MMR penalizes: selecting the
         fused pool through MMR measurably traded relevant lexical hits for
         diverse off-topic neighbors on graded evaluation.
+
+        When ``cfg.title_search`` is on, a third BM25 arm over document
+        titles joins the fusion at ``cfg.title_search_weight``; title rows
+        carry ``bm25_score``, so a title match counts as lexical support
+        for the distance exemption like any other lexical hit.
         """
+        title_rows: list[SearchChunk] = []
+        if self._config.title_search:
+            title_rows = self._title_arm(table, query_text, top_k, chunk_type)
+        vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type)
+        lexical_weight = self._config.lexical_fusion_weight
+        if self._config.adaptive_fusion:
+            # Gate the lexical arm per query by how peaked the vector ranking is.
+            lexical_weight = adaptive_lexical_weight(
+                vector_rows, lexical_weight, self._config.adaptive_fusion_margin
+            )
         fused = fuse_arms(
-            self._vector_arm(table, query_vector, top_k, chunk_type),
+            vector_rows,
             self._fts_arm(table, query_text, top_k, chunk_type),
+            title_rows,
+            lexical_weight=lexical_weight,
+            title_weight=self._config.title_search_weight,
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)
         return fused[:top_k]
@@ -861,6 +954,34 @@ class Store:
             rows = filtered.to_pylist()
         return [SearchChunk(**r) for r in rows]
 
+    def get_chunks_by_indices(self, source: str, indices: Sequence[int]) -> list[SearchChunk]:
+        """Return *source*'s chunks whose ``chunk_index`` is in *indices*.
+
+        Rows come back in ``chunk_index`` order; indices past either end of
+        the document are simply absent from the result.
+        """
+        if not indices:
+            return []
+        table = self.open_table(CHUNKS_TABLE)
+        if table is None:
+            return []
+        escaped = escape_sql_string(source)
+        wanted = ", ".join(str(int(i)) for i in indices)
+        try:
+            predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
+            rows = table.search().where(predicate).limit(None).to_list()
+        except Exception:
+            # Same FTS-enabled query-builder limitation as get_chunks_by_source;
+            # fall through to a pyarrow.compute filter on the Arrow table.
+            log.debug("get_chunks_by_indices search() failed, using Arrow fallback", exc_info=True)
+            arrow_tbl = table.to_arrow()
+            mask = pc.and_(
+                pc.equal(arrow_tbl["source"], source),
+                pc.is_in(arrow_tbl["chunk_index"], value_set=pa.array(list(indices), pa.int32())),
+            )
+            rows = arrow_tbl.filter(mask).to_pylist()
+        return sorted((SearchChunk(**r) for r in rows), key=lambda c: c.chunk_index)
+
     def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
         """Delete the sources' chunks, page texts, and chunk-concept rows.
 
@@ -966,8 +1087,14 @@ class Store:
         chunk_count: int,
         source_type: str,
         stat: SourceStat | None,
+        meta: SourceMeta | None = None,
     ) -> dict:
-        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel."""
+        """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel.
+
+        Absent extraction metadata persists as NULL, matching rows written
+        before the metadata columns existed.
+        """
+        meta = meta or SourceMeta()
         return {
             "filename": filename,
             "file_hash": file_hash,
@@ -977,14 +1104,19 @@ class Store:
             "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
             "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
             "stat_captured_ns": stat.captured_ns if stat else SOURCE_STAT_UNKNOWN,
+            "title": meta.title or None,
+            "authors": meta.authors or None,
+            "created_at": meta.created_at or None,
         }
 
     def _sources_table(self) -> lancedb.table.Table:
-        """Open/create ``_sources``, adding the stat columns to pre-stat tables."""
+        """Open/create ``_sources``, adding the stat and metadata columns to older tables."""
         table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
-        missing = [name for name in _SOURCE_STAT_COLUMNS if name not in table.schema.names]
+        defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
+        defaults |= {name: "CAST(NULL AS STRING)" for name in _SOURCE_META_COLUMNS}
+        missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
         if missing:
-            table.add_columns({name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in missing})
+            table.add_columns(missing)
         return table
 
     def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:
@@ -1009,9 +1141,10 @@ class Store:
         chunk_count: int,
         source_type: SourceType = SourceType.DOCUMENT,
         stat: SourceStat | None = None,
+        meta: SourceMeta | None = None,
     ) -> None:
         """Add or update a source tracking record."""
-        row = self._source_row(filename, file_hash, chunk_count, source_type, stat)
+        row = self._source_row(filename, file_hash, chunk_count, source_type, stat, meta)
         with self._write_lock():
             self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
@@ -1069,7 +1202,7 @@ class Store:
             db = self.get_db()
             self._cleanup_batch_unlocked(items)
             self._add_page_texts_unlocked(db, items)
-            self._add_chunk_records_unlocked(db, all_records, embedding_model, embedding_dim)
+            self._add_chunk_records_unlocked(all_records, embedding_model, embedding_dim)
             self._replace_source_rows_unlocked(self._batch_source_rows(items))
         self._invalidate_source_cache()
         return len(all_records)
@@ -1088,7 +1221,6 @@ class Store:
 
     def _add_chunk_records_unlocked(
         self,
-        db: lancedb.DBConnection,
         all_records: list[dict],
         embedding_model: str,
         embedding_dim: int,
@@ -1096,14 +1228,16 @@ class Store:
         """Add the batch's chunk rows, writing meta on first use. Caller holds ``write_lock()``."""
         if not all_records:
             return
-        ensure_table(db, CHUNKS_TABLE, self._chunks_schema()).add(all_records)
+        self._chunks_table().add(all_records)
         if self.get_meta() is None:
             self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
 
     def _batch_source_rows(self, items: list[ChunkWrite]) -> list[dict]:
         """One ``_sources`` row per batched document."""
         return [
-            self._source_row(it.source, it.file_hash, len(it.records), it.source_type, it.stat)
+            self._source_row(
+                it.source, it.file_hash, len(it.records), it.source_type, it.stat, it.meta
+            )
             for it in items
         ]
 

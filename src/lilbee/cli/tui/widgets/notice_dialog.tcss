@@ -1,0 +1,50 @@
+NoticeDialog {
+    align: center middle;
+}
+
+NoticeDialog > Vertical {
+    width: 60;
+    height: auto;
+    max-height: 14;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+NoticeDialog #notice-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+    color: $text;
+}
+
+NoticeDialog #notice-message {
+    width: 100%;
+    content-align: center middle;
+    margin-bottom: 1;
+    color: $text;
+}
+
+NoticeDialog Center {
+    width: 100%;
+    height: auto;
+    margin-top: 1;
+}
+
+NoticeDialog .notice-pill {
+    width: auto;
+    height: 1;
+    padding: 0 2;
+    background: $primary 20%;
+    color: $text;
+    text-style: bold;
+    content-align: center middle;
+}
+
+NoticeDialog .notice-pill:focus,
+NoticeDialog .notice-pill:hover {
+    background: $primary 40%;
+    color: $text;
+    text-style: bold;
+}

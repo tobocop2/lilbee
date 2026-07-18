@@ -133,6 +133,89 @@ async def test_panel_holds_probing_until_devices_probed(
 
 
 @pytest.mark.asyncio
+async def test_panel_renders_probe_failure_and_pauses_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed device probe names its reason instead of probing forever (bb-0yf0),
+    and the stat timer stops re-painting over it."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    probes = {"n": 0}
+
+    def _count(devices: object) -> dict:
+        probes["n"] += 1
+        return {}
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", _count)
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_probe_failed("GPU driver did not respond")
+        rendered = str(panel.render())
+        assert "GPU driver did not respond" in rendered
+        assert msg.FLEET_GPU_PROBING not in rendered
+
+        before = probes["n"]
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert probes["n"] == before  # ticks paused while the failure stands
+        assert "GPU driver did not respond" in str(panel.render())
+
+
+@pytest.mark.asyncio
+async def test_panel_keeps_the_failure_when_an_in_flight_probe_lands_late(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stats worker started before the failure landed must not repaint the
+    empty state over the failure message (the set_probe_failed/_apply_stats race)."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_probe_failed("GPU driver did not respond")
+        # Simulate the racing worker's completion callback arriving afterwards.
+        panel._apply_stats({}, {}, {})
+        rendered = str(panel.render())
+        assert "GPU driver did not respond" in rendered
+        assert "no GPUs detected" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_panel_recovers_from_probe_failure_on_set_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later successful device probe clears the failure state and resumes stats."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    device = _make_device(0)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: _make_stat(0)})
+
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_probe_failed("GPU driver did not respond")
+        panel.set_devices([device], labels={0: "CUDA0"})
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = str(panel.render())
+        assert "CUDA0" in rendered
+        assert "GPU driver did not respond" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_panel_renders_card_label_and_vram(monkeypatch: pytest.MonkeyPatch) -> None:
     """With one CUDA GPU the panel renders the label and VRAM figures."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
@@ -282,23 +365,22 @@ async def test_panel_updates_on_second_tick(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_panel_graceful_on_probe_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failing probe leaves the previous content intact and does not crash.
 
-    The initial on_mount probe returns an empty dict (no devices set yet).
-    The first explicit tick returns good stats with the right labels set.
-    The second explicit tick raises; the panel must keep the previous content.
+    The fake probe answers by the test's current phase, not by call count:
+    the panel's own interval timer can slip extra ticks in between the
+    explicit ones on a slow host, and a counter-keyed fake then hands the
+    good-stats answer to a tick that snapshotted labels before
+    ``set_devices`` ran, rendering the default GPU0 label.
     """
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 
     good_stat = _make_stat(0, utilization_pct=50)
-    probe_calls: list[int] = []
+    probe_phase = {"answer": "empty"}
 
     def _probe(devices: object) -> object:  # type: ignore[no-untyped-def]
-        idx = len(probe_calls)
-        probe_calls.append(idx)
-        if idx == 0:
-            # on_mount probe: no devices registered yet
+        if probe_phase["answer"] == "empty":
             return {}
-        if idx == 1:
+        if probe_phase["answer"] == "good":
             return {0: good_stat}
         raise OSError("nvidia-smi not found")
 
@@ -313,14 +395,16 @@ async def test_panel_graceful_on_probe_exception(monkeypatch: pytest.MonkeyPatch
         panel.set_devices([device], labels={0: "CUDA0"})
         await app.workers.wait_for_complete()
 
-        # First explicit tick returns good stats
+        # Devices and labels are in, so a probe may now answer with stats.
+        probe_phase["answer"] = "good"
         panel._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()
         content_after_good = str(panel.render())
         assert "CUDA0" in content_after_good
 
-        # Second explicit tick raises; content must remain unchanged
+        # Every probe from here on raises; content must remain unchanged.
+        probe_phase["answer"] = "raise"
         panel._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()

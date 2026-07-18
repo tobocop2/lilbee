@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from lilbee.data.ingest.extract import chunk_and_embed_pages
-from lilbee.data.store import ChunkWrite, PageTextRecord, SourceType
+from lilbee.data.ingest.title import derive_title
+from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
@@ -225,6 +226,11 @@ async def import_dataset(
         content_type = source_rows[0]["content_type"] or "text"
         page_texts = [(r["page"], r["text"]) for r in source_rows]
         chunks = await chunk_and_embed_pages(page_texts, name, content_type, on_progress)
+        # Imports carry no extraction metadata; the stem-derived title keeps
+        # imported chunks visible to the title search arm.
+        title = derive_title(name)
+        for chunk in chunks:
+            chunk["title"] = title
         # One locked transaction (cleanup + chunks + page texts + source row) so a
         # failure can't leave the source with its old rows deleted and no new ones;
         # the embedding-dim check inside runs before the cleanup delete.
@@ -238,6 +244,7 @@ async def import_dataset(
                     needs_cleanup=True,
                     page_texts=[dict(r) for r in source_rows],
                     source_type=SourceType.IMPORTED,
+                    meta=SourceMeta(title=title),
                 )
             ],
         )
