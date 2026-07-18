@@ -65,6 +65,17 @@ class TestIsStructuralChunk:
         # A shouting heading with no classification banner is left alone.
         assert is_structural_chunk("NOTABLE TRENDS REGARDING PROPULSION AND FLIGHT") is False
 
+    def test_short_classified_body_page_is_not_a_cover(self):
+        # A short government body page carries a classification banner and caps
+        # but real content; its full sentences must keep it out of scope so the
+        # answer does not lose the page it needs (bb-lenb, the rag-1 failure).
+        body = (
+            "UNCLASSIFIED. The AARO assessment concluded the object was a "
+            "commercial aircraft, and the case was resolved. RADAR and EO/IR "
+            "data were CONSISTENT across the entire track."
+        )
+        assert is_structural_chunk(body) is False
+
     def test_long_classified_body_is_not_a_cover(self):
         # A real document body that opens with a classification banner but runs
         # long is content, not a cover page: the word-count gate protects it.

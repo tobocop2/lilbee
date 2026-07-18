@@ -25,9 +25,13 @@ _CLASSIFICATION = re.compile(r"\b(UNCLASSIFIED|CONFIDENTIAL|SECRET|FOR OFFICIAL 
 _MIN_TOC_LINES = 3
 _TOC_RATIO = 0.30
 
-# Cover/title-page gates: short, few sentences, shouting-case dominated.
-_COVER_MAX_WORDS = 120
-_COVER_MAX_SENTENCES = 3
+# Cover/title-page gates: a title page is very short with essentially no prose.
+# These are deliberately tight -- a UFO-corpus A/B (bb-lenb) showed looser gates
+# firing on short, classification-banner government BODY pages and dropping the
+# content the answer needed, so a real body page's word count or its first full
+# sentence must take it out of scope.
+_COVER_MAX_WORDS = 60
+_COVER_MAX_SENTENCES = 1
 _COVER_CAPS_RATIO = 0.30
 
 

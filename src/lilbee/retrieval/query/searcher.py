@@ -630,7 +630,15 @@ class Searcher:
         # context precision (bb-pkn6). Filtered from the top_k*2 candidate
         # buffer, so enough real passages remain for the downstream trim.
         if self._config.filter_structural_chunks:
-            results = [r for r in results if not is_structural_chunk(r.chunk)]
+            # Never drop a page the query actually hit: a lexical (BM25) match or
+            # the top-ranked result is content the answer may need, whatever its
+            # shape, so only genuinely-unhit structural chunks are removed
+            # (bb-lenb: the filter was dropping needed body pages).
+            results = [
+                r
+                for i, r in enumerate(results)
+                if r.bm25_score is not None or i == 0 or not is_structural_chunk(r.chunk)
+            ]
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
