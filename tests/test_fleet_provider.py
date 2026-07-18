@@ -859,6 +859,32 @@ def test_chat_streams_from_server() -> None:
     client.chat_stream_items.assert_called_once()
 
 
+def test_chat_stream_with_no_frames_yields_nothing() -> None:
+    # Priming must pass an immediately-exhausted stream through, not error on it.
+    client = _fake_client(0)
+    client.chat_stream_items.return_value = iter([])
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == []
+
+
+def test_chat_stream_close_before_iteration_releases_the_request() -> None:
+    closed: list[bool] = []
+
+    def _frames():
+        try:
+            yield "a"
+            yield "b"
+        finally:
+            closed.append(True)
+
+    client = _fake_client(0)
+    client.chat_stream_items.return_value = _frames()
+    p = _provider_with_clients({WorkerRole.CHAT: [client]})
+    stream = p.chat([{"role": "user", "content": "hi"}], stream=True)
+    stream.close()  # truncated before consuming anything
+    assert closed == [True]  # the source stream (and its request slot) was released
+
+
 def test_supports_rerank_always_true() -> None:
     # llama-server reranks any cross-encoder GGUF via --pooling rank.
     assert FleetProvider().supports_rerank() is True
@@ -2296,10 +2322,14 @@ class TestReplicaHealthRouting:
     def test_retry_connection_failure_marks_the_second_replica_unhealthy(self) -> None:
         import httpx as _httpx
 
+        from lilbee.providers.base import ProviderError
+
         dead = _FakeReplica(fail=_httpx.ConnectError("refused"))
         also_dead = _FakeReplica(in_flight=5, fail=_httpx.ConnectError("refused"))
         p = _provider_with_clients({WorkerRole.EMBED: [dead, also_dead]})
-        with pytest.raises(_httpx.ConnectError):
+        # An exhausted pool triggers one engine rediscovery; with no engine to
+        # rebuild here, that surfaces the no-server error, not the transport one.
+        with pytest.raises(ProviderError, match="No embed model server"):
             p.embed(["a"])
         assert dead.healthy is False
         assert also_dead.healthy is False  # the retry target is taken out too
@@ -3395,6 +3425,63 @@ def test_ladder_rolls_back_earlier_binds_when_a_later_one_fails(
     assert swap.shutdowns_after_bind >= 1  # the earlier bind was rolled back
 
 
+def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A pin-equal incumbent missing a wanted group is rebuilt in place, not overflowed.
+
+    The healthy groups serve only wanted models, so the slot is this
+    contract's own engine and its live members are waiting for exactly this
+    rebuild; overflowing around it would load duplicate weights.
+    """
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(
+        monkeypatch, tmp_path, launches=[_chat_launch(), _embed_launch()]
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "embed": "m-embed"}.get(role.value, ""),
+    )
+    # Only the chat group survives; the wanted embed group has no live state.
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # a member (e.g. serve) is still live
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert stopped == [machine]  # the partially dead engine was stopped...
+    assert built and built[0] == machine  # ...and rebuilt in the machine slot
+    holder.release_and_check_last()
+
+
+def test_healthy_groups_ours_is_false_with_no_healthy_group(tmp_path: Path) -> None:
+    # The vacuous case: an empty slot is "not ours" (the ladder's occupied
+    # check owns that branch); the helper must not claim it.
+    assert prov_mod._healthy_groups_ours(tmp_path, "pin-a", {(WorkerRole.CHAT, "m-chat")}) is False
+
+
+def test_ladder_overflows_when_a_live_used_pin_equal_group_serves_unwanted_models(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Pin-equal but serving a model outside the contract: protected while in use."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "embed", pin="pin-a", model="m-unrelated", role="embed")
+    holder = hold_user_lock(machine, pid=999_888)  # that foreign fleet is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert built and built[0] == tmp_path / "root" / "data" / "engine"  # overflowed
+    holder.release_and_check_last()
+
+
 # ── Retry-rediscover: a vanished engine gets one ladder re-run ──────
 
 
@@ -3467,3 +3554,81 @@ def test_non_connection_errors_do_not_rediscover(monkeypatch, tmp_path: Path) ->
     with pytest.raises(ProviderError):
         p.embed(["hello"])
     assert len(calls) == 1  # no ladder re-run for non-connection failures
+
+
+def _chat_ladder(monkeypatch, tmp_path: Path, client_factory) -> FleetProvider:
+    """A ladder-built provider whose chat clients come from *client_factory*."""
+    _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", client_factory)
+    return FleetProvider()
+
+
+def test_chat_transport_failure_rediscovers_once_and_recovers(monkeypatch, tmp_path: Path) -> None:
+    """A dead llama-swap proxy (raw ConnectError, no HTTP status) still rediscovers.
+
+    A SIGKILLed proxy surfaces as httpx.ConnectError, not as a ProviderError
+    carrying a status; rediscovery must classify both as connection failures.
+    """
+    import httpx
+
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.chat_result.side_effect = httpx.ConnectError("refused")
+        else:
+            client.chat_result.return_value = "recovered"
+        clients.append(client)
+        return client
+
+    p = _chat_ladder(monkeypatch, tmp_path, _client_factory)
+    assert p.chat([{"role": "user", "content": "hi"}]) == "recovered"
+    assert len(clients) == 2  # first pool failed, rediscovery built a second
+
+
+def test_chat_stream_open_failure_rediscovers_once_and_streams(monkeypatch, tmp_path: Path) -> None:
+    """A stream whose open dies on a dead proxy rediscovers before the first frame."""
+    import httpx
+
+    def _dead_stream():
+        raise httpx.ConnectError("refused")
+        yield  # pragma: no cover - unreachable; makes this a generator
+
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.chat_stream_items.return_value = _dead_stream()
+        else:
+            client.chat_stream_items.return_value = iter(["a", "b"])
+        clients.append(client)
+        return client
+
+    p = _chat_ladder(monkeypatch, tmp_path, _client_factory)
+    assert list(p.chat([{"role": "user", "content": "hi"}], stream=True)) == ["a", "b"]
+    assert len(clients) == 2  # the dead pool was dropped and rebuilt
+
+
+def test_chat_with_tools_transport_failure_rediscovers_once(monkeypatch, tmp_path: Path) -> None:
+    """chat_with_tools gets the same transport-failure rediscovery as chat."""
+    import httpx
+
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.chat_tools.side_effect = httpx.ConnectError("refused")
+        else:
+            client.chat_tools.return_value = "tools-recovered"
+        clients.append(client)
+        return client
+
+    p = _chat_ladder(monkeypatch, tmp_path, _client_factory)
+    assert p.chat_with_tools([{"role": "user", "content": "hi"}], tools=[]) == "tools-recovered"
+    assert len(clients) == 2

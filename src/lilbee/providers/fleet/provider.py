@@ -23,6 +23,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 
+import httpx
+
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
@@ -156,6 +158,71 @@ def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
     """
     healthy = [client for client in clients if client.healthy]
     return min(healthy or clients, key=lambda c: c.in_flight)
+
+
+def _healthy_groups_ours(engine_dir: Path, pin: str, wanted: set[tuple[WorkerRole, str]]) -> bool:
+    """Whether every healthy group at *engine_dir* is pin-equal and serves only wanted pairs.
+
+    True marks the incumbent as this contract's own engine that a full bind
+    could not cover (a dead group, or config grew a role): the ladder rebuilds
+    it in place even with live users, since those users need the rebuild too.
+    False (a foreign pin or a model outside the contract) keeps the incumbent
+    protected while in use. Vacuously False with no healthy group.
+    """
+    states = [
+        state
+        for group in SwapGroup
+        if (state := find_live_state(engine_dir, group)) is not None and state_is_healthy(state)
+    ]
+    if not states:
+        return False
+    for state in states:
+        if not contract_matches(state, (), pin):
+            return False
+        pairs = {
+            (launch.role, launch.model)
+            for launch in (InstanceLaunch.from_state(item) for item in state.launches)
+        }
+        if not pairs <= wanted:
+            return False
+    return True
+
+
+class _PrimedStream:
+    """A stream re-fronted with its eagerly-pulled first frame.
+
+    close() always reaches the source stream, even before any iteration, so a
+    caller that truncates immediately still releases the fleet's in-flight
+    request slot (an unstarted chaining generator would silently drop it).
+    """
+
+    def __init__(self, first: ChatStreamItem, source: ClosableIterator[ChatStreamItem]) -> None:
+        self._first: list[ChatStreamItem] = [first]
+        self._source = source
+
+    def __iter__(self) -> _PrimedStream:
+        return self
+
+    def __next__(self) -> ChatStreamItem:
+        if self._first:
+            return self._first.pop()
+        return next(self._source)
+
+    def close(self) -> None:
+        self._source.close()
+
+
+def _primed_stream(items: ClosableIterator[ChatStreamItem]) -> ClosableIterator[ChatStreamItem]:
+    """Pull the first frame of *items* now, so a dead engine raises to the caller.
+
+    The stream connects lazily on first iteration; without priming, a proxy
+    that died raises only inside the consumer's loop, past any rediscovery.
+    """
+    try:
+        first = next(items)
+    except StopIteration:
+        return items  # already exhausted; still closable
+    return _PrimedStream(first, items)
 
 
 def _call_with_failover(
@@ -675,12 +742,16 @@ class FleetProvider:
     def _acquire_engine(self, config_root: Path) -> bool:
         """The acquisition ladder: bind to a compatible engine, else build one.
 
-        Machine slot first. An incompatible incumbent with no live users is
-        replaced in place; only one in active use sends the build to the
-        config root's private overflow dir. Per-dir the step is all-or-
-        nothing: every configured (role, model) pair bound, or built fresh.
-        Runs under the cross-process build lock, so two starts never both
-        build and stop-if-last never races an arrival.
+        Machine slot first. An incumbent is replaced in place when no live
+        user holds it, or when it is this contract's own engine (pin-equal,
+        serving only wanted models) left partially dead or partially covering:
+        its members are waiting for exactly that rebuild, and overflowing
+        around it would load duplicate weights. Only a live incompatible
+        engine in active use sends the build to the config root's private
+        overflow dir. Per-dir the step is all-or-nothing: every configured
+        (role, model) pair bound, or built fresh. Runs under the cross-process
+        build lock, so two starts never both build and stop-if-last never
+        races an arrival.
         """
         pin = engine_pin()
         wanted = {(role, model) for role in WorkerRole if (model := _configured_model_for(role))}
@@ -690,8 +761,12 @@ class FleetProvider:
                 self._hold_membership(machine)
                 return True
             occupied = self._slot_occupied(machine)
-            if not occupied or not live_users_exist(machine):
-                # Reap dead leftovers, then stop any unused incumbent, so
+            if (
+                not occupied
+                or not live_users_exist(machine)
+                or _healthy_groups_ours(machine, pin, wanted)
+            ):
+                # Reap dead leftovers, then stop any replaceable incumbent, so
                 # planning sees true free VRAM.
                 reap_stale(machine)
                 if occupied:
@@ -706,8 +781,10 @@ class FleetProvider:
                 self._hold_membership(private)
                 return True
             reap_stale(private)
-            if self._slot_occupied(private) and not live_users_exist(private):
-                # Never stack a second fleet on an unused incompatible one.
+            if self._slot_occupied(private) and (
+                not live_users_exist(private) or _healthy_groups_ours(private, pin, wanted)
+            ):
+                # Never stack a second fleet on an unused or own-contract one.
                 stop_engine(private)
             if self._plan_and_spawn(private):
                 self._hold_membership(private)
@@ -947,15 +1024,17 @@ class FleetProvider:
         """Run *call*; on a connection-kind failure, re-run the ladder once.
 
         A vanished engine (an owner's config change restarted it, or it died)
-        surfaces as ProviderErrorKind.CONNECTION. Membership is still held, so
-        dropping the swap refs and retrying sends the call through
-        _ensure_fleet, which rediscovers the new proxy ports or rebuilds. One
-        retry only; a second failure surfaces to the caller.
+        surfaces as ProviderErrorKind.CONNECTION, or as a raw httpx transport
+        error when the proxy itself is gone (nothing listening to answer with
+        a status). Membership is still held, so dropping the swap refs and
+        retrying sends the call through _ensure_fleet, which rediscovers the
+        new proxy ports or rebuilds. One retry only; a second failure surfaces
+        to the caller.
         """
         try:
             return call()
-        except ProviderError as err:
-            if err.kind is not ProviderErrorKind.CONNECTION:
+        except (ProviderError, httpx.TransportError) as err:
+            if not is_connection_failure(err):
                 raise
             log.info("Engine unreachable; rediscovering before one retry")
             self._drop_swap_refs()
@@ -1156,20 +1235,23 @@ class FleetProvider:
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
-        clients = self._require_clients(WorkerRole.CHAT)
+        self._require_clients(WorkerRole.CHAT)
         messages = self._fit_chat_context(messages, tools, options, model or str(cfg.chat_model))
-        client = _least_in_flight(clients)
         # Translate options exactly as the in-process path did (validate via
         # LLMOptions, num_predict -> max_tokens, drop num_ctx) so the server
         # honors the same generation settings; a raw passthrough would drop
         # num_predict and leak the load-only num_ctx.
         server_options = chat_options_to_kwargs(options) or None
         if stream:
-            # generator satisfies ClosableIterator; close() releases the request.
-            # Mid-stream engine restarts surface to the caller as a retry error;
-            # rediscovery covers the next call.
-            return client.chat_stream_items(  # type: ignore[return-value]
-                messages, tools=tools, tool_choice=tool_choice, options=server_options
+            # The first frame is pulled eagerly so a dead proxy fails inside
+            # _with_rediscover; a failure past the first frame surfaces to the
+            # caller as a retry error, and rediscovery covers the next call.
+            return self._with_rediscover(
+                lambda: _primed_stream(
+                    _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_stream_items(
+                        messages, tools=tools, tool_choice=tool_choice, options=server_options
+                    )
+                )
             )
         return self._with_rediscover(
             lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_result(
@@ -1191,11 +1273,13 @@ class FleetProvider:
         from lilbee.providers.engine_params import chat_options_to_kwargs
 
         self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
-        clients = self._require_clients(WorkerRole.CHAT)
+        self._require_clients(WorkerRole.CHAT)
         messages = self._fit_chat_context(messages, tools, options, model or str(cfg.chat_model))
         server_options = chat_options_to_kwargs(options) or None
-        return _least_in_flight(clients).chat_tools(
-            messages, tools=tools, tool_choice=tool_choice, options=server_options
+        return self._with_rediscover(
+            lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).chat_tools(
+                messages, tools=tools, tool_choice=tool_choice, options=server_options
+            )
         )
 
     def _fit_chat_context(

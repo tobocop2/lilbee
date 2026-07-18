@@ -595,11 +595,14 @@ through the same ladder, under a cross-process build lock:
    spawn nothing and write nothing. lilbee version is not in the contract:
    releases sharing a pin share an engine; differing pins never run on a
    build they were not tested against.
-2. **Build** into the empty slot otherwise. An incompatible incumbent with no
-   live users is replaced in place, so leftovers never poison the slot.
+2. **Build** into the empty slot otherwise. An incumbent is replaced in place
+   when no live user holds it, and also when it is this contract's own engine
+   left partially dead (a killed group) or partially covering (config grew a
+   role): its members need that rebuild too, and rediscover it, so leftovers
+   never poison the slot and weights are never duplicated.
 3. **Overflow** to the config root's private dir (`<root>/data/engine/`) only
-   when the slot's incompatible engine is in active use: two engines exist
-   exactly while two different model setups run at once.
+   when the slot holds a live *incompatible* engine in active use: two engines
+   exist exactly while two different model setups run at once.
 
 Lifetime is kernel-refcounted membership: each process holds a user lock the
 OS releases on any death, and the last clean exit stops the engine.
