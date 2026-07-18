@@ -109,9 +109,10 @@ class TestAssistantMessage:
     def test_compose_yields_widgets(self) -> None:
         msg = AssistantMessage()
         children = list(msg.compose())
-        # Compose-time children are speaker label, content, citation. The
-        # ThinkingHeader and reasoning Collapsible are mounted lazily.
-        assert len(children) == 3
+        # Compose-time children are speaker label and content; sources render
+        # inside the content's own Sources list. The ThinkingHeader and
+        # reasoning Collapsible are mounted lazily.
+        assert len(children) == 2
 
     def test_append_content(self) -> None:
         msg = AssistantMessage()

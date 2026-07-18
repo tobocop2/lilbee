@@ -312,6 +312,33 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text="System prompt sent when there are no documents to ground the answer",
     ),
+    "chat_compaction": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): when a chat outgrows the model's context window the oldest "
+            "turns are dropped. They stay on screen but the model stops seeing them, and "
+            "the context chip by the prompt shows the window filling. Costs nothing. "
+            "On: those turns are condensed into a short summary the model keeps reading, "
+            "so it still knows roughly what was said. That costs one extra model call each "
+            "time it fires, pausing the reply for a few seconds on a GPU and considerably "
+            "longer on a CPU-only machine. Worth turning on if your hardware is quick."
+        ),
+    ),
+    "sessions_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "On (default): conversations are saved automatically, and you can list, "
+            "resume, rename, and delete them from the Sessions drawer (ctrl+o), the "
+            "Sessions tab, and the /sessions command. Off: nothing is written to disk, "
+            "the ctrl+o binding leaves the footer, and opening the Sessions view shows a "
+            "notice that sessions are turned off. Turn it off if you would rather your "
+            "chats not persist."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,

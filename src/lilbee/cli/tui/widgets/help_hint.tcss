@@ -1,5 +1,7 @@
+/* 1fr, not 100%: the hint shares its row with the context chip, and 100% would
+ * claim the whole width and squeeze the chip out. */
 HelpHint {
-    width: 100%;
+    width: 1fr;
     height: 1;
     padding: 0 1;
     background: $boost;

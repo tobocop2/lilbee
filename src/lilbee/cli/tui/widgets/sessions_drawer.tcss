@@ -1,0 +1,10 @@
+/* width must match the .sessions-open bar inset in app.tcss so the docked
+ * top/bottom bars shrink to exactly the space right of the drawer. */
+SessionsDrawer {
+    dock: left;
+    width: 50;
+    height: 100%;
+    background: $surface;
+    border-right: thick $primary;
+    padding: 0 1;
+}

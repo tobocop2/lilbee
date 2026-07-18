@@ -87,21 +87,48 @@ class TestUserMessage:
 
 
 class TestAssistantMessageAsync:
-    async def test_compose_yields_speaker_content_citation(self) -> None:
-        """Compose yields three children: speaker label, content, citation. No
-        Collapsible up front; the reasoning fold is mounted lazily inside
-        ``on_mount``/``append_reasoning``.
+    async def test_compose_yields_speaker_and_content(self) -> None:
+        """Compose yields two children: speaker label and content. No separate
+        citation widget (sources live inside the content's own Sources list)
+        and no Collapsible up front; the reasoning fold mounts lazily.
         """
         from lilbee.cli.tui.widgets.message import AssistantMessage
 
         am = AssistantMessage()
         children = list(am.compose())
-        assert len(children) == 3
+        assert len(children) == 2
         # First child carries the lilbee speaker label markup.
         assert "lilbee" in str(children[0].render())
         assert am._reasoning_widget is None
         assert am._content_widget is not None
-        assert am._citation_widget is not None
+
+    async def test_sources_render_one_way_across_mixed_turns(self) -> None:
+        """One citation style everywhere: a restored transcript mixing turns
+        that carry an in-text Sources list (TUI-saved) with turns that carry
+        only the structured array (seeded / HTTP / MCP) must not alternate
+        between two renderings. The in-text list is the one rendering; a turn
+        without one gets the identical list synthesized, exactly once."""
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        answer = "The belt goes 90,000 km [1].\n\nSources:\n\n1. [manual.md](file:///v/manual.md)"
+        has_block = AssistantMessage(content=answer, sources=("manual.md",))
+        array_only = AssistantMessage(content="85 Nm.", sources=("manual.md",))
+
+        joined = "".join(has_block._content_parts)
+        assert joined.count("\nSources:\n") == 1, "existing list must not duplicate"
+        synthesized = "".join(array_only._content_parts)
+        assert synthesized.count("\nSources:\n") == 1, "array-only turns gain the same list"
+        assert "1. [manual.md](" in synthesized, "and it is the clickable markdown form"
+
+    def test_finishing_a_never_mounted_message_does_not_crash(self) -> None:
+        """A turn can end before its bubble reaches the screen; finish() must
+        not touch widgets that compose() never built."""
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        am = AssistantMessage()
+        am.finish(["/docs/a.pdf"])  # no compose() ran: nothing mounted yet
+        assert am._finished
+        assert "Sources:" in "".join(am._content_parts) or not am._content_parts
 
     async def test_on_mount_attaches_thinking_header(self) -> None:
         """Mounting the message inserts a sibling ``ThinkingHeader`` above content."""
@@ -262,23 +289,27 @@ class TestAssistantMessageAsync:
             assert am._reasoning_widget is None
             assert am._thinking_header is None
 
-    async def test_finish_without_sources_hides_citation(self) -> None:
+    async def test_finish_without_sources_adds_no_sources_list(self) -> None:
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
+            am.append_content("just an answer")
             am.finish(sources=None)
-            assert am._citation_widget is not None
-            assert am._citation_widget.display is False
+            assert "Sources:" not in "".join(am._content_parts)
 
-    async def test_finish_with_empty_sources_hides_citation(self) -> None:
+    async def test_finish_with_sources_folds_them_into_the_answer(self) -> None:
+        """A live turn handed structured sources renders them the one way:
+        appended as the same clickable Sources list, not a separate widget."""
         app = _MsgApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             am = app._am
-            am.finish(sources=[])
-            assert am._citation_widget is not None
-            assert am._citation_widget.display is False
+            am.append_content("the answer")
+            am.finish(sources=["manual.md"])
+            joined = "".join(am._content_parts)
+            assert joined.count("\nSources:\n") == 1
+            assert "1. [manual.md](" in joined
 
     async def test_markdown_rendering_true_uses_markdown_widget(self) -> None:
         from textual.widgets import Markdown
@@ -539,7 +570,7 @@ class TestTaskBar:
         starting = _warm_detail(WarmProgress(phase=WarmPhase.STARTING))
         assert "starting" in starting and "▓" in starting
         loading = _warm_detail(WarmProgress(phase=WarmPhase.LOADING_ENGINE))
-        assert "almost ready" in loading and ("▓" in loading or "░" in loading)
+        assert "loading the engine" in loading and ("▓" in loading or "░" in loading)
         reading = _warm_detail(
             WarmProgress(phase=WarmPhase.READING_WEIGHTS, bytes_done=42, bytes_total=100)
         )
