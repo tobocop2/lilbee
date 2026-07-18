@@ -70,6 +70,7 @@ from lilbee.retrieval.query.intent import (
     title_candidates,
 )
 from lilbee.retrieval.query.memory import format_memory_block
+from lilbee.retrieval.query.neighbors import expand_neighbors
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
 from lilbee.retrieval.reasoning import (
     StreamToken,
@@ -908,6 +909,7 @@ class Searcher:
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         results = self._fit_context_budget(results, system, question, history, scale)
+        results = self._widen_with_neighbors(results, system, question, history, scale)
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
         messages: list[ChatMessage] = [{"role": "system", "content": system}]
@@ -921,19 +923,14 @@ class Searcher:
         """Conservative token cost for budgeting (see _BUDGET_CHARS_PER_TOKEN)."""
         return max(1, len(text) // _BUDGET_CHARS_PER_TOKEN)
 
-    def _fit_context_budget(
+    def _context_budget(
         self,
-        results: list[SearchChunk],
         system: str,
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
-    ) -> list[SearchChunk]:
-        """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
-
-        ``max_context_sources`` caps by count; this caps by tokens so a
-        retrieval-heavy query degrades gracefully instead of erroring with
-        CONTEXT_OVERFLOW. The top-ranked source is always kept.
+    ) -> int:
+        """Token budget left for source passages after the fixed prompt parts.
 
         The ceiling is the engine's ACTUAL per-slot window when known: the
         configured value is a target the dynamic picker aims for, and the
@@ -951,7 +948,23 @@ class Searcher:
             + _ANSWER_RESERVE_TOKENS
             + _CONTEXT_TEMPLATE_TOKENS
         )
-        budget = int((ctx - reserve) * scale)
+        return int((ctx - reserve) * scale)
+
+    def _fit_context_budget(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        scale: float = 1.0,
+    ) -> list[SearchChunk]:
+        """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
+
+        ``max_context_sources`` caps by count; this caps by tokens so a
+        retrieval-heavy query degrades gracefully instead of erroring with
+        CONTEXT_OVERFLOW. The top-ranked source is always kept.
+        """
+        budget = self._context_budget(system, question, history, scale)
         kept: list[SearchChunk] = []
         used = 0
         for r in results:
@@ -967,6 +980,31 @@ class Searcher:
                 len(results),
             )
         return kept
+
+    def _widen_with_neighbors(
+        self,
+        results: list[SearchChunk],
+        system: str,
+        question: str,
+        history: list[ChatMessage] | None,
+        scale: float,
+    ) -> list[SearchChunk]:
+        """Widen each fitted passage with adjacent same-source chunks.
+
+        Runs after the budget fit so neighbors only ever spend leftover
+        budget: a tight window sheds expansion first and never drops an
+        original chunk for a neighbor. Widening changes a passage's text
+        and page/line span only, so citation numbering and the sources
+        block are untouched.
+        """
+        radius = self._config.neighbor_expansion
+        if radius <= 0:
+            return results
+        budget = self._context_budget(system, question, history, scale)
+        used = sum(self._budget_tokens(r.chunk) + _PER_SOURCE_TOKENS for r in results)
+        return expand_neighbors(
+            results, self._store, radius, max(0, budget - used), self._budget_tokens
+        )
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""
