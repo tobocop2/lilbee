@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from lilbee.core.config import active_config
 
 if TYPE_CHECKING:
-    from xberg import ChunkingConfig, ChunkSizing, EmbeddingConfig
+    from xberg import ChunkingConfig, ChunkSizing, EmbeddingConfig, TableChunkingMode
 
 CHARS_PER_TOKEN = 4
 
@@ -61,6 +61,20 @@ def _semantic_embedding_config() -> EmbeddingConfig:
     return EmbeddingConfig(model=model)
 
 
+def _table_chunking() -> TableChunkingMode | None:
+    """Header-repeating table splits when table extraction is on, else xberg's default.
+
+    REPEAT_HEADER carries the header row into every piece of a long table, so
+    no chunk holds headerless rows.
+    """
+    config = active_config()
+    if not config.table_extraction:
+        return None
+    from xberg import TableChunkingMode
+
+    return TableChunkingMode.REPEAT_HEADER
+
+
 def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
     """Build an xberg ChunkingConfig from the current cfg."""
     from xberg import ChunkingConfig
@@ -76,9 +90,15 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
             topic_threshold=config.topic_threshold,
             max_characters=max_chars,
             overlap=max_overlap,
+            table_chunking=_table_chunking(),
         )
     max_size, max_overlap, sizing = _size_params()
-    return ChunkingConfig(max_characters=max_size, overlap=max_overlap, sizing=sizing)
+    return ChunkingConfig(
+        max_characters=max_size,
+        overlap=max_overlap,
+        sizing=sizing,
+        table_chunking=_table_chunking(),
+    )
 
 
 def chunk_text(

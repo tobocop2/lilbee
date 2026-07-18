@@ -1686,6 +1686,19 @@ class TestChunkTypePredicate:
         assert "IS NULL" not in pred
         assert pred == "chunk_type = 'wiki'"
 
+    def test_raw_scope_includes_table_chunks(self):
+        """Table chunks are document content, so the raw scope covers them."""
+        from lilbee.data.store.lance_helpers import _chunk_type_predicate
+
+        pred = _chunk_type_predicate("raw")
+        assert "'table'" in pred
+
+    def test_table_filter_is_exact(self):
+        from lilbee.data.store.lance_helpers import _chunk_type_predicate
+
+        pred = _chunk_type_predicate("table")
+        assert pred == "chunk_type = 'table'"
+
 
 class TestEmbeddingModelGate:
     """Refuse search/ingest when cfg.embedding_model drifts from the persisted _meta row."""

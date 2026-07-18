@@ -762,6 +762,8 @@ effect on already-indexed material.
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
 | `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
+| `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats |
+| `LILBEE_LAYOUT_DETECTION` | `false` | Layout-aware PDF extraction: text follows the detected reading order and running headers/footers are stripped |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
 | `LILBEE_EMBED_REPLICAS` | `1` | Embedding servers to run in parallel, one per spare GPU, for large-scale ingest. Capped at runtime by the GPUs with room after the chat model is placed |

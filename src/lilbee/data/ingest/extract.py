@@ -34,7 +34,7 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig
+    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, PdfConfig, Table
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +133,44 @@ def _ocr_force_requested() -> bool:
     return os.environ.get("LILBEE_OCR_FORCE", "").strip().lower() in {"1", "true", "yes"}
 
 
+# Fraction of page height treated as the running header/footer band when
+# layout detection is on. Conservative: strips only the outermost 5%.
+_TOP_MARGIN_FRACTION = 0.05
+_BOTTOM_MARGIN_FRACTION = 0.05
+
+
+def _pdf_options() -> PdfConfig | None:
+    """PdfConfig for the enabled opt-in ingest features, or None when all are off.
+
+    Table extraction turns on structure recognition; layout detection orders
+    text by detected reading order and strips the header/footer margin bands.
+    """
+    config = active_config()
+    if not (config.table_extraction or config.layout_detection):
+        return None
+    from xberg import PdfConfig
+
+    kwargs: dict[str, Any] = {}
+    if config.table_extraction:
+        kwargs["extract_tables"] = True
+    if config.layout_detection:
+        kwargs.update(
+            reading_order=True,
+            top_margin_fraction=_TOP_MARGIN_FRACTION,
+            bottom_margin_fraction=_BOTTOM_MARGIN_FRACTION,
+        )
+    return PdfConfig(**kwargs)
+
+
+def _layout_options() -> dict[str, Any]:
+    """ExtractionConfig kwargs enabling layout detection, empty when off."""
+    if not active_config().layout_detection:
+        return {}
+    from xberg import LayoutDetectionConfig
+
+    return {"layout": LayoutDetectionConfig(), "use_layout_for_markdown": True}
+
+
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
     """Build ExtractionConfig for the given extraction mode."""
     from xberg import ExtractionConfig, PageConfig
@@ -152,6 +190,8 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
             pages=PageConfig(extract_pages=True, insert_page_markers=False),
             ocr=ocr,
             force_ocr=force_ocr,
+            pdf_options=_pdf_options(),
+            **_layout_options(),
         )
     return ExtractionConfig(
         chunking=chunking,
@@ -229,6 +269,20 @@ def _capture_result_page_texts(
         page_texts_out.append(_page_text_record(source_name, 0, doc.content, content_type))
 
 
+def _document_tables(doc: ExtractedDocument) -> list[Table]:
+    """The result tables to index as dedicated chunks, when table extraction is on.
+
+    Each table becomes its own chunk carrying xberg's markdown serialization and
+    page metadata. The table's flattened text also stays inside the content
+    chunks: stripping it there would tear holes in reading-order prose and the
+    page-text export, so both are indexed deliberately. The dedicated table
+    chunk adds the structured serialization for targeted retrieval.
+    """
+    if not active_config().table_extraction:
+        return []
+    return [t for t in (doc.tables or []) if t.markdown and t.markdown.strip()]
+
+
 def _warn_empty_ocr(source_name: str, media: str) -> None:
     """Warn that extraction yielded no text and point to the vision-model remedy."""
     log.warning(
@@ -293,7 +347,8 @@ async def ingest_document(
         )
     )
 
-    if not doc.chunks:
+    tables = _document_tables(doc)
+    if not doc.chunks and not tables:
         if content_type in (PDF_CONTENT_TYPE, IMAGE_CONTENT_TYPE):
             _warn_empty_ocr(source_name, "scanned documents")
         return []
@@ -309,11 +364,17 @@ async def ingest_document(
         ExtractEvent(file=source_name, page=page_count, total_pages=page_count),
     )
 
-    texts = [chunk.content for chunk in doc.chunks]
+    # Content chunks and table serializations share one embed batch; the vector
+    # list is split back apart below by position.
+    texts = [chunk.content for chunk in doc.chunks or []]
+    table_texts = [table.markdown for table in tables]
     vectors = await to_ingest_thread(
-        get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
+        get_services().embedder.embed_batch,
+        texts + table_texts,
+        source=source_name,
+        on_progress=on_progress,
     )
-    return [
+    records = [
         ChunkRecord(
             source=source_name,
             content_type=content_type,
@@ -326,8 +387,28 @@ async def ingest_document(
             chunk_index=chunk.metadata.chunk_index,
             vector=vec,
         )
-        for chunk, text, vec in zip(doc.chunks, texts, vectors, strict=True)
+        for chunk, text, vec in zip(doc.chunks or [], texts, vectors[: len(texts)], strict=True)
     ]
+    # Table chunk indices continue after the content chunks so a source's
+    # (source, chunk_index) pairs stay unique.
+    records.extend(
+        ChunkRecord(
+            source=source_name,
+            content_type=content_type,
+            chunk_type=ChunkType.TABLE,
+            page_start=table.page_number,
+            page_end=table.page_number,
+            line_start=0,
+            line_end=0,
+            chunk=text,
+            chunk_index=len(texts) + i,
+            vector=vec,
+        )
+        for i, (table, text, vec) in enumerate(
+            zip(tables, table_texts, vectors[len(texts) :], strict=True)
+        )
+    )
+    return records
 
 
 async def ingest_markdown(
