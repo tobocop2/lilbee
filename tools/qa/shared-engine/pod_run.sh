@@ -18,8 +18,10 @@ if [ ! -x "$ENGINE_CACHE/llama-server" ]; then
   done
   python3 -c "import zipfile; zipfile.ZipFile('/tmp/engwheel/engine.whl').extractall('/tmp/engwheel/x')"
   cp -a /tmp/engwheel/x/lilbee_engine/bin/. "$ENGINE_CACHE/"
-  chmod +x "$ENGINE_CACHE"/llama-* 2>/dev/null
 fi
+# zipfile.extractall drops the executable bits; gguf-parser missing +x silently
+# degrades planning to file-size estimates.
+chmod +x "$ENGINE_CACHE"/llama-* "$ENGINE_CACHE"/gguf-parser 2>/dev/null
 ls -la "$ENGINE_CACHE" | head -8
 
 # 2. Bootstrap (clones the branch, uv sync, CUDA runtime libs, opencode pin).

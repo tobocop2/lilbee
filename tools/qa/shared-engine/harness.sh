@@ -44,6 +44,7 @@ user_locks() { ls "$LILBEE_ENGINE_DIR/engine-users/" 2>/dev/null | wc -l; }
 note "phase 0: fixtures (4 project roots, per-project KBs, shared models+slot)"
 for i in 1 2 3 4; do
   PROJ="$AGENTS_ROOT/proj$i"
+  rm -rf "$PROJ/kb" "$PROJ/.lilbee/data" "$PROJ/home"
   mkdir -p "$PROJ/.lilbee" "$PROJ/kb" "$PROJ/home"
   cp "$REPO_DIR/docs/usage.md" "$REPO_DIR/docs/architecture.md" "$PROJ/kb/" 2>/dev/null
   cat > "$PROJ/.lilbee/config.toml" <<EOF
@@ -70,8 +71,13 @@ for i in 1 2 3 4; do
 done
 note "post-ingest engine census: servers=$(engine_llama_servers) swaps=$(engine_swaps)"
 
-lilbee engine stop >> "$RESULTS/ingest.log" 2>&1 || true
+# engine stop covers the machine slot plus the CURRENT root's private dir,
+# so run it once per project root to catch any private-overflow leftovers.
+for i in 1 2 3 4; do
+  (cd "$AGENTS_ROOT/proj$i" && lilbee engine stop) >> "$RESULTS/ingest.log" 2>&1 || true
+done
 sleep "$SETTLE_S"
+note "post-ingest lingering check: swaps=$(engine_swaps) (0 expected: last CLI out stops the engine)"
 note "idle VRAM: $(vram_used_mb)MB"
 
 start_server() { # start_server <proj-index>
@@ -93,18 +99,23 @@ wire_opencode() { # wire_opencode <proj-index>: launcher-equivalent config, per-
   port=$(cat "$proj/.lilbee/data/server.port")
   token=$(python3 -c "import json;print(json.load(open('$proj/.lilbee/data/server.json'))['token'])")
   mkdir -p "$proj/home/.config/opencode"
-  LILBEE_PORT="$port" LILBEE_TOKEN="$token" CHAT_REF="$CHAT_MODEL" \
-    "$VENV/bin/python" - > "$proj/home/.config/opencode/opencode.json" <<'PY'
+  # chat_ctx caps the client's context accounting to what the engine actually
+  # serves; without it opencode assumes the model's native window and requests
+  # blow past the served slot size.
+  (cd "$proj" && LILBEE_PORT="$port" LILBEE_TOKEN="$token" CHAT_REF="$CHAT_MODEL" \
+    "$VENV/bin/python" - > "$proj/home/.config/opencode/opencode.json") <<'PY'
 import json
 import os
 
 from lilbee.cli.agent_configs.opencode import opencode_config
+from lilbee.cli.launchers.server import client_chat_ctx
 
+port = int(os.environ["LILBEE_PORT"])
 block = opencode_config(
-    base_url=f"http://127.0.0.1:{os.environ['LILBEE_PORT']}",
+    base_url=f"http://127.0.0.1:{port}",
     api_key=os.environ["LILBEE_TOKEN"],
     model_refs=[os.environ["CHAT_REF"]],
-    chat_ctx=None,
+    chat_ctx=client_chat_ctx(port),
     default_ref=os.environ["CHAT_REF"],
     include_mcp=False,
 )
@@ -123,9 +134,16 @@ run_agent() { # run_agent <proj-index>
   )
 }
 
-stop_server() { # stop_server <proj-index>
-  local pid_file="$RESULTS/serve$1.pid"
-  [ -f "$pid_file" ] && kill -TERM "$(cat "$pid_file")" 2>/dev/null
+stop_server() { # stop_server <proj-index>: the product's shutdown path, TERM fallback
+  local proj="$AGENTS_ROOT/proj$1"
+  local port token
+  port=$(cat "$proj/.lilbee/data/server.port" 2>/dev/null)
+  token=$(python3 -c "import json;print(json.load(open('$proj/.lilbee/data/server.json'))['token'])" 2>/dev/null)
+  if [ -n "$port" ] && [ -n "$token" ]; then
+    curl -sf -X POST -H "Authorization: Bearer $token" \
+      "http://127.0.0.1:$port/api/shutdown" >/dev/null 2>&1 && return
+  fi
+  kill -TERM "$(cat "$RESULTS/serve$1.pid" 2>/dev/null)" 2>/dev/null
 }
 
 verify_task() { # verify_task <proj-index>
