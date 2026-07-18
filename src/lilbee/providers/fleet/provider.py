@@ -1214,17 +1214,28 @@ class FleetProvider:
     ) -> list[ChatMessage]:
         """Drop oldest turns so the prompt fits the served context.
 
-        Raises ``ProviderError(CONTEXT_OVERFLOW)`` when even the system messages,
-        tools, and the final turn exceed the window; the chat-completions route
-        maps that to a 400 ``context_length_exceeded`` rather than a 500.
+        The caller's output reservation (``num_predict``) is honored while the
+        window allows it and clamped to the default generation room otherwise:
+        agent clients size their reservation from their own prompt estimate,
+        which under-counts, and llama-server stops at the context edge anyway,
+        so a greedy reservation must degrade the output room, not kill the
+        turn. Raises ``ProviderError(CONTEXT_OVERFLOW)`` only when the system
+        messages, tools, and the final turn exceed the window even with the
+        clamped reserve; the chat-completions route maps that to a 400
+        ``context_length_exceeded`` rather than a 500.
         """
         # 0/None means the served context is unknown (no chat launch adopted yet);
         # a real per-slot context is always positive, so skip windowing.
         if not self._chat_ctx:
             return messages
         reserve = (options or {}).get("num_predict") or _DEFAULT_GENERATION_RESERVE
-        budget = self._chat_ctx - reserve - _CONTEXT_WINDOW_MARGIN
-        result = window_messages(messages, tools, budget)
+        result = window_messages(messages, tools, self._chat_ctx - reserve - _CONTEXT_WINDOW_MARGIN)
+        if not result.fits and reserve > _DEFAULT_GENERATION_RESERVE:
+            result = window_messages(
+                messages,
+                tools,
+                self._chat_ctx - _DEFAULT_GENERATION_RESERVE - _CONTEXT_WINDOW_MARGIN,
+            )
         if not result.fits:
             raise ProviderError(
                 f"Prompt of about {result.prompt_tokens} tokens exceeds the "

@@ -441,15 +441,31 @@ def test_fit_chat_context_raises_context_overflow_when_unfixable() -> None:
     assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
-def test_fit_chat_context_reserves_requested_max_tokens() -> None:
-    from lilbee.providers.base import ProviderError
+def test_fit_chat_context_clamps_a_greedy_output_reservation() -> None:
+    """A num_predict the window cannot honor shrinks to the floor, not an error.
+
+    Agent clients reserve output from their own (under-counting) prompt
+    estimate; a prompt that fits the window with the default generation room
+    must be served, with llama-server stopping at the context edge if the
+    generation runs long.
+    """
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 2000
+    msgs = [{"role": "user", "content": "x" * 2000}]
+    out = p._fit_chat_context(msgs, None, {"num_predict": 1900}, "m")
+    assert out[-1]["content"] == "x" * 2000
+
+
+def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
     p._chat_ctx = 2000
-    # a large num_predict shrinks the prompt budget below what a modest history needs
-    msgs = [{"role": "user", "content": "x" * 3000}]
-    with pytest.raises(ProviderError):
+    # far beyond ctx minus the floor reserve: no reservation shrink can save it
+    msgs = [{"role": "user", "content": "x" * 40_000}]
+    with pytest.raises(ProviderError) as excinfo:
         p._fit_chat_context(msgs, None, {"num_predict": 1900}, "m")
+    assert excinfo.value.kind is ProviderErrorKind.CONTEXT_OVERFLOW
 
 
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:

@@ -47,10 +47,11 @@ for i in 1 2 3 4; do
   rm -rf "$PROJ/kb" "$PROJ/.lilbee/data" "$PROJ/home"
   mkdir -p "$PROJ/.lilbee" "$PROJ/kb" "$PROJ/home"
   cp "$REPO_DIR/docs/usage.md" "$REPO_DIR/docs/architecture.md" "$PROJ/kb/" 2>/dev/null
+  # documents_dir stays default (.lilbee/documents): pointing it at kb/ would
+  # make "lilbee add kb/" copy kb into itself.
   cat > "$PROJ/.lilbee/config.toml" <<EOF
 chat_model = "$CHAT_MODEL"
 embedding_model = "$EMBED_MODEL"
-documents_dir = "$PROJ/kb"
 EOF
   case $i in
     1) cp "$TASKS_SRC/task1_slugify_test.py" "$PROJ/"; rm -f "$PROJ/slugify_impl.py"; cp "$TASKS_SRC/task1_prompt.txt" "$PROJ/prompt.txt";;
