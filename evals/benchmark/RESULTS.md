@@ -79,6 +79,26 @@ python -m evals.benchmark score-ir --qrels results/scifact/qrels.json \
   --run results/scifact/run-w1.0.trec --dataset scifact --run-tag w1.0 --out /tmp/ir.jsonl
 ```
 
+## Adaptive fusion
+
+Because no fixed weight wins everywhere, a follow-up run measured `adaptive_fusion`
+(the BM25 weight scaled per query by how peaked the vector ranking is) at three
+confidence margins, on the same three datasets. Best margin was 0.15.
+
+| Dataset | dense | w=1.0 | adaptive (m=0.15) | adaptive vs dense |
+|---|---|---|---|---|
+| NFCorpus | 0.3666 | 0.3732 | 0.3751 | +0.0085, p=0.033, **sig win** |
+| SciFact | 0.6981 | 0.7280 | 0.7186 | +0.0205, p=0.009, **sig win** |
+| FiQA | 0.4593 | 0.4027 | 0.4410 | −0.0184, p=0.003, sig regression |
+
+Adaptive fusion is the best single policy found. It beats the fixed w=1.0 default
+on all three datasets, keeps the significant NFCorpus and SciFact wins, and gives
+the smallest FiQA regression of any config (−0.018 vs −0.056 at w=1.0 and −0.023
+at the best fixed weight). It does not fully erase FiQA's regression — pure dense
+still wins there — so the vector-margin confidence signal reduces, but does not
+eliminate, the cases where the lexical arm hurts. Run files and stats are under
+`results-adaptive/`.
+
 ## Scope
 
 This is the 0.6B-embedder study: it validates the fusion mechanism and the
