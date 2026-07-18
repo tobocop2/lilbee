@@ -31,14 +31,29 @@ ChatWelcome {
     display: none;
 }
 
+/* Where the model's view of the chat changes; a rule, not a message. No
+ * content-align (the rich Rule centres itself); the margin keeps it from
+ * reading as a caption on the message above. */
+.compaction-marker {
+    width: 100%;
+    height: auto;
+    margin: 1 0;
+    color: $text-muted;
+}
+
+/* The hint band: help text left, context reading right. $boost here (not only on
+ * HelpHint) so the chip's transparent cells sit on the same band instead of
+ * punching a hole in its right end. */
+#hint-row {
+    width: 100%;
+    height: 1;
+    background: $boost;
+}
+
 .speaker-label {
     height: auto;
 }
 
-.source-citation {
-    padding: 0 1;
-    color: $text-muted;
-}
 
 .section-header {
     text-style: bold underline;

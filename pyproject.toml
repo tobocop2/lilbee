@@ -193,13 +193,15 @@ extend-immutable-calls = ["litestar.params.Body"]
 # - S104 bind-all-interfaces (testing host parsing)
 # - S105/S106 hardcoded password string/arg (test fixtures)
 # - S108 /tmp paths (mocked, not actual temp-file usage)
+# - S311 pseudo-random (seeded generators building test data, never a secret;
+#   the seed is the point, since a load test that cannot be replayed is useless)
 # - S603/S607 subprocess (e2e tests spawning sys.executable)
 # Test files also ignore PLR2004 (test fixtures use literal expected
 # values inline; extracting them to constants hurts readability) and
 # the pep8-naming rules (test helpers frequently shadow PascalCase
 # class names from the system under test).
 "tests/**/*.py" = [
-    "S101", "S104", "S105", "S106", "S108", "S603", "S607",
+    "S101", "S104", "S105", "S106", "S108", "S311", "S603", "S607",
     "PLR2004",
     "N802", "N806", "N818", "N817",
 ]
