@@ -234,17 +234,20 @@ def test_disabled_session_tools_write_nothing(store):
     assert [meta.id for meta in store.list(origins=(SessionOrigin.MCP,))] == [session_id]
 
 
-def test_session_tools_are_off_the_wire_by_default(monkeypatch):
+async def test_session_tools_are_off_the_wire_by_default():
     """A default install offers no session tools over MCP.
 
-    ``isolated_env`` turns them on for this file, so this asserts against the
-    declared default rather than the fixture's override. Registration is
-    import-time, so the flag decides whether the tools reach the wire at all;
-    the runtime refusals above cover a toggle flipped mid-process.
+    Registration is import-time, so the tools were gated out when this process
+    imported ``mcp_server`` under the real default. ``isolated_env`` flips the
+    flag at runtime for the rest of this file, which cannot re-register them,
+    so the wire still reflects the default here.
     """
     from lilbee.core.config import Config
+    from lilbee.mcp_server import mcp as _mcp
 
     assert Config.model_fields["mcp_sessions_enabled"].default is False
     assert Config.model_fields["sessions_enabled"].default is True, (
         "the human surfaces stay on by default; only the agent half is opt-in"
     )
+    on_the_wire = sorted(t.name for t in await _mcp.list_tools() if t.name.startswith("session"))
+    assert on_the_wire == [], f"session tools reached the default wire: {on_the_wire}"
