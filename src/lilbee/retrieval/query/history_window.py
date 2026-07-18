@@ -19,6 +19,15 @@ def estimate_text_tokens(text: str) -> int:
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
+def chars_for_tokens(tokens: int) -> int:
+    """Rough char budget for a token budget: the inverse of estimate_text_tokens.
+
+    Keeps the chars-per-token ratio owned by this module, so callers that need to
+    clip text to a token budget do not import the constant behind its back.
+    """
+    return tokens * _CHARS_PER_TOKEN
+
+
 def estimate_tokens(message: ChatMessage) -> int:
     """Cheap char/4 token estimate for one message."""
     return estimate_text_tokens(message["content"])

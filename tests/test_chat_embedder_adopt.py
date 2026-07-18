@@ -45,6 +45,9 @@ class TestStreamResponseDispatch:
     def _screen(self):
         screen = _bare_screen()
         screen._history = [{"role": "user", "content": "q"}]
+        # __new__ skips __init__, so state the stream body reads must be supplied
+        # here: _compact_history reads the rolling summary before building a prompt.
+        screen._summary = ""
         screen._history_lock = MagicMock()
         screen._history_lock.__enter__ = MagicMock(return_value=None)
         screen._history_lock.__exit__ = MagicMock(return_value=False)
