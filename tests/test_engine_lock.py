@@ -149,6 +149,30 @@ class TestUserLocks:
         assert hold.path.exists()
         hold.release_and_check_last()
 
+    def test_reacquire_on_the_original_thread_after_cross_thread_release(self, tmp_path: Path):
+        """A worker thread can hold again after a cross-thread release.
+
+        filelock's deadlock-detection registry is thread-local: acquiring on a
+        worker thread and releasing on the teardown thread orphans the worker
+        thread's registry entry. When a thread pool reuses that worker for the
+        next hold (the integration suite's ingest flow), a fresh instance's
+        infinite blocking acquire would false-positive as a deadlock; the
+        finite acquire timeout keeps the detection out of the picture.
+        """
+        import gc
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            hold = pool.submit(hold_user_lock, tmp_path).result()
+            assert hold.release_and_check_last() is True  # released on THIS thread
+            # The released hold is dropped and collected, as between two tests
+            # in a long-lived process; the singleton weak registry forgets the
+            # instance, so the next hold constructs a fresh one.
+            del hold
+            gc.collect()
+            second = pool.submit(hold_user_lock, tmp_path).result()  # same worker
+            assert second.release_and_check_last() is True
+
     def test_release_on_another_thread_still_counts_as_last(self, tmp_path: Path):
         """Acquire and release run on different threads in real fronts.
 

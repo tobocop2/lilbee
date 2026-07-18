@@ -28,6 +28,13 @@ _USER_LOCK_SUFFIX = ".lock"
 # A live peer refuses its lock instantly; this poll exists only to make the
 # probe non-blocking, not to wait.
 _PROBE_TIMEOUT_S = 0.0
+# Finite so filelock's deadlock detection stays out of the picture: its
+# held-registry is thread-local, and a hold acquired on a worker thread but
+# released on the teardown thread orphans the worker's entry; the next hold
+# on a reused worker would false-positive as a deadlock under an infinite
+# blocking acquire. The pid-named file has no legitimate contender (our own
+# process is singleton-reentrant), so this never actually waits.
+_HOLD_TIMEOUT_S = 10.0
 
 
 def machine_engine_dir() -> Path:
@@ -97,7 +104,7 @@ def hold_user_lock(engine_dir: Path, pid: int | None = None) -> UserLockHold:
     path = _user_lock_path(engine_dir, os.getpid() if pid is None else pid)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = _user_file_lock(path)
-    lock.acquire()
+    lock.acquire(timeout=_HOLD_TIMEOUT_S)
     return UserLockHold(engine_dir=engine_dir, path=path, _lock=lock)
 
 
