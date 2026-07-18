@@ -844,6 +844,36 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Candidate-pool multiplier over top_k before reranking",
     ),
+    "title_search": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Match queries against document titles as a third hybrid-search arm",
+    ),
+    "title_search_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Title arm weight in rank fusion (1.0 = equal voice with the other arms)",
+    ),
+    "lexical_fusion_weight": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="BM25 arm weight in fusion (1.0 = equal to vector; lower to favor dense)",
+    ),
+    "adaptive_fusion": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Scale the BM25 weight per query by vector-arm confidence, not a fixed value",
+    ),
+    "adaptive_fusion_margin": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Vector-similarity margin at which adaptive fusion fully silences the BM25 arm",
+    ),
     "history_rewrite": SettingDef(
         bool,
         nullable=False,

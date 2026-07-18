@@ -194,6 +194,35 @@ class Config(BaseSettings):
     # fusion arms stay exactly top_k deep.
     candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
 
+    # Third lexical arm in hybrid search: BM25 over document titles, fused with
+    # the vector and chunk arms so a query naming a document by title surfaces
+    # its chunks. Off by default until the eval harness measures it.
+    title_search: bool = ConfigField(default=False, writable=True)
+
+    # Title arm weight relative to a full arm in rank fusion (1.0 = equal voice
+    # with the vector and chunk arms).
+    title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+
+    # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
+    # 1.0 keeps the two arms equal (the historical behaviour); lowering it lets
+    # a strong dense embedder dominate on corpora where the lexical arm adds
+    # noise rather than signal. The right value is corpus-dependent and set by
+    # the retrieval benchmark, not guessed here.
+    lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
+
+    # Adaptive fusion: instead of a fixed lexical_fusion_weight, scale the BM25
+    # arm per query by how confident the vector arm is (a peaked dense ranking
+    # downweights lexical, a flat one keeps it). On by default: the retrieval
+    # benchmark found no single fixed weight wins every corpus, and adaptive at
+    # margin 0.15 beat the fixed-weight default on all three BEIR sets tested
+    # (biggest gain on the corpus a fixed lexical arm hurt most). lexical_fusion_
+    # weight is the ceiling the adaptive rule scales down from; adaptive_fusion_
+    # margin is the vector-similarity margin at which the lexical arm is fully
+    # silenced (smaller = more aggressive). Set adaptive_fusion=false to pin the
+    # fixed weight instead.
+    adaptive_fusion: bool = ConfigField(default=True, writable=True)
+    adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.

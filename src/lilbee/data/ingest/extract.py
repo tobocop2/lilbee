@@ -22,6 +22,7 @@ from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.discovery import file_hash
 from lilbee.data.ingest.ocr_cache import load_ocr_pages, ocr_cache_key, store_ocr_pages
 from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.ingest.title import source_meta_from_extraction
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
@@ -31,7 +32,7 @@ from lilbee.data.ingest.types import (
     ChunkRecord,
     ExtractMode,
 )
-from lilbee.data.store import ChunkType, PageTextRecord
+from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
@@ -549,11 +550,14 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
+    meta_out: list[SourceMeta] | None = None,
 ) -> list[ChunkRecord]:
     """Extract and chunk a document, embed, return records.
 
     Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
     When ``page_texts_out`` is given, per-page text is appended for export.
+    When ``meta_out`` is given, the document's extraction metadata (title,
+    authors, creation date) is appended for the source row.
     """
     # An image carries no text layer; route it straight to OCR (vision or Tesseract)
     # instead of a no-op kreuzberg markdown extract that yields nothing for a scan.
@@ -566,6 +570,11 @@ async def ingest_document(
 
     config = extraction_config(content_type_to_mode(content_type))
     result = await to_ingest_thread(extract_file_sync, str(path), config=config)
+
+    # Captured before the scanned-PDF fallback: a scan's PDF metadata (title,
+    # authors) survives even when its text layer is empty.
+    if meta_out is not None:
+        meta_out.append(source_meta_from_extraction(result.metadata or {}, source_name))
 
     if content_type == PDF_CONTENT_TYPE and not _has_meaningful_text(result):
         return await _handle_scanned_pdf_fallback(
