@@ -17,6 +17,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.screens.fleet import FleetScreen
+from lilbee.cli.tui.screens.sessions import SessionsScreen
 from lilbee.cli.tui.screens.settings import SettingsScreen
 from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
@@ -108,6 +109,7 @@ async def test_bracket_keys_cycle_all_screens():
             SettingsScreen,
             TaskCenter,
             FleetScreen,
+            SessionsScreen,
             ChatScreen,
         ]
         for screen_type in expected:
@@ -176,6 +178,9 @@ async def test_bracket_keys_cycle_backward():
         # Escape to normal mode so ] works
         await pilot.press("escape")
         await pilot.pause()
+
+        await pilot.press("left_square_bracket")
+        await _wait_for_screen(app, pilot, SessionsScreen)
 
         await pilot.press("left_square_bracket")
         await _wait_for_screen(app, pilot, FleetScreen)

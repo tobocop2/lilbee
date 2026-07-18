@@ -217,6 +217,52 @@ per sync) so day-to-day re-ingest never churns existing concept slugs. Rebuild
 from scratch, lint, drafts review, and prune are also available as CLI
 commands (see [Wiki commands](#wiki-1)) and as MCP tools.
 
+## Sessions
+
+Conversations save automatically. The first message opens a session and names
+it after what you asked; each turn is appended as it lands. There is no save
+step.
+
+- **The drawer** (`ctrl+o` or `/sessions`) docks the session list beside the
+  live chat. Type to filter, `enter` resumes, `^n` new chat, `^r` rename,
+  `^d` delete.
+- **The Sessions tab** is the same list full-screen.
+- **The CLI**: `lilbee sessions list / show / rename / delete` (see
+  [Sessions commands](#sessions-1)).
+
+Resuming restores the transcript and switches back to the model the
+conversation used, if it is still installed; otherwise lilbee keeps the
+current model and says so.
+
+Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
+conversation. No database; back them up or sync them like any other file.
+The same surface exists over HTTP and MCP (list, read, create, append,
+rename, delete), so a script or agent can own a conversation the way the
+TUI does. The TUI, HTTP server, and CLI are one conversation space: start
+a chat in Obsidian, continue it in the terminal. Agent (MCP) sessions are
+separate: they never appear in your session list, and agents cannot list
+or read yours. The one bridge is explicit: an agent can take over a
+session whose id you hand it (`claim=true`, which moves it to the agent's
+space), and `POST /api/sessions/{id}/claim` brings one back.
+
+To keep nothing, turn `sessions_enabled` off in Settings: nothing is written
+to disk, `ctrl+o` leaves the footer, and the Sessions view says sessions are
+off instead of showing an empty list.
+
+### When a conversation outgrows the model
+
+By default, turns that no longer fit the model's context window stop being
+sent. They stay on screen; a `context` gauge by the prompt shows the window
+filling, and a rule in the transcript marks where the model's view now
+begins.
+
+To keep the old context instead, turn on `chat_compaction` in Settings. When
+the window fills, lilbee folds the oldest turns into short notes the model
+keeps reading. The fold is a model call (the gauge shows `condensing…` while
+it runs), around a second or two with a small model, even on CPU. Either way
+the transcript on screen and on disk is never touched; only what the model
+is sent changes.
+
 ## The engine lifecycle
 
 lilbee loads the model lazily, the way Ollama and LM Studio do: the TUI never
@@ -580,6 +626,18 @@ lilbee memory recall "what language"             # recall facts by relevance
 lilbee memory remove <id>                        # delete a memory by id
 ```
 
+### Sessions
+
+See [Sessions](#sessions). Ids accept any unique prefix.
+
+```bash
+lilbee sessions list                   # saved conversations, newest first
+lilbee sessions show 3f2a              # print a transcript by id prefix
+lilbee sessions rename 3f2a "Brake specs"
+lilbee sessions delete 3f2a            # asks first; --yes skips the prompt
+lilbee --json sessions show 3f2a       # transcript + compaction summary as JSON
+```
+
 ### Vault and status
 
 ```bash
@@ -609,8 +667,10 @@ lilbee serve --host 0.0.0.0            # bind all interfaces (default: 127.0.0.1
 The surface covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
-configuration (including a defaults endpoint that powers per-setting reset),
-and status/health. The
+saved conversations (`/api/sessions`: list, read, create, append, rename,
+delete, and the compaction summary; reads work with a read-only token,
+writes need a full one), configuration (including a defaults endpoint
+that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the

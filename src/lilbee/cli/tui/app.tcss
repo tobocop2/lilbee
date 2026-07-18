@@ -88,3 +88,10 @@ HelpPanel #widget-help MarkdownBlock:last-child {
 .fleet-open BottomBars {
     margin-right: 50;
 }
+
+/* The Sessions drawer (ctrl+o) docks left; inset the docked bars to its right.
+ * The inset must match SessionsDrawer width in sessions_drawer.tcss. */
+.sessions-open TopBars,
+.sessions-open BottomBars {
+    margin-left: 50;
+}
