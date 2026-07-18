@@ -427,18 +427,30 @@ class Store:
                 return
             try:
                 if _has_fts_index(table):
-                    # One optimize folds new rows into every index on the
-                    # table, the title index included.
-                    table.optimize()
-                    log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
+                    # The index exists and already serves queries, so mark hybrid
+                    # ready BEFORE the optimize: optimize() only folds new rows and
+                    # compacts, and on a large corpus it can hit a LanceDB encoding
+                    # bug and raise. Letting that failure fall through would leave
+                    # _fts_ready False and silently drop every query to vector-only.
+                    self._fts_ready = True
+                    try:
+                        # One optimize folds new rows into every index on the
+                        # table, the title index included.
+                        table.optimize()
+                        log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
+                    except Exception:
+                        log.warning(
+                            "FTS optimize() failed; the existing index still serves hybrid search",
+                            exc_info=True,
+                        )
                 else:
                     # with_position lets the lexical arm serve phrase queries;
                     # raw user query text can reach LanceDB as a phrase, which
                     # errors on a positionless index.
                     table.create_fts_index("chunk", replace=False, with_position=True)
+                    self._fts_ready = True
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 self._ensure_title_fts_unlocked(table)
-                self._fts_ready = True
             except Exception:
                 log.debug("FTS index ensure failed (empty table?)", exc_info=True)
 

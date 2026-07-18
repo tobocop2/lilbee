@@ -162,6 +162,24 @@ class TestEnsureFtsIndex:
         create_spy.assert_not_called()
         optimize_spy.assert_called_once()
 
+    def test_optimize_failure_keeps_hybrid_ready(self, store):
+        """An optimize() crash on an already-built index (a LanceDB encoding
+        bug bites large corpora) must not disable hybrid search: the index
+        still serves queries, so _fts_ready stays True instead of silently
+        dropping every query to the vector-only fallback."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()  # builds the index
+        store._fts_ready = False  # a fresh process is unaware the index exists yet
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(
+            type(table),
+            "optimize",
+            side_effect=RuntimeError("lance list offset overflow"),
+        ):
+            store.ensure_fts_index()
+        assert store._fts_ready is True
+
     def test_first_call_creates_without_replace(self, store):
         """Fresh table creates the chunk and title indexes, both with replace=False."""
         store.add_chunks(_make_records())
