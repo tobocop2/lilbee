@@ -80,6 +80,10 @@ sleep "$SETTLE_S"
 note "post-ingest lingering check: swaps=$(engine_swaps) (0 expected: last CLI out stops the engine)"
 note "idle VRAM: $(vram_used_mb)MB"
 
+server_token() { # server_token <proj-index>
+  python3 -c "import json;print(json.load(open('$AGENTS_ROOT/proj$1/.lilbee/data/server.json'))['token'])" 2>/dev/null
+}
+
 start_server() { # start_server <proj-index>
   local proj="$AGENTS_ROOT/proj$1"
   (cd "$proj" && nohup lilbee serve --data-dir "$proj/.lilbee" \
@@ -97,7 +101,7 @@ wire_opencode() { # wire_opencode <proj-index>: launcher-equivalent config, per-
   local proj="$AGENTS_ROOT/proj$1"
   local port token
   port=$(cat "$proj/.lilbee/data/server.port")
-  token=$(python3 -c "import json;print(json.load(open('$proj/.lilbee/data/server.json'))['token'])")
+  token=$(server_token "$1")
   mkdir -p "$proj/home/.config/opencode"
   # chat_ctx caps the client's context accounting to what the engine actually
   # serves; without it opencode assumes the model's native window and requests
@@ -138,7 +142,7 @@ stop_server() { # stop_server <proj-index>: the product's shutdown path, TERM fa
   local proj="$AGENTS_ROOT/proj$1"
   local port token
   port=$(cat "$proj/.lilbee/data/server.port" 2>/dev/null)
-  token=$(python3 -c "import json;print(json.load(open('$proj/.lilbee/data/server.json'))['token'])" 2>/dev/null)
+  token=$(server_token "$1")
   if [ -n "$port" ] && [ -n "$token" ]; then
     curl -sf -X POST -H "Authorization: Bearer $token" \
       "http://127.0.0.1:$port/api/shutdown" >/dev/null 2>&1 && return

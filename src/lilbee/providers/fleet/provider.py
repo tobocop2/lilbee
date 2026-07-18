@@ -726,8 +726,10 @@ class FleetProvider:
     ) -> bool:
         """Bind every group needed to cover *wanted*; False leaves nothing bound.
 
-        Groups serving models outside *wanted* coexist untouched; the dir
+        Binding never touches groups serving models outside *wanted*; the dir
         matches only when healthy, pin-equal groups cover every wanted pair.
+        (Whether an unmatched dir's engine is then replaced or overflowed
+        around is the ladder's call, based on live users.)
         """
         candidates: list[tuple[SwapGroup, _SwapState, list[InstanceLaunch]]] = []
         covered: set[tuple[WorkerRole, str]] = set()

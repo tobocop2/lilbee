@@ -8,6 +8,7 @@ import pytest
 from lilbee.runtime.engine_lock import (
     build_lock,
     hold_user_lock,
+    live_users_exist,
     machine_engine_dir,
     private_engine_dir,
 )
@@ -88,6 +89,20 @@ class TestUserLocks:
         assert own.exists()
         hold.release_and_check_last()
         assert not own.exists()
+
+    def test_own_hold_counts_as_a_live_user(self, tmp_path: Path):
+        """A process probing a dir where it holds membership must see itself.
+
+        The config-change restart path runs the ladder while this process's
+        hold is still in place. The probe uses filelock's default constructor
+        while the hold uses thread_local=False on the same path; this pins
+        that the probe still refuses (and never deletes) the live lock file
+        if a filelock upgrade changes its per-path singleton semantics.
+        """
+        hold = hold_user_lock(tmp_path)
+        assert live_users_exist(tmp_path) is True
+        assert hold.path.exists()
+        hold.release_and_check_last()
 
     def test_release_on_another_thread_still_counts_as_last(self, tmp_path: Path):
         """Acquire and release run on different threads in real fronts.

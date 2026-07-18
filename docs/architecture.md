@@ -622,10 +622,13 @@ build:
    against.
 2. **Build** into the empty slot otherwise, from this process's own binaries
    and plan.
-3. **Overflow** to the config root's private dir (`<root>/data/engine/`) when
-   the slot is occupied by an incompatible engine: two engines exist exactly
-   while two genuinely different model setups are in active use, and the slot
-   promotes to the next builder when it frees.
+3. **Overflow** to the config root's private dir (`<root>/data/engine/`) only
+   when the slot's incompatible engine has live users (processes holding user
+   locks on it): two engines exist exactly while two genuinely different model
+   setups are in active use. An incompatible incumbent nobody is using — a
+   fleet built while only some configured models were installed, or another
+   config's idle warm engine — is replaced in the slot instead, so leftovers
+   can never poison the slot for every later arrival.
 
 Engine lifetime is kernel-refcounted membership: each process holds a user
 lock file the OS releases on any death. The last clean exit stops the engine,
@@ -649,7 +652,9 @@ flowchart TD
     L --> Q{"machine slot engine healthy,<br/>models + engine pin match?"}
     Q -- bind --> B["use its proxy ports<br/>spawn nothing"]
     Q -- "slot empty" --> BU["build engine in the slot"]
-    Q -- "occupied, incompatible" --> PR["build private engine<br/>in this config root"]
+    Q -- "occupied, incompatible,<br/>in live use" --> PR["build private engine<br/>in this config root"]
+    Q -- "occupied, incompatible,<br/>no live users" --> RP["replace it:<br/>build in the slot"]
+    RP --> X
     B --> X{"clean exit:<br/>last user out?"}
     BU --> X
     PR --> X
