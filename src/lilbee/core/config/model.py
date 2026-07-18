@@ -224,10 +224,15 @@ class Config(BaseSettings):
     adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
 
     # Drop tables-of-contents and cover/title pages from search results. The
-    # title and table arms surface these document-structure chunks, which never
-    # answer a question and only dilute context precision. On by default; the
-    # detector is conservative (unambiguous TOCs and cover pages only).
-    filter_structural_chunks: bool = ConfigField(default=True, writable=True)
+    # title and table arms surface these document-structure chunks, which usually
+    # do not answer a question. OFF by default: a UFO-corpus A/B (bb-lenb) found
+    # the filter net-negative -- its cover-page heuristic also fires on short,
+    # classification-banner government body pages, dropping content the answer
+    # needed and hurting faithfulness. When on, a query-matched or top-ranked
+    # page is never dropped (searcher.search), so the removal is limited to
+    # structural chunks the query did not actually hit. Re-validate per corpus
+    # before turning it on.
+    filter_structural_chunks: bool = ConfigField(default=False, writable=True)
 
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact

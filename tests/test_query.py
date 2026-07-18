@@ -501,30 +501,41 @@ class TestSearchContext:
         results = get_services().searcher.search("q")
         assert [r.source for r in results] == ["a.md"]
 
-    def test_structural_chunks_filtered_from_results(self, mock_svc):
-        """A TOC the title/table arms surfaced is dropped so it does not dilute
-        context precision, while the real answer passage survives (bb-pkn6)."""
-        toc = _make_result(
-            source="toc.pdf",
-            distance=0.2,
-            chunk="A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n",
-        )
-        real = _make_result(source="body.pdf", distance=0.2, chunk="Real answer prose.")
-        mock_svc.store.search.return_value = [toc, real]
+    _TOC_CHUNK = "A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n"
+
+    def test_structural_chunk_the_query_missed_is_dropped(self, mock_svc):
+        """With the filter on, a lower-ranked TOC the query did not hit is
+        dropped, while the real answer passage survives (bb-pkn6)."""
+        cfg.filter_structural_chunks = True
+        real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
+        toc = _make_result(source="toc.pdf", distance=0.4, chunk=self._TOC_CHUNK)
+        mock_svc.store.search.return_value = [real, toc]
         results = get_services().searcher.search("q")
         assert [r.source for r in results] == ["body.pdf"]
 
-    def test_structural_filter_off_keeps_toc(self, mock_svc):
-        """Opting out (filter_structural_chunks=false) keeps every retrieved row."""
-        cfg.filter_structural_chunks = False
-        toc = _make_result(
-            source="toc.pdf",
-            distance=0.2,
-            chunk="A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n",
-        )
+    def test_structural_filter_keeps_query_matched_page(self, mock_svc):
+        """A page the query lexically hit is never dropped, whatever its shape:
+        it is content the answer may need (bb-lenb)."""
+        cfg.filter_structural_chunks = True
+        real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
+        hit = _make_result(source="toc.pdf", distance=0.4, bm25_score=9.0, chunk=self._TOC_CHUNK)
+        mock_svc.store.search.return_value = [real, hit]
+        assert "toc.pdf" in [r.source for r in get_services().searcher.search("q")]
+
+    def test_structural_filter_keeps_top_hit(self, mock_svc):
+        """The top-ranked result is never dropped, whatever its shape (bb-lenb)."""
+        cfg.filter_structural_chunks = True
+        toc = _make_result(source="toc.pdf", distance=0.05, chunk=self._TOC_CHUNK)
         mock_svc.store.search.return_value = [toc]
-        results = get_services().searcher.search("q")
-        assert [r.source for r in results] == ["toc.pdf"]
+        assert [r.source for r in get_services().searcher.search("q")] == ["toc.pdf"]
+
+    def test_structural_filter_off_by_default_keeps_toc(self, mock_svc):
+        """Off by default (bb-lenb: net-negative on the UFO corpus)."""
+        assert cfg.filter_structural_chunks is False
+        toc = _make_result(source="toc.pdf", distance=0.4, chunk=self._TOC_CHUNK)
+        real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
+        mock_svc.store.search.return_value = [real, toc]
+        assert "toc.pdf" in [r.source for r in get_services().searcher.search("q")]
 
     def test_far_row_with_lexical_support_survives_search(self, mock_svc):
         """A both-arm row keeps its standing past max_distance: dropping it
