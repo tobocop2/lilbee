@@ -619,6 +619,30 @@ class TestAdoptEmbedder:
         assert fake_manager.pull_calls == []
 
 
+class TestCatalogCommandsNeverWarmTheFleet:
+    """Catalog operations never run inference; none may eager-warm the engine.
+
+    A pull that warms spawns a fleet mid-download; with only some configured
+    models installed yet, that fleet serves a partial contract and poisons
+    the machine slot for every later arrival.
+    """
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"],
+            ["model", "show", _CHAT_REF],
+            ["model", "rm", "--yes", _CHAT_REF],
+            ["model", "browse"],
+        ],
+        ids=["pull", "show", "rm", "browse"],
+    )
+    def test_command_suppresses_eager_start(self, argv, fake_manager, native_manifests):
+        cfg.worker_pool_eager_start = True
+        runner.invoke(app, argv)
+        assert cfg.worker_pool_eager_start is False
+
+
 class TestPullCmd:
     def test_json_stream_emits_done_event(self, fake_manager, native_manifests):
         result = runner.invoke(

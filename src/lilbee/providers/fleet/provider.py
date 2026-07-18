@@ -54,6 +54,7 @@ from lilbee.runtime.engine_lock import (
     UserLockHold,
     build_lock,
     hold_user_lock,
+    live_users_exist,
     machine_engine_dir,
     private_engine_dir,
 )
@@ -674,12 +675,17 @@ class FleetProvider:
     def _acquire_engine(self, config_root: Path) -> bool:
         """The acquisition ladder: bind to a compatible engine, else build one.
 
-        Machine slot first; a slot occupied by an incompatible engine sends the
-        whole build to this config root's private overflow dir. Per-dir the
-        step is all-or-nothing: every configured (role, model) pair bound, or
-        the engine is built fresh. Runs under the cross-process build lock, so
-        two simultaneous starts can never both build, and a departure's
-        stop-if-last (also under the lock) can never race an arrival.
+        Machine slot first; only a slot occupied by an incompatible engine
+        that live processes hold user locks on sends the build to this config
+        root's private overflow dir. An incompatible incumbent nobody is
+        using is spare capacity of the wrong shape (a fleet built while only
+        some configured models were installed, or another config's idle warm
+        engine) and is replaced in place: overflowing around it would poison
+        the slot for every later arrival. Per-dir the step is all-or-nothing:
+        every configured (role, model) pair bound, or the engine is built
+        fresh. Runs under the cross-process build lock, so two simultaneous
+        starts can never both build, and a departure's stop-if-last (also
+        under the lock) can never race an arrival.
         """
         pin = engine_pin()
         wanted = {(role, model) for role in WorkerRole if (model := _configured_model_for(role))}
@@ -688,10 +694,14 @@ class FleetProvider:
             if wanted and self._bind_all_in_dir(machine, pin, wanted):
                 self._hold_membership(machine)
                 return True
-            if not self._slot_occupied(machine):
-                # A dead engine's leftovers hold VRAM; reap before the probe
-                # so planning sees true free memory.
+            occupied = self._slot_occupied(machine)
+            if not occupied or not live_users_exist(machine):
+                # Reap first (dead engines' leftovers hold VRAM and reap also
+                # clears orphaned servers), then stop the healthy-but-unused
+                # incumbent if one remains, so planning sees true free memory.
                 reap_stale(machine)
+                if occupied:
+                    stop_engine(machine)
                 if self._plan_and_spawn(machine):
                     self._hold_membership(machine)
                     return True
@@ -702,6 +712,10 @@ class FleetProvider:
                 self._hold_membership(private)
                 return True
             reap_stale(private)
+            if self._slot_occupied(private) and not live_users_exist(private):
+                # Same replacement rule as the machine slot: never stack a
+                # second fleet on top of an unused incompatible one.
+                stop_engine(private)
             if self._plan_and_spawn(private):
                 self._hold_membership(private)
                 return True

@@ -82,7 +82,7 @@ class UserLockHold:
         if self._lock.is_locked:
             self._lock.release()
             self.path.unlink(missing_ok=True)
-        return not _live_peer_exists(self.engine_dir)
+        return not live_users_exist(self.engine_dir)
 
 
 def hold_user_lock(engine_dir: Path, pid: int | None = None) -> UserLockHold:
@@ -93,13 +93,22 @@ def hold_user_lock(engine_dir: Path, pid: int | None = None) -> UserLockHold:
     """
     path = _user_lock_path(engine_dir, os.getpid() if pid is None else pid)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(path)
+    # Not thread-local: membership is per-process. The fleet acquires on its
+    # warm-up thread while teardown releases on the signal/exit path; a
+    # thread-local hold would read as unlocked there, skip its own release,
+    # and then mistake its own lock for a live peer.
+    lock = FileLock(path, thread_local=False)
     lock.acquire()
     return UserLockHold(engine_dir=engine_dir, path=path, _lock=lock)
 
 
-def _live_peer_exists(engine_dir: Path) -> bool:
-    """Probe every user lock file; clean the dead, report whether any refused."""
+def live_users_exist(engine_dir: Path) -> bool:
+    """Probe every user lock file; clean the dead, report whether any refused.
+
+    The ladder consults this (under the build lock) to distinguish an engine
+    someone is actively using from leftover spare capacity: an incompatible
+    incumbent with no live users is replaced, never overflowed around.
+    """
     users = _users_dir(engine_dir)
     for path in sorted(users.glob(f"*{_USER_LOCK_SUFFIX}")):
         probe = FileLock(path)

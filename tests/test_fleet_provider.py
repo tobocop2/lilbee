@@ -3119,6 +3119,7 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: pin)
     monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
     monkeypatch.setattr(
@@ -3159,7 +3160,33 @@ def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_
 
 
 def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: Path) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
     swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the incumbent is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert swap.binds == []  # incompatible: never bound
+    assert swap.started  # built instead
+    assert built and built[0] == tmp_path / "root" / "data" / "engine"
+    holder.release_and_check_last()
+
+
+def test_ladder_replaces_an_unused_incompatible_machine_engine(monkeypatch, tmp_path: Path) -> None:
+    """A wrong-shape incumbent nobody holds a user lock on is replaced in place.
+
+    A fleet built while only some configured models were installed serves a
+    partial contract; once its builder exits, overflowing around it would
+    poison the machine slot for every later arrival.
+    """
+    swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
@@ -3168,8 +3195,8 @@ def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: 
     p = FleetProvider()
     assert p._ensure_fleet() is True
     assert swap.binds == []  # incompatible: never bound
-    assert swap.started  # built instead
-    assert built and built[0] == tmp_path / "root" / "data" / "engine"
+    assert stopped == [machine]  # the unused incumbent was stopped...
+    assert built and built[0] == machine  # ...and the slot rebuilt, not overflowed
 
 
 def test_last_out_stops_the_engine(monkeypatch, tmp_path: Path) -> None:
@@ -3242,11 +3269,14 @@ def test_config_change_restarts_the_engine_but_keeps_membership(
 def test_ladder_binds_in_the_private_dir_when_machine_is_incompatible(
     monkeypatch, tmp_path: Path
 ) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
     swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
     _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the incumbent is in live use
     monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
     private = tmp_path / "root" / "data" / "engine"
     _engine_state_file(private, "chat", pin="pin-a", model="m-chat", role="chat")
@@ -3254,33 +3284,64 @@ def test_ladder_binds_in_the_private_dir_when_machine_is_incompatible(
     assert p._ensure_fleet() is True
     assert len(swap.binds) == 1  # bound in the overflow dir
     assert swap.started == []
+    holder.release_and_check_last()
+
+
+def test_ladder_replaces_an_unused_incompatible_private_engine(monkeypatch, tmp_path: Path) -> None:
+    """The private dir gets the same replacement rule: no stacked second fleet."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # machine incumbent is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    private = tmp_path / "root" / "data" / "engine"
+    _engine_state_file(private, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert stopped == [private]  # unused private incumbent stopped, machine's left alone
+    assert built and built[0] == private
+    holder.release_and_check_last()
 
 
 def test_ladder_returns_false_when_overflow_has_nothing_to_serve(
     monkeypatch, tmp_path: Path
 ) -> None:
+    from lilbee.runtime.engine_lock import hold_user_lock
+
     swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
     _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the incumbent is in live use
     monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
     p = FleetProvider()
     assert p._ensure_fleet() is False
     assert swap.binds == [] and swap.started == []
+    holder.release_and_check_last()
 
 
 def test_ladder_ignores_groups_serving_only_unwanted_models(monkeypatch, tmp_path: Path) -> None:
     swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
-    # A pin-matching group serving a model nobody asked for: coexists, no bind.
+    # A pin-matching group serving a model nobody asked for: no bind, and with
+    # no live users it is replaced along with the rest of the unused engine.
     _engine_state_file(machine, "embed", pin="pin-a", model="m-unrelated", role="embed")
     p = FleetProvider()
     assert p._ensure_fleet() is True
     assert swap.binds == []
-    assert swap.started  # built alongside the coexisting group
+    assert stopped == [machine]  # unused wrong-shape incumbent replaced
+    assert swap.started  # built fresh in the machine slot
 
 
 def test_ladder_rolls_back_earlier_binds_when_a_later_one_fails(

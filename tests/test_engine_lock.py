@@ -88,3 +88,23 @@ class TestUserLocks:
         assert own.exists()
         hold.release_and_check_last()
         assert not own.exists()
+
+    def test_release_on_another_thread_still_counts_as_last(self, tmp_path: Path):
+        """Acquire and release run on different threads in real fronts.
+
+        The fleet builds (and takes membership) on a warm-up thread while
+        teardown runs on the signal/exit path. The hold must not mistake its
+        own still-held lock for a live peer when the releasing thread differs
+        from the acquiring one.
+        """
+        acquired: list = []
+
+        def acquire() -> None:
+            acquired.append(hold_user_lock(tmp_path))
+
+        thread = threading.Thread(target=acquire)
+        thread.start()
+        thread.join(timeout=5)
+        hold = acquired[0]
+        assert hold.release_and_check_last() is True
+        assert not hold.path.exists()

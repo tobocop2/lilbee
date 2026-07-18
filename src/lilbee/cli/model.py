@@ -173,6 +173,8 @@ def show_cmd(
     from lilbee.modelhub.model_manager import ModelNotFoundError
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Reading catalog metadata never runs inference; don't pay the fleet warm.
+    cfg.worker_pool_eager_start = False
     try:
         data = show_model_data(ref)
     except ModelNotFoundError as exc:
@@ -282,6 +284,11 @@ def pull_cmd(
     from lilbee.catalog.types import ModelSource
 
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # A download never runs inference. Warming here would spawn a fleet
+    # mid-pull; with only some configured models installed yet, that fleet
+    # serves a partial contract and poisons the machine slot for later
+    # arrivals.
+    cfg.worker_pool_eager_start = False
     src = _parse_source_or_bad_param(source) or ModelSource.NATIVE
     if cfg.json_mode:
         _pull_json_stream(ref, src, allow_unsupported=allow_unsupported)
@@ -307,6 +314,8 @@ def rm_cmd(
 ) -> None:
     """Remove an installed model."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Deleting model files never runs inference; don't pay the fleet warm.
+    cfg.worker_pool_eager_start = False
     src = _parse_source_or_bad_param(source)
     _confirm_remove_or_exit(ref, yes)
     try:
@@ -351,6 +360,8 @@ def browse_cmd(
     runtime environment failures (no TTY).
     """
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # The catalog screen browses and downloads; it never runs inference.
+    cfg.worker_pool_eager_start = False
     if cfg.json_mode:
         json_output({"error": "model browse is interactive, not available in --json mode"})
         raise typer.Exit(2)
