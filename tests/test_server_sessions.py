@@ -235,3 +235,46 @@ class TestOwnership:
 
     def test_claim_unknown_404(self, client):
         assert client.post("/api/sessions/nope/claim").status_code == 404
+
+
+_DISABLED_ROUTES = {
+    "list": lambda client, sid: client.get("/api/sessions"),
+    "get": lambda client, sid: client.get(f"/api/sessions/{sid}"),
+    "create": lambda client, sid: client.post(
+        "/api/sessions", json={"model_ref": "m", "scope": "both"}
+    ),
+    "append": lambda client, sid: client.post(
+        f"/api/sessions/{sid}/messages",
+        json={"role": "user", "content": "q", "sources": []},
+    ),
+    "claim": lambda client, sid: client.post(f"/api/sessions/{sid}/claim"),
+    "summary": lambda client, sid: client.put(
+        f"/api/sessions/{sid}/summary", json={"summary": "s"}
+    ),
+    "rename": lambda client, sid: client.patch(f"/api/sessions/{sid}", json={"title": "t"}),
+    "delete": lambda client, sid: client.delete(f"/api/sessions/{sid}"),
+}
+
+
+class TestSessionsDisabled:
+    """Every session route answers 404 when the toggle is off, matching how
+    the wiki and memory routes refuse a disabled feature.
+    """
+
+    @pytest.mark.parametrize("route", sorted(_DISABLED_ROUTES), ids=sorted(_DISABLED_ROUTES))
+    def test_route_404s(self, client, store, route):
+        session_id = _seed(store)
+        cfg.sessions_enabled = False
+        assert _DISABLED_ROUTES[route](client, session_id).status_code == 404
+
+    def test_disabled_routes_write_nothing(self, client, store):
+        session_id = _seed(store)
+        before = len(store.get(session_id).messages)
+        cfg.sessions_enabled = False
+        client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "should not land", "sources": []},
+        )
+        client.delete(f"/api/sessions/{session_id}")
+        cfg.sessions_enabled = True
+        assert len(store.get(session_id).messages) == before

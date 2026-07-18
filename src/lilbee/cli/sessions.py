@@ -13,7 +13,12 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
-from lilbee.sessions import SessionStore, TitleSource
+from lilbee.sessions import (
+    SESSIONS_DISABLED_HINT,
+    SessionStore,
+    TitleSource,
+    sessions_enabled,
+)
 
 sessions_app = typer.Typer(
     name="sessions",
@@ -25,7 +30,21 @@ _yes_option = typer.Option(False, "--yes", "-y", help="Skip the delete confirmat
 _id_argument = typer.Argument(..., help="Session id, or a unique prefix of it.")
 
 
+def _require_sessions() -> None:
+    """Report that sessions are off and exit; every command reaches the store
+    through ``_store``, so the check lives there rather than in each command.
+    """
+    if sessions_enabled():
+        return
+    if cfg.json_mode:
+        json_output({"error": SESSIONS_DISABLED_HINT})
+    else:
+        console.print(SESSIONS_DISABLED_HINT)
+    raise typer.Exit(0)
+
+
 def _store() -> SessionStore:
+    _require_sessions()
     return SessionStore()
 
 

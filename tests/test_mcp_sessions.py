@@ -183,3 +183,49 @@ def test_claim_flag_transfers_and_appends_atomically(store):
 
 def test_claim_flag_on_unknown_session_errors(store):
     assert "error" in session_add_message("nope", "user", "x", claim=True)
+
+
+# --- the sessions_enabled toggle -----------------------------------------
+
+
+_DISABLED_CALLS = {
+    "sessions_list": lambda session_id: sessions_list(),
+    "session_get": lambda session_id: session_get(session_id),
+    "session_create": lambda session_id: session_create("m"),
+    "session_add_message": lambda session_id: session_add_message(session_id, "user", "x"),
+    "session_set_summary": lambda session_id: session_set_summary(session_id, "s"),
+    "session_rename": lambda session_id: session_rename(session_id, "t"),
+    "session_delete": lambda session_id: session_delete(session_id),
+}
+
+
+@pytest.mark.parametrize("tool", sorted(_DISABLED_CALLS), ids=sorted(_DISABLED_CALLS))
+def test_session_tool_refuses_when_sessions_disabled(store, tool):
+    """Every session tool refuses once the toggle goes off mid-process.
+
+    ``_tool_if`` keeps them off the wire when sessions are off at import, but
+    ``sessions_enabled`` is writable at runtime, so a tool registered at start
+    can still be called after the user turns sessions off. Without this each
+    one would keep writing to disk.
+    """
+    session_id = _seed(store)
+    cfg.sessions_enabled = False
+    result = _DISABLED_CALLS[tool](session_id)
+    assert "error" in result
+    assert "sessions are off" in result["error"].lower()
+
+
+def test_disabled_session_tools_write_nothing(store):
+    """The refusal is real: the transcript and the session list are untouched."""
+    session_id = _seed(store)
+    before = len(store.get(session_id).messages)
+    cfg.sessions_enabled = False
+
+    session_add_message(session_id, "user", "should not land")
+    session_rename(session_id, "should not rename")
+    session_delete(session_id)
+    session_create("m")
+
+    cfg.sessions_enabled = True
+    assert len(store.get(session_id).messages) == before
+    assert [meta.id for meta in store.list(origins=(SessionOrigin.MCP,))] == [session_id]
