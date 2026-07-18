@@ -77,11 +77,14 @@ class UserLockHold:
 
         Peer lock files that can be acquired belong to dead processes (the
         kernel released their locks) and are deleted in passing; any refusal
-        means a live peer. Idempotent: a second call re-runs the peer probe.
+        means a live peer. The lock file is only removed once the last hold
+        in this process releases (two providers in one process share the
+        singleton lock). Idempotent: a second call re-runs the peer probe.
         """
         if self._lock.is_locked:
             self._lock.release()
-            self.path.unlink(missing_ok=True)
+            if not self._lock.is_locked:
+                self.path.unlink(missing_ok=True)
         return not live_users_exist(self.engine_dir)
 
 
@@ -93,13 +96,24 @@ def hold_user_lock(engine_dir: Path, pid: int | None = None) -> UserLockHold:
     """
     path = _user_lock_path(engine_dir, os.getpid() if pid is None else pid)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Not thread-local: membership is per-process. The fleet acquires on its
-    # warm-up thread while teardown releases on the signal/exit path; a
-    # thread-local hold would read as unlocked there, skip its own release,
-    # and then mistake its own lock for a live peer.
-    lock = FileLock(path, thread_local=False)
+    lock = _user_file_lock(path)
     lock.acquire()
     return UserLockHold(engine_dir=engine_dir, path=path, _lock=lock)
+
+
+def _user_file_lock(path: Path) -> FileLock:
+    """One process-wide reentrant lock instance per user-lock path.
+
+    Not thread-local: membership is per-process. The fleet acquires on its
+    warm-up thread while teardown releases on the signal/exit path; a
+    thread-local hold would read as unlocked there, skip its own release,
+    and then mistake its own lock for a live peer. Singleton: two providers
+    in one process (per-instance Lilbee objects) hold the same pid-named
+    file, and on Linux's fcntl locks a second instance would either falsely
+    succeed or trip filelock's deadlock detection; the shared instance
+    counts holds instead.
+    """
+    return FileLock(path, thread_local=False, is_singleton=True)
 
 
 def live_users_exist(engine_dir: Path) -> bool:
@@ -111,7 +125,11 @@ def live_users_exist(engine_dir: Path) -> bool:
     """
     users = _users_dir(engine_dir)
     for path in sorted(users.glob(f"*{_USER_LOCK_SUFFIX}")):
-        probe = FileLock(path)
+        probe = _user_file_lock(path)
+        if probe.is_locked:
+            # Held by this very process (the singleton instance is live):
+            # acquiring would be reentrant and "succeed", so answer directly.
+            return True
         try:
             probe.acquire(timeout=_PROBE_TIMEOUT_S)
         except FileLockTimeout:

@@ -1,5 +1,7 @@
 """The engine's cross-process lifecycle primitives: dirs, build lock, user locks."""
 
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -89,6 +91,49 @@ class TestUserLocks:
         assert own.exists()
         hold.release_and_check_last()
         assert not own.exists()
+
+    def test_peer_in_another_process_refuses_the_probe(self, tmp_path: Path):
+        """A lock held by a different process reads as a live peer.
+
+        In-process holders short-circuit on the shared singleton instance, so
+        the probe's timeout path is exercised only across a real process
+        boundary, where the kernel refuses the acquire.
+        """
+        path = tmp_path / "engine-users" / "424242.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        script = (
+            "import sys, time\n"
+            "from filelock import FileLock\n"
+            "lock = FileLock(sys.argv[1], thread_local=False)\n"  # keep a ref: GC releases
+            "lock.acquire()\n"
+            "print('held', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script, str(path)], stdout=subprocess.PIPE, text=True
+        )
+        try:
+            assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
+            assert live_users_exist(tmp_path) is True
+            assert path.exists()
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_two_holds_in_one_process_share_the_lock(self, tmp_path: Path):
+        """Two providers in one process hold the same pid-named lock file.
+
+        On Linux's fcntl locks a second FileLock instance would falsely
+        succeed or trip filelock's deadlock detection (the CI integration
+        failure); the singleton instance must count holds instead. The file
+        survives the first release and only the last release is 'last out'.
+        """
+        first = hold_user_lock(tmp_path)
+        second = hold_user_lock(tmp_path)
+        assert first.release_and_check_last() is False  # second still holds
+        assert first.path.exists()
+        assert second.release_and_check_last() is True
+        assert not second.path.exists()
 
     def test_own_hold_counts_as_a_live_user(self, tmp_path: Path):
         """A process probing a dir where it holds membership must see itself.

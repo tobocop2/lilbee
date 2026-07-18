@@ -440,7 +440,9 @@ class TestServeExclusiveScope:
             holder.release()
         assert result.exit_code == 3
         assert "already running" in result.output
-        assert "other-vault" in result.output
+        # The console hard-wraps at terminal width and a long tmp path can
+        # split the dir name across lines; compare with newlines removed.
+        assert "other-vault" in result.output.replace("\n", "")
         mock_asyncio_run.assert_not_called()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
