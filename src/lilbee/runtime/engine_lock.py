@@ -37,7 +37,7 @@ def machine_engine_dir() -> Path:
         return Path(override)
     if sys.platform == "win32":  # pragma: no cover - platform split
         base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    else:
+    else:  # pragma: no cover - platform split
         base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
     return base / "lilbee" / "engine"
 
