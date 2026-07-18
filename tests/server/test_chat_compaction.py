@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,8 +11,8 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.retrieval.query.compaction import (
     COMPACT_KEEP_RECENT,
-    CompactionResult,
     HISTORY_TOKEN_BUDGET_FRACTION,
+    CompactionResult,
     history_budget,
     summary_messages,
 )
