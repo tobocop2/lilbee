@@ -455,3 +455,50 @@ async def test_resume_keeps_current_model_when_session_model_is_gone(sessions):
         mock_set.assert_not_called()  # never point chat at a missing model
         assert screen.session_id == session_id  # the conversation still loaded
         assert screen._history[0] == {"role": "user", "content": "q"}
+
+
+# --- turning sessions off mid-conversation --------------------------------
+
+
+async def test_assistant_turn_is_not_saved_after_sessions_go_off(sessions, monkeypatch):
+    """Toggling sessions off mid-chat stops the auto-save.
+
+    ``_persist_user_turn`` returns early, but the session is already open by
+    then, so ``_session_id`` stays set and the assistant turn would otherwise
+    keep appending to a conversation the user has switched off.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen._persist_user_turn("first question")
+        session_id = screen._session_id
+        before = sessions.get(session_id).meta.message_count
+
+        monkeypatch.setattr(cfg, "sessions_enabled", False)
+        screen._persist_assistant_turn("the answer", [])
+
+        assert sessions.get(session_id).meta.message_count == before
+
+
+async def test_compaction_summary_is_not_saved_after_sessions_go_off(sessions, monkeypatch):
+    """The compaction summary write honors the toggle too."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen._persist_user_turn("first question")
+        session_id = screen._session_id
+
+        monkeypatch.setattr(cfg, "sessions_enabled", False)
+        with patch.object(
+            get_services().searcher,
+            "summarize_history",
+            return_value=CompactionResult(summary="folded", condensed=2, stranded=0),
+        ) as summarize:
+            screen._history = [{"role": "user", "content": "x" * 1200} for _ in range(6)]
+            cfg.chat_n_ctx_target = 512
+            cfg.chat_compaction = True
+            screen._compact_history()
+
+        assert summarize.called, "the test must drive a real fold, or it asserts nothing"
+        assert screen._summary == "folded", "the fold landed in memory"
+        assert sessions.get(session_id).summary == "", "but nothing reached the disk"

@@ -237,33 +237,35 @@ class TestOwnership:
         assert client.post("/api/sessions/nope/claim").status_code == 404
 
 
+_DISABLED_ROUTES = {
+    "list": lambda client, sid: client.get("/api/sessions"),
+    "get": lambda client, sid: client.get(f"/api/sessions/{sid}"),
+    "create": lambda client, sid: client.post(
+        "/api/sessions", json={"model_ref": "m", "scope": "both"}
+    ),
+    "append": lambda client, sid: client.post(
+        f"/api/sessions/{sid}/messages",
+        json={"role": "user", "content": "q", "sources": []},
+    ),
+    "claim": lambda client, sid: client.post(f"/api/sessions/{sid}/claim"),
+    "summary": lambda client, sid: client.put(
+        f"/api/sessions/{sid}/summary", json={"summary": "s"}
+    ),
+    "rename": lambda client, sid: client.patch(f"/api/sessions/{sid}", json={"title": "t"}),
+    "delete": lambda client, sid: client.delete(f"/api/sessions/{sid}"),
+}
+
+
 class TestSessionsDisabled:
     """Every session route answers 404 when the toggle is off, matching how
     the wiki and memory routes refuse a disabled feature.
     """
 
-    def test_every_route_404s(self, client, store):
+    @pytest.mark.parametrize("route", sorted(_DISABLED_ROUTES), ids=sorted(_DISABLED_ROUTES))
+    def test_route_404s(self, client, store, route):
         session_id = _seed(store)
         cfg.sessions_enabled = False
-        routes = {
-            "list": lambda: client.get("/api/sessions"),
-            "get": lambda: client.get(f"/api/sessions/{session_id}"),
-            "create": lambda: client.post(
-                "/api/sessions", json={"model_ref": "m", "scope": "both"}
-            ),
-            "append": lambda: client.post(
-                f"/api/sessions/{session_id}/messages",
-                json={"role": "user", "content": "q", "sources": []},
-            ),
-            "claim": lambda: client.post(f"/api/sessions/{session_id}/claim"),
-            "summary": lambda: client.put(
-                f"/api/sessions/{session_id}/summary", json={"summary": "s"}
-            ),
-            "rename": lambda: client.patch(f"/api/sessions/{session_id}", json={"title": "t"}),
-            "delete": lambda: client.delete(f"/api/sessions/{session_id}"),
-        }
-        for name, call in routes.items():
-            assert call().status_code == 404, f"{name} did not 404"
+        assert _DISABLED_ROUTES[route](client, session_id).status_code == 404
 
     def test_disabled_routes_write_nothing(self, client, store):
         session_id = _seed(store)

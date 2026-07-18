@@ -1407,7 +1407,10 @@ class ChatScreen(Screen[None]):
 
     def _persist_assistant_turn(self, content: str, sources: list[str]) -> None:
         """Append the assistant turn to the active session. Worker thread."""
-        if self._session_id is None:
+        if self._session_id is None or not cfg.sessions_enabled:
+            # Sessions switched off mid-conversation: the id outlives the
+            # setting, so the toggle has to be re-checked here rather than
+            # relying on _persist_user_turn having left the id unset.
             return
         # A concurrent delete of the active session must not crash the worker.
         with contextlib.suppress(SessionNotFoundError):
@@ -1803,9 +1806,11 @@ class ChatScreen(Screen[None]):
         with self._history_lock:
             del self._history[: len(dropped)]
             self._summary = result.summary
-        if self._session_id and result.summary:
+        if self._session_id and result.summary and cfg.sessions_enabled:
             # A summary for a session deleted mid-chat is not worth a crash; the
-            # next user turn reopens one and re-summarizes from there.
+            # next user turn reopens one and re-summarizes from there. The
+            # toggle is re-checked because the fold keeps working in memory
+            # after sessions go off, but must not reach the disk.
             with contextlib.suppress(SessionNotFoundError):
                 get_services().session_store.set_summary(self._session_id, result.summary)
         call_from_thread(self, self._on_history_compacted, result.condensed, result.stranded)

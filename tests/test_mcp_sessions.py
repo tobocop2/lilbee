@@ -188,7 +188,19 @@ def test_claim_flag_on_unknown_session_errors(store):
 # --- the sessions_enabled toggle -----------------------------------------
 
 
-def test_session_tools_refuse_when_sessions_disabled(store):
+_DISABLED_CALLS = {
+    "sessions_list": lambda session_id: sessions_list(),
+    "session_get": lambda session_id: session_get(session_id),
+    "session_create": lambda session_id: session_create("m"),
+    "session_add_message": lambda session_id: session_add_message(session_id, "user", "x"),
+    "session_set_summary": lambda session_id: session_set_summary(session_id, "s"),
+    "session_rename": lambda session_id: session_rename(session_id, "t"),
+    "session_delete": lambda session_id: session_delete(session_id),
+}
+
+
+@pytest.mark.parametrize("tool", sorted(_DISABLED_CALLS), ids=sorted(_DISABLED_CALLS))
+def test_session_tool_refuses_when_sessions_disabled(store, tool):
     """Every session tool refuses once the toggle goes off mid-process.
 
     ``_tool_if`` keeps them off the wire when sessions are off at import, but
@@ -198,20 +210,9 @@ def test_session_tools_refuse_when_sessions_disabled(store):
     """
     session_id = _seed(store)
     cfg.sessions_enabled = False
-
-    calls = {
-        "sessions_list": lambda: sessions_list(),
-        "session_get": lambda: session_get(session_id),
-        "session_create": lambda: session_create("m"),
-        "session_add_message": lambda: session_add_message(session_id, "user", "x"),
-        "session_set_summary": lambda: session_set_summary(session_id, "s"),
-        "session_rename": lambda: session_rename(session_id, "t"),
-        "session_delete": lambda: session_delete(session_id),
-    }
-    for name, call in calls.items():
-        result = call()
-        assert "error" in result, f"{name} did not refuse"
-        assert "sessions are off" in result["error"].lower(), name
+    result = _DISABLED_CALLS[tool](session_id)
+    assert "error" in result
+    assert "sessions are off" in result["error"].lower()
 
 
 def test_disabled_session_tools_write_nothing(store):
