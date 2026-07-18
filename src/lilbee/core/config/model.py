@@ -210,6 +210,16 @@ class Config(BaseSettings):
     # the retrieval benchmark, not guessed here.
     lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
 
+    # Adaptive fusion: instead of a fixed lexical_fusion_weight, scale the BM25
+    # arm per query by how confident the vector arm is (a peaked dense ranking
+    # downweights lexical, a flat one keeps it). The benchmark found no single
+    # fixed weight wins every corpus, so this gates the weight per query. Off by
+    # default; when on, lexical_fusion_weight is the ceiling the adaptive rule
+    # scales down from. adaptive_fusion_margin is the vector-similarity margin at
+    # which the lexical arm is fully silenced (smaller = more aggressive).
+    adaptive_fusion: bool = ConfigField(default=False, writable=True)
+    adaptive_fusion_margin: float = ConfigField(default=0.3, ge=0.0, le=2.0, writable=True)
+
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
