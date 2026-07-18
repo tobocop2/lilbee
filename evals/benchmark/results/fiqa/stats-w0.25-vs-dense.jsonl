@@ -1,0 +1,4 @@
+{"row_type": "meta", "run_id": "parity-2026-07", "fingerprint": "8abf1d39d4a2bfb065f6b7fedf9a7b7f1bf22d4a5f7ebb3e4f665c1899c131d7", "arm_a": "w0.25", "arm_b": "dense"}
+{"row_type": "ir", "dataset": "fiqa", "metric": "nDCG@10", "n": 648, "mean_a": 0.4363178119525206, "mean_b": 0.45978106466228363, "mean_diff": 0.023463252709763096, "ci_low": 0.011821418732420208, "ci_high": 0.03564233972463353, "p_value": 0.00039996000399960006, "significant": true}
+{"row_type": "ir", "dataset": "fiqa", "metric": "Recall@20", "n": 648, "mean_a": 0.6186453678351826, "mean_b": 0.6186453678351826, "mean_diff": 0.0, "ci_low": 0.0, "ci_high": 0.0, "p_value": 1.0, "significant": false}
+{"row_type": "ir", "dataset": "fiqa", "metric": "MRR@10", "n": 648, "mean_a": 0.5093296382359778, "mean_b": 0.5447689828844154, "mean_diff": 0.03543934464843764, "ci_low": 0.017134746294228436, "ci_high": 0.05425535648253711, "p_value": 0.0004999500049995, "significant": true}
