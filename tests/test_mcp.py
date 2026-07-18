@@ -1686,12 +1686,13 @@ class TestCatalogBrowseMcp:
 
 
 # Tool families whose registration depends on ambient state: ``wiki_`` on
-# ``cfg.wiki``, ``memory_`` on ``cfg.memory_enabled``, ``crawl`` on whether the
-# crawl4ai extra is installed. They are excluded from the budget so it measures
+# ``cfg.wiki``, ``memory_`` on ``cfg.memory_enabled``, ``session`` on
+# ``cfg.mcp_sessions_enabled``, ``crawl`` on whether the crawl4ai extra is
+# installed. They are excluded from the budget so it measures
 # one fixed surface. Counting them made the same commit measure 9672 bytes in
 # the docs-site job and 10143 on a developer box, which is how a schema
 # regression took down a website deploy while every release job stayed green.
-_AMBIENT_TOOL_PREFIXES = ("wiki_", "memory_", "crawl")
+_AMBIENT_TOOL_PREFIXES = ("wiki_", "memory_", "session", "crawl")
 
 # Every tool a default install puts on the wire. Pinned by name so an
 # unconditionally-registered addition fails here and names itself, rather than
@@ -1715,13 +1716,6 @@ _DEFAULT_TOOL_NAMES = frozenset(
         "remove",
         "reset",
         "search",
-        "session_add_message",
-        "session_create",
-        "session_delete",
-        "session_get",
-        "session_rename",
-        "session_set_summary",
-        "sessions_list",
         "set_placement",
         "settings_get",
         "settings_list",
@@ -1784,10 +1778,8 @@ class TestToolsSchemaSize:
         lands here first, named, instead of surfacing as a byte overflow in
         whichever job happens to register the most tools.
         """
-        from lilbee.core.config import cfg as _cfg
         from lilbee.mcp_server import mcp as _mcp
 
-        assert _cfg.sessions_enabled is True, "budget measures the default config"
         tools = await _mcp.list_tools()
         registered = {t.name for t in tools if not t.name.startswith(_AMBIENT_TOOL_PREFIXES)}
         assert registered == _DEFAULT_TOOL_NAMES, (
@@ -1816,13 +1808,12 @@ class TestToolsSchemaSize:
         ]
         total_bytes = len(_json.dumps(payload))
         # 8_800 originally, measured over whatever the environment registered.
-        # Pinned to the default surface it reads 8_799, so sessions never
-        # actually breached the budget; an ambient memory_* family did. 9_500
-        # keeps the intent and replaces one byte of headroom with room for a
-        # tool or two before the next deliberate look. Each tool's docstring
-        # becomes its schema description, so trim verbose Args sections before
-        # bumping this again.
-        ceiling = 9_500
+        # Pinning the surface put it at 8_799; moving the session tools behind
+        # mcp_sessions_enabled (off by default) takes them off the default wire
+        # and drops it to 6_996. 7_500 leaves room for a tool or two. Each
+        # tool's docstring becomes its schema description, so trim verbose Args
+        # sections before raising this.
+        ceiling = 7_500
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}."
         )

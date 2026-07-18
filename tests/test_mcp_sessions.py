@@ -23,6 +23,9 @@ from tests.conftest import make_mock_services
 def isolated_env(tmp_path):
     snapshot = cfg.model_copy()
     cfg.data_dir = tmp_path / "data"
+    # Agent sessions are off by default; this file exercises the tools, so it
+    # turns them on and the toggle tests below switch them back off.
+    cfg.mcp_sessions_enabled = True
     yield
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -185,7 +188,7 @@ def test_claim_flag_on_unknown_session_errors(store):
     assert "error" in session_add_message("nope", "user", "x", claim=True)
 
 
-# --- the sessions_enabled toggle -----------------------------------------
+# --- the mcp_sessions_enabled toggle -----------------------------------------
 
 
 _DISABLED_CALLS = {
@@ -204,28 +207,44 @@ def test_session_tool_refuses_when_sessions_disabled(store, tool):
     """Every session tool refuses once the toggle goes off mid-process.
 
     ``_tool_if`` keeps them off the wire when sessions are off at import, but
-    ``sessions_enabled`` is writable at runtime, so a tool registered at start
+    ``mcp_sessions_enabled`` is writable at runtime, so a tool registered at start
     can still be called after the user turns sessions off. Without this each
     one would keep writing to disk.
     """
     session_id = _seed(store)
-    cfg.sessions_enabled = False
+    cfg.mcp_sessions_enabled = False
     result = _DISABLED_CALLS[tool](session_id)
     assert "error" in result
-    assert "sessions are off" in result["error"].lower()
+    assert "agent sessions are off" in result["error"].lower()
 
 
 def test_disabled_session_tools_write_nothing(store):
     """The refusal is real: the transcript and the session list are untouched."""
     session_id = _seed(store)
     before = len(store.get(session_id).messages)
-    cfg.sessions_enabled = False
+    cfg.mcp_sessions_enabled = False
 
     session_add_message(session_id, "user", "should not land")
     session_rename(session_id, "should not rename")
     session_delete(session_id)
     session_create("m")
 
-    cfg.sessions_enabled = True
+    cfg.mcp_sessions_enabled = True
     assert len(store.get(session_id).messages) == before
     assert [meta.id for meta in store.list(origins=(SessionOrigin.MCP,))] == [session_id]
+
+
+def test_session_tools_are_off_the_wire_by_default(monkeypatch):
+    """A default install offers no session tools over MCP.
+
+    ``isolated_env`` turns them on for this file, so this asserts against the
+    declared default rather than the fixture's override. Registration is
+    import-time, so the flag decides whether the tools reach the wire at all;
+    the runtime refusals above cover a toggle flipped mid-process.
+    """
+    from lilbee.core.config import Config
+
+    assert Config.model_fields["mcp_sessions_enabled"].default is False
+    assert Config.model_fields["sessions_enabled"].default is True, (
+        "the human surfaces stay on by default; only the agent half is opt-in"
+    )

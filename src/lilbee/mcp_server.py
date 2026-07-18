@@ -63,7 +63,7 @@ from lilbee.data.store import (
     scope_to_chunk_type,
 )
 from lilbee.sessions import (
-    SESSIONS_DISABLED_HINT,
+    AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
     Session,
     SessionMessage,
@@ -71,7 +71,7 @@ from lilbee.sessions import (
     SessionOrigin,
     SessionOwnershipError,
     TitleSource,
-    sessions_enabled,
+    agent_sessions_enabled,
 )
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
@@ -469,20 +469,20 @@ def _require_agent_session(session_id: str) -> Session:
     return session
 
 
-@_tool_if(sessions_enabled())
+@_tool_if(agent_sessions_enabled())
 def sessions_list() -> dict[str, Any]:
     """List the agent's sessions, newest first."""
-    if not sessions_enabled():
-        return _error(SESSIONS_DISABLED_HINT)
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
     metas = get_services().session_store.list(origins=_AGENT_ORIGINS)
     return {"sessions": [asdict(meta) for meta in metas], "total": len(metas)}
 
 
-@_tool_if(sessions_enabled())
+@_tool_if(agent_sessions_enabled())
 def session_get(session_id: str) -> dict[str, Any]:
     """Return one agent session: metadata, transcript, summary."""
-    if not sessions_enabled():
-        return _error(SESSIONS_DISABLED_HINT)
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
     try:
         session = _require_agent_session(session_id)
     except SessionNotFoundError as exc:
@@ -505,18 +505,18 @@ def session_get(session_id: str) -> dict[str, Any]:
     }
 
 
-@_tool_if(sessions_enabled())
+@_tool_if(agent_sessions_enabled())
 def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
     """Start a saved chat session; returns its id."""
-    if not sessions_enabled():
-        return _error(SESSIONS_DISABLED_HINT)
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
     session_id = get_services().session_store.create(
         model_ref=model_ref, scope=scope, origin=SessionOrigin.MCP
     )
     return {"id": session_id, "model_ref": model_ref, "scope": scope}
 
 
-@_tool_if(sessions_enabled())
+@_tool_if(agent_sessions_enabled())
 def session_add_message(
     session_id: str,
     role: MessageRole,
@@ -525,8 +525,8 @@ def session_add_message(
     claim: bool = False,
 ) -> dict[str, Any]:
     """Append one turn; a foreign session errors unless claim=True (ask first)."""
-    if not sessions_enabled():
-        return _error(SESSIONS_DISABLED_HINT)
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
     store = get_services().session_store
     try:
         # Re-coerce: the MCP layer passes the enum, but a raw string still
@@ -544,11 +544,11 @@ def session_add_message(
     return {"id": session_id, "added": True}
 
 
-@_tool_if(sessions_enabled())
+@_tool_if(agent_sessions_enabled())
 def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
     """Replace an agent session's compaction summary."""
-    if not sessions_enabled():
-        return _error(SESSIONS_DISABLED_HINT)
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
     try:
         _require_agent_session(session_id)
         get_services().session_store.set_summary(session_id, summary)
@@ -557,11 +557,11 @@ def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
     return {"id": session_id, "summary": summary}
 
 
-@_tool_if(sessions_enabled())
+@_tool_if(agent_sessions_enabled())
 def session_rename(session_id: str, title: str) -> dict[str, Any]:
     """Rename an agent session."""
-    if not sessions_enabled():
-        return _error(SESSIONS_DISABLED_HINT)
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
     try:
         _require_agent_session(session_id)
         get_services().session_store.set_title(session_id, title, TitleSource.CUSTOM)
@@ -570,11 +570,11 @@ def session_rename(session_id: str, title: str) -> dict[str, Any]:
     return {"id": session_id, "title": title}
 
 
-@_tool_if(sessions_enabled())
+@_tool_if(agent_sessions_enabled())
 def session_delete(session_id: str) -> dict[str, Any]:
     """Delete an agent session."""
-    if not sessions_enabled():
-        return _error(SESSIONS_DISABLED_HINT)
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
     try:
         _require_agent_session(session_id)
         get_services().session_store.delete(session_id)
