@@ -83,6 +83,7 @@ from lilbee.retrieval.query import SOURCES_BLOCK_MARKER, ChatMessage
 from lilbee.retrieval.query.compaction import (
     compaction_due,
     foldable,
+    history_budget,
     overflow,
     prompt_history,
     summary_messages,
@@ -106,16 +107,6 @@ from lilbee.sessions import (
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 log = logging.getLogger(__name__)
-
-_HISTORY_TOKEN_BUDGET_FRACTION = 0.5
-"""Fraction of ``cfg.chat_n_ctx_target`` reserved for prior conversation history.
-
-The other half of the working context is for the system prompt, the current
-turn's RAG context (~8 chunks), the user question, and reasoning headroom.
-The windower drops oldest user/assistant pairs once history exceeds this
-fraction so the assembled prompt never approaches ``n_ctx`` and the chat
-server never rejects the request for exceeding the context window.
-"""
 
 # Coalesce per-token UI updates into ~50 ms windows. Tiny reasoning models can
 # emit 100+ tokens/sec; one ``call_from_thread`` per token saturates Textual's
@@ -1751,13 +1742,8 @@ class ChatScreen(Screen[None]):
 
     @staticmethod
     def _history_budget() -> int:
-        """Token budget for everything this conversation carries into the prompt.
-
-        A fraction of ``cfg.chat_n_ctx_target`` so the assembled prompt (system +
-        history + RAG + user) stays under the loaded model's ``n_ctx`` regardless
-        of how many turns have run or were resumed.
-        """
-        return int(cfg.chat_n_ctx_target * _HISTORY_TOKEN_BUDGET_FRACTION)
+        """Token budget for everything this conversation carries into the prompt."""
+        return history_budget(cfg.chat_n_ctx_target)
 
     def _compact_history(self) -> None:
         """Fold turns that no longer fit into the rolling summary. Worker thread only.
