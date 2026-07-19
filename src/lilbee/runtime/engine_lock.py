@@ -8,6 +8,7 @@ The mechanics are agnostic to what they front.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from contextlib import contextmanager
@@ -21,8 +22,15 @@ from filelock import Timeout as FileLockTimeout
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+log = logging.getLogger(__name__)
+
 ENGINE_DIR_ENV = "LILBEE_ENGINE_DIR"
 _BUILD_LOCK_NAME = "engine.lock"
+# A legitimate build holds the lock only for the llama-swap spawn (its 30 s boot
+# budget); the model itself loads lazily on the first request, outside the lock.
+# So a wait longer than this is a wedged holder, not honest contention -- bound
+# it rather than block forever, which would deadlock every startup and exit.
+_BUILD_LOCK_TIMEOUT_S = 90.0
 _USERS_DIRNAME = "engine-users"
 _USER_LOCK_SUFFIX = ".lock"
 # Non-blocking probe: a live peer refuses instantly.
@@ -51,12 +59,43 @@ def private_engine_dir(config_root: Path) -> Path:
 
 
 @contextmanager
-def build_lock(engine_dir: Path) -> Iterator[None]:
-    """Serialize scan-or-build (and config-change restarts) for *engine_dir*."""
+def build_lock(engine_dir: Path, *, best_effort: bool = False) -> Iterator[None]:
+    """Serialize scan-or-build (and config-change restarts) for *engine_dir*.
+
+    Acquired with a finite timeout so a wedged holder cannot deadlock the machine:
+    a blocking acquire would hang every startup behind it and, on the shutdown and
+    config-change paths, leave processes unable to exit. A wait is logged so a
+    stall is visible. On timeout a build caller raises (it could not acquire the
+    engine, better than an unbounded hang); a *best_effort* caller -- teardown and
+    config-change, which must not wedge a dying or reconfiguring process -- logs
+    and proceeds without the lock.
+    """
     engine_dir.mkdir(parents=True, exist_ok=True)
     lock = FileLock(engine_dir / _BUILD_LOCK_NAME)
-    with lock:
+    try:
+        lock.acquire(timeout=_PROBE_TIMEOUT_S)
+    except FileLockTimeout:
+        log.info(
+            "Waiting up to %.0fs for another process to build the engine at %s",
+            _BUILD_LOCK_TIMEOUT_S,
+            engine_dir,
+        )
+        try:
+            lock.acquire(timeout=_BUILD_LOCK_TIMEOUT_S)
+        except FileLockTimeout:
+            if not best_effort:
+                raise
+            log.warning(
+                "Engine build lock at %s held past %.0fs; proceeding without it.",
+                engine_dir,
+                _BUILD_LOCK_TIMEOUT_S,
+            )
+            yield
+            return
+    try:
         yield
+    finally:
+        lock.release()
 
 
 def _users_dir(engine_dir: Path) -> Path:

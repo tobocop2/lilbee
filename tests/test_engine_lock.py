@@ -192,3 +192,47 @@ class TestUserLocks:
         hold = acquired[0]
         assert hold.release_and_check_last() is True
         assert not hold.path.exists()
+
+
+def test_build_lock_raises_on_timeout_for_a_build_caller(tmp_path, monkeypatch) -> None:
+    # A wedged holder must not deadlock a startup: a bounded acquire raises.
+    from filelock import Timeout as FileLockTimeout
+
+    import lilbee.runtime.engine_lock as el
+
+    monkeypatch.setattr(el, "_BUILD_LOCK_TIMEOUT_S", 0.1)
+    holder = el.FileLock(tmp_path / "engine.lock")
+    holder.acquire()
+    try:
+        with pytest.raises(FileLockTimeout), build_lock(tmp_path):
+            pass
+    finally:
+        holder.release()
+
+
+def test_build_lock_best_effort_proceeds_when_held(tmp_path, monkeypatch, caplog) -> None:
+    # Shutdown/config-change must not hang behind a wedged holder: proceed + warn.
+    import lilbee.runtime.engine_lock as el
+
+    monkeypatch.setattr(el, "_BUILD_LOCK_TIMEOUT_S", 0.1)
+    holder = el.FileLock(tmp_path / "engine.lock")
+    holder.acquire()
+    try:
+        ran = False
+        with (
+            caplog.at_level("WARNING", logger="lilbee.runtime.engine_lock"),
+            build_lock(tmp_path, best_effort=True),
+        ):
+            ran = True
+        assert ran is True
+        assert "proceeding without it" in caplog.text
+    finally:
+        holder.release()
+
+
+def test_build_lock_releases_after_use(tmp_path) -> None:
+    # A normal acquire/release leaves the lock free for the next caller.
+    with build_lock(tmp_path):
+        pass
+    with build_lock(tmp_path):  # would block/raise if the first never released
+        pass

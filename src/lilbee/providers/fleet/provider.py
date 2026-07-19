@@ -792,45 +792,48 @@ class FleetProvider:
         """
         pin = engine_pin()
         wanted = _placeable_wanted()
-        machine = machine_engine_dir()
-        with build_lock(machine):
-            if wanted and self._bind_all_in_dir(machine, pin, wanted):
-                self._hold_membership(machine)
-                return True
-            occupied = self._slot_occupied(machine)
-            if (
-                not occupied
-                or not live_users_exist(machine)
-                or _healthy_groups_ours(machine, pin, wanted)
-            ):
-                if not _can_build_engine(wanted):
-                    # Can't serve anything: never stop a warm engine we can't
-                    # replace and then spawn nothing.
-                    return False
-                # Reap dead leftovers, then stop any replaceable incumbent, so
-                # planning sees true free VRAM.
-                reap_stale(machine)
-                if occupied:
-                    stop_engine(machine)
-                if self._plan_and_spawn(machine):
-                    self._hold_membership(machine)
-                    return True
-                return False
+        machine = self._acquire_in_dir(machine_engine_dir(), pin, wanted, is_overflow=False)
+        if machine is not None:
+            return machine
+        # The machine slot holds a live incompatible engine in active use: overflow
+        # to this config root's private dir rather than evict another model setup.
         private = private_engine_dir(config_root)
-        with build_lock(private):
-            if wanted and self._bind_all_in_dir(private, pin, wanted):
-                self._hold_membership(private)
+        return self._acquire_in_dir(private, pin, wanted, is_overflow=True) or False
+
+    def _acquire_in_dir(
+        self, engine_dir: Path, pin: str, wanted: set[tuple[WorkerRole, str]], *, is_overflow: bool
+    ) -> bool | None:
+        """Bind or build one engine dir; ``None`` on the slot means overflow next.
+
+        Binds a compatible running engine. Otherwise an incumbent is replaced in
+        place when no live user holds it or it is this contract's own engine
+        (pin-equal, serving only wanted models). On the machine slot a live
+        incompatible engine in active use returns ``None`` (overflow); the private
+        overflow dir always builds. The stop is gated on ``_can_build_engine`` so a
+        process that can serve nothing never destroys a warm engine it can't
+        replace. Held under the cross-process build lock.
+        """
+        with build_lock(engine_dir):
+            if wanted and self._bind_all_in_dir(engine_dir, pin, wanted):
+                self._hold_membership(engine_dir)
                 return True
+            occupied = self._slot_occupied(engine_dir)
+            replaceable = (
+                not occupied
+                or not live_users_exist(engine_dir)
+                or _healthy_groups_ours(engine_dir, pin, wanted)
+            )
+            if not is_overflow and not replaceable:
+                return None
             if not _can_build_engine(wanted):
                 return False
-            reap_stale(private)
-            if self._slot_occupied(private) and (
-                not live_users_exist(private) or _healthy_groups_ours(private, pin, wanted)
-            ):
-                # Never stack a second fleet on an unused or own-contract one.
-                stop_engine(private)
-            if self._plan_and_spawn(private):
-                self._hold_membership(private)
+            # Reap dead leftovers, then stop any replaceable incumbent, so planning
+            # sees true free VRAM.
+            reap_stale(engine_dir)
+            if occupied and replaceable:
+                stop_engine(engine_dir)
+            if self._plan_and_spawn(engine_dir):
+                self._hold_membership(engine_dir)
                 return True
             return False
 
@@ -1168,7 +1171,7 @@ class FleetProvider:
         from lilbee.core.config import cfg
 
         for engine_dir, hold in list(self._engine_holds.items()):
-            with build_lock(engine_dir):
+            with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
                 if last and not cfg.keep_engine_warm:
                     stop_engine(engine_dir)
@@ -1180,7 +1183,7 @@ class FleetProvider:
     def _restart_engines(self) -> None:
         """A config change stops every used engine; users rediscover and rebuild."""
         for engine_dir in list(self._engine_holds):
-            with build_lock(engine_dir):
+            with build_lock(engine_dir, best_effort=True):
                 stop_engine(engine_dir)
                 log.info("Engine restarted at %s (configuration changed)", engine_dir)
 
