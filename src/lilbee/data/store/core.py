@@ -106,6 +106,19 @@ def _drop_unsupported_far_rows(
 _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
+
+def _sanitize_fts_query(text: str) -> str:
+    """Strip the double quotes that make LanceDB parse an FTS query as a phrase.
+
+    lilbee's FTS indexes carry no token positions (bb-rqr8: positions overflow
+    LanceDB's list encoding on a large corpus), so a phrase query would error.
+    Replacing quotes with spaces turns a quoted span into plain terms -- which
+    is what every lilbee FTS call wants anyway, since none needs exact-phrase
+    matching.
+    """
+    return text.replace('"', " ")
+
+
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
 _VECTOR_METRIC = "cosine"
@@ -444,10 +457,15 @@ class Store:
                             exc_info=True,
                         )
                 else:
-                    # with_position lets the lexical arm serve phrase queries;
-                    # raw user query text can reach LanceDB as a phrase, which
-                    # errors on a positionless index.
-                    table.create_fts_index("chunk", replace=False, with_position=True)
+                    # No token positions: with_position=True makes the chunk
+                    # index's trigram position lists overflow LanceDB's list
+                    # encoding on optimize() for a large corpus, which then
+                    # serves BM25 un-optimized all session (bb-rqr8). Positions
+                    # only serve exact-phrase queries, which lilbee never issues
+                    # -- query text is sanitized of the quotes that would make
+                    # LanceDB parse it as a phrase (see _sanitize_fts_query), so
+                    # a positionless index never errors on one.
+                    table.create_fts_index("chunk", replace=False, with_position=False)
                     self._fts_ready = True
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 self._ensure_title_fts_unlocked(table)
@@ -463,7 +481,9 @@ class Store:
         if _TITLE_COLUMN not in table.schema.names or _has_fts_index(table, _TITLE_COLUMN):
             return
         try:
-            table.create_fts_index(_TITLE_COLUMN, replace=False, with_position=True)
+            # Positionless for the same reason as the chunk index (bb-rqr8);
+            # queries are sanitized of phrase quotes so it never errors.
+            table.create_fts_index(_TITLE_COLUMN, replace=False, with_position=False)
             log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
         except Exception:
             log.debug("Title FTS index create failed", exc_info=True)
@@ -548,7 +568,9 @@ class Store:
             # Pin the chunk column: once a title FTS index exists, an unpinned
             # FTS query searches every indexed column, which would silently
             # widen the probe's semantics.
-            query = table.search(query_text, query_type="fts", fts_columns="chunk")
+            query = table.search(
+                _sanitize_fts_query(query_text), query_type="fts", fts_columns="chunk"
+            )
             if chunk_type:
                 query = query.where(_chunk_type_predicate(chunk_type))
             rows = query.limit(top_k).to_list()
@@ -657,7 +679,9 @@ class Store:
         query searches every indexed column, which would double-count title
         tokens this arm's sibling already scores.
         """
-        query = table.search(query_text, query_type="fts", fts_columns="chunk").limit(limit)
+        query = table.search(
+            _sanitize_fts_query(query_text), query_type="fts", fts_columns="chunk"
+        ).limit(limit)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
         return [SearchChunk(**r) for r in query.to_list()]
@@ -676,7 +700,9 @@ class Store:
         """
         if not _has_fts_index(table, _TITLE_COLUMN):
             return []
-        query = table.search(query_text, query_type="fts", fts_columns=_TITLE_COLUMN).limit(limit)
+        query = table.search(
+            _sanitize_fts_query(query_text), query_type="fts", fts_columns=_TITLE_COLUMN
+        ).limit(limit)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
         return [SearchChunk(**r) for r in query.to_list()]

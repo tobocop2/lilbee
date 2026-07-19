@@ -192,16 +192,23 @@ class TestEnsureFtsIndex:
         assert [c.args[0] for c in create_spy.call_args_list] == ["chunk", "title"]
         # Verify replace was NOT True (would defeat the purpose of incremental)
         assert all(c.kwargs.get("replace") is False for c in create_spy.call_args_list)
-        # Both indexes carry token positions so the lexical arm can serve
-        # phrase queries; without this LanceDB raises on any phrase.
-        assert all(c.kwargs.get("with_position") is True for c in create_spy.call_args_list)
+        # Both indexes are positionless: with_position=True overflows LanceDB's
+        # list encoding on a large corpus (bb-rqr8), and no lilbee query needs
+        # exact-phrase matching.
+        assert all(c.kwargs.get("with_position") is False for c in create_spy.call_args_list)
 
-    def test_fts_phrase_query_does_not_fail(self, store):
-        """A multi-word phrase query must return matches, not raise on a missing index.
+    def test_sanitize_fts_query_replaces_quotes_with_spaces(self):
+        from lilbee.data.store.core import _sanitize_fts_query
 
-        lilbee passes raw user query text to the lexical arm, so a quoted phrase
-        reaches LanceDB as a phrase query. Without positional indexing that raises
-        (and bm25_probe swallows it, returning nothing); with positions it matches.
+        assert _sanitize_fts_query('"exact phrase" and terms') == " exact phrase  and terms"
+        assert _sanitize_fts_query("plain terms") == "plain terms"
+
+    def test_fts_quoted_query_is_sanitized_not_a_phrase(self, store):
+        """A quoted query must return term matches, not raise on the positionless index.
+
+        The chunk index carries no token positions (bb-rqr8), so a phrase query
+        would error. bm25_probe strips the quotes (_sanitize_fts_query), turning
+        the quoted span into plain terms that still match.
         """
         store.add_chunks(_make_records())
         store.ensure_fts_index()
