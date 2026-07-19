@@ -338,6 +338,10 @@ async def test_delete_confirmed_removes_session(sessions):
         drawer = await _open_drawer(app, pilot)
         panel = drawer.query_one(SessionListPanel)
         meta = sessions.list()[0]
+        # The filter and chat inputs both eat ctrl+d as delete-right; the list
+        # leaves it to bubble to the panel binding, so press from there.
+        drawer.query_one("#sessions-list", ListView).focus()
+        await pilot.pause()
         await pilot.press("ctrl+d")
         await pilot.pause()
         assert isinstance(app.screen, ConfirmDialog)
