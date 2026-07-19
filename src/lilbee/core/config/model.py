@@ -471,7 +471,14 @@ class Config(BaseSettings):
     # Persist conversations and expose the Sessions drawer, tab, and commands.
     # On by default; turning it off stops chats being written to disk, hides the
     # ctrl+o binding from the footer, and gates the Sessions view behind a notice.
+    # Governs the human surfaces (TUI, HTTP, CLI); agent sessions have their own
+    # flag below, so the two domains the store already separates stay separate.
     sessions_enabled: bool = ConfigField(default=True, writable=True)
+
+    # The agent (MCP) half of the same feature, off by default: agent hosts
+    # generally track their own conversation history, and the seven session
+    # tools cost schema on every request whether or not anything uses them.
+    mcp_sessions_enabled: bool = ConfigField(default=False, writable=True)
 
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,

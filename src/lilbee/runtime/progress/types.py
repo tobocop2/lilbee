@@ -35,6 +35,8 @@ class SseEvent(StrEnum):
     ALREADY_INGESTING = "already_ingesting"
     WARMING = "warming"
     WARM = "warm"
+    COMPACTING = "compacting"
+    COMPACTION = "compaction"
     MEMORY_EXTRACTED = "memory_extracted"
     GPU_STATS = "gpu_stats"
 

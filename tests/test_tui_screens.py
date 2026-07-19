@@ -46,7 +46,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
-from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 
@@ -1123,10 +1123,7 @@ async def test_settings_checkbox_persist():
         # Windows CI runners tick the textual event loop slower than one
         # pilot.pause() can drain. Poll for the setattr from the event
         # handler rather than asserting after a single pause.
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.show_reasoning != original:
-                break
+        await pump_until(pilot, lambda: cfg.show_reasoning != original)
         assert cfg.show_reasoning != original
 
 
@@ -1153,10 +1150,7 @@ async def test_settings_tab_reaches_checkbox_and_space_toggles():
                 break
         assert app.focused is cb, "Tab failed to reach show_reasoning checkbox"
         await pilot.press("space")
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.show_reasoning != original:
-                break
+        await pump_until(pilot, lambda: cfg.show_reasoning != original)
         assert cfg.show_reasoning != original
 
 
@@ -1232,10 +1226,7 @@ async def test_settings_list_editor_saves_on_blur():
         await pilot.pause()
         ta.load_text("foo\nbar")
         ta.blur()
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.crawl_exclude_patterns == ["foo", "bar"]:
-                break
+        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == ["foo", "bar"])
         assert cfg.crawl_exclude_patterns == ["foo", "bar"]
 
 
@@ -1251,10 +1242,7 @@ async def test_settings_list_editor_strips_blanks():
         await pilot.pause()
         ta.load_text("a\n\nb\n")
         ta.blur()
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.crawl_exclude_patterns == ["a", "b"]:
-                break
+        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == ["a", "b"])
         assert cfg.crawl_exclude_patterns == ["a", "b"]
 
 
@@ -1276,10 +1264,7 @@ async def test_settings_list_editor_invalid_regex_blocks_save():
         # Focus change → blur handler → regex validation → error widget
         # class toggle are all async. Single pilot.pause is not enough on
         # slower runners; poll until the -visible class lands.
-        for _ in range(10):
-            await pilot.pause()
-            if err.has_class("-visible"):
-                break
+        await pump_until(pilot, lambda: err.has_class("-visible"))
         assert err.has_class("-visible")
         assert "line 1" in str(err.render())
         assert cfg.crawl_exclude_patterns == ["keep"]
@@ -1300,10 +1285,9 @@ async def test_settings_list_editor_restore_defaults():
         # Button.Pressed flows through Textual's async message bus; poll until
         # the handler updates cfg. A single pilot.pause is not enough on
         # slower runners (Windows, in particular).
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS):
-                break
+        await pump_until(
+            pilot, lambda: cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        )
         assert cfg.crawl_exclude_patterns == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
         ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
         assert ta.text == "\n".join(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
@@ -1342,7 +1326,12 @@ async def test_settings_list_editor_persists_through_toml_round_trip(tmp_path):
         await pilot.pause()
         ta.load_text("pat-a\npat-b")
         ta.blur()
-        await pilot.pause()
+        # The blur handler posts Blurred, the screen handles it, and only then
+        # is the value written, so wait for the write rather than one pause.
+        landed = await pump_until(
+            pilot, lambda: "crawl_exclude_patterns" in settings.load(tmp_path)
+        )
+        assert landed, "the blur never reached the settings store"
 
     # Raw TOML value is a newline-joined string (not Python repr of the list).
     reloaded = settings.load(tmp_path)
@@ -1586,10 +1575,7 @@ async def test_reset_button_resets_scalar():
         button = app.screen.query_one("#reset-wiki_clusterer_k", Button)
         button.press()
         target = get_default("wiki_clusterer_k")
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.wiki_clusterer_k == target:
-                break
+        await pump_until(pilot, lambda: cfg.wiki_clusterer_k == target)
         assert cfg.wiki_clusterer_k == target
         editor = app.screen.query_one("#ed-wiki_clusterer_k", Input)
         assert editor.value == str(target)
@@ -1673,10 +1659,7 @@ async def test_refresh_editor_updates_checkbox():
 
         button = app.screen.query_one("#reset-show_reasoning", Button)
         button.press()
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.show_reasoning == default:
-                break
+        await pump_until(pilot, lambda: cfg.show_reasoning == default)
         assert cfg.show_reasoning == default
         assert checkbox.value == default
 
@@ -1690,10 +1673,7 @@ async def test_reset_nullable_to_none():
     async with app.run_test(size=(120, 40)) as pilot:
         button = app.screen.query_one("#reset-seed", Button)
         button.press()
-        for _ in range(10):
-            await pilot.pause()
-            if cfg.seed is None:
-                break
+        await pump_until(pilot, lambda: cfg.seed is None)
         assert cfg.seed is None
         editor = app.screen.query_one("#ed-seed", Input)
         assert editor.value == ""
@@ -6187,10 +6167,7 @@ async def test_chat_sync_file_done_bad_type():
             await _pilot.pause()
             while app.screen.workers:
                 await _pilot.pause()
-            for _ in range(10):
-                await _pilot.pause()
-                if app.screen._sync_active is False:
-                    break
+            await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
 
@@ -6214,10 +6191,7 @@ async def test_chat_sync_file_start_bad_type():
             await _pilot.pause()
             while app.screen.workers:
                 await _pilot.pause()
-            for _ in range(10):
-                await _pilot.pause()
-                if app.screen._sync_active is False:
-                    break
+            await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
             assert app.screen._sync_active is False
 
@@ -8270,10 +8244,7 @@ async def test_chat_tab_cycles_through_all_four_model_buttons():
             await pilot.press("tab")
             # Poll: the tab keypress travels through several refresh ticks
             # before the focus watcher updates has_focus on a slow xdist shard.
-            for _ in range(10):
-                await pilot.pause()
-                if target.has_focus:
-                    break
+            await pump_until(pilot, lambda t=target: t.has_focus)
             assert target.has_focus, f"Tab did not reach #{next_id}"
 
 
@@ -8293,10 +8264,7 @@ async def test_chat_tab_in_normal_mode_advances_focus():
         await pilot.pause()
         before = app.focused
         await pilot.press("tab")
-        for _ in range(10):
-            await pilot.pause()
-            if app.focused is not before:
-                break
+        await pump_until(pilot, lambda: app.focused is not before)
         assert app.focused is not before, "Tab did not move focus in normal mode"
 
 
@@ -10269,10 +10237,7 @@ async def test_catalog_grid_leave_down_focuses_next():
             grids[0].focus()
             await pilot.pause()
             grids[0].post_message(ModelGrid.LeaveDown(grids[0]))
-            for _ in range(10):
-                await pilot.pause()
-                if screen.focused is not grids[0]:
-                    break
+            await pump_until(pilot, lambda: screen.focused is not grids[0])
             assert screen.focused is not grids[0]
 
 

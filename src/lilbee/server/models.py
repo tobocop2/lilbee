@@ -61,6 +61,10 @@ class ChatRequest(BaseModel):
     top_k: int | None = Field(default=None, le=100)
     options: dict[str, Any] | None = None
     chunk_type: ChunkType | None = None
+    summary: str = ""
+    """Carry-forward notes from earlier compactions, folded into the prompt."""
+    session_id: str | None = None
+    """Session that receives the new summary when this turn compacts."""
 
     @field_validator("chunk_type", mode="before")
     @classmethod
@@ -209,6 +213,16 @@ class HealthResponse(BaseModel):
     its window and the client trims history to fit. None until the engine is up."""
 
 
+class CompactionInfo(BaseModel):
+    """What one pre-turn compaction folded out of a conversation."""
+
+    summary: str
+    condensed: int
+    """Turns folded into the notes."""
+    stranded: int
+    """Turns dropped with no notes; a client must say so rather than hide it."""
+
+
 class AskResponse(BaseModel):
     """Response for /api/ask and /api/chat.
 
@@ -219,6 +233,8 @@ class AskResponse(BaseModel):
     answer: str
     sources: list[CleanedChunk]
     cited_sources: list[CleanedChunk] = Field(default_factory=list)
+    compaction: CompactionInfo | None = None
+    """Set when a /api/chat turn compacted its history before answering."""
 
 
 class SetModelResponse(BaseModel):

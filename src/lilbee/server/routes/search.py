@@ -206,6 +206,8 @@ async def chat_route(data: ChatRequest) -> AskResponse:
             top_k=data.top_k,
             options=data.options,
             chunk_type=data.chunk_type,
+            summary=data.summary,
+            session_id=data.session_id,
         )
     except EmbeddingModelMismatchError as exc:
         raise _embedding_mismatch_http(exc) from exc
@@ -229,6 +231,8 @@ async def chat_stream_route(data: ChatRequest) -> Stream:
             top_k=data.top_k,
             options=data.options,
             chunk_type=data.chunk_type,
+            summary=data.summary,
+            session_id=data.session_id,
         ),
         ChatSlotGuard(),
     )

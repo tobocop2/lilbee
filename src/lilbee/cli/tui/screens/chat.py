@@ -58,6 +58,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
+from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
@@ -83,6 +84,7 @@ from lilbee.retrieval.query import SOURCES_BLOCK_MARKER, ChatMessage
 from lilbee.retrieval.query.compaction import (
     compaction_due,
     foldable,
+    history_budget,
     overflow,
     prompt_history,
     summary_messages,
@@ -106,16 +108,6 @@ from lilbee.sessions import (
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 log = logging.getLogger(__name__)
-
-_HISTORY_TOKEN_BUDGET_FRACTION = 0.5
-"""Fraction of ``cfg.chat_n_ctx_target`` reserved for prior conversation history.
-
-The other half of the working context is for the system prompt, the current
-turn's RAG context (~8 chunks), the user question, and reasoning headroom.
-The windower drops oldest user/assistant pairs once history exceeds this
-fraction so the assembled prompt never approaches ``n_ctx`` and the chat
-server never rejects the request for exceeding the context window.
-"""
 
 # Coalesce per-token UI updates into ~50 ms windows. Tiny reasoning models can
 # emit 100+ tokens/sec; one ``call_from_thread`` per token saturates Textual's
@@ -496,7 +488,7 @@ class ChatScreen(Screen[None]):
             # mean nothing to those widgets, so they always return to INSERT.
             if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
                 return
-            if self._focus_in_fleet_drawer():
+            if self._focus_in_drawer():
                 return
             self._enter_insert_mode()
             if event.key == "enter" and inp.value.strip():
@@ -1407,7 +1399,10 @@ class ChatScreen(Screen[None]):
 
     def _persist_assistant_turn(self, content: str, sources: list[str]) -> None:
         """Append the assistant turn to the active session. Worker thread."""
-        if self._session_id is None:
+        if self._session_id is None or not cfg.sessions_enabled:
+            # Sessions switched off mid-conversation: the id outlives the
+            # setting, so the toggle has to be re-checked here rather than
+            # relying on _persist_user_turn having left the id unset.
             return
         # A concurrent delete of the active session must not crash the worker.
         with contextlib.suppress(SessionNotFoundError):
@@ -1748,13 +1743,8 @@ class ChatScreen(Screen[None]):
 
     @staticmethod
     def _history_budget() -> int:
-        """Token budget for everything this conversation carries into the prompt.
-
-        A fraction of ``cfg.chat_n_ctx_target`` so the assembled prompt (system +
-        history + RAG + user) stays under the loaded model's ``n_ctx`` regardless
-        of how many turns have run or were resumed.
-        """
-        return int(cfg.chat_n_ctx_target * _HISTORY_TOKEN_BUDGET_FRACTION)
+        """Token budget for everything this conversation carries into the prompt."""
+        return history_budget(cfg.chat_n_ctx_target)
 
     def _compact_history(self) -> None:
         """Fold turns that no longer fit into the rolling summary. Worker thread only.
@@ -1803,9 +1793,11 @@ class ChatScreen(Screen[None]):
         with self._history_lock:
             del self._history[: len(dropped)]
             self._summary = result.summary
-        if self._session_id and result.summary:
+        if self._session_id and result.summary and cfg.sessions_enabled:
             # A summary for a session deleted mid-chat is not worth a crash; the
-            # next user turn reopens one and re-summarizes from there.
+            # next user turn reopens one and re-summarizes from there. The
+            # toggle is re-checked because the fold keeps working in memory
+            # after sessions go off, but must not reach the disk.
             with contextlib.suppress(SessionNotFoundError):
                 get_services().session_store.set_summary(self._session_id, result.summary)
         call_from_thread(self, self._on_history_compacted, result.condensed, result.stranded)
@@ -2162,12 +2154,16 @@ class ChatScreen(Screen[None]):
             return
         self._preview_next()
 
-    def _focus_in_fleet_drawer(self) -> bool:
-        """True when keyboard focus is inside the open Fleet drawer, so Enter /
-        i / a / o activate the focused toggle instead of entering insert mode."""
+    def _focus_in_drawer(self) -> bool:
+        """True when keyboard focus is inside an open drawer, so Enter / i / a / o
+        reach that drawer's own controls instead of entering insert mode.
+
+        Asked of the Drawer base rather than one drawer class: a drawer that had
+        to name itself here would otherwise swallow its own Enter until someone
+        noticed.
+        """
         focused = self.focused
-        drawers = self.screen.query(FleetDrawer)
-        return bool(focused and drawers and drawers.first() in focused.ancestors_with_self)
+        return bool(focused and any(isinstance(n, Drawer) for n in focused.ancestors_with_self))
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement

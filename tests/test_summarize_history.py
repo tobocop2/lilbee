@@ -262,3 +262,14 @@ def test_nothing_to_summarize_makes_no_call() -> None:
     cfg.chat_n_ctx_target = 8192
     assert _searcher(provider).summarize_history([], "keep me").summary == "keep me"
     provider.chat.assert_not_called()
+
+
+def test_on_batch_hears_each_batch_before_its_model_call() -> None:
+    """Progress runs 1..total in order, so a client can tick a live indicator."""
+    heard: list[tuple[int, int]] = []
+    _searcher(_provider("notes")).summarize_history(
+        _msgs(6), "", on_batch=lambda batch, total: heard.append((batch, total))
+    )
+    assert heard, "at least one batch must be reported"
+    total = heard[0][1]
+    assert heard == [(index + 1, total) for index in range(len(heard))]

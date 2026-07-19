@@ -161,9 +161,23 @@ class SessionListPanel(Vertical):
         if self._renaming_id is not None:
             self._commit_rename()
             return
-        selected = self._selected()
-        if selected is not None:
-            self.post_message(self.Resumed(selected.id))
+        self._resume(self._selected())
+
+    @on(ListView.Selected, "#sessions-list")
+    def _on_row_selected(self, event: ListView.Selected) -> None:
+        """Resume the row the list itself reports as chosen.
+
+        ListView posts this both for a click and for enter while it holds focus,
+        and a click also moves focus off the filter box. Resuming only from the
+        filter's Submitted leaves a click inert and then strands the panel with
+        no working key to resume from.
+        """
+        if self._renaming_id is None:
+            self._resume(event.item.meta if isinstance(event.item, SessionRow) else None)
+
+    def _resume(self, meta: SessionMeta | None) -> None:
+        if meta is not None:
+            self.post_message(self.Resumed(meta.id))
 
     def action_cursor_down(self) -> None:
         self.query_one("#sessions-list", ListView).action_cursor_down()
