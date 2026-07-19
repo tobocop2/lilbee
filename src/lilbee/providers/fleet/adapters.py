@@ -170,11 +170,14 @@ def build_server_argv(
     batch_size: int | None = None,
     threads: int | None = None,
     no_mmap: bool = False,
+    cpu_moe: bool = False,
+    n_cpu_moe: int | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
     ``--ctx-size`` is the per-slot context times the slot count, since
-    llama-server divides total context across parallel slots.
+    llama-server divides total context across parallel slots. ``n_cpu_moe``
+    wins over ``cpu_moe``; the pair would offload the same tensors twice.
     """
     argv = [
         str(binary),
@@ -205,5 +208,9 @@ def build_server_argv(
         argv += ["--tensor-split", ",".join(str(r) for r in ratio)]
     if no_mmap:
         argv += ["--no-mmap"]
+    if n_cpu_moe is not None:
+        argv += ["--n-cpu-moe", str(n_cpu_moe)]
+    elif cpu_moe:
+        argv += ["--cpu-moe"]
     argv += list(spec.extra_args)
     return argv

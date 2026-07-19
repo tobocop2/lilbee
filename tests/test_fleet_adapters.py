@@ -323,3 +323,39 @@ def test_build_argv_defaults_to_mmap() -> None:
         ctx_per_slot=4096,
     )
     assert "--no-mmap" not in argv
+
+
+def _chat_argv(**kwargs) -> list[str]:
+    """A chat command line with the offload knobs under test applied."""
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+        **kwargs,
+    )
+
+
+def test_build_argv_has_no_expert_offload_by_default() -> None:
+    argv = _chat_argv()
+    assert "--cpu-moe" not in argv
+    assert "--n-cpu-moe" not in argv
+
+
+def test_build_argv_offloads_every_expert_when_asked() -> None:
+    assert "--cpu-moe" in _chat_argv(cpu_moe=True)
+
+
+def test_build_argv_offloads_a_layer_count_when_asked() -> None:
+    argv = _chat_argv(n_cpu_moe=24)
+    assert argv[argv.index("--n-cpu-moe") + 1] == "24"
+
+
+def test_build_argv_layer_count_wins_over_offload_everything() -> None:
+    # The pair would offload the same tensors twice.
+    argv = _chat_argv(cpu_moe=True, n_cpu_moe=8)
+    assert "--cpu-moe" not in argv
+    assert argv[argv.index("--n-cpu-moe") + 1] == "8"

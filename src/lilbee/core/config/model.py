@@ -439,6 +439,15 @@ class Config(BaseSettings):
     # discrete GPU has less VRAM than the model needs.
     n_gpu_layers: int | None = ConfigField(default=None, writable=True)
 
+    # Keep a MoE model's expert weights in system memory, attention and shared
+    # layers on the GPU. Lets a sparse model run on a card too small to hold it.
+    # No effect on dense models, which have no expert tensors.
+    cpu_moe: bool = ConfigField(default=False, writable=True)
+
+    # Offload only the first N layers' experts. Takes precedence over cpu_moe;
+    # a smaller N keeps more of the model resident.
+    n_cpu_moe: int | None = ConfigField(default=None, writable=True)
+
     # GPU device picker for dual-GPU machines (typical laptop case:
     # discrete NVIDIA + integrated Intel/AMD). The Vulkan backend
     # enumerates every adapter the system exposes and may pick the

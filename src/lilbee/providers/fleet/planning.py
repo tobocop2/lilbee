@@ -377,10 +377,16 @@ def _role_flash(role: WorkerRole) -> bool:
 
 
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
-    """Chat honors ``cfg.kv_cache_type``; embed/rerank/vision run f16 KV."""
+    """Chat honors ``cfg.kv_cache_type``; embed/rerank/vision run f16 KV.
+
+    Mirrors :func:`_cache_type_flag`'s flash-attention fallback so the estimate
+    is sized against the KV type the launch actually uses.
+    """
     from lilbee.core.config import cfg
 
-    return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
+    if role is not WorkerRole.CHAT:
+        return KvCacheType.F16
+    return cfg.kv_cache_type if _flash_enabled() else KvCacheType.F16
 
 
 def _replica_count(role: WorkerRole, device_count: int) -> int:
@@ -389,11 +395,22 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
 
 
 def _cache_type_flag() -> str | None:
-    """KV cache type for chat, or ``None`` to leave llama-server's f16 default."""
+    """KV cache type for chat, or ``None`` to leave llama-server's f16 default.
+
+    Quantized KV requires flash attention; with it off the launch falls back to
+    f16 rather than emitting a pair llama-server refuses to load.
+    """
     from lilbee.core.config import cfg
     from lilbee.core.config.enums import KvCacheType
 
     if cfg.kv_cache_type is KvCacheType.F16:
+        return None
+    if not _flash_enabled():
+        log.warning(
+            "Flash attention is off, so the %s KV cache is not available; "
+            "using f16. Enable flash attention to keep the smaller cache.",
+            cfg.kv_cache_type.value,
+        )
         return None
     return cfg.kv_cache_type.value
 
@@ -616,16 +633,50 @@ def _role_weights_bytes(role: WorkerRole, ref: str) -> int:
     return size
 
 
+def _is_moe(meta: dict[str, str] | None) -> bool:
+    """Whether the GGUF declares routed experts, so its experts can be offloaded."""
+    count = (meta or {}).get("expert_count")
+    try:
+        return int(count) > 0 if count is not None else False
+    except ValueError:
+        return False
+
+
+def _expert_offload_all(meta: dict[str, str] | None) -> bool:
+    """Whether to keep every layer's experts in system memory; MoE models only."""
+    from lilbee.core.config import cfg
+
+    return bool(cfg.cpu_moe) and _is_moe(meta)
+
+
+def _expert_offload_layers(meta: dict[str, str] | None) -> int | None:
+    """How many layers' experts to keep in system memory, or None for no split."""
+    from lilbee.core.config import cfg
+
+    if cfg.n_cpu_moe is None or not _is_moe(meta):
+        return None
+    return max(0, cfg.n_cpu_moe)
+
+
+def _expert_offload_configured() -> bool:
+    """Whether the user asked for any expert offload at all."""
+    from lilbee.core.config import cfg
+
+    return bool(cfg.cpu_moe) or cfg.n_cpu_moe is not None
+
+
 def _weights_exceed_hardware(size: int, total_vram: int) -> bool:
     """True when a model's weight bytes alone cannot fit the fleet's physical VRAM.
 
     File size is ground truth, not an estimate, so this bound cannot repeat the
     false-refusal class: no estimator error makes a 40 GiB file fit a 1 GiB card.
-    It stands down when the user configured partial CPU offload (``n_gpu_layers``),
-    where big-weights-small-VRAM is a legitimate setup.
+    It stands down when the user configured partial CPU offload (``n_gpu_layers``
+    or expert offload), where big-weights-small-VRAM is a legitimate setup.
     """
     from lilbee.core.config import cfg
 
+    if _expert_offload_configured():
+        return False
     return total_vram > 0 and cfg.n_gpu_layers is None and size > total_vram
 
 
@@ -715,15 +766,33 @@ def _sizing_failure_fallback(
     )
 
 
+def _ref_is_moe(ref: str) -> bool:
+    """Whether *ref*'s GGUF declares routed experts; False when it cannot be read."""
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.engine_params import resolve_model_path
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    try:
+        return _is_moe(read_gguf_metadata(resolve_model_path(ref)))
+    except (ProviderError, OSError):
+        return False
+
+
 def _warn_weights_exceed(role: WorkerRole, ref: str, weights: int, total_vram: int) -> None:
+    # Cutting GPU layers on a sparse model slows all of it; offload the experts.
+    remedy = (
+        "set cpu_moe to keep its expert weights in system memory"
+        if _ref_is_moe(ref)
+        else "set n_gpu_layers to offload part of it to system memory"
+    )
     log.warning(
         "The %s model %s cannot load: its weights alone are %.1f GiB and the GPU "
-        "memory is %.1f GiB in total. Use a smaller model, or set n_gpu_layers to "
-        "offload part of it to system memory.",
+        "memory is %.1f GiB in total. Use a smaller model, or %s.",
         role.value,
         ref,
         weights / 1024**3,
         total_vram / 1024**3,
+        remedy,
     )
 
 
@@ -923,6 +992,8 @@ def _launch_for(
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
+        cpu_moe=_expert_offload_all(meta),
+        n_cpu_moe=_expert_offload_layers(meta),
     )
     return InstanceLaunch(
         role=plan.role,

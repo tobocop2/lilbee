@@ -272,6 +272,24 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "positive int = partial offload for tight VRAM."
         ),
     ),
+    "cpu_moe": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Keep a mixture-of-experts model's expert weights in system memory so "
+            "it fits a smaller GPU. No effect on dense models."
+        ),
+    ),
+    "n_cpu_moe": SettingDef(
+        int,
+        nullable=True,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Offload only the first N layers' experts to system memory. Takes "
+            "precedence over the offload-everything setting; smaller N stays faster."
+        ),
+    ),
     "gpu_devices": SettingDef(
         str,
         nullable=True,

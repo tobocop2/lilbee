@@ -358,7 +358,26 @@ def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr(cfg, "flash_attention", None)
     assert planning_mod._cache_type_flag() == "q8_0"
+
+
+def test_quantized_kv_falls_back_to_f16_without_flash_attention(monkeypatch) -> None:
+    # llama-server rejects quantized KV without flash attention.
+    from lilbee.core.config.enums import KvCacheType
+
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr(cfg, "flash_attention", False)
+    assert planning_mod._cache_type_flag() is None
+
+
+def test_estimator_kv_type_matches_the_launch_without_flash_attention(monkeypatch) -> None:
+    # The estimate must match the KV type actually launched.
+    from lilbee.core.config.enums import KvCacheType
+
+    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+    monkeypatch.setattr(cfg, "flash_attention", False)
+    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.F16
 
 
 def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
@@ -1910,3 +1929,73 @@ class TestSizingFailureFallsBackToFileSize:
             budget=8 * _GB,
         )
         assert slots == 1
+
+
+def test_expert_offload_is_ignored_on_a_dense_model(monkeypatch) -> None:
+    # No expert tensors to move, so the flag would be a silent no-op.
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod._expert_offload_all({"architecture": "qwen3"}) is False
+
+
+def test_expert_offload_applies_to_a_sparse_model(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod._expert_offload_all({"expert_count": "128"}) is True
+
+
+def test_expert_offload_layer_count_applies_to_a_sparse_model(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "n_cpu_moe", 16)
+    assert planning_mod._expert_offload_layers({"expert_count": "128"}) == 16
+
+
+def test_expert_offload_survives_unparsable_expert_count(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod._expert_offload_all({"expert_count": "many"}) is False
+
+
+def test_expert_offload_lets_a_model_bigger_than_vram_through(monkeypatch) -> None:
+    # Oversize weights are legitimate once the experts live in system memory.
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3) is False
+
+
+def test_oversize_model_is_still_refused_without_expert_offload(monkeypatch) -> None:
+    monkeypatch.setattr(cfg, "cpu_moe", False)
+    monkeypatch.setattr(cfg, "n_cpu_moe", None)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3) is True
+
+
+def test_oversize_sparse_model_is_told_to_offload_its_experts(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: True)
+    with caplog.at_level("WARNING"):
+        planning_mod._warn_weights_exceed(WorkerRole.CHAT, "m/moe", 80 * 1024**3, 24 * 1024**3)
+    assert "cpu_moe" in caplog.text
+    assert "n_gpu_layers" not in caplog.text
+
+
+def test_oversize_dense_model_is_still_told_to_cut_gpu_layers(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
+    with caplog.at_level("WARNING"):
+        planning_mod._warn_weights_exceed(WorkerRole.CHAT, "m/dense", 80 * 1024**3, 24 * 1024**3)
+    assert "n_gpu_layers" in caplog.text
+    assert "cpu_moe" not in caplog.text
+
+
+def test_ref_is_moe_reads_the_model_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_is_moe", lambda _meta: True)
+    monkeypatch.setattr(
+        "lilbee.providers.engine_params.resolve_model_path", lambda _ref: Path("/m/moe.gguf")
+    )
+    monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+    assert planning_mod._ref_is_moe("m/moe") is True
+
+
+def test_ref_is_moe_is_false_for_an_unresolvable_model(monkeypatch) -> None:
+    # The caller is already reporting a failure; a metadata read must not raise
+    # over the top of it.
+    def _boom(_ref):
+        raise OSError("gone")
+
+    monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _boom)
+    assert planning_mod._ref_is_moe("m/missing") is False
