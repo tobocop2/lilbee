@@ -58,6 +58,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
+from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
@@ -487,7 +488,7 @@ class ChatScreen(Screen[None]):
             # mean nothing to those widgets, so they always return to INSERT.
             if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
                 return
-            if self._focus_in_fleet_drawer():
+            if self._focus_in_drawer():
                 return
             self._enter_insert_mode()
             if event.key == "enter" and inp.value.strip():
@@ -2153,12 +2154,16 @@ class ChatScreen(Screen[None]):
             return
         self._preview_next()
 
-    def _focus_in_fleet_drawer(self) -> bool:
-        """True when keyboard focus is inside the open Fleet drawer, so Enter /
-        i / a / o activate the focused toggle instead of entering insert mode."""
+    def _focus_in_drawer(self) -> bool:
+        """True when keyboard focus is inside an open drawer, so Enter / i / a / o
+        reach that drawer's own controls instead of entering insert mode.
+
+        Asked of the Drawer base rather than one drawer class: a drawer that had
+        to name itself here would otherwise swallow its own Enter until someone
+        noticed.
+        """
         focused = self.focused
-        drawers = self.screen.query(FleetDrawer)
-        return bool(focused and drawers and drawers.first() in focused.ancestors_with_self)
+        return bool(focused and any(isinstance(n, Drawer) for n in focused.ancestors_with_self))
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement

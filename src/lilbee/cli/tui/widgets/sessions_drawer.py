@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, ClassVar
 
 from textual import on
 from textual.app import ComposeResult
-from textual.containers import Vertical
 from textual.screen import Screen
 
+from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.session_list import SessionListPanel
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ _DRAWER_CSS = (Path(__file__).parent / "sessions_drawer.tcss").read_text(encodin
 _HOST_OPEN_CLASS = "sessions-open"
 
 
-class SessionsDrawer(Vertical):
+class SessionsDrawer(Drawer):
     """Session switcher as a non-modal left-side drawer; closed with esc or ctrl+o."""
 
     DEFAULT_CSS: ClassVar[str] = _DRAWER_CSS
