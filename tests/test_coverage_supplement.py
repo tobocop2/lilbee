@@ -382,6 +382,19 @@ class TestSettingsFeatureGating:
         missing = writable_memory - set(SETTINGS_MAP)
         assert missing == set(), f"memory fields missing from SETTINGS_MAP: {missing}"
 
+    def test_both_session_toggles_have_a_settings_map_entry(self) -> None:
+        """Both session flags must be in SETTINGS_MAP, for the same reason the
+        memory fields are: without the entry ``/set`` rejects the key and the
+        Settings screen never renders it, even though the field is writable.
+        """
+        from lilbee.app.settings import WRITABLE_CONFIG_FIELDS
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        toggles = {"sessions_enabled", "mcp_sessions_enabled"}
+        assert toggles <= set(WRITABLE_CONFIG_FIELDS)  # sanity: both writable
+        missing = toggles - set(SETTINGS_MAP)
+        assert missing == set(), f"session toggles missing from SETTINGS_MAP: {missing}"
+
     def test_no_setting_help_text_mentions_obsidian(self) -> None:
         """Obsidian is one host of the HTTP API; it must not leak into setting labels."""
         from lilbee.app.settings_map import SETTINGS_MAP

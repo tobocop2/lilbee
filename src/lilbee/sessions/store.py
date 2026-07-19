@@ -30,6 +30,11 @@ SESSIONS_DISABLED_HINT = (
     "Sessions are off. Turn them on with /set sessions_enabled true in the TUI, "
     "settings_set via MCP, or sessions_enabled = true in config.toml."
 )
+AGENT_SESSIONS_DISABLED_HINT = (
+    "Agent sessions are off. Turn them on with settings_set mcp_sessions_enabled "
+    "true, /set mcp_sessions_enabled true in the TUI, or mcp_sessions_enabled = "
+    "true in config.toml."
+)
 # Bounds a wedged lock holder; a healthy append holds the lock for milliseconds.
 _APPEND_LOCK_TIMEOUT_S = 10
 UNTITLED_SESSION_TITLE = "Untitled chat"
@@ -38,8 +43,17 @@ TITLE_ELLIPSIS = "…"
 
 
 def sessions_enabled() -> bool:
-    """True when session persistence is switched on (on by default)."""
+    """True when session persistence is on for the human surfaces (default on)."""
     return cfg.sessions_enabled
+
+
+def agent_sessions_enabled() -> bool:
+    """True when agent (MCP) sessions are on (default off).
+
+    Independent of ``sessions_enabled``: the two govern separate domains, so an
+    agent's working state can be off while a human's conversations are saved.
+    """
+    return cfg.mcp_sessions_enabled
 
 
 class SessionEventType(StrEnum):
