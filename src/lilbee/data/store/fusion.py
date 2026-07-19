@@ -12,6 +12,12 @@ neighbors. The vector arm weighs 1; the chunk-BM25 arm weighs
 dominate); the optional title arm weighs ``title_weight``. Weights rescale
 the shares without leaving the canonical range.
 
+When adaptive fusion varies ``lexical_weight`` per query (or the title arm
+toggles on whether it returned rows), the total weight the score normalizes
+against changes query to query, so a fused score is a within-query ranking
+signal, not a value comparable across queries. ``min_relevance_score`` is
+therefore a coarse floor, not a fixed cross-query threshold.
+
 Rank fusion is deliberate. A convex combination of normalized raw scores
 (``alpha * vector_similarity + (1 - alpha) * normalized_bm25``) was tried
 here and measurably regressed graded precision: cosine similarities sit
@@ -50,14 +56,13 @@ def adaptive_lexical_weight(
 
     A *peaked* vector ranking -- a top hit standing well clear of the field --
     means the dense embedder already located the answer and the lexical arm
-    mostly adds term-match noise (the FiQA case in the retrieval benchmark). A
-    *flat* ranking means dense is unsure and BM25's exact-term matching is worth
-    trusting (NFCorpus, SciFact). The confidence signal is the margin between
-    the top similarity and the mean of the rest, divided by *margin_scale*: at or
-    above that margin the lexical arm is fully silenced, at zero margin it keeps
-    its full *base_weight*, and it scales linearly between. Returns *base_weight*
-    unchanged when there is nothing to measure (fewer than two scored rows) or
-    the feature is disabled (*margin_scale* <= 0).
+    mostly adds term-match noise. A *flat* ranking means dense is unsure and
+    BM25's exact-term matching is worth trusting. The confidence signal is the
+    margin between the top similarity and the mean of the rest, divided by
+    *margin_scale*: at or above that margin the lexical arm is fully silenced,
+    at zero margin it keeps its full *base_weight*, and it scales linearly
+    between. Returns *base_weight* unchanged when there is nothing to measure
+    (fewer than two scored rows) or when *margin_scale* <= 0 (adaptation off).
     """
     if margin_scale <= 0:
         return base_weight
@@ -138,7 +143,11 @@ def fuse_arms(
     total_weight = 1.0 + lexical_weight + (title_weight if title_rows else 0.0)
     merged: dict[tuple[str, int], SearchChunk] = {}
     _merge_arm(merged, vector_rows, 1.0 / total_weight)
-    _merge_arm(merged, fts_rows, lexical_weight / total_weight)
-    if title_rows:
+    # A zero-weight arm contributes nothing, so skip it rather than folding in
+    # zero-score rows that would still carry lexical provenance (and its
+    # downstream distance/structural exemptions) on no real support.
+    if lexical_weight > 0:
+        _merge_arm(merged, fts_rows, lexical_weight / total_weight)
+    if title_rows and title_weight > 0:
         _merge_arm(merged, title_rows, title_weight / total_weight)
     return sorted(merged.values(), key=lambda r: r.score or 0.0, reverse=True)

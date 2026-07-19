@@ -72,6 +72,37 @@ class TestFuseArms:
         lexical_row = next(r for r in fused if r.source == "catalog_482.pdf")
         assert lexical_row.score == pytest.approx(0.5)
 
+    def test_top_lexical_hit_outranks_all_but_the_top_dense_neighbor(self):
+        """The pinpoint-document failure mode: an FTS-arm top hit unseen by
+        the vector arm must rank above every vector row except at most the
+        vector arm's own number one."""
+        vec = [_chunk("noise.md", i, distance=0.1) for i in range(30)]
+        lex = [_chunk("target.pdf", 0, bm25=30.0), _chunk("noise.md", 0, bm25=3.0)]
+        fused = fuse_arms(vec, lex)
+        rank = next(i for i, r in enumerate(fused) if r.source == "target.pdf")
+        assert rank <= 1
+
+    def test_rank_order_ignores_score_magnitude(self):
+        """A wildly stronger BM25 score at rank 2 stays rank 2: fusion is
+        scale-free by construction."""
+        lex = [_chunk("first.md", 0, bm25=5.0), _chunk("second.md", 0, bm25=500.0)]
+        fused = fuse_arms([], lex)
+        assert [r.source for r in fused] == ["first.md", "second.md"]
+
+    def test_dedup_keeps_both_provenance_fields(self):
+        fused = fuse_arms([_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)])
+        assert len(fused) == 1
+        assert fused[0].distance == pytest.approx(0.3)
+        assert fused[0].bm25_score == pytest.approx(9.0)
+
+    def test_sorted_descending_by_score(self):
+        fused = fuse_arms(
+            [_chunk("near.md", 0, distance=0.1), _chunk("far.md", 0, distance=1.5)],
+            [],
+        )
+        assert [r.source for r in fused] == ["near.md", "far.md"]
+        assert all(r.score is not None for r in fused)
+
 
 class TestAdaptiveLexicalWeight:
     """Per-query lexical weight gated by the vector arm's confidence."""
@@ -134,42 +165,17 @@ class TestLexicalFusionWeight:
         explicit = {r.source: r.score for r in fuse_arms(vec, lex, lexical_weight=1.0)}
         assert default == explicit
 
-    def test_zero_weight_silences_the_lexical_arm(self):
-        assert self._lex_row(0.0).score == pytest.approx(0.0)
+    def test_zero_weight_drops_the_lexical_only_arm(self):
+        """A fully-silenced lexical arm contributes no rows at all, so a
+        BM25-only hit never enters the pool carrying lexical provenance (and
+        with it the downstream distance/structural exemptions)."""
+        vec = [_chunk("noise.md", 0, distance=0.5)]
+        lex = [_chunk("cat.pdf", 0, bm25=35.0)]
+        fused = fuse_arms(vec, lex, lexical_weight=0.0)
+        assert "cat.pdf" not in [r.source for r in fused]
 
     def test_lower_weight_shrinks_the_lexical_contribution(self):
         assert self._lex_row(0.5).score < self._lex_row(1.0).score
-
-    def test_top_lexical_hit_outranks_all_but_the_top_dense_neighbor(self):
-        """The pinpoint-document failure mode: an FTS-arm top hit unseen by
-        the vector arm must rank above every vector row except at most the
-        vector arm's own number one."""
-        vec = [_chunk("noise.md", i, distance=0.1) for i in range(30)]
-        lex = [_chunk("target.pdf", 0, bm25=30.0), _chunk("noise.md", 0, bm25=3.0)]
-        fused = fuse_arms(vec, lex)
-        rank = next(i for i, r in enumerate(fused) if r.source == "target.pdf")
-        assert rank <= 1
-
-    def test_rank_order_ignores_score_magnitude(self):
-        """A wildly stronger BM25 score at rank 2 stays rank 2: fusion is
-        scale-free by construction."""
-        lex = [_chunk("first.md", 0, bm25=5.0), _chunk("second.md", 0, bm25=500.0)]
-        fused = fuse_arms([], lex)
-        assert [r.source for r in fused] == ["first.md", "second.md"]
-
-    def test_dedup_keeps_both_provenance_fields(self):
-        fused = fuse_arms([_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)])
-        assert len(fused) == 1
-        assert fused[0].distance == pytest.approx(0.3)
-        assert fused[0].bm25_score == pytest.approx(9.0)
-
-    def test_sorted_descending_by_score(self):
-        fused = fuse_arms(
-            [_chunk("near.md", 0, distance=0.1), _chunk("far.md", 0, distance=1.5)],
-            [],
-        )
-        assert [r.source for r in fused] == ["near.md", "far.md"]
-        assert all(r.score is not None for r in fused)
 
 
 class TestRegressionMechanism:

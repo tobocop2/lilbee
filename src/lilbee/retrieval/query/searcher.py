@@ -624,15 +624,14 @@ class Searcher:
         # HTTP, and MCP copies of a bare distance cutoff dropped both-arm
         # rows the fusion layer deliberately keeps past max_distance.
         results = filter_results(results, self._config.max_distance)
-        # Drop tables-of-contents and cover pages: the title and table arms
-        # surface them, but they never answer a question and only dilute
-        # context precision (bb-pkn6). Filtered from the top_k*2 candidate
-        # buffer, so enough real passages remain for the downstream trim.
+        # Drop tables-of-contents and cover pages that only the vector arm
+        # surfaced: they dilute context precision without answering a question.
+        # Filtered from the top_k*2 candidate buffer so enough real passages
+        # remain for the downstream trim.
         if self._config.filter_structural_chunks:
-            # Never drop a page the query actually hit: a lexical (BM25) match or
-            # the top-ranked result is content the answer may need, whatever its
-            # shape, so only genuinely-unhit structural chunks are removed
-            # (bb-lenb: the filter was dropping needed body pages).
+            # A lexical (BM25 or title) hit or the top-ranked row is content the
+            # answer may need, whatever its shape, so it is never dropped; only
+            # structural chunks the lexical arms did not support are removed.
             results = [
                 r
                 for i, r in enumerate(results)

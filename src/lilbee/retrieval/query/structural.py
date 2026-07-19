@@ -1,13 +1,11 @@
 """Detect document-structure chunks that dilute retrieval precision.
 
-Tables of contents, cover/title pages, and bare reference lists carry a
-document's title and section words, so the title arm and table extraction
-surface them, but they never *answer* a substantive question. The UFO A/B
-(bb-5bjp / bb-pkn6) traced a real context-precision drop to exactly these
-chunks entering the retrieved set. The detector is deliberately conservative:
-it protects recall/faithfulness by only flagging chunks that are unambiguously
-structural, so a false negative (some noise slips through) is preferred to a
-false positive (dropping real content).
+Flags two classes: tables of contents (generic), and classification-banner
+cover/title pages. Both carry a document's title and section words but never
+*answer* a substantive question. The detector is deliberately conservative:
+it only flags chunks that are unambiguously structural, so a false negative
+(some noise slips through) is preferred to a false positive (dropping real
+content).
 """
 
 from __future__ import annotations
@@ -26,10 +24,9 @@ _MIN_TOC_LINES = 3
 _TOC_RATIO = 0.30
 
 # Cover/title-page gates: a title page is very short with essentially no prose.
-# These are deliberately tight -- a UFO-corpus A/B (bb-lenb) showed looser gates
-# firing on short, classification-banner government BODY pages and dropping the
-# content the answer needed, so a real body page's word count or its first full
-# sentence must take it out of scope.
+# Deliberately tight -- looser gates fire on short banner-carrying body pages and
+# drop content the answer needs, so a real body page's word count or its first
+# full sentence must take it out of scope.
 _COVER_MAX_WORDS = 60
 _COVER_MAX_SENTENCES = 1
 _COVER_CAPS_RATIO = 0.30

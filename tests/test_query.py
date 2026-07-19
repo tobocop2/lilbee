@@ -505,7 +505,7 @@ class TestSearchContext:
 
     def test_structural_chunk_the_query_missed_is_dropped(self, mock_svc):
         """With the filter on, a lower-ranked TOC the query did not hit is
-        dropped, while the real answer passage survives (bb-pkn6)."""
+        dropped, while the real answer passage survives."""
         cfg.filter_structural_chunks = True
         real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
         toc = _make_result(source="toc.pdf", distance=0.4, chunk=self._TOC_CHUNK)
@@ -515,7 +515,7 @@ class TestSearchContext:
 
     def test_structural_filter_keeps_query_matched_page(self, mock_svc):
         """A page the query lexically hit is never dropped, whatever its shape:
-        it is content the answer may need (bb-lenb)."""
+        it is content the answer may need."""
         cfg.filter_structural_chunks = True
         real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")
         hit = _make_result(source="toc.pdf", distance=0.4, bm25_score=9.0, chunk=self._TOC_CHUNK)
@@ -523,14 +523,14 @@ class TestSearchContext:
         assert "toc.pdf" in [r.source for r in get_services().searcher.search("q")]
 
     def test_structural_filter_keeps_top_hit(self, mock_svc):
-        """The top-ranked result is never dropped, whatever its shape (bb-lenb)."""
+        """The top-ranked result is never dropped, whatever its shape."""
         cfg.filter_structural_chunks = True
         toc = _make_result(source="toc.pdf", distance=0.05, chunk=self._TOC_CHUNK)
         mock_svc.store.search.return_value = [toc]
         assert [r.source for r in get_services().searcher.search("q")] == ["toc.pdf"]
 
     def test_structural_filter_off_by_default_keeps_toc(self, mock_svc):
-        """Off by default (bb-lenb: net-negative on the UFO corpus)."""
+        """Off by default: the A/B found it net-negative on the eval corpus."""
         assert cfg.filter_structural_chunks is False
         toc = _make_result(source="toc.pdf", distance=0.4, chunk=self._TOC_CHUNK)
         real = _make_result(source="body.pdf", distance=0.1, chunk="Real answer prose.")

@@ -2,41 +2,41 @@
 
 from lilbee.retrieval.query.structural import is_structural_chunk
 
-# A real table of contents, as seen diluting precision in the UFO A/B (bb-pkn6).
+# A table of contents: section titles followed by dot leaders and page numbers.
 TOC = """Contents
 A. Executive Summary ................................................. 1
 B. Introduction ..................................................... 3
-C. Geographic Trends ................................................ 9
-D. Notable Trends Regarding Propulsion .............................. 10
-E. Flight Safety Issues ............................................. 11
-F. UAS Observations Reported ........................................ 13
+C. Regional Overview ............................................... 9
+D. Budget and Staffing ............................................. 10
+E. Program Findings ................................................ 11
+F. Recommendations ................................................. 13
 """
 
-# A real DoD cover/title page.
+# A classification-banner cover/title page.
 COVER = """UNCLASSIFIED
-THE DEPARTMENT OF DEFENSE
-ALL-DOMAIN ANOMALY RESOLUTION OFFICE
+NATIONAL PROGRAM REVIEW BOARD
+OFFICE OF STRATEGIC ASSESSMENT
 Fiscal Year 2024 Consolidated Annual Report on
-Unidentified Anomalous Phenomena
+Program Performance and Oversight
 Information Cut Off Date: 1 JUNE 2024
 UNCLASSIFIED
 """
 
 # Real prose that must NOT be flagged.
 PROSE = (
-    "During the reporting period, AARO received no reports indicating UAP sightings "
-    "have been associated with any adverse health effects. However, many reports from "
-    "military witnesses described transient effects. The office continues to evaluate "
-    "each case against a standardized methodology, and it has resolved the majority of "
-    "reported incidents as ordinary objects or sensor artifacts."
+    "During the reporting period, the office received no reports indicating that the "
+    "program had an adverse effect on regional operations. However, many reports from "
+    "field staff described transient delays. The office continues to evaluate each case "
+    "against a standardized methodology, and it has resolved the majority of reported "
+    "incidents as routine administrative issues."
 )
 
 # Prose that happens to reference a page and carry a classification header.
 PROSE_WITH_HEADER = (
-    "UNCLASSIFIED. As detailed on page 12, the assessment concluded that the object was "
-    "a commercial aircraft. The radar track and the electro-optical imagery were "
-    "consistent, and the case was closed. No anomalous performance was observed at any "
-    "point during the encounter, which lasted several minutes."
+    "UNCLASSIFIED. As detailed on page 12, the assessment concluded that the shortfall was "
+    "a routine scheduling gap. The budget records and the staffing figures were "
+    "consistent, and the case was closed. No irregularity was observed at any point "
+    "during the review, which lasted several weeks."
 )
 
 
@@ -63,16 +63,16 @@ class TestIsStructuralChunk:
 
     def test_short_all_caps_without_classification_is_not_a_cover(self):
         # A shouting heading with no classification banner is left alone.
-        assert is_structural_chunk("NOTABLE TRENDS REGARDING PROPULSION AND FLIGHT") is False
+        assert is_structural_chunk("REGIONAL OVERVIEW AND PROGRAM FINDINGS") is False
 
     def test_short_classified_body_page_is_not_a_cover(self):
-        # A short government body page carries a classification banner and caps
-        # but real content; its full sentences must keep it out of scope so the
-        # answer does not lose the page it needs (bb-lenb, the rag-1 failure).
+        # A short body page carries a classification banner and caps but real
+        # content; its full sentences must keep it out of scope so the answer
+        # does not lose the page it needs.
         body = (
-            "UNCLASSIFIED. The AARO assessment concluded the object was a "
-            "commercial aircraft, and the case was resolved. RADAR and EO/IR "
-            "data were CONSISTENT across the entire track."
+            "UNCLASSIFIED. The office assessment concluded the shortfall was a "
+            "routine scheduling gap, and the case was resolved. BUDGET and STAFFING "
+            "data were CONSISTENT across the entire review."
         )
         assert is_structural_chunk(body) is False
 

@@ -108,16 +108,26 @@ _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
 
-def _sanitize_fts_query(text: str) -> str:
-    """Strip the double quotes that make LanceDB parse an FTS query as a phrase.
+def _lexical_rows(
+    table: lancedb.table.Table,
+    query_text: str,
+    limit: int,
+    chunk_type: ChunkType | None,
+    column: str = "chunk",
+) -> list[SearchChunk]:
+    """BM25 rows for *query_text* over a single FTS *column*.
 
-    lilbee's FTS indexes carry no token positions (bb-rqr8: positions overflow
-    LanceDB's list encoding on a large corpus), so a phrase query would error.
-    Replacing quotes with spaces turns a quoted span into plain terms -- which
-    is what every lilbee FTS call wants anyway, since none needs exact-phrase
-    matching.
+    ``MatchQuery`` pins the column and matches plain terms, so an unpinned search
+    cannot widen to the title index and a quoted span cannot reach LanceDB as a
+    phrase (which the positionless index rejects). This is the one place FTS
+    queries are built; every arm goes through it.
     """
-    return text.replace('"', " ")
+    from lancedb.query import MatchQuery
+
+    query = table.search(MatchQuery(query_text, column), query_type="fts").limit(limit)
+    if chunk_type:
+        query = query.where(_chunk_type_predicate(chunk_type))
+    return [SearchChunk(**r) for r in query.to_list()]
 
 
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
@@ -441,11 +451,10 @@ class Store:
                 return
             try:
                 if _has_fts_index(table):
-                    # The index exists and already serves queries, so mark hybrid
-                    # ready BEFORE the optimize: optimize() only folds new rows and
-                    # compacts, and on a large corpus it can hit a LanceDB encoding
-                    # bug and raise. Letting that failure fall through would leave
-                    # _fts_ready False and silently drop every query to vector-only.
+                    # Mark hybrid ready BEFORE optimize(): the existing index
+                    # already serves queries, and optimize() can raise on a large
+                    # corpus. A failure here must not drop every query to
+                    # vector-only.
                     self._fts_ready = True
                     try:
                         # One optimize folds new rows into every index on the
@@ -458,14 +467,10 @@ class Store:
                             exc_info=True,
                         )
                 else:
-                    # No token positions: with_position=True makes the chunk
-                    # index's trigram position lists overflow LanceDB's list
-                    # encoding on optimize() for a large corpus, which then
-                    # serves BM25 un-optimized all session (bb-rqr8). Positions
-                    # only serve exact-phrase queries, which lilbee never issues
-                    # -- query text is sanitized of the quotes that would make
-                    # LanceDB parse it as a phrase (see _sanitize_fts_query), so
-                    # a positionless index never errors on one.
+                    # Positionless: with_position=True overflows LanceDB's list
+                    # encoding on optimize() for a large corpus. Positions only
+                    # serve exact-phrase queries, which lilbee never issues (FTS
+                    # queries match plain terms), so the index never needs them.
                     table.create_fts_index("chunk", replace=False, with_position=False)
                     self._fts_ready = True
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
@@ -482,8 +487,7 @@ class Store:
         if _TITLE_COLUMN not in table.schema.names or _has_fts_index(table, _TITLE_COLUMN):
             return
         try:
-            # Positionless for the same reason as the chunk index (bb-rqr8);
-            # queries are sanitized of phrase quotes so it never errors.
+            # Positionless for the same reason as the chunk index.
             table.create_fts_index(_TITLE_COLUMN, replace=False, with_position=False)
             log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
         except Exception:
@@ -591,16 +595,7 @@ class Store:
         if not self._fts_ready:
             return []
         try:
-            # Pin the chunk column: once a title FTS index exists, an unpinned
-            # FTS query searches every indexed column, which would silently
-            # widen the probe's semantics.
-            query = table.search(
-                _sanitize_fts_query(query_text), query_type="fts", fts_columns="chunk"
-            )
-            if chunk_type:
-                query = query.where(_chunk_type_predicate(chunk_type))
-            rows = query.limit(top_k).to_list()
-            results = [SearchChunk(**r) for r in rows]
+            results = _lexical_rows(table, query_text, top_k, chunk_type)
             norms = normalized_bm25([r.bm25_score or 0.0 for r in results])
             return [
                 r.model_copy(update={"score": norm}) for r, norm in zip(results, norms, strict=True)
@@ -699,18 +694,8 @@ class Store:
         limit: int,
         chunk_type: ChunkType | None,
     ) -> list[SearchChunk]:
-        """BM25-arm candidates over the chunk text.
-
-        The column is pinned: once a title FTS index exists, an unpinned FTS
-        query searches every indexed column, which would double-count title
-        tokens this arm's sibling already scores.
-        """
-        query = table.search(
-            _sanitize_fts_query(query_text), query_type="fts", fts_columns="chunk"
-        ).limit(limit)
-        if chunk_type:
-            query = query.where(_chunk_type_predicate(chunk_type))
-        return [SearchChunk(**r) for r in query.to_list()]
+        """BM25-arm candidates over the chunk text."""
+        return _lexical_rows(table, query_text, limit, chunk_type)
 
     def _title_arm(
         self,
@@ -726,12 +711,7 @@ class Store:
         """
         if not _has_fts_index(table, _TITLE_COLUMN):
             return []
-        query = table.search(
-            _sanitize_fts_query(query_text), query_type="fts", fts_columns=_TITLE_COLUMN
-        ).limit(limit)
-        if chunk_type:
-            query = query.where(_chunk_type_predicate(chunk_type))
-        return [SearchChunk(**r) for r in query.to_list()]
+        return _lexical_rows(table, query_text, limit, chunk_type, column=_TITLE_COLUMN)
 
     def _hybrid_search(
         self,
@@ -742,24 +722,24 @@ class Store:
         max_distance: float,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
-        """Dual-arm retrieval fused by reciprocal rank; the fused ordering is final.
+        """Multi-arm retrieval fused by weighted reciprocal rank; the fused ordering is final.
+
+        A vector arm and a chunk-BM25 arm always run; a title-BM25 arm joins
+        when ``cfg.title_search`` is on. Each row's fused score is the
+        weight-normalized sum of its arm contributions: the vector arm has
+        weight 1.0, the lexical arm ``cfg.lexical_fusion_weight`` (scaled per
+        query when ``cfg.adaptive_fusion`` is on), the title arm
+        ``cfg.title_search_weight``. So a row a single peaked arm is certain
+        about scores that arm's share of the total weight, not a fixed 0.5.
 
         Each arm fetches exactly ``top_k`` rows. Deeper pools measurably hurt
-        rank fusion: rows a single arm is certain about score a fixed 0.5,
-        while rows both arms rank mid-pool accumulate two contributions, so
-        widening the arms floods the fused top-k with both-arm mediocrity and
-        buries single-arm certainty (lexical identifier hits above all).
+        rank fusion by flooding the fused top-k with both-arm mediocrity and
+        burying single-arm certainty (lexical identifier hits above all). No
+        MMR runs here: lexical passages are often mutually similar, which MMR
+        penalizes, trading relevant hits for off-topic neighbors.
 
-        No diversity selection runs here either. For lexical queries the
-        relevant passages are often mutually similar (they quote the same
-        identifiers), which is exactly what MMR penalizes: selecting the
-        fused pool through MMR measurably traded relevant lexical hits for
-        diverse off-topic neighbors on graded evaluation.
-
-        When ``cfg.title_search`` is on, a third BM25 arm over document
-        titles joins the fusion at ``cfg.title_search_weight``; title rows
-        carry ``bm25_score``, so a title match counts as lexical support
-        for the distance exemption like any other lexical hit.
+        Title rows carry ``bm25_score``, so a title match counts as lexical
+        support for the distance exemption like any other lexical hit.
         """
         title_rows: list[SearchChunk] = []
         if self._config.title_search:

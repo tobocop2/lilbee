@@ -95,10 +95,11 @@ class Config(BaseSettings):
     max_embed_chars: int = Field(default=2000, ge=1)
     top_k: int = ConfigField(default=12, ge=1, writable=True)
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
-    # Abstention floor against the canonical [0, 1] relevance score
-    # (0.0 = no filtering). When every retrieved chunk falls below it, ask
-    # refuses instead of feeding noise as context. On the fused reciprocal-rank
-    # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
+    # Abstention floor against the [0, 1] fused relevance score (0.0 = no
+    # filtering). When every retrieved chunk falls below it, ask refuses instead
+    # of feeding noise as context. The fused score normalizes against a per-query
+    # weight total under adaptive fusion, so this is a coarse floor, not a value
+    # that means the same thing on every query; tune it against your own corpus.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(
@@ -210,28 +211,24 @@ class Config(BaseSettings):
     # the retrieval benchmark, not guessed here.
     lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
 
-    # Adaptive fusion: instead of a fixed lexical_fusion_weight, scale the BM25
-    # arm per query by how confident the vector arm is (a peaked dense ranking
-    # downweights lexical, a flat one keeps it). On by default: the retrieval
-    # benchmark found no single fixed weight wins every corpus, and adaptive at
-    # margin 0.15 beat the fixed-weight default on all three BEIR sets tested
-    # (biggest gain on the corpus a fixed lexical arm hurt most). lexical_fusion_
-    # weight is the ceiling the adaptive rule scales down from; adaptive_fusion_
-    # margin is the vector-similarity margin at which the lexical arm is fully
-    # silenced (smaller = more aggressive). Set adaptive_fusion=false to pin the
-    # fixed weight instead.
+    # Adaptive fusion: scale the BM25 arm per query by vector-arm confidence
+    # instead of a fixed lexical_fusion_weight (a peaked dense ranking downweights
+    # lexical, a flat one keeps it). On by default. lexical_fusion_weight is the
+    # ceiling the rule scales down from. Set adaptive_fusion=false to pin the
+    # fixed weight.
     adaptive_fusion: bool = ConfigField(default=True, writable=True)
+
+    # Vector-similarity margin at which the lexical arm is fully silenced; smaller
+    # = more aggressive downweighting. 0 disables adaptation entirely (the lexical
+    # arm keeps its full fixed weight).
     adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
 
-    # Drop tables-of-contents and cover/title pages from search results. The
-    # title and table arms surface these document-structure chunks, which usually
-    # do not answer a question. OFF by default: a UFO-corpus A/B (bb-lenb) found
-    # the filter net-negative -- its cover-page heuristic also fires on short,
-    # classification-banner government body pages, dropping content the answer
-    # needed and hurting faithfulness. When on, a query-matched or top-ranked
-    # page is never dropped (searcher.search), so the removal is limited to
-    # structural chunks the query did not actually hit. Re-validate per corpus
-    # before turning it on.
+    # Drop tables-of-contents and classification-banner cover/title pages from
+    # search results. OFF by default: an evaluation A/B on a government-document
+    # corpus found the filter net-negative, because its cover-page heuristic also
+    # fires on short banner-carrying body pages. When on, a query-matched or
+    # top-ranked page is never dropped (searcher.search), so removal is limited to
+    # structural chunks the query did not hit. Re-validate per corpus before use.
     filter_structural_chunks: bool = ConfigField(default=False, writable=True)
 
     # Chunk count at/above which sync builds an approximate (ANN) vector index

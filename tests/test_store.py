@@ -193,22 +193,16 @@ class TestEnsureFtsIndex:
         # Verify replace was NOT True (would defeat the purpose of incremental)
         assert all(c.kwargs.get("replace") is False for c in create_spy.call_args_list)
         # Both indexes are positionless: with_position=True overflows LanceDB's
-        # list encoding on a large corpus (bb-rqr8), and no lilbee query needs
-        # exact-phrase matching.
+        # list encoding on a large corpus, and no lilbee query needs exact-phrase
+        # matching.
         assert all(c.kwargs.get("with_position") is False for c in create_spy.call_args_list)
 
-    def test_sanitize_fts_query_replaces_quotes_with_spaces(self):
-        from lilbee.data.store.core import _sanitize_fts_query
-
-        assert _sanitize_fts_query('"exact phrase" and terms') == " exact phrase  and terms"
-        assert _sanitize_fts_query("plain terms") == "plain terms"
-
-    def test_fts_quoted_query_is_sanitized_not_a_phrase(self, store):
+    def test_fts_quoted_query_matches_terms_not_a_phrase(self, store):
         """A quoted query must return term matches, not raise on the positionless index.
 
-        The chunk index carries no token positions (bb-rqr8), so a phrase query
-        would error. bm25_probe strips the quotes (_sanitize_fts_query), turning
-        the quoted span into plain terms that still match.
+        The chunk index carries no token positions, so a phrase query would
+        error. FTS goes through ``MatchQuery``, which matches the quoted span's
+        plain terms instead of parsing it as a phrase.
         """
         store.add_chunks(_make_records())
         store.ensure_fts_index()
@@ -695,26 +689,50 @@ class TestHybridSearch:
         scores = [r.score for r in results]
         assert all(0.0 <= s <= 1.0 for s in scores)
 
-    def test_adaptive_fusion_gates_the_hybrid_search(self, store, test_config):
-        """With adaptive_fusion on (the default), hybrid search derives the
-        lexical weight per query from the vector arm instead of the fixed value."""
+    def test_adaptive_fusion_feeds_a_derived_weight_to_fusion(self, store, test_config):
+        """With adaptive_fusion on (the default), the per-query weight from
+        adaptive_lexical_weight -- fed the configured margin -- is what reaches
+        fuse_arms, not the fixed config value. Deleting the adaptive branch would
+        fail this, unlike a smoke test that only checks the score range."""
         assert test_config.adaptive_fusion is True  # shipped default
+        test_config.adaptive_fusion_margin = 0.42
         store.add_chunks(_make_records())
         store.ensure_fts_index()
         query_vec = [0.5] * test_config.embedding_dim
-        results = store.search(query_vec, top_k=3, query_text="chunk number")
-        assert len(results) > 0
-        assert all(r.score is not None and 0.0 <= r.score <= 1.0 for r in results)
+        from lilbee.data.store import core as store_core
 
-    def test_fixed_fusion_when_adaptive_disabled(self, store, test_config):
-        """Opting out of adaptive fusion pins the fixed lexical_fusion_weight."""
+        with (
+            mock.patch.object(store_core, "adaptive_lexical_weight", return_value=0.123) as adapt,
+            mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
+        ):
+            results = store.search(query_vec, top_k=3, query_text="chunk number")
+        adapt.assert_called_once()
+        # adaptive_lexical_weight(vector_rows, base_weight, margin): the base is
+        # lexical_fusion_weight and the margin is the configured value.
+        assert adapt.call_args.args[1] == pytest.approx(test_config.lexical_fusion_weight)
+        assert adapt.call_args.args[2] == pytest.approx(0.42)
+        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(0.123)
+        assert len(results) > 0
+
+    def test_fixed_fusion_pins_the_config_weight(self, store, test_config):
+        """Opting out of adaptive fusion skips adaptive_lexical_weight and pins
+        the fixed lexical_fusion_weight into fuse_arms; a non-default weight must
+        reach fusion verbatim."""
         test_config.adaptive_fusion = False
+        test_config.lexical_fusion_weight = 0.3
         store.add_chunks(_make_records())
         store.ensure_fts_index()
         query_vec = [0.5] * test_config.embedding_dim
-        results = store.search(query_vec, top_k=3, query_text="chunk number")
+        from lilbee.data.store import core as store_core
+
+        with (
+            mock.patch.object(store_core, "adaptive_lexical_weight") as adapt,
+            mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
+        ):
+            results = store.search(query_vec, top_k=3, query_text="chunk number")
+        adapt.assert_not_called()
+        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(0.3)
         assert len(results) > 0
-        assert all(r.score is not None and 0.0 <= r.score <= 1.0 for r in results)
 
     def test_fallback_to_vector_when_no_query_text(self, store, test_config):
         records = _make_records()
@@ -2423,6 +2441,20 @@ class TestTitleSearch:
         matched = [r for r in results if r.source == "a.pdf"]
         assert matched
         assert all(r.bm25_score is not None for r in matched)
+
+    def test_title_search_weight_reaches_fusion(self, store, test_config):
+        """A non-default title_search_weight is threaded into fuse_arms, not
+        hardcoded: the config value is what weights the title arm."""
+        test_config.title_search = True
+        test_config.title_search_weight = 0.2
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        query_vec = [0.1] * test_config.embedding_dim
+        from lilbee.data.store import core as store_core
+
+        with mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse:
+            store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
+        assert fuse.call_args.kwargs["title_weight"] == pytest.approx(0.2)
 
     def test_title_arm_off_by_default(self, store, test_config):
         """With title_search off, a title-only term earns no lexical support."""

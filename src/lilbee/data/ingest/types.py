@@ -73,8 +73,7 @@ class ChunkRecord(TypedDict):
     chunk: str
     chunk_index: int
     vector: list[float]
-    # Stamped once per document by the pipeline (see _produce_records) rather
-    # than set by every producer, so the derivation lives in one place.
+    # Stamped once per document by the pipeline (see _produce_records).
     title: NotRequired[str]
 
 

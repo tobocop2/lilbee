@@ -878,7 +878,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        help_text="Drop tables-of-contents and cover pages from search results",
+        help_text="Drop tables-of-contents and classification-banner cover pages from results",
     ),
     "history_rewrite": SettingDef(
         bool,
