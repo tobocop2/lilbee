@@ -641,6 +641,24 @@ def _placeable_wanted() -> set[tuple[WorkerRole, str]]:
     }
 
 
+def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
+    """Cheap preconditions for a viable build, checked before stopping a warm engine.
+
+    A process that can serve nothing (no placeable model, or an unresolvable
+    engine binary) must not stop an engine another setup left warm and then spawn
+    nothing. These checks need no free VRAM, so they run before the stop.
+    """
+    from lilbee.providers.fleet.binary import resolve_llama_server
+
+    if not wanted:
+        return False
+    try:
+        resolve_llama_server()
+    except (ProviderError, OSError):
+        return False
+    return True
+
+
 def _warm_ttl_seconds() -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
@@ -785,6 +803,10 @@ class FleetProvider:
                 or not live_users_exist(machine)
                 or _healthy_groups_ours(machine, pin, wanted)
             ):
+                if not _can_build_engine(wanted):
+                    # Can't serve anything: never stop a warm engine we can't
+                    # replace and then spawn nothing.
+                    return False
                 # Reap dead leftovers, then stop any replaceable incumbent, so
                 # planning sees true free VRAM.
                 reap_stale(machine)
@@ -799,6 +821,8 @@ class FleetProvider:
             if wanted and self._bind_all_in_dir(private, pin, wanted):
                 self._hold_membership(private)
                 return True
+            if not _can_build_engine(wanted):
+                return False
             reap_stale(private)
             if self._slot_occupied(private) and (
                 not live_users_exist(private) or _healthy_groups_ours(private, pin, wanted)

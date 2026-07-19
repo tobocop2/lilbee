@@ -3175,9 +3175,10 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
-    # Everything the test configures is placeable unless a test overrides this.
+    # Everything the test configures is placeable and buildable unless overridden.
     monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
     monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: True)
     monkeypatch.setattr(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
     )
@@ -3191,6 +3192,24 @@ def _chat_launch() -> InstanceLaunch:
     return InstanceLaunch(
         role=WorkerRole.CHAT, argv=["/bin/llama-server"], env_overrides={}, model="m-chat"
     )
+
+
+def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Path) -> None:
+    """A process that can serve nothing must not stop an engine left warm.
+
+    keep_engine_warm leaves the machine engine running with no live users. A
+    process whose models are all unplaceable (or whose binary is missing) would
+    otherwise stop that warm engine and then spawn nothing.
+    """
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "_placeable_wanted", lambda: set())  # nothing placeable
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-warm", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is False  # serves nothing...
+    assert stopped == []  # ...but never stops the warm engine
 
 
 def test_ladder_binds_when_a_configured_role_is_unplaceable(monkeypatch, tmp_path: Path) -> None:
@@ -3258,6 +3277,25 @@ def test_ladder_overflows_to_private_dir_on_pin_mismatch(monkeypatch, tmp_path: 
     assert swap.binds == []  # incompatible: never bound
     assert swap.started  # built instead
     assert built and built[0] == tmp_path / "root" / "data" / "engine"
+    holder.release_and_check_last()
+
+
+def test_ladder_private_path_stops_short_when_it_cannot_build(monkeypatch, tmp_path: Path) -> None:
+    """Overflow to the private dir also refuses to build when nothing is buildable,
+    rather than stopping a private incumbent it cannot replace."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    monkeypatch.setattr(prov_mod, "_can_build_engine", lambda _wanted: False)
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # live foreign incumbent forces overflow
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is False  # can't build, so the private path serves nothing
+    assert swap.started == []
     holder.release_and_check_last()
 
 
@@ -3670,3 +3708,24 @@ def test_chat_with_tools_transport_failure_rediscovers_once(monkeypatch, tmp_pat
     p = _chat_ladder(monkeypatch, tmp_path, _client_factory)
     assert p.chat_with_tools([{"role": "user", "content": "hi"}], tools=[]) == "tools-recovered"
     assert len(clients) == 2
+
+
+def test_can_build_engine_false_when_nothing_placeable() -> None:
+    assert prov_mod._can_build_engine(set()) is False
+
+
+def test_can_build_engine_false_when_binary_unresolvable(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
+    def _boom():
+        raise ProviderError("no engine binary", provider="llama-server")
+
+    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_llama_server", _boom)
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is False
+
+
+def test_can_build_engine_true_with_a_placeable_model_and_binary(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
+    )
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is True
