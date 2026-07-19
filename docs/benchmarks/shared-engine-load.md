@@ -79,11 +79,31 @@ GPU memory by building a duplicate engine in the overflow slot, and left the
 resident server returning errors until restart. The soak now passes the same
 violence cleanly, which is the point of running it.
 
+## Endurance run
+
+The same soak at 600 rounds: **2 hours 24 minutes of continuous load, 2,400
+chat completions across 4 concurrent streams, 600 CLI engine cycles, and 120
+forced process kills.**
+
+- Zero persistent failures and zero resource leaks: VRAM held between 39.4 and
+  39.9 GB for the entire run, the membership lock count never left 1, and
+  process counts always returned to baseline.
+- 588 of 600 rounds fully green. The 12 degraded rounds were the crash-recovery
+  window: 10 were the round immediately following a proxy kill (streams fail
+  for one 14 to 16 second round while the engine rebuilds in place, then full
+  service resumes), and 2 were partial rounds in the same neighborhood.
+- The CLI path, a fresh process each cycle, went 600 for 600: an arriving
+  process always finds or rebuilds a working engine.
+
+Requests that land inside the rebuild window currently fail fast rather than
+waiting out the rebuild; turning that window into added latency instead of
+errors is tracked as a follow-up.
+
 ## What this does and does not show
 
-These results show the shared-engine architecture holds up under concurrent
-multi-client load and survives engine-process crashes without leaking VRAM,
-locks, or processes, on one GPU with one model pairing. They do not cover
-multi-GPU placement, other quantizations, consumer GPUs, or sustained
-multi-hour operation (a longer endurance run is tracked separately). Absolute
-throughput numbers are specific to this model, quantization, and card.
+These results show the shared-engine architecture holds up under sustained
+concurrent multi-client load and survives repeated engine-process crashes
+without leaking VRAM, locks, or processes, on one GPU with one model pairing.
+They do not cover multi-GPU placement, other quantizations, or consumer GPUs.
+Absolute throughput numbers are specific to this model, quantization, and
+card.
