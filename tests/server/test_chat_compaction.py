@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
+import time
 from collections.abc import AsyncIterator
 from unittest.mock import MagicMock
 
@@ -268,6 +271,62 @@ class TestChatStreamCompactionEvents:
         assert "compacting" not in names
         assert "compaction" not in names
         mock_svc.searcher.summarize_history.assert_not_called()
+
+
+class TestStreamKeepsTheLoopFree:
+    """bb-izsf: retrieval must not block the event loop for the whole turn."""
+
+    async def test_other_requests_are_served_while_retrieval_runs(
+        self, mock_svc, monkeypatch
+    ) -> None:
+        """A slow, blocking retrieval must not stall a concurrent coroutine.
+
+        The plugin appends each turn to its session while the answer streams. With
+        retrieval on the loop those appends queued behind the whole turn, timed out,
+        and split one conversation across two sessions during E2E recording.
+        """
+        monkeypatch.setattr(cfg, "chat_compaction", False)
+        monkeypatch.setattr(
+            _rag, "dispatch_chat_stream", lambda req: _async_stream(_events_from(["hi"]))
+        )
+
+        def _slow_context(question, top_k=0, history=None, chunk_type=None):
+            time.sleep(0.3)  # stands in for embed + search + rerank
+            return ([], [{"role": "user", "content": "q"}])
+
+        # Unset, skip_retrieval() returns a truthy MagicMock and the turn takes the
+        # direct path, never reaching retrieval at all.
+        mock_svc.searcher.skip_retrieval.return_value = False
+        mock_svc.searcher.library_empty.return_value = False
+        mock_svc.searcher.build_rag_context.side_effect = _slow_context
+
+        # Throughput is the signal, not the widest gap: while the loop is blocked
+        # every 10ms timer piles up and then fires back to back, so the stamps are
+        # bunched rather than spread. A free loop ticks steadily throughout.
+        ticks = 0
+
+        async def _heartbeat() -> None:
+            nonlocal ticks
+            for _ in range(60):
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        beat = asyncio.ensure_future(_heartbeat())
+        # Let it tick before the turn starts: with no stamp on record before the
+        # stall, the gap that proves the stall has nothing to measure from.
+        await asyncio.sleep(0.05)
+        frames = [frame async for frame in _rag.chat_stream("q", history=[], top_k=5)]
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
+
+        assert mock_svc.searcher.build_rag_context.called, "retrieval was never reached"
+        assert any("token" in f for f in frames), "the turn still answers"
+        # Blocking retrieval yields ~4 ticks across the turn; off the loop it is ~30.
+        assert ticks >= 15, (
+            f"the loop only ticked {ticks} times through a 0.3s retrieval; "
+            "it must not run on the event loop"
+        )
 
 
 class TestChatResponseCompaction:

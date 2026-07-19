@@ -319,7 +319,11 @@ async def _stream_rag_response(
         yield sse_event(SseEvent.SOURCES, [])
         yield sse_done({})
         return
-    results, messages, preempt = _resolve_stream_context(
+    # Retrieval embeds, searches, reranks, and can spend an LLM call expanding
+    # the query. On the loop it stalls every other admitted request for the whole
+    # turn; the non-streaming siblings already thread the same work.
+    results, messages, preempt = await asyncio.to_thread(
+        _resolve_stream_context,
         searcher,
         question,
         history,
@@ -620,8 +624,8 @@ async def _stream_chat_response(
             yield item
             continue
         history, _compaction = item
-    frames, ctx = _resolve_chat_stream_context(
-        get_services().searcher, question, history, top_k, chunk_type
+    frames, ctx = await asyncio.to_thread(
+        _resolve_chat_stream_context, get_services().searcher, question, history, top_k, chunk_type
     )
     for frame in frames:
         yield frame
