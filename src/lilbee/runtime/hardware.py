@@ -60,9 +60,34 @@ def available_memory_for_fit() -> int | None:
     try:
         from lilbee.providers.model_cache import get_available_memory
 
-        return get_available_memory(cfg.gpu_memory_fraction, total=True)
+        budget = get_available_memory(cfg.gpu_memory_fraction, total=True)
     except Exception:
         return None
+    return budget + _expert_offload_headroom()
+
+
+def _expert_offload_headroom() -> int:
+    """System memory the fit budget may borrow when expert offload is configured.
+
+    A sparse model's experts live in system RAM under offload, so a host whose
+    budget is discrete VRAM can run a model larger than that VRAM and must not
+    be told otherwise. Zero unless the budget really is device memory: every
+    other path (Apple unified memory, a non-NVIDIA or CPU-only host) already
+    reports system RAM, and adding it twice would invent capacity. Dense models
+    gain nothing from the setting, so this reads optimistically for a host that
+    enables offload and then pulls a dense model; the planner still sizes the
+    real placement at load time.
+    """
+    from lilbee.providers.model_cache import free_system_memory, has_nvidia_gpu
+
+    if not (cfg.cpu_moe or cfg.n_cpu_moe is not None):
+        return 0
+    try:
+        if not has_nvidia_gpu():
+            return 0
+        return int(free_system_memory() * cfg.gpu_memory_fraction)
+    except Exception:
+        return 0
 
 
 class SizeVariantInfo(BaseModel):

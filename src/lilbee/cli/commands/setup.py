@@ -129,7 +129,6 @@ def _self_check_server(
     same binary and flags a real request drives. The upstream loads on the first
     request; the caller shuts the manager down.
     """
-    from lilbee.core.config.enums import KvCacheType
     from lilbee.providers.engine_params import (
         resolve_chat_ctx,
         resolve_embed_ctx,
