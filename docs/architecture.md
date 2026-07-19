@@ -501,7 +501,13 @@ touching the running fleet.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
   `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and
-  `--cache-type-k/-v` from `kv_cache_type`; it also loads with `--no-mmap`
+  `--cache-type-k/-v` from `kv_cache_type` -- but a quantized KV type needs flash
+  attention, so with it disabled the launch falls back to f16 (and the estimate
+  sizes against f16 to match). A mixture-of-experts model also offloads its expert
+  weights to system memory when `cpu_moe`/`n_cpu_moe` is set (`--cpu-moe`/
+  `--n-cpu-moe`, gated on the GGUF declaring routed experts), and the VRAM estimate
+  charges the same tensors to the host so the plan matches the launch. Chat also
+  loads with `--no-mmap`
   (a malloc'd host copy) when its weights fit in at most half of total system
   RAM -- a buffered sequential read reaches ready ~20% faster than mmap's
   page-fault-driven upload (measured 33s vs 43s for a 112GB model on 3 GPUs),

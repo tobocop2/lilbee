@@ -80,15 +80,22 @@ class _FakeSwap:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_probe(monkeypatch):
-    """No test in this module may probe real hardware or resolve real binaries.
+def _no_real_probe(monkeypatch, tmp_path_factory):
+    """No test in this module may probe real hardware, resolve real binaries, or
+    touch the real per-user machine engine slot.
 
-    capture_plan_probe resolves the engine binary and spawns device probes; on a
-    host without the bundled engine (CI) it raises, and on a dev box it silently
-    probes the real GPUs. Tests that exercise the capture lifecycle override
-    this stub with their own recorder.
+    capture_plan_probe and placeable_total_vram both resolve the engine binary
+    and spawn device probes; on a host without the bundled engine (CI) they raise,
+    and on a dev box they silently probe the real GPUs. machine_engine_dir would
+    otherwise let parallel tests collide on one real directory. Tests that
+    exercise these override the stubs with their own recorders; placeability is
+    stubbed true so a configured role is placeable unless a test says otherwise.
     """
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
+    mslot = tmp_path_factory.mktemp("machine-slot")
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: mslot)
 
 
 def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:

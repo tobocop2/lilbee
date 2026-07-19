@@ -1975,18 +1975,37 @@ def test_expert_offload_survives_unparsable_expert_count(monkeypatch) -> None:
     assert planning_mod.expert_offload_all({"expert_count": "many"}) is False
 
 
-def test_expert_offload_lets_a_model_bigger_than_vram_through(monkeypatch) -> None:
-    # Oversize weights are legitimate once the experts live in system memory.
+def test_expert_offload_lets_a_sparse_model_bigger_than_vram_through(monkeypatch) -> None:
+    # Oversize weights are legitimate once a sparse model's experts live in RAM.
     monkeypatch.setattr(cfg, "cpu_moe", True)
     monkeypatch.setattr(cfg, "n_gpu_layers", None)
-    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3) is False
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is False
+
+
+def test_expert_offload_still_refuses_a_dense_model_over_vram(monkeypatch) -> None:
+    # A dense model gains no offload flags, so its weights really must fit: keep
+    # the guided refusal instead of a raw load-time OOM.
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=False) is True
 
 
 def test_oversize_model_is_still_refused_without_expert_offload(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "cpu_moe", False)
     monkeypatch.setattr(cfg, "n_cpu_moe", None)
     monkeypatch.setattr(cfg, "n_gpu_layers", None)
-    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3) is True
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is True
+
+
+def test_zero_n_cpu_moe_is_not_effective_offload(monkeypatch) -> None:
+    # n_cpu_moe <= 0 would emit a no-op --n-cpu-moe 0; treat it as no offload, so
+    # a dense OR sparse model over VRAM is still refused rather than silently OOM.
+    monkeypatch.setattr(cfg, "cpu_moe", False)
+    monkeypatch.setattr(cfg, "n_cpu_moe", 0)
+    monkeypatch.setattr(cfg, "n_gpu_layers", None)
+    assert planning_mod._expert_offload_configured() is False
+    assert planning_mod._weights_exceed_hardware(80 * 1024**3, 24 * 1024**3, is_moe=True) is True
+    assert planning_mod.expert_offload_layers({"expert_count": "128"}) is None
 
 
 def test_oversize_sparse_model_is_told_to_offload_its_experts(monkeypatch, caplog) -> None:
@@ -2126,7 +2145,8 @@ def test_resolve_split_chat_slots_stays_single_when_the_fit_is_the_floor() -> No
 def test_role_model_placeable_true_for_installed_fitting_model(monkeypatch) -> None:
     monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
     monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 10 * 1024**3)
-    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda _w, _v: False)
+    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda _w, _v, **_k: False)
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
     _ref = type("R", (), {"is_remote": False})()
     monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
     assert planning_mod.role_model_placeable(WorkerRole.CHAT, "org/repo/m.gguf", 80 * 1024**3)
@@ -2143,7 +2163,8 @@ def test_role_model_placeable_false_when_not_installed(monkeypatch) -> None:
 def test_role_model_placeable_false_when_weights_exceed_vram(monkeypatch) -> None:
     monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
     monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 200 * 1024**3)
-    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda w, v: w > v)
+    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda w, v, **_k: w > v)
+    monkeypatch.setattr(planning_mod, "_ref_is_moe", lambda _ref: False)
     _ref = type("R", (), {"is_remote": False})()
     monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
     assert not planning_mod.role_model_placeable(WorkerRole.CHAT, "org/repo/m.gguf", 80 * 1024**3)

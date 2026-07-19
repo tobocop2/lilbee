@@ -677,12 +677,16 @@ def expert_offload_all(meta: dict[str, str] | None) -> bool:
 
 
 def expert_offload_layers(meta: dict[str, str] | None) -> int | None:
-    """How many layers' experts to keep in system memory, or None for no split."""
+    """How many layers' experts to keep in system memory, or None for no split.
+
+    A non-positive ``n_cpu_moe`` offloads nothing (it would emit a no-op
+    ``--n-cpu-moe 0``), so it reads as unset.
+    """
     from lilbee.core.config import cfg
 
-    if cfg.n_cpu_moe is None or not _is_moe(meta):
+    if cfg.n_cpu_moe is None or cfg.n_cpu_moe < 1 or not _is_moe(meta):
         return None
-    return max(0, cfg.n_cpu_moe)
+    return cfg.n_cpu_moe
 
 
 def _role_expert_offload(model_path: Path) -> tuple[str, ...]:
@@ -701,25 +705,33 @@ def _role_expert_offload(model_path: Path) -> tuple[str, ...]:
 
 
 def _expert_offload_configured() -> bool:
-    """Whether the user asked for any expert offload at all."""
+    """Whether the user asked for expert offload that would actually take effect.
+
+    A non-positive ``n_cpu_moe`` offloads nothing, so it does not count.
+    """
     from lilbee.core.config import cfg
 
-    return bool(cfg.cpu_moe) or cfg.n_cpu_moe is not None
+    return bool(cfg.cpu_moe) or (cfg.n_cpu_moe is not None and cfg.n_cpu_moe >= 1)
 
 
-def _weights_exceed_hardware(size: int, total_vram: int) -> bool:
+def _weights_exceed_hardware(size: int, total_vram: int, *, is_moe: bool) -> bool:
     """True when a model's weight bytes alone cannot fit the fleet's physical VRAM.
 
     File size is ground truth, not an estimate, so this bound cannot repeat the
     false-refusal class: no estimator error makes a 40 GiB file fit a 1 GiB card.
-    It stands down when the user configured partial CPU offload (``n_gpu_layers``
-    or expert offload), where big-weights-small-VRAM is a legitimate setup.
+    It stands down for a per-layer offload (``n_gpu_layers``, which moves dense
+    layers too) on any model, and for expert offload only on a mixture-of-experts
+    model, where the experts genuinely leave the GPU. A dense model with expert
+    offload set keeps its refusal: the launch would emit no offload flags, so the
+    weights really must fit, and a guided refusal beats a raw load-time OOM.
     """
     from lilbee.core.config import cfg
 
-    if _expert_offload_configured():
+    if cfg.n_gpu_layers is not None:
         return False
-    return total_vram > 0 and cfg.n_gpu_layers is None and size > total_vram
+    if is_moe and _expert_offload_configured():
+        return False
+    return total_vram > 0 and size > total_vram
 
 
 def _vision_without_mmproj(role: WorkerRole, ref: str) -> bool:
@@ -773,7 +785,7 @@ def _estimate_or_fallback(
             role, ref, exc, device_count=device_count, total_vram=total_vram
         )
     weights = _role_weights_bytes(role, ref)
-    if _weights_exceed_hardware(weights, total_vram):
+    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
     return estimate
@@ -794,7 +806,7 @@ def _sizing_failure_fallback(
     if weights == 0:
         log.warning("Skipping %s server: could not size model %r (%s).", role.value, ref, exc)
         return None
-    if _weights_exceed_hardware(weights, total_vram):
+    if _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref)):
         _warn_weights_exceed(role, ref, weights, total_vram)
         return None
     log.warning(
@@ -872,7 +884,9 @@ def role_model_placeable(role: WorkerRole, ref: str, total_vram: int) -> bool:
     if parse_model_ref(ref).is_remote or _vision_without_mmproj(role, ref):
         return False
     weights = _role_weights_bytes(role, ref)  # 0 when not installed / unresolvable
-    return weights > 0 and not _weights_exceed_hardware(weights, total_vram)
+    if weights == 0:
+        return False
+    return not _weights_exceed_hardware(weights, total_vram, is_moe=_ref_is_moe(ref))
 
 
 def _server_model_inputs(

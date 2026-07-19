@@ -73,14 +73,15 @@ def _expert_offload_headroom() -> int:
     budget is discrete VRAM can run a model larger than that VRAM and must not
     be told otherwise. Zero unless the budget really is device memory: every
     other path (Apple unified memory, a non-NVIDIA or CPU-only host) already
-    reports system RAM, and adding it twice would invent capacity. Dense models
-    gain nothing from the setting, so this reads optimistically for a host that
-    enables offload and then pulls a dense model; the planner still sizes the
-    real placement at load time.
+    reports system RAM, and adding it twice would invent capacity. Zero too for a
+    non-positive ``n_cpu_moe``, which offloads nothing. The chip is per-family and
+    this budget is global, so it reads optimistically for a dense model pulled on
+    an offload-enabled host (a sparse model gains the room, a dense one still
+    fails to place); the planner sizes the real placement at load time.
     """
     from lilbee.providers.model_cache import free_system_memory, has_nvidia_gpu
 
-    if not (cfg.cpu_moe or cfg.n_cpu_moe is not None):
+    if not (cfg.cpu_moe or (cfg.n_cpu_moe is not None and cfg.n_cpu_moe >= 1)):
         return 0
     try:
         if not has_nvidia_gpu():
