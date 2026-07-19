@@ -336,7 +336,20 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Sessions tab, and the /sessions command. Off: nothing is written to disk, "
             "the ctrl+o binding leaves the footer, and opening the Sessions view shows a "
             "notice that sessions are turned off. Turn it off if you would rather your "
-            "chats not persist."
+            "chats not persist. Covers the TUI, the HTTP server, and the CLI; agent "
+            "sessions have their own setting."
+        ),
+    ),
+    "mcp_sessions_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the session tools are not offered over MCP, and a connected "
+            "agent cannot create or read agent sessions. On: an agent can keep its own "
+            "saved conversations, separate from yours. Most agent hosts already track "
+            "their own history, and the tools cost context on every request, so this "
+            "stays off unless you want an agent owning conversations."
         ),
     ),
     "chat_mode": SettingDef(
