@@ -3849,6 +3849,8 @@ class TestSelfCheck:
             "flash_attention",
             "kv_cache_type",
             "n_gpu_layers",
+            "cpu_moe",
+            "n_cpu_moe",
             "main_gpu",
             "gpu_devices",
         }

@@ -228,6 +228,8 @@ def status() -> dict[str, Any]:
             "flash_attention": cfg.flash_attention,
             "kv_cache_type": cfg.kv_cache_type.value,
             "n_gpu_layers": cfg.n_gpu_layers,
+            "cpu_moe": cfg.cpu_moe,
+            "n_cpu_moe": cfg.n_cpu_moe,
             "main_gpu": cfg.main_gpu,
             "gpu_devices": cfg.gpu_devices,
         },
