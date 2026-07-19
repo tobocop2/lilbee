@@ -931,8 +931,10 @@ class TestBuildFleetWiring:
         seen: dict = {}
 
         def _fit(_model_path, *, slots, ratio, per_device_free_bytes, **_k) -> int:
-            seen.update(slots=slots, ratio=ratio, free=per_device_free_bytes)
-            return 5000
+            # Only one full window fits (a tight split): more slots shrink the fit,
+            # so the chooser keeps a single full-context sequence.
+            seen.update(ratio=ratio, free=per_device_free_bytes)
+            return 5000 if slots == 1 else 4000
 
         monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", _fit)
         d0 = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
@@ -940,12 +942,33 @@ class TestBuildFleetWiring:
         plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
         launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1})
         assert launch.ctx == 5000
-        # A multi-card chat serves one full-context slot, fit against per-device free.
-        assert seen["slots"] == planning_mod._SPLIT_CHAT_SLOTS and seen["ratio"] == (1, 1)
+        assert seen["ratio"] == (1, 1)
         assert seen["free"] == [70 * _GB, 60 * _GB]  # per-device free, not the summed pool
-        assert launch.slots == planning_mod._SPLIT_CHAT_SLOTS
-        ctx_total = 5000 * planning_mod._SPLIT_CHAT_SLOTS
-        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(ctx_total)
+        assert launch.slots == 1  # tight split: one full-context sequence
+        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(5000)
+
+    def test_launch_for_split_chat_serves_multiple_slots_when_headroom_holds_them(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A split whose cards hold several full windows serves that many agents
+        # concurrently: the reel/multi-agent case on 2 big cards.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(cfg, "num_ctx", None)
+
+        # Every slot count still reaches the full window: 4 agents fit.
+        monkeypatch.setattr("lilbee.providers.fleet.ctx.fit_split_ctx", lambda *_a, **_k: 65536)
+        d0 = FleetDevice("CUDA", 0, "gpu", 143 * _GB, 130 * _GB)
+        d1 = FleetDevice("CUDA", 1, "gpu", 143 * _GB, 130 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0, 1), tensor_split=(1, 1))
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: d0, 1: d1})
+        assert launch.slots == planning_mod._CHAT_SLOTS  # all four full windows fit
+        assert launch.ctx == 65536  # each agent keeps the full window
+        # --ctx-size is the per-slot window times the slot count.
+        total = 65536 * planning_mod._CHAT_SLOTS
+        assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(total)
 
     def test_launch_for_warns_on_oversize_network_fs_chat(self, tmp_path, monkeypatch, caplog):
         # A chat model served from a network volume that can't fit host RAM keeps
@@ -2063,3 +2086,38 @@ def test_estimate_offloads_nothing_for_a_dense_model(monkeypatch, tmp_path: Path
     )
     monkeypatch.setattr(cfg, "cpu_moe", True)
     assert planning_mod._role_expert_offload(model) == ()
+
+
+def test_resolve_split_chat_slots_uses_all_when_every_window_fits() -> None:
+    # fit_fn returns the full window at every slot count -> take the max.
+    slots, ctx = planning_mod._resolve_split_chat_slots(lambda _n: 65536)
+    assert slots == planning_mod._CHAT_SLOTS
+    assert ctx == 65536
+
+
+def test_resolve_split_chat_slots_falls_to_one_on_a_tight_split() -> None:
+    # More slots shrink the per-slot window below the single-slot full window.
+    def fit(n: int) -> int:
+        return 65536 if n == 1 else 20000
+
+    slots, ctx = planning_mod._resolve_split_chat_slots(fit)
+    assert slots == 1
+    assert ctx == 65536
+
+
+def test_resolve_split_chat_slots_picks_the_largest_fitting_count() -> None:
+    # Two full windows fit but not three or four.
+    def fit(n: int) -> int:
+        return 40000 if n <= 2 else 12000
+
+    slots, _ctx = planning_mod._resolve_split_chat_slots(fit)
+    assert slots == 2
+
+
+def test_resolve_split_chat_slots_stays_single_when_the_fit_is_the_floor() -> None:
+    # A degenerate floor fit is a give-up value, not a verified fit; never multiply it.
+    from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR
+
+    slots, ctx = planning_mod._resolve_split_chat_slots(lambda _n: _DYNAMIC_CTX_FLOOR)
+    assert slots == 1
+    assert ctx == _DYNAMIC_CTX_FLOOR
