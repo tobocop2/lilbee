@@ -23,7 +23,7 @@ from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, pump_until
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +96,7 @@ async def test_bracket_keys_cycle_all_screens():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         assert isinstance(app.screen, ChatScreen)
 
         # Chat starts in insert mode: Escape to normal mode first
@@ -139,7 +139,7 @@ async def test_view_switch_guard_held_until_transition_completes():
         assert app._switching is False
         assert isinstance(app.screen, CatalogScreen)
         app.switch_view("Settings")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
         assert isinstance(app.screen, SettingsScreen)
 
 
@@ -148,7 +148,7 @@ async def test_bracket_keys_typed_literally_when_chat_input_focused():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         assert isinstance(app.screen, ChatScreen)
 
         chat_input = app.screen.query_one("#chat-input", ChatInput)
@@ -196,11 +196,11 @@ async def test_bracket_keys_work_from_settings():
         await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
         assert isinstance(app.screen, SettingsScreen)
 
         await pilot.press("right_square_bracket")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, TaskCenter))
         assert isinstance(app.screen, TaskCenter)
 
 
@@ -241,7 +241,7 @@ async def test_settings_escape_returns_to_chat():
         await await_chat(app, pilot)
         await pilot.pause()
         app.switch_view("Settings")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
         assert isinstance(app.screen, SettingsScreen)
 
         await pilot.press("escape")
@@ -292,7 +292,7 @@ async def test_slash_catalog_routes_through_switch_view_under_lilbee_app():
         chat = app.screen
         assert isinstance(chat, ChatScreen)
         chat._handle_slash("/models")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, CatalogScreen))
         assert isinstance(app.screen, CatalogScreen)
 
 
@@ -305,7 +305,7 @@ async def test_slash_settings_routes_through_switch_view_under_lilbee_app():
         chat = app.screen
         assert isinstance(chat, ChatScreen)
         chat._handle_slash("/settings")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, SettingsScreen))
         assert isinstance(app.screen, SettingsScreen)
 
 
@@ -318,7 +318,7 @@ async def test_slash_status_routes_through_switch_view_under_lilbee_app():
         chat = app.screen
         assert isinstance(chat, ChatScreen)
         chat._handle_slash("/status")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, StatusScreen))
         assert isinstance(app.screen, StatusScreen)
 
 
@@ -332,7 +332,7 @@ async def test_grid_arrows_stay_on_catalog():
         await pilot.pause()
 
         await pilot.press("right")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, CatalogScreen))
         assert isinstance(app.screen, CatalogScreen)
 
 
@@ -475,31 +475,31 @@ async def test_backward_nav_from_catalog_after_visiting_tasks():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         assert isinstance(app.screen, ChatScreen)
         await pilot.press("escape")
         await pilot.pause()
 
         # Forward to Catalog
         await pilot.press("right_square_bracket")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, CatalogScreen))
         assert isinstance(app.screen, CatalogScreen)
 
         # Forward past Catalog to Tasks (Catalog > Status > Settings > Tasks)
         for _ in range(3):
             await pilot.press("right_square_bracket")
-            await pilot.pause()
+            await pump_until(pilot, lambda: isinstance(app.screen, TaskCenter))
         assert isinstance(app.screen, TaskCenter)
 
         # Backward back to Catalog (Tasks > Settings > Status > Catalog)
         for _ in range(3):
             await pilot.press("left_square_bracket")
-            await pilot.pause()
+            await pump_until(pilot, lambda: isinstance(app.screen, CatalogScreen))
         assert isinstance(app.screen, CatalogScreen)
 
         # The critical step: backward from Catalog to Chat
         await pilot.press("left_square_bracket")
-        await pilot.pause()
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
         assert isinstance(app.screen, ChatScreen), (
             f"Expected ChatScreen after [ from Catalog, got {type(app.screen).__name__}"
         )
