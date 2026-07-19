@@ -10,18 +10,34 @@ get typed on camera.
 ## Models
 
 No small models. A 4B or 8B model cannot carry a real coding task, and a demo
-where the agent flails is worse than no demo.
+where the agent flails is worse than no demo. Every pick below is a model
+people currently reach for to drive coding agents.
 
-| Tier | Candidate | Why it earns a row |
-|---|---|---|
-| Mid dense | Qwen3-32B, Q4_K_M (~20 GB) | The honest dense contrast. Makes the MoE number interpretable and fits comfortably beside an embed model. |
-| Large dense | Llama-3.3-70B, Q4_K_M (~40 GB) | Where sharing stops being a convenience: two copies do not fit on one card, so the architecture is the only way four agents run at all. |
-| Sparse MoE (already measured) | Qwen3.6-35B-A3B, Q8_0 (37 GB) | Reference point, carried over from the first run. |
+| Tier | Model | Size at Q4 | Hardware | Why it earns a row |
+|---|---|---|---|---|
+| Workhorse | Qwen3-Coder-Next, 80B-A3B | ~49 GB | 1x A100 80GB or H200 | Purpose-built for agentic coding, ~70.6% SWE-bench Verified, and 3B active means it streams fast enough to read on camera. Single GPU, so the shared-engine result stays free of multi-GPU variables. |
+| Frontier | MiniMax-M2.1, 230B-A10B | ~130 GB | 2 GPUs minimum | Explicitly tuned for coding agents. Doubles as the multi-GPU flagship: four agents across two cards on one shared engine. |
+| Reference | Qwen3.6-35B-A3B, Q8_0 | 37 GB | 1x A100 80GB | Already measured in the first round. Free row, no new pod time. |
 
-Before pulling anything, run the real gguf-parser planner per candidate and
-confirm slots, per-slot context, and KV budget on the target card. Substitute a
-sibling model if a candidate does not fit four slots at a working context; do
-not shrink context below what an agent needs to hold a session.
+Kimi K2.6 is the SWE-bench leader at ~80.2% verified, but it is a 1T MoE that
+lands at roughly 340 GB even at 2-bit, so it needs four H200s and puts a 2-bit
+quantization on camera. MiniMax-M2.1 buys most of the frontier story at about a
+quarter of the hardware. Run Kimi only if the giant tier is the point of the
+reel rather than the coding quality.
+
+Two practical notes before pulling anything:
+
+- **Tool-call plumbing is not uniform.** Qwen3-Coder is already a verified
+  family in this repo's opencode matrix, so Qwen3-Coder-Next should inherit
+  working tool dispatch. MiniMax is a new family and may need a response-parser
+  schema before it dispatches at all. Verify dispatch with the existing matrix
+  harness before committing a recording session to it; fixing a parser is dev
+  work and does not belong in a recording session.
+- **Size against the real planner.** Run the gguf-parser planner per candidate
+  and confirm slots, per-slot context, and KV budget on the target card. A 4-bit
+  80B jumps roughly 7 GB going from 4k to 256k of context, and this harness
+  wants four slots at a context an agent can actually hold a session in. Do not
+  shrink context to make a model fit; pick a different model.
 
 ## The four agents
 
