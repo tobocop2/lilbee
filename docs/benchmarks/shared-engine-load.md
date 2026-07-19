@@ -16,7 +16,8 @@ engine: one llama.cpp fleet serving every lilbee process on the machine.
 
 The harness lives in `tools/qa/shared-engine/load/`: a streaming asyncio driver
 (`bench_driver.py`), the concurrency sweep (`bench_sweep.sh`), and the chaos
-soak (`soak_run.sh`). Every number below is reproducible from those scripts.
+soak (`soak_run.sh`). Every number below is reproducible from those scripts; the raw per-request records are in
+`docs/benchmarks/shared-engine-load-results/`.
 
 ## Throughput sweep
 
