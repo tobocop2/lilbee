@@ -21,7 +21,7 @@ agent flailing on camera is worse than no demo.
 |---|---|---|---|---|
 | Consumer, single card | Qwen3-Coder-30B-A3B, Q4_K_M | ~18 GB | One RTX 4090 or 5090; M-series 32 GB | "Runs on the card you already own." Already a verified passing family in this repo's opencode matrix, including on M1 Metal. |
 | Consumer, enthusiast desktop | Qwen3-Coder-Next, 80B-A3B, Q4_K_M | ~48.7 GB | Dual 5090 (64 GB), or Mac Studio M4 Max 64 GB | An 80B agentic coder at ~71% SWE-bench Verified, on a desktop. The Mac path is the least friction: no dual-card power budget, roughly 80 W at load. |
-| Workstation | MiniMax-M2.1, 230B-A10B | ~130 GB | Mac Studio M3 Ultra (large unified memory) | Frontier coding agent on a machine a person can buy. On NVIDIA this tier needs expert offload, which lilbee does not support yet (bb-cuzq). |
+| Workstation | MiniMax-M2.1, 230B-A10B | ~130 GB | Mac Studio M3 Ultra (large unified memory) | Frontier coding agent on a machine a person can buy. On NVIDIA this tier needs expert offload, which lilbee does not support yet. |
 | Warehouse | Kimi K2.6, 1T-A32B | ~340 GB at UD-Q2_K_XL | 4x H200 | The SWE-bench leader at ~80.2%. The one row that is honestly datacenter-only. |
 | Reference | Qwen3.6-35B-A3B, Q8_0 | 37 GB | A100 80GB, already run | Free row, no new pod time. |
 
@@ -32,12 +32,13 @@ principle a 24 GB card could hold the hot weights and park idle experts in
 system RAM. llama.cpp supports exactly that. **lilbee does not**: there is no
 `--n-cpu-moe`, no `--override-tensor`, nothing in the fleet launcher that
 splits experts off the GPU, so every model must fit VRAM entirely. That is the
-single lever between "rent an A100" and "runs on your 4090", and it is filed as
-**bb-cuzq**.
+single lever between "rent an A100" and "runs on your 4090".
 
-If bb-cuzq lands before this session, the enthusiast tier collapses onto a
-single 4090 and the workstation tier opens up on NVIDIA. Worth checking its
-status before booking any hardware, because it changes the whole shopping list.
+Expert offload is tracked in the issue tracker and **this plan is blocked on
+it**, along with the wider audit of what else llama.cpp offers that lilbee
+never emits. When those land, the enthusiast tier collapses onto a single 4090
+and the workstation tier opens up on NVIDIA, so re-read this table before
+booking any hardware: the whole shopping list changes.
 
 ### What four agents means on a small card
 
@@ -113,7 +114,7 @@ so the chat doesn't scroll down to the end when an answer comes in, you have to
 drag the scrollbar yourself every time. can you work out why?
 ```
 
-Feature, real, open bead bb-u27f:
+Feature, real, from the open HTTP chat surface issue:
 
 ```
 i want the http chat surface to keep window history and compact a run when it
@@ -146,7 +147,7 @@ every chat, but the same query through the cli works fine every time. same box,
 same engine. why would the resident process not recover when a fresh one does?
 ```
 
-Feature, real, open bead bb-cuzq, and the one that matters most to this project:
+Feature, real, the expert-offload issue, and the one that matters most here:
 
 ```
 i want lilbee to run big moe models on consumer gpus. only about 3b params are
@@ -172,7 +173,7 @@ configured, what actually happens? i want to understand whether they collide.
 
 ### Tier 3, MiniMax-M2.1 on a workstation: real open P1 work
 
-Bug hunt, real, open bead bb-izsf, currently unfixed:
+Bug hunt, real, the open event-loop blocking issue, currently unfixed:
 
 ```
 i think chat retrieval is blocking the server event loop. if two requests come
@@ -189,7 +190,7 @@ errors, but i don't want something hanging forever if the rebuild is genuinely
 broken. what's the right design here, and can you build it?
 ```
 
-Refactor, real, open bead bb-pkn6:
+Refactor, real, the open retrieval-noise issue:
 
 ```
 retrieval is pulling in tocs and cover pages and diluting the real context. i
@@ -216,7 +217,7 @@ later acquire never comes back. i've been staring at this a while. what's
 actually going on?
 ```
 
-Feature, real, open bead bb-cuzq at the harder end:
+Feature, real, the expert-offload issue at its harder end:
 
 ```
 same expert offload question as before, but i want the planner to decide the
