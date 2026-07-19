@@ -290,42 +290,46 @@ class TestStreamKeepsTheLoopFree:
             _rag, "dispatch_chat_stream", lambda req: _async_stream(_events_from(["hi"]))
         )
 
-        def _slow_context(question, top_k=0, history=None, chunk_type=None):
-            time.sleep(0.3)  # stands in for embed + search + rerank
-            return ([], [{"role": "user", "content": "q"}])
-
         # Unset, skip_retrieval() returns a truthy MagicMock and the turn takes the
         # direct path, never reaching retrieval at all.
         mock_svc.searcher.skip_retrieval.return_value = False
         mock_svc.searcher.library_empty.return_value = False
-        mock_svc.searcher.build_rag_context.side_effect = _slow_context
 
-        # Throughput is the signal, not the widest gap: while the loop is blocked
-        # every 10ms timer piles up and then fires back to back, so the stamps are
-        # bunched rather than spread. A free loop ticks steadily throughout.
-        ticks = 0
+        # Did the loop run *while* retrieval was running? A blocked loop cannot
+        # schedule anything between the call starting and returning, so record
+        # whether the heartbeat ticked inside that window. Counting ticks would
+        # be a clock-resolution bet: Windows timers land near 15ms, so a
+        # threshold tuned on macOS fails there for reasons unrelated to the bug.
+        entered = asyncio.Event()
+        ticked_during_retrieval = False
+        released = False
+
+        def _slow_context_signalling(question, top_k=0, history=None, chunk_type=None):
+            loop.call_soon_threadsafe(entered.set)
+            time.sleep(0.3)  # stands in for embed + search + rerank
+            return ([], [{"role": "user", "content": "q"}])
+
+        mock_svc.searcher.build_rag_context.side_effect = _slow_context_signalling
+        loop = asyncio.get_running_loop()
 
         async def _heartbeat() -> None:
-            nonlocal ticks
-            for _ in range(60):
+            nonlocal ticked_during_retrieval
+            await entered.wait()
+            while not released:
                 await asyncio.sleep(0.01)
-                ticks += 1
+                ticked_during_retrieval = True
 
         beat = asyncio.ensure_future(_heartbeat())
-        # Let it tick before the turn starts: with no stamp on record before the
-        # stall, the gap that proves the stall has nothing to measure from.
-        await asyncio.sleep(0.05)
         frames = [frame async for frame in _rag.chat_stream("q", history=[], top_k=5)]
+        released = True
         beat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await beat
 
         assert mock_svc.searcher.build_rag_context.called, "retrieval was never reached"
         assert any("token" in f for f in frames), "the turn still answers"
-        # Blocking retrieval yields ~4 ticks across the turn; off the loop it is ~30.
-        assert ticks >= 15, (
-            f"the loop only ticked {ticks} times through a 0.3s retrieval; "
-            "it must not run on the event loop"
+        assert ticked_during_retrieval, (
+            "the loop never ran while retrieval was in flight; it must not run on the event loop"
         )
 
 
