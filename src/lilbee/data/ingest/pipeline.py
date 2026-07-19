@@ -538,6 +538,7 @@ async def sync(
 
     if files_to_process or removed:
         _store.ensure_fts_index()
+        _store.ensure_scalar_indexes()
         _store.ensure_vector_index()
         _store.optimize_sources()
         await _rebuild_concept_clusters()

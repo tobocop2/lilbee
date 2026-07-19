@@ -305,6 +305,50 @@ def _make_indexable_records(n, dim):
     ]
 
 
+class TestEnsureScalarIndexes:
+    """source and chunk_type get scalar indexes so their prefilters are lookups."""
+
+    def test_creates_btree_on_source_and_bitmap_on_chunk_type(self, store):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "create_scalar_index") as spy:
+            store.ensure_scalar_indexes()
+        assert [c.args[0] for c in spy.call_args_list] == ["source", "chunk_type"]
+        kinds = {c.args[0]: c.kwargs.get("index_type") for c in spy.call_args_list}
+        assert kinds == {"source": "BTREE", "chunk_type": "BITMAP"}
+        assert all(c.kwargs.get("replace") is False for c in spy.call_args_list)
+
+    def test_idempotent_once_the_indexes_exist(self, store):
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()  # builds them for real
+        table = store.open_table("chunks")
+        with mock.patch.object(type(table), "create_scalar_index") as spy:
+            store.ensure_scalar_indexes()
+        spy.assert_not_called()
+
+    def test_handles_exception_gracefully(self, store):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(
+            type(table), "create_scalar_index", side_effect=RuntimeError("boom")
+        ):
+            store.ensure_scalar_indexes()  # must not raise
+
+    def test_noop_when_no_table(self, store):
+        store.ensure_scalar_indexes()  # empty store, no chunks table yet
+
+    def test_has_scalar_index_is_false_when_listing_raises(self, store):
+        from lilbee.data.store.lance_helpers import _has_scalar_index
+
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
+            assert _has_scalar_index(table, "source") is False
+
+
 class TestEnsureVectorIndex:
     """Small vaults stay on exact flat search; large ones get an ANN index."""
 

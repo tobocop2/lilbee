@@ -139,6 +139,19 @@ def _has_fts_index(table: lancedb.table.Table, column: str = "chunk") -> bool:
     return False
 
 
+def _has_scalar_index(table: lancedb.table.Table, column: str) -> bool:
+    """Return True when a scalar index on *column* already exists.
+
+    lilbee only builds scalar indexes on ``source`` and ``chunk_type``, and
+    never an FTS or vector index on those columns, so any index touching the
+    column is the scalar one.
+    """
+    try:
+        return any(column in idx.columns for idx in table.list_indices())
+    except Exception:
+        return False
+
+
 def _has_vector_index(table: lancedb.table.Table) -> bool:
     """Return True when an ANN index on the vector column already exists.
 

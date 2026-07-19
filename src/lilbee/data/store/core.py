@@ -32,6 +32,7 @@ from .fusion import adaptive_lexical_weight, fuse_arms, normalized_bm25, vector_
 from .lance_helpers import (
     _chunk_type_predicate,
     _has_fts_index,
+    _has_scalar_index,
     _has_vector_index,
     _safe_delete_unlocked,
     _sources_search_filter,
@@ -487,6 +488,31 @@ class Store:
             log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
         except Exception:
             log.debug("Title FTS index create failed", exc_info=True)
+
+    def ensure_scalar_indexes(self) -> None:
+        """Build scalar indexes on the columns lilbee filters by.
+
+        ``source`` and ``chunk_type`` predicates run as prefilters (LanceDB's
+        default), but without an index each is a full-table scan. A BTree on the
+        high-cardinality ``source`` (known-item lookup and per-source fetches)
+        and a Bitmap on the low-cardinality ``chunk_type`` (raw/wiki/table scope)
+        turn those into indexed lookups. Missing columns and empty tables are
+        skipped; ``optimize()`` folds later rows into every index, this one too.
+        """
+        with self._write_lock():
+            table = self.open_table(CHUNKS_TABLE)
+            if table is None:
+                return
+            names = table.schema.names
+            try:
+                if "source" in names and not _has_scalar_index(table, "source"):
+                    table.create_scalar_index("source", index_type="BTREE", replace=False)
+                    log.debug("Scalar (BTree) index created on 'source'")
+                if "chunk_type" in names and not _has_scalar_index(table, "chunk_type"):
+                    table.create_scalar_index("chunk_type", index_type="BITMAP", replace=False)
+                    log.debug("Scalar (Bitmap) index created on 'chunk_type'")
+            except Exception:
+                log.debug("Scalar index ensure failed (empty table?)", exc_info=True)
 
     def ensure_vector_index(self, *, force: bool = False) -> bool:
         """Build or refresh the ANN vector index when the corpus is large enough.
