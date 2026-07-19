@@ -281,6 +281,7 @@ def _fit_slots(
                 flash_attn=_role_flash(role),
                 kv_cache_type=_role_kv_cache_type(role),
                 mmproj_path=mmproj_path,
+                expert_offload=_role_expert_offload(model_path),
             )
         except (ProviderError, OSError):
             # An unsizable model runs a single slot; the load decides the rest.
@@ -474,6 +475,7 @@ def _estimate_role(
         kv_cache_type=_role_kv_cache_type(role),
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
+        expert_offload=_role_expert_offload(path),
     )
     fp = est.footprint(unified=unified_budget is not None)
     if role is WorkerRole.CHAT and unified_budget is None:
@@ -563,6 +565,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
             mmproj_path=mmproj,
             tensor_split=ratio,
             batch_size=_pooled_batch_size(role, _role_rerank_mode(role, meta), ctx),
+            expert_offload=_role_expert_offload(path),
         )
         return est.per_device_vram
 
@@ -656,6 +659,21 @@ def expert_offload_layers(meta: dict[str, str] | None) -> int | None:
     if cfg.n_cpu_moe is None or not _is_moe(meta):
         return None
     return max(0, cfg.n_cpu_moe)
+
+
+def _role_expert_offload(model_path: Path) -> tuple[str, ...]:
+    """Expert patterns the launch will offload, for sizing the same way it runs.
+
+    Reads the GGUF (cached) rather than taking metadata as an argument so every
+    estimate site charges the same tensors the launch moves off the GPU.
+    """
+    from lilbee.providers.fleet.adapters import expert_offload_patterns
+    from lilbee.providers.gguf_meta import read_gguf_metadata
+
+    meta = read_gguf_metadata(model_path)
+    return expert_offload_patterns(
+        cpu_moe=expert_offload_all(meta), n_cpu_moe=expert_offload_layers(meta)
+    )
 
 
 def _expert_offload_configured() -> bool:

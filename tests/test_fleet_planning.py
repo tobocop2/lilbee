@@ -1999,3 +1999,67 @@ def test_ref_is_moe_is_false_for_an_unresolvable_model(monkeypatch) -> None:
 
     monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", _boom)
     assert planning_mod._ref_is_moe("m/missing") is False
+
+
+def test_estimator_argv_has_no_override_tensor_without_offload() -> None:
+    from lilbee.providers.fleet import vram as vram_mod
+
+    argv = vram_mod.estimator_argv(
+        "/m/m.gguf",
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=True,
+        kv_cache_type="q8_0",
+        mmproj=None,
+        tensor_split=(),
+        batch_size=None,
+    )
+    assert "--override-tensor" not in argv
+
+
+def test_estimator_argv_charges_offloaded_experts_to_cpu() -> None:
+    # Without this the estimate charges the GPU for experts the launch keeps in
+    # system memory, and the planner sizes slots against a footprint that never exists.
+    from lilbee.providers.fleet import vram as vram_mod
+
+    argv = vram_mod.estimator_argv(
+        "/m/m.gguf",
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=True,
+        kv_cache_type="q8_0",
+        mmproj=None,
+        tensor_split=(),
+        batch_size=None,
+        expert_offload=(r"blk\.0\.ffn_x", r"blk\.1\.ffn_x"),
+    )
+    value = argv[argv.index("--override-tensor") + 1]
+    assert value == r"blk\.0\.ffn_x=CPU,blk\.1\.ffn_x=CPU"
+
+
+def test_estimate_offload_matches_what_the_launch_offloads(monkeypatch, tmp_path: Path) -> None:
+    # The estimate and the launch must move the same tensors or the planner's
+    # budget describes a configuration that never runs.
+    model = tmp_path / "moe.gguf"
+    model.write_bytes(b"x" * 64)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"expert_count": "128"}
+    )
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    monkeypatch.setattr(cfg, "n_cpu_moe", None)
+    from lilbee.providers.fleet.adapters import expert_offload_patterns
+
+    launched = expert_offload_patterns(cpu_moe=True, n_cpu_moe=None)
+    assert planning_mod._role_expert_offload(model) == launched
+
+
+def test_estimate_offloads_nothing_for_a_dense_model(monkeypatch, tmp_path: Path) -> None:
+    model = tmp_path / "dense.gguf"
+    model.write_bytes(b"x" * 64)
+    monkeypatch.setattr(
+        "lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {"architecture": "qwen3"}
+    )
+    monkeypatch.setattr(cfg, "cpu_moe", True)
+    assert planning_mod._role_expert_offload(model) == ()
