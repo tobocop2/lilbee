@@ -366,7 +366,7 @@ def _flash_enabled() -> bool:
     return cfg.flash_attention is not False
 
 
-def _flash_attn_flag() -> str:
+def flash_attn_flag() -> str:
     """``--flash-attn`` argv value for chat and vision."""
     return _FLASH_ON if _flash_enabled() else _FLASH_OFF
 
@@ -379,7 +379,7 @@ def _role_flash(role: WorkerRole) -> bool:
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     """Chat honors ``cfg.kv_cache_type``; embed/rerank/vision run f16 KV.
 
-    Mirrors :func:`_cache_type_flag`'s flash-attention fallback so the estimate
+    Mirrors :func:`cache_type_flag`'s flash-attention fallback so the estimate
     is sized against the KV type the launch actually uses.
     """
     from lilbee.core.config import cfg
@@ -394,7 +394,7 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
     return resolve_replica_count(role, device_count)
 
 
-def _cache_type_flag() -> str | None:
+def cache_type_flag() -> str | None:
     """KV cache type for chat, or ``None`` to leave llama-server's f16 default.
 
     Quantized KV requires flash attention; with it off the launch falls back to
@@ -642,14 +642,14 @@ def _is_moe(meta: dict[str, str] | None) -> bool:
         return False
 
 
-def _expert_offload_all(meta: dict[str, str] | None) -> bool:
+def expert_offload_all(meta: dict[str, str] | None) -> bool:
     """Whether to keep every layer's experts in system memory; MoE models only."""
     from lilbee.core.config import cfg
 
     return bool(cfg.cpu_moe) and _is_moe(meta)
 
 
-def _expert_offload_layers(meta: dict[str, str] | None) -> int | None:
+def expert_offload_layers(meta: dict[str, str] | None) -> int | None:
     """How many layers' experts to keep in system memory, or None for no split."""
     from lilbee.core.config import cfg
 
@@ -987,13 +987,13 @@ def _launch_for(
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
-        flash_attn=_flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
-        cache_type=_cache_type_flag() if is_chat else None,
+        flash_attn=flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
+        cache_type=cache_type_flag() if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
-        cpu_moe=_expert_offload_all(meta),
-        n_cpu_moe=_expert_offload_layers(meta),
+        cpu_moe=expert_offload_all(meta),
+        n_cpu_moe=expert_offload_layers(meta),
     )
     return InstanceLaunch(
         role=plan.role,

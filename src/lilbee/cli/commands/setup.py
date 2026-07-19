@@ -143,6 +143,12 @@ def _self_check_server(
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.planning import (
+        cache_type_flag,
+        expert_offload_all,
+        expert_offload_layers,
+        flash_attn_flag,
+    )
     from lilbee.providers.fleet.swap_manager import SwapManager
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
@@ -162,11 +168,11 @@ def _self_check_server(
         slots=1,
         ctx_per_slot=ctx,
         # Chat mirrors the fleet's chat flags; embed runs f16 KV with a full-ctx batch.
-        flash_attn=None if is_embed else ("off" if cfg.flash_attention is False else "on"),
-        cache_type=(
-            None if is_embed or cfg.kv_cache_type is KvCacheType.F16 else cfg.kv_cache_type.value
-        ),
+        flash_attn=None if is_embed else flash_attn_flag(),
+        cache_type=None if is_embed else cache_type_flag(),
         batch_size=ctx if is_embed else None,
+        cpu_moe=not is_embed and expert_offload_all(meta),
+        n_cpu_moe=None if is_embed else expert_offload_layers(meta),
     )
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     launch = InstanceLaunch(

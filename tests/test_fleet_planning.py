@@ -160,14 +160,14 @@ def test_role_ctx_vision_uses_vision_picker(monkeypatch) -> None:
 
 def test_flash_attn_flag_on_by_default(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "flash_attention", None)
-    assert planning_mod._flash_attn_flag() == "on"
+    assert planning_mod.flash_attn_flag() == "on"
     monkeypatch.setattr(cfg, "flash_attention", True)
-    assert planning_mod._flash_attn_flag() == "on"
+    assert planning_mod.flash_attn_flag() == "on"
 
 
 def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod._flash_attn_flag() == "off"
+    assert planning_mod.flash_attn_flag() == "off"
 
 
 def test_slots_for_aux_roles_are_single_slot() -> None:
@@ -351,7 +351,7 @@ def test_cache_type_flag_none_for_f16(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
-    assert planning_mod._cache_type_flag() is None
+    assert planning_mod.cache_type_flag() is None
 
 
 def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
@@ -359,7 +359,7 @@ def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", None)
-    assert planning_mod._cache_type_flag() == "q8_0"
+    assert planning_mod.cache_type_flag() == "q8_0"
 
 
 def test_quantized_kv_falls_back_to_f16_without_flash_attention(monkeypatch) -> None:
@@ -368,7 +368,7 @@ def test_quantized_kv_falls_back_to_f16_without_flash_attention(monkeypatch) -> 
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod._cache_type_flag() is None
+    assert planning_mod.cache_type_flag() is None
 
 
 def test_estimator_kv_type_matches_the_launch_without_flash_attention(monkeypatch) -> None:
@@ -1934,22 +1934,22 @@ class TestSizingFailureFallsBackToFileSize:
 def test_expert_offload_is_ignored_on_a_dense_model(monkeypatch) -> None:
     # No expert tensors to move, so the flag would be a silent no-op.
     monkeypatch.setattr(cfg, "cpu_moe", True)
-    assert planning_mod._expert_offload_all({"architecture": "qwen3"}) is False
+    assert planning_mod.expert_offload_all({"architecture": "qwen3"}) is False
 
 
 def test_expert_offload_applies_to_a_sparse_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "cpu_moe", True)
-    assert planning_mod._expert_offload_all({"expert_count": "128"}) is True
+    assert planning_mod.expert_offload_all({"expert_count": "128"}) is True
 
 
 def test_expert_offload_layer_count_applies_to_a_sparse_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "n_cpu_moe", 16)
-    assert planning_mod._expert_offload_layers({"expert_count": "128"}) == 16
+    assert planning_mod.expert_offload_layers({"expert_count": "128"}) == 16
 
 
 def test_expert_offload_survives_unparsable_expert_count(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "cpu_moe", True)
-    assert planning_mod._expert_offload_all({"expert_count": "many"}) is False
+    assert planning_mod.expert_offload_all({"expert_count": "many"}) is False
 
 
 def test_expert_offload_lets_a_model_bigger_than_vram_through(monkeypatch) -> None:
