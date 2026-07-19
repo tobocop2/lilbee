@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from textual.widgets import ListView
 
 from lilbee.app.services import get_services, set_services
 from lilbee.cli.tui.app import LilbeeApp
@@ -220,6 +221,75 @@ async def test_resume_from_drawer_loads_and_closes(sessions):
         assert not screen.query(SessionsDrawer)
 
 
+@pytest.mark.parametrize("count", [1, 2])
+async def test_clicking_a_row_resumes_it(sessions, count):
+    """A mouse click on a row resumes it, whether or not the list is the only one."""
+    for i in range(count):
+        _seed(sessions, f"Session {i}")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _open_drawer(app, pilot)
+        row = screen.query(SessionRow)[0]
+        clicked_id = row.meta.id
+        await pilot.click(row)
+        await pilot.pause()
+        assert app.chat_screen().session_id == clicked_id
+        assert not screen.query(SessionsDrawer)
+
+
+async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
+    """The chat screen must not eat the drawer's enter while it sits in NORMAL mode.
+
+    Clicking a row moves focus off the chat input, which drops chat out of INSERT;
+    the screen-level vim handler then swallowed every later enter in the drawer.
+    """
+    session_id = _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        chat._insert_mode = False
+        screen = await _open_drawer(app, pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.chat_screen().session_id == session_id
+        assert not screen.query(SessionsDrawer)
+
+
+async def test_enter_resumes_after_filtering(sessions):
+    """Enter must resume the row a filter narrowed to, not just an unfiltered list."""
+    _seed(sessions, "Alpha")
+    _seed(sessions, "Beta")
+    wanted = _seed(sessions, "Gamma")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _open_drawer(app, pilot)
+        for ch in "Gamma":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert len(screen.query(SessionRow)) == 1
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.chat_screen().session_id == wanted
+
+
+async def test_enter_on_the_focused_list_resumes(sessions):
+    """Enter resumes when the list holds focus, not just when the filter does.
+
+    Clicking a row moves focus off the filter box, so a resume path that only
+    listens on the filter's Submitted leaves Enter dead for the rest of the visit.
+    """
+    session_id = _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _open_drawer(app, pilot)
+        screen.query_one("#sessions-list", ListView).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.chat_screen().session_id == session_id
+        assert not screen.query(SessionsDrawer)
+
+
 async def test_new_chat_from_drawer(sessions):
     session_id = _seed(sessions, "Torque specs")
     app = LilbeeApp()
@@ -268,6 +338,10 @@ async def test_delete_confirmed_removes_session(sessions):
         drawer = await _open_drawer(app, pilot)
         panel = drawer.query_one(SessionListPanel)
         meta = sessions.list()[0]
+        # The filter and chat inputs both eat ctrl+d as delete-right; the list
+        # leaves it to bubble to the panel binding, so press from there.
+        drawer.query_one("#sessions-list", ListView).focus()
+        await pilot.pause()
         await pilot.press("ctrl+d")
         await pilot.pause()
         assert isinstance(app.screen, ConfirmDialog)
@@ -360,6 +434,20 @@ async def test_sessions_tab_resume_switches_to_chat(sessions):
         app.switch_view("Sessions")
         await pilot.pause()
         app.screen.query_one(SessionListPanel).post_message(SessionListPanel.Resumed(session_id))
+        await pilot.pause()
+        assert app.active_view == "Chat"
+        assert app.chat_screen().session_id == session_id
+
+
+async def test_sessions_tab_enter_resumes(sessions):
+    """The tab focuses the list rather than the filter, so Enter must work there."""
+    session_id = _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Sessions")
+        await pilot.pause()
+        await pilot.press("enter")
         await pilot.pause()
         assert app.active_view == "Chat"
         assert app.chat_screen().session_id == session_id
