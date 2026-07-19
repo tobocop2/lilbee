@@ -420,27 +420,39 @@ async def _context_management_frames(
     closing ``compaction`` frame (str items), persisting a fresh summary along
     the way; the ``(history, info)`` tuple arrives exactly once, last.
     """
-    if _compaction_pending(history, summary):
-        # Condensing blocks this turn on model calls; announce it like warming,
-        # then relay per-batch progress while the condenser works.
-        yield sse_event(SseEvent.COMPACTING, {})
-    loop = asyncio.get_running_loop()
-    progress: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
+    if not _compaction_pending(history, summary):
+        # Windowing only: pure arithmetic over the messages, no model call to wait on.
+        yield await asyncio.to_thread(_manage_history, history, summary)
+        return
+
+    # Condensing blocks this turn on model calls; announce it like warming, then
+    # relay per-batch progress. SseStream carries the heartbeats and the
+    # client-disconnect cancellation every other streaming endpoint here gets.
+    yield sse_event(SseEvent.COMPACTING, {})
+    stream = SseStream()
 
     def _on_batch(batch: int, total: int) -> None:
-        loop.call_soon_threadsafe(progress.put_nowait, (batch, total))
+        stream.put_threadsafe(sse_event(SseEvent.COMPACTING, {"batch": batch, "batches": total}))
 
-    manage = asyncio.ensure_future(asyncio.to_thread(_manage_history, history, summary, _on_batch))
-    while True:
-        get = asyncio.ensure_future(progress.get())
-        done, _ = await asyncio.wait({manage, get}, return_when=asyncio.FIRST_COMPLETED)
-        if get in done:
-            batch, total = get.result()
-            yield sse_event(SseEvent.COMPACTING, {"batch": batch, "batches": total})
-            continue
-        get.cancel()
-        break
-    managed_history, compaction = await manage
+    async def _condense() -> tuple[list[ChatMessage], CompactionInfo | None]:
+        try:
+            return await asyncio.to_thread(_manage_history, history, summary, _on_batch)
+        finally:
+            stream.put_threadsafe(None)
+
+    task = asyncio.ensure_future(_condense())
+    async for frame in stream.drain(task, "Compaction stream"):
+        yield frame
+    try:
+        managed_history, compaction = await task
+    except Exception:
+        # Condensing is best-effort: a failed fold degrades to plain windowing,
+        # which is what this turn would have done with compaction off. Losing the
+        # summary costs context; failing the turn costs the user their answer.
+        log.warning("Compaction failed; falling back to windowing", exc_info=True)
+        budget = history_budget(cfg.chat_n_ctx_target)
+        yield (prompt_history(history, summary, max_tokens=budget), None)
+        return
     if compaction is not None:
         _persist_summary(session_id, compaction)
         yield sse_event(SseEvent.COMPACTION, compaction.model_dump())

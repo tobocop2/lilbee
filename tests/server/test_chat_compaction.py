@@ -236,6 +236,25 @@ class TestChatStreamCompactionEvents:
         names = [name for name, _ in events]
         assert names.index("compaction") < names.index("token")
 
+    async def test_a_failed_fold_degrades_to_windowing_and_still_answers(
+        self, mock_svc, monkeypatch
+    ) -> None:
+        """Condensing is best-effort: the turn survives a condenser that blows up."""
+        monkeypatch.setattr(cfg, "chat_compaction", True)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 2048)
+        monkeypatch.setattr(
+            _rag, "dispatch_chat_stream", lambda req: _async_stream(_events_from(["hi"]))
+        )
+        mock_svc.searcher.summarize_history.side_effect = RuntimeError("engine died")
+
+        frames = await self._frames(_msgs(40))
+
+        events = parse_sse_events("".join(frames).encode())
+        names = [name for name, _ in events]
+        assert "token" in names, "the answer must still stream"
+        assert "compaction" not in names, "no fold to report"
+        assert "error" not in names
+
     async def test_stays_silent_when_compaction_is_off(self, mock_svc, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "chat_compaction", False)
         monkeypatch.setattr(cfg, "chat_n_ctx_target", 2048)
