@@ -20,7 +20,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 
 @pytest.fixture(autouse=True)
@@ -1681,10 +1681,7 @@ class TestCatalogInteractions:
                 # spawns a download worker that would outlive the test.
                 with mock.patch.object(app.screen, "_enqueue_download"):
                     await search.action_submit()
-                    for _ in range(10):
-                        await pilot.pause()
-                        if app.screen._list_widget.has_focus:
-                            break
+                    await pump_until(pilot, lambda: app.screen._list_widget.has_focus)
                     assert app.screen._list_widget.has_focus
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
