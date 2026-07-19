@@ -23,7 +23,12 @@ from lilbee.data.store import (
     cosine_sim,
     human_recall_predicate,
 )
-from lilbee.providers.base import LLMProvider, ProviderError, ProviderErrorKind
+from lilbee.providers.base import (
+    LLMProvider,
+    ProviderError,
+    ProviderErrorKind,
+    prompt_token_budget,
+)
 from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.language import noun_variants, query_language
 from lilbee.retrieval.query.compaction import (
@@ -175,8 +180,6 @@ SEARCH_NEEDS_EMBEDDER = (
     "Add one, or switch to chat mode for an ungrounded reply."
 )
 
-# Token reserve for the generated answer when budgeting RAG context to num_ctx.
-_ANSWER_RESERVE_TOKENS = 1024
 # Chars-per-token assumed when BUDGETING context. Deliberately harsher than
 # the display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars
 # per token, and budgeting at 4 let a document whose real cost exceeded the
@@ -950,14 +953,16 @@ class Searcher:
         configured = self._config.num_ctx or self._config.chat_n_ctx_target
         served = self._provider.served_chat_ctx()
         ctx = min(configured, served) if served else configured
-        reserve = (
+        # Fit inside what the provider will actually accept: prompt_token_budget
+        # already removes the generation reserve and the engine's margin, so the
+        # sources get what is left after the rest of the prompt.
+        non_source = (
             self._budget_tokens(system)
             + self._budget_tokens(question)
             + sum(self._budget_tokens(m["content"]) for m in history or [])
-            + _ANSWER_RESERVE_TOKENS
             + _CONTEXT_TEMPLATE_TOKENS
         )
-        budget = int((ctx - reserve) * scale)
+        budget = int((prompt_token_budget(ctx) - non_source) * scale)
         kept: list[SearchChunk] = []
         used = 0
         for r in results:
