@@ -87,6 +87,15 @@ COMPACT_TRIGGER_FRACTION = 0.8
 # Messages (not exchanges) kept verbatim when compaction clears the history.
 COMPACT_KEEP_RECENT = 4
 
+# Fraction of ``chat_n_ctx_target`` a conversation may spend on its history;
+# the rest is for the system prompt, RAG context, question, and reasoning.
+HISTORY_TOKEN_BUDGET_FRACTION = 0.5
+
+
+def history_budget(ctx_target: int) -> int:
+    """Token budget for everything a conversation carries into the prompt."""
+    return int(ctx_target * HISTORY_TOKEN_BUDGET_FRACTION)
+
 
 @dataclass(frozen=True)
 class CompactionResult:

@@ -20,6 +20,22 @@ T_co = TypeVar("T_co", covariant=True)
 # The inline reasoning markers lilbee's pipeline speaks. A provider whose server
 # extracts reasoning into a separate field re-inlines it with these tags at the
 # client boundary, so every downstream consumer parses one format.
+# What every provider holds back from the context window for the answer it is
+# about to generate, plus a small margin for the chat template's own framing.
+# One owner for both numbers: the fleet ENFORCES this budget and rejects a
+# prompt that exceeds it, while retrieval FITS its context to it. When the two
+# disagreed, retrieval assembled prompts up to the margin larger than the
+# engine would accept, and a grounded turn failed with a 400 the caller could
+# do nothing about.
+GENERATION_RESERVE_TOKENS = 1024
+CONTEXT_WINDOW_MARGIN_TOKENS = 128
+
+
+def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
+    """Tokens a prompt may occupy in a *ctx*-token window, reserve and margin removed."""
+    return ctx - (num_predict or GENERATION_RESERVE_TOKENS) - CONTEXT_WINDOW_MARGIN_TOKENS
+
+
 THINK_OPEN_TAG = "<think>"
 THINK_CLOSE_TAG = "</think>"
 

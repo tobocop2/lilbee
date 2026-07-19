@@ -18,6 +18,12 @@ from lilbee.core.results import DocumentResult, group
 from lilbee.data.store import ChunkType, EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.roles import WorkerRole
+from lilbee.retrieval.query.compaction import (
+    compaction_due,
+    foldable,
+    history_budget,
+    prompt_history,
+)
 from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
 from lilbee.retrieval.query.searcher import (
     GROUNDED_REFUSAL,
@@ -62,9 +68,11 @@ from lilbee.server.handlers.sse import (
 from lilbee.server.models import (
     AskResponse,
     CleanedChunk,
+    CompactionInfo,
     MemoryExtractedEvent,
     MemoryExtractedItem,
 )
+from lilbee.sessions import SessionNotFoundError, sessions_enabled
 
 if TYPE_CHECKING:
     from lilbee.core.results import SearchChunk
@@ -311,7 +319,11 @@ async def _stream_rag_response(
         yield sse_event(SseEvent.SOURCES, [])
         yield sse_done({})
         return
-    results, messages, preempt = _resolve_stream_context(
+    # Retrieval embeds, searches, reranks, and can spend an LLM call expanding
+    # the query. On the loop it stalls every other admitted request for the whole
+    # turn; the non-streaming siblings already thread the same work.
+    results, messages, preempt = await asyncio.to_thread(
+        _resolve_stream_context,
         searcher,
         question,
         history,
@@ -374,12 +386,99 @@ def ask_stream(
     return _stream_rag_response(question, top_k=top_k, options=options, chunk_type=chunk_type)
 
 
+def _compaction_pending(history: list[ChatMessage], summary: str) -> bool:
+    """Whether this turn will fold turns into notes before answering."""
+    budget = history_budget(cfg.chat_n_ctx_target)
+    return bool(
+        cfg.chat_compaction
+        and compaction_due(history, summary, max_tokens=budget)
+        and foldable(history)
+    )
+
+
+def _manage_history(
+    history: list[ChatMessage],
+    summary: str,
+    on_batch: Callable[[int, int], None] | None = None,
+) -> tuple[list[ChatMessage], CompactionInfo | None]:
+    """Apply the TUI's pre-turn context discipline to an HTTP conversation."""
+    budget = history_budget(cfg.chat_n_ctx_target)
+    info: CompactionInfo | None = None
+    if _compaction_pending(history, summary):
+        dropped = foldable(history)
+        result = get_services().searcher.summarize_history(dropped, summary, on_batch=on_batch)
+        history = history[len(dropped) :]
+        summary = result.summary
+        info = CompactionInfo(
+            summary=result.summary, condensed=result.condensed, stranded=result.stranded
+        )
+    return prompt_history(history, summary, max_tokens=budget), info
+
+
+async def _context_management_frames(
+    history: list[ChatMessage], summary: str, session_id: str | None
+) -> AsyncGenerator[str | tuple[list[ChatMessage], CompactionInfo | None], None]:
+    """Manage this turn's history off-loop, yielding its SSE frames, then the result.
+
+    Yields the ``compacting`` announcement, per-batch progress frames, and the
+    closing ``compaction`` frame (str items), persisting a fresh summary along
+    the way; the ``(history, info)`` tuple arrives exactly once, last.
+    """
+    if not _compaction_pending(history, summary):
+        # Windowing only: pure arithmetic over the messages, no model call to wait on.
+        yield await asyncio.to_thread(_manage_history, history, summary)
+        return
+
+    # Condensing blocks this turn on model calls; announce it like warming, then
+    # relay per-batch progress. SseStream carries the heartbeats and the
+    # client-disconnect cancellation every other streaming endpoint here gets.
+    yield sse_event(SseEvent.COMPACTING, {})
+    stream = SseStream()
+
+    def _on_batch(batch: int, total: int) -> None:
+        stream.put_threadsafe(sse_event(SseEvent.COMPACTING, {"batch": batch, "batches": total}))
+
+    async def _condense() -> tuple[list[ChatMessage], CompactionInfo | None]:
+        try:
+            return await asyncio.to_thread(_manage_history, history, summary, _on_batch)
+        finally:
+            stream.put_threadsafe(None)
+
+    task = asyncio.ensure_future(_condense())
+    async for frame in stream.drain(task, "Compaction stream"):
+        yield frame
+    try:
+        managed_history, compaction = await task
+    except Exception:
+        # Condensing is best-effort: a failed fold degrades to plain windowing,
+        # which is what this turn would have done with compaction off. Losing the
+        # summary costs context; failing the turn costs the user their answer.
+        log.warning("Compaction failed; falling back to windowing", exc_info=True)
+        budget = history_budget(cfg.chat_n_ctx_target)
+        yield (prompt_history(history, summary, max_tokens=budget), None)
+        return
+    if compaction is not None:
+        _persist_summary(session_id, compaction)
+        yield sse_event(SseEvent.COMPACTION, compaction.model_dump())
+    yield (managed_history, compaction)
+
+
+def _persist_summary(session_id: str | None, info: CompactionInfo | None) -> None:
+    """Store fresh notes on the session; a session deleted mid-chat is tolerated."""
+    if info is None or not session_id or not info.summary or not sessions_enabled():
+        return
+    with contextlib.suppress(SessionNotFoundError):
+        get_services().session_store.set_summary(session_id, info.summary)
+
+
 async def chat(
     question: str,
     history: list[ChatMessage],
     top_k: int | None = None,
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
+    summary: str = "",
+    session_id: str | None = None,
 ) -> AskResponse:
     """Chat with history. Returns answer and sources via canonical dispatch."""
     searcher = get_services().searcher
@@ -387,6 +486,8 @@ async def chat(
         # Search mode with no embedder can't ground; refuse cleanly with the same
         # message ask returns instead of silently answering off-corpus.
         return AskResponse(answer=SEARCH_NEEDS_EMBEDDER, sources=[], cited_sources=[])
+    history, compaction = await asyncio.to_thread(_manage_history, history, summary)
+    _persist_summary(session_id, compaction)
     if _retrieval_off(searcher, top_k):
         # Chat-only mode or an explicit top_k:0 pure-LLM call.
         sources: list[SearchChunk] = []
@@ -396,14 +497,18 @@ async def chat(
         # library, count routing, memory-awareness) so surfaces cannot drift.
         pre_answer = searcher.pre_retrieval_answer(question)
         if pre_answer is not None:
-            return AskResponse(answer=pre_answer, sources=[], cited_sources=[])
+            return AskResponse(
+                answer=pre_answer, sources=[], cited_sources=[], compaction=compaction
+            )
         rag = searcher.build_rag_context(
             question, top_k=top_k or 0, history=history, chunk_type=chunk_type
         )
         if rag is None:
             # Refuse like every sibling surface; the old fallback silently
             # answered off-corpus with nothing telling the caller so.
-            return AskResponse(answer=GROUNDED_REFUSAL, sources=[], cited_sources=[])
+            return AskResponse(
+                answer=GROUNDED_REFUSAL, sources=[], cited_sources=[], compaction=compaction
+            )
         sources, messages = rag
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
@@ -422,6 +527,7 @@ async def chat(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
         cited_sources=[CleanedChunk(**clean_result(s)) for s in cited_subset(answer, sources)],
+        compaction=compaction,
     )
 
 
@@ -431,10 +537,18 @@ def chat_stream(
     top_k: int | None = None,
     options: dict[str, Any] | None = None,
     chunk_type: ChunkType | None = None,
+    summary: str = "",
+    session_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream RAG chat tokens through canonical dispatch as token/sources/done events."""
     return _stream_chat_response(
-        question, history=history, top_k=top_k, options=options, chunk_type=chunk_type
+        question,
+        history=history,
+        top_k=top_k,
+        options=options,
+        chunk_type=chunk_type,
+        summary=summary,
+        session_id=session_id,
     )
 
 
@@ -501,10 +615,17 @@ async def _stream_chat_response(
     top_k: int | None,
     options: dict[str, Any] | None,
     chunk_type: ChunkType | None,
+    summary: str = "",
+    session_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Drive ``dispatch_chat_stream`` and emit reasoning/token/sources/done SSE events."""
-    frames, ctx = _resolve_chat_stream_context(
-        get_services().searcher, question, history, top_k, chunk_type
+    async for item in _context_management_frames(history, summary, session_id):
+        if isinstance(item, str):
+            yield item
+            continue
+        history, _compaction = item
+    frames, ctx = await asyncio.to_thread(
+        _resolve_chat_stream_context, get_services().searcher, question, history, top_k, chunk_type
     )
     for frame in frames:
         yield frame
