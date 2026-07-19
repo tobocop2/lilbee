@@ -2121,3 +2121,49 @@ def test_resolve_split_chat_slots_stays_single_when_the_fit_is_the_floor() -> No
     slots, ctx = planning_mod._resolve_split_chat_slots(lambda _n: _DYNAMIC_CTX_FLOOR)
     assert slots == 1
     assert ctx == _DYNAMIC_CTX_FLOOR
+
+
+def test_role_model_placeable_true_for_installed_fitting_model(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
+    monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 10 * 1024**3)
+    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda _w, _v: False)
+    _ref = type("R", (), {"is_remote": False})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert planning_mod.role_model_placeable(WorkerRole.CHAT, "org/repo/m.gguf", 80 * 1024**3)
+
+
+def test_role_model_placeable_false_when_not_installed(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
+    monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 0)  # not installed
+    _ref = type("R", (), {"is_remote": False})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert not planning_mod.role_model_placeable(WorkerRole.EMBED, "org/repo/m.gguf", 80 * 1024**3)
+
+
+def test_role_model_placeable_false_when_weights_exceed_vram(monkeypatch) -> None:
+    monkeypatch.setattr(planning_mod, "_vision_without_mmproj", lambda _r, _ref: False)
+    monkeypatch.setattr(planning_mod, "_role_weights_bytes", lambda _r, _ref: 200 * 1024**3)
+    monkeypatch.setattr(planning_mod, "_weights_exceed_hardware", lambda w, v: w > v)
+    _ref = type("R", (), {"is_remote": False})()
+    monkeypatch.setattr(planning_mod, "parse_model_ref", lambda _r: _ref)
+    assert not planning_mod.role_model_placeable(WorkerRole.CHAT, "org/repo/m.gguf", 80 * 1024**3)
+
+
+def test_placeable_total_vram_reuses_the_captured_probe(monkeypatch) -> None:
+    _dev = type("D", (), {"total_bytes": 40 * 1024**3})
+    probe = type("P", (), {"devices": [_dev(), _dev()]})()
+    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: probe)
+    assert planning_mod.placeable_total_vram() == 80 * 1024**3
+
+
+def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+    monkeypatch.setattr(planning_mod, "apply_fleet_gpu_env", lambda: None, raising=False)
+
+    def _boom(*_a, **_k):
+        raise ProviderError("no binary", provider="llama-server")
+
+    monkeypatch.setattr(planning_mod, "resolve_llama_server", _boom)
+    assert planning_mod.placeable_total_vram() == 0

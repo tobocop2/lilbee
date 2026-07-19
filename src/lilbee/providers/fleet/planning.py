@@ -838,6 +838,43 @@ def _warn_weights_exceed(role: WorkerRole, ref: str, weights: int, total_vram: i
     )
 
 
+def placeable_total_vram() -> int:
+    """Physical VRAM across all cards, for the weights-exceed placeability bound.
+
+    Physical total is box-state-independent (a running incumbent doesn't skew
+    it), so it is safe to read without a clean box. Reuses the plan probe when
+    one is captured; otherwise probes best-effort and returns ``0`` on failure,
+    which disables only the weights-exceed filter (its own ``total > 0`` guard).
+    """
+    probe = _plan_probe_store.get()
+    if probe is not None:
+        return sum(d.total_bytes for d in probe.devices)
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
+
+    try:
+        apply_fleet_gpu_env()
+        return sum(d.total_bytes for d in resolve_devices(resolve_llama_server()))
+    except (ProviderError, OSError):
+        return 0
+
+
+def role_model_placeable(role: WorkerRole, ref: str, total_vram: int) -> bool:
+    """Whether a fresh plan would actually serve *role* on *ref*.
+
+    Mirrors the planner's own drop conditions (SDK-routed role, vision without a
+    projector, model not installed, weights exceeding physical VRAM) using the
+    same primitives, so the acquisition ladder binds and replaces against what
+    an engine can serve rather than the raw config. Without this a
+    configured-but-unplaceable role keeps bind from ever matching a running
+    engine and restarts the shared engine on every process start.
+    """
+    if parse_model_ref(ref).is_remote or _vision_without_mmproj(role, ref):
+        return False
+    weights = _role_weights_bytes(role, ref)  # 0 when not installed / unresolvable
+    return weights > 0 and not _weights_exceed_hardware(weights, total_vram)
+
+
 def _server_model_inputs(
     roles: tuple[WorkerRole, ...] | None = None,
     *,

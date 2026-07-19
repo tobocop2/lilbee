@@ -3168,6 +3168,9 @@ def _install_ladder(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _data_dir: None)
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: True)
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    # Everything the test configures is placeable unless a test overrides this.
+    monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
+    monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     monkeypatch.setattr(
         prov_mod, "LlamaServerClient", lambda _endpoint, _model, **_kw: _fake_client()
     )
@@ -3181,6 +3184,34 @@ def _chat_launch() -> InstanceLaunch:
     return InstanceLaunch(
         role=WorkerRole.CHAT, argv=["/bin/llama-server"], env_overrides={}, model="m-chat"
     )
+
+
+def test_ladder_binds_when_a_configured_role_is_unplaceable(monkeypatch, tmp_path: Path) -> None:
+    """A configured-but-unplaceable role must not keep the engine restarting.
+
+    The engine serves the installed chat model; embed is configured but not
+    installed, so a fresh plan omits it. wanted must reflect that placeable set
+    so bind matches and the engine is never stopped and rebuilt (the storm).
+    """
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "embed": "m-embed-missing"}.get(role.value, ""),
+    )
+    # embed's model is not installed, so the planner would drop it; chat is fine.
+    monkeypatch.setattr(
+        planning_mod,
+        "role_model_placeable",
+        lambda role, _ref, _vram: role is WorkerRole.CHAT,
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert len(swap.binds) == 1  # bound to the running engine...
+    assert swap.started == [] and stopped == []  # ...never stopped or rebuilt
 
 
 def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) -> None:

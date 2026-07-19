@@ -622,6 +622,25 @@ def _configured_model_for(role: WorkerRole) -> str:
     return getattr(cfg, field) or "" if field else ""
 
 
+def _placeable_wanted() -> set[tuple[WorkerRole, str]]:
+    """Configured (role, model) pairs a fresh plan would actually serve.
+
+    Filters the raw config down to what the planner would place, so the
+    acquisition ladder binds and replaces against an engine's real contents. A
+    configured-but-unplaceable role (model not installed, weights over VRAM)
+    left in the set keeps bind from ever matching a running engine, restarting
+    the shared engine on every process start.
+    """
+    from lilbee.providers.fleet.planning import placeable_total_vram, role_model_placeable
+
+    total_vram = placeable_total_vram()
+    return {
+        (role, model)
+        for role in WorkerRole
+        if (model := _configured_model_for(role)) and role_model_placeable(role, model, total_vram)
+    }
+
+
 def _warm_ttl_seconds() -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
@@ -754,7 +773,7 @@ class FleetProvider:
         races an arrival.
         """
         pin = engine_pin()
-        wanted = {(role, model) for role in WorkerRole if (model := _configured_model_for(role))}
+        wanted = _placeable_wanted()
         machine = machine_engine_dir()
         with build_lock(machine):
             if wanted and self._bind_all_in_dir(machine, pin, wanted):
