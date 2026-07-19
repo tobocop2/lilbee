@@ -236,18 +236,24 @@ current model and says so.
 
 Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
 conversation. No database; back them up or sync them like any other file.
-The same surface exists over HTTP and MCP (list, read, create, append,
-rename, delete), so a script or agent can own a conversation the way the
-TUI does. The TUI, HTTP server, and CLI are one conversation space: start
-a chat in Obsidian, continue it in the terminal. Agent (MCP) sessions are
-separate: they never appear in your session list, and agents cannot list
-or read yours. The one bridge is explicit: an agent can take over a
-session whose id you hand it (`claim=true`, which moves it to the agent's
-space), and `POST /api/sessions/{id}/claim` brings one back.
+The same surface exists over HTTP (list, read, create, append, rename,
+delete), so a script can own a conversation the way the TUI does. The TUI,
+HTTP server, and CLI are one conversation space: start a chat in Obsidian,
+continue it in the terminal.
+
+Agents get the same tools over MCP, but they are off by default: most agent
+hosts already track their own history, and the tools cost context on every
+request. Turn on `mcp_sessions_enabled` if you want an agent keeping its own
+saved conversations. Agent sessions stay separate from yours: they never
+appear in your session list, and agents cannot list or read yours. The one
+bridge is explicit: an agent can take over a session whose id you hand it
+(`claim=true`, which moves it to the agent's space), and
+`POST /api/sessions/{id}/claim` brings one back.
 
 To keep nothing, turn `sessions_enabled` off in Settings: nothing is written
 to disk, `ctrl+o` leaves the footer, and the Sessions view says sessions are
-off instead of showing an empty list.
+off instead of showing an empty list. That covers the TUI, HTTP server, and
+CLI; `mcp_sessions_enabled` governs the agent half independently.
 
 ### When a conversation outgrows the model
 

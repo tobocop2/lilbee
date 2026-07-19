@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from lilbee.sessions.store import (
+    AGENT_SESSIONS_DISABLED_HINT,
     HUMAN_ORIGINS,
     SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -14,11 +15,13 @@ from lilbee.sessions.store import (
     SessionOwnershipError,
     SessionStore,
     TitleSource,
+    agent_sessions_enabled,
     derive_title,
     sessions_enabled,
 )
 
 __all__ = [
+    "AGENT_SESSIONS_DISABLED_HINT",
     "HUMAN_ORIGINS",
     "SESSIONS_DISABLED_HINT",
     "MessageRole",
@@ -30,6 +33,7 @@ __all__ = [
     "SessionOwnershipError",
     "SessionStore",
     "TitleSource",
+    "agent_sessions_enabled",
     "derive_title",
     "sessions_enabled",
 ]
