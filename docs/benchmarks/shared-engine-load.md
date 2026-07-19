@@ -11,7 +11,11 @@ engine: one llama.cpp fleet serving every lilbee process on the machine.
   `llama-cpp-0.3.30+swap-v223+gguf-v0.25.0`, Python 3.11.10
 - **Chat model:** Qwen3.6-35B-A3B, Q8_0 GGUF (37 GB weights), 4 batching slots,
   65,536 tokens of context per slot (262,144 served), q8_0 KV cache, flash
-  attention on
+  attention on. This is a sparse mixture-of-experts model: it occupies VRAM
+  like a 35B model but activates about 3B parameters per token, so its decode
+  rate is far higher than a dense model of the same footprint. Read the
+  throughput numbers below as specific to that architecture, not as a general
+  35B result.
 - **Embed model:** nomic-embed-text-v1.5, Q4_K_M
 
 The harness lives in `tools/qa/shared-engine/load/`: a streaming asyncio driver
@@ -105,6 +109,18 @@ errors is tracked as a follow-up.
 These results show the shared-engine architecture holds up under sustained
 concurrent multi-client load and survives repeated engine-process crashes
 without leaking VRAM, locks, or processes, on one GPU with one model pairing.
-They do not cover multi-GPU placement, other quantizations, or consumer GPUs.
-Absolute throughput numbers are specific to this model, quantization, and
-card.
+
+Four gaps are worth naming, in order of how much they would move the numbers:
+
+- **One model architecture.** A sparse MoE is the most favorable case for
+  decode rate. Small dense, mid dense, and 70B-class dense models are pending.
+- **Short prompts.** The sweep sent short prompts and generated 200 tokens, so
+  time to first token here reflects queueing, not prefill. Agent workloads send
+  tens of thousands of tokens of context, where prefill dominates TTFT.
+- **One role under load.** Chat carried the load while embedding stayed idle.
+  Real usage runs ingest alongside chat on the same engine, and that contention
+  is untested.
+- **One card.** No consumer GPU, no Apple Silicon (a different engine backend,
+  not merely a slower one), and no multi-GPU placement.
+
+Absolute throughput numbers are specific to this model, quantization, and card.
