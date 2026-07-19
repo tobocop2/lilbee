@@ -831,6 +831,34 @@ class TestContextBudget:
         assert 0 < len(kept) < len(results)
         assert kept == results[: len(kept)]  # keeps the top-ranked prefix
 
+    def test_fitted_context_survives_the_provider_that_enforces_the_window(self, mock_svc):
+        """bb-e0np: retrieval must fit inside what the engine will actually accept.
+
+        The fleet rejects a prompt above ``prompt_token_budget``; retrieval used
+        to fit to a ceiling one margin higher, so a grounded turn assembled a
+        prompt the engine refused with a 400 nothing downstream could fix.
+        """
+        from lilbee.providers.base import prompt_token_budget
+
+        ctx = 2560
+        cfg.num_ctx = ctx
+        system, question = "sys " * 40, "q " * 20
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 900) for i in range(5)]
+
+        kept = get_services().searcher._fit_context_budget(results, system, question, None)
+
+        searcher = get_services().searcher
+        assembled = (
+            searcher._budget_tokens(system)
+            + searcher._budget_tokens(question)
+            + sum(searcher._budget_tokens(r.chunk) for r in kept)
+        )
+        assert kept, "the top-ranked source is always kept"
+        assert assembled <= prompt_token_budget(ctx), (
+            f"assembled {assembled} tokens exceeds the provider ceiling "
+            f"{prompt_token_budget(ctx)}; the engine would reject this turn"
+        )
+
     def test_keeps_all_when_budget_ample(self, mock_svc):
         cfg.num_ctx = 100_000
         results = [_make_result(source=f"{i}.pdf", chunk="short") for i in range(5)]
@@ -843,9 +871,12 @@ class TestContextBudget:
         assert len(kept) == 1
 
     def test_history_counts_against_the_budget(self, mock_svc):
-        cfg.num_ctx = 1400
-        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
-        history = [{"role": "user", "content": "h" * 600}]
+        # Sized so both cases have room to differ: the budget now excludes the
+        # provider's margin as well as its generation reserve, so a 1400-token
+        # window leaves too little for anything but the always-kept top source.
+        cfg.num_ctx = 3000
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 1200) for i in range(5)]
+        history = [{"role": "user", "content": "h" * 3000}]
         no_hist = get_services().searcher._fit_context_budget(results, "sys", "q", None)
         with_hist = get_services().searcher._fit_context_budget(results, "sys", "q", history)
         assert len(with_hist) < len(no_hist)

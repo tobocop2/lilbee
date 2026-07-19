@@ -6,6 +6,7 @@ import sys
 import threading
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import cfg
@@ -30,31 +31,46 @@ def _escape_toml_string(s: str) -> str:
     )
 
 
-def load(data_root: Path) -> dict[str, str]:
-    """Read all settings from config.toml. Returns {} if file is missing."""
+def load(data_root: Path) -> dict[str, Any]:
+    """Read all settings from config.toml. Returns {} if file is missing.
+
+    Values keep the types TOML gave them. Stringifying here used to turn a
+    ``true`` into ``"True"`` in memory, which the next save then wrote back
+    quoted, so the file drifted away from valid types for its own fields.
+    """
     path = _config_path(data_root)
     if not path.exists():
         return {}
     with path.open("rb") as f:
-        return {k: str(v) for k, v in tomllib.load(f).items()}
+        return dict(tomllib.load(f))
 
 
-def save(data_root: Path, settings: dict[str, str]) -> None:
+def _render_toml_value(value: Any) -> str:
+    """Render a scalar as TOML: booleans and numbers bare, everything else quoted."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return f'"{_escape_toml_string(str(value))}"'
+
+
+def save(data_root: Path, settings: dict[str, Any]) -> None:
     """Write settings dict as simple TOML key-value pairs."""
     path = _config_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f'{k} = "{_escape_toml_string(v)}"\n' for k, v in sorted(settings.items())]
+    lines = [f"{k} = {_render_toml_value(v)}\n" for k, v in sorted(settings.items())]
     path.write_text("".join(lines), encoding="utf-8", newline="\n")
     if sys.platform != "win32":
         path.chmod(0o600)  # pragma: no cover - POSIX-only; Windows has no 0600 mode bits
 
 
 def get(data_root: Path, key: str) -> str | None:
-    """Look up a single key from config.toml."""
-    return load(data_root).get(key)
+    """Look up a single key from config.toml, as text for callers that want text."""
+    value = load(data_root).get(key)
+    return None if value is None else str(value)
 
 
-def set_value(data_root: Path, key: str, value: str) -> None:
+def set_value(data_root: Path, key: str, value: Any) -> None:
     """Read-modify-write a single key in config.toml (thread-safe)."""
     with _settings_lock:
         current = load(data_root)
@@ -70,7 +86,7 @@ def delete_value(data_root: Path, key: str) -> None:
         save(data_root, current)
 
 
-def update_values(data_root: Path, updates: dict[str, str]) -> None:
+def update_values(data_root: Path, updates: dict[str, Any]) -> None:
     """Batch update multiple keys in config.toml (single write)."""
     with _settings_lock:
         current = load(data_root)

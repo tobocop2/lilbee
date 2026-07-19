@@ -3128,8 +3128,10 @@ class TestUpdateConfig:
         from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
-        assert stored["temperature"] == "0.7"
-        assert stored["top_k"] == "5"
+        # Persisted with their real types, so config.toml stays valid for its
+        # own fields rather than holding "0.7" and "5" as quoted strings.
+        assert stored["temperature"] == 0.7
+        assert stored["top_k"] == 5
 
     async def test_api_key_update_injects_provider_keys(self, tmp_path):
         with patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject:
