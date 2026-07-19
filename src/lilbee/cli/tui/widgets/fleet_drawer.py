@@ -7,9 +7,9 @@ from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
 from textual.screen import Screen
 
+from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
 _CSS_FILE = Path(__file__).parent / "fleet_drawer.tcss"
@@ -20,7 +20,7 @@ _DRAWER_CSS = _CSS_FILE.read_text(encoding="utf-8")
 _HOST_OPEN_CLASS = "fleet-open"
 
 
-class FleetDrawer(Vertical):
+class FleetDrawer(Drawer):
     """GPU fleet panel as a non-modal right-side drawer; closed with esc or ctrl+g.
 
     Docked to the right so the screen underneath reflows to the left and stays
