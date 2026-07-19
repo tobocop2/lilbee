@@ -109,7 +109,9 @@ class TestManageHistory:
 
         managed, info = _rag._manage_history(history, "old notes")
 
-        mock_svc.searcher.summarize_history.assert_called_once_with(dropped, "old notes")
+        mock_svc.searcher.summarize_history.assert_called_once_with(
+            dropped, "old notes", on_batch=None
+        )
         assert info == CompactionInfo(summary="the notes", condensed=len(dropped), stranded=2)
         assert managed[:2] == summary_messages("the notes")
         assert managed[2:] == history[-COMPACT_KEEP_RECENT:]
@@ -207,6 +209,32 @@ class TestChatStreamCompactionEvents:
         compaction = dict(events)["compaction"]
         assert compaction == {"summary": "the notes", "condensed": 6, "stranded": 0}
         mock_svc.session_store.set_summary.assert_called_once_with("s1", "the notes")
+
+    async def test_relays_per_batch_progress_while_condensing(self, mock_svc, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chat_compaction", True)
+        monkeypatch.setattr(cfg, "chat_n_ctx_target", 2048)
+        monkeypatch.setattr(cfg, "sessions_enabled", True)
+        monkeypatch.setattr(
+            _rag, "dispatch_chat_stream", lambda req: _async_stream(_events_from(["hi"]))
+        )
+
+        def _condense(dropped, summary, on_batch=None):
+            if on_batch is not None:
+                on_batch(1, 2)
+                on_batch(2, 2)
+            return CompactionResult(summary="the notes", condensed=len(dropped), stranded=0)
+
+        mock_svc.searcher.summarize_history.side_effect = _condense
+
+        frames = await self._frames(_msgs(40))
+
+        events = parse_sse_events("".join(frames).encode())
+        compacting = [data for name, data in events if name == "compacting"]
+        assert compacting[0] == {}
+        assert {"batch": 1, "batches": 2} in compacting
+        assert {"batch": 2, "batches": 2} in compacting
+        names = [name for name, _ in events]
+        assert names.index("compaction") < names.index("token")
 
     async def test_stays_silent_when_compaction_is_off(self, mock_svc, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "chat_compaction", False)

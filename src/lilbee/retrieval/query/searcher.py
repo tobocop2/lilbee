@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -652,7 +652,10 @@ class Searcher:
         return question
 
     def summarize_history(
-        self, messages: list[ChatMessage], previous_summary: str = ""
+        self,
+        messages: list[ChatMessage],
+        previous_summary: str = "",
+        on_batch: Callable[[int, int], None] | None = None,
     ) -> CompactionResult:
         """Condense turns being dropped from the prompt into carry-forward notes.
 
@@ -670,13 +673,16 @@ class Searcher:
 
         Returns the notes and how many turns they cover; ``stranded`` counts turns
         dropped without notes, which the caller must surface rather than hide.
+        ``on_batch`` hears ``(batch, total)`` before each model call, for progress UI.
         """
         ctx_target = self._config.chat_n_ctx_target
         plan = plan_compaction(messages, previous_summary, ctx_target=ctx_target)
         notes: list[str] = []
         condensed = 0
         stranded = plan.stranded
-        for batch in plan.batches:
+        for index, batch in enumerate(plan.batches):
+            if on_batch is not None:
+                on_batch(index + 1, len(plan.batches))
             note = self._summarize_batch(batch, "")
             if note:
                 notes.append(note)

@@ -393,20 +393,58 @@ def _compaction_pending(history: list[ChatMessage], summary: str) -> bool:
 
 
 def _manage_history(
-    history: list[ChatMessage], summary: str
+    history: list[ChatMessage],
+    summary: str,
+    on_batch: Callable[[int, int], None] | None = None,
 ) -> tuple[list[ChatMessage], CompactionInfo | None]:
     """Apply the TUI's pre-turn context discipline to an HTTP conversation."""
     budget = history_budget(cfg.chat_n_ctx_target)
     info: CompactionInfo | None = None
     if _compaction_pending(history, summary):
         dropped = foldable(history)
-        result = get_services().searcher.summarize_history(dropped, summary)
+        result = get_services().searcher.summarize_history(dropped, summary, on_batch=on_batch)
         history = history[len(dropped) :]
         summary = result.summary
         info = CompactionInfo(
             summary=result.summary, condensed=result.condensed, stranded=result.stranded
         )
     return prompt_history(history, summary, max_tokens=budget), info
+
+
+async def _context_management_frames(
+    history: list[ChatMessage], summary: str, session_id: str | None
+) -> AsyncGenerator[str | tuple[list[ChatMessage], CompactionInfo | None], None]:
+    """Manage this turn's history off-loop, yielding its SSE frames, then the result.
+
+    Yields the ``compacting`` announcement, per-batch progress frames, and the
+    closing ``compaction`` frame (str items), persisting a fresh summary along
+    the way; the ``(history, info)`` tuple arrives exactly once, last.
+    """
+    if _compaction_pending(history, summary):
+        # Condensing blocks this turn on model calls; announce it like warming,
+        # then relay per-batch progress while the condenser works.
+        yield sse_event(SseEvent.COMPACTING, {})
+    loop = asyncio.get_running_loop()
+    progress: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
+
+    def _on_batch(batch: int, total: int) -> None:
+        loop.call_soon_threadsafe(progress.put_nowait, (batch, total))
+
+    manage = asyncio.ensure_future(asyncio.to_thread(_manage_history, history, summary, _on_batch))
+    while True:
+        get = asyncio.ensure_future(progress.get())
+        done, _ = await asyncio.wait({manage, get}, return_when=asyncio.FIRST_COMPLETED)
+        if get in done:
+            batch, total = get.result()
+            yield sse_event(SseEvent.COMPACTING, {"batch": batch, "batches": total})
+            continue
+        get.cancel()
+        break
+    managed_history, compaction = await manage
+    if compaction is not None:
+        _persist_summary(session_id, compaction)
+        yield sse_event(SseEvent.COMPACTION, compaction.model_dump())
+    yield (managed_history, compaction)
 
 
 def _persist_summary(session_id: str | None, info: CompactionInfo | None) -> None:
@@ -565,13 +603,11 @@ async def _stream_chat_response(
     session_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Drive ``dispatch_chat_stream`` and emit reasoning/token/sources/done SSE events."""
-    if _compaction_pending(history, summary):
-        # Condensing blocks this turn on model calls; announce it like warming.
-        yield sse_event(SseEvent.COMPACTING, {})
-    history, compaction = await asyncio.to_thread(_manage_history, history, summary)
-    if compaction is not None:
-        _persist_summary(session_id, compaction)
-        yield sse_event(SseEvent.COMPACTION, compaction.model_dump())
+    async for item in _context_management_frames(history, summary, session_id):
+        if isinstance(item, str):
+            yield item
+            continue
+        history, _compaction = item
     frames, ctx = _resolve_chat_stream_context(
         get_services().searcher, question, history, top_k, chunk_type
     )
