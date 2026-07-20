@@ -159,6 +159,9 @@ uv pip install -r evals/benchmark/requirements.txt   # pytrec_eval, ragas, beir,
 
 - The frozen manifest pins the bootstrap seed, resamples, and alpha, so every
   CI is reproducible.
-- `collect` and `answer` checkpoint per query. Kill and re-run freely; only
-  unfinished queries repeat, and the run file is rebuilt from the full
-  checkpoint each time.
+- `collect` and `answer` checkpoint per query, so killing and re-running repeats
+  only unfinished queries, and the run file is rebuilt from the full checkpoint
+  each time. Each checkpoint records the arm and configuration that produced it
+  and refuses to resume under a different one, so pointing the second arm at the
+  first arm's checkpoint path fails loudly instead of emitting a complete run
+  file built from the wrong arm's hits.

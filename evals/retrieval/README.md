@@ -102,11 +102,16 @@ export LILBEE_EVAL_JUDGE_API_KEY="..."              # optional
 
 ## Determinism and resume
 
-- `--seed` (questions, judge) makes sampling, blinding ids, and shuffles
-  reproducible. Re-running `judge` with the same seed and inputs regenerates
-  the identical blind set, so the grades checkpoint stays valid.
-- `answer` and `judge` both checkpoint per row. Kill and re-run freely; only
-  unfinished work repeats.
+- `--seed` (questions, judge) makes sampling and shuffles reproducible. Blind
+  ids are not seeded: each is a hash of its (question, arm, replicate, answer),
+  so re-running `judge` after regenerating questions or re-running an answer
+  misses the checkpoint for exactly the rows that changed instead of inheriting
+  a grade that belongs to a different answer.
+- `answer` and `judge` checkpoint per row, so killing and re-running repeats
+  only unfinished work. A checkpoint is bound to the run that created it: the
+  answers file records its arm, endpoint, depth and a digest of the question
+  set, and resuming it under a different one is refused rather than silently
+  producing a file that mixes two configurations.
 - Answers that hard-fail after all retries are recorded as failures and score
   zero everywhere (prefailed: they never reach the judge).
 
@@ -118,3 +123,4 @@ export LILBEE_EVAL_JUDGE_API_KEY="..."              # optional
 | `gid_map.json` | secret gid to (qid, arm, replicate) mapping |
 | `prefailed.json` | gids scored zero without judging |
 | `grades.jsonl` | checkpointed judge output, one row per gid |
+| `judge_meta.json` | which arm was graded twice, and the judge model that graded |
