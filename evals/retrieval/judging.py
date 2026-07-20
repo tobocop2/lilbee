@@ -102,13 +102,6 @@ def parse_grade(text: str) -> dict[str, int] | None:
     return graded
 
 
-def _alternate_prompt(row: BlindRow) -> str:
-    """The other equivalent presentation, for a retry that can actually differ."""
-    return JUDGE_PROMPTS[(row.variant + 1) % len(JUDGE_PROMPTS)].format(
-        question=row.question, source=row.source, ground=row.ground, answer=row.answer
-    )
-
-
 def judge_rows(
     rows: list[BlindRow],
     chat: ChatFn,
@@ -123,21 +116,24 @@ def judge_rows(
         if row.gid in checkpoint:
             continue
         grade: dict[str, int] | None = None
+        prompt = judge_prompt_for(row)
+        # Only transport failures are retried, and always under this row's own
+        # presentation. Both backends decode greedily, so an unparseable
+        # response is deterministic and re-asking cannot change it, which is why
+        # the old three identical attempts were three calls for one result.
+        # Re-asking under the *other* presentation would be worse still: a
+        # retried noise replicate would then be graded under exactly the
+        # presentation its twin got, so that pair would contribute zero
+        # disagreement and quietly deflate the floor it exists to measure.
         for attempt in range(attempts):
-            # Retries re-ask under the other equivalent presentation. Both
-            # backends decode greedily, so re-sending the identical prompt is the
-            # same computation and cannot produce a different parse; only a
-            # transport error would clear on its own.
-            attempt_prompt = judge_prompt_for(row) if attempt == 0 else _alternate_prompt(row)
             try:
-                grade = parse_grade(chat(attempt_prompt))
-            except Exception as exc:  # a failed grade is skipped, not fatal
+                grade = parse_grade(chat(prompt))
+            except Exception as exc:
                 print(f"judge call failed for {row.gid}: {exc}", file=sys.stderr)
-                grade = None
-            if grade is not None:
-                break
-            if attempt + 1 < attempts:
-                time.sleep(retry_delay)
+                if attempt + 1 < attempts:
+                    time.sleep(retry_delay)
+                continue
+            break
         if grade is None:
             print(f"no parseable grade for {row.gid}; leaving unreturned", file=sys.stderr)
             continue

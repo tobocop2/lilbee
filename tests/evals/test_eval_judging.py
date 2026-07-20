@@ -1,5 +1,8 @@
 """Judge plumbing: grade parsing, clamping, and checkpointed judging."""
 
+import tempfile
+from pathlib import Path
+
 from evals.retrieval.blinding import BlindRow
 from evals.retrieval.checkpoint import load_jsonl
 from evals.retrieval.judging import judge_rows, parse_grade
@@ -73,7 +76,11 @@ def test_judge_rows_resumes_and_keeps_existing_grades(tmp_path):
     assert grades["g2"] == {"faithfulness": 2, "relevance": 2, "citation": 2}
 
 
-def test_judge_rows_retries_and_skips_unparseable_rows(tmp_path):
+def test_judge_rows_skips_an_unparseable_row_without_retrying(tmp_path):
+    # Greedy decode makes an unparseable response deterministic, so re-asking is
+    # extra calls for the same result. Re-asking under the other presentation
+    # would be worse: a retried noise replicate would land on its twin's exact
+    # presentation and contribute zero disagreement to the floor.
     calls: list[str] = []
 
     def bad_judge(prompt: str) -> str:
@@ -82,16 +89,19 @@ def test_judge_rows_retries_and_skips_unparseable_rows(tmp_path):
 
     grades = judge_rows([_row("g1")], bad_judge, tmp_path / "g.jsonl", attempts=2, retry_delay=0)
     assert grades == {}
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
-def test_a_retry_reasks_under_a_different_presentation():
-    # Both backends decode greedily, so re-sending the identical prompt is the
-    # same computation and cannot parse differently the second time.
-    from evals.retrieval.blinding import BlindRow
-    from evals.retrieval.judging import _alternate_prompt, judge_prompt_for
+def test_a_transport_failure_is_retried_under_the_same_presentation():
+    attempts = []
 
-    row = BlindRow(gid="g1", question="Q?", source="a.txt", ground="g", answer="a", variant=0)
-    assert judge_prompt_for(row) != _alternate_prompt(row)
-    for fragment in ("Q?", "a.txt", "g", "a"):
-        assert fragment in _alternate_prompt(row)
+    def chat(prompt):
+        attempts.append(prompt)
+        if len(attempts) == 1:
+            raise RuntimeError("connection reset")
+        return '{"faithfulness": 2, "relevance": 2, "citation": 1}'
+
+    rows = [BlindRow(gid="g1", question="Q?", source="a.txt", ground="g", answer="a", variant=1)]
+    grades = judge_rows(rows, chat, Path(tempfile.mkdtemp()) / "grades.jsonl", retry_delay=0)
+    assert grades["g1"]["faithfulness"] == 2
+    assert attempts[0] == attempts[1]
