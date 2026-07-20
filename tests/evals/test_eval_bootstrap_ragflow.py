@@ -69,6 +69,17 @@ def test_upload_sends_nested_paths_relative_to_the_corpus_root(tmp_path):
     assert client.batches == [["a.txt", "nested/c.txt", "nested/deeper/b.txt"]]
 
 
+def test_uploaded_names_are_os_independent(tmp_path):
+    # The document name is the identifier the run is scored against. Windows
+    # would give backslashes from str(), so the same corpus would be indexed
+    # under different names depending on who ran the upload.
+    client = _RecordingClient([["1", "2", "3"]])
+    upload_corpus(client, "ds1", _corpus(tmp_path), batch_size=10)
+    names = client.batches[0]
+    assert not any("\\" in name for name in names)
+    assert all(name == name.replace("\\", "/") for name in names)
+
+
 def test_upload_batches_rather_than_posting_one_giant_request(tmp_path):
     client = _RecordingClient([["1", "2"], ["3"]])
     ids = upload_corpus(client, "ds1", _corpus(tmp_path), batch_size=2)

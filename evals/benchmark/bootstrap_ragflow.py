@@ -119,7 +119,13 @@ def upload_corpus(
     document_ids: list[str] = []
     for start in range(0, len(paths), batch_size):
         batch = paths[start : start + batch_size]
-        files = [("file", (str(path.relative_to(corpus_dir)), path.read_bytes())) for path in batch]
+        # as_posix() rather than str(): the document name is an identifier the
+        # run is scored against, and str() yields backslashes on Windows, so the
+        # same corpus would be indexed under different names depending on the
+        # operator's OS.
+        files = [
+            ("file", (path.relative_to(corpus_dir).as_posix(), path.read_bytes())) for path in batch
+        ]
         data = _data(client.post(route, files=files))
         document_ids.extend(str(doc["id"]) for doc in data)
     return document_ids
