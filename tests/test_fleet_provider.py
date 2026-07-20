@@ -343,7 +343,7 @@ def test_restart_engines_releases_and_prunes_holds(monkeypatch, tmp_path: Path) 
     p._engine_holds = {tmp_path: hold_user_lock(tmp_path)}
     assert live_users_exist(tmp_path) is True  # we hold membership
 
-    p._restart_engines()
+    p._release_engines(config_changed=True)
 
     assert p._engine_holds == {}  # hold map pruned
     assert live_users_exist(tmp_path) is False  # membership released, not left stale
@@ -603,6 +603,45 @@ def test_fit_chat_context_clamps_a_greedy_output_reservation() -> None:
     msgs = [{"role": "user", "content": "x" * 2000}]
     out = p._fit_chat_context(msgs, None, {"num_predict": 1900}, "m")
     assert out[-1]["content"] == "x" * 2000
+
+
+def test_fit_chat_context_keeps_history_a_greedy_reservation_would_evict() -> None:
+    """The clamp is a policy, not a rescue: it must fire before history is lost.
+
+    An agent that reserves most of the window on every call left a prompt
+    budget of a few dozen tokens. The final turn still squeezed in, so the fit
+    "succeeded" and the reservation was honored verbatim -- silently dropping
+    the entire conversation on exactly the clients the clamp exists for.
+    """
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 8192
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for i in range(10):
+        msgs.append({"role": "user", "content": f"turn {i} " + "x" * 200})
+        msgs.append({"role": "assistant", "content": "y" * 200})
+    msgs.append({"role": "user", "content": "final"})
+
+    greedy = p._fit_chat_context(msgs, None, {"num_predict": 8000}, "m")
+
+    # The same history the default reservation preserves, not a bare final turn.
+    assert greedy == p._fit_chat_context(msgs, None, None, "m")
+    assert len(greedy) > 2
+
+
+def test_fit_chat_context_honors_a_small_output_reservation() -> None:
+    """Capping the reserve at the default must not shrink a modest request."""
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    p._chat_ctx = 8192
+    msgs: list[dict] = [{"role": "system", "content": "s"}]
+    for i in range(200):
+        msgs.append({"role": "user", "content": f"turn {i} " + "x" * 200})
+        msgs.append({"role": "assistant", "content": "y" * 200})
+    msgs.append({"role": "user", "content": "final"})
+
+    # A caller wanting only 16 tokens out earns more prompt room, not less.
+    small = p._fit_chat_context(msgs, None, {"num_predict": 16}, "m")
+    default = p._fit_chat_context(msgs, None, None, "m")
+    assert len(small) > len(default)
 
 
 def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
@@ -3643,6 +3682,42 @@ def test_opting_in_after_binding_still_keeps_the_engine(monkeypatch, tmp_path: P
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
     p.shutdown()
     assert stopped == []
+
+
+def test_a_config_change_leaves_an_engine_other_users_are_serving(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """One member's settings change must not interrupt every peer's requests."""
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    peer = hold_user_lock(machine, pid=555_555)
+
+    p.invalidate_load_cache()
+
+    assert stopped == []  # the peer is mid-request; we rebind or overflow on next use
+    assert p._engine_holds == {}  # our membership is gone either way
+    peer.release_and_check_last()
+
+
+def test_a_config_change_stops_an_engine_no_one_else_is_using(monkeypatch, tmp_path: Path) -> None:
+    """Nothing keeps a stale-config engine resident once its last user leaves."""
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    # Even an explicit warm opt-in does not preserve an engine built for a
+    # configuration that no longer exists.
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+
+    p.invalidate_load_cache()
+
+    assert stopped == [machine]
 
 
 def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:

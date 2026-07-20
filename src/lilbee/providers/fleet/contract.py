@@ -14,11 +14,11 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from lilbee.providers.fleet.swap_manager import _SwapState
+    from lilbee.providers.fleet.swap_manager import SwapState
     from lilbee.providers.roles import WorkerRole
 
 
-def decoded_launches(state: _SwapState) -> list[InstanceLaunch] | None:
+def decoded_launches(state: SwapState) -> list[InstanceLaunch] | None:
     """The engine's recorded launches, or ``None`` when the contract is undecodable.
 
     The single decode site. Callers previously re-decoded launches bare, relying on
@@ -32,13 +32,13 @@ def decoded_launches(state: _SwapState) -> list[InstanceLaunch] | None:
         return None
 
 
-def served_pairs(state: _SwapState) -> set[tuple[WorkerRole, str]] | None:
+def served_pairs(state: SwapState) -> set[tuple[WorkerRole, str]] | None:
     """The (role, model) pairs the engine behind *state* serves, or ``None``."""
     launches = decoded_launches(state)
     return None if launches is None else {(launch.role, launch.model) for launch in launches}
 
 
-def contract_matches(state: _SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:
+def contract_matches(state: SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:
     """Whether the engine behind *state* serves every wanted (role, model) pair.
 
     The engine may serve more roles than asked; the engine build pin must

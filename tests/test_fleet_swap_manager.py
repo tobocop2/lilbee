@@ -483,9 +483,9 @@ def _own_state_path(tmp_path: Path) -> Path:
     return tmp_path / sm._state_filename(os.getpid(), _GROUP)
 
 
-def _swap_state(*, pid: int = 123, created_at: float | None = None) -> sm._SwapState:
-    """A minimal _SwapState for swap-liveness checks."""
-    return sm._SwapState(pid=pid, pgid=None, created_at=created_at)
+def _swap_state(*, pid: int = 123, created_at: float | None = None) -> sm.SwapState:
+    """A minimal SwapState for swap-liveness checks."""
+    return sm.SwapState(pid=pid, pgid=None, created_at=created_at)
 
 
 class TestCrossRunReaping:
@@ -531,7 +531,7 @@ class TestCrossRunReaping:
         _write_state(tmp_path, pid=7777)
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap", "-config", "x.json"])
         _patch_psutil_process(monkeypatch, {7777: stale})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
@@ -611,7 +611,7 @@ class TestCrossRunReaping:
         _write_state(tmp_path, pid=7777, created_at=42.0)
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=42.0)
         _patch_psutil_process(monkeypatch, {7777: stale})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -622,7 +622,7 @@ class TestCrossRunReaping:
         _write_state(tmp_path, pid=7777, created_at=None)
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"], create_time=5000.0)
         _patch_psutil_process(monkeypatch, {7777: stale})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -669,7 +669,7 @@ class TestCrossRunReaping:
         _write_state(tmp_path, pid=7777)
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
@@ -706,7 +706,7 @@ class TestCrossRunReaping:
         state_path = _write_state(tmp_path, pid=7777, filename=sm._state_filename(999, _GROUP))
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -719,7 +719,7 @@ class TestCrossRunReaping:
         legacy = _write_state(tmp_path, pid=7777)
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})
-        stopped: list[sm._SwapState] = []
+        stopped: list[sm.SwapState] = []
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert [state.pid for state in stopped] == [7777]
@@ -738,7 +738,7 @@ class TestStopStaleSwap:
         monkeypatch.setattr(
             sm.os, "killpg", lambda pgid, sig: signals.append((pgid, sig)), raising=False
         )
-        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=8888))
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=8888))
         assert signals == [(8888, sm.signal.SIGTERM)]
 
     def test_escalates_to_sigkill_when_term_is_ignored(
@@ -758,7 +758,7 @@ class TestStopStaleSwap:
             return ([], [])
 
         monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
-        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=8888))
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=8888))
         assert signals == [sm.signal.SIGTERM, sm._SIGKILL]
         # The KILLed swap is awaited so its VRAM is free before the next probe.
         assert [stale] in waits
@@ -767,13 +767,13 @@ class TestStopStaleSwap:
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: stale})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
-        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=None))
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))
         assert stale.signals == [sm.signal.SIGTERM]
 
     def test_noop_when_process_died_between_checks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_psutil_process(monkeypatch, {})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
-        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=None))  # must not raise
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))  # must not raise
 
     def test_reaps_surviving_servers_of_the_stale_swap(
         self, monkeypatch: pytest.MonkeyPatch
@@ -785,7 +785,7 @@ class TestStopStaleSwap:
         _patch_psutil_process(monkeypatch, {7777: stale})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [survivor])
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
-        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=None))
+        sm._stop_stale_swap(sm.SwapState(pid=7777, pgid=None))
         assert survivor.terminated is True
 
 
@@ -1213,7 +1213,7 @@ class TestBindToLiveEngine:
 
     def test_bind_refuses_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
         mgr = SwapManager(tmp_path, _GROUP)
-        state = sm._SwapState(pid=1, pgid=None)
+        state = sm.SwapState(pid=1, pgid=None)
         assert mgr.bind(state) is False
         assert mgr.bound is False
 
@@ -1344,18 +1344,18 @@ class TestLiveStateHelpers:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is True
 
     def test_state_without_a_port_is_unhealthy(self) -> None:
-        state = sm._SwapState(pid=1, pgid=None)
+        state = sm.SwapState(pid=1, pgid=None)
         assert sm.state_is_healthy(state) is False
 
     def test_refused_probe_is_unhealthy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_http(monkeypatch, _raise_connect_error)
-        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is False
 
     def test_error_status_is_unhealthy(
@@ -1364,7 +1364,7 @@ class TestLiveStateHelpers:
         # A proxy that answers but errors (llama-swap starting up, or a foreign
         # service refusing the path) is not a live engine.
         _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
-        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is False
 
     def test_recycled_port_responder_is_not_our_engine(
@@ -1374,7 +1374,7 @@ class TestLiveStateHelpers:
         # unknown path (no {"running": [...]} body) must NOT read as healthy, or
         # inference clients would bind to a non-engine endpoint forever.
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200, payload={"ok": True}))
-        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is False
 
     def test_non_json_responder_is_not_our_engine(
@@ -1387,7 +1387,7 @@ class TestLiveStateHelpers:
             return resp
 
         _patch_http(monkeypatch, _html)
-        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        state = sm.SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is False
 
 

@@ -596,8 +596,9 @@ flowchart TD
 ```
 
 The engine is machine-level infrastructure. One **machine engine slot** per
-OS user (`~/.cache/lilbee/engine/`, `%LOCALAPPDATA%\lilbee\engine` on
-Windows) holds the running fleet's records; every process acquires its engine
+OS user (`~/.local/state/lilbee/engine/`, `~/Library/Application
+Support/lilbee/engine` on macOS, `%LOCALAPPDATA%\lilbee\engine` on Windows)
+holds the running fleet's records; every process acquires its engine
 through the same ladder, under a cross-process build lock:
 
 1. **Bind** when the slot's engine is healthy and its contract (per-role

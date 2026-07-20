@@ -2,7 +2,7 @@
 
 from lilbee.providers.fleet.contract import contract_matches
 from lilbee.providers.fleet.launch import InstanceLaunch
-from lilbee.providers.fleet.swap_manager import _SwapState
+from lilbee.providers.fleet.swap_manager import SwapState
 from lilbee.providers.roles import WorkerRole
 
 
@@ -12,8 +12,8 @@ def _launch(role: WorkerRole, model: str, *, ctx: int = 0) -> InstanceLaunch:
     )
 
 
-def _state(*launches: InstanceLaunch, pin: str = "pin-a") -> _SwapState:
-    return _SwapState(
+def _state(*launches: InstanceLaunch, pin: str = "pin-a") -> SwapState:
+    return SwapState(
         pid=1,
         pgid=None,
         proxy_port=4100,
@@ -55,7 +55,7 @@ def test_derived_ctx_difference_does_not_refuse() -> None:
 
 
 def test_undecodable_contract_refuses() -> None:
-    state = _SwapState(
+    state = SwapState(
         pid=1,
         pgid=None,
         proxy_port=4100,

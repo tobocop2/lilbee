@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,14 +45,12 @@ _HOLD_TIMEOUT_S = 10.0
 
 def machine_engine_dir() -> Path:
     """The per-OS-user engine slot every lilbee process scans first."""
+    from lilbee.core.system import default_state_dir
+
     override = os.environ.get(ENGINE_DIR_ENV, "").strip()
     if override:
         return Path(override)
-    if sys.platform == "win32":  # pragma: no cover - platform split
-        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-    else:  # pragma: no cover - platform split
-        base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-    return base / "lilbee" / "engine"
+    return default_state_dir() / "engine"
 
 
 def private_engine_dir(config_root: Path) -> Path:

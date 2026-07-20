@@ -28,7 +28,12 @@ import httpx
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.base import ProviderError, ProviderErrorKind, prompt_token_budget
+from lilbee.providers.base import (
+    GENERATION_RESERVE_TOKENS,
+    ProviderError,
+    ProviderErrorKind,
+    prompt_token_budget,
+)
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.binary import engine_pin
 from lilbee.providers.fleet.client import (
@@ -43,7 +48,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
     SwapManager,
-    _SwapState,
+    SwapState,
     engine_record_exists,
     find_live_state,
     reap_stale,
@@ -188,7 +193,7 @@ def _healthy_groups_ours(engine_dir: Path, pin: str, wanted: set[tuple[WorkerRol
 
 def _bindable_group(
     engine_dir: Path, group: SwapGroup, pin: str, wanted: set[tuple[WorkerRole, str]]
-) -> tuple[_SwapState, list[InstanceLaunch], set[tuple[WorkerRole, str]]] | None:
+) -> tuple[SwapState, list[InstanceLaunch], set[tuple[WorkerRole, str]]] | None:
     """*group*'s state, launches, and the wanted pairs it covers, or ``None``.
 
     ``None`` for every reason a group is not bindable by us: no record, unhealthy,
@@ -889,7 +894,7 @@ class FleetProvider:
         (Whether an unmatched dir's engine is then replaced or overflowed
         around is the ladder's call, based on live users.)
         """
-        candidates: list[tuple[SwapGroup, _SwapState, list[InstanceLaunch]]] = []
+        candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]] = []
         covered: set[tuple[WorkerRole, str]] = set()
         for group in SwapGroup:
             found = _bindable_group(engine_dir, group, pin, wanted)
@@ -1210,12 +1215,9 @@ class FleetProvider:
             # Terminal shutdown closes every client; a config-change teardown
             # retires them so an in-flight reader is never severed.
             self._drop_swap_refs(close_all=latch)
-            if latch:
-                self._release_engines()
-            else:
-                self._restart_engines()
+            self._release_engines(config_changed=not latch)
 
-    def _release_engines(self) -> None:
+    def _release_engines(self, *, config_changed: bool = False) -> None:
         """Drop membership in every used engine dir; stop each engine we leave last.
 
         Runs under each dir's cross-process build lock so a departing last user
@@ -1226,6 +1228,20 @@ class FleetProvider:
         just the exiting process's config: the machine slot is shared by
         installations that configure it differently, and which one leaves last
         is arbitrary.
+
+        *config_changed* is the cache-drop path, where this provider's settings
+        or model changed. That makes the running engine stale for us, so no
+        persistence opt-in preserves it -- but it says nothing about the peers
+        still serving requests against it, so a shared engine is left running
+        and the next use re-runs the ladder, binding it if it happens to match
+        and overflowing to a private dir if it does not.
+
+        The hold map is cleared either way. Leaving a stale hold behind is not
+        benign: after a lazy rebuild overflows to a private dir (a foreign
+        process having claimed the machine slot in the gap), the next release
+        would iterate the stale machine hold and stop that foreign engine
+        mid-use, and the stale flock would keep live_users_exist true so the
+        foreign engine's real last user could never reap it.
         """
         from lilbee.core.config import cfg
 
@@ -1236,30 +1252,16 @@ class FleetProvider:
                 # this process's own setting, which it may have flipped after
                 # binding (the setting doesn't affect the load, so a flip never
                 # re-acquires and never reaches the mark).
-                keep = keep_warm_requested(engine_dir) or cfg.keep_engine_warm
+                keep = not config_changed and (
+                    keep_warm_requested(engine_dir) or cfg.keep_engine_warm
+                )
                 if last and not keep:
                     stop_engine(engine_dir)
                     log.info("Engine stopped at %s (last user out)", engine_dir)
                 elif last:
                     log.info("Engine left warm at %s (last user out)", engine_dir)
-        self._engine_holds = {}
-
-    def _restart_engines(self) -> None:
-        """A config change stops this provider's engines so they rebuild with the
-        new config; users rediscover and rebuild.
-
-        Membership is released and the hold map cleared as each engine is stopped.
-        Leaving a stale hold behind is not benign: after the lazy rebuild overflows
-        to a private dir (a foreign process having claimed the machine slot in the
-        gap), the next config change would iterate the stale machine hold and stop
-        that foreign engine mid-use, and the stale flock would keep live_users_exist
-        true so the foreign engine's real last user could never reap it.
-        """
-        for engine_dir, hold in list(self._engine_holds.items()):
-            with build_lock(engine_dir, best_effort=True):
-                hold.release_and_check_last()  # drop our membership; we own the teardown
-                stop_engine(engine_dir)
-                log.info("Engine restarted at %s (configuration changed)", engine_dir)
+                elif config_changed:
+                    log.info("Engine left running at %s (still in use by peers)", engine_dir)
         self._engine_holds = {}
 
     def _drop_swap_refs(self, *, close_all: bool = False) -> None:
@@ -1427,27 +1429,29 @@ class FleetProvider:
     ) -> list[ChatMessage]:
         """Drop oldest turns so the prompt fits the served context.
 
-        A ``num_predict`` reservation the window cannot honor is clamped to
-        the default generation room; llama-server stops at the context edge
-        anyway. Raises ``ProviderError(CONTEXT_OVERFLOW)`` only when system
-        messages, tools, and the final turn exceed the window even with the
-        clamped reserve (mapped to a 400 by the chat-completions route).
+        A ``num_predict`` reservation larger than the default generation room is
+        capped to it, so an agent client that over-reserves keeps its history
+        instead of having it evicted; llama-server stops at the context edge
+        anyway. A smaller reservation is honored as-is and widens the prompt.
+        Raises ``ProviderError(CONTEXT_OVERFLOW)`` only when system messages,
+        tools, and the final turn exceed the window even with the capped
+        reserve (mapped to a 400 by the chat-completions route).
         """
         # 0/None means the served context is unknown (no chat launch adopted yet);
         # a real per-slot context is always positive, so skip windowing.
         if not self._chat_ctx:
             return messages
-        budget = prompt_token_budget(self._chat_ctx, (options or {}).get("num_predict"))
-        result = window_messages(messages, tools, budget)
-        if not result.fits:
-            # An over-large output reservation (num_predict past the default) is
-            # clamped to the default budget so an agent client that over-reserves
-            # still fits, rather than being rejected. Re-expressed via #561's
-            # centralized prompt_token_budget: the default budget (num_predict=None)
-            # is wider than a large explicit reservation.
-            default_budget = prompt_token_budget(self._chat_ctx, None)
-            if default_budget > budget:
-                result = window_messages(messages, tools, default_budget)
+        # An output reservation only ever buys the prompt MORE room, never less:
+        # a num_predict past the default is a ceiling on what the model may
+        # generate, not a claim on prompt space, and llama-server stops at the
+        # context edge regardless. Capping it here rather than retrying after a
+        # failed fit is the difference between a policy and a rescue -- an agent
+        # reserving most of the window leaves a budget of a few dozen tokens, in
+        # which the final turn still "fits" while the whole conversation is
+        # silently evicted.
+        requested = (options or {}).get("num_predict")
+        reserve = min(requested, GENERATION_RESERVE_TOKENS) if requested else None
+        result = window_messages(messages, tools, prompt_token_budget(self._chat_ctx, reserve))
         if not result.fits:
             raise ProviderError(
                 f"Prompt of about {result.prompt_tokens} tokens exceeds the "

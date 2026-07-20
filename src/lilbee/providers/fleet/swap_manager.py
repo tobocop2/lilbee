@@ -120,8 +120,14 @@ def _state_filename(owner_pid: int, group: str) -> str:
 
 
 @dataclass(frozen=True)
-class _SwapState:
-    """A previous run's llama-swap identity, read back for cross-run reaping."""
+class SwapState:
+    """A running llama-swap's recorded identity and serving contract.
+
+    Read back from the engine dir's state file, so it describes engines this
+    process did not start. The currency the bind/build ladder is written in:
+    swap_manager records it, provider reads it to decide what a slot is
+    serving, and contract matches it against what this process wants.
+    """
 
     pid: int
     pgid: int | None
@@ -283,7 +289,7 @@ class SwapManager:
         """Whether this manager rides an engine built by another process."""
         return self._bound
 
-    def bind(self, state: _SwapState) -> bool:
+    def bind(self, state: SwapState) -> bool:
         """Use a running engine's proxy without taking any ownership of it.
 
         The engine's own state record stays untouched: the binder writes
@@ -454,14 +460,14 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
     return swaps
 
 
-def find_live_state(data_dir: Path, group: SwapGroup) -> _SwapState | None:
+def find_live_state(data_dir: Path, group: SwapGroup) -> SwapState | None:
     """The newest recorded state for *group* at *data_dir* (no liveness check).
 
     A record's presence does not prove the engine is up; callers that need that
     probe it with ``state_is_healthy``. The name reflects that a record is written
     only for a running engine, not that this function verifies it.
     """
-    best: _SwapState | None = None
+    best: SwapState | None = None
     for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
         if f".{group.value}." not in f".{state_path.name}":
             continue
@@ -496,7 +502,7 @@ def _running_endpoint_answers(base_url: str) -> bool:
         return False
 
 
-def state_is_healthy(state: _SwapState) -> bool:
+def state_is_healthy(state: SwapState) -> bool:
     """Whether the engine behind *state* answers on its recorded proxy port."""
     if state.proxy_port is None:
         return False
@@ -656,15 +662,15 @@ def _hard_stop_proc(proc: psutil.Process) -> None:
             proc.kill()
 
 
-def _load_state(path: Path) -> _SwapState | None:
-    """Parse a state file into a :class:`_SwapState`; ``None`` when absent/corrupt."""
+def _load_state(path: Path) -> SwapState | None:
+    """Parse a state file into a :class:`SwapState`; ``None`` when absent/corrupt."""
     try:
         payload = json.loads(path.read_text())
         raw_pgid = payload.get(_STATE_KEY_PGID)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
         raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
-        return _SwapState(
+        return SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
@@ -678,7 +684,7 @@ def _load_state(path: Path) -> _SwapState | None:
         return None
 
 
-def _is_live_llama_swap(state: _SwapState) -> bool:
+def _is_live_llama_swap(state: SwapState) -> bool:
     """True when the recorded pid is alive and is the recorded llama-swap.
 
     A recorded create time that differs from the live process's is pid reuse,
@@ -699,7 +705,7 @@ def _is_live_llama_swap(state: _SwapState) -> bool:
     return _LLAMA_SWAP_PROCESS_NAME in binary
 
 
-def _stop_stale_swap(state: _SwapState) -> None:
+def _stop_stale_swap(state: SwapState) -> None:
     """TERM-then-KILL a stale llama-swap's group and reap the servers it spawned."""
     children = _live_children(state.pid)
     try:
@@ -716,7 +722,7 @@ def _stop_stale_swap(state: _SwapState) -> None:
     _reap_survivors(children)
 
 
-def _signal_stale(state: _SwapState, sig: int) -> None:
+def _signal_stale(state: SwapState, sig: int) -> None:
     """Signal the stale swap's process group, or the pid where groups don't apply."""
     if state.pgid is not None and sys.platform != "win32":
         with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -726,7 +732,7 @@ def _signal_stale(state: _SwapState, sig: int) -> None:
         psutil.Process(state.pid).send_signal(sig)
 
 
-def _stop_recorded_engine(state: _SwapState) -> bool:
+def _stop_recorded_engine(state: SwapState) -> bool:
     """Terminate a live llama-swap and its servers, or reap the servers a dead one
     orphaned (matched by recorded port, since they run in their own process groups
     and outlive the swap). Returns whether anything was actually alive to stop, so
