@@ -22,24 +22,30 @@ _CITE_RANGE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
 # Ranges wider than this are page spans or line numbers, not citation lists.
 _MAX_CITE_RANGE = 32
 
-# An LLM-generated citation block: a "Sources:"/"References:"/... heading line
-# followed by a list (bullets, arrows, "[1]" or "1." numbering). Requiring the
-# list keeps an answer that legitimately discusses such a heading in prose
-# (e.g. "References:\n\nIt lists 40 works.") from being clipped.
+# Heading shapes that open a model-authored citation block. Anchored to the
+# start of the text as well as to a preceding newline, so an answer that is
+# nothing but a fabricated block (heading at position 0) is still stripped.
+_CITE_HEADING = (
+    r"(?:\n{1,3}|\A)(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*"
+)
+# One list line: a bullet, arrow, "[1]" or "1." marker and the rest of its line.
+_CITE_LIST_LINE = r"[ \t]*(?:[-*•→\[]|\d+[.)])[^\n]*"
+
+# An LLM-generated citation block: a heading line followed by a list. Requiring
+# the list keeps an answer that legitimately discusses such a heading in prose
+# (e.g. "References:\n\nIt lists 40 works.") from being clipped. The match stops
+# at the end of the list rather than running to end-of-text, so an answer that
+# resumes after its citation block keeps the continuation.
 _LLM_CITATION_BLOCK_RE = re.compile(
-    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*\n"
-    r"\s*(?:[-*•→\[]|\d+[.)]).*",
-    re.IGNORECASE | re.DOTALL,
+    _CITE_HEADING + r"\n\s*" + _CITE_LIST_LINE + r"(?:\n" + _CITE_LIST_LINE + r")*",
+    re.IGNORECASE,
 )
 
 # A citation-style heading at the very end of the text, nothing after it yet.
 # Mid-stream this is ambiguous (the next line decides list vs prose), so it is
 # held back rather than shown; at end of stream it is a dangling artifact of a
 # citation block the model never finished, and is dropped either way.
-_TRAILING_HEADING_RE = re.compile(
-    r"\n{1,3}(?:#+\s*)?(?:(?:Key\s+)?Sources|References|Bibliography|Citations)\s*:?\s*$",
-    re.IGNORECASE,
-)
+_TRAILING_HEADING_RE = re.compile(_CITE_HEADING + r"$", re.IGNORECASE)
 
 
 def display_source_path(source: str) -> str:
@@ -260,9 +266,23 @@ def cited_subset(answer: str, sources: list[SearchChunk]) -> list[SearchChunk]:
             continue
         name = Path(source.source).name.lower()
         stem = Path(source.source).stem
-        if name in lowered or (_identifier_shaped(stem) and stem.lower() in lowered):
+        if _mentions(lowered, name) or (
+            _identifier_shaped(stem) and _mentions(lowered, stem.lower())
+        ):
             picked.add(i)
     return [uniq[i] for i in sorted(picked)]
+
+
+def _mentions(answer_lower: str, needle: str) -> bool:
+    """Whether *answer_lower* names *needle* as a whole token.
+
+    Plain containment marks a source cited whenever its name embeds in a
+    longer one ("log-1" inside "catalog-10", "notes.md" inside
+    "footnotes.md"), which inflates the grounding signal. Filename
+    characters are what must not abut the match; surrounding punctuation
+    and whitespace still count as a mention.
+    """
+    return re.search(rf"(?<![\w.-]){re.escape(needle)}(?![\w-])", answer_lower) is not None
 
 
 def _stream_safe_prefix(text: str) -> str:

@@ -194,9 +194,24 @@ def foldable(history: list[ChatMessage]) -> list[ChatMessage]:
 
     No ``keep`` parameter: COMPACT_KEEP_RECENT is the policy, and a knob nobody
     turns is just a second place for it to disagree with itself.
+
+    The boundary is aligned forward to a user message so the kept window opens
+    a turn. A history can be odd-length (an interrupted turn persists a user
+    message with no reply), and cutting a fixed count would then leave the
+    window starting on an assistant reply, so the assembled prompt would run
+    user, assistant, assistant -- the non-alternating shape the summary pair
+    and windowed_history both take care to avoid.
     """
     keep = COMPACT_KEEP_RECENT
-    return history[:-keep] if len(history) > keep else []
+    if len(history) <= keep:
+        return []
+    cut = len(history) - keep
+    for i in range(cut, len(history)):
+        if history[i]["role"] == "user":
+            return history[:i]
+    # No user message in the tail at all: keep the plain boundary rather than
+    # folding the entire history away.
+    return history[:cut]
 
 
 def summary_cap(ctx_target: int) -> int:

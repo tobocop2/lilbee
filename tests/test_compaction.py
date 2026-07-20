@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from lilbee.retrieval.query.compaction import (
+    COMPACT_KEEP_RECENT,
     COMPACT_MAX_TOKENS,
     SUMMARY_REQUEST,
     batch_overflow,
+    foldable,
     overflow,
     prompt_history,
     summary_cap,
@@ -172,3 +174,37 @@ def test_a_summary_that_cannot_fit_is_dropped_not_stacked() -> None:
     without = prompt_history(history, "", max_tokens=budget)
     assert all(m["content"] != SUMMARY_REQUEST for m in with_summary), "the summary was dropped"
     assert with_summary == without, "and the prompt is exactly what it would be without one"
+
+
+class TestFoldableAlignment:
+    """The fold boundary must leave the kept window opening on a user turn."""
+
+    @staticmethod
+    def _roles(messages):
+        return [m["role"] for m in messages]
+
+    def test_odd_history_keeps_alternation_intact(self):
+        """An interrupted turn persists an unpaired user message, so a history
+        can be odd-length. Cutting a fixed count then leaves the kept window
+        starting on an assistant reply, and the assembled prompt runs
+        user, assistant, assistant -- the shape strict chat templates reject."""
+        history = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+        ]
+        dropped = foldable(history)
+        kept = history[len(dropped) :]
+        assert kept, "folding must not consume the whole history"
+        assert kept[0]["role"] == "user"
+
+    def test_even_history_is_unchanged(self):
+        history = _msgs(10)
+        dropped = foldable(history)
+        assert len(dropped) == len(history) - COMPACT_KEEP_RECENT
+        assert history[len(dropped)]["role"] == "user"
+
+    def test_short_history_folds_nothing(self):
+        assert foldable(_msgs(COMPACT_KEEP_RECENT)) == []
