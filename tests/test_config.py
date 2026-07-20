@@ -116,6 +116,36 @@ class TestEnvVarOverrides:
             assert c.data_root == Path.home() / "lilbee_expanduser_probe"
             assert c.lancedb_dir == Path.home() / "lilbee_expanduser_probe" / "data" / "lancedb"
 
+    def test_symlinked_data_root_keys_the_same_paths_as_its_target(self, tmp_path):
+        """Two spellings of one directory must derive one set of lock paths.
+
+        Session file, port file, and store write lock are all keyed on paths
+        under the data root, so a symlinked spelling that stayed distinct
+        would let a second server start against data a first one already owns.
+        """
+        real = tmp_path / "real_root"
+        real.mkdir()
+        link = tmp_path / "link_root"
+        link.symlink_to(real)
+
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(real)}):
+            direct = Config()
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(link)}):
+            through_link = Config()
+
+        assert through_link.data_root == direct.data_root
+        assert through_link.data_dir == direct.data_dir
+        assert through_link.lancedb_dir == direct.lancedb_dir
+
+    def test_relative_data_root_resolves_absolute(self, tmp_path, monkeypatch):
+        """A relative root must not re-key on the process working directory."""
+        (tmp_path / "kb").mkdir()
+        monkeypatch.chdir(tmp_path)
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": "kb"}):
+            c = Config()
+        assert c.data_root.is_absolute()
+        assert c.data_root == (tmp_path / "kb").resolve()
+
     def test_empty_data_root_falls_back_to_default_not_cwd(self):
         """An empty LILBEE_DATA_ROOT must resolve to the platform default, not
         the process cwd (which would make the data dir move with the launcher)."""

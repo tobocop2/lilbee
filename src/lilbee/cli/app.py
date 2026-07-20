@@ -65,7 +65,15 @@ def _apply_data_root(root: Path) -> None:
 
     Exporting the env var keeps spawn-context worker subprocesses on the
     same data root after their fresh ``import lilbee``.
+
+    The root is canonicalized first: this bypasses ``Config._resolve_defaults``
+    entirely, so a ``--data-dir`` given as a symlink or a relative path would
+    otherwise derive lock paths that no longer match the ones another process
+    derived for the same directory.
     """
+    from lilbee.core.system import canonical_data_root
+
+    root = canonical_data_root(root)
     cfg.data_root = root
     cfg.documents_dir = root / "documents"
     cfg.data_dir = root / "data"

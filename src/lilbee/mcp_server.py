@@ -51,7 +51,7 @@ from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.core.settings import overlay_persisted_settings
-from lilbee.core.system import LOCAL_ROOT_DIRNAME
+from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import (
@@ -408,7 +408,9 @@ def init(path: str = "") -> dict[str, Any]:
             "init is unavailable on the HTTP server: it is bound to one vault and "
             "shared by every connected client. Start a separate server for another vault."
         )
-    base = Path(path) if path else Path.cwd()
+    # Canonical so the vault this session switches to keys the same lock paths
+    # a CLI or server process would derive for the same directory.
+    base = canonical_data_root(path) if path else canonical_data_root(Path.cwd())
     root = base / LOCAL_ROOT_DIRNAME
 
     created = False

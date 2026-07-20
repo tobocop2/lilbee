@@ -1019,7 +1019,12 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.core.system import canonical_models_dir, default_data_dir, find_local_root
+        from lilbee.core.system import (
+            canonical_data_root,
+            canonical_models_dir,
+            default_data_dir,
+            find_local_root,
+        )
 
         if not isinstance(data, dict):
             return data
@@ -1037,10 +1042,11 @@ class Config(BaseSettings):
                 data["data_root"] = local if local is not None else default_data_dir()
         # data_root may arrive as a raw string (e.g. from LILBEE_DATA_ROOT); the
         # child-path derivations below use ``/``, so coerce to Path first.
-        # expanduser() so a "~/lilbee" value from a systemd unit or .env (which
-        # do not expand ~) points at the home dir instead of creating a literal
-        # ./~ tree that a server lock keyed on this path would then diverge on.
-        root = Path(data["data_root"]).expanduser()
+        # Canonicalizing here is what makes one directory key one lock: every
+        # path below is derived from this value, and the server-lock layer keys
+        # on those, so a symlinked or relative spelling that stayed distinct
+        # would let a second server start against data a first one owns.
+        root = canonical_data_root(data["data_root"])
         data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
@@ -1062,11 +1068,14 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.system import default_data_dir, find_local_root
+        from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
 
         data_env = os.environ.get("LILBEE_DATA", "")
         if data_env:
-            toml_dir = Path(data_env)
+            # Canonical for the same reason the root itself is: a "~/lilbee"
+            # env value would otherwise look for config.toml under a literal
+            # ./~ tree and silently find nothing.
+            toml_dir = canonical_data_root(data_env)
         else:
             local = find_local_root()
             toml_dir = local if local else default_data_dir()

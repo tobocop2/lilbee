@@ -66,6 +66,25 @@ def find_local_root(start: Path | None = None) -> Path | None:
     return None
 
 
+def canonical_data_root(root: Path | str) -> Path:
+    """Return the one true spelling of a data-root path.
+
+    Server session files, the port file, and the store's write lock are all
+    keyed on paths derived from the data root, so two spellings of the same
+    directory key two different locks and let two servers run against the
+    same data. Symlinks, relative paths, a leading ``~`` (which systemd units
+    and .env files do not expand), and macOS's ``/var`` vs ``/private/var``
+    all produce such a pair. Resolving here collapses them to one key.
+
+    Every entry point that accepts a raw root -- the environment, ``--data-dir``,
+    ``--global``, the local walk-up -- passes through this, so the config and
+    lock layers agree by construction rather than by both remembering to
+    normalize. ``strict=False`` is implicit: a root that does not exist yet
+    resolves to where it will be created.
+    """
+    return Path(root).expanduser().resolve()
+
+
 def canonical_models_dir() -> Path:
     """Return the shared models directory (always in the platform default, never per-project).
     Multiple lilbee instances share this directory so models are downloaded once.
