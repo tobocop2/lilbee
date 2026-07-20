@@ -800,10 +800,13 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
             return []
         devices: list[VulkanDevice] = []
         for i in range(count.value):
+            # Indexing the array yields a bare address; the queries below take a
+            # handle, so make it one rather than widen every signature to int.
+            handle = c_void_p(handles[i])
             props = _VkPhysicalDeviceProperties()
-            get_properties(handles[i], byref(props))
+            get_properties(handle, byref(props))
             mem = _VkPhysicalDeviceMemoryProperties()
-            get_memory(handles[i], byref(mem))
+            get_memory(handle, byref(mem))
             devices.append(
                 VulkanDevice(
                     index=i,
@@ -811,9 +814,9 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
                     device_name=props.deviceName.decode("utf-8", errors="replace"),
                     vendor_id=int(props.vendorID),
                     vram_bytes=_device_local_vram(mem),
-                    device_uuid=_device_uuid(handles[i], get_properties2),
-                    storage_buffer_16bit=_storage_buffer_16bit(handles[i], get_features2),
-                    free_bytes=_free_device_local_bytes(handles[i], memory_budget),
+                    device_uuid=_device_uuid(handle, get_properties2),
+                    storage_buffer_16bit=_storage_buffer_16bit(handle, get_features2),
+                    free_bytes=_free_device_local_bytes(handle, memory_budget),
                 )
             )
         return devices

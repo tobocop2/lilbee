@@ -1539,14 +1539,16 @@ class TestVulkanGpuSelect:
             return 0
 
         def _get_properties(handle: object, props_ref: object) -> None:
-            i = handle - 0xCAFE
+            # The probe passes a c_void_p; unwrap it to recover the fake index.
+            i = handle.value - 0xCAFE
             dtype, name = fake_props[i]
             props_ref._obj.deviceType = dtype
             props_ref._obj.deviceName = name
 
         def _get_memory(handle: object, mem_ref: object) -> None:
             # device 1 reports a 12 GB device-local heap + a host heap to ignore.
-            i = handle - 0xCAFE
+            # The probe passes a c_void_p; unwrap it to recover the fake index.
+            i = handle.value - 0xCAFE
             mem_ref._obj.memoryHeapCount = 2
             mem_ref._obj.memoryHeaps[0].size = (i + 1) * 12_000_000_000
             mem_ref._obj.memoryHeaps[0].flags = 1  # VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
