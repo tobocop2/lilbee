@@ -343,3 +343,28 @@ class TestPresetVisibleDeviceComposition:
         monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "opencl:0,1")
         env = visible_env((FleetDevice("SYCL", 0, "", 0, 0), FleetDevice("SYCL", 1, "", 0, 0)))
         assert env == {"ONEAPI_DEVICE_SELECTOR": "level_zero:0,1"}
+
+
+def test_software_rasterizer_is_not_planned_as_a_gpu() -> None:
+    """Mesa's CPU rasterizer enumerates through Vulkan exactly like a GPU.
+
+    It reports system RAM as VRAM, so a host with a real integrated GPU beside
+    lavapipe would be planned as a two-GPU machine and tensor-split across a
+    real adapter and a software renderer -- far slower than either the iGPU
+    alone or plain CPU inference.
+    """
+    from lilbee.providers.fleet.devices import FleetDevice, _select_backend
+
+    igpu = FleetDevice("Vulkan", 0, "Intel(R) Iris(R) Xe Graphics", 8 * 10**9, 7 * 10**9)
+    llvmpipe = FleetDevice("Vulkan", 1, "llvmpipe (LLVM 17.0.6, 256 bits)", 15 * 10**9, 14 * 10**9)
+
+    assert _select_backend([igpu, llvmpipe]) == [igpu]
+
+
+def test_a_software_rasterizer_alone_is_no_gpu_at_all() -> None:
+    """A GPU-less host with mesa Vulkan must plan as CPU-only, not as a big GPU."""
+    from lilbee.providers.fleet.devices import FleetDevice, _select_backend
+
+    lavapipe = FleetDevice("Vulkan", 0, "llvmpipe (LLVM 17.0.6, 256 bits)", 15 * 10**9, 14 * 10**9)
+
+    assert _select_backend([lavapipe]) == []

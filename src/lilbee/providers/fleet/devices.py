@@ -219,13 +219,30 @@ def _parse_devices(text: str) -> list[FleetDevice]:
     return devices
 
 
+# Mesa and friends expose CPU rasterizers through the Vulkan loader, and
+# llama.cpp's Vulkan backend enumerates them exactly like a GPU: same
+# "VulkanN: <name> (<total> MiB, <free> MiB free)" shape, with system RAM
+# reported as VRAM. Planning against one is worse than having no GPU at all,
+# because the "VRAM" looks enormous: a host with a real iGPU beside lavapipe
+# can be planned as a two-GPU machine and tensor-split across a real adapter
+# and a software renderer, which runs orders of magnitude slower than either
+# CPU inference or the iGPU alone.
+_SOFTWARE_RENDERER_MARKERS = ("llvmpipe", "lavapipe", "softpipe", "swiftshader")
+
+
+def _is_software_renderer(device: FleetDevice) -> bool:
+    """Whether *device* is a CPU rasterizer masquerading as a GPU."""
+    name = device.name.casefold()
+    return any(marker in name for marker in _SOFTWARE_RENDERER_MARKERS)
+
+
 def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
     """Keep one GPU backend's devices (highest rank, ties broken by name).
 
     Returns a single backend so pinning is unambiguous: ``visible_env`` keys off
     one backend, and mixing index spaces is the very hazard this module avoids.
     """
-    ranked = [d for d in devices if d.backend in _BACKEND_RANK]
+    ranked = [d for d in devices if d.backend in _BACKEND_RANK and not _is_software_renderer(d)]
     if not ranked:
         return []
     backend = max(ranked, key=lambda d: (_BACKEND_RANK[d.backend], d.backend)).backend
