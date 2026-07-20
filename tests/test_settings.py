@@ -188,6 +188,13 @@ class TestRerankerConfig:
 
         assert "reranker_type" in LOAD_AFFECTING_KEYS
 
+    def test_flash_attention_is_load_affecting(self):
+        # flash_attention bakes into the llama-server argv, so it must reload the
+        # engine and gate cross-process sharing (it feeds the engine pin signature).
+        from lilbee.core.config.keys import LOAD_AFFECTING_KEYS
+
+        assert "flash_attention" in LOAD_AFFECTING_KEYS
+
     def test_reranker_fields_in_settings_map(self):
         from lilbee.app.settings_map import SETTINGS_MAP
 

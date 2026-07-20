@@ -23,12 +23,14 @@ LOAD_AFFECTING_KEYS: frozenset[str] = frozenset(
         "num_ctx_max",
         "chat_n_ctx_target",
         "kv_cache_type",
-        # Baked into the llama-server argv (--n-gpu-layers, --cpu-moe, --n-cpu-moe),
-        # so a change must rebuild the engine; the bind contract (role/model + pin)
-        # would otherwise adopt a running engine's old offload flags unchanged.
+        # Baked into the llama-server argv (--n-gpu-layers, --cpu-moe, --n-cpu-moe,
+        # --flash-attn), so a change must rebuild the engine; the bind contract
+        # (role/model + pin) would otherwise adopt a running engine's old offload,
+        # cache, or flash-attention flags unchanged.
         "n_gpu_layers",
         "cpu_moe",
         "n_cpu_moe",
+        "flash_attention",
         "chat_model",
         "embedding_model",
         "vision_model",
