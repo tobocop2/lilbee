@@ -167,7 +167,8 @@ def build_server_argv(
     tensor_split: tuple[int, ...] = (),
     mmproj: Path | None = None,
     flash_attn: str | None = None,
-    cache_type: str | None = None,
+    cache_type_k: str | None = None,
+    cache_type_v: str | None = None,
     batch_size: int | None = None,
     no_mmap: bool = False,
 ) -> list[str]:
@@ -192,8 +193,10 @@ def build_server_argv(
     ]
     if flash_attn is not None:
         argv += ["--flash-attn", flash_attn]
-    if cache_type is not None:
-        argv += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
+    if cache_type_k is not None:
+        argv += ["--cache-type-k", cache_type_k]
+    if cache_type_v is not None:
+        argv += ["--cache-type-v", cache_type_v]
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar

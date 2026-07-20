@@ -76,6 +76,12 @@ _EMBED_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.pooled
 _ALL_LAYER_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.offload_all_layers)
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
+_FLASH_AUTO = "auto"
+# Backends whose flash-attention coverage in llama.cpp is complete enough to ask
+# for it outright. Vulkan and SYCL are behind CUDA's and have been incomplete on
+# Intel's mesa driver, so those are left to the engine's own auto, which enables
+# flash attention only where the backend really supports it.
+_TRUSTED_FLASH_BACKENDS = frozenset({"CUDA", "ROCm", "HIP", "MTL", "Metal"})
 # Roles to which flash attention applies; embed/rerank run without it.
 _FLASH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.flash_attn)
 
@@ -279,6 +285,7 @@ def _fit_slots(
                 gpu_layers=_role_gpu_layers(role),
                 flash_attn=_role_flash(role),
                 kv_cache_type=_role_kv_cache_type(role),
+                kv_cache_type_v=_role_kv_cache_type_v(role),
                 mmproj_path=mmproj_path,
             )
         except (ProviderError, OSError):
@@ -365,14 +372,46 @@ def _flash_enabled() -> bool:
     return cfg.flash_attention is not False
 
 
+def _fleet_backend() -> str | None:
+    """The engine backend this host plans onto, or ``None`` when unknown.
+
+    Prefers the plan snapshot so a whole planning pass answers consistently, and
+    falls back to the short-TTL read cache rather than a fresh probe.
+    """
+    probe = _plan_probe_store.get()
+    if probe is not None:
+        return probe.devices[0].backend if probe.devices else None
+    try:
+        devices = _read_device_cache.get(resolve_llama_server())
+    except (ProviderError, OSError):
+        return None
+    return devices[0].backend if devices else None
+
+
+def _flash_attention_is_trusted() -> bool:
+    """Whether to ask for flash attention outright rather than let the engine decide.
+
+    Unknown backends answer yes, which keeps every host that works today on the
+    argv it has now; only the backends known to lag get the engine's own auto.
+    """
+    backend = _fleet_backend()
+    return backend is None or backend in _TRUSTED_FLASH_BACKENDS
+
+
 def _flash_attn_flag() -> str:
     """``--flash-attn`` argv value for chat and vision."""
-    return _FLASH_ON if _flash_enabled() else _FLASH_OFF
+    if not _flash_enabled():
+        return _FLASH_OFF
+    return _FLASH_ON if _flash_attention_is_trusted() else _FLASH_AUTO
 
 
 def _role_flash(role: WorkerRole) -> bool:
-    """Flash attention applies to chat and vision; embed/rerank run without it."""
-    return role in _FLASH_ROLES and _flash_enabled()
+    """Whether the estimate may assume flash attention for *role*.
+
+    Only a definite ``on``. Under ``auto`` the engine decides at load time, and
+    assuming it would size the KV cache below what the launch may need.
+    """
+    return role in _FLASH_ROLES and _flash_attn_flag() == _FLASH_ON
 
 
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
@@ -387,14 +426,29 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
     return resolve_replica_count(role, device_count)
 
 
-def _cache_type_flag() -> str | None:
-    """KV cache type for chat, or ``None`` to leave llama-server's f16 default."""
-    from lilbee.core.config import cfg
+def _role_kv_cache_type_v(role: WorkerRole) -> KvCacheType:
+    """The V cache type for *role*: the configured one only when flash attention is on.
+
+    llama.cpp refuses a quantized V cache without flash attention ("V cache
+    quantization requires flash_attn") and the server never starts, while a
+    quantized K cache needs nothing. So V follows the setting only where flash
+    attention is certain, and is f16 under ``auto`` or ``off``. That costs memory
+    rather than a launch, and the estimate moves with it.
+    """
     from lilbee.core.config.enums import KvCacheType
 
-    if cfg.kv_cache_type is KvCacheType.F16:
-        return None
-    return cfg.kv_cache_type.value
+    configured = _role_kv_cache_type(role)
+    return configured if _flash_attn_flag() == _FLASH_ON else KvCacheType.F16
+
+
+def _cache_type_flags() -> tuple[str | None, str | None]:
+    """``(--cache-type-k, --cache-type-v)`` for chat; ``None`` leaves the f16 default."""
+    from lilbee.core.config.enums import KvCacheType
+
+    def flag(kind: KvCacheType) -> str | None:
+        return None if kind is KvCacheType.F16 else kind.value
+
+    return flag(_role_kv_cache_type(WorkerRole.CHAT)), flag(_role_kv_cache_type_v(WorkerRole.CHAT))
 
 
 def _vision_mmproj(model_ref: str) -> Path | None:
@@ -454,6 +508,7 @@ def _estimate_role(
         gpu_layers=_role_gpu_layers(role),
         flash_attn=_role_flash(role),
         kv_cache_type=_role_kv_cache_type(role),
+        kv_cache_type_v=_role_kv_cache_type_v(role),
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
     )
@@ -542,6 +597,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
             gpu_layers=_role_gpu_layers(role),
             flash_attn=_role_flash(role),
             kv_cache_type=_role_kv_cache_type(role),
+            kv_cache_type_v=_role_kv_cache_type_v(role),
             mmproj_path=mmproj,
             tensor_split=ratio,
             batch_size=_pooled_batch_size(role, _role_rerank_mode(role, meta), ctx),
@@ -582,6 +638,7 @@ def _chat_split_ctx_objective(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=target,
         )
 
@@ -882,6 +939,7 @@ def _launch_for(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
         )
     else:
@@ -907,6 +965,7 @@ def _launch_for(
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
+    cache_type_k, cache_type_v = _cache_type_flags() if is_chat else (None, None)
     argv = build_server_argv(
         binary=binary,
         spec=spec,
@@ -918,7 +977,8 @@ def _launch_for(
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
         flash_attn=_flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
-        cache_type=_cache_type_flag() if is_chat else None,
+        cache_type_k=cache_type_k,
+        cache_type_v=cache_type_v,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         device_names=_device_names(chosen),

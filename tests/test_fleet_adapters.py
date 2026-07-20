@@ -136,10 +136,27 @@ def test_build_argv_cache_type_sets_k_and_v() -> None:
         n_gpu_layers=-1,
         slots=4,
         ctx_per_slot=4096,
-        cache_type="q8_0",
+        cache_type_k="q8_0",
+        cache_type_v="q8_0",
     )
     assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
     assert argv[argv.index("--cache-type-v") + 1] == "q8_0"
+
+
+def test_build_argv_quantizes_k_alone_when_asked() -> None:
+    """A quantized V cache needs flash attention; a quantized K cache needs nothing."""
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+        cache_type_k="q8_0",
+    )
+    assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+    assert "--cache-type-v" not in argv
 
 
 def test_build_argv_batch_size_raises_both_batch_and_ubatch() -> None:
