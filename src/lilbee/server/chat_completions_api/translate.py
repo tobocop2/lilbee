@@ -225,9 +225,18 @@ async def canonical_stream_to_completions_chunks(
     matching OpenAI's ``stream_options.include_usage`` contract.
     """
     mapper = _StreamMapper()
+    # One timestamp for the whole completion. OpenAI holds created constant
+    # across a stream; recomputing it per chunk reported several creation times
+    # for one completion, and clients order or dedupe on it.
+    created = int(time.time())
     async for event in events:
         for chunk in _chunks_for_event(
-            event, mapper, model=model, response_id=response_id, include_usage=include_usage
+            event,
+            mapper,
+            model=model,
+            response_id=response_id,
+            include_usage=include_usage,
+            created=created,
         ):
             yield chunk
 
@@ -239,19 +248,24 @@ def _chunks_for_event(
     model: str,
     response_id: str,
     include_usage: bool,
+    created: int,
 ) -> list[CompletionsStreamChunk]:
     """The OpenAI chunks one canonical event translates to; empty for a no-op event."""
     if isinstance(event, ContentBlockStart):
-        return _maybe_chunk(model, response_id, mapper.block_start(event))
+        return _maybe_chunk(model, response_id, mapper.block_start(event), created=created)
     if isinstance(event, ContentBlockDelta):
-        return _maybe_chunk(model, response_id, mapper.block_delta(event))
+        return _maybe_chunk(model, response_id, mapper.block_delta(event), created=created)
     if isinstance(event, ContentBlockStop):
         # Closing a text block flushes any text the reasoning splitter still
         # buffers (an unclosed <think>, or a tag that never completed).
-        return _maybe_chunk(model, response_id, mapper.block_stop())
+        return _maybe_chunk(model, response_id, mapper.block_stop(), created=created)
     if isinstance(event, MessageDelta):
         return _message_delta_chunks(
-            event, model=model, response_id=response_id, include_usage=include_usage
+            event,
+            model=model,
+            response_id=response_id,
+            include_usage=include_usage,
+            created=created,
         )
     if isinstance(event, MessageStart | MessageStop):
         # OpenAI's wire format has no equivalent: MessageStart carries metadata
@@ -264,12 +278,16 @@ def _chunks_for_event(
 
 
 def _message_delta_chunks(
-    event: MessageDelta, *, model: str, response_id: str, include_usage: bool
+    event: MessageDelta, *, model: str, response_id: str, include_usage: bool, created: int
 ) -> list[CompletionsStreamChunk]:
     """The finish chunk, plus the usage-only chunk when the client asked for it."""
     chunks = [
         _chunk(
-            model, response_id, CompletionsStreamDelta(), finish_reason=_finish_reason_for(event)
+            model,
+            response_id,
+            CompletionsStreamDelta(),
+            finish_reason=_finish_reason_for(event),
+            created=created,
         )
     ]
     if include_usage:
@@ -277,15 +295,15 @@ def _message_delta_chunks(
         # include_usage is set; a client blocking on it must not hang because the
         # provider streamed no usage frame.
         usage = event.usage or CanonicalUsage(input_tokens=0, output_tokens=0)
-        chunks.append(_usage_chunk(model, response_id, usage))
+        chunks.append(_usage_chunk(model, response_id, usage, created=created))
     return chunks
 
 
 def _maybe_chunk(
-    model: str, response_id: str, delta: CompletionsStreamDelta | None
+    model: str, response_id: str, delta: CompletionsStreamDelta | None, *, created: int
 ) -> list[CompletionsStreamChunk]:
     """Wrap a delta in a chunk, or nothing when the event produced no delta."""
-    return [] if delta is None else [_chunk(model, response_id, delta)]
+    return [] if delta is None else [_chunk(model, response_id, delta, created=created)]
 
 
 def _chunk(
@@ -294,21 +312,24 @@ def _chunk(
     delta: CompletionsStreamDelta,
     *,
     finish_reason: FinishReason | None = None,
+    created: int,
 ) -> CompletionsStreamChunk:
     return CompletionsStreamChunk(
         id=response_id,
-        created=int(time.time()),
+        created=created,
         model=model,
         choices=[CompletionsStreamChoice(index=0, delta=delta, finish_reason=finish_reason)],
     )
 
 
-def _usage_chunk(model: str, response_id: str, usage: CanonicalUsage) -> CompletionsStreamChunk:
+def _usage_chunk(
+    model: str, response_id: str, usage: CanonicalUsage, *, created: int
+) -> CompletionsStreamChunk:
     """Final include_usage chunk: empty choices, populated usage totals."""
     total = usage.input_tokens + usage.output_tokens
     return CompletionsStreamChunk(
         id=response_id,
-        created=int(time.time()),
+        created=created,
         model=model,
         choices=[],
         usage=CompletionsUsage(

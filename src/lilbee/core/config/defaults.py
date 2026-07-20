@@ -145,6 +145,10 @@ _ECOMMERCE_EXCLUDE = (
 )
 
 # Marketing / tracking query parameters (utm_*, fbclid, gclid, etc.).
+# Only vendor campaign tokens belong here: dropping ?utm_source= costs nothing
+# because the canonical URL is in the frontier too, but ?ref= and ?share= are
+# ordinary content links on docs and forum platforms and dropping one can drop
+# the only URL that reaches a page.
 _TRACKING_EXCLUDE: tuple[str, ...] = (
     (
         r"[?&]("
@@ -160,10 +164,9 @@ _TRACKING_EXCLUDE: tuple[str, ...] = (
         r"|igshid"
         r"|pk_campaign|pk_source|pk_medium|pk_[a-z_]+"
         r"|_ga"
-        r"|ref|referrer"
         r"|affiliate|aff_id|aff_ref|aff|partner"
         r"|srsltid"
-        r"|share|replytocom"
+        r"|replytocom"
         r")="
     ),
 )

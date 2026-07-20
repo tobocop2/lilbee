@@ -129,7 +129,14 @@ def validate_add_paths(
     # your-codebase use case (hundreds of small files).
 
     for p_str in paths:
-        validate_path_within(cfg.documents_dir / Path(p_str).name, cfg.documents_dir)
+        # Path(x).name is always a bare final component, so joining it onto the
+        # root cannot escape and the traversal check alone could never fail. The
+        # case it does need to catch is a name that is empty ("/", "a/"), which
+        # would resolve to documents_dir itself as the copy destination.
+        name = Path(p_str).name
+        if not name:
+            raise ValueError(f"{p_str!r} does not name a file")
+        validate_path_within(cfg.documents_dir / name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
     enable_ocr, ocr_timeout = _parse_ocr_params(data)

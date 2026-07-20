@@ -797,3 +797,20 @@ class TestAddIngestHardening:
         # The stale chunks are removed in the same batched write that re-adds them.
         assert "orphan.txt" in self._cleanup_sources(store)
         store.write_chunks_batch.assert_called()
+
+
+class TestValidateAddPathsRejectsNamelessPaths:
+    def test_a_path_with_no_final_component_is_rejected(self):
+        """Path(x).name never contains separators, so the traversal check alone
+        could not fail. What it must catch is an empty name, which would make
+        documents_dir itself the copy destination."""
+        from lilbee.server.handlers.ingest import validate_add_paths
+
+        with pytest.raises(ValueError, match="does not name a file"):
+            validate_add_paths({"paths": ["/"]})
+
+    def test_a_normal_path_still_passes(self):
+        from lilbee.server.handlers.ingest import validate_add_paths
+
+        paths, _force, _ocr, _timeout = validate_add_paths({"paths": ["/tmp/report.pdf"]})
+        assert paths == ["/tmp/report.pdf"]

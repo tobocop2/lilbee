@@ -1846,6 +1846,25 @@ class TestCrawlExclusionsMatchWholeSegments:
         assert not self._excluded(url)
 
     @pytest.mark.parametrize(
+        ("url", "excluded"),
+        [
+            ("https://x.dev/docs?ref=sidebar", False),
+            ("https://x.dev/p?share=twitter", False),
+            ("https://x.dev/p?utm_source=newsletter", True),
+            ("https://x.dev/p?fbclid=abc", True),
+            ("https://x.dev/p?replytocom=5", True),
+        ],
+    )
+    def test_only_campaign_tokens_are_treated_as_tracking(self, url, excluded):
+        """?ref= and ?share= are ordinary content links on docs and forum
+        platforms; dropping one can drop the only URL that reaches a page."""
+        import re
+
+        from lilbee.core.config.defaults import _TRACKING_EXCLUDE
+
+        assert any(re.search(p, url) for p in _TRACKING_EXCLUDE) is excluded
+
+    @pytest.mark.parametrize(
         "url",
         [
             "https://example.com/cart",

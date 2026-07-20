@@ -1151,3 +1151,40 @@ def test_message_from_request_rejects_system_role_defensively() -> None:
     system_msg = CompletionsMessage(role="system", content="be terse")
     with pytest.raises(ValueError, match="system messages"):
         _message_from_request(system_msg)
+
+
+class TestStreamCreatedIsConstant:
+    async def test_every_chunk_of_one_completion_shares_created(self) -> None:
+        """OpenAI holds created constant across a stream; it was recomputed per
+        chunk, so one completion reported several creation times."""
+        import time
+        from unittest import mock
+
+        from lilbee.server.chat_completions_api.translate import (
+            canonical_stream_to_completions_chunks,
+        )
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalUsage,
+            ContentBlockDelta,
+            MessageDelta,
+            TextDelta,
+        )
+
+        async def _events():
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="a"))
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="b"))
+            yield MessageDelta(
+                stop_reason=None, usage=CanonicalUsage(input_tokens=1, output_tokens=1)
+            )
+
+        ticking = iter([1000.0, 1001.0, 1002.0, 1003.0, 1004.0, 1005.0])
+        with mock.patch.object(time, "time", lambda: next(ticking)):
+            chunks = [
+                c
+                async for c in canonical_stream_to_completions_chunks(
+                    _events(), model="m", response_id="chatcmpl-x", include_usage=True
+                )
+            ]
+
+        assert len(chunks) >= 3
+        assert len({c.created for c in chunks}) == 1

@@ -103,6 +103,10 @@ async def list_documents(
         total=total,
         limit=limit,
         offset=offset,
+        # Gated on a non-empty page on purpose: a concurrent writer shrinking
+        # SOURCES between count_sources() and get_sources() leaves a stale total,
+        # and without this a client reading has_more would spin past the end.
+        # Stopping early beats looping forever.
         has_more=len(page) > 0 and (offset + len(page)) < total,
     )
 
