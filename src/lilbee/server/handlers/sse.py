@@ -142,6 +142,9 @@ class SseEventQueue(asyncio.Queue[str | None]):
         self._max_events = max_events
         self._put_droppable = False
         self.dropped_events = 0
+        # Set once the queue is full of undroppable events, i.e. the consumer
+        # has stopped reading. See put_nowait.
+        self.stalled = False
 
     def _put(self, item: str | None) -> None:
         self._queue.append(_QueuedEvent(item, self._put_droppable))
@@ -166,8 +169,14 @@ class SseEventQueue(asyncio.Queue[str | None]):
 
     def put_nowait(self, item: str | None) -> None:
         """Enqueue an always-delivered event, evicting old progress when full."""
-        if self.qsize() >= self._max_events:
-            self._evict_oldest_droppable()
+        if self.qsize() >= self._max_events and not self._evict_oldest_droppable():
+            # Nothing left that may be shed: the queue is full of events this
+            # class is required to deliver (chat and RAG tokens go through
+            # here), and the consumer has not taken one in _max_events. That
+            # is a stalled or already-gone client, so record it. Growing the
+            # queue for the rest of the generation is the alternative, and it
+            # is unbounded by construction.
+            self.stalled = True
         self._put_droppable = False
         super().put_nowait(item)
 
@@ -207,7 +216,26 @@ class SseStream:
         producer running under ``run_in_executor`` therefore hands the put back
         to the loop instead of mutating the queue directly.
         """
-        self.loop.call_soon_threadsafe(self.queue.put_nowait, item)
+        self.loop.call_soon_threadsafe(self._put_and_check_stall, item)
+
+    def _put_and_check_stall(self, item: str | None) -> None:
+        """Enqueue on the loop thread, cancelling the producer if it has stalled.
+
+        Chat and RAG tokens are in the always-deliver class, so a fast
+        generation streaming to a client that has stopped reading fills the
+        queue with events nothing is permitted to shed and it grows until the
+        generation ends. A consumer that has not taken a single event in a
+        full queue's worth is gone or as good as gone; cancelling is the same
+        signal a detected disconnect sends, just reached a different way.
+        """
+        self.queue.put_nowait(item)
+        if self.queue.stalled and not self.cancel.is_set():
+            log.warning(
+                "SSE consumer stalled with %d undroppable events queued; "
+                "cancelling the producer.",
+                self.queue.qsize(),
+            )
+            self.cancel.set()
 
     def _build_callback(self) -> DetailedProgressCallback:
         """Create a progress callback that serializes events into the queue.

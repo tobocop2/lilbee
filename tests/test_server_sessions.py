@@ -173,9 +173,12 @@ class TestDelete:
         assert client.delete("/api/sessions/nope").status_code == 404
 
 
-def test_reads_are_read_only_and_writes_are_not():
-    assert is_read_only(sessions_list_route.fn)
-    assert is_read_only(session_get_route.fn)
+def test_every_session_route_requires_the_token():
+    """Reads included. This used to pin the two GETs as unauthenticated, which
+    served full chat transcripts to any caller that could reach the port; the
+    memory store next door is gated for the same reason."""
+    assert not is_read_only(sessions_list_route.fn)
+    assert not is_read_only(session_get_route.fn)
     assert not is_read_only(session_rename_route.fn)
     assert not is_read_only(session_delete_route.fn)
     # A read-only token must not be able to create, append, or summarize.

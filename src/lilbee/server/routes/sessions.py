@@ -1,15 +1,17 @@
 """Session routes: list, get, create, append, summary, rename, delete.
 
-The two ``GET`` routes are ``@read_only`` so a read-only session token can browse
-and resume history; the mutating routes are unmarked so read-only tokens cannot
-create, append, summarize, rename, or delete.
+Every route requires the bearer token, reads included. A conversation
+transcript is at least as personal as the memory store, which is gated for the
+same reason. The two ``GET`` routes used to be marked read-only, with a
+docstring claiming that let "a read-only session token" browse history; there
+is no such token, and the marker means no auth check at all, so both reads
+answered callers that sent no Authorization header.
 """
 
 from __future__ import annotations
 
 from litestar import delete, get, patch, post, put
 
-from lilbee.server.auth import read_only
 from lilbee.server.handlers.sessions import (
     add_session_message,
     claim_session,
@@ -33,14 +35,12 @@ from lilbee.server.models import (
 
 
 @get("/api/sessions")
-@read_only
 async def sessions_list_route() -> SessionListResponse:
     """List saved conversations, newest first."""
     return await list_sessions()
 
 
 @get("/api/sessions/{session_id:str}")
-@read_only
 async def session_get_route(session_id: str) -> SessionDetailResponse:
     """Return a conversation's metadata and full transcript."""
     return await get_session(session_id)
