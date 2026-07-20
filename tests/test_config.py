@@ -135,6 +135,18 @@ class TestEnvVarOverrides:
             assert c2.data_root != Path.cwd()
             assert str(c2.data_root).endswith("lilbee")
 
+    def test_unexpandable_home_keeps_the_literal_path(self):
+        """expanduser() raises when the OS cannot resolve a home directory (no
+        HOME, an unknown ~user). The data root must still resolve rather than
+        taking config construction -- and the whole process -- down."""
+        from lilbee.core.config.model import _expanded
+
+        literal = Path("~/lilbee")
+        with mock.patch.object(Path, "expanduser", side_effect=OSError("no home")):
+            assert _expanded(literal) == literal
+        # The normal case still expands.
+        assert _expanded(literal) == Path.home() / "lilbee"
+
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)
         env["LILBEE_OLLAMA_BASE_URL"] = "http://box:11434"

@@ -44,6 +44,19 @@ log = logging.getLogger(__name__)
 _UNSET_PATH = Path()
 
 
+def _expanded(path: Path) -> Path:
+    """``path`` with a leading ``~`` expanded, or unchanged if it cannot be.
+
+    ``expanduser()`` raises when the OS cannot resolve a home directory (no
+    HOME, an unknown ``~user``). Configuration must still load in that case, so
+    the literal path stands rather than taking the whole process down.
+    """
+    try:
+        return path.expanduser()
+    except (OSError, RuntimeError):
+        return path
+
+
 class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
 
@@ -1040,7 +1053,9 @@ class Config(BaseSettings):
         # expanduser() so a "~/lilbee" value from a systemd unit or .env (which
         # do not expand ~) points at the home dir instead of creating a literal
         # ./~ tree that a server lock keyed on this path would then diverge on.
-        root = Path(data["data_root"]).expanduser()
+        # It raises when the OS cannot resolve a home directory, and config must
+        # still load then, so an unresolvable ~ keeps the literal path.
+        root = _expanded(Path(data["data_root"]))
         data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
