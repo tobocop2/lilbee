@@ -1,10 +1,7 @@
-"""Memory route handlers: list, remember, update flags, forget.
+"""Memory routes: list, remember, update, forget.
 
-Every route here requires the session token. ``@read_only`` does not mean
-"a weaker token is accepted": ``AuthMiddleware`` short-circuits before any
-token check for handlers in that registry, so a decorated route answers
-callers with no ``Authorization`` header at all. Memories are the human's
-own facts and preferences in plain text, so none of these routes carry it.
+Every route here requires the session token. Memories are the human's own
+notes about themselves, so they are not part of any open-read surface.
 """
 
 from __future__ import annotations

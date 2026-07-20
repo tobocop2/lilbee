@@ -1438,12 +1438,15 @@ class TestSetupCrawlerRoutes:
         assert resp.status_code == 200
         assert resp.json()["installed"] is False
 
-    def test_status_route_is_read_only(self):
-        """Parity with the other status GETs: no auth token required to poll."""
-        from lilbee.server.auth import is_read_only
+    def test_status_route_is_gated_by_the_middleware(self):
+        """It used to skip auth for parity with the other status GETs, back when
+        those skipped it too. It reports whether Chromium is installed, which is
+        inventory about the host, and nothing on this server answers without a
+        token now."""
+        from lilbee.server.auth import authenticates_itself
         from lilbee.server.routes.setup import setup_crawler_status_route
 
-        assert is_read_only(setup_crawler_status_route.fn)
+        assert not authenticates_itself(setup_crawler_status_route.fn)
 
     def test_post_setup_crawler_streams_setup_events(self, client):
         """Stub bootstrap_chromium to emit a setup_done event via on_progress."""
@@ -1760,7 +1763,7 @@ class TestAuthMiddleware:
             auth_mod.session_manager.token = old
 
     @pytest.mark.asyncio
-    async def test_read_only_handler_passes_through(self, middleware):
+    async def test_a_self_authenticating_handler_passes_through(self, middleware):
         import lilbee.server.auth as auth_mod
 
         old = auth_mod.session_manager.token
@@ -1768,7 +1771,7 @@ class TestAuthMiddleware:
         try:
             handler = mock.MagicMock()
 
-            @auth_mod.read_only
+            @auth_mod.auth_checked_in_handler
             def _ro_route() -> None: ...
 
             handler.fn = _ro_route
@@ -1898,7 +1901,9 @@ class TestExportRoute:
         assert row["source"] == "doc.pdf"
         assert resp.headers["content-disposition"] == 'attachment; filename="pages.jsonl"'
 
-    def test_read_only_without_token(self, dataset_store):
+    def test_a_caller_without_the_token_gets_nothing(self, dataset_store):
+        """This asserted a 200. /api/export serializes the entire corpus, so it
+        was the widest of the routes that answered an unauthenticated caller."""
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 
@@ -1907,7 +1912,7 @@ class TestExportRoute:
             resp = TestClient(create_app()).get("/api/export")
         finally:
             auth_mod.session_manager.token = None
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     def test_unknown_source_is_400(self, dataset_store, client):
         resp = client.get("/api/export", params={"source": "missing.pdf"})
@@ -1936,9 +1941,18 @@ class TestExportRoute:
             return real(fmt, source)
 
         loop_tid = threading.get_ident()
+        import lilbee.server.auth as auth_mod
+
         with mock.patch.object(dataset_mod, "export_to_bytes", record):
             async with AsyncTestClient(create_app()) as client:
-                resp = await client.get("/api/export", params={"format": "jsonl"})
+                # The app lifespan mints the token, so read it after startup
+                # rather than planting one that startup would overwrite.
+                token = auth_mod.session_manager.token
+                resp = await client.get(
+                    "/api/export",
+                    params={"format": "jsonl"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
         assert resp.status_code == 200
         assert seen and seen[0] != loop_tid
 
@@ -2056,11 +2070,11 @@ class TestReadOnlyDecoratorOrdering:
     def test_applying_it_above_the_route_decorator_is_rejected(self):
         from litestar import get
 
-        from lilbee.server.auth import read_only
+        from lilbee.server.auth import auth_checked_in_handler
 
         with pytest.raises(TypeError, match="below the route decorator"):
 
-            @read_only
+            @auth_checked_in_handler
             @get("/api/example")
             async def _wrong_order() -> dict[str, str]:
                 return {}
@@ -2068,11 +2082,11 @@ class TestReadOnlyDecoratorOrdering:
     def test_applying_it_below_the_route_decorator_registers(self):
         from litestar import get
 
-        from lilbee.server.auth import is_read_only, read_only
+        from lilbee.server.auth import auth_checked_in_handler, authenticates_itself
 
         @get("/api/example-ok")
-        @read_only
+        @auth_checked_in_handler
         async def _right_order() -> dict[str, str]:
             return {}
 
-        assert is_read_only(_right_order.fn)
+        assert authenticates_itself(_right_order.fn)

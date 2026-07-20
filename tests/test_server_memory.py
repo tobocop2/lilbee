@@ -146,7 +146,7 @@ class TestMemoryRoutesRequireAuth:
     """
 
     def test_no_memory_route_bypasses_auth(self):
-        from lilbee.server.auth import is_read_only
+        from lilbee.server.auth import authenticates_itself
         from lilbee.server.routes.memory import (
             memories_list_route,
             memories_remember_route,
@@ -160,7 +160,9 @@ class TestMemoryRoutesRequireAuth:
             memories_update_route,
             memories_remove_route,
         ):
-            assert not is_read_only(route.fn), f"{route.fn.__name__} bypasses authentication"
+            assert not authenticates_itself(route.fn), (
+                f"{route.fn.__name__} bypasses authentication"
+            )
 
     async def test_listing_memories_without_a_token_is_rejected(self):
         from litestar.testing import AsyncTestClient

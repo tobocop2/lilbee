@@ -130,6 +130,37 @@ def test_log_unlink_permission_error_falls_through_to_append(
 class TestHealthProbes:
     """chat_ready / served_chat_ctx / wait_for_chat_warm read /api/health."""
 
+    @pytest.fixture(autouse=True)
+    def _token(self, monkeypatch):
+        """/api/health needs the token like every other route; these probes read
+        it from server.json, which does not exist under test."""
+        monkeypatch.setattr(server_mod, "_session_token", lambda: "t")
+
+    def test_no_probe_is_attempted_before_the_token_exists(self, monkeypatch) -> None:
+        """server.json is written by the app lifespan, so a probe racing startup
+        finds no token. That is the same answer a refused connection gives, and
+        it must not fire a request that would only come back 401."""
+        monkeypatch.setattr(server_mod, "_session_token", lambda: None)
+
+        def _fail(*_a, **_k):
+            raise AssertionError("probed without a token")
+
+        monkeypatch.setattr(server_mod.httpx, "get", _fail)
+        assert server_mod.health_ok(8080) is False
+        assert server_mod.chat_ready(8080) is False
+        assert server_mod.served_chat_ctx(8080) is None
+
+    def test_the_probe_sends_the_bearer_token(self, monkeypatch) -> None:
+        seen: dict[str, object] = {}
+
+        def _capture(url, **kwargs):
+            seen.update(kwargs)
+            return httpx.Response(200, json={"status": "ok"})
+
+        monkeypatch.setattr(server_mod.httpx, "get", _capture)
+        assert server_mod.health_ok(8080) is True
+        assert seen["headers"] == {"Authorization": "Bearer t"}
+
     def test_chat_ready_false_on_non_ok_status(self, monkeypatch) -> None:
         monkeypatch.setattr(
             server_mod.httpx, "get", lambda *_a, **_k: httpx.Response(503, text="loading")

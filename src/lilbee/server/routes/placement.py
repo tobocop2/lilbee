@@ -1,7 +1,7 @@
 """Placement routes: inspect, preview, and (when enabled) apply GPU placement.
 
 Every route requires auth: even the reads run resolve_placement_plan, which
-spawns subprocess device probes, so none are marked @read_only. Applying or
+spawns subprocess device probes. Every route needs the token. Applying or
 clearing placement restarts the shared fleet's moved roles, which is unsafe
 across concurrent HTTP clients, so PUT/DELETE are refused by default. They are gated on the
 ``allow_http_placement`` flag (LILBEE_ALLOW_HTTP_PLACEMENT), which an operator

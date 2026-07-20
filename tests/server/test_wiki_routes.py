@@ -879,8 +879,9 @@ class TestWikiReadPathsDoNotWrite:
         cfg.wiki = True
 
     async def test_listing_pages_does_not_rewrite_the_index(self, isolated_env: Path):
-        """GET /api/wiki is unauthenticated; regenerating index.md there let any
-        caller drive repeated writes and race the build path over the same file."""
+        """A read must not write. GET /api/wiki regenerated index.md, so a
+        listing raced the build path over the same file; at the time the route
+        was also unauthenticated, which let any caller drive those writes."""
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "test-doc")
         index_path = wiki_root / "index.md"
@@ -888,7 +889,7 @@ class TestWikiReadPathsDoNotWrite:
         before = index_path.stat().st_mtime_ns
 
         async with AsyncTestClient(_create_app()) as client:
-            resp = await client.get("/api/wiki")
+            resp = await client.get("/api/wiki", headers=_h())
 
         assert resp.status_code == 200
         assert [p["slug"] for p in resp.json()] == ["summaries/test-doc"]

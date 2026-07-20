@@ -1,4 +1,9 @@
-"""Wiki layer route handlers: page listing, reading, citations, lint, generation, pruning."""
+"""Wiki layer route handlers: page listing, reading, citations, lint, generation, pruning.
+
+Every route here needs the session token. Wiki pages are generated from the
+user's own corpus, so a page body, a citation list, and even the page titles
+in a listing are their content, not public reference material.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,6 @@ from litestar.params import Parameter
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
-from lilbee.server.auth import read_only
 from lilbee.server.models import (
     DraftInfoResponse,
     WikiBuildResult,
@@ -70,7 +74,6 @@ def _find_page(slug: str) -> Path | None:
 
 
 @get("/api/wiki")
-@read_only
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
 
@@ -88,7 +91,6 @@ async def wiki_list_route() -> list[dict[str, Any]]:
 
 
 @get("/api/wiki/drafts")
-@read_only
 async def wiki_drafts_route() -> list[DraftInfoResponse]:
     """List pending wiki drafts with drift, faithfulness, and pending-marker info."""
     _require_wiki()
@@ -96,7 +98,6 @@ async def wiki_drafts_route() -> list[DraftInfoResponse]:
 
 
 @get("/api/wiki/drafts/diff/{slug:path}")
-@read_only
 async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
     """Return the unified diff of a draft against its published counterpart.
 
@@ -153,7 +154,6 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
 
 
 @get("/api/wiki/citations")
-@read_only
 async def wiki_citations_reverse_route(
     source: str = Parameter(query="source", default=""),
 ) -> list[WikiCitationRecord]:
@@ -167,7 +167,6 @@ async def wiki_citations_reverse_route(
 
 
 @get("/api/wiki/{slug:path}")
-@read_only
 async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     """Read a specific wiki page as markdown, or its citations."""
     _require_wiki()

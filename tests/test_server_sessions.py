@@ -7,7 +7,7 @@ from litestar.testing import TestClient
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
-from lilbee.server.auth import is_read_only
+from lilbee.server.auth import authenticates_itself
 from lilbee.server.routes.sessions import (
     session_add_message_route,
     session_claim_route,
@@ -177,16 +177,16 @@ def test_every_session_route_requires_the_token():
     """Reads included. This used to pin the two GETs as unauthenticated, which
     served full chat transcripts to any caller that could reach the port; the
     memory store next door is gated for the same reason."""
-    assert not is_read_only(sessions_list_route.fn)
-    assert not is_read_only(session_get_route.fn)
-    assert not is_read_only(session_rename_route.fn)
-    assert not is_read_only(session_delete_route.fn)
+    assert not authenticates_itself(sessions_list_route.fn)
+    assert not authenticates_itself(session_get_route.fn)
+    assert not authenticates_itself(session_rename_route.fn)
+    assert not authenticates_itself(session_delete_route.fn)
     # A read-only token must not be able to create, append, or summarize.
-    assert not is_read_only(session_create_route.fn)
-    assert not is_read_only(session_add_message_route.fn)
-    assert not is_read_only(session_set_summary_route.fn)
+    assert not authenticates_itself(session_create_route.fn)
+    assert not authenticates_itself(session_add_message_route.fn)
+    assert not authenticates_itself(session_set_summary_route.fn)
     # The takeover operation above all: a read-only token must never claim.
-    assert not is_read_only(session_claim_route.fn)
+    assert not authenticates_itself(session_claim_route.fn)
 
 
 class TestOwnership:

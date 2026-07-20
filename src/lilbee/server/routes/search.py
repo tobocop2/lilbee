@@ -1,4 +1,8 @@
-"""Search, ask, ask_stream, chat, and chat_stream route handlers."""
+"""Search, ask, ask_stream, chat, and chat_stream route handlers.
+
+Every route here needs the session token. These return the user's own
+documents, so they are not part of the unauthenticated liveness surface.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,6 @@ from lilbee.data.store import EmbeddingModelMismatchError
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
-from lilbee.server.auth import read_only
 from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
@@ -147,7 +150,6 @@ def _slot_gated_sse(generator: AsyncGenerator[str, None], guard: ChatSlotGuard) 
 
 
 @get("/api/search")
-@read_only
 async def search_route(
     q: str = Parameter(query="q"),
     top_k: int = Parameter(query="top_k", default=5, ge=1, le=100),
@@ -161,11 +163,11 @@ async def search_route(
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
     except EmbeddingModelMismatchError as exc:
-        # This route is unauthenticated (@read_only), so unlike ask/chat it must
-        # not name the persisted and configured embedders. ``adoptable`` is kept:
-        # it is a bare yes/no on whether switching embedder alone would fix the
-        # index, which is what a client renders its recovery hint from, and it
-        # identifies nothing.
+        # ``adoptable`` is a bare yes/no on whether switching embedder alone
+        # would fix the index, which is what a client renders its recovery hint
+        # from. The embedder names stay out: this is the generic-503 path, and
+        # naming them here would make the message depend on which of the two
+        # mismatched sides the caller already knows.
         raise HTTPException(
             status_code=409,
             detail="The index was built with a different embedding model than the one configured.",

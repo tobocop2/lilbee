@@ -27,12 +27,10 @@ from lilbee.crawler import (
     crawler_available,
     crawler_browsers_path,
 )
-from lilbee.server.auth import read_only
 from lilbee.server.handlers import SseStream
 
 
 @get("/setup/crawler/status")
-@read_only
 async def setup_crawler_status_route() -> dict[str, Any]:
     """Return whether the crawler is fully ready (Python package + Chromium)."""
     package_installed = crawler_available()

@@ -1,4 +1,8 @@
-"""Document management route handlers: add, list, remove, sync."""
+"""Document management route handlers: add, list, remove, sync, export.
+
+Every route here needs the session token, reads included: the listing names
+the user's files and ``/api/export`` serializes the whole corpus.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,6 @@ from litestar.response import Stream
 from pydantic import BaseModel, Field
 
 from lilbee.server import handlers
-from lilbee.server.auth import read_only
 from lilbee.server.models import (
     AddRequest,
     DocumentListResponse,
@@ -94,7 +97,6 @@ async def add_upload_route(
 
 
 @get("/api/documents")
-@read_only
 async def documents_list_route(
     search: str = Parameter(query="search", default=""),
     limit: int = Parameter(query="limit", default=50, ge=1, le=1000),
@@ -111,7 +113,6 @@ async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
 
 
 @get("/api/export")
-@read_only
 async def export_route(
     fmt: str = Parameter(query="format", default=""),
     source: str = Parameter(query="source", default=""),

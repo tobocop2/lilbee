@@ -58,11 +58,11 @@ def test_delete_refused_on_daemon():
 
 def test_placement_routes_require_auth():
     """No placement route is read-only: they all run subprocess device probes."""
-    from lilbee.server.auth import is_read_only
+    from lilbee.server.auth import authenticates_itself
 
-    assert not is_read_only(placement_preview_route.fn)
-    assert not is_read_only(placement_route.fn)
-    assert not is_read_only(gpus_route.fn)
+    assert not authenticates_itself(placement_preview_route.fn)
+    assert not authenticates_itself(placement_route.fn)
+    assert not authenticates_itself(gpus_route.fn)
 
 
 def test_preview_provider_error_returns_503(monkeypatch):

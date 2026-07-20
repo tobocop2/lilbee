@@ -1,4 +1,9 @@
-"""Model management route handlers: catalog, installed, pull, show, delete, set."""
+"""Model management route handlers: catalog, installed, pull, show, delete, set.
+
+Every route here needs the session token. The read routes describe which
+models the user has installed and what their machine can fit, which is
+inventory about the host rather than public catalog data.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,6 @@ from pydantic import BaseModel
 from lilbee.catalog.types import ModelSource
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.server import handlers
-from lilbee.server.auth import read_only
 from lilbee.server.handlers import ModelsResponse, format_task_mismatch
 from lilbee.server.models import (
     ExternalModelsResponse,
@@ -40,14 +44,12 @@ class PullRequest(BaseModel):
 
 
 @get("/api/models")
-@read_only
 async def models_list_route() -> ModelsResponse:
     """Available chat, embedding, vision, and reranker models."""
     return await handlers.list_models()
 
 
 @get("/api/models/external")
-@read_only
 async def models_external_route() -> ExternalModelsResponse:
     """Discover models available from the configured external provider."""
     return await handlers.list_external_models()
@@ -90,7 +92,6 @@ async def models_set_reranker_route(data: SetModelRequest) -> SetModelResponse:
 
 
 @get("/api/models/catalog")
-@read_only
 async def models_catalog_route(
     task: str | None = Parameter(query="task", default=None),
     search: str = Parameter(query="search", default=""),
@@ -118,7 +119,6 @@ async def models_catalog_route(
 
 
 @get("/api/models/installed")
-@read_only
 async def models_installed_route() -> ModelsInstalledResponse:
     """List installed models with their source (native or remote)."""
     return await handlers.models_installed()

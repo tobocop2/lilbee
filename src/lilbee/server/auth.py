@@ -28,37 +28,48 @@ _MIN_TOKEN_CHARS = len(secrets.token_urlsafe(_TOKEN_BYTES))
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-# Set of route-handler functions that bypass auth. Populated at import time by
-# the @read_only decorator; checked by AuthMiddleware via membership lookup.
+# Route handlers AuthMiddleware skips. Populated at import time by the
+# @auth_checked_in_handler decorator; checked via membership lookup.
 # Module-level set is intentional: route handlers are defined once at import,
 # the registry has no other lifecycle, and the alternative (mutating an
 # attribute on the function object) lands every check on a # type: ignore
 # because mypy cannot see the dynamic attribute on Callable.
-_READ_ONLY_HANDLERS: set[Callable[..., Any]] = set()
+_SELF_AUTHENTICATING_HANDLERS: set[Callable[..., Any]] = set()
 
 
-def read_only(fn: F) -> F:
-    """Mark a route handler as requiring no auth.
+def auth_checked_in_handler(fn: F) -> F:
+    """Mark a route whose token check runs inside the handler, not in middleware.
+
+    This is not an exemption from auth. It exists for the ``/v1/*`` surface,
+    which has to answer a bad token with the OpenAI error envelope rather than
+    Litestar's 401 shape, so the check has to happen somewhere it can build
+    that body. Every route that carries this must still reject an
+    unauthenticated caller itself; ``test_every_route_is_authenticated`` holds
+    the line.
+
+    It was called ``read_only``, which described a token that has never
+    existed: there is one token, and skipping the middleware meant answering
+    callers who sent none. That name is why a reviewer could approve the
+    decorator on a route serving chat transcripts without noticing what it
+    opened.
 
     Must sit *below* the Litestar route decorator so it receives the raw
     function, which is what ``AuthMiddleware`` looks up via ``handler.fn``.
-    Stacked the other way it registers the handler object instead, the lookup
-    misses, and the route quietly starts requiring a token. Since the same
-    mistake in reverse would quietly open a route, the ordering is enforced
-    rather than left to reviewers.
+    Stacked the other way it registers the handler object instead and the
+    lookup misses, so the ordering is enforced rather than left to reviewers.
     """
     if hasattr(fn, "fn"):
         raise TypeError(
-            "@read_only must be applied below the route decorator, so it sees "
-            "the function rather than the route handler."
+            "@auth_checked_in_handler must be applied below the route decorator, "
+            "so it sees the function rather than the route handler."
         )
-    _READ_ONLY_HANDLERS.add(fn)
+    _SELF_AUTHENTICATING_HANDLERS.add(fn)
     return fn
 
 
-def is_read_only(fn: Callable[..., Any]) -> bool:
-    """True iff *fn* was decorated with :func:`read_only`."""
-    return fn in _READ_ONLY_HANDLERS
+def authenticates_itself(fn: Callable[..., Any]) -> bool:
+    """True iff *fn* was decorated with :func:`auth_checked_in_handler`."""
+    return fn in _SELF_AUTHENTICATING_HANDLERS
 
 
 def server_json_path() -> Path:
@@ -180,7 +191,7 @@ class AuthMiddleware:
             return
 
         handler = scope.get("route_handler")
-        if handler and is_read_only(handler.fn):
+        if handler and authenticates_itself(handler.fn):
             await self.app(scope, receive, send)
             return
 

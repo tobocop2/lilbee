@@ -19,7 +19,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.providers.model_ref import default_first, with_configured_remote_chat
-from lilbee.server.auth import read_only, session_manager
+from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
     classify_provider_error,
@@ -55,7 +55,7 @@ _MULTI_CHOICE_MESSAGE = "lilbee serves one choice per request; set n to 1 or omi
 
 
 @get("/v1/models")
-@read_only
+@auth_checked_in_handler
 async def list_models_endpoint(request: Request) -> Response:
     """Return installed chat models in the ``/v1/models`` shape, the configured one leading."""
     auth_error = _auth_failure(request)
@@ -102,8 +102,9 @@ def _build_models_list_payload() -> ModelsListResponse:
 async def _auth_before_request(request: Request) -> Response | None:
     """Reject an unauthenticated caller before Litestar parses the body.
 
-    The endpoint is marked @read_only so AuthMiddleware waves it through and
-    the bearer check lives in the handler. But binding the body as a handler
+    The endpoint is marked @auth_checked_in_handler so AuthMiddleware defers to
+    the handler, which answers a bad token with the OpenAI error envelope
+    rather than Litestar's 401 shape. But binding the body as a handler
     parameter made Litestar parse and pydantic-validate the whole payload
     first, so an unauthenticated caller got request_max_body_size worth of
     JSON processed on every request, and a malformed body was answered with a
@@ -115,7 +116,7 @@ async def _auth_before_request(request: Request) -> Response | None:
 
 
 @post("/v1/chat/completions", status_code=200, before_request=_auth_before_request)
-@read_only
+@auth_checked_in_handler
 async def chat_completions_endpoint(
     request: Request, data: CompletionsRequest
 ) -> Response | Stream:
