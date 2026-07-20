@@ -1,7 +1,6 @@
 """Scoring: noise floor math, per-dimension means, and exact-truth checks."""
 
 import pytest
-
 from evals.retrieval.answers import AnswerRow
 from evals.retrieval.questions import CountOracle, Question, QuestionKind
 from evals.retrieval.scoring import (

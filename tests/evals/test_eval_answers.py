@@ -4,7 +4,6 @@ import json
 
 import httpx
 import pytest
-
 from evals.retrieval.answers import AnswerRow, answer_questions, wait_for_server
 from evals.retrieval.checkpoint import load_jsonl
 from evals.retrieval.questions import Question, QuestionKind

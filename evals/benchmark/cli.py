@@ -157,18 +157,41 @@ def _load_metrics_file(path: Path) -> dict[str, Any]:
     return rows[0]
 
 
+def resolve_comparison(
+    manifest: Manifest, file_a: dict[str, Any], file_b: dict[str, Any]
+) -> tuple[str, str, str]:
+    """Validate two metrics files against the manifest, return (dataset, arm_a, arm_b).
+
+    The arm labels are the metrics files' own run_tags, not free text, so the
+    stamped comparison cannot claim a pairing other than the one that produced
+    the numbers. Both files must be the same declared dataset, and the run_tags
+    must be the manifest's two declared arms; otherwise the fingerprint would
+    attest to a study the manifest never froze, or (on zero query overlap) a
+    cross-dataset mismatch would masquerade as a genuine null.
+    """
+    dataset_a, dataset_b = file_a["dataset"], file_b["dataset"]
+    if dataset_a != dataset_b:
+        raise ValueError(
+            f"metrics files are different datasets ('{dataset_a}' vs '{dataset_b}'); "
+            "a paired comparison must be within one dataset"
+        )
+    arm_a, arm_b = file_a["run_tag"], file_b["run_tag"]
+    manifest.require_declared_comparison(arm_a, arm_b, dataset_a)
+    return dataset_a, arm_a, arm_b
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     manifest = Manifest.load(args.manifest)
     file_a = _load_metrics_file(args.metrics_a)
     file_b = _load_metrics_file(args.metrics_b)
-    dataset = file_a["dataset"]
+    dataset, arm_a, arm_b = resolve_comparison(manifest, file_a, file_b)
     rows: list[dict[str, Any]] = [
         {
             "row_type": "meta",
             "run_id": manifest.run_id,
             "fingerprint": manifest.fingerprint(),
-            "arm_a": args.arm_a_label,
-            "arm_b": args.arm_b_label,
+            "arm_a": arm_a,
+            "arm_b": arm_b,
         }
     ]
     for metric in manifest.metrics:
@@ -255,8 +278,6 @@ def _add_stats(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--metrics-a", type=Path, required=True)
     parser.add_argument("--metrics-b", type=Path, required=True)
-    parser.add_argument("--arm-a-label", default="lilbee")
-    parser.add_argument("--arm-b-label", default="ragflow")
     parser.add_argument("--out", type=Path, required=True)
     parser.set_defaults(handler=_cmd_stats)
 

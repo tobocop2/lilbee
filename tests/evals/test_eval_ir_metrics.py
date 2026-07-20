@@ -6,7 +6,6 @@ the run it was handed, so truncation is observable without the C extension.
 """
 
 import pytest
-
 from evals.benchmark.ir_metrics import METRIC_MEASURES, score_run
 
 
@@ -28,16 +27,18 @@ class _RecordingEvaluator:
             ranked = sorted(docs.items(), key=lambda item: (-item[1], item[0]))
             values = {}
             if "recip_rank" in self._measures:
-                values["recip_rank"] = next(
-                    (1.0 / rank for rank, (doc, _) in enumerate(ranked, 1) if judged.get(doc, 0) > 0),
-                    0.0,
+                hit = next(
+                    (rank for rank, (doc, _) in enumerate(ranked, 1) if judged.get(doc, 0) > 0),
+                    None,
                 )
+                values["recip_rank"] = 1.0 / hit if hit else 0.0
             if "recall_20" in self._measures:
                 positives = {doc for doc, grade in judged.items() if grade > 0}
                 found = {doc for doc, _ in ranked[:20]} & positives
                 values["recall_20"] = len(found) / len(positives) if positives else 0.0
             if "ndcg_cut_10" in self._measures:
-                values["ndcg_cut_10"] = 1.0 if any(judged.get(doc, 0) > 0 for doc, _ in ranked[:10]) else 0.0
+                top10 = ranked[:10]
+                values["ndcg_cut_10"] = 1.0 if any(judged.get(d, 0) > 0 for d, _ in top10) else 0.0
             scored[query_id] = values
         return scored
 

@@ -3,7 +3,6 @@
 import random
 
 import pytest
-
 from evals.retrieval import questions as questions_mod
 from evals.retrieval.questions import (
     CountOracle,

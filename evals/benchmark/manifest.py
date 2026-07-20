@@ -91,6 +91,43 @@ class Manifest:
     def derived_datasets(self) -> list[str]:
         return [ds.name for ds in self.datasets if ds.label_kind == LABEL_DERIVED]
 
+    @property
+    def arm_names(self) -> set[str]:
+        return {arm.name for arm in self.arms}
+
+    @property
+    def dataset_names(self) -> set[str]:
+        return {ds.name for ds in self.datasets}
+
+    def require_declared_comparison(self, arm_a: str, arm_b: str, dataset: str) -> None:
+        """Fail unless this manifest declares exactly this pair of arms and dataset.
+
+        The fingerprint is the preregistration's identity; stamping it onto a
+        comparison the manifest never declared attests to a study that was not
+        performed. A comparison is declared only when both arms are named in the
+        manifest, they are the two distinct declared arms, and the dataset is one
+        the manifest lists.
+        """
+        undeclared_arms = {arm_a, arm_b} - self.arm_names
+        if undeclared_arms:
+            raise ValueError(
+                f"arms {sorted(undeclared_arms)} are not declared in manifest "
+                f"'{self.run_id}' (declares {sorted(self.arm_names)}); "
+                "the frozen fingerprint cannot attest to this comparison"
+            )
+        if arm_a == arm_b:
+            raise ValueError(f"a comparison needs two distinct arms, both are '{arm_a}'")
+        if {arm_a, arm_b} != self.arm_names:
+            raise ValueError(
+                f"manifest '{self.run_id}' declares arms {sorted(self.arm_names)}, "
+                f"but the comparison is between {sorted({arm_a, arm_b})}"
+            )
+        if dataset not in self.dataset_names:
+            raise ValueError(
+                f"dataset '{dataset}' is not declared in manifest '{self.run_id}' "
+                f"(declares {sorted(self.dataset_names)})"
+            )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Manifest:
         manifest = cls(
@@ -137,14 +174,24 @@ class Manifest:
             raise ValueError(f"temperature must be {FROZEN_TEMPERATURE} for a deterministic run")
 
 
+KNOWN_SYSTEMS = frozenset({LILBEE_SYSTEM, RAGFLOW_SYSTEM})
+
+
 def _validate_arms(arms: list[ArmConfig]) -> None:
-    systems = {arm.system for arm in arms}
-    if len(arms) != 2:  # noqa: PLR2004 - an A/B has exactly two arms
-        raise ValueError("an A/B benchmark needs exactly two arms")
+    if len(arms) != 2:  # noqa: PLR2004 - a paired comparison has exactly two arms
+        raise ValueError("a paired benchmark needs exactly two arms")
     if len({arm.name for arm in arms}) != len(arms):
         raise ValueError("arm names must be distinct")
-    if systems != {LILBEE_SYSTEM, RAGFLOW_SYSTEM}:
-        raise ValueError(f"arms must be one {LILBEE_SYSTEM} and one {RAGFLOW_SYSTEM}")
+    # Both a cross-system parity study (one lilbee, one ragflow) and a
+    # single-system ablation (two lilbee arms at different configs) are valid
+    # preregistrations; forcing one of each made the ablation impossible to
+    # declare, so the run compared undeclared arms under a stamped fingerprint.
+    unknown = {arm.system for arm in arms} - KNOWN_SYSTEMS
+    if unknown:
+        raise ValueError(
+            f"unknown arm system(s) {sorted(unknown)}; each arm's system must be "
+            f"one of {sorted(KNOWN_SYSTEMS)}"
+        )
 
 
 def _validate_models(models: ModelConfig) -> None:
