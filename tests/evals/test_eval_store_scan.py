@@ -97,3 +97,21 @@ def test_count_oracle_counts_word_mentions_not_substrings():
     counts = count_term_hits(rows, ["report"])["report"]
     assert counts.chunks == 2
     assert counts.sources == 2
+
+
+def test_passages_are_not_drawn_in_scan_order():
+    # Only part of the reservoir survives the per-source dedupe, so consuming it
+    # in slot order would favour whatever the table returned first.
+    import random
+
+    rows = [ChunkRow(f"s{i:02d}.txt", "x" * 200, 0) for i in range(40)]
+    scan = scan_passages_and_heads(
+        rows,
+        passage_count=5,
+        min_passage_chars=10,
+        head_sources=set(),
+        rng=random.Random(3),
+    )
+    picked = [source for source, _ in scan.passages]
+    assert len(picked) == 5
+    assert picked != sorted(picked)[:5]

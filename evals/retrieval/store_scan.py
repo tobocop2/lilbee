@@ -126,6 +126,12 @@ def scan_passages_and_heads(
                 reservoir[slot] = row
         seen += 1
 
+    # Algorithm R leaves slots never hit by a replacement holding the first
+    # candidate_cap rows in stream order, and only about a quarter of the
+    # reservoir survives the per-source dedupe below. Consuming it in slot order
+    # would therefore draw preferentially from whatever the table returned
+    # first. The sample is uniform only once the order is discarded.
+    rng.shuffle(reservoir)
     passages: list[tuple[str, str]] = []
     picked_sources: set[str] = set()
     for row in reservoir:

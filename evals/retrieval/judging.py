@@ -30,8 +30,12 @@ class Dimension(StrEnum):
 DIMENSIONS = tuple(str(dimension) for dimension in Dimension)
 
 _RUBRIC = (
-    "faithfulness: 2 = every claim supported by the ground material, "
-    "1 = minor unsupported detail, 0 = contradicts or invents. "
+    "faithfulness: 2 = nothing in the answer contradicts the ground material and "
+    "its main claim is supported by it, 1 = a minor detail the ground material "
+    "neither supports nor contradicts, 0 = contradicts the ground material or "
+    "invents specifics. Detail that is merely absent from the ground material is "
+    "not itself a fault: the ground material is one passage, not the whole "
+    "corpus, and the answer may draw on other passages you were not shown. "
     "relevance: 2 = directly answers the question, 1 = partial, 0 = misses. "
     "citation: 2 = names or cites the correct document, 1 = cites nothing, "
     "0 = cites a wrong document. Return ONLY the JSON."

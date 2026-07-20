@@ -166,6 +166,34 @@ def sample_terms(passages: list[tuple[str, str]], count: int, rng: random.Random
     return band[:count]
 
 
+@dataclass(frozen=True)
+class BatteryShortfall:
+    """How much of the requested battery actually survived generation."""
+
+    topical_requested: int
+    topical_sampled: int
+    topical_authored: int
+    known_item_requested: int
+    known_item_delivered: int
+
+    @property
+    def short(self) -> bool:
+        return (
+            self.topical_authored < self.topical_requested
+            or self.known_item_delivered < self.known_item_requested
+        )
+
+    def describe(self) -> str:
+        return (
+            "battery is smaller than requested: topical "
+            f"{self.topical_authored}/{self.topical_requested} "
+            f"({self.topical_sampled} passages survived the per-source dedupe, "
+            f"{self.topical_sampled - self.topical_authored} authoring calls did not parse), "
+            f"known-item {self.known_item_delivered}/{self.known_item_requested}. "
+            "Fewer questions means a noisier per-arm mean."
+        )
+
+
 def build_questions(
     lancedb_dir: Path,
     chat: ChatFn,
@@ -187,6 +215,19 @@ def build_questions(
         rng=rng,
     )
     questions = author_topical(scan.passages, chat)
+    # A battery can fall short of what was asked for in two silent ways: the
+    # per-source dedupe leaves fewer candidate passages than requested when a
+    # corpus is a few long documents, and an authoring call whose response does
+    # not parse is dropped. Neither is visible downstream, so a run graded on a
+    # dozen topical questions looks the same as one graded on sixty, with a
+    # noisier delta and nothing saying why.
+    shortfall = BatteryShortfall(
+        topical_requested=topical,
+        topical_sampled=len(scan.passages),
+        topical_authored=len(questions),
+        known_item_requested=known_item,
+        known_item_delivered=len(known_sources),
+    )
     for index, name in enumerate(known_sources):
         questions.append(
             Question(
@@ -208,4 +249,6 @@ def build_questions(
                 oracle=CountOracle(term=term, chunks=hits[term].chunks, sources=hits[term].sources),
             )
         )
+    if shortfall.short:
+        print(shortfall.describe(), file=sys.stderr)
     return questions

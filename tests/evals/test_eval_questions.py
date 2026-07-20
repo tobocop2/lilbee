@@ -125,3 +125,32 @@ def test_build_questions_skips_the_count_scan_when_no_terms_qualify(monkeypatch)
     )
     assert all(q.kind is not QuestionKind.COUNT for q in built)
     assert len(scans) == 1
+
+
+def test_battery_shortfall_reports_the_gap():
+    from evals.retrieval.questions import BatteryShortfall
+
+    short = BatteryShortfall(
+        topical_requested=60,
+        topical_sampled=15,
+        topical_authored=12,
+        known_item_requested=20,
+        known_item_delivered=20,
+    )
+    assert short.short is True
+    text = short.describe()
+    assert "12/60" in text
+    assert "20/20" in text
+
+
+def test_a_full_battery_is_not_reported_as_short():
+    from evals.retrieval.questions import BatteryShortfall
+
+    full = BatteryShortfall(
+        topical_requested=5,
+        topical_sampled=5,
+        topical_authored=5,
+        known_item_requested=2,
+        known_item_delivered=2,
+    )
+    assert full.short is False
