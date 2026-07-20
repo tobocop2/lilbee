@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -1480,15 +1481,18 @@ class TestLifespan:
             pass
 
     @mock.patch("lilbee.server.app.get_services")
-    async def test_validate_model_failure_does_not_block(self, mock_get_svc):
+    async def test_unavailable_embedding_model_warns_and_does_not_block(self, mock_get_svc, caplog):
         mock_svc = mock.MagicMock()
-        mock_svc.embedder.validate_model.side_effect = RuntimeError("no model")
+        mock_svc.embedder.validate_model.return_value = False
         mock_get_svc.return_value = mock_svc
         from lilbee.server.app import _lifespan
 
-        async with _lifespan(mock.MagicMock()):
-            pass
+        with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
+            async with _lifespan(mock.MagicMock()):
+                pass
         mock_get_svc.assert_called()
+        assert "Embedding model validated" not in caplog.text
+        assert "embedding" in caplog.text.lower()
 
     @mock.patch("lilbee.server.app.peek_services")
     @mock.patch("lilbee.server.app.get_services")
