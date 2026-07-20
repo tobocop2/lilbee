@@ -115,3 +115,113 @@ def test_integrated_index_probe_runs_once_per_process(monkeypatch) -> None:
         assert len(calls) == 1, f"probed the Vulkan loader {len(calls)} times"
     finally:
         gpu_select.integrated_vulkan_indices.cache_clear()
+
+
+def _device(index: int, uuid: bytes, name: str = "AMD Radeon RX 7900 XTX"):
+    from lilbee.providers.fleet import gpu_select
+
+    return gpu_select.VulkanDevice(
+        index=index,
+        device_type=gpu_select.VkDeviceType.DISCRETE_GPU,
+        device_name=name,
+        vendor_id=0x1002,
+        vram_bytes=24 * 1024**3,
+        device_uuid=uuid,
+    )
+
+
+def test_one_card_behind_two_drivers_counts_once() -> None:
+    """RADV and AMDVLK installed together enumerate the same card twice.
+
+    ggml deduplicates on deviceUUID and counts it once, so without this lilbee
+    plans a two-GPU fleet on one piece of silicon and tensor-splits a model
+    across a card and itself.
+    """
+    from lilbee.providers.fleet.gpu_select import _deduplicate_by_uuid
+
+    uuid = bytes(range(16))
+    radv = _device(0, uuid, "AMD Radeon RX 7900 XTX (RADV NAVI31)")
+    amdvlk = _device(1, uuid)
+
+    assert [d.index for d in _deduplicate_by_uuid([radv, amdvlk])] == [0]
+
+
+def test_two_identical_cards_are_still_two_cards() -> None:
+    """Same model, same name, different silicon: the UUID is what separates them."""
+    from lilbee.providers.fleet.gpu_select import _deduplicate_by_uuid
+
+    first = _device(0, bytes([1] * 16))
+    second = _device(1, bytes([2] * 16))
+
+    assert [d.index for d in _deduplicate_by_uuid([first, second])] == [0, 1]
+
+
+def test_devices_without_a_uuid_are_all_kept() -> None:
+    """A 1.0-only loader says nothing about identity; silence is not a match."""
+    from lilbee.providers.fleet.gpu_select import _deduplicate_by_uuid
+
+    devices = [_device(0, b""), _device(1, b"")]
+
+    assert [d.index for d in _deduplicate_by_uuid(devices)] == [0, 1]
+
+
+def test_a_driver_that_leaves_the_chained_struct_alone_reports_no_uuid() -> None:
+    """All zeros is what an ignored pNext looks like, not an identity every card shares."""
+    from lilbee.providers.fleet.gpu_select import _device_uuid
+
+    assert _device_uuid(None, lambda *_a: None) == b""
+
+
+def test_the_uuid_is_read_back_through_the_pnext_chain() -> None:
+    """The driver writes into the struct lilbee chained on, so follow the real pointer."""
+    import ctypes
+
+    from lilbee.providers.fleet import gpu_select
+
+    written = bytes(range(1, 17))
+
+    def _fake_get_properties2(_handle, props2_ref) -> None:
+        id_props = ctypes.cast(
+            props2_ref._obj.pNext, ctypes.POINTER(gpu_select._VkPhysicalDeviceIDProperties)
+        )
+        assert id_props[0].sType == gpu_select._VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES
+        id_props[0].deviceUUID = (ctypes.c_uint8 * 16)(*written)
+
+    assert gpu_select._device_uuid(None, _fake_get_properties2) == written
+
+
+def test_a_loader_that_refuses_vulkan_1_1_still_enumerates() -> None:
+    """Asking for 1.1 buys the device UUID; being refused must not cost the probe."""
+    from lilbee.providers.fleet import gpu_select
+
+    attempts: list[int] = []
+
+    def _create(create_info_ref, _alloc, instance_ref):
+        api_version = create_info_ref._obj.pApplicationInfo[0].apiVersion
+        attempts.append(api_version)
+        if api_version == gpu_select._VK_API_VERSION_1_1:
+            return 1  # VK_ERROR_INCOMPATIBLE_DRIVER
+        instance_ref._obj.value = 0xDEAD
+        return gpu_select._VK_SUCCESS
+
+    instance, api_version = gpu_select._create_probe_instance(_create)
+
+    assert attempts == [gpu_select._VK_API_VERSION_1_1, gpu_select._VK_API_VERSION_1_0]
+    assert instance is not None
+    assert api_version == gpu_select._VK_API_VERSION_1_0
+
+
+def test_the_probe_itself_returns_deduplicated_devices(monkeypatch) -> None:
+    """The dedup has to sit on the path every caller uses, not beside it."""
+    from lilbee.providers.fleet import gpu_select
+
+    uuid = bytes(range(16))
+    monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: object())
+    monkeypatch.setattr(
+        gpu_select, "_list_devices_with_instance", lambda _lib: [_device(0, uuid), _device(1, uuid)]
+    )
+
+    devices = gpu_select._enumerate_vulkan_devices()
+
+    assert devices is not None
+    assert [d.index for d in devices] == [0]

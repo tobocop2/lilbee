@@ -35,6 +35,12 @@ _VK_STRUCTURE_TYPE_APPLICATION_INFO = 0
 _VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
 _VK_SUCCESS = 0
 _VK_API_VERSION_1_0 = (1 << 22) | (0 << 12) | 0
+# 1.1 is asked for first, purely to make vkGetPhysicalDeviceProperties2 (and the
+# device UUID it carries) core rather than an extension; a loader that refuses
+# it gets the 1.0 request back and the probe simply has no UUIDs to dedup by.
+_VK_API_VERSION_1_1 = (1 << 22) | (1 << 12) | 0
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 = 1000059001
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES = 1000071004
 
 
 class VkDeviceType(IntEnum):
@@ -94,6 +100,11 @@ class VulkanDevice:
     device_name: str
     vendor_id: int
     vram_bytes: int = 0
+    # VkPhysicalDeviceIDProperties::deviceUUID, empty when the loader could not
+    # be asked for it. The spec requires it to be immutable for a given device
+    # across instances, processes, driver APIs, driver versions and reboots, so
+    # two entries sharing one is one piece of silicon behind two drivers.
+    device_uuid: bytes = b""
 
 
 class PCIVendorID(IntEnum):
@@ -235,6 +246,29 @@ class _VkMemoryType(ctypes.Structure):
 
 class _VkMemoryHeap(ctypes.Structure):
     _fields_ = [("size", c_uint64), ("flags", c_uint32)]
+
+
+class _VkPhysicalDeviceIDProperties(ctypes.Structure):
+    # VkPhysicalDeviceIDProperties, promoted to core in Vulkan 1.1. Chained onto
+    # VkPhysicalDeviceProperties2 via pNext; the driver fills every field, so the
+    # trailing ones are declared for layout even though only deviceUUID is read.
+    _fields_ = [
+        ("sType", c_uint32),
+        ("pNext", c_void_p),
+        ("deviceUUID", c_uint8 * _VK_UUID_SIZE),
+        ("driverUUID", c_uint8 * _VK_UUID_SIZE),
+        ("deviceLUID", c_uint8 * 8),
+        ("deviceNodeMask", c_uint32),
+        ("deviceLUIDValid", c_uint32),
+    ]
+
+
+class _VkPhysicalDeviceProperties2(ctypes.Structure):
+    _fields_ = [
+        ("sType", c_uint32),
+        ("pNext", c_void_p),
+        ("properties", _VkPhysicalDeviceProperties),
+    ]
 
 
 class _VkPhysicalDeviceMemoryProperties(ctypes.Structure):
@@ -386,11 +420,45 @@ def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
     if lib is None:
         return None
     try:
-        return _list_devices_with_instance(lib)
+        return _deduplicate_by_uuid(_list_devices_with_instance(lib))
     except OSError:
         # ctypes argument / call-site errors land here; treat as
         # "probe failed" rather than crashing the host process.
         return None
+
+
+def _deduplicate_by_uuid(devices: list[VulkanDevice]) -> list[VulkanDevice]:
+    """Collapse adapters that share a ``deviceUUID`` into one, keeping the first.
+
+    Two ICDs able to drive the same card (RADV beside AMDVLK is the case ggml's
+    own dedup names) enumerate it twice. ggml counts it once, so without this
+    lilbee plans a two-GPU fleet on one piece of silicon and tensor-splits a
+    model across a card and itself.
+
+    ggml breaks the same tie with a driver-priority table, picking which
+    driver's entry survives. Lowest index is enough here because nothing lilbee
+    reads off a device tells the two entries apart: the type, the name and the
+    device-local heap size describe the silicon, not the driver, and no caller
+    pins by the raw enumeration index any more.
+
+    Devices with no UUID are all kept, since "the loader would not say" is not
+    evidence that two adapters are one.
+    """
+    seen: set[bytes] = set()
+    unique: list[VulkanDevice] = []
+    for device in devices:
+        if device.device_uuid and device.device_uuid in seen:
+            log.debug(
+                "Vulkan device %d (%s) is device %s under a second driver; ignoring the duplicate",
+                device.index,
+                device.device_name,
+                next(d.index for d in unique if d.device_uuid == device.device_uuid),
+            )
+            continue
+        if device.device_uuid:
+            seen.add(device.device_uuid)
+        unique.append(device)
+    return unique
 
 
 def _load_vulkan_loader() -> ctypes.CDLL | None:
@@ -427,6 +495,74 @@ def _load_vulkan_loader() -> ctypes.CDLL | None:
     return None
 
 
+def _create_probe_instance(create_instance: ctypes._FuncPointer) -> tuple[c_void_p | None, int]:
+    """Create the throwaway instance, asking for 1.1 and settling for 1.0.
+
+    Returns the instance and the API version it was created with. 1.1 makes
+    ``vkGetPhysicalDeviceProperties2`` core, which is where the device UUID
+    lives; a 1.0-only loader rejects the request outright, so the 1.0 retry is
+    what keeps the probe working there at all rather than silently reporting no
+    adapters.
+    """
+    for api_version in (_VK_API_VERSION_1_1, _VK_API_VERSION_1_0):
+        app_info = _VkApplicationInfo(
+            sType=_VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            pNext=None,
+            pApplicationName=b"lilbee-gpu-probe",
+            applicationVersion=0,
+            pEngineName=b"lilbee",
+            engineVersion=0,
+            apiVersion=api_version,
+        )
+        create_info = _VkInstanceCreateInfo(
+            sType=_VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            pNext=None,
+            flags=0,
+            pApplicationInfo=ctypes.pointer(app_info),
+            enabledLayerCount=0,
+            ppEnabledLayerNames=None,
+            enabledExtensionCount=0,
+            ppEnabledExtensionNames=None,
+        )
+        instance = c_void_p()
+        result = create_instance(byref(create_info), None, byref(instance))
+        if result == _VK_SUCCESS and instance.value:
+            return instance, api_version
+    return None, 0
+
+
+def _resolve_properties2(lib: ctypes.CDLL) -> ctypes._FuncPointer | None:
+    """``vkGetPhysicalDeviceProperties2`` with argtypes stamped, ``None`` if absent."""
+    try:
+        get_properties2 = lib.vkGetPhysicalDeviceProperties2
+    except AttributeError:
+        return None
+    get_properties2.argtypes = [c_void_p, POINTER(_VkPhysicalDeviceProperties2)]
+    get_properties2.restype = None
+    return get_properties2
+
+
+def _device_uuid(handle: c_void_p, get_properties2: ctypes._FuncPointer | None) -> bytes:
+    """The adapter's ``deviceUUID``, empty when it cannot be asked for.
+
+    An all-zero UUID is returned as empty too: it is what a driver leaves behind
+    when it ignores the chained struct, and treating it as a real identity would
+    collapse every such adapter into one.
+    """
+    if get_properties2 is None:
+        return b""
+    id_props = _VkPhysicalDeviceIDProperties(
+        sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES, pNext=None
+    )
+    props2 = _VkPhysicalDeviceProperties2(
+        sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        pNext=ctypes.cast(ctypes.pointer(id_props), c_void_p),
+    )
+    get_properties2(handle, byref(props2))
+    uuid = bytes(id_props.deviceUUID)
+    return b"" if not any(uuid) else uuid
+
+
 def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
     """Create a temporary VkInstance, enumerate physical devices, destroy.
 
@@ -442,29 +578,10 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
         get_memory,
     ) = _resolve_vk_symbols(lib)
 
-    app_info = _VkApplicationInfo(
-        sType=_VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        pNext=None,
-        pApplicationName=b"lilbee-gpu-probe",
-        applicationVersion=0,
-        pEngineName=b"lilbee",
-        engineVersion=0,
-        apiVersion=_VK_API_VERSION_1_0,
-    )
-    create_info = _VkInstanceCreateInfo(
-        sType=_VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        pNext=None,
-        flags=0,
-        pApplicationInfo=ctypes.pointer(app_info),
-        enabledLayerCount=0,
-        ppEnabledLayerNames=None,
-        enabledExtensionCount=0,
-        ppEnabledExtensionNames=None,
-    )
-    instance = c_void_p()
-    result = create_instance(byref(create_info), None, byref(instance))
-    if result != _VK_SUCCESS or not instance.value:
+    instance, api_version = _create_probe_instance(create_instance)
+    if instance is None:
         return []
+    get_properties2 = _resolve_properties2(lib) if api_version >= _VK_API_VERSION_1_1 else None
 
     try:
         count = c_uint32(0)
@@ -488,6 +605,7 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
                     device_name=props.deviceName.decode("utf-8", errors="replace"),
                     vendor_id=int(props.vendorID),
                     vram_bytes=_device_local_vram(mem),
+                    device_uuid=_device_uuid(handles[i], get_properties2),
                 )
             )
         return devices
