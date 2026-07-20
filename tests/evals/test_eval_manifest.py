@@ -64,10 +64,20 @@ def test_a_single_system_ablation_is_a_valid_preregistration():
     _manifest(arms=ablation).validate()
 
 
-def test_exactly_two_arms_are_required():
+def test_at_least_two_arms_are_required():
     one = [ArmConfig(name="solo", system="lilbee", description="")]
-    with pytest.raises(ValueError, match="exactly two arms"):
+    with pytest.raises(ValueError, match="at least two arms"):
         _manifest(arms=one).validate()
+
+
+def test_an_ablation_may_declare_a_baseline_and_several_variants():
+    # One baseline against four fusion weights is one study, not four studies.
+    ablation = [ArmConfig(name="dense", system="lilbee", description="")] + [
+        ArmConfig(name=f"w{w}", system="lilbee", description="") for w in ("0.25", "0.5", "1.0")
+    ]
+    manifest = _manifest(arms=ablation)
+    manifest.validate()
+    manifest.require_declared_comparison("dense", "w0.5", "scifact")
 
 
 def test_arm_names_must_be_distinct():

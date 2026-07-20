@@ -1,0 +1,88 @@
+{
+  "arms": [
+    {
+      "config": {
+        "lexical_fusion_weight": 0.0,
+        "title_search": false
+      },
+      "description": "vector-only baseline; lexical and title arms silenced",
+      "name": "dense",
+      "system": "lilbee"
+    },
+    {
+      "config": {
+        "lexical_fusion_weight": 0.25,
+        "title_search": true
+      },
+      "description": "hybrid fusion, BM25 arm at weight 0.25, title arm on",
+      "name": "w0.25",
+      "system": "lilbee"
+    },
+    {
+      "config": {
+        "lexical_fusion_weight": 0.5,
+        "title_search": true
+      },
+      "description": "hybrid fusion, BM25 arm at weight 0.5, title arm on",
+      "name": "w0.5",
+      "system": "lilbee"
+    },
+    {
+      "config": {
+        "lexical_fusion_weight": 0.75,
+        "title_search": true
+      },
+      "description": "hybrid fusion, BM25 arm at weight 0.75, title arm on",
+      "name": "w0.75",
+      "system": "lilbee"
+    },
+    {
+      "config": {
+        "lexical_fusion_weight": 1.0,
+        "title_search": true
+      },
+      "description": "hybrid fusion, BM25 arm at weight 1.0, title arm on",
+      "name": "w1.0",
+      "system": "lilbee"
+    }
+  ],
+  "datasets": [
+    {
+      "label_kind": "native",
+      "loader": "scifact",
+      "name": "scifact",
+      "split": "test"
+    },
+    {
+      "label_kind": "native",
+      "loader": "fiqa",
+      "name": "fiqa",
+      "split": "test"
+    },
+    {
+      "label_kind": "native",
+      "loader": "nfcorpus",
+      "name": "nfcorpus",
+      "split": "test"
+    }
+  ],
+  "fingerprint": "97cab75218651dccd13c8c87e5c71f690c0a69c0b825f44f525776c12559ea73",
+  "metrics": [
+    "nDCG@10",
+    "Recall@20",
+    "MRR@10"
+  ],
+  "models": {
+    "embedder": "Qwen3-Embedding-0.6B-Q8_0",
+    "generator": "none-tier1-only",
+    "generator_swap": "",
+    "judge": "not-applicable-tier1-only"
+  },
+  "run_id": "fusion-weight-ablation-2026-07",
+  "stats": {
+    "alpha": 0.05,
+    "bootstrap_resamples": 10000,
+    "seed": 20260714
+  },
+  "temperature": 0.0
+}

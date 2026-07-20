@@ -4,7 +4,7 @@ import pytest
 from evals.retrieval.answers import AnswerRow
 from evals.retrieval.questions import CountOracle, Question, QuestionKind
 from evals.retrieval.scoring import (
-    MissingNoiseReplicate,
+    MissingNoiseReplicateError,
     ResultRowType,
     build_results,
     count_question_pass,
@@ -33,12 +33,12 @@ def test_noise_floor_ignores_questions_missing_from_either_replicate():
 def test_noise_floor_without_a_second_replicate_fails_loudly():
     # A silent 0.0 here would mark every delta as outside the noise, so a run
     # that measured no judge variance at all must say so rather than score it.
-    with pytest.raises(MissingNoiseReplicate):
+    with pytest.raises(MissingNoiseReplicateError):
         noise_floor({}, {})
 
 
 def test_noise_floor_fails_when_the_replicates_share_no_question():
-    with pytest.raises(MissingNoiseReplicate):
+    with pytest.raises(MissingNoiseReplicateError):
         noise_floor({"q1": _grades(2, 2, 2)}, {"q2": _grades(0, 0, 0)})
 
 

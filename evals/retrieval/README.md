@@ -26,14 +26,22 @@ the store. Lives outside `src/` on purpose: it never ships in the package.
 3. **judge** shuffles every gradable answer under an opaque id and grades
    them one at a time: the judge sees only question + ground truth + one
    answer, never arm labels, and never knows a comparison is happening. Arm
-   B's answers are judged twice under different ids; the disagreement between
-   those two passes is the judge's noise floor. Grades are checkpointed too.
+   B's answers are judged twice under different ids and under two equivalent
+   phrasings of the grading prompt; the disagreement between those two passes
+   is the judge's noise floor. The two phrasings carry identical content and an
+   identical rubric and differ only in how the material is arranged, which is
+   what makes the second pass a measurement: both backends decode greedily at
+   temperature 0, so re-sending an identical prompt would return an identical
+   grade and report a noise floor of exactly zero. Grades are checkpointed too.
 4. **score** unblinds mechanically: per-dimension means (faithfulness,
-   relevance, citation, each 0-2) with the noise floor as the error bar, plus
-   exact pass/fail for count and known-item questions. Writes machine-readable
-   `results.jsonl`.
-5. **report** renders `results.jsonl` as markdown; any cross-arm delta at or
-   below the noise floor is labeled within noise.
+   relevance, citation, each 0-2), a paired test of each dimension across the
+   two arms, and exact pass/fail for count and known-item questions. Writes
+   machine-readable `results.jsonl`.
+5. **report** renders `results.jsonl` as markdown. Significance comes from the
+   paired per-question test, Benjamini-Hochberg adjusted across the dimensions
+   tested. The noise floor is reported as what it is, a per-question statement
+   about how steady the judge is on one answer; it is not a threshold for a
+   difference of means over many questions, which is a different scale.
 
 ## Running on a pod
 
@@ -76,15 +84,18 @@ uv run python -m evals.retrieval report \
   --results /tmp/eval/results.jsonl --out /tmp/eval/report.md
 ```
 
-Question generation and judging talk to the configured lilbee chat model by
-default (set `LILBEE_CHAT_MODEL` before step 1, and switch it to a stronger
-judge model before step 3 if both run locally). The judge can instead be any
-OpenAI-compatible endpoint:
+Question generation talks to the configured lilbee chat model (set
+`LILBEE_CHAT_MODEL` before step 1). **Judging requires a separate endpoint and
+model, and there is no fallback.** That model wrote the questions and generated
+both arms' answers, so letting it judge means one model grades its own output
+against ground truth it paraphrased. `judge` refuses to run until both variables
+are set, and records which model produced the grades in `results.jsonl` and the
+report:
 
 ```bash
 export LILBEE_EVAL_JUDGE_BASE_URL="https://api.example.com/v1"
-export LILBEE_EVAL_JUDGE_MODEL="judge-model-name"
-export LILBEE_EVAL_JUDGE_API_KEY="..."   # optional
+export LILBEE_EVAL_JUDGE_MODEL="judge-model-name"   # required, not optional
+export LILBEE_EVAL_JUDGE_API_KEY="..."              # optional
 ```
 
 ## Determinism and resume

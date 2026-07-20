@@ -45,7 +45,9 @@ DOCUMENTS_PAGE_SIZE = 200
 # RAGFlow's documented defaults at the version under test, written down so a
 # change is a visible diff instead of a silent drift.
 CHUNK_TOKEN_COUNT = 128
-CHUNK_DELIMITER = "\n!?;。；！？"
+# RAGFlow's default sentence delimiters; the fullwidth forms are the exact
+# characters it splits on, so ASCII look-alikes would change the chunking.
+CHUNK_DELIMITER = "\n!?;。；！？"  # noqa: RUF001
 RETRIEVAL_SIMILARITY_THRESHOLD = 0.2
 RETRIEVAL_KEYWORDS_WEIGHT = 0.7
 RETRIEVAL_TOP_N = 20

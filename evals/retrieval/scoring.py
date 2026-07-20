@@ -28,7 +28,7 @@ class ResultRowType(StrEnum):
     SUMMARY = "summary"
 
 
-class MissingNoiseReplicate(RuntimeError):
+class MissingNoiseReplicateError(RuntimeError):
     """The second judging pass produced nothing, so no noise floor was measured."""
 
 
@@ -73,7 +73,7 @@ def noise_floor(rep0: Grades, rep1: Grades) -> float:
     """
     shared = [qid for qid in rep0 if qid in rep1]
     if not shared:
-        raise MissingNoiseReplicate(
+        raise MissingNoiseReplicateError(
             "no question was graded in both judging passes, so the judge noise "
             "floor was never measured; check that the noise arm matches the one "
             "the judge pass used and that replicate 1 completed"

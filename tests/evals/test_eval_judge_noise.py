@@ -11,7 +11,7 @@ from evals.retrieval.blinding import BlindRow, build_blind_rows, unblind
 from evals.retrieval.judging import JUDGE_PROMPTS, judge_prompt_for
 from evals.retrieval.llm import JUDGE_BASE_URL_ENV, JUDGE_MODEL_ENV, judge_backend
 from evals.retrieval.questions import Question, QuestionKind
-from evals.retrieval.scoring import MissingNoiseReplicate, build_results
+from evals.retrieval.scoring import MissingNoiseReplicateError, build_results
 
 
 def _row(variant):
@@ -94,7 +94,7 @@ def test_ungraded_rows_do_not_count_as_judge_agreement():
         "A": {0: {"tq000": {"faithfulness": 2, "relevance": 2, "citation": 2}}},
         "B": {0: {"tq000": {"faithfulness": 1, "relevance": 1, "citation": 1}}},
     }
-    with pytest.raises(MissingNoiseReplicate):
+    with pytest.raises(MissingNoiseReplicateError):
         build_results(questions, answers, unblinded, noise_arm="B")
 
 

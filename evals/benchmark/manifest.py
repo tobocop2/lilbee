@@ -100,13 +100,13 @@ class Manifest:
         return {ds.name for ds in self.datasets}
 
     def require_declared_comparison(self, arm_a: str, arm_b: str, dataset: str) -> None:
-        """Fail unless this manifest declares exactly this pair of arms and dataset.
+        """Fail unless this manifest declares both arms and the dataset.
 
         The fingerprint is the preregistration's identity; stamping it onto a
         comparison the manifest never declared attests to a study that was not
-        performed. A comparison is declared only when both arms are named in the
-        manifest, they are the two distinct declared arms, and the dataset is one
-        the manifest lists.
+        performed. A manifest may declare more than two arms, since an ablation
+        is one baseline against several variants, but every comparison must be
+        between two distinct arms it names, on a dataset it lists.
         """
         undeclared_arms = {arm_a, arm_b} - self.arm_names
         if undeclared_arms:
@@ -117,11 +117,6 @@ class Manifest:
             )
         if arm_a == arm_b:
             raise ValueError(f"a comparison needs two distinct arms, both are '{arm_a}'")
-        if {arm_a, arm_b} != self.arm_names:
-            raise ValueError(
-                f"manifest '{self.run_id}' declares arms {sorted(self.arm_names)}, "
-                f"but the comparison is between {sorted({arm_a, arm_b})}"
-            )
         if dataset not in self.dataset_names:
             raise ValueError(
                 f"dataset '{dataset}' is not declared in manifest '{self.run_id}' "
@@ -177,9 +172,12 @@ class Manifest:
 KNOWN_SYSTEMS = frozenset({LILBEE_SYSTEM, RAGFLOW_SYSTEM})
 
 
+MIN_ARMS = 2
+
+
 def _validate_arms(arms: list[ArmConfig]) -> None:
-    if len(arms) != 2:  # noqa: PLR2004 - a paired comparison has exactly two arms
-        raise ValueError("a paired benchmark needs exactly two arms")
+    if len(arms) < MIN_ARMS:
+        raise ValueError("a benchmark needs at least two arms to compare")
     if len({arm.name for arm in arms}) != len(arms):
         raise ValueError("arm names must be distinct")
     # Both a cross-system parity study (one lilbee, one ragflow) and a
