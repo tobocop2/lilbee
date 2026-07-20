@@ -52,6 +52,7 @@ from lilbee.retrieval.query.expansion import (
     CONDENSE_PROMPT,
     EXPANSION_MAX_TOKENS,
     EXPANSION_PROMPT,
+    HYDE_MAX_TOKENS,
 )
 from lilbee.retrieval.query.formatting import (
     CONTEXT_TEMPLATE,
@@ -431,7 +432,7 @@ class Searcher:
             response = self._provider.chat(
                 [{"role": "user", "content": self._config.hyde_prompt.format(question=question)}],
                 stream=False,
-                options={"num_predict": EXPANSION_MAX_TOKENS},
+                options={"num_predict": HYDE_MAX_TOKENS},
             )
             # Reasoning models front-load deliberation; embedding it instead
             # of the passage would search for the model's thought process.
@@ -700,14 +701,14 @@ class Searcher:
         ``on_batch`` hears ``(batch, total)`` before each model call, for progress UI.
         """
         ctx_target = self._config.chat_n_ctx_target
-        plan = plan_compaction(messages, previous_summary, ctx_target=ctx_target)
+        plan = plan_compaction(messages, ctx_target=ctx_target)
         notes: list[str] = []
         condensed = 0
         stranded = plan.stranded
         for index, batch in enumerate(plan.batches):
             if on_batch is not None:
                 on_batch(index + 1, len(plan.batches))
-            note = self._summarize_batch(batch, "")
+            note = self._summarize_batch(batch)
             if note:
                 notes.append(note)
                 condensed += len(batch)
@@ -718,26 +719,29 @@ class Searcher:
         merged = merge_notes(previous_summary, notes)
         cap = summary_cap(ctx_target)
         if estimate_text_tokens(merged) > cap:
-            merged = self._summarize_batch([{"role": "user", "content": merged}], "") or merged
+            merged = self._summarize_batch([{"role": "user", "content": merged}]) or merged
         return CompactionResult(
             summary=merged or previous_summary, condensed=condensed, stranded=stranded
         )
 
-    def _summarize_batch(self, batch: list[ChatMessage], previous_summary: str) -> str:
-        """Fold one batch of dropped turns into *previous_summary*.
+    def _summarize_batch(self, batch: list[ChatMessage]) -> str:
+        """Fold one batch of dropped turns into notes.
+
+        Each batch is summarized on its own, with no carried-forward notes in
+        the prompt: summarize_history merges the per-batch notes instead, which
+        keeps summary depth at one rather than re-summarizing the summary once
+        per batch.
 
         An overflowing batch splits in half and each half folds on its own:
         batch sizing is estimate-based, and the cost of an estimate miss here
         is stranded turns, not a slow call. Depth is log2 of the batch.
 
-        Returns *previous_summary* unchanged on any other failure: older notes
-        beat dropping the turns on the floor.
+        Returns "" on any other failure, so the caller counts the batch as
+        stranded rather than reporting turns it has no notes for.
         """
         transcript = "\n".join(f"{m['role']}: {m['content']}" for m in batch)
-        previous = f"Earlier notes:\n{previous_summary}\n\n" if previous_summary.strip() else ""
         prompt = COMPACT_PROMPT.format(
             words=summary_word_budget(self._config.chat_n_ctx_target),
-            previous=previous,
             transcript=transcript,
         )
         try:
@@ -764,23 +768,23 @@ class Searcher:
             reasoning = split_reasoning(response.text).reasoning.strip()
             if reasoning:
                 return reasoning
-            log.warning("History compaction returned nothing; keeping the previous summary")
+            log.warning("History compaction returned nothing for this batch")
         except ProviderError as exc:
             # A single message too big for the window cannot split; it falls
             # through to the warning below.
             if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW and len(batch) > 1:
                 mid = len(batch) // 2
-                first = self._summarize_batch(batch[:mid], previous_summary)
-                second = self._summarize_batch(batch[mid:], "")
+                first = self._summarize_batch(batch[:mid])
+                second = self._summarize_batch(batch[mid:])
                 merged = "\n".join(part for part in (first, second) if part.strip())
                 if merged.strip():
                     return merged
-            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
+            log.warning("History compaction failed for this batch", exc_info=True)
         except Exception:
             # warning, not debug: the user is told turns were dropped, so the
             # reason must be in the log by default.
-            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
-        return previous_summary
+            log.warning("History compaction failed for this batch", exc_info=True)
+        return ""
 
     def _known_item_results(self, question: str) -> list[SearchChunk]:
         """Resolve a document named in *question* to its own chunks.

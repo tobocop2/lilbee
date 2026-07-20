@@ -1,4 +1,4 @@
-"""Constants for LLM-driven query expansion and history condensation."""
+"""Constants for LLM-driven query expansion, HyDE, and history condensation."""
 
 from __future__ import annotations
 
@@ -9,6 +9,11 @@ EXPANSION_PROMPT = (
 )
 
 EXPANSION_MAX_TOKENS = 200
+
+# HyDE writes one hypothetical answer passage to embed, which is a different
+# shape of output from a list of query variants. Same number today, but tuning
+# either one must not move the other.
+HYDE_MAX_TOKENS = 200
 
 CONDENSE_PROMPT = (
     "Rewrite the follow-up question as one standalone search query, resolving "

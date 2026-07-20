@@ -143,11 +143,11 @@ async def _build_entity_records(records: list[ChunkRecord], source_name: str) ->
     nlp = None
     if any(t.kind is ExtractorKind.SPACY for t in schema.types):
         from lilbee.retrieval.concepts import concepts_available
-        from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
+        from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
 
         if concepts_available():
             try:
-                nlp = _ensure_spacy_model()
+                nlp = load_spacy_pipeline()
             except ImportError:
                 log.warning("spaCy model unavailable; spacy-kind entity types skipped")
     provider = None

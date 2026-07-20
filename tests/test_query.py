@@ -1707,6 +1707,17 @@ class TestHydeSearch:
         get_services().searcher._hyde_search("explain X", top_k=5)
         mock_svc.embedder.embed_query.assert_called_once_with("hypothetical passage")
 
+    def test_spends_its_own_token_budget(self, mock_svc):
+        """A generated answer passage and a list of query variants are not the
+        same length of output, so they must not share one cap: retuning either
+        one through a shared constant silently retunes the other."""
+        from lilbee.retrieval.query.expansion import HYDE_MAX_TOKENS
+
+        mock_svc.provider.chat.return_value = _text_result("hypothetical passage")
+        mock_svc.store.search.return_value = []
+        get_services().searcher._hyde_search("explain X", top_k=5)
+        assert mock_svc.provider.chat.call_args.kwargs["options"]["num_predict"] == HYDE_MAX_TOKENS
+
     def test_returns_empty_on_error(self, mock_svc):
         mock_svc.provider.chat.side_effect = RuntimeError("fail")
         assert get_services().searcher._hyde_search("test", top_k=5) == []

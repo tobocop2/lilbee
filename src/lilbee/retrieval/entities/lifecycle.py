@@ -197,10 +197,10 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | Non
         from lilbee.retrieval.concepts import concepts_available
 
         if concepts_available():
-            from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
+            from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
 
             try:
-                nlp = _ensure_spacy_model()
+                nlp = load_spacy_pipeline()
             except ImportError:
                 log.warning("spaCy model unavailable; skipping spaCy entity types")
     provider = None
