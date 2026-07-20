@@ -2,9 +2,10 @@ name: Publish compat packages
 
 # Pins a tag's pre-Haswell Linux binary into the lilbee-compat channels: the
 # Homebrew lilbee-compat formula, the AUR lilbee-compat PKGBUILD, the Nix flake
-# compat entry, and a lilbee-compat snap. Runs manually after release.yml has
-# attached lilbee-compat-linux-x86_64. Separate from publish-packages.yml (like
-# publish-cuda-packages.yml) so the default channels are never touched.
+# compat entry, and a lilbee-compat snap. release-candidate.yml dispatches it
+# after attach-prerelease; workflow_dispatch remains for manual re-runs.
+# Separate from publish-packages.yml (like publish-cuda-packages.yml) so the
+# default channels are never touched.
 
 on:
   workflow_dispatch:
