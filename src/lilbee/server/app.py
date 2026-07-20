@@ -113,15 +113,18 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     inject_provider_keys()
 
     try:
-        get_services()  # pre-load all services (provider, embedder, etc.)
+        services = get_services()  # pre-load all services (provider, embedder, etc.)
         log.info("LLM provider pre-loaded")
     except Exception:
         log.warning("Failed to pre-load LLM provider", exc_info=True)
-    try:
-        get_services().embedder.validate_model()
-        log.info("Embedding model validated")
-    except Exception:
-        log.warning("Failed to validate embedding model", exc_info=True)
+    else:
+        if services.embedder.validate_model():
+            log.info("Embedding model validated")
+        else:
+            log.warning(
+                "Embedding model %s is unavailable; search and chat will run without embeddings",
+                cfg.embedding_model,
+            )
     try:
         yield
     finally:
