@@ -4336,3 +4336,57 @@ def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_pa
     assert p._ensure_fleet() is True
     assert stopped == [machine]  # cleared the recorded incumbent...
     assert built and built[0] == machine  # ...then built fresh in the same slot
+
+
+def test_shutdown_does_not_hang_on_a_wedged_build(monkeypatch) -> None:
+    """A wedged engine start must not make process exit unreachable.
+
+    Every _shut_down check runs after the build lock is taken, so a build that
+    never finishes used to hold shutdown forever rather than for a bounded time.
+    """
+    import threading
+
+    p = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    monkeypatch.setattr(prov_mod, "_SHUTDOWN_BUILD_LOCK_WAIT_S", 0.2)
+    released: list[str] = []
+    monkeypatch.setattr(p, "_release_engines", lambda **_kw: released.append("released"))
+
+    p._build_lock.acquire()  # stand in for a builder that never returns
+    try:
+        done = threading.Event()
+        threading.Thread(target=lambda: (p.shutdown(), done.set()), daemon=True).start()
+        assert done.wait(timeout=10), "shutdown blocked on the build lock"
+    finally:
+        p._build_lock.release()
+
+    assert released == ["released"]  # teardown ran rather than being skipped
+    assert p._shut_down is True  # and the latch is set for any queued thread
+
+
+def test_shutdown_latches_before_taking_the_build_lock() -> None:
+    """A queued warm thread can only bail early if the flag is already set."""
+    provider = _provider_with_clients({WorkerRole.CHAT: [_fake_client()]})
+    seen: list[bool] = []
+
+    class _SpyLock:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def acquire(self, *args, **kwargs):
+            # What a warm or reload thread would observe on getting the lock next.
+            seen.append(provider._shut_down)
+            return self._inner.acquire(*args, **kwargs)
+
+        def release(self) -> None:
+            self._inner.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_exc) -> None:
+            self.release()
+
+    provider._build_lock = _SpyLock(provider._build_lock)  # type: ignore[assignment]
+    provider.shutdown()
+    assert seen == [True]

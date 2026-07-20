@@ -73,6 +73,11 @@ from lilbee.runtime.engine_lock import (
 
 log = logging.getLogger(__name__)
 
+# How long a shutdown waits for an in-flight build to finish before tearing down
+# regardless. Generous against a legitimate llama-swap spawn (a 30 s boot budget)
+# and far short of any supervisor's patience for a process that will not exit.
+_SHUTDOWN_BUILD_LOCK_WAIT_S = 45.0
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
@@ -1237,17 +1242,35 @@ class FleetProvider:
         ``latch=False``: a config change restarts the shared engine for every
         user (they rediscover), and this provider rebuilds on next use.
         """
+        # Latched before the lock, not inside it: every _shut_down check runs after
+        # acquiring the build lock, so a warm or reload thread queued behind us can
+        # only bail early if the flag is already set when its turn comes.
+        if latch:
+            with self._lock:
+                self._shut_down = True
         # The build lock serializes shutdown against a concurrent reload/build:
         # both mutate self._swaps and the llama-swap processes, so an unserialized
         # loser would overwrite the winner's state and leak a live llama-swap.
-        with self._build_lock:
-            with self._lock:
-                if latch:
-                    self._shut_down = True
+        # Bounded, because a wedged engine start holds this lock and an unbounded
+        # wait would hang process exit outright. On timeout the teardown proceeds
+        # anyway: whatever the builder leaves behind is recorded in the engine
+        # dir's state files, so the next start's reap finds it by record, while a
+        # shutdown that never returns cannot be recovered from at all.
+        acquired = self._build_lock.acquire(timeout=_SHUTDOWN_BUILD_LOCK_WAIT_S)
+        if not acquired:
+            log.warning(
+                "Engine build still in progress after %.0fs; shutting down without "
+                "waiting for it. Leftovers are reaped from their records on the next start.",
+                _SHUTDOWN_BUILD_LOCK_WAIT_S,
+            )
+        try:
             # Terminal shutdown closes every client; a config-change teardown
             # retires them so an in-flight reader is never severed.
             self._drop_swap_refs(close_all=latch)
             self._release_engines(config_changed=not latch)
+        finally:
+            if acquired:
+                self._build_lock.release()
 
     def _release_engines(self, *, config_changed: bool = False) -> None:
         """Drop membership in every used engine dir; stop each engine we leave last.
