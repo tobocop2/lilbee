@@ -437,6 +437,64 @@ class TestEnsureScalarIndexes:
         with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
             assert _has_scalar_index(table, "source") is False
 
+    def test_indexes_chunk_concepts_source_column(self, store):
+        """The concept-boost path filters chunk_concepts by chunk_source per
+        result, so that column gets its own BTree index too."""
+        from lilbee.core.config import CHUNK_CONCEPTS_TABLE
+        from lilbee.data.store import ensure_table
+        from lilbee.data.store.lance_helpers import _has_scalar_index
+        from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
+
+        store.add_chunks(_make_records())
+        cc = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
+        cc.add([{"chunk_source": "doc.md", "chunk_index": 0, "concept": "alpha"}])
+        store.ensure_scalar_indexes()
+        assert _has_scalar_index(store.open_table(CHUNK_CONCEPTS_TABLE), "chunk_source")
+
+    def test_one_column_failure_does_not_skip_the_other(self, store):
+        """A BTree failure on 'source' must not skip the independent Bitmap on
+        'chunk_type' -- each column gets its own try."""
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        attempted = []
+
+        def _record(self, column, **kwargs):
+            attempted.append(column)
+            if column == "source":
+                raise RuntimeError("boom")
+
+        with mock.patch.object(type(table), "create_scalar_index", _record):
+            store.ensure_scalar_indexes()
+        assert attempted == ["source", "chunk_type"]
+
+    def test_scalar_index_failure_on_populated_table_warns(self, store, caplog):
+        """A create failure on a non-empty table warns (it silently loses the
+        prefilter speedup), unlike the benign empty-table case."""
+        import logging
+
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with (
+            mock.patch.object(type(table), "create_scalar_index", side_effect=RuntimeError("boom")),
+            caplog.at_level(logging.WARNING),
+        ):
+            store.ensure_scalar_indexes()
+        warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("Scalar index create failed" in r.message for r in warns)
+
+    def test_search_builds_scalar_indexes_on_a_serve_only_store(self, store, test_config):
+        """A store served without a fresh ingest never ran the ingest path that
+        builds scalar indexes, so the first search must build them once."""
+        store.add_chunks(_make_records())
+        assert store._scalar_ready is False  # ingest path did not run here
+        with mock.patch.object(
+            store, "ensure_scalar_indexes", wraps=store.ensure_scalar_indexes
+        ) as spy:
+            store.search([0.5] * test_config.embedding_dim, top_k=3)
+            store.search([0.5] * test_config.embedding_dim, top_k=3)
+        spy.assert_called_once()  # built once, then the guard skips it
+        assert store._scalar_ready is True
+
 
 class TestEnsureVectorIndex:
     """Small vaults stay on exact flat search; large ones get an ANN index."""
@@ -2657,8 +2715,12 @@ class TestTitleSearch:
         assert store.bm25_probe("zebra") == []
         assert store.bm25_probe("plain body words")
 
-    def test_title_index_failure_never_blocks_chunk_index(self, store, test_config):
-        """A failing title index leaves chunk FTS ready; the arm degrades to empty."""
+    def test_title_index_failure_never_blocks_chunk_index(self, store, test_config, caplog):
+        """A failing title index leaves chunk FTS ready; the arm degrades to
+        empty. Because the arm is enabled, the failure warns (not debug) so an
+        opted-in title arm that cannot build is not a silent no-op."""
+        import logging
+
         test_config.title_search = True
         store.add_chunks(_titled_records("a.pdf", 1, title="zebra manifesto"))
         table = store.open_table("chunks")
@@ -2669,10 +2731,15 @@ class TestTitleSearch:
                 raise RuntimeError("boom")
             return real_create(self, column, **kwargs)
 
-        with mock.patch.object(type(table), "create_fts_index", _fail_title):
+        with (
+            mock.patch.object(type(table), "create_fts_index", _fail_title),
+            caplog.at_level(logging.WARNING),
+        ):
             store.ensure_fts_index()
         assert store._fts_ready
         assert store._title_arm(store.open_table("chunks"), "zebra", 5, None) == []
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("title" in r.message.lower() for r in warnings)
 
 
 class TestSourceMetadata:

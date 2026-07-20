@@ -128,6 +128,12 @@ class TestEnvVarOverrides:
             assert c.data_root != Path()
             assert c.data_root != Path.cwd()
             assert str(c.data_root).endswith("lilbee")
+            # A raw blank string (direct construction / a string env source) hits
+            # the same fall-through instead of resolving to Path(".") = cwd.
+            c2 = Config(data_root="   ")
+            assert c2.data_root != Path()
+            assert c2.data_root != Path.cwd()
+            assert str(c2.data_root).endswith("lilbee")
 
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)
@@ -209,6 +215,24 @@ class TestEnvVarOverrides:
             cfg.chat_model = "   "
         with pytest.raises(ValidationError, match="embedding_model must not be blank"):
             cfg.embedding_model = "\t"
+
+    def test_fusion_config_fields_enforce_their_bounds(self):
+        """The new fusion/expansion knobs reject out-of-range values, so a bad
+        config surfaces at assignment instead of silently mis-weighting fusion."""
+        from pydantic import ValidationError
+
+        for field, bad in [
+            ("lexical_fusion_weight", 1.5),
+            ("lexical_fusion_weight", -0.1),
+            ("adaptive_fusion_margin", 2.5),
+            ("adaptive_fusion_margin", -0.1),
+            ("title_search_weight", 1.5),
+            ("title_search_weight", -0.1),
+            ("neighbor_expansion", -1),
+            ("neighbor_expansion", 101),  # upper bound guards against a token-count misread
+        ]:
+            with pytest.raises(ValidationError):
+                setattr(cfg, field, bad)
 
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):

@@ -219,6 +219,10 @@ class Store:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._fts_ready: bool = False
+        # Scalar indexes (source/chunk_type) are built at ingest, but a store
+        # served without a fresh ingest never ran that path, so search builds
+        # them lazily once. This guards the one-shot per process.
+        self._scalar_ready: bool = False
         self._db: lancedb.DBConnection | None = None
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
@@ -521,7 +525,13 @@ class Store:
             table.create_fts_index(_TITLE_COLUMN, replace=False, with_position=False)
             log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
         except Exception:
-            log.debug("Title FTS index create failed", exc_info=True)
+            # Only reached with title_search enabled, so a silent failure means
+            # the user's opted-in title arm quietly does nothing. Warn, don't hide.
+            log.warning(
+                "Title FTS index creation failed; the title-search arm will "
+                "contribute nothing until it can be built",
+                exc_info=True,
+            )
 
     def _rebuild_fts_positionless(self, table: lancedb.table.Table) -> None:
         """Replace positional FTS indexes with positionless ones. Caller holds the lock.
@@ -552,19 +562,43 @@ class Store:
         skipped; ``optimize()`` folds later rows into every index, this one too.
         """
         with self._write_lock():
-            table = self.open_table(CHUNKS_TABLE)
-            if table is None:
-                return
-            names = table.schema.names
+            self._ensure_scalar_index_on(
+                CHUNKS_TABLE, (("source", "BTREE"), ("chunk_type", "BITMAP"))
+            )
+            # The concept-boost path filters chunk_concepts by chunk_source once
+            # per search result (see ConceptGraph._chunk_concepts_from), so index
+            # it too or every boosted query full-scans the table.
+            self._ensure_scalar_index_on(CHUNK_CONCEPTS_TABLE, (("chunk_source", "BTREE"),))
+            self._scalar_ready = True
+
+    def _ensure_scalar_index_on(
+        self, table_name: str, columns: tuple[tuple[str, str], ...]
+    ) -> None:
+        """Build the given (column, index_type) scalar indexes on *table_name*.
+
+        Caller holds ``write_lock()``. Each column gets its own try so one
+        failure does not skip the rest; a failure on a populated table warns
+        (the prefilter speedup is silently lost) while an empty table's is debug.
+        """
+        table = self.open_table(table_name)
+        if table is None:
+            return
+        names = table.schema.names
+        fail_level = logging.WARNING if table.count_rows() > 0 else logging.DEBUG
+        for column, index_type in columns:
+            if column not in names or _has_scalar_index(table, column):
+                continue
             try:
-                if "source" in names and not _has_scalar_index(table, "source"):
-                    table.create_scalar_index("source", index_type="BTREE", replace=False)
-                    log.debug("Scalar (BTree) index created on 'source'")
-                if "chunk_type" in names and not _has_scalar_index(table, "chunk_type"):
-                    table.create_scalar_index("chunk_type", index_type="BITMAP", replace=False)
-                    log.debug("Scalar (Bitmap) index created on 'chunk_type'")
+                table.create_scalar_index(column, index_type=index_type, replace=False)
+                log.debug("Scalar (%s) index created on '%s.%s'", index_type, table_name, column)
             except Exception:
-                log.debug("Scalar index ensure failed (empty table?)", exc_info=True)
+                log.log(
+                    fail_level,
+                    "Scalar index create failed on '%s.%s'",
+                    table_name,
+                    column,
+                    exc_info=True,
+                )
 
     def ensure_vector_index(self, *, force: bool = False) -> bool:
         """Build or refresh the ANN vector index when the corpus is large enough.
@@ -617,6 +651,7 @@ class Store:
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
             self._fts_ready = False
+            self._scalar_ready = False
             if not records:
                 return 0
             _check_vector_dims(records, embedding_dim)
@@ -679,6 +714,11 @@ class Store:
         self.initialize_meta_if_legacy()
         self.canonicalize_meta_if_legacy()
         self._ensure_embedding_compat()
+
+        if not self._scalar_ready:
+            # A serve-only store never ran ingest, where scalar indexes are
+            # built; without them the source/chunk_type prefilters full-scan.
+            self.ensure_scalar_indexes()
 
         if query_text and not self._fts_ready:
             self.ensure_fts_index()
@@ -813,8 +853,8 @@ class Store:
         # Normalize against the configured weight budget, not this query's adapted
         # weights or whether its title arm happened to return rows, so scores stay
         # comparable across the sub-searches Searcher merges (query + variants).
-        weight_total = 1.0 + base_lexical_weight + (
-            base_title_weight if self._config.title_search else 0.0
+        weight_total = (
+            1.0 + base_lexical_weight + (base_title_weight if self._config.title_search else 0.0)
         )
         fused = fuse_arms(
             vector_rows,
@@ -1293,6 +1333,7 @@ class Store:
             embedding_dim = self._config.embedding_dim
             self._ensure_embedding_compat()
             self._fts_ready = False
+            self._scalar_ready = False
             all_records = [rec for it in items for rec in it.records]
             _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
@@ -1650,6 +1691,7 @@ class Store:
         """Release the database connection and reset state."""
         self._db = None
         self._fts_ready = False
+        self._scalar_ready = False
 
     def drop_all(self) -> None:
         """Drop every table except ``_memories`` -- used by rebuild.
@@ -1660,6 +1702,7 @@ class Store:
         """
         with self._write_lock():
             self._fts_ready = False
+            self._scalar_ready = False
             db = self.get_db()
             for name in _table_names(db):
                 if name == MEMORIES_TABLE:

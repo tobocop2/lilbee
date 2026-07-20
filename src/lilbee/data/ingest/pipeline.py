@@ -233,7 +233,9 @@ async def _produce_records(
             meta = extracted_meta[0]
 
     for record in records:
-        record["title"] = meta.title
+        # NULL (not "") for an absent title, so chunk rows match the migration
+        # and the _sources table, which both persist absence as NULL.
+        record["title"] = meta.title or None
     if meta_out is not None:
         meta_out.append(meta)
     return records

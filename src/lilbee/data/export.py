@@ -230,7 +230,7 @@ async def import_dataset(
         # imported chunks visible to the title search arm.
         title = derive_title(name)
         for chunk in chunks:
-            chunk["title"] = title
+            chunk["title"] = title or None
         # One locked transaction (cleanup + chunks + page texts + source row) so a
         # failure can't leave the source with its old rows deleted and no new ones;
         # the embedding-dim check inside runs before the cleanup delete.

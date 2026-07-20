@@ -283,7 +283,11 @@ class Config(BaseSettings):
     # Adjacent chunks pulled from the same source on each side of every
     # selected chunk and merged into one contiguous passage, so a hit that
     # lands mid-argument regains the text before and after it. 0 disables.
-    neighbor_expansion: int = ConfigField(default=0, ge=0, writable=True)
+    # Capped: it is a small chunk radius (useful values are single digits), and
+    # the merged text is token-budget-bounded anyway, so a large value only
+    # inflates per-query fetch cost -- and a misread as a token count (e.g.
+    # 50000) would build a megabyte-long IN-predicate per source.
+    neighbor_expansion: int = ConfigField(default=0, ge=0, le=100, writable=True)
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
     hyde: bool = ConfigField(default=False, writable=True)

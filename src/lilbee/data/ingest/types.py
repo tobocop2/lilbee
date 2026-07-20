@@ -73,8 +73,9 @@ class ChunkRecord(TypedDict):
     chunk: str
     chunk_index: int
     vector: list[float]
-    # Stamped once per document by the pipeline (see _produce_records).
-    title: NotRequired[str]
+    # Stamped once per document by the pipeline (see _produce_records); None
+    # when the title is empty, so chunk rows persist NULL like the _sources table.
+    title: NotRequired[str | None]
 
 
 class SyncResult(BaseModel):
