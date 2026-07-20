@@ -278,3 +278,25 @@ class TestSessionsDisabled:
         client.delete(f"/api/sessions/{session_id}")
         cfg.sessions_enabled = True
         assert len(store.get(session_id).messages) == before
+
+
+class TestSessionVanishesMidRequest:
+    """Every mutating handler mutates and then re-reads the session to build
+    its response. The TUI and HTTP surfaces share one store, so a session
+    deleted between those two calls made the trailing read raise an unguarded
+    SessionNotFoundError that escaped as a 500 rather than the promised 404."""
+
+    def test_a_delete_between_the_mutation_and_the_read_is_a_404(self, client, store):
+        session_id = store.create(model_ref=None, scope=None, origin=SessionOrigin.HTTP)
+        real_add = store.add_message
+
+        def add_then_vanish(*args, **kwargs):
+            real_add(*args, **kwargs)
+            store.delete(session_id)
+
+        store.add_message = add_then_vanish
+        resp = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "hi"},
+        )
+        assert resp.status_code == 404

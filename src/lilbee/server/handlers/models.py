@@ -505,14 +505,16 @@ async def models_catalog(
     ]
     # Hosted rows (frontier + ollama) are selectable and download-free, so
     # they're shown on the first page only (mirrors the featured first-page
-    # convention), skipped for featured-only and installed=False filters, and
-    # counted toward ``total``.
+    # convention) and skipped for featured-only and installed=False filters.
+    # They are an unpaginated overlay, so they stay out of ``total``: adding
+    # them made page 1 report a larger total than page 2 of the same listing,
+    # and total/limit/offset/has_more now all describe the same paginated set.
     hosted_rows: list[CatalogEntryResponse] = []
     if offset == 0 and not featured and installed is not False:
         hosted_rows = await _collect_hosted_entries(task=parsed_task, search=search)
 
     return ModelsCatalogResponse(
-        total=result.total + len(hosted_rows),
+        total=result.total,
         limit=result.limit,
         offset=result.offset,
         has_more=result.has_more,

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import tomli_w
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
@@ -54,39 +55,6 @@ def _config_write_lock(data_root: Path) -> Generator[None, None, None]:
             flock.release()
 
 
-# The escapes TOML gives a short name to. Everything else in the C0 range
-# (plus U+007F) has to go out as \uXXXX.
-_TOML_NAMED_ESCAPES = {
-    "\\": "\\\\",
-    '"': '\\"',
-    "\b": "\\b",
-    "\f": "\\f",
-    "\n": "\\n",
-    "\r": "\\r",
-    "\t": "\\t",
-}
-
-
-def _escape_toml_string(s: str) -> str:
-    """Escape a string for embedding in a TOML double-quoted value.
-
-    TOML forbids every control character from appearing raw in a basic string,
-    and the reader responds to a parse failure by discarding the whole file, so
-    a single stray ESC or NUL in one setting value would silently wipe every
-    other persisted setting on the next start.
-    """
-    out: list[str] = []
-    for char in s:
-        named = _TOML_NAMED_ESCAPES.get(char)
-        if named is not None:
-            out.append(named)
-        elif char < "\x20" or char == "\x7f":
-            out.append(f"\\u{ord(char):04X}")
-        else:
-            out.append(char)
-    return "".join(out)
-
-
 def load(data_root: Path) -> dict[str, Any]:
     """Read all settings from config.toml. Returns {} if file is missing.
 
@@ -101,22 +69,25 @@ def load(data_root: Path) -> dict[str, Any]:
         return dict(tomllib.load(f))
 
 
-def _render_toml_value(value: Any) -> str:
-    """Render a scalar as TOML: booleans and numbers bare, everything else quoted."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return str(value)
-    return f'"{_escape_toml_string(str(value))}"'
-
-
 def save(data_root: Path, settings: dict[str, Any]) -> None:
-    """Write settings dict as simple TOML key-value pairs."""
+    """Write *settings* to config.toml.
+
+    ``tomli_w`` is the write half of the stdlib ``tomllib`` used by ``load``.
+    The emitter this replaced escaped strings by hand and stringified anything
+    that was not a bool or a number, so a list value was persisted as its
+    quoted repr and read back as text. A control character it escaped wrongly
+    was worse still: the reader discards the whole file on a parse error, so
+    one bad value silently wiped every other setting.
+
+    A ``None`` is dropped rather than written. TOML has no null, and the old
+    emitter wrote the literal string "None", which then read back as a set
+    value instead of an absent one.
+    """
     path = _config_path(data_root)
-    lines = [f"{k} = {_render_toml_value(v)}\n" for k, v in sorted(settings.items())]
+    present = {k: v for k, v in sorted(settings.items()) if v is not None}
     # config.toml can hold provider API keys, so it gets the same owner-only
     # treatment as the session token rather than a post-hoc chmod.
-    write_private_text(path, "".join(lines))
+    write_private_text(path, tomli_w.dumps(present))
 
 
 def get(data_root: Path, key: str) -> str | None:

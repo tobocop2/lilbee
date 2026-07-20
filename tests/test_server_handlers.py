@@ -2300,7 +2300,10 @@ class TestModelsCatalog:
         frontier = [m for m in resp.models if m.source == ModelSource.FRONTIER]
         assert frontier and frontier[0].display_name == "gemini-2.0-flash"
         assert frontier[0].key_status == "ready"
-        assert resp.total == 1  # 0 native + 1 hosted
+        # total describes the paginated native listing only. Counting the
+        # first-page-only hosted overlay into it made page 1 report a larger
+        # total than page 2 of the same listing.
+        assert resp.total == 0
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_hosted_skipped_when_featured_filter(

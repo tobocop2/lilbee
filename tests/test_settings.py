@@ -189,18 +189,27 @@ class TestTomlEscaping:
         settings.set_value(tmp_path, "reranker_prompt", "rank\x1bthese")
         assert settings.load(tmp_path) == {"model": "qwen3:8b", "reranker_prompt": "rank\x1bthese"}
 
-    def test_escape_toml_string_function(self):
-        from lilbee.core.settings import _escape_toml_string
+    @pytest.mark.parametrize(
+        "value",
+        ['say "hi"', r"C:\path", "a\nb", "a\tb", "normal", "", "a\x1bb", "a\x00b", "a\x7fb"],
+    )
+    def test_a_value_survives_the_round_trip_verbatim(self, tmp_path, value):
+        """Escaping is only correct if the reader gives the string back unchanged."""
+        settings.set_value(tmp_path, "reranker_prompt", value)
+        assert settings.load(tmp_path)["reranker_prompt"] == value
 
-        assert _escape_toml_string('say "hi"') == r"say \"hi\""
-        assert _escape_toml_string(r"C:\path") == r"C:\\path"
-        assert _escape_toml_string("a\nb") == r"a\nb"
-        assert _escape_toml_string("a\tb") == r"a\tb"
-        assert _escape_toml_string("normal") == "normal"
-        assert _escape_toml_string("") == ""
-        assert _escape_toml_string("a\x1bb") == r"a\u001Bb"
-        assert _escape_toml_string("a\x00b") == r"a\u0000b"
-        assert _escape_toml_string("a\x7fb") == r"a\u007Fb"
+    def test_a_list_value_round_trips_as_a_list(self, tmp_path):
+        """The hand-rolled emitter stringified anything non-scalar, so a list
+        was persisted as the quoted repr "['a', 'b']" and read back as text."""
+        settings.set_value(tmp_path, "exclude", ["a", "b"])
+        assert settings.load(tmp_path)["exclude"] == ["a", "b"]
+
+    def test_a_none_value_is_dropped_rather_than_written_as_text(self, tmp_path):
+        """It used to land as the string "None", which then read back as a
+        truthy setting rather than an absent one."""
+        settings.set_value(tmp_path, "model", "qwen3:8b")
+        settings.set_value(tmp_path, "reranker_prompt", None)
+        assert settings.load(tmp_path) == {"model": "qwen3:8b"}
 
 
 class TestRerankerConfig:

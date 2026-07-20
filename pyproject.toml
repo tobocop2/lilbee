@@ -57,6 +57,8 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
     "numpy",
+    # The read side is stdlib tomllib; this is its write half.
+    "tomli-w>=1.0",
 ]
 
 [project.optional-dependencies]

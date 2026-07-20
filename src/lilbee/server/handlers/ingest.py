@@ -104,6 +104,15 @@ async def _run_add(
         if sse.cancel.is_set():
             return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
 
+        if not copy_result.copied and not copy_result.skipped:
+            # Every requested path was missing, so nothing reached the corpus.
+            # sync() is a whole-vault discovery/hash/embed pass holding the
+            # ingest lock, which on a large vault is minutes of work in
+            # response to a request that changed nothing. A *skipped* file is
+            # not the same case: it is already in the documents dir but may
+            # never have been indexed, so that path still needs the sync.
+            return AddSummary(copied=[], skipped=[], errors=errors)
+
         with temporary_ocr_config(enable_ocr, ocr_timeout):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
 
