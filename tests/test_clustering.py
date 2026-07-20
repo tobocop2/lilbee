@@ -516,10 +516,29 @@ class TestClustererFacade:
 
         cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: False)
+        clusterer = Clusterer(cfg, MagicMock())
         with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.clustering"):
-            clusterer = Clusterer(cfg, MagicMock())
-        assert isinstance(clusterer.backend, EmbeddingClusterer)
+            backend = clusterer.backend
+        assert isinstance(backend, EmbeddingClusterer)
         assert any("falling back" in rec.message.lower() for rec in caplog.records)
+
+    def test_backend_selection_is_live_not_pinned_at_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The services container caches the facade for the process lifetime,
+        so a concept graph built later in the same process must be picked up
+        without a restart."""
+        from lilbee.retrieval.concepts import ConceptGraphClusterer
+
+        cfg.wiki_clusterer = ClustererBackend.CONCEPTS
+        graph_built = {"value": False}
+        monkeypatch.setattr(
+            ConceptGraphClusterer, "available", lambda self: graph_built["value"]
+        )
+        clusterer = Clusterer(cfg, MagicMock())
+        assert isinstance(clusterer.backend, EmbeddingClusterer)
+        graph_built["value"] = True
+        assert isinstance(clusterer.backend, ConceptGraphClusterer)
 
     def test_facade_forwards_available_and_get_clusters(self, monkeypatch: pytest.MonkeyPatch):
         # Swap _select_backend out for a stub backend so the test only
