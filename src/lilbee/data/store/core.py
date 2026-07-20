@@ -182,6 +182,12 @@ _SOURCE_STAT_BATCH_ROWS = 2000
 # bounds the decoded-text working set while the scan stays columnar.
 _TERM_SCAN_BATCH_ROWS = 20_000
 
+# The title arm collapses each matched document to one row, so it over-fetches
+# to gather enough distinct documents before deduping. Bounded so a title that
+# hits a huge document can't scan the whole corpus.
+_TITLE_FETCH_FACTOR = 20
+_TITLE_MIN_FETCH = 200
+
 
 def _ann_nprobes(row_count: int) -> int:
     """Partitions to probe: a fixed fraction of the IVF partition count (~sqrt(N)), floored."""
@@ -792,7 +798,14 @@ class Store:
         limit: int,
         chunk_type: ChunkType | None,
     ) -> list[SearchChunk]:
-        """BM25-arm candidates over the document title column.
+        """One BM25 row per document whose title matches, in title-relevance order.
+
+        Every chunk of a document carries the same title, so all of its chunks
+        tie on BM25 and a plain ``limit`` would return an arbitrary tie-ordered
+        subset of a single document. Instead this over-fetches, collapses each
+        source to one deterministic representative (its first chunk), and returns
+        the top *limit* documents ordered by title score -- so "a query naming a
+        document by title surfaces its chunks" holds as one stable row per doc.
 
         Empty when the store predates the title column or its FTS index (old
         indexes keep working) and empty on any query-time failure: the optional
@@ -802,10 +815,23 @@ class Store:
         if not _has_fts_index(table, _TITLE_COLUMN):
             return []
         try:
-            return _lexical_rows(table, query_text, limit, chunk_type, column=_TITLE_COLUMN)
+            rows = _lexical_rows(
+                table,
+                query_text,
+                max(limit * _TITLE_FETCH_FACTOR, _TITLE_MIN_FETCH),
+                chunk_type,
+                column=_TITLE_COLUMN,
+            )
         except Exception:
             log.debug("Title arm search failed; contributing no title rows", exc_info=True)
             return []
+        best: dict[str, SearchChunk] = {}
+        for row in rows:
+            seen = best.get(row.source)
+            if seen is None or row.chunk_index < seen.chunk_index:
+                best[row.source] = row
+        ordered = sorted(best.values(), key=lambda r: (-(r.bm25_score or 0.0), r.source))
+        return ordered[:limit]
 
     def _hybrid_search(
         self,

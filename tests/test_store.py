@@ -2589,7 +2589,9 @@ class TestTitleSearch:
 
     def test_title_arm_surfaces_title_only_match(self, store, test_config):
         """A term that lives only in a document's title reaches hybrid results
-        with lexical support (bm25_score) when title_search is on."""
+        with lexical support (bm25_score) when title_search is on. The title arm
+        surfaces one representative chunk per matched document, so the document
+        appears with lexical support even though not every chunk carries it."""
         test_config.title_search = True
         store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto", base=0.9))
         store.add_chunks(_titled_records("b.pdf", 2, title="meeting notes", base=0.1))
@@ -2598,7 +2600,33 @@ class TestTitleSearch:
         results = store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
         matched = [r for r in results if r.source == "a.pdf"]
         assert matched
-        assert all(r.bm25_score is not None for r in matched)
+        assert any(r.bm25_score is not None for r in matched)
+
+    def test_title_arm_collapses_to_one_deterministic_row_per_document(self, store, test_config):
+        """Every chunk of a document shares its title, so all tie on BM25. The
+        arm must collapse each matched document to one deterministic row (its
+        first chunk), not return an arbitrary tie-ordered subset of that doc."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 5, title="zebra manifesto"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        rows = store._title_arm(table, "zebra", 5, None)
+        assert [(r.source, r.chunk_index) for r in rows] == [("a.pdf", 0)]
+        # Deterministic across repeated calls (no implementation-defined tie order).
+        again = store._title_arm(table, "zebra", 5, None)
+        assert [(r.source, r.chunk_index) for r in again] == [("a.pdf", 0)]
+
+    def test_title_arm_one_row_per_matched_document(self, store, test_config):
+        """Two matched documents surface one representative row each, not an
+        arbitrary flood of one document's chunks."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("zebra.pdf", 4, title="zebra"))
+        store.add_chunks(_titled_records("safari.pdf", 4, title="zebra safari"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        rows = store._title_arm(table, "zebra", 5, None)
+        assert sorted(r.source for r in rows) == ["safari.pdf", "zebra.pdf"]
+        assert all(r.chunk_index == 0 for r in rows)
 
     def test_title_search_weight_reaches_fusion(self, store, test_config):
         """A non-default title_search_weight is threaded into fuse_arms, not
