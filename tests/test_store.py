@@ -1481,31 +1481,17 @@ class TestChunkTypeField:
         results = store.get_chunks_by_source("doc0.md")
         assert results[0].chunk_type == "raw"
 
-    def test_get_chunks_by_source_fallback(self, store):
-        """Fallback path when table.search() raises (e.g. incompatible FTS builder)."""
-        from unittest.mock import patch
+    def test_get_chunks_by_source_filters_with_fts_index_built(self, store):
+        """The filtered query still selects rows once the chunks table is FTS-indexed.
 
-        records = _make_records(n=2)
-        store.add_chunks(records)
-
-        # Make table.search() raise to trigger the Arrow fallback
-        original_open = store.open_table
-
-        def _broken_open(name):
-            table = original_open(name)
-            if table is None:
-                return None
-
-            def _raise_search(*args, **kwargs):
-                raise AttributeError("LanceFtsQueryBuilder has no attribute 'metric'")
-
-            table.search = _raise_search
-            return table
-
-        with patch.object(store, "open_table", side_effect=_broken_open):
-            results = store.get_chunks_by_source("doc0.md")
-        assert len(results) == 1
-        assert results[0].source == "doc0.md"
+        Both chunk-fetch paths rely on the database doing the filtering, so an
+        FTS-indexed table that rejected ``.where()`` would silently regress them
+        into whole-table reads. Pin the behavior the fetch paths depend on.
+        """
+        store.add_chunks(_make_records(n=3))
+        store.ensure_fts_index()
+        results = store.get_chunks_by_source("doc1.md")
+        assert [r.source for r in results] == ["doc1.md"]
 
 
 def _one_source_records(source: str, n: int) -> list[dict]:
@@ -1540,26 +1526,13 @@ class TestGetChunksByIndices:
     def test_no_table_returns_empty(self, store):
         assert store.get_chunks_by_indices("a.md", [0]) == []
 
-    def test_fallback_when_search_raises(self, store):
-        """Same Arrow fallback as get_chunks_by_source when table.search() raises."""
-        from unittest.mock import patch
-
-        store.add_chunks(_one_source_records("a.md", 3))
-
-        original_open = store.open_table
-
-        def _broken_open(name):
-            table = original_open(name)
-
-            def _raise_search(*args, **kwargs):
-                raise AttributeError("LanceFtsQueryBuilder has no attribute 'metric'")
-
-            table.search = _raise_search
-            return table
-
-        with patch.object(store, "open_table", side_effect=_broken_open):
-            results = store.get_chunks_by_indices("a.md", [0, 2])
+    def test_filters_with_fts_index_built(self, store):
+        """The compound source+index predicate survives an FTS-indexed table."""
+        store.add_chunks(_one_source_records("a.md", 3) + _one_source_records("b.md", 3))
+        store.ensure_fts_index()
+        results = store.get_chunks_by_indices("a.md", [0, 2])
         assert [r.chunk_index for r in results] == [0, 2]
+        assert {r.source for r in results} == {"a.md"}
 
     def test_search_chunk_default_is_raw(self):
         chunk = SearchChunk(

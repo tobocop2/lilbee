@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
-import pyarrow.compute as pc
 
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
@@ -1098,29 +1097,28 @@ class Store:
         return table.count_rows() if table is not None else 0
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
-        """Return every chunk whose ``source`` equals *source*."""
+        """Return every chunk whose ``source`` equals *source*.
+
+        The database does the filtering, so only the matching rows are read.
+        A query failure raises rather than falling back to a whole-table scan:
+        a document's chunks are a bounded read, and the scan that would rescue
+        it costs the entire index, vectors included, in memory.
+        """
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
         escaped = escape_sql_string(source)
-        try:
-            rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
-        except Exception:
-            # FTS-enabled tables return a query builder that cannot
-            # handle .where() on arbitrary columns; fall through to a
-            # pyarrow.compute filter on the Arrow table so the source
-            # match runs in C++ without materializing non-matching rows.
-            log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
-            arrow_tbl = table.to_arrow()
-            filtered = arrow_tbl.filter(pc.equal(arrow_tbl["source"], source))
-            rows = filtered.to_pylist()
+        rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
         return [SearchChunk(**r) for r in rows]
 
     def get_chunks_by_indices(self, source: str, indices: Sequence[int]) -> list[SearchChunk]:
         """Return *source*'s chunks whose ``chunk_index`` is in *indices*.
 
         Rows come back in ``chunk_index`` order; indices past either end of
-        the document are simply absent from the result.
+        the document are simply absent from the result. Filtering happens in
+        the database for the same reason as :meth:`get_chunks_by_source`:
+        neighbor expansion runs once per hit source per query, so a
+        whole-table rescue would spike memory on the hottest path there is.
         """
         if not indices:
             return []
@@ -1129,19 +1127,8 @@ class Store:
             return []
         escaped = escape_sql_string(source)
         wanted = ", ".join(str(int(i)) for i in indices)
-        try:
-            predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
-            rows = table.search().where(predicate).limit(None).to_list()
-        except Exception:
-            # Same FTS-enabled query-builder limitation as get_chunks_by_source;
-            # fall through to a pyarrow.compute filter on the Arrow table.
-            log.debug("get_chunks_by_indices search() failed, using Arrow fallback", exc_info=True)
-            arrow_tbl = table.to_arrow()
-            mask = pc.and_(
-                pc.equal(arrow_tbl["source"], source),
-                pc.is_in(arrow_tbl["chunk_index"], value_set=pa.array(list(indices), pa.int32())),
-            )
-            rows = arrow_tbl.filter(mask).to_pylist()
+        predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
+        rows = table.search().where(predicate).limit(None).to_list()
         return sorted((SearchChunk(**r) for r in rows), key=lambda c: c.chunk_index)
 
     def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
