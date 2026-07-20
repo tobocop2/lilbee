@@ -323,3 +323,21 @@ def test_gpu_stats_stream_probes_off_the_event_loop(monkeypatch):
         r = client.get("/api/gpus/stream")
         assert r.status_code == 200
     assert probe_tid and loop_tid and probe_tid[0] != loop_tid[0]
+
+
+def test_probe_oserror_is_service_unavailable_not_unprocessable(monkeypatch):
+    """A missing vendor tool is a host fault, not a bad spec.
+
+    FileNotFoundError (no nvidia-smi on PATH) and PermissionError (device node)
+    were bundled with PlacementError into a 422, which sends the caller looking
+    for a mistake in JSON that is fine.
+    """
+
+    async def _boom(_spec):
+        raise FileNotFoundError(2, "No such file or directory", "nvidia-smi")
+
+    monkeypatch.setattr(handlers, "placement_preview", _boom)
+    with create_test_client([placement_preview_route]) as client:
+        r = client.post("/api/placement/preview", json={"spec": None})
+    assert r.status_code == 503
+    assert "nvidia-smi" in r.text or "probe" in r.text.lower()

@@ -51,7 +51,12 @@ def sse_error(
     return sse_event(SseEvent.ERROR, payload)
 
 
-_OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "llama_context")
+# Phrases that describe an allocation failure. "llama_context" alone used to be
+# here, but that is the prefix llama.cpp stamps on every context-subsystem
+# diagnostic, so n_ctx-over-training-context and KV-cache rejections were all
+# reported as "model too large", pointing at a smaller model when the fix is a
+# config change.
+_OOM_MARKERS = ("failed to load", "free ram", "try a smaller model", "failed to allocate")
 _NOT_INSTALLED_MARKERS = ("is not installed", "is not available", "pull it first")
 
 

@@ -497,11 +497,16 @@ class TestEnableOcrConfig:
             c = Config()
             assert c.enable_ocr is True
 
-    def test_garbage_value_coerces_via_bool(self) -> None:
-        """Unrecognized string falls through parse_bool and coerces via ``bool()``."""
+    def test_garbage_value_falls_back_to_auto(self) -> None:
+        """An unparseable value must not turn OCR on.
+
+        This used to fall through to ``bool()``, and ``bool("maybe")`` is True,
+        so a typo silently enabled an expensive pass. The sibling bool
+        validators warn and take their default; this one now does too.
+        """
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
             c = Config()
-            assert c.enable_ocr is True  # bool("maybe") is True
+            assert c.enable_ocr is None
 
     def test_whitespace_only_means_auto(self) -> None:
         """Whitespace-only strings hit the auto/none branch and return None."""
@@ -1768,3 +1773,46 @@ class TestActiveConfigScope:
         with config_scope(scoped):
             assert active_config() is scoped
         assert active_config() is cfg
+
+
+class TestBoolVocabularyMatchesPydantic:
+    """parse_bool must accept what pydantic accepts for the same settings object.
+
+    Every other bool field on Config is coerced by pydantic, which takes
+    on/off/y/n/t/f as well. The narrower hand-rolled vocabulary made the same
+    env spelling mean different things on different fields, and on enable_ocr
+    it inverted: the ValueError fell through to bool("off"), which is True.
+    """
+
+    @pytest.mark.parametrize("raw", ["on", "y", "t", "true", "1", "yes", "ON", " on "])
+    def test_truthy_spellings(self, raw):
+        from lilbee.core.config.parsing import parse_bool
+
+        assert parse_bool(raw) is True
+
+    @pytest.mark.parametrize("raw", ["off", "n", "f", "false", "0", "no", "OFF", " off "])
+    def test_falsy_spellings(self, raw):
+        from lilbee.core.config.parsing import parse_bool
+
+        assert parse_bool(raw) is False
+
+    def test_unknown_spelling_still_raises(self):
+        from lilbee.core.config.parsing import parse_bool
+
+        with pytest.raises(ValueError, match="Invalid boolean"):
+            parse_bool("maybe")
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"), [("off", False), ("on", True), ("n", False), ("y", True)]
+    )
+    def test_enable_ocr_agrees_with_pydantic(self, raw, expected):
+        """enable_ocr routed through parse_bool; 'off' used to come back True."""
+        from lilbee.core.config.model import Config
+
+        assert Config(enable_ocr=raw).enable_ocr is expected
+
+    def test_enable_ocr_unknown_value_falls_back_to_auto(self):
+        """An unparseable value must not silently become True via bool()."""
+        from lilbee.core.config.model import Config
+
+        assert Config(enable_ocr="maybe").enable_ocr is None

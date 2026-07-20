@@ -3816,6 +3816,24 @@ class TestClassifyLoadError:
         assert code == SseErrorCode.MODEL_TOO_LARGE
         assert user_message == "Model too large for available RAM"
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "llama_context: n_ctx_per_seq (8192) > n_ctx_train (4096)",
+            "llama_context: KV cache type not supported",
+            "llama_context: invalid sequence configuration",
+        ],
+    )
+    def test_context_diagnostics_are_not_reported_as_out_of_memory(self, message):
+        """llama_context prefixes a whole family of context diagnostics.
+
+        Matching the bare prefix told users to pick a smaller model when the
+        real fix is a config change, and hid the message that said so.
+        """
+        code, text = handlers.classify_load_error(message)
+        assert code is None
+        assert "too large" not in text.lower()
+
     def test_llama_context_signature_is_classified(self):
         code, _ = handlers.classify_load_error("llama_context: failed to allocate")
         assert code == SseErrorCode.MODEL_TOO_LARGE
