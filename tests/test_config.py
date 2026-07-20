@@ -137,6 +137,21 @@ class TestEnvVarOverrides:
         assert through_link.data_dir == direct.data_dir
         assert through_link.lancedb_dir == direct.lancedb_dir
 
+    def test_padded_data_env_finds_the_same_dir_for_root_and_config(
+        self, tmp_path, overlay_reads_config_toml
+    ):
+        """A whitespace-padded LILBEE_DATA must not split the root from its config.
+
+        The root resolution and the config.toml lookup read the same env var;
+        if only one of them strips, a padded value points them at two
+        different directories and the settings file is silently not found.
+        """
+        (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
+            c = Config()
+        assert c.data_root == tmp_path
+        assert c.top_k == 7
+
     def test_relative_data_root_resolves_absolute(self, tmp_path, monkeypatch):
         """A relative root must not re-key on the process working directory."""
         (tmp_path / "kb").mkdir()

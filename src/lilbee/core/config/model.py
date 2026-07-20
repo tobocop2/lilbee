@@ -1070,9 +1070,12 @@ class Config(BaseSettings):
     ) -> tuple[Any, ...]:
         from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
 
-        data_env = os.environ.get("LILBEE_DATA", "")
+        # .strip() to match _resolve_defaults: the two must read the env var
+        # identically, or a padded value sends the root and its config.toml to
+        # different directories.
+        data_env = os.environ.get("LILBEE_DATA", "").strip()
         if data_env:
-            toml_dir: Path | str = data_env
+            toml_dir = Path(data_env)
         else:
             local = find_local_root()
             toml_dir = local if local else default_data_dir()
