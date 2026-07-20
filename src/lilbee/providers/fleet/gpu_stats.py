@@ -123,3 +123,8 @@ def intel_util_hint(
         if stat is not None and stat.utilization_pct is None:
             return _detect_intel_util_hint()
     return None
+
+
+def probe_intel_util_hint(devices: Sequence[DeviceLike]) -> IntelUtilHint | None:
+    """Probe live stats and evaluate the Intel util hint in one call."""
+    return intel_util_hint(devices, probe_gpu_stats(devices))

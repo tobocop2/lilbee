@@ -4672,13 +4672,17 @@ class TestPlacementHandlers:
         assert resp.notice is None
 
     async def test_placement_includes_intel_notice_when_hint_fires(self):
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
         view = _stub_placement_view()
+        hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
         with (
             patch("lilbee.app.placement.get_placement", return_value=view),
-            patch("lilbee.app.placement.intel_util_notice", return_value="INSTALL HINT"),
+            patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
         ):
             resp = await handlers.placement()
-        assert resp.notice == "INSTALL HINT"
+        assert resp.notice is not None
+        assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in resp.notice
 
     async def test_placement_surfaces_co_tenant_roles(self):
         # Co-tenants are placed but not co-resident; a surface that omits them
@@ -4745,6 +4749,7 @@ class TestPlacementHandlers:
 
     async def test_gpus_includes_intel_notice_when_hint_fires(self):
         from lilbee.app.placement import GpuInfo, PlacementView
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 
         gpu = GpuInfo(
             index=0,
@@ -4755,12 +4760,14 @@ class TestPlacementHandlers:
             free_bytes=200,
         )
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
+        hint = IntelUtilHint(IntelHintKind.INSTALL, None)
         with (
             patch("lilbee.app.placement.get_placement", return_value=view),
-            patch("lilbee.app.placement.intel_util_notice", return_value="INSTALL HINT"),
+            patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
         ):
             result = await handlers.gpus()
-        assert result.notice == "INSTALL HINT"
+        assert result.notice is not None
+        assert "igt-gpu-tools" in result.notice
 
     async def test_gpu_stats_stream_emits_live_snapshots(self):
         from lilbee.app.placement import GpuInfo

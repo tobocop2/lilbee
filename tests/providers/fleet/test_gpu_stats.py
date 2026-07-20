@@ -16,7 +16,12 @@ from lilbee.providers.fleet.devices import MIB, FleetDevice
 from lilbee.providers.fleet.gpu_backends import util_backend_name
 from lilbee.providers.fleet.gpu_backends.base import UtilSample
 from lilbee.providers.fleet.gpu_backends.intel import IntelHintKind, IntelUtilHint
-from lilbee.providers.fleet.gpu_stats import GpuStat, intel_util_hint, probe_gpu_stats
+from lilbee.providers.fleet.gpu_stats import (
+    GpuStat,
+    intel_util_hint,
+    probe_gpu_stats,
+    probe_intel_util_hint,
+)
 
 _CUDA = (
     FleetDevice("CUDA", 0, "NVIDIA A40", 48 * 1024 * MIB, 47 * 1024 * MIB),
@@ -283,3 +288,21 @@ def test_intel_util_hint_skips_index_absent_from_stats(monkeypatch: pytest.Monke
     _hint(monkeypatch, _GRANT_HINT)
     dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
     assert intel_util_hint([dev], {}) is None
+
+
+# ---------------------------------------------------------------------------
+# probe_intel_util_hint (probe + gate in one call, for the JSON surfaces)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_intel_util_hint_composes_probe_and_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, _GRANT_HINT)
+    monkeypatch.setattr(stats_mod, "probe_gpu_stats", lambda devices: {0: GpuStat(0, None, 0, 0)})
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert probe_intel_util_hint([dev]) == _GRANT_HINT
+
+
+def test_probe_intel_util_hint_silent_when_util_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(stats_mod, "probe_gpu_stats", lambda devices: {0: GpuStat(0, 50, 0, 0)})
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert probe_intel_util_hint([dev]) is None

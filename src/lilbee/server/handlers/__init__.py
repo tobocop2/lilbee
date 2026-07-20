@@ -82,7 +82,7 @@ from lilbee.server.models import (
 )
 
 if TYPE_CHECKING:
-    from lilbee.app.placement import PlacementView
+    from lilbee.app.placement import GpuInfo, PlacementView
     from lilbee.providers.base import LLMProvider
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
@@ -233,21 +233,28 @@ async def placement_clear() -> PlacementResponse:
 
 def _placement_response(view: PlacementView) -> PlacementResponse:
     """Serialize a placement view with the host-level Intel util notice attached."""
-    from lilbee.app.placement import intel_util_notice
-
     resp = PlacementResponse.from_view(view)
-    resp.notice = intel_util_notice(view.gpus)
+    resp.notice = _intel_notice_text(view.gpus)
     return resp
+
+
+def _intel_notice_text(devices: Sequence[GpuInfo]) -> str | None:
+    """Formatted Intel util fix for the JSON surfaces, or None when util reads fine."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
+
+    hint = probe_intel_util_hint(devices)
+    return msg.intel_util_hint_text(hint) if hint else None
 
 
 async def gpus() -> GpusResponse:
     """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
-    from lilbee.app.placement import get_placement, intel_util_notice
+    from lilbee.app.placement import get_placement
 
     view = get_placement()
     return GpusResponse(
         gpus=PlacementResponse.from_view(view).gpus,
-        notice=intel_util_notice(view.gpus),
+        notice=_intel_notice_text(view.gpus),
     )
 
 

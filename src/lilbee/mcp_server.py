@@ -32,7 +32,6 @@ from lilbee.app.memory import (
 from lilbee.app.placement import (
     PlacementView,
     get_placement,
-    intel_util_notice,
     placement_refused_message,
     preview_placement,
     set_placement,
@@ -1302,10 +1301,14 @@ def get_gpus_tool() -> dict[str, Any]:
     """List detected GPUs with free/total VRAM (the placement HTTP /api/gpus equivalent)."""
 
     def _body() -> dict[str, Any]:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
+
         view = get_placement()
+        hint = probe_intel_util_hint(view.gpus)
         return {
             "gpus": _placement_dict(view)["gpus"],
-            "notice": intel_util_notice(view.gpus),
+            "notice": msg.intel_util_hint_text(hint) if hint else None,
         }
 
     return _placement_guard(_body)
