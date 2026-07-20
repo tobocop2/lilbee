@@ -104,6 +104,27 @@ class TestDispatchChat:
         assert resp.stop_reason == StopReason.END_TURN
         assert resp.id.startswith("msg_")
 
+    def test_tool_calls_force_tool_use_even_when_the_provider_says_stop(
+        self, services_with_model
+    ) -> None:
+        """A provider that returns tool calls without saying so still means tool_use.
+
+        FinishReason.coerce falls back to STOP for a missing or unknown value,
+        so the response carried tool_use content under end_turn and a client
+        reading stop_reason would not run the tools. The streaming path already
+        refuses the same downgrade.
+        """
+        from lilbee.providers.base import ToolCall
+
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="",
+            tool_calls=(ToolCall(id="call_1", name="search", arguments='{"q": "x"}'),),
+            finish_reason=FinishReason.STOP,
+        )
+        resp = dispatch_chat(_req())
+        assert resp.stop_reason == StopReason.TOOL_USE
+        assert any(getattr(block, "name", None) == "search" for block in resp.content)
+
     def test_empty_text_returns_empty_content(self, services_with_model) -> None:
         services_with_model.provider.chat.return_value = ChatResult(
             text="", tool_calls=(), finish_reason=FinishReason.STOP

@@ -227,11 +227,15 @@ async def _gated_completions_stream(
     all unwind cleanly; a disconnect before the first iteration is covered
     by the route's after-send release of the same guard.
     """
+    # One id for the whole stream, error frame included: the frame is shaped as a
+    # real chunk so SDK clients parse it, and those accumulate by chunk id, so a
+    # fresh id made the error look like part of a different completion.
+    response_id = _response_id()
     try:
         try:
             events = dispatch_chat_stream(req, canonical_model=model)
             chunks = canonical_stream_to_completions_chunks(
-                events, model=model, response_id=_response_id(), include_usage=include_usage
+                events, model=model, response_id=response_id, include_usage=include_usage
             )
             async for frame in encode_completions_sse(chunks):
                 yield frame
@@ -240,15 +244,26 @@ async def _gated_completions_stream(
             if classified is None:
                 log.exception("chat_completions stream failed")
                 yield _sse_error_frame(
-                    CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE, model=model
+                    CompletionsErrorCode.INTERNAL_ERROR,
+                    _INTERNAL_ERROR_MESSAGE,
+                    model=model,
+                    response_id=response_id,
                 )
             else:
-                yield _sse_error_frame(classified.code, classified.message, model=model)
+                yield _sse_error_frame(
+                    classified.code, classified.message, model=model, response_id=response_id
+                )
     finally:
         await guard.release()
 
 
-def _sse_error_frame(code: CompletionsErrorCode, message: str, *, model: str = "") -> bytes:
+def _sse_error_frame(
+    code: CompletionsErrorCode,
+    message: str,
+    *,
+    model: str = "",
+    response_id: str | None = None,
+) -> bytes:
     """SSE frame carrying a mid-stream error in OpenAI's chunk-shaped wire format.
 
     OpenAI-SDK clients only parse ``chat.completion.chunk``-shaped frames, so the
@@ -259,7 +274,7 @@ def _sse_error_frame(code: CompletionsErrorCode, message: str, *, model: str = "
     """
     body = completions_error_body(code, message)
     chunk: dict[str, object] = {
-        "id": _response_id(),
+        "id": response_id or _response_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,

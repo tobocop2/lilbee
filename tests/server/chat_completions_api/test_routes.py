@@ -1648,3 +1648,52 @@ class TestIgnoredParamsLogged:
             )
         assert resp.status_code == 200
         spy.assert_not_called()
+
+
+class TestStreamErrorFrameKeepsTheStreamId:
+    """SDK accumulators key on chunk id.
+
+    The error frame is deliberately shaped as a real chat.completion.chunk so
+    OpenAI clients parse it, but it minted a fresh chatcmpl id, so it read as a
+    chunk of some other completion and the error could be dropped.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_error_reuses_the_id_of_the_preceding_chunks(
+        self, monkeypatch
+    ) -> None:
+        import json
+
+        from lilbee.server.chat_completions_api.routes import _gated_completions_stream
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalChatRequest,
+            CanonicalMessage,
+            ContentBlockDelta,
+            TextDelta,
+        )
+
+        async def _one_chunk_then_boom(req: object, *, canonical_model: str | None = None) -> Any:
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="partial"))
+            raise RuntimeError("upstream died mid-stream")
+
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes.dispatch_chat_stream", _one_chunk_then_boom
+        )
+        req = CanonicalChatRequest(
+            model="vendor/model",
+            messages=(CanonicalMessage(role="user", content="hi"),),
+            stream=True,
+        )
+        frames = [
+            frame
+            async for frame in _gated_completions_stream(req, ChatSlotGuard(), model=req.model)
+        ]
+
+        ids = []
+        for line in b"".join(frames).decode().splitlines():
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            ids.append(json.loads(line[len("data: ") :])["id"])
+
+        assert len(ids) >= 2, f"expected content and error frames, got {ids}"
+        assert len(set(ids)) == 1, f"error frame changed the completion id: {ids}"

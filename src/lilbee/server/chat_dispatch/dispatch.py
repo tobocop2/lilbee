@@ -108,6 +108,20 @@ def _provider_chat_kwargs(req: CanonicalChatRequest, canonical_model: str) -> di
     }
 
 
+def _stop_reason_for(result: ChatResult) -> StopReason:
+    """Closing stop reason for a non-streaming result.
+
+    Tool calls win over the reported finish reason. FinishReason.coerce falls
+    back to STOP for a missing or unknown value, so a provider that returns
+    tool calls without saying so produced tool_use content under end_turn, and
+    a client reading stop_reason decides whether to run the tools. The
+    streaming path already refuses the same downgrade.
+    """
+    if result.tool_calls:
+        return StopReason.TOOL_USE
+    return _FINISH_REASON_TO_STOP.get(result.finish_reason, StopReason.END_TURN)
+
+
 def _content_blocks_from_result(result: ChatResult) -> list[ContentBlock]:
     """Build canonical content blocks from a non-streaming provider result."""
     content: list[ContentBlock] = []
@@ -140,7 +154,7 @@ def dispatch_chat(
         id=_new_message_id(),
         model=canonical_model,
         content=_content_blocks_from_result(result),
-        stop_reason=_FINISH_REASON_TO_STOP.get(result.finish_reason, StopReason.END_TURN),
+        stop_reason=_stop_reason_for(result),
         usage=CanonicalUsage(
             input_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.completion_tokens,
