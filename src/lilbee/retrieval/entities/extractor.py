@@ -1,8 +1,8 @@
 """Two-phase typed entity extraction.
 
 Phase 1 (cheap): an LLM reads a stratified sample of chunks and proposes the
-corpus-specific type schema, persisted as an editable artifact before any
-expensive pass runs.
+corpus-specific type schema, persisted as machine state inside the index
+before any expensive pass runs (see :mod:`schema`; nothing to review or edit).
 
 Phase 2 (scales with corpus): each type is found by the cheapest extractor
 that can serve it: compiled regex for identifier-shaped types, spaCy labels

@@ -325,8 +325,10 @@ class AdaptiveController:
     """Drives a :class:`ResizableGate`'s limit from live signals until cancelled.
 
     ``sample(throughput)`` returns the current :class:`Signals`; ``completed()`` is a
-    monotonic count of finished documents, from which per-interval throughput is
-    derived. Both are injected so the controller runs in tests with no clock or GPU.
+    monotonic count of finished work units, from which per-interval throughput is
+    derived. The production wiring counts OCR pages, not documents (a per-document
+    count would bias the controller toward files of a given size). Both are injected
+    so the controller runs in tests with no clock or GPU.
     """
 
     def __init__(

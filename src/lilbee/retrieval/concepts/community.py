@@ -47,7 +47,11 @@ def _compute_pmi(
 
 
 class _LeidenResult(NamedTuple):
-    """Leiden output: node -> community id, and node -> weighted degree."""
+    """Leiden output: node -> community id, and node -> incident-edge count.
+
+    ``degrees`` is an unweighted count of edges incident to each node (edge
+    weights are not summed), which is what label ranking consumes.
+    """
 
     partition: dict[str, int]
     degrees: dict[str, int]

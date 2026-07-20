@@ -42,8 +42,11 @@ _MIN_VECTOR_NORM = 1e-12
 
 # Source-membership thresholds. A source joins a chunk community when it
 # contributes at least `min(_MIN_SOURCE_CHUNKS, ceil(total * _MIN_SOURCE_FRACTION))`
-# of its chunks. The stricter (smaller) side wins, so a single stray chunk
-# from a long document never pulls the whole source into an unrelated cluster.
+# of its chunks. min() picks the lower (more lenient) cutoff, which caps the
+# requirement at _MIN_SOURCE_CHUNKS: a long document needs a real foothold
+# rather than a chunk-count proportional to its length. Once the source is
+# long enough that ceil(total * fraction) > 1, a single stray chunk cannot
+# pull it into an unrelated cluster; very short sources can still join on one.
 _MIN_SOURCE_CHUNKS = 3
 _MIN_SOURCE_FRACTION = 0.2
 

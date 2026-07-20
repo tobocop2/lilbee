@@ -183,9 +183,10 @@ def effective_reasoning_cap() -> int:
 
     A per-model ``ModelDefaults.max_reasoning_chars`` value (including
     ``0`` for "this model is allowed to think forever") beats the global
-    ``cfg.max_reasoning_chars`` setting. Only ``None`` falls through to
-    the global, so a per-model 0 means the user explicitly opted that
-    model out of the cap.
+    ``cfg.max_reasoning_chars`` setting. A missing (``None``) or negative
+    per-model value falls through to the global: ModelDefaults is an
+    unvalidated dataclass, so a negative is treated as "unset" rather than
+    trusted as a cap.
     """
     defaults = cfg.model_defaults
     override = defaults.max_reasoning_chars if defaults is not None else None

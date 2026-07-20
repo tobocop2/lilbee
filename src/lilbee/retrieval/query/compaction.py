@@ -103,9 +103,9 @@ class CompactionResult:
 
     summary: str
     condensed: int
-    """Turns folded into the notes."""
+    """Messages folded into the notes (not exchanges: a user+assistant pair is two)."""
     stranded: int
-    """Turns dropped with no notes. Non-zero means the conversation lost detail
+    """Messages dropped with no notes. Non-zero means the conversation lost detail
     outright, which the UI must say plainly rather than let the model appear to
     have forgotten for no reason."""
 
@@ -116,7 +116,7 @@ class CompactionPlan:
 
     batches: list[list[ChatMessage]]
     stranded: int
-    """Turns dropped with no notes because the backlog exceeded MAX_COMPACT_CALLS.
+    """Messages dropped with no notes because the backlog exceeded MAX_COMPACT_CALLS.
 
     Deliberately no ``condensed`` counterpart: a plan cannot know what will be
     condensed, only what it will try. Whether a batch lands depends on the model
