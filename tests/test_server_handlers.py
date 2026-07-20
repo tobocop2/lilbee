@@ -2929,18 +2929,30 @@ class TestModelsPull:
         assert any("error" in e and "fail" in e for e in non_empty)
 
     async def test_cancel_stops_pull(self, caplog):
-        """Closing the pull generator mid-stream sets cancel and logs."""
+        """A disconnect aborts the download, it does not just silence progress.
+
+        The pull runs in a worker thread that asyncio cannot interrupt, so the
+        progress callback is the only way in. It used to return quietly on
+        cancel, leaving a multi-GB download running for a client that had gone.
+        """
         import threading
 
+        from lilbee.runtime.cancellation import TaskCancelledError
+
         barrier = threading.Event()
+        finished_whole_download = threading.Event()
+        aborted: list[bool] = []
         mock_manager = MagicMock()
 
         def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False):
-            if on_bytes:
-                on_bytes(100, 1000)
+            on_bytes(100, 1000)
             barrier.wait(timeout=2)
-            if on_bytes:
+            try:
                 on_bytes(1000, 1000)
+            except TaskCancelledError:
+                aborted.append(True)
+                raise
+            finished_whole_download.set()
 
         mock_manager.pull.side_effect = blocking_pull
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
@@ -2954,9 +2966,13 @@ class TestModelsPull:
                     await gen.aclose()
                     barrier.set()
                     break
-            await asyncio.sleep(0.05)
+            for _ in range(200):
+                if aborted or finished_whole_download.is_set():
+                    break
+                await asyncio.sleep(0.01)
 
-        assert any("Model pull stream cancelled by client" in r.message for r in caplog.records)
+        assert aborted == [True], "the progress callback must abort the pull, not return"
+        assert not finished_whole_download.is_set(), "the download ran to completion after cancel"
 
 
 class TestModelsDelete:
@@ -4312,18 +4328,27 @@ class TestAddHandlerCancel:
 
 
 class TestModelPullProgressCancel:
-    async def test_cancel_during_pull_skips_later_progress(self):
-        """When cancel is set before pull starts, all progress calls return early."""
+    async def test_cancel_during_pull_aborts_and_emits_no_progress(self):
+        """Cancel set before the pull starts aborts it at the first callback.
+
+        The callback used to return quietly, which emitted nothing but let the
+        download run on. It now raises, so the worker stops as well.
+        """
         import threading
+
+        from lilbee.runtime.cancellation import TaskCancelledError
 
         mock_manager = MagicMock()
         progress_called = threading.Event()
+        aborted = threading.Event()
 
         def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
-            if on_bytes:
-                # All progress calls should see cancel already set
+            progress_called.set()
+            try:
                 on_bytes(500, 1000)
-                progress_called.set()
+            except TaskCancelledError:
+                aborted.set()
+                raise
 
         mock_manager.pull.side_effect = fake_pull
 
@@ -4348,7 +4373,8 @@ class TestModelPullProgressCancel:
             # Wait for the pull thread to complete
             await asyncio.sleep(0.2)
 
-        assert progress_called.is_set()  # Pull did call on_bytes
+        assert progress_called.is_set(), "the pull should have started"
+        assert aborted.is_set(), "the callback must abort the pull, not return"
         assert not any("current" in e for e in events if e)
 
 

@@ -320,9 +320,16 @@ def _usage_chunk(model: str, response_id: str, usage: CanonicalUsage) -> Complet
 
 
 def _system_text(msg: CompletionsMessage) -> str:
+    """Flatten a system message to text, rejecting image parts.
+
+    The same image part is a 400 in a user message, so silently dropping it
+    here answered as though the request had been honoured.
+    """
     if isinstance(msg.content, str):
         return msg.content
     if isinstance(msg.content, list):
+        if any(isinstance(part, CompletionsImageContent) for part in msg.content):
+            raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
         return "".join(
             part.text for part in msg.content if isinstance(part, CompletionsTextContent)
         )

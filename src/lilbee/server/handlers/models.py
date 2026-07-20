@@ -32,6 +32,7 @@ from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_
 from lilbee.providers.local_servers import canonical_local_ref, local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import (
     FitLevel,
     SizeVariantInfo,
@@ -589,8 +590,12 @@ async def models_pull(
 
     def _pull_blocking() -> None:
         def _on_bytes(downloaded: int, total: int) -> None:
+            # Raise rather than return: the pull runs in a worker thread that
+            # asyncio cannot interrupt, so returning quietly left a multi-GB
+            # download running for a client that had already gone. This is the
+            # abort path the downloader is written for.
             if sse.cancel.is_set():
-                return
+                raise TaskCancelledError
             payload = sse_event(SseEvent.PROGRESS, {"current": downloaded, "total": total})
             sse.loop.call_soon_threadsafe(sse.queue.put_event_nowait, payload, SseEvent.PROGRESS)
 
@@ -601,14 +606,23 @@ async def models_pull(
                 on_bytes=_on_bytes,
                 allow_unsupported=allow_unsupported,
             )
+        except TaskCancelledError:
+            log.info("Model pull for %s aborted: client disconnected", model)
         except Exception as exc:
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
-    async for event in sse.drain(task, "Model pull stream"):
-        yield event
+    try:
+        async for event in sse.drain(task, "Model pull stream"):
+            yield event
+    finally:
+        # Closing this generator means the client is gone. Set the flag here
+        # rather than relying on drain's own cleanup, which runs only once that
+        # inner generator is collected: until then the worker thread keeps
+        # downloading for a client that has already disconnected.
+        sse.cancel.set()
 
 
 async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteResponse:

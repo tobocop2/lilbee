@@ -166,6 +166,30 @@ class TestCompletionsToCanonicalRequest:
                 }
             )
 
+    def test_image_content_in_system_message_is_rejected(self) -> None:
+        # The same part is a 400 in a user message. The system path filtered it
+        # out instead, so an identical payload was rejected in one role and
+        # silently honoured minus the image in the other.
+        with pytest.raises(ValueError, match="Image content is not supported"):
+            _translate(
+                {
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": [
+                                {"type": "text", "text": "you are terse"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+                                },
+                            ],
+                        },
+                        {"role": "user", "content": "hi"},
+                    ],
+                }
+            )
+
     def test_assistant_message_with_tool_calls(self) -> None:
         req = _translate(
             {
