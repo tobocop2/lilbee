@@ -1028,6 +1028,9 @@ class FleetProvider:
         """
         swap = self._swaps.pop(group, None)
         self._launches.pop(group, None)
+        # Prune the dir map with the group: a stale entry outliving its group makes
+        # _reload_dir see two dirs and pick one arbitrarily, splitting the provider.
+        self._group_dirs.pop(group, None)
         for role in [r for r, g in self._role_group.items() if g is group]:
             del self._role_group[role]
             self._retire_clients(self._clients.pop(role, []))
@@ -1212,6 +1215,7 @@ class FleetProvider:
             self._swaps = {}
             self._launches = {}
             self._role_group = {}
+            self._group_dirs = {}
             self._clients = {}
             self._retiring_clients = []
             self._chat_slots = 1
@@ -2013,8 +2017,7 @@ class FleetProvider:
             groups = list(self._swaps)
         for group in groups:
             with self._lock:
-                swap = self._drop_group(group)
-                self._group_dirs.pop(group, None)
+                swap = self._drop_group(group)  # also prunes _group_dirs
             if swap is not None:
                 swap.shutdown()  # bound: detaches; the shared engine keeps running
         self._release_engines()  # a shared engine's builder keeps it live; no stop here

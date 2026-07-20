@@ -350,6 +350,25 @@ def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> No
     assert p._swaps == {}
 
 
+def test_drop_group_prunes_its_dir_entry() -> None:
+    # A dir entry must not outlive its group: a stale entry makes _reload_dir see
+    # two dirs and pick one arbitrarily, splitting the provider across dirs.
+    p = FleetProvider()
+    group = SwapGroup.CHAT
+    p._swaps = {group: _FakeSwap()}
+    p._group_dirs = {group: Path("/slot/a")}
+    p._drop_group(group)
+    assert group not in p._group_dirs
+
+
+def test_drop_swap_refs_clears_the_dir_map() -> None:
+    # A full teardown leaves no group, so it must leave no dir map either.
+    p = FleetProvider()
+    p._group_dirs = {SwapGroup.CHAT: Path("/slot/a"), SwapGroup.EMBED: Path("/slot/b")}
+    p._drop_swap_refs()
+    assert p._group_dirs == {}
+
+
 def test_reload_of_a_bound_engine_reacquires_instead_of_duplicating(monkeypatch) -> None:
     # A provider bound to another process's engine owns none of its groups. A model
     # change must not restart the group "in place": a bound manager's shutdown only
