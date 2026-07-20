@@ -66,7 +66,7 @@ _DEVICE_TYPE_RANK: dict[VkDeviceType, int] = {
 # The device types ggml's Vulkan backend will actually run on. Anything else --
 # a software rasterizer, a paravirtual adapter, an unknown type -- is not a
 # device the engine would choose, so planning against one guarantees a mismatch.
-_USABLE_DEVICE_TYPES = frozenset({VkDeviceType.DISCRETE_GPU, VkDeviceType.INTEGRATED_GPU})
+USABLE_VULKAN_TYPES = frozenset({VkDeviceType.DISCRETE_GPU, VkDeviceType.INTEGRATED_GPU})
 
 
 def _rank_for(device_type: int) -> int:
@@ -300,7 +300,7 @@ def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
     devices = _enumerate_vulkan_devices()
     if devices is None:
         return None
-    return [(d.index, d.vram_bytes) for d in devices if d.device_type in _USABLE_DEVICE_TYPES]
+    return [(d.index, d.vram_bytes) for d in devices if d.device_type in USABLE_VULKAN_TYPES]
 
 
 @lru_cache(maxsize=1)
@@ -319,6 +319,38 @@ def integrated_vulkan_indices() -> frozenset[int]:
     if not devices:
         return frozenset()
     return frozenset(d.index for d in devices if d.device_type == VkDeviceType.INTEGRATED_GPU)
+
+
+@lru_cache(maxsize=1)
+def vulkan_device_types_by_name() -> dict[str, VkDeviceType]:
+    """Adapter type keyed by the name the loader reports, empty when unavailable.
+
+    Keyed by name rather than index because the engine's ``--list-devices``
+    ordinals are assigned after ggml has filtered and deduplicated the loader's
+    list, so ``Vulkan0`` is only the loader's device 0 when nothing ahead of it
+    was dropped. The name is the one field both views print verbatim from
+    ``VkPhysicalDeviceProperties``, so it correlates the two without either
+    side having to replicate the other's filtering.
+
+    Two adapters of the same model share a name, which is harmless: they share
+    a type too, and the type is all this answers.
+    """
+    devices = _enumerate_vulkan_devices()
+    if not devices:
+        return {}
+    return {
+        d.device_name: device_type
+        for d in devices
+        if (device_type := _known_device_type(d.device_type)) is not None
+    }
+
+
+def _known_device_type(value: int) -> VkDeviceType | None:
+    """The enum member for a raw ``deviceType``, ``None`` for a value vk.h doesn't define."""
+    try:
+        return VkDeviceType(value)
+    except ValueError:
+        return None
 
 
 def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:

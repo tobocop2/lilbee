@@ -382,3 +382,65 @@ def test_a_software_rasterizer_alone_is_no_gpu_at_all() -> None:
     lavapipe = FleetDevice("Vulkan", 0, "llvmpipe (LLVM 17.0.6, 256 bits)", 15 * 10**9, 14 * 10**9)
 
     assert _select_backend([lavapipe]) == []
+
+
+def test_a_paravirtual_adapter_is_dropped_even_though_its_name_looks_real(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In a VM ggml falls back to the first non-CPU adapter, which is VIRTUAL_GPU.
+
+    Nothing in "Virtio-GPU Venus (Intel ...)" marks it as not a GPU, so the
+    software-renderer name list walks straight past it; the loader's device
+    type is the only thing that separates it from a real card.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _select_backend
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "Virtio-GPU Venus (Intel(R) Iris(R) Xe Graphics)": gpu_select.VkDeviceType.VIRTUAL_GPU
+        },
+    )
+    venus = FleetDevice(
+        "Vulkan", 0, "Virtio-GPU Venus (Intel(R) Iris(R) Xe Graphics)", 15 * 10**9, 15 * 10**9
+    )
+
+    assert _select_backend([venus]) == []
+
+
+def test_an_adapter_the_loader_cannot_type_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No loader, no opinion: dropping devices on missing evidence would blind working hosts."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _select_backend
+
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+    card = FleetDevice("Vulkan", 0, "AMD Radeon RX 7900 XTX", 24 * 10**9, 24 * 10**9)
+
+    assert _select_backend([card]) == [card]
+
+
+def test_unified_memory_is_read_by_name_not_by_ordinal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--list-devices numbers survivors; the loader numbers everything it enumerated.
+
+    A host whose loader lists a software rasterizer ahead of its integrated GPU
+    has the iGPU at loader index 1 and at Vulkan0 in the engine's output, so an
+    index comparison reads it as dedicated and hands placement the host's own
+    RAM as GPU headroom.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "llvmpipe (LLVM 17.0.6, 256 bits)": gpu_select.VkDeviceType.CPU,
+            "Intel(R) Iris(R) Xe Graphics": gpu_select.VkDeviceType.INTEGRATED_GPU,
+        },
+    )
+
+    parsed = _parse_devices("  Vulkan0: Intel(R) Iris(R) Xe Graphics (15690 MiB, 15690 MiB free)")
+
+    assert [d.unified for d in parsed] == [True]

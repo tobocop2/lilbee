@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
 
 log = logging.getLogger(__name__)
 
@@ -230,7 +231,7 @@ def _parse_devices(text: str) -> list[FleetDevice]:
                 name.strip(),
                 total,
                 free,
-                unified=_is_unified(backend, int(index)),
+                unified=_is_unified(backend, name.strip()),
             )
         )
     return devices
@@ -248,13 +249,49 @@ _SOFTWARE_RENDERER_MARKERS = ("llvmpipe", "lavapipe", "softpipe", "swiftshader")
 
 
 def _is_software_renderer(device: FleetDevice) -> bool:
-    """Whether *device* is a CPU rasterizer masquerading as a GPU."""
+    """Whether *device* is a CPU rasterizer masquerading as a GPU.
+
+    A name test, so it only recognizes the rasterizers it already knows, and a
+    renamed or newly written one walks past it. It stays as the answer for hosts
+    where the Vulkan loader can't be opened from this process and the device
+    type is therefore unavailable; where the type is available,
+    ``_is_unusable_vulkan`` decides and this never gets the chance to be wrong.
+    """
     name = device.name.casefold()
     return any(marker in name for marker in _SOFTWARE_RENDERER_MARKERS)
 
 
-def _is_unified(backend: str, index: int) -> bool:
-    """Whether *backend*'s device *index* shares its memory with the host.
+def _vulkan_device_type(name: str) -> VkDeviceType | None:
+    """The loader's type for the Vulkan adapter the engine printed as *name*.
+
+    ``None`` when the loader can't be reached or reports no adapter by that
+    name, which reads as "no opinion": the device is kept and assumed dedicated,
+    preserving the behaviour of hosts that never had a type to consult.
+    """
+    from lilbee.providers.fleet.gpu_select import vulkan_device_types_by_name
+
+    return vulkan_device_types_by_name().get(name)
+
+
+def _is_unusable_vulkan(device: FleetDevice) -> bool:
+    """Whether *device* is a Vulkan adapter ggml would not choose to run on.
+
+    ggml's Vulkan backend builds its device pool from discrete and integrated
+    adapters only, and falls back to the first non-CPU adapter when it finds
+    neither. In a VM that fallback is a paravirtual adapter (VMware SVGA,
+    VirtIO-GPU Venus, QXL), which reports guest RAM as VRAM and is typically
+    compute-incomplete or fails at allocation. Planning a fleet onto one costs
+    more than planning no GPU at all, since a non-empty device list also turns
+    off the shared-RAM budget.
+    """
+    if device.backend != "Vulkan":
+        return False
+    device_type = _vulkan_device_type(device.name)
+    return device_type is not None and device_type not in USABLE_VULKAN_TYPES
+
+
+def _is_unified(backend: str, name: str) -> bool:
+    """Whether the device *backend* printed as *name* shares its memory with the host.
 
     Metal is unified by construction on Apple Silicon: the figure it reports is
     ``recommendedMaxWorkingSetSize``, a slice of system RAM rather than a
@@ -270,9 +307,7 @@ def _is_unified(backend: str, index: int) -> bool:
         return True
     if backend != "Vulkan":
         return False
-    from lilbee.providers.fleet.gpu_select import integrated_vulkan_indices
-
-    return index in integrated_vulkan_indices()
+    return _vulkan_device_type(name) is VkDeviceType.INTEGRATED_GPU
 
 
 def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
@@ -281,7 +316,13 @@ def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
     Returns a single backend so pinning is unambiguous: ``visible_env`` keys off
     one backend, and mixing index spaces is the very hazard this module avoids.
     """
-    ranked = [d for d in devices if d.backend in _BACKEND_RANK and not _is_software_renderer(d)]
+    ranked = [
+        d
+        for d in devices
+        if d.backend in _BACKEND_RANK
+        and not _is_software_renderer(d)
+        and not _is_unusable_vulkan(d)
+    ]
     if not ranked:
         return []
     backend = max(ranked, key=lambda d: (_BACKEND_RANK[d.backend], d.backend)).backend
