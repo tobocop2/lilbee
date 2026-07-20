@@ -17,12 +17,7 @@ log = logging.getLogger(__name__)
 
 
 def file_hash(path: Path) -> str:
-    """Compute SHA-256 hex digest of a file.
-
-    ``hashlib.file_digest`` (3.11+) owns the chunked read loop and uses a
-    larger internal buffer than a hand-rolled 8 KiB one, which matters on the
-    ingest path where every file is hashed on every sync.
-    """
+    """Compute SHA-256 hex digest of a file."""
     with open(path, "rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
 

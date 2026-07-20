@@ -4714,14 +4714,10 @@ async def test_catalog_load_more_isolates_per_task_offset():
 
 
 async def test_catalog_tabs_never_force_an_active_id_at_construction():
-    """The tab strip is composed without a forced-active id, and Chat still wins.
+    """The strip composes without a forced-active id, and Chat still wins.
 
-    `TabbedContent(initial=...)` only reaches the strip when the panes are passed
-    to the constructor. Under the `with TabPane(...)` form the panes mount after
-    compose, so the strip is built empty while `initial` still arms
-    `Tabs._on_mount`, whose `self.active = self._first_active` runs unguarded and
-    raises "No Tab with id" whenever the tab children mount a frame late. The
-    no-initial path right below it is the one wrapped in `except NoMatches`.
+    A forced id arms `Tabs._on_mount`'s unguarded set, which raises "No Tab with
+    id" when the tab children mount late.
     """
     from textual.widgets import TabbedContent
 

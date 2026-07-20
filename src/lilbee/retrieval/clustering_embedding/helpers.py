@@ -26,11 +26,9 @@ from lilbee.retrieval.clustering_embedding.types import ClusterChunk
 # peak float32 memory at block * N * 4 bytes ~= 40 MB.
 _BLOCK_SIZE = 1024
 
-# Rows per record batch when scanning the chunks table. Rows are converted
-# to Python objects one batch at a time, so this bounds the transient boxed
-# working set (row dicts plus vector float lists) while the columnar Arrow
-# data stays compact. At 1024 rows x 768 dims the transient boxing peaks
-# around 25 MB regardless of corpus size.
+# Rows boxed into Python objects per batch when scanning the chunks table.
+# Caps the transient working set at ~25 MB (1024 rows x 768 dims), whatever
+# the corpus size.
 _SCAN_BATCH_ROWS = 1024
 
 # Label Propagation hard iteration cap. Convergence is typically reached
@@ -40,13 +38,10 @@ _MAX_LPA_ITERATIONS = 30
 # Minimum non-zero L2 norm for a row vector to be kept.
 _MIN_VECTOR_NORM = 1e-12
 
-# Source-membership thresholds. A source joins a chunk community when it
-# contributes at least `min(_MIN_SOURCE_CHUNKS, ceil(total * _MIN_SOURCE_FRACTION))`
-# of its chunks. min() picks the lower (more lenient) cutoff, which caps the
-# requirement at _MIN_SOURCE_CHUNKS: a long document needs a real foothold
-# rather than a chunk-count proportional to its length. Once the source is
-# long enough that ceil(total * fraction) > 1, a single stray chunk cannot
-# pull it into an unrelated cluster; very short sources can still join on one.
+# A source joins a chunk community on at least
+# `min(_MIN_SOURCE_CHUNKS, ceil(total * _MIN_SOURCE_FRACTION))` of its chunks.
+# min() is the lenient cutoff: it caps the requirement at _MIN_SOURCE_CHUNKS so
+# a long document needs a foothold, not a proportional chunk count.
 _MIN_SOURCE_CHUNKS = 3
 _MIN_SOURCE_FRACTION = 0.2
 

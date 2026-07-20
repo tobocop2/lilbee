@@ -31,11 +31,9 @@ _CITE_HEADING = (
 # One list line: a bullet, arrow, "[1]" or "1." marker and the rest of its line.
 _CITE_LIST_LINE = r"[ \t]*(?:[-*•→\[]|\d+[.)])[^\n]*"
 
-# An LLM-generated citation block: a heading line followed by a list. Requiring
-# the list keeps an answer that legitimately discusses such a heading in prose
-# (e.g. "References:\n\nIt lists 40 works.") from being clipped. The match stops
-# at the end of the list rather than running to end-of-text, so an answer that
-# resumes after its citation block keeps the continuation.
+# A heading line followed by a list. The list is required so prose discussing
+# such a heading is not clipped; the match ends with the list, not end-of-text,
+# so an answer resuming after its citations keeps the continuation.
 _LLM_CITATION_BLOCK_RE = re.compile(
     _CITE_HEADING + r"\n\s*" + _CITE_LIST_LINE + r"(?:\n" + _CITE_LIST_LINE + r")*",
     re.IGNORECASE,

@@ -443,15 +443,10 @@ class CatalogScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._fetch_installed_names()
-        # Force Chat as the initial active tab. `TabbedContent(initial=...)`
-        # cannot do it for us: compose builds the tab strip from constructor
-        # content, which is empty under the `with TabPane(...)` form, so the
-        # id never resolves. Worse, it still arms `Tabs._on_mount`, which sets
-        # the forced-active id unguarded and raises "No Tab with id" when the
-        # tab children mount a frame late. So the strip is composed without an
-        # initial and we set active explicitly via call_after_refresh, once the
-        # TabActivated cascade has settled. Chat is the most common landing
-        # destination; users opt into Discover via keyboard shortcut.
+        # `TabbedContent(initial=...)` is unusable under `with TabPane(...)`: the
+        # strip composes empty so the id never resolves, and it still arms
+        # `Tabs._on_mount`'s unguarded forced-active set, which raises "No Tab
+        # with id" when the tab children mount late. Activate Chat here instead.
         self.call_after_refresh(self._activate_initial_tab)
         self.add_class("-grid-view")
 
