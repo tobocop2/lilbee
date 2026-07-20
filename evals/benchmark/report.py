@@ -58,11 +58,17 @@ def _ragas_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[s
     lines = [
         "## Tier 2 - answer quality (RAGAS)",
         "",
-        f"| metric | {arm_a} | {arm_b} |",
-        "| --- | --- | --- |",
+        "Each mean carries the number of answers that actually scored; RAGAS "
+        "cannot score every answer, and the two arms need not fail equally often.",
+        "",
+        f"| metric | {arm_a} | n | {arm_b} | n |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for row in ragas_rows:
-        lines.append(f"| {row['metric']} | {row['arm_a']:.4f} | {row['arm_b']:.4f} |")
+        lines.append(
+            f"| {row['metric']} | {row['arm_a']:.4f} | {row.get('n_a', '?')} | "
+            f"{row['arm_b']:.4f} | {row.get('n_b', '?')} |"
+        )
     for judge in _rows_of(rows, "judge"):
         lines += [
             "",

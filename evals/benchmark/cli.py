@@ -24,7 +24,12 @@ from evals.benchmark.collectors import (
     load_queries,
 )
 from evals.benchmark.manifest import Manifest
-from evals.benchmark.ragas_tier import Sample, score_ragas
+from evals.benchmark.ragas_tier import (
+    RagasJudge,
+    Sample,
+    make_ragas_evaluator,
+    score_ragas,
+)
 from evals.benchmark.report import render_report
 from evals.retrieval.checkpoint import JsonlCheckpoint, load_jsonl
 
@@ -135,23 +140,48 @@ def _cmd_answer(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_score_ragas(args: argparse.Namespace) -> int:
-    samples = [
+def _load_samples(path: Path) -> list[Sample]:
+    return [
         Sample(
             question=row["question"],
             answer=row["answer"],
             contexts=list(row["contexts"]),
             ground_truth=row.get("ground_truth", ""),
         )
-        for row in load_jsonl(args.samples)
+        for row in load_jsonl(path)
     ]
-    scores_a = score_ragas(samples, args.metrics)
+
+
+def _cmd_score_ragas(args: argparse.Namespace) -> int:
+    manifest = Manifest.load(args.manifest)
+    judge = RagasJudge(
+        model=manifest.models.judge,
+        base_url=args.judge_base_url,
+        temperature=manifest.temperature,
+    )
+    evaluate_fn = make_ragas_evaluator(judge)
+    metrics = args.metrics
+    scored: dict[str, Any] = {}
+    for label, path in (("arm_a", args.samples_a), ("arm_b", args.samples_b)):
+        samples = _load_samples(path)
+        scored[label] = (samples, score_ragas(samples, metrics, evaluate_fn=evaluate_fn))
+    (samples_a, scores_a), (samples_b, scores_b) = scored["arm_a"], scored["arm_b"]
     rows = [
-        {"row_type": "ragas", "metric": metric, "arm_a": value, "arm_b": value}
-        for metric, value in scores_a.items()
+        {
+            "row_type": "ragas",
+            "metric": metric,
+            "arm_a": scores_a.means[metric],
+            "arm_b": scores_b.means[metric],
+            "n_a": scores_a.scored[metric],
+            "n_b": scores_b.scored[metric],
+        }
+        for metric in scores_a.means
     ]
     _append_jsonl(args.out, rows)
-    print(f"scored {len(samples)} answers with RAGAS -> {args.out}")
+    print(
+        f"scored {len(samples_a)} and {len(samples_b)} answers with RAGAS "
+        f"(judge {manifest.models.judge}) -> {args.out}"
+    )
     return 0
 
 
@@ -276,8 +306,19 @@ def _add_answer(sub: argparse._SubParsersAction) -> None:
 
 
 def _add_score_ragas(sub: argparse._SubParsersAction) -> None:
-    parser = sub.add_parser("score-ragas", help="score generated answers with RAGAS")
-    parser.add_argument("--samples", type=Path, required=True)
+    parser = sub.add_parser("score-ragas", help="score both arms' generated answers with RAGAS")
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--samples-a", type=Path, required=True, help="arm A's answers; both arms are required"
+    )
+    parser.add_argument(
+        "--samples-b", type=Path, required=True, help="arm B's answers; both arms are required"
+    )
+    parser.add_argument(
+        "--judge-base-url",
+        required=True,
+        help="OpenAI-compatible endpoint serving the manifest's judge model",
+    )
     parser.add_argument("--metrics", nargs="+", default=None)
     parser.add_argument("--out", type=Path, required=True)
     parser.set_defaults(handler=_cmd_score_ragas)
