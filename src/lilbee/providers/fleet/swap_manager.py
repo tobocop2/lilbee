@@ -493,21 +493,33 @@ def engine_record_exists(data_dir: Path) -> bool:
     return any(data_dir.glob(_STATE_FILE_GLOB))
 
 
-def stop_engine(data_dir: Path) -> None:
+def stop_engine(data_dir: Path) -> list[str]:
     """Stop every engine the dir's state files record, regardless of liveness.
 
     The unconditional off switch behind ``lilbee engine stop`` and the
     last-user-out path: each recorded swap is terminated through its state
     record (never a Popen handle, so it works on engines this process did
-    not build) and its file removed. Unparseable files are left alone, as
-    in reap_stale: they may be a sibling's in-flight write.
+    not build) and its file removed. A record whose llama-swap is already dead
+    still has its llama-servers (each in its own process group) reaped by
+    recorded port, exactly as reap_stale does -- otherwise the off switch would
+    leave those orphans holding VRAM and delete the ports needed to find them.
+    Stale config files for dead owners are cleaned too, so the dir is left as
+    clean as a reap leaves it. Unparseable files are left alone, as in
+    reap_stale: they may be a sibling's in-flight write. Returns the group tokens
+    whose engine was actually alive, so a caller reports only real stops.
     """
+    _clean_stale_configs(data_dir)
+    stopped: list[str] = []
     for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
         state = _load_state(state_path)
         if state is None:
             continue
-        _stop_stale_swap(state)
+        if _stop_recorded_engine(state):
+            group = _state_group(state_path.name)
+            if group is not None:
+                stopped.append(group)
         state_path.unlink(missing_ok=True)
+    return stopped
 
 
 def reap_stale(data_dir: Path) -> None:
@@ -539,10 +551,7 @@ def reap_stale(data_dir: Path) -> None:
             # An answering engine is in use (bind accepts on exactly this
             # test); reaping must never disagree with binding.
             continue
-        if _is_live_llama_swap(state):
-            _stop_stale_swap(state)
-        else:
-            _reap_orphan_servers(state)
+        _stop_recorded_engine(state)
         state_path.unlink(missing_ok=True)
 
 
@@ -691,14 +700,19 @@ def _signal_stale(state: _SwapState, sig: int) -> None:
         psutil.Process(state.pid).send_signal(sig)
 
 
-def _reap_orphan_servers(state: _SwapState) -> None:
-    """Stop llama-servers that outlived a dead llama-swap, matched by recorded port.
-
-    The servers run in their own process groups, so they survive their swap's
-    death and are no longer reachable as its children; the recorded member
-    ports are the only handle left.
+def _stop_recorded_engine(state: _SwapState) -> bool:
+    """Terminate a live llama-swap and its servers, or reap the servers a dead one
+    orphaned (matched by recorded port, since they run in their own process groups
+    and outlive the swap). Returns whether anything was actually alive to stop, so
+    the off switch reports a stale record as "nothing stopped" rather than a false
+    success.
     """
-    _reap_survivors(_find_orphan_servers(state.member_ports))
+    if _is_live_llama_swap(state):
+        _stop_stale_swap(state)
+        return True
+    orphans = _find_orphan_servers(state.member_ports)
+    _reap_survivors(orphans)
+    return bool(orphans)
 
 
 def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
@@ -738,6 +752,17 @@ def _state_owner_pid(name: str) -> int | None:
         return int(stem.rsplit(".", 1)[-1])
     except ValueError:
         return None
+
+
+def _state_group(name: str) -> str | None:
+    """Group token from a group-qualified state filename, ``None`` for legacy names.
+
+    ``llama-swap.state.chat.123.json`` -> ``chat``; the legacy pre-group form
+    ``llama-swap.state.123.json`` has no group token.
+    """
+    stem = name.removeprefix(_STATE_FILENAME_PREFIX).removesuffix(_STATE_FILENAME_SUFFIX)
+    head, _, _ = stem.rpartition(".")  # drop the trailing pid; group is what remains
+    return head or None
 
 
 def _config_filename(pid: int, group: str) -> str:

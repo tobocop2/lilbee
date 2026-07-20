@@ -1272,9 +1272,11 @@ class TestStopEngine:
             path = tmp_path / sm._state_filename(999_999, group)
             path.write_text(json.dumps({"pid": pid, "member_ports": [4000]}))
         stopped: list[int] = []
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: True)  # both alive
         monkeypatch.setattr(sm, "_stop_stale_swap", lambda state: stopped.append(state.pid))
-        sm.stop_engine(tmp_path)
+        result = sm.stop_engine(tmp_path)
         assert sorted(stopped) == [7001, 7002]
+        assert sorted(result) == ["chat", "embed"]  # both reported as actually stopped
         assert not list(tmp_path.glob(sm._STATE_FILE_GLOB))
 
     def test_empty_dir_is_a_noop(self, tmp_path: Path) -> None:
@@ -1285,6 +1287,34 @@ class TestStopEngine:
         junk.write_text("not json{{{")
         sm.stop_engine(tmp_path)
         assert junk.exists()
+
+    def test_reaps_orphan_servers_when_the_swap_is_dead(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The chaos case: llama-swap is dead but its llama-servers (own process
+        # groups) survive on the recorded ports. The off switch must reap them by
+        # port, not silently drop the record and leave them holding VRAM.
+        path = tmp_path / sm._state_filename(999_999, "chat")
+        path.write_text(json.dumps({"pid": 999_998, "member_ports": [4000, 4001]}))
+        monkeypatch.setattr(sm, "_is_live_llama_swap", lambda _state: False)  # swap dead
+        reaped: list[tuple[int, ...]] = []
+        monkeypatch.setattr(
+            sm, "_find_orphan_servers", lambda ports: reaped.append(ports) or ["srv"]
+        )
+        monkeypatch.setattr(sm, "_reap_survivors", lambda procs: None)
+        result = sm.stop_engine(tmp_path)
+        assert reaped == [(4000, 4001)]  # orphans looked up by the recorded ports
+        assert result == ["chat"]  # reported as actually stopped (orphans existed)
+        assert not path.exists()
+
+    def test_cleans_stale_config_files(self, tmp_path: Path, monkeypatch) -> None:
+        # stop_engine leaves the dir as clean as a reap: a dead owner's config file
+        # is removed, not stranded for a future ladder reap to find.
+        dead_config = tmp_path / sm._config_filename(999_998, "chat")
+        dead_config.write_text("{}")
+        monkeypatch.setattr(sm.psutil, "pid_exists", lambda _pid: False)  # owner dead
+        sm.stop_engine(tmp_path)
+        assert not dead_config.exists()
 
 
 class TestLiveStateHelpers:
