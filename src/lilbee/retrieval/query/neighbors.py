@@ -26,34 +26,15 @@ def _overlap_chars(left: str, right: str) -> int:
     fully contained text matches whole, which is what makes merging an
     already-widened passage idempotent instead of duplicating its neighbors.
 
-    Computed with a prefix-function pass rather than trying every length: the
-    no-overlap case (a ``chunk_overlap=0`` build) is common and would otherwise
-    scan every length to exhaustion, quadratic in the chunk's own size.
+    Longest length first, so the first match wins. A prefix-function scan is
+    the better complexity on paper but measured slower here on every input
+    shape tried: each ``endswith`` rejects on its first differing character in
+    C, while the linear version pays per-character interpreter overhead.
     """
-    if not left or not right:
-        return 0
-    # Prefix function of right alone. Concatenating the two around a sentinel
-    # would be shorter to write but only correct for text that never contains
-    # the sentinel, and extracted document text carries stray control bytes.
-    failure = [0] * len(right)
-    length = 0
-    for i in range(1, len(right)):
-        while length and right[i] != right[length]:
-            length = failure[length - 1]
-        if right[i] == right[length]:
-            length += 1
-        failure[i] = length
-    # Only left's last len(right) chars can reach a prefix of right, so the scan
-    # stays linear in the incoming chunk, not the accumulated passage. That
-    # window is also what keeps ``right[length]`` in range: matching right in
-    # full costs len(right) chars, so it can only complete on the last one.
-    length = 0
-    for char in left[-len(right) :]:
-        while length and char != right[length]:
-            length = failure[length - 1]
-        if char == right[length]:
-            length += 1
-    return length
+    for k in range(min(len(left), len(right)), 0, -1):
+        if left.endswith(right[:k]):
+            return k
+    return 0
 
 
 def merge_adjacent_texts(texts: list[str]) -> str:
