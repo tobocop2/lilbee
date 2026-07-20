@@ -156,3 +156,39 @@ def test_unblind_keeps_replicates_separate():
     regrouped = unblind(assignments, grades)
     assert regrouped["B"][0]["q1"]["faithfulness"] == 2
     assert regrouped["B"][1]["q1"]["faithfulness"] == 1
+
+
+def test_prefailed_answers_are_not_counted_as_judge_graded():
+    # An answer that failed outright never reaches the judge. It scores zero
+    # against its arm, but reporting it as judge-graded overstates the judge's n
+    # and makes the report's own caveat false.
+    questions = [
+        Question(
+            qid=f"tq{i}",
+            kind=QuestionKind.TOPICAL,
+            question="Where?",
+            source="a.txt",
+            ground_passage="g",
+        )
+        for i in range(2)
+    ]
+    answers = {
+        "A": {"tq0": _answer("tq0", "A"), "tq1": _answer("tq1", "A", error="boom")},
+        "B": {"tq0": _answer("tq0", "B"), "tq1": _answer("tq1", "B")},
+    }
+    grade = {"faithfulness": 1, "relevance": 1, "citation": 1}
+    zero = {"faithfulness": 0, "relevance": 0, "citation": 0}
+    # Arm A's tq1 prefailed: mechanically zeroed in `unblinded`, absent from `judged`.
+    unblinded = {
+        "A": {0: {"tq0": grade, "tq1": zero}},
+        "B": {0: {"tq0": grade, "tq1": grade}, 1: {"tq0": grade, "tq1": grade}},
+    }
+    judged = {
+        "A": {0: {"tq0": grade}},
+        "B": {0: {"tq0": grade, "tq1": grade}, 1: {"tq0": grade, "tq1": grade}},
+    }
+    summary = build_results(questions, answers, unblinded, noise_arm="B", judged=judged)[-1]
+    assert summary["judge_graded"]["A"] == 1
+    # The mean still covers both, because the failure counts against the arm.
+    assert summary["scored"]["A"] == 2
+    assert summary["judgeable"] == 2

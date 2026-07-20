@@ -1,4 +1,4 @@
-# Retrieval benchmark results — Qwen3-Embedding-0.6B
+# Retrieval benchmark results: Qwen3-Embedding-0.6B
 
 A significance-tested measurement of lilbee's hybrid retrieval against its own
 vector-only baseline on three public, human-labeled BEIR datasets. The point of
@@ -81,7 +81,7 @@ The strongest and most consistent finding in this study is a regression, not a
 win: on FiQA every fusion weight loses to dense on both nDCG@10 and MRR@10, all
 nine of those tests survive correction, and the damage grows monotonically with
 the weight. SciFact improves, significantly at the two higher weights. NFCorpus
-improves marginally, significant only at w=0.25 on nDCG@10 and nowhere else —
+improves marginally, significant only at w=0.25 on nDCG@10 and nowhere else:
 its MRR@10 gain at the same weight (+0.0098) does not survive.
 
 ## What this establishes
@@ -201,7 +201,7 @@ identically to the vector-only baseline. The cause was a production defect, not
 a benchmark artifact: `ensure_fts_index()` runs `table.optimize()` on an
 existing index, which on a real-sized corpus hits a LanceDB encoding bug and
 raises; the failure was swallowed and left hybrid search disabled, so every
-query silently fell back to vector-only. It only surfaced on real data — a
-tiny local corpus never tripped the LanceDB bug. Fixed by marking an existing,
+query silently fell back to vector-only. It only surfaced on real data, since
+a tiny local corpus never tripped the LanceDB bug. Fixed by marking an existing,
 queryable index ready before the best-effort optimize, so an optimize failure
 degrades to a warning instead of disabling retrieval corpus-wide.

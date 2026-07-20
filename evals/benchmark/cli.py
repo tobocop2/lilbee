@@ -79,7 +79,6 @@ def _cmd_collect(args: argparse.Namespace) -> int:
         queries,
         args.run,
         args.checkpoint,
-        target_docs=args.target_docs,
         on_query=lambda qid: print(f"[{args.run_tag}] {qid}", flush=True),
     )
     print(f"collected {len(queries)} queries, {len(hits)} hits -> {args.run}")

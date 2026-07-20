@@ -119,9 +119,7 @@ def upload_corpus(
     document_ids: list[str] = []
     for start in range(0, len(paths), batch_size):
         batch = paths[start : start + batch_size]
-        files = [
-            ("file", (str(path.relative_to(corpus_dir)), path.read_bytes())) for path in batch
-        ]
+        files = [("file", (str(path.relative_to(corpus_dir)), path.read_bytes())) for path in batch]
         data = _data(client.post(route, files=files))
         document_ids.extend(str(doc["id"]) for doc in data)
     return document_ids

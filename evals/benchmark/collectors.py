@@ -34,7 +34,6 @@ RETRIEVE_TIMEOUT_SECONDS = 120.0
 # Distinct parent documents every arm is asked for; matches the published
 # Recall@20 depth, so recall_20 is scored on runs that can actually reach 20.
 DEFAULT_TARGET_DOCS = 20
-DEFAULT_TOP_K = DEFAULT_TARGET_DOCS
 # Chunks fetched per RAGFlow page while over-fetching toward the document target.
 RAGFLOW_CHUNK_PAGE_SIZE = 50
 # Ceiling on pages, so a corpus that cannot supply the target cannot loop forever.
@@ -65,9 +64,16 @@ def collect_to_document_depth(
 
 
 class Collector(Protocol):
-    """Retrieves ranked chunk hits for one query from one system."""
+    """Retrieves ranked chunk hits for one query from one system.
+
+    ``target_docs`` is the document depth this collector was asked for. It is
+    part of the protocol so the run driver caps the run at the depth that was
+    actually fetched, rather than carrying a second copy of the number that can
+    silently disagree and truncate the run below what the arm retrieved.
+    """
 
     run_tag: str
+    target_docs: int
 
     def retrieve(self, query_id: str, query_text: str) -> list[ChunkHit]: ...
 
@@ -181,7 +187,6 @@ def collect_run(
     run_path: Path,
     checkpoint_path: Path,
     *,
-    target_docs: int = DEFAULT_TARGET_DOCS,
     on_query: Callable[[str], None] | None = None,
 ) -> list[ChunkHit]:
     """Retrieve every query (resuming from the checkpoint) and write the run file.
@@ -190,7 +195,7 @@ def collect_run(
     file is (re)built from the full checkpoint at the end, so an interrupted run
     resumes without re-querying and still produces a complete run file.
 
-    The collapsed run is capped at ``target_docs`` documents per query so every
+    The collapsed run is capped at the collector's own ``target_docs`` so every
     arm is scored at the same document depth regardless of how many chunks it
     had to fetch to get there.
     """
@@ -205,7 +210,7 @@ def collect_run(
     all_hits: list[ChunkHit] = []
     for row in load_jsonl(checkpoint_path):
         all_hits.extend(_row_hits(row["query_id"], row))
-    entries = collapse_hits(all_hits, collector.run_tag, limit=target_docs)
+    entries = collapse_hits(all_hits, collector.run_tag, limit=collector.target_docs)
     write_run(run_path, entries)
     return all_hits
 

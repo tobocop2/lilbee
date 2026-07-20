@@ -142,7 +142,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
     # Prefailed rows were never judged; both of their replicates are mechanically
     # set to zero below, which would register as perfect agreement and pull the
     # floor toward zero, making every real cross-arm delta look like signal.
-    noise_source = unblind(assignments, judged)
+    judged_only = unblind(assignments, judged)
     scored = dict(judged)
     for gid in prefailed:
         scored[gid] = dict.fromkeys(DIMENSIONS, 0)
@@ -151,7 +151,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
         answers_by_arm,
         unblind(assignments, scored),
         noise_arm,
-        noise_grades=noise_source.get(noise_arm, {}),
+        judged=judged_only,
         judge_model=judge_meta.get("judge_model", ""),
     )
     _write_jsonl(args.out, results)

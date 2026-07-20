@@ -32,14 +32,18 @@ def render_report(rows: list[dict[str, Any]]) -> str:
     noise = summary["noise_floor"]
 
     graded = summary.get("judge_graded", {})
+    scored = summary.get("scored", {})
     counts = " and ".join(f"{graded.get(arm, '?')} for {arm}" for arm in (first, second))
+    mean_counts = " and ".join(f"{scored.get(arm, '?')} for {arm}" for arm in (first, second))
     judge_model = summary.get("judge_model") or "an unrecorded model"
     lines = [
         "# Retrieval eval report",
         "",
-        f"Graded by {judge_model}. The judge returned grades for {counts}, out of "
-        f"{summary.get('judgeable', '?')} judgeable questions; answers that failed "
-        "outright and grades the judge returned unparseable are not in those counts. "
+        f"Graded by {judge_model}. Of {summary.get('judgeable', '?')} judgeable "
+        f"questions the judge returned a usable grade for {counts}; answers that "
+        "failed outright and grades that came back unparseable are not in those "
+        f"counts. The per-dimension means below are over {mean_counts}, since a "
+        "failed answer scores zero rather than being dropped. "
         "Judges saw only question + ground truth + one answer; no arm labels.",
         f"Judge noise floor: plus or minus {noise} per dimension, measured over "
         f"{summary.get('noise_pairs', '?')} questions from {summary.get('noise_arm', '?')} "
@@ -59,9 +63,7 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         second_mean = arms[second]["means"][dimension]
         test = tests.get(dimension)
         adjusted = adjusted_by_dimension.get(dimension)
-        interval = (
-            f"[{test['ci_low']:+.3f}, {test['ci_high']:+.3f}]" if test is not None else "-"
-        )
+        interval = f"[{test['ci_low']:+.3f}, {test['ci_high']:+.3f}]" if test is not None else "-"
         shown = f"{adjusted:.3f}" if adjusted is not None else "-"
         lines.append(
             f"| {dimension} (0-2) | {first_mean} | {second_mean} "

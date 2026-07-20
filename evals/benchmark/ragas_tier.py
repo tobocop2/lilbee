@@ -114,9 +114,9 @@ def _build_ragas_judge(judge: RagasJudge) -> Any:  # pragma: no cover - needs ra
 def make_ragas_evaluator(judge: RagasJudge) -> RagasEvaluateFn:
     """A RAGAS evaluator bound to the manifest's judge, returning per-sample scores."""
 
-    def evaluate_fn(
+    def evaluate_fn(  # pragma: no cover - exercised only with ragas installed
         rows: list[dict[str, Any]], metrics: list[str]
-    ) -> dict[str, list[float]]:  # pragma: no cover - exercised only with ragas installed
+    ) -> dict[str, list[float]]:
         try:
             from ragas import EvaluationDataset, evaluate
             from ragas import metrics as ragas_metrics

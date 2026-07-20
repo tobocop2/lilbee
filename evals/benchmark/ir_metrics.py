@@ -56,9 +56,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
 }
 
 # Display name -> measure, kept for callers that only need the mapping.
-METRIC_MEASURES: dict[str, str] = {
-    name: spec.measure for name, spec in METRIC_SPECS.items()
-}
+METRIC_MEASURES: dict[str, str] = {name: spec.measure for name, spec in METRIC_SPECS.items()}
 
 PYTREC_INSTALL_HINT = (
     "pytrec_eval is required to score retrieval; install the benchmark deps: "
@@ -101,9 +99,7 @@ def truncate_run(run: Run, depth: int) -> Run:
     truncating here selects the same documents the run file already ranked first.
     """
     return {
-        query_id: dict(
-            sorted(docs.items(), key=lambda item: (-item[1], item[0]))[:depth]
-        )
+        query_id: dict(sorted(docs.items(), key=lambda item: (-item[1], item[0]))[:depth])
         for query_id, docs in run.items()
     }
 
