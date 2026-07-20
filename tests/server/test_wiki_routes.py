@@ -406,7 +406,13 @@ class TestWikiEnabled:
 
         Asserts that ``run_full_build`` is invoked from a non-loop thread
         (so an LLM-blocking build won't freeze the event loop) and that
-        two concurrent POSTs run sequentially.
+        two concurrent builds run sequentially.
+
+        Drives the handlers directly rather than through AsyncTestClient: that
+        client serializes gathered requests itself, so the spans never overlap
+        whether or not the lock exists, and deleting the lock from the handler
+        left this test green. See the prune-vs-build sibling, which had the
+        same flaw.
         """
         import asyncio
         import threading
@@ -428,29 +434,30 @@ class TestWikiEnabled:
         skew_s = 0.01
 
         def fake_build(*args, **kwargs):
-            invocations.append((threading.get_ident(), time.monotonic(), 0.0))
+            # One append after the sleep, with start held locally: the earlier
+            # version appended a placeholder first and then rewrote
+            # invocations[-1], so with two threads actually overlapping the
+            # second one rewrote the first one's entry and the spans came out
+            # looking serialized either way.
+            start = time.monotonic()
             time.sleep(sleep_s)
-            invocations[-1] = (invocations[-1][0], invocations[-1][1], time.monotonic())
+            invocations.append((threading.get_ident(), start, time.monotonic()))
             return {"paths": [], "entities": 0, "count": 0}
 
         monkeypatch.setattr("lilbee.server.wiki.run_full_build", fake_build)
 
-        async with AsyncTestClient(_create_app()) as client:
-            r1, r2 = await asyncio.gather(
-                client.post("/api/wiki/build", headers=_h()),
-                client.post("/api/wiki/build", headers=_h()),
-            )
         try:
-            assert r1.status_code == 201
-            assert r2.status_code == 201
+            await asyncio.gather(
+                _wiki_mod.wiki_build_route.fn(),
+                _wiki_mod.wiki_build_route.fn(),
+            )
             assert len(invocations) == 2
             # Worker thread is not the event-loop thread.
             for tid, _start, _end in invocations:
                 assert tid != loop_thread_id
             # Lock serialized: second invocation starts at or after first ends.
-            first_end = invocations[0][2]
-            second_start = invocations[1][1]
-            assert second_start >= first_end - skew_s
+            first, second = sorted(invocations, key=lambda i: i[1])
+            assert second[1] >= first[2] - skew_s, f"builds overlapped: {invocations}"
         finally:
             _wiki_mod._reset_wiki_build_lock()
 
