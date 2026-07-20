@@ -5,6 +5,11 @@ The noise arm's answers appear twice (replicates 0 and 1) so the judge's
 per-question disagreement with itself is measurable; all rows shuffle
 together, so a judge cannot tell arms, replicates, or that a comparison is
 happening at all.
+
+The two replicates are graded under different but equivalent presentations of
+the same prompt (see ``judging.JUDGE_PROMPTS``). Re-sending an identical prompt
+to a greedy decoder returns an identical grade, which would make the measured
+"noise" zero by construction.
 """
 
 from __future__ import annotations
@@ -25,13 +30,20 @@ JUDGED_KINDS = (QuestionKind.TOPICAL, QuestionKind.KNOWN_ITEM)
 
 @dataclass(frozen=True)
 class BlindRow:
-    """What a judge sees: no qid, no arm, no replicate."""
+    """What a judge sees: no qid, no arm, no replicate.
+
+    ``variant`` selects which equivalent presentation of the grading prompt this
+    row is graded under. It is not a hint about arm or replicate: it carries no
+    identity, and a judge seeing one row cannot tell which variant it is or that
+    a second pass exists.
+    """
 
     gid: str
     question: str
     source: str
     ground: str
     answer: str
+    variant: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,6 +111,7 @@ def build_blind_rows(
                         source=question.source,
                         ground=question.ground_passage[:GROUND_CHARS],
                         answer=answer.answer[:ANSWER_CHARS],
+                        variant=replicate,
                     )
                 )
     rng.shuffle(rows)

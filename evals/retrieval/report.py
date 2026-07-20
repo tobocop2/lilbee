@@ -23,14 +23,20 @@ def render_report(rows: list[dict[str, Any]]) -> str:
     first, second = list(arms)
     noise = summary["noise_floor"]
 
+    graded = summary.get("judge_graded", {})
+    counts = " and ".join(f"{graded.get(arm, '?')} for {arm}" for arm in (first, second))
+    judge_model = summary.get("judge_model") or "an unrecorded model"
     lines = [
         "# Retrieval eval report",
         "",
-        f"{summary['judged']} judge-graded questions per arm; the second arm was "
-        "judged twice under fresh opaque ids to measure the judge's noise floor. "
+        f"Graded by {judge_model}. The judge returned grades for {counts}, out of "
+        f"{summary.get('judgeable', '?')} judgeable questions; answers that failed "
+        "outright and grades the judge returned unparseable are not in those counts. "
         "Judges saw only question + ground truth + one answer; no arm labels.",
-        f"Judge noise floor (same answers re-graded blind): plus or minus {noise} "
-        "per dimension. Deltas at or below it are labeled within noise.",
+        f"Judge noise floor: plus or minus {noise} per dimension, measured over "
+        f"{summary.get('noise_pairs', '?')} questions from {summary.get('noise_arm', '?')} "
+        "graded twice under two equivalent phrasings of the grading prompt. Deltas at "
+        "or below it are labeled within noise.",
         "",
         f"| dimension | {first} | {second} | delta |",
         "| --- | --- | --- | --- |",

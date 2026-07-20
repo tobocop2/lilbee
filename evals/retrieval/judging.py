@@ -29,20 +29,48 @@ class Dimension(StrEnum):
 
 DIMENSIONS = tuple(str(dimension) for dimension in Dimension)
 
-JUDGE_PROMPT = (
-    "You are grading an answer produced by a document-search assistant.\n"
-    "Question: {question}\n\n"
-    "Ground-truth material the answer should be based on (from document "
-    "{source}):\n{ground}\n\n"
-    "Answer to grade:\n{answer}\n\n"
-    "Score STRICTLY as JSON with integer fields 0-2 each: "
-    '{{"faithfulness": _, "relevance": _, "citation": _}}. '
+_RUBRIC = (
     "faithfulness: 2 = every claim supported by the ground material, "
     "1 = minor unsupported detail, 0 = contradicts or invents. "
     "relevance: 2 = directly answers the question, 1 = partial, 0 = misses. "
     "citation: 2 = names or cites the correct document, 1 = cites nothing, "
     "0 = cites a wrong document. Return ONLY the JSON."
 )
+
+# Two presentations of one grading task. Both carry identical content and the
+# identical rubric; they differ only in the order the material is laid out and
+# the order the JSON fields are requested.
+#
+# This is what makes the second judging pass a measurement. Both chat backends
+# decode greedily at temperature 0, so re-sending a byte-identical prompt is the
+# same computation twice and its "disagreement" is exactly zero -- it measures
+# decoder determinism, not the judge. Grading the same content under an
+# equivalent but differently-arranged prompt measures the judge's sensitivity to
+# presentation, which is real judge instability and is still fully reproducible.
+JUDGE_PROMPTS = (
+    "You are grading an answer produced by a document-search assistant.\n"
+    "Question: {question}\n\n"
+    "Ground-truth material the answer should be based on (from document "
+    "{source}):\n{ground}\n\n"
+    "Answer to grade:\n{answer}\n\n"
+    "Score STRICTLY as JSON with integer fields 0-2 each: "
+    '{{"faithfulness": _, "relevance": _, "citation": _}}. ' + _RUBRIC,
+    "You are grading an answer produced by a document-search assistant.\n"
+    "Answer to grade:\n{answer}\n\n"
+    "Question it was asked: {question}\n\n"
+    "Ground-truth material the answer should be based on (from document "
+    "{source}):\n{ground}\n\n"
+    "Score STRICTLY as JSON with integer fields 0-2 each: "
+    '{{"citation": _, "relevance": _, "faithfulness": _}}. ' + _RUBRIC,
+)
+
+
+def judge_prompt_for(row: BlindRow) -> str:
+    """The prompt presentation this row's variant calls for."""
+    template = JUDGE_PROMPTS[row.variant % len(JUDGE_PROMPTS)]
+    return template.format(
+        question=row.question, source=row.source, ground=row.ground, answer=row.answer
+    )
 
 
 def parse_grade(text: str) -> dict[str, int] | None:
@@ -73,9 +101,7 @@ def judge_rows(
     for row in rows:
         if row.gid in checkpoint:
             continue
-        prompt = JUDGE_PROMPT.format(
-            question=row.question, source=row.source, ground=row.ground, answer=row.answer
-        )
+        prompt = judge_prompt_for(row)
         grade: dict[str, int] | None = None
         for attempt in range(attempts):
             try:

@@ -25,11 +25,25 @@ class ResultRowType(StrEnum):
     SUMMARY = "summary"
 
 
+class MissingNoiseReplicate(RuntimeError):
+    """The second judging pass produced nothing, so no noise floor was measured."""
+
+
 def noise_floor(rep0: Grades, rep1: Grades) -> float:
-    """Mean absolute per-question, per-dimension disagreement between replicates."""
+    """Mean absolute per-question, per-dimension disagreement between replicates.
+
+    Raises when the two replicates share no question. A zero here would be
+    indistinguishable from a perfectly self-consistent judge, and because the
+    floor is the report's only significance threshold, a silent 0.0 marks every
+    delta as outside the noise. A run that measured nothing must say so.
+    """
     shared = [qid for qid in rep0 if qid in rep1]
     if not shared:
-        return 0.0
+        raise MissingNoiseReplicate(
+            "no question was graded in both judging passes, so the judge noise "
+            "floor was never measured; check that the noise arm matches the one "
+            "the judge pass used and that replicate 1 completed"
+        )
     per_question = [
         sum(abs(rep0[qid][d] - rep1[qid][d]) for d in DIMENSIONS) / len(DIMENSIONS)
         for qid in shared
@@ -105,20 +119,42 @@ def build_results(
     answers_by_arm: dict[str, dict[str, AnswerRow]],
     unblinded: Unblinded,
     noise_arm: str,
+    *,
+    noise_grades: dict[int, Grades] | None = None,
+    judge_model: str = "",
 ) -> list[dict[str, Any]]:
-    """Per-question rows for every arm, then one summary row, results.jsonl shaped."""
+    """Per-question rows for every arm, then one summary row, results.jsonl shaped.
+
+    ``noise_grades`` supplies the noise arm's two replicates as the judge
+    actually returned them. It is passed separately because ``unblinded`` has
+    prefailed rows mechanically zeroed in both replicates, which reads as perfect
+    self-agreement and would deflate the floor toward zero.
+    """
     rows: list[dict[str, Any]] = []
     for question in questions:
         for arm, answers in answers_by_arm.items():
             arm_grades = unblinded.get(arm, {}).get(ARM_REPLICATE, {})
             rows.append(_question_row(question, arm, answers.get(question.qid), arm_grades))
-    noise_replicates = unblinded.get(noise_arm, {})
+    replicates = noise_grades if noise_grades is not None else unblinded.get(noise_arm, {})
     summary: dict[str, Any] = {
         "row_type": ResultRowType.SUMMARY,
         "noise_floor": noise_floor(
-            noise_replicates.get(ARM_REPLICATE, {}), noise_replicates.get(NOISE_REPLICATE, {})
+            replicates.get(ARM_REPLICATE, {}), replicates.get(NOISE_REPLICATE, {})
         ),
-        "judged": sum(
+        "noise_arm": noise_arm,
+        "noise_pairs": len(
+            set(replicates.get(ARM_REPLICATE, {})) & set(replicates.get(NOISE_REPLICATE, {}))
+        ),
+        "judge_model": judge_model,
+        # Questions a judge actually returned a grade for, per arm. The count of
+        # judgeable questions is not the same number: answers can prefail and
+        # judges can return junk, and reporting the former as the latter
+        # overstates every mean's n.
+        "judge_graded": {
+            arm: len(unblinded.get(arm, {}).get(ARM_REPLICATE, {}))
+            for arm in answers_by_arm
+        },
+        "judgeable": sum(
             1 for q in questions if q.kind in (QuestionKind.TOPICAL, QuestionKind.KNOWN_ITEM)
         ),
         "arms": {

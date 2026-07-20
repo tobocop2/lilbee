@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import httpx
 
@@ -57,13 +58,40 @@ def lilbee_chat_fn() -> ChatFn:
     return chat
 
 
-def judge_chat_fn() -> ChatFn:
-    """The judge backend: env-configured OpenAI-compatible endpoint, else lilbee."""
-    base_url = os.environ.get(JUDGE_BASE_URL_ENV)
-    if base_url:
-        model = os.environ.get(JUDGE_MODEL_ENV, "")
-        return openai_chat_fn(base_url, model, os.environ.get(JUDGE_API_KEY_ENV))
-    return lilbee_chat_fn()
+@dataclass(frozen=True)
+class JudgeBackend:
+    """The judge's chat function plus the identity that produced the grades."""
+
+    chat: ChatFn
+    model: str
+    base_url: str
+
+
+def judge_backend() -> JudgeBackend:
+    """The judge backend, which must be an endpoint separate from the system under test.
+
+    There is deliberately no fallback to the configured lilbee chat model. That
+    model authors the questions and generates both arms' answers, so falling back
+    to it means one model grades its own output against ground truth it
+    paraphrased. Self-preference bias largely cancels on a mean where both arms
+    share the generator, but not on the per-question variance the noise floor is
+    supposed to bound, and a self-consistent grader shrinks that floor and widens
+    what the report calls significant.
+    """
+    base_url = os.environ.get(JUDGE_BASE_URL_ENV, "").strip()
+    model = os.environ.get(JUDGE_MODEL_ENV, "").strip()
+    if not base_url or not model:
+        raise RuntimeError(
+            f"set {JUDGE_BASE_URL_ENV} and {JUDGE_MODEL_ENV} to an endpoint and model "
+            "separate from the system under test. The judge must not be the model that "
+            "wrote the questions and generated the answers, and an unnamed model would "
+            "leave the run's grades unattributable."
+        )
+    return JudgeBackend(
+        chat=openai_chat_fn(base_url, model, os.environ.get(JUDGE_API_KEY_ENV)),
+        model=model,
+        base_url=base_url,
+    )
 
 
 def warm_chat(

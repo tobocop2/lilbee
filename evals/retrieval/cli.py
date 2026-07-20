@@ -13,7 +13,7 @@ from evals.retrieval.answers import AnswerRow, answer_questions, make_http_clien
 from evals.retrieval.blinding import BlindAssignment, build_blind_rows, unblind
 from evals.retrieval.checkpoint import load_jsonl
 from evals.retrieval.judging import DIMENSIONS, judge_rows
-from evals.retrieval.llm import judge_chat_fn, lilbee_chat_fn, warm_chat
+from evals.retrieval.llm import judge_backend, lilbee_chat_fn, warm_chat
 from evals.retrieval.questions import (
     COUNT_QUESTIONS,
     DEFAULT_SEED,
@@ -27,6 +27,7 @@ from evals.retrieval.scoring import build_results
 
 GID_MAP_FILE = "gid_map.json"
 PREFAILED_FILE = "prefailed.json"
+JUDGE_META_FILE = "judge_meta.json"
 BLIND_ROWS_FILE = "blind_rows.jsonl"
 GRADES_FILE = "grades.jsonl"
 
@@ -98,12 +99,21 @@ def _cmd_judge(args: argparse.Namespace) -> int:
     )
     (args.work_dir / PREFAILED_FILE).write_text(json.dumps(blind.prefailed, indent=1))
     _write_jsonl(args.work_dir / BLIND_ROWS_FILE, [row.to_dict() for row in blind.rows])
-    chat = judge_chat_fn()
-    warm_chat(chat)
-    grades = judge_rows(blind.rows, chat, args.work_dir / GRADES_FILE)
+    judge = judge_backend()
+    warm_chat(judge.chat)
+    grades = judge_rows(blind.rows, judge.chat, args.work_dir / GRADES_FILE)
+    # The noise arm and judge identity are recorded here so scoring cannot pick a
+    # different noise arm than the one that was actually graded twice, and so a
+    # finished run says which model produced its grades.
+    (args.work_dir / JUDGE_META_FILE).write_text(
+        json.dumps(
+            {"noise_arm": noise_arm, "judge_model": judge.model, "judge_base_url": judge.base_url},
+            indent=1,
+        )
+    )
     unreturned = len(blind.rows) - sum(1 for row in blind.rows if row.gid in grades)
     print(
-        f"{len(blind.rows)} blind rows judged ({unreturned} unreturned), "
+        f"{len(blind.rows)} blind rows judged by {judge.model} ({unreturned} unreturned), "
         f"{len(blind.prefailed)} prefailed -> {args.work_dir}"
     )
     return 0
@@ -112,19 +122,38 @@ def _cmd_judge(args: argparse.Namespace) -> int:
 def _cmd_score(args: argparse.Namespace) -> int:
     questions = _load_questions(args.questions)
     answers_by_arm = _load_arms(args)
-    noise_arm = next(reversed(answers_by_arm))
     assignments = {
         gid: BlindAssignment.from_dict(data)
         for gid, data in json.loads((args.work_dir / GID_MAP_FILE).read_text()).items()
     }
+    judge_meta = json.loads((args.work_dir / JUDGE_META_FILE).read_text())
+    noise_arm = judge_meta["noise_arm"]
+    if noise_arm not in answers_by_arm:
+        raise ValueError(
+            f"the judge pass graded '{noise_arm}' twice, but the arms given here are "
+            f"{sorted(answers_by_arm)}; pass the same --answers-a/--answers-b as judge did"
+        )
     prefailed = json.loads((args.work_dir / PREFAILED_FILE).read_text())
-    grades = {
+    judged = {
         record["gid"]: {k: v for k, v in record.items() if k != "gid"}
         for record in load_jsonl(args.work_dir / GRADES_FILE)
     }
+    # The noise floor is measured only over rows a judge actually graded twice.
+    # Prefailed rows were never judged; both of their replicates are mechanically
+    # set to zero below, which would register as perfect agreement and pull the
+    # floor toward zero, making every real cross-arm delta look like signal.
+    noise_source = unblind(assignments, judged)
+    scored = dict(judged)
     for gid in prefailed:
-        grades[gid] = dict.fromkeys(DIMENSIONS, 0)
-    results = build_results(questions, answers_by_arm, unblind(assignments, grades), noise_arm)
+        scored[gid] = dict.fromkeys(DIMENSIONS, 0)
+    results = build_results(
+        questions,
+        answers_by_arm,
+        unblind(assignments, scored),
+        noise_arm,
+        noise_grades=noise_source.get(noise_arm, {}),
+        judge_model=judge_meta.get("judge_model", ""),
+    )
     _write_jsonl(args.out, results)
     print(f"wrote {len(results)} result rows -> {args.out}")
     return 0
