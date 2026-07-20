@@ -18,9 +18,11 @@ engine: one llama.cpp fleet serving every lilbee process on the machine.
   35B result.
 - **Embed model:** nomic-embed-text-v1.5, Q4_K_M
 
-The harness lives in `tools/qa/shared-engine/load/`: a streaming asyncio driver
-(`bench_driver.py`), the concurrency sweep (`bench_sweep.sh`), and the chaos
-soak (`soak_run.sh`). Every number below is reproducible from those scripts; the raw per-request records are in
+The harness lives in `tools/qa/shared-engine/load/`: `bench_setup.sh` provisions
+the pod, `bench_sweep.sh` runs the concurrency sweep (llmperf against lilbee's
+`/v1`, then against the engine's llama-swap proxy directly so the server overhead
+is a measured delta), and `soak_run.sh` runs the chaos soak. The per-cell
+summaries those runs produced are recorded under
 `docs/benchmarks/shared-engine-load-results/`.
 
 ## Throughput sweep
