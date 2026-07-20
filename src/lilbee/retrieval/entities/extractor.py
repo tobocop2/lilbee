@@ -16,8 +16,10 @@ import json
 import logging
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+import regex
 
 from lilbee.retrieval.entities.schema import (
     EntitySchema,
@@ -47,15 +49,18 @@ _CONFIDENCE = {ExtractorKind.REGEX: 1.0, ExtractorKind.SPACY: 0.8, ExtractorKind
 
 @dataclass
 class ExtractionStats:
-    """Mutable counters :func:`extract_entities` fills for its caller.
+    """Mutable state :func:`extract_entities` carries across its calls.
 
     Lets the full pass tell a clean zero-entity result from batches the
     provider failed outright -- the latter must not count as a completed
     pass, or the schema gets marked applied with rows silently missing.
+    ``timed_out_types`` carries a runaway pattern's name across batches so
+    it is abandoned once per pass instead of per chunk.
     """
 
     llm_batches: int = 0
     llm_batches_failed: int = 0
+    timed_out_types: set[str] = field(default_factory=set)
 
 
 INDUCTION_PROMPT = (
@@ -145,8 +150,8 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
             continue
         if entity_type.kind is ExtractorKind.REGEX:
             try:
-                re.compile(entity_type.pattern)
-            except re.error:
+                _compile_pattern(entity_type.pattern)
+            except regex.error:
                 log.warning("Dropping induced type %s: bad regex", entity_type.name)
                 continue
         # Small models sometimes propose several names for one extractor
@@ -166,9 +171,25 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
 # never defeats the match.
 _IDENTIFIER_TOKEN_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]*")
 
+# Wall-clock budget for one pattern against one chunk. Schema patterns are
+# authored by a small local model, so a pathological one (nested quantifiers)
+# is a realistic input; without a bound it backtracks until sync gives up.
+# A second is orders of magnitude above what a sane identifier pattern costs.
+_PATTERN_MATCH_TIMEOUT_SECONDS = 1.0
 
-def _extract_regex(entity_type: EntityType, text: str) -> list[str]:
-    """Regex mentions, treating anchored patterns as per-token full matches.
+
+def _compile_pattern(pattern: str) -> regex.Pattern[str]:
+    """Compile a schema pattern on the timeout-capable engine.
+
+    ``regex`` accepts everything ``re`` does and, unlike the stdlib module,
+    takes a per-match ``timeout``, which is the only way to bound an
+    LLM-authored pattern running over the whole corpus.
+    """
+    return regex.compile(pattern)
+
+
+def _extract_regex(entity_type: EntityType, text: str) -> list[str] | None:
+    """Regex mentions, or ``None`` when the match blew its time budget.
 
     Schema authors (and the induction model) tend to write ^...$ patterns
     that describe an identifier's whole shape. Applied to running text those
@@ -181,19 +202,26 @@ def _extract_regex(entity_type: EntityType, text: str) -> list[str]:
     # Only a single fully-anchored pattern converts; an alternation of
     # anchored branches (^A$|^B$) would be mangled by stripping the outer
     # pair, so it falls through to finditer unchanged.
-    if (
+    anchored = (
         pattern.startswith("^")
         and pattern.endswith("$")
         and "^" not in inner_text
         and "$" not in inner_text
-    ):
-        inner = re.compile(inner_text)
+    )
+    try:
+        if anchored:
+            inner = _compile_pattern(inner_text)
+            return [
+                token.group(0)
+                for token in _IDENTIFIER_TOKEN_RE.finditer(text)
+                if inner.fullmatch(token.group(0), timeout=_PATTERN_MATCH_TIMEOUT_SECONDS)
+            ]
+        compiled = _compile_pattern(pattern)
         return [
-            token.group(0)
-            for token in _IDENTIFIER_TOKEN_RE.finditer(text)
-            if inner.fullmatch(token.group(0))
+            m.group(0) for m in compiled.finditer(text, timeout=_PATTERN_MATCH_TIMEOUT_SECONDS)
         ]
-    return [m.group(0) for m in re.finditer(pattern, text)]
+    except TimeoutError:
+        return None
 
 
 def _extract_spacy(types: list[EntityType], text: str, nlp: Any) -> list[tuple[EntityType, str]]:
@@ -275,12 +303,28 @@ def extract_entities(
     spacy_types = [t for t in schema.types if t.kind is ExtractorKind.SPACY]
     llm_types = [t for t in schema.types if t.kind is ExtractorKind.LLM]
 
+    # A pattern that blows its budget is abandoned rather than retried on
+    # every remaining chunk; with stats the ban holds for the whole pass.
+    timed_out = stats.timed_out_types if stats is not None else set()
+
     per_chunk: list[list[tuple[EntityType, str]]] = []
     for record in chunks:
         text = record["chunk"]
         found: list[tuple[EntityType, str]] = []
         for entity_type in regex_types:
-            found.extend((entity_type, m) for m in _extract_regex(entity_type, text))
+            if entity_type.name in timed_out:
+                continue
+            matches = _extract_regex(entity_type, text)
+            if matches is None:
+                timed_out.add(entity_type.name)
+                log.warning(
+                    "Entity type %s: its pattern exceeded the %.0fs match budget; "
+                    "skipping that type. Its regex is likely pathological.",
+                    entity_type.name,
+                    _PATTERN_MATCH_TIMEOUT_SECONDS,
+                )
+                continue
+            found.extend((entity_type, m) for m in matches)
         if spacy_types and nlp is not None:
             found.extend(_extract_spacy(spacy_types, text, nlp))
         per_chunk.append(found)

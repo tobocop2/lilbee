@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -279,6 +280,52 @@ class TestExtractEntities:
             ("PX9001", "px9001"),
         }
         assert all(r["confidence"] == 1.0 for r in rows)
+
+    def test_runaway_pattern_is_abandoned_and_named(self, caplog):
+        """An induced pattern that blows its match budget must not stall the
+        pass: the type is dropped with a warning naming it, and the other
+        types still extract."""
+        import lilbee.retrieval.entities.extractor as extractor_mod
+
+        runaway = EntityType(name="runaway", kind=ExtractorKind.REGEX, pattern=r"(a+)+b")
+        real_compile = extractor_mod._compile_pattern
+
+        def fake_compile(pattern):
+            if pattern == r"(a+)+b":
+                stub = MagicMock()
+                stub.finditer.side_effect = TimeoutError("regex timed out")
+                return stub
+            return real_compile(pattern)
+
+        with (
+            mock.patch.object(extractor_mod, "_compile_pattern", fake_compile),
+            caplog.at_level("WARNING"),
+        ):
+            rows = extract_entities(
+                [_chunk("parts PX4471 aaaaaaaaaa")],
+                EntitySchema(types=[runaway, PART]),
+            )
+        assert {r["normalized_value"] for r in rows} == {"px4471"}
+        assert any("runaway" in rec.message for rec in caplog.records)
+
+    def test_runaway_pattern_is_not_retried_across_batches(self):
+        """With stats carried across a full pass, a pattern that timed out
+        once is skipped for the rest of the pass rather than costing the
+        budget again on every chunk."""
+        import lilbee.retrieval.entities.extractor as extractor_mod
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        runaway = EntityType(name="runaway", kind=ExtractorKind.REGEX, pattern=r"(a+)+b")
+        stub = MagicMock()
+        stub.finditer.side_effect = TimeoutError("regex timed out")
+
+        stats = ExtractionStats()
+        with mock.patch.object(extractor_mod, "_compile_pattern", lambda pattern: stub):
+            extract_entities([_chunk("aaaa")], EntitySchema(types=[runaway]), stats=stats)
+            extract_entities([_chunk("aaaa")], EntitySchema(types=[runaway]), stats=stats)
+        assert stats.timed_out_types == {"runaway"}
+        # Two chunks, but the pattern was only ever attempted once.
+        assert stub.finditer.call_count == 1
 
     def test_anchored_pattern_matches_identifiers_inline(self):
         """The OCR-corpus failure: an induced pattern anchored with ^...$
