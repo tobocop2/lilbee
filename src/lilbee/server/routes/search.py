@@ -18,6 +18,7 @@ from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query import ChatMessage as ChatMessageDict
 from lilbee.server import handlers
 from lilbee.server.auth import read_only
+from lilbee.server.chat_completions_api.errors import classify_provider_error
 from lilbee.server.chat_dispatch.concurrency import (
     ChatBusyError,
     ChatSlotGuard,
@@ -120,7 +121,18 @@ async def _gated_stream(
             yield chunk
     except Exception as exc:
         log.exception("streaming chat handler failed")
-        yield sse_error(str(exc))
+        # The typed dispatch failures that reach here (unknown model, no tool
+        # support, context overflow) are exactly the ones the SSE error code
+        # vocabulary was widened to cover, and the non-streaming sibling already
+        # maps them to distinct statuses. Without a code the stream flattened
+        # them into one message, so a client could not tell "pull the model"
+        # from "shorten the prompt". classify_provider_error also redacts the
+        # backend-failure kinds, whose text names loopback ports and engine paths.
+        classified = classify_provider_error(exc)
+        if classified is None:
+            yield sse_error(str(exc))
+        else:
+            yield sse_error(classified.message, code=classified.code)
     finally:
         await guard.release()
 

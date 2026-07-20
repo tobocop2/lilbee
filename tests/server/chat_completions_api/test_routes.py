@@ -757,9 +757,7 @@ class TestNonStreamingCompletion:
         assert body["error"]["message"] == "the provider said no, here is what to do about it"
         assert chat_gate().in_flight == 0
 
-    @pytest.mark.parametrize(
-        ("kind", "status"), [("connection", 503), ("server", 502)]
-    )
+    @pytest.mark.parametrize(("kind", "status"), [("connection", 503), ("server", 502)])
     async def test_backend_failure_returns_a_generic_envelope(
         self, services_with_chat_model, _auth_token, kind, status
     ):
