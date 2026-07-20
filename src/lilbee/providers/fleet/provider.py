@@ -1982,6 +1982,34 @@ class FleetProvider:
                     return
                 self._reload_pending = False
 
+    def _rebind_or_overflow(self) -> list[WorkerRole]:
+        """Re-acquire a bound engine after a config change; caller holds the build lock.
+
+        A provider that rode another process's engine owns none of its groups and
+        cannot restart them. Restarting "in place" would spawn a duplicate fleet
+        into the shared slot (a bound manager's ``shutdown`` only detaches, leaving
+        the incumbent resident) and size it blind against VRAM the incumbent still
+        holds. Instead drop every binding and this process's membership, then re-run
+        the acquisition ladder: it rebinds to the reconfigured shared engine, builds
+        fresh in the machine slot if we were its last user, or overflows to a private
+        engine sized against a fresh probe. Returns the roles now served (to preload).
+        """
+        from lilbee.core.config import cfg
+
+        with self._lock:
+            groups = list(self._swaps)
+        for group in groups:
+            with self._lock:
+                swap = self._drop_group(group)
+                self._group_dirs.pop(group, None)
+            if swap is not None:
+                swap.shutdown()  # bound: detaches; the shared engine keeps running
+        self._release_engines()  # a shared engine's builder keeps it live; no stop here
+        if not self._acquire_engine(cfg.data_root):
+            return []
+        with self._lock:
+            return list(self._role_group)
+
     def _reload_pass(self, force: frozenset[WorkerRole] = frozenset()) -> None:
         """One re-plan from current cfg, restarting only the groups that changed.
 
@@ -1996,6 +2024,7 @@ class FleetProvider:
         llama-swap holding GPU memory.
         """
 
+        restarted: list[WorkerRole] = []
         with self._build_lock:
             with self._lock:
                 if self._shut_down:
@@ -2004,6 +2033,15 @@ class FleetProvider:
                     return
                 running = set(self._swaps)
                 old = dict(self._launches)
+                # All groups share one dir and one ownership by construction, so any
+                # bound manager means this provider rides another process's engine.
+                bound = any(swap.bound for swap in self._swaps.values())
+            if bound:
+                # Cannot restart a shared engine's groups in place (that duplicates
+                # the fleet into the slot); drop the bindings and re-acquire.
+                restarted = self._rebind_or_overflow()
+                self._preload_restarted(restarted)
+                return
             # Reap dead engines in our dirs before re-planning, as a build would.
             reload_dir = self._reload_dir()
             reap_stale(reload_dir)
@@ -2041,7 +2079,6 @@ class FleetProvider:
                 if swap is not None:
                     swap.shutdown()
             # Start phase: spawn the changed groups present in the new plan.
-            restarted: list[WorkerRole] = []
             for group in sorted(changed & set(new), key=lambda g: g.value):
                 group_launches = list(new[group])
                 swap = SwapManager(reload_dir, group)
@@ -2050,16 +2087,22 @@ class FleetProvider:
                     self._adopt_group(group, swap, group_launches)
                     self._group_dirs[group] = reload_dir
                 restarted.extend(_by_role(group_launches))
-        if restarted:
-            # Load the restarted roles' models off-thread (llama-swap spawns an
-            # upstream on its first request): the reload returns once the proxies
-            # answer, and the UI's spawn listeners track the model loads.
-            threading.Thread(
-                target=self._preload_roles,
-                kwargs={"roles": frozenset(restarted)},
-                name="fleet-reload-warm",
-                daemon=True,
-            ).start()
+        self._preload_restarted(restarted)
+
+    def _preload_restarted(self, restarted: list[WorkerRole]) -> None:
+        """Load the restarted roles' models off-thread (a no-op for none).
+
+        llama-swap spawns an upstream on its first request, so the reload returns
+        once the proxies answer and the UI's spawn listeners track the model loads.
+        """
+        if not restarted:
+            return
+        threading.Thread(
+            target=self._preload_roles,
+            kwargs={"roles": frozenset(restarted)},
+            name="fleet-reload-warm",
+            daemon=True,
+        ).start()
 
     def add_spawn_listener(
         self,

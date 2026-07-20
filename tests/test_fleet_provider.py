@@ -52,6 +52,7 @@ class _FakeSwap:
         self.shutdowns = 0
         self.ready: set[WorkerRole] = set()
         self.running = True
+        self.bound = False
 
     def reap_stale(self) -> None:
         self.reaps += 1
@@ -346,6 +347,70 @@ def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> No
     p = FleetProvider()
     p._reload_pass()  # must not raise
     assert p._swaps == {}
+
+
+def test_reload_of_a_bound_engine_reacquires_instead_of_duplicating(monkeypatch) -> None:
+    # A provider bound to another process's engine owns none of its groups. A model
+    # change must not restart the group "in place": a bound manager's shutdown only
+    # detaches, so restarting spawns a SECOND full fleet into the shared slot, sized
+    # blind against the incumbent's resident VRAM (an OOM on a small-VRAM box). The
+    # binder must drop its binding and re-run the acquisition ladder instead.
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    built: list = []
+
+    def _record_manager(data_dir, group):
+        built.append((data_dir, group))
+        return _FakeSwap()
+
+    monkeypatch.setattr(prov_mod, "SwapManager", _record_manager)
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
+    reacquired: list[bool] = []
+
+    def _fake_acquire(_root) -> bool:
+        reacquired.append(True)
+        return False  # rebound/overflowed off the shared slot; nothing to preload
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_acquire_engine", _fake_acquire)
+    bound_swap = _FakeSwap()
+    bound_swap.bound = True
+    group = SwapGroup.CHAT
+    p._swaps = {group: bound_swap}
+    p._role_group = {WorkerRole.CHAT: group}
+    p._group_dirs = {group: prov_mod.machine_engine_dir()}
+
+    p._reload_pass()
+
+    assert reacquired == [True]  # re-acquired through the ladder, not restarted in place
+    assert bound_swap.shutdowns == 1  # the binding was dropped (detached)
+    assert built == []  # no duplicate fleet spawned into the shared slot
+
+
+def test_reload_of_a_bound_engine_preloads_the_reacquired_roles(monkeypatch) -> None:
+    # When the re-acquire lands (rebinds or overflows), the reload warms the roles
+    # it now serves off-thread, just like an owned restart does.
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    kicked = _stub_warm_thread(monkeypatch)
+
+    def _fake_acquire(_root) -> bool:
+        p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}  # ladder adopted the role
+        return True
+
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_acquire_engine", _fake_acquire)
+    monkeypatch.setattr(p, "_release_engines", lambda: None)
+    bound_swap = _FakeSwap()
+    bound_swap.bound = True
+    p._swaps = {SwapGroup.CHAT: bound_swap}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+
+    p._reload_pass()
+
+    assert kicked and kicked[0]["name"] == "fleet-reload-warm"  # roles warmed off-thread
 
 
 def test_ensure_fleet_refused_after_shutdown(monkeypatch) -> None:
