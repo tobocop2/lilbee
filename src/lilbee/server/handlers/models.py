@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Literal
 
+from cachetools import TTLCache
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
@@ -395,36 +395,15 @@ def _hosted_entry(rm: RemoteModel, source: ModelSource) -> CatalogEntryResponse:
 _HOSTED_MODELS_TTL = 60
 
 
-_CacheT = TypeVar("_CacheT")
-
-
-class _TtlCache(Generic[_CacheT]):
-    """Single-entry TTL cache keyed on the config tuple that produced it.
-
-    One class rather than the two near-identical copies this module used to
-    carry: they differed only in the cached type and in whether the freshness
-    check tested the result for truthiness or for None, and the truthiness
-    variant re-fetched every time the answer was legitimately empty.
-    """
-
-    def __init__(self, ttl_seconds: float) -> None:
-        self._ttl = ttl_seconds
-        self._time: float = 0.0
-        self._key: str = ""
-        self._result: _CacheT | None = None
-
-    def get(self, key: str) -> _CacheT | None:
-        if self._result is None or key != self._key:
-            return None
-        return self._result if (time.monotonic() - self._time) < self._ttl else None
-
-    def set(self, key: str, result: _CacheT) -> None:
-        self._time = time.monotonic()
-        self._key = key
-        self._result = result
-
-
-_hosted_cache: _TtlCache[list[CatalogEntryResponse]] = _TtlCache(_HOSTED_MODELS_TTL)
+# Single-entry TTL caches keyed on the config tuple that produced the value.
+# maxsize=1 is the "single entry" part: a lookup under a new key misses and the
+# store evicts the old one, which is the behaviour the two hand-rolled classes
+# here reimplemented. They had already drifted apart, one testing the cached
+# value for truthiness instead of for presence, so a legitimately empty result
+# was never cached and re-fetched on every request.
+_hosted_cache: TTLCache[str, list[CatalogEntryResponse]] = TTLCache(
+    maxsize=1, ttl=_HOSTED_MODELS_TTL
+)
 
 
 def _discover_hosted_sync() -> list[CatalogEntryResponse]:
@@ -463,7 +442,7 @@ async def _collect_hosted_entries(
     rows = _hosted_cache.get(key)
     if rows is None:
         rows = await asyncio.to_thread(_discover_hosted_sync)
-        _hosted_cache.set(key, rows)
+        _hosted_cache[key] = rows
     if task is not None:
         rows = [r for r in rows if r.task == task]
     if search:
@@ -660,20 +639,24 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
 _EXTERNAL_MODELS_TTL = 60
 
 
-_external_cache: _TtlCache[ExternalModelsResponse] = _TtlCache(_EXTERNAL_MODELS_TTL)
+_external_cache: TTLCache[str, ExternalModelsResponse] = TTLCache(
+    maxsize=1, ttl=_EXTERNAL_MODELS_TTL
+)
 
 
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
     key = f"{cfg.ollama_base_url}:{cfg.lm_studio_base_url}:{cfg.llm_api_key or ''}"
+    # ``is not None``, not truthiness: an empty model list is a real answer and
+    # caching it is the point. Testing the value itself re-fetched every time.
     cached = _external_cache.get(key)
-    if cached:
+    if cached is not None:
         return cached
 
     try:
         models = await asyncio.to_thread(get_services().provider.list_models)
         result = ExternalModelsResponse(models=models)
-        _external_cache.set(key, result)
+        _external_cache[key] = result
         return result
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)

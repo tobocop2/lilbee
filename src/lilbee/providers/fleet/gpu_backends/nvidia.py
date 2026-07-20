@@ -17,7 +17,15 @@ _CACHE_TTL_S = 0.9
 
 
 class SmiCache:
-    """Shares one nvidia-smi probe across concurrent callers within the TTL."""
+    """Shares one nvidia-smi probe across concurrent callers within the TTL.
+
+    Not a ``cachetools.TTLCache``: this holds the lock *across* the probe, so
+    concurrent callers block and share the one result. ``@cached(cache,
+    lock=...)`` releases the lock around the call by design, so three streams
+    ticking at once would spawn three nvidia-smi subprocesses. Measured, not
+    assumed: three concurrent misses call the producer three times.
+    ``test_concurrent_threads_probe_once`` pins the behaviour that matters.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()

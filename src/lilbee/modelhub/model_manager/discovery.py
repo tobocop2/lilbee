@@ -229,7 +229,16 @@ def gather_known_model_refs() -> set[str]:
 
 
 class KnownModelCache:
-    """TTL-cached union of native + remote + frontier model refs."""
+    """TTL-cached union of native + remote + frontier model refs.
+
+    Not a ``cachetools.TTLCache``: the generation counter is the point. A pull
+    or a remove calls :meth:`invalidate` and must be visible to the very next
+    ``refs()``, but a fan-out already in flight when that happens would
+    otherwise finish and install its pre-pull answer with a full TTL, hiding
+    the new model for the next 30 seconds. Bumping the generation makes that
+    late writer publish its refs without renewing the expiry. The fan-out
+    itself runs off the lock because it makes network calls.
+    """
 
     DEFAULT_TTL_S = 30.0
 

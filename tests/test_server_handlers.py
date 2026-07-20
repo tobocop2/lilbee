@@ -2095,8 +2095,7 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        h._hosted_cache.set("", [])  # prime then clear to defeat any prior TTL entry
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2146,7 +2145,7 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
         monkeypatch.setattr(
             h,
@@ -2169,7 +2168,7 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         calls = {"n": 0}
 
         def _discover():
@@ -2255,7 +2254,7 @@ class TestModelsCatalog:
         """
         import lilbee.server.handlers.models as h
 
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
         monkeypatch.setattr(h, "classify_all_remote_models", lambda *a, **k: [])
 
@@ -2280,7 +2279,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2316,7 +2315,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2344,7 +2343,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=20, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2374,7 +2373,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -4041,9 +4040,9 @@ class TestListExternalModels:
         """Reset the external models cache before each test."""
         from lilbee.server.handlers import models as h
 
-        h._external_cache = h._TtlCache(h._EXTERNAL_MODELS_TTL)
+        h._external_cache.clear()
         yield
-        h._external_cache = h._TtlCache(h._EXTERNAL_MODELS_TTL)
+        h._external_cache.clear()
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_provider_models(self, mock_svc):
@@ -4068,17 +4067,29 @@ class TestListExternalModels:
         assert result1.models == ["model-a"]
         mock_svc.return_value.provider.list_models.assert_called_once()
 
-    @patch("lilbee.server.handlers.models.time")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_cache_expires(self, mock_svc, mock_time):
-        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
-        mock_time.monotonic.return_value = 0.0
-        await handlers.list_external_models()
+    async def test_cache_expires(self, mock_svc):
+        """Drives the cache's own clock rather than patching the module's, which
+        the store no longer reads: cachetools takes its timer at construction."""
+        from cachetools import TTLCache
 
-        mock_time.monotonic.return_value = 61.0
-        await handlers.list_external_models()
+        from lilbee.server.handlers import models as h
 
-        assert mock_svc.return_value.provider.list_models.call_count == 2
+        now = {"t": 0.0}
+        original = h._external_cache
+        h._external_cache = TTLCache(maxsize=1, ttl=h._EXTERNAL_MODELS_TTL, timer=lambda: now["t"])
+        try:
+            mock_svc.return_value.provider.list_models.return_value = ["model-a"]
+            await handlers.list_external_models()
+            now["t"] = h._EXTERNAL_MODELS_TTL - 1
+            await handlers.list_external_models()
+            assert mock_svc.return_value.provider.list_models.call_count == 1, "still fresh"
+
+            now["t"] = h._EXTERNAL_MODELS_TTL + 1
+            await handlers.list_external_models()
+            assert mock_svc.return_value.provider.list_models.call_count == 2
+        finally:
+            h._external_cache = original
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_cache_invalidates_on_config_change(self, mock_svc):
