@@ -24,6 +24,7 @@ CONDENSE_PROMPT = (
 
 CONDENSE_MAX_TOKENS = 120
 
-# History turns included in the condensation prompt; older turns rarely change
-# what a follow-up refers to and only add latency.
+# Trailing history messages included in the condensation prompt (one
+# ChatMessage each, so 6 is the last 3 user/assistant exchanges); older
+# messages rarely change what a follow-up refers to and only add latency.
 CONDENSE_HISTORY_TURNS = 6

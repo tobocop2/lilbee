@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from lilbee.core.config import CHUNKS_TABLE, ENTITIES_TABLE, active_config
 from lilbee.retrieval.entities.extractor import (
     INDUCTION_SAMPLE_SIZE,
+    ExtractionStats,
     extract_entities,
     induce_schema,
 )
@@ -45,7 +46,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Chunks per extraction batch during a full pass; bounds the working set.
+# Chunks per extraction batch during a full pass; bounds the boxed Python
+# rows in flight (the scan itself is projected and stays columnar).
 _BACKFILL_BATCH = 2000
 
 # Corpus growth that makes the induced taxonomy worth revisiting, as a
@@ -171,14 +173,22 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
     total = table.count_rows()
     if total == 0:
         return []
-    step = max(1, total // limit)
+    # Ceiling division: flooring makes the stride too small, so the sample is
+    # the first `limit` contiguous rows and the table's tail -- the most
+    # recently ingested documents, exactly what re-induction exists to catch --
+    # is never reached.
+    step = max(1, -(-total // limit))
     texts: list[str] = []
-    arrow = table.to_arrow().select(["chunk"])
+    # Projection is pushed into LanceDB: a bare to_arrow() would drag every
+    # column, embedding vectors included, into memory before selecting.
+    arrow = table.search().select(["chunk"]).limit(None).to_arrow()
     index = 0
     for batch in arrow.to_batches(max_chunksize=_BACKFILL_BATCH):
         for text in batch.column("chunk").to_pylist():
-            if index % step == 0 and len(texts) < limit:
+            if index % step == 0:
                 texts.append(text)
+                if len(texts) >= limit:
+                    return texts
             index += 1
     return texts
 
@@ -186,7 +196,10 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
 def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | None) -> bool:
     """Extract entities across every stored chunk. True when it completed.
 
-    Clears previously extracted rows first so the pass is idempotent.
+    Clears previously extracted rows first so the pass is idempotent. A pass
+    with failed LLM batches (chat model down or erroring) does NOT count as
+    completed: rows are missing for those chunks, and marking the schema
+    applied would make every later sync return early and never retry.
     """
     table = store.open_table(CHUNKS_TABLE)
     if table is None:
@@ -209,14 +222,23 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | Non
 
         provider = get_services().provider
     written = 0
+    stats = ExtractionStats()
     columns = ["chunk", "source", "chunk_index", "page_start"]
-    arrow = table.to_arrow().select(columns)
+    # Projection pushed into LanceDB; see _sample_chunks.
+    arrow = table.search().select(columns).limit(None).to_arrow()
     for batch in arrow.to_batches(max_chunksize=_BACKFILL_BATCH):
         if cancel is not None and cancel.is_set():
             log.info("Entity extraction cancelled; the next sync restarts the pass")
             return False
         records = batch.to_pylist()
-        rows = extract_entities(records, schema, provider=provider, nlp=nlp)
+        rows = extract_entities(records, schema, provider=provider, nlp=nlp, stats=stats)
         written += store.add_entities(rows)
+    if stats.llm_batches_failed:
+        log.warning(
+            "Entity extraction pass had %d of %d LLM batches fail; the next sync redoes the pass",
+            stats.llm_batches_failed,
+            stats.llm_batches,
+        )
+        return False
     log.info("Entity extraction complete: %d rows across the index", written)
     return True

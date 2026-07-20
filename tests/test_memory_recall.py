@@ -55,14 +55,36 @@ class TestFormatMemoryBlock:
     def test_budget_drops_overflow_facts(self):
         prefs = [_mem("p" * 80, MemoryKind.PREFERENCE)]
         facts = [_mem("f" * 80)]
-        # Budget fits exactly the header + the preference line, so the fact overflows.
-        budget = estimate_text_tokens(MEMORY_BLOCK_HEADER) + estimate_text_tokens("- " + "p" * 80)
+        # Budget fits exactly the framing + the preference line, so the fact overflows.
+        budget = (
+            estimate_text_tokens(MEMORY_BLOCK_HEADER)
+            + estimate_text_tokens(MEMORY_BLOCK_FOOTER)
+            + estimate_text_tokens("- " + "p" * 80)
+        )
         block = format_memory_block(prefs, facts, budget)
         assert "p" * 80 in block
         assert "f" * 80 not in block
 
     def test_tiny_budget_returns_empty(self):
         assert format_memory_block([_mem("anything")], [], 1) == ""
+
+    def test_rendered_block_stays_within_the_budget(self):
+        """The footer is appended unconditionally, so it has to be budgeted:
+        otherwise the rendered block overruns the budget it was given."""
+        prefs = [_mem("p" * 80, MemoryKind.PREFERENCE)]
+        budget = estimate_text_tokens(MEMORY_BLOCK_HEADER) + estimate_text_tokens("- " + "p" * 80)
+        block = format_memory_block(prefs, [], budget)
+        assert estimate_text_tokens(block) <= budget
+
+    def test_one_oversized_preference_does_not_block_every_fact(self):
+        """'Preferences claim the budget first; facts fill the remainder' --
+        a single preference too large to fit must be skipped, not end the
+        fill and strand every fact behind it."""
+        prefs = [_mem("p" * 4000, MemoryKind.PREFERENCE)]
+        facts = [_mem("uses rust")]
+        budget = estimate_text_tokens(MEMORY_BLOCK_HEADER) + 200
+        block = format_memory_block(prefs, facts, budget)
+        assert "uses rust" in block
 
 
 class TestSearcherMemoryBlock:

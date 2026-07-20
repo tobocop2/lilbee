@@ -455,6 +455,29 @@ class TestBuildContext:
         ctx = build_context(results)
         assert "[1] (notes.md)\nhello" in ctx
 
+    def test_header_omits_page_zero(self):
+        """PDF chunks whose page metadata was missing are stored with page 0.
+        The Sources block already suppresses that locator, so the prompt
+        header must too, or the model cites a page the user's list denies."""
+        results = [
+            _make_result(
+                source="scan.pdf", content_type="pdf", chunk="body", page_start=0, page_end=0
+            )
+        ]
+        ctx = build_context(results)
+        assert "[1] (scan.pdf)\nbody" in ctx
+        assert "page 0" not in ctx
+
+    def test_header_omits_line_zero_for_code(self):
+        results = [
+            _make_result(
+                source="app.py", content_type="code", chunk="x = 1", line_start=0, line_end=0
+            )
+        ]
+        ctx = build_context(results)
+        assert "[1] (app.py)\nx = 1" in ctx
+        assert "line 0" not in ctx
+
 
 class TestCitedIndexExtraction:
     def test_single_brackets(self):
@@ -3456,6 +3479,30 @@ class TestCitedSubsetByName:
         answer = "The witness notes that the repair happened in March."
         assert cited_subset(answer, sources) == []
 
+    def test_stem_embedded_in_a_longer_identifier_is_not_cited(self):
+        """Substring containment marks 'log-1' cited by an answer that only
+        discusses 'catalog-10'. cited_sources is the grounding signal JSON
+        consumers read, so a false positive inflates grounding."""
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="log-1.md", chunk_index=0)]
+        answer = "The catalog-10.pdf entry lists the part."
+        assert cited_subset(answer, sources) == []
+
+    def test_name_embedded_in_a_longer_filename_is_not_cited(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="notes.md", chunk_index=0)]
+        answer = "See footnotes.md for the caveats."
+        assert cited_subset(answer, sources) == []
+
+    def test_name_mention_still_counts_next_to_punctuation(self):
+        from lilbee.retrieval.query.formatting import cited_subset
+
+        sources = [_make_result(source="log-1.md", chunk_index=0)]
+        for answer in ("As log-1.md shows,", "(log-1.md)", "see log-1.md."):
+            assert len(cited_subset(answer, sources)) == 1, answer
+
     def test_marker_and_name_citations_combine(self):
         from lilbee.retrieval.query.formatting import cited_subset
 
@@ -3504,6 +3551,22 @@ class TestStripLlmCitations:
         # citation block; only heading-plus-list gets stripped.
         text = "The paper has three parts.\n\nReferences:\nIt lists 40 works."
         assert strip_llm_citations(text) == text
+
+    def test_removes_a_block_that_starts_the_answer(self):
+        """An answer that is nothing but a fabricated citation block must not
+        stream through: lilbee stacks its authoritative list underneath, which
+        is the double-list shape the filter exists to prevent."""
+        text = "Sources:\n- fake.pdf\n- other.pdf"
+        assert strip_llm_citations(text) == ""
+
+    def test_removes_a_bare_heading_that_starts_the_answer(self):
+        assert strip_llm_citations("Sources:") == ""
+
+    def test_keeps_prose_that_follows_a_mid_answer_block(self):
+        """The block is removed, not everything after it: a model that emits a
+        citation list and then keeps answering must not lose the continuation."""
+        text = "Answer.\n\nSources:\n- a.pdf\n\nAdditionally, more prose here."
+        assert strip_llm_citations(text) == "Answer.\n\nAdditionally, more prose here."
 
     def test_removes_dangling_heading(self):
         text = "The answer is 42.\n\nSources:\n"

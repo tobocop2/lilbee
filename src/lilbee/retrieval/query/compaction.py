@@ -102,9 +102,9 @@ class CompactionResult:
 
     summary: str
     condensed: int
-    """Turns folded into the notes."""
+    """Messages folded into the notes (not exchanges: a user+assistant pair is two)."""
     stranded: int
-    """Turns dropped with no notes. Non-zero means the conversation lost detail
+    """Messages dropped with no notes. Non-zero means the conversation lost detail
     outright, which the UI must say plainly rather than let the model appear to
     have forgotten for no reason."""
 
@@ -115,7 +115,7 @@ class CompactionPlan:
 
     batches: list[list[ChatMessage]]
     stranded: int
-    """Turns dropped with no notes because the backlog exceeded MAX_COMPACT_CALLS.
+    """Messages dropped with no notes because the backlog exceeded MAX_COMPACT_CALLS.
 
     Deliberately no ``condensed`` counterpart: a plan cannot know what will be
     condensed, only what it will try. Whether a batch lands depends on the model
@@ -193,9 +193,24 @@ def foldable(history: list[ChatMessage]) -> list[ChatMessage]:
 
     No ``keep`` parameter: COMPACT_KEEP_RECENT is the policy, and a knob nobody
     turns is just a second place for it to disagree with itself.
+
+    The boundary is aligned forward to a user message so the kept window opens
+    a turn. A history can be odd-length (an interrupted turn persists a user
+    message with no reply), and cutting a fixed count would then leave the
+    window starting on an assistant reply, so the assembled prompt would run
+    user, assistant, assistant -- the non-alternating shape the summary pair
+    and windowed_history both take care to avoid.
     """
     keep = COMPACT_KEEP_RECENT
-    return history[:-keep] if len(history) > keep else []
+    if len(history) <= keep:
+        return []
+    cut = len(history) - keep
+    for i in range(cut, len(history)):
+        if history[i]["role"] == "user":
+            return history[:i]
+    # No user message in the tail at all: keep the plain boundary rather than
+    # folding the entire history away.
+    return history[:cut]
 
 
 def summary_cap(ctx_target: int) -> int:

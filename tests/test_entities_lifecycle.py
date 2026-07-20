@@ -243,6 +243,45 @@ class TestEnsureEntities:
         assert store.entity_value_counts("part_number") == (1, 1)  # regex still ran
         assert any("spaCy model unavailable" in r.message for r in caplog.records)
 
+    def test_provider_failure_during_full_pass_leaves_schema_unapplied(self, isolated, caplog):
+        """A pass whose LLM batches fail (chat model down) must not mark the
+        schema applied: applied=True with zero rows would make every later
+        sync return early and nothing would ever retry the extraction."""
+        store, services = isolated
+        _index_chunks(store, ["the vessel Meridian docked"])
+        save_schema(
+            EntitySchema(types=[EntityType(name="vessel", kind=ExtractorKind.LLM)]),
+            store,
+            applied=False,
+            source_count=1,
+        )
+        services.provider.chat.side_effect = RuntimeError("model unloaded")
+        with caplog.at_level("WARNING"):
+            ensure_entities()
+        assert not _applied(store)
+        assert any("LLM batch" in r.message for r in caplog.records)
+
+    def test_llm_batch_failure_still_writes_other_kind_rows(self, isolated):
+        """Extractor kinds degrade independently: regex rows land even when
+        the LLM batches fail, and the pass is simply redone next sync."""
+        store, services = isolated
+        _index_chunks(store, ["part PX4471 aboard the Meridian"])
+        save_schema(
+            EntitySchema(
+                types=[
+                    EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}"),
+                    EntityType(name="vessel", kind=ExtractorKind.LLM),
+                ]
+            ),
+            store,
+            applied=False,
+            source_count=1,
+        )
+        services.provider.chat.side_effect = RuntimeError("model unloaded")
+        ensure_entities()
+        assert store.entity_value_counts("part_number") == (1, 1)
+        assert not _applied(store)
+
     def test_empty_chunks_table_skips_pass(self, isolated):
         store, _services = isolated
         save_schema(_part_schema(), store, applied=False, source_count=1)
@@ -257,6 +296,93 @@ class TestEnsureEntities:
         store.remove_documents(["catalog.txt"])
         ensure_entities()
         services.provider.chat.assert_not_called()
+
+
+class TestChunkScanProjection:
+    """The lifecycle's chunk scans must push column projection into LanceDB;
+    a bare to_arrow() drags the whole table, embedding vectors included,
+    into memory before selecting."""
+
+    @staticmethod
+    def _projecting_table(batches):
+        table = mock.MagicMock()
+        query = table.search.return_value.select.return_value.limit.return_value
+        query.to_arrow.return_value.to_batches.return_value = batches
+        return table
+
+    def test_sample_chunks_projects_only_the_chunk_column(self):
+        from lilbee.retrieval.entities.lifecycle import _sample_chunks
+
+        batch = mock.MagicMock()
+        batch.column.return_value.to_pylist.return_value = ["a", "b", "c"]
+        table = self._projecting_table([batch])
+        table.count_rows.return_value = 3
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+
+        # 3 rows into a 2-sample: stride 2 takes the first and the last,
+        # spreading across the table rather than taking the head.
+        texts = _sample_chunks(store, 2)
+        assert texts == ["a", "c"]
+        table.search.return_value.select.assert_called_once_with(["chunk"])
+        table.search.return_value.select.return_value.limit.assert_called_once_with(None)
+        table.to_arrow.assert_not_called()
+
+    def test_sample_spans_the_whole_table_not_just_the_head(self):
+        """Floor division makes the stride too small, so the sample is the
+        first `limit` contiguous rows and the table's tail -- the most
+        recently ingested documents, i.e. exactly the new family that
+        re-induction exists to catch -- can never be sampled."""
+        from lilbee.retrieval.entities.lifecycle import _sample_chunks
+
+        total = 79
+        batch = mock.MagicMock()
+        batch.column.return_value.to_pylist.return_value = [f"chunk-{i}" for i in range(total)]
+        table = self._projecting_table([batch])
+        table.count_rows.return_value = total
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+
+        texts = _sample_chunks(store, 40)
+        sampled = [int(t.split("-")[1]) for t in texts]
+        assert len(sampled) <= 40
+        # Floor division gives stride 1 here, sampling rows 0-39 and leaving
+        # the last half of the table unreachable; an even spread reaches it.
+        assert max(sampled) >= total - 10
+
+    def test_sample_chunks_stops_reading_once_the_sample_is_full(self):
+        from lilbee.retrieval.entities.lifecycle import _sample_chunks
+
+        first = mock.MagicMock()
+        first.column.return_value.to_pylist.return_value = ["a", "b", "c"]
+        second = mock.MagicMock()
+        table = self._projecting_table([first, second])
+        table.count_rows.return_value = 4
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+
+        # step = 4 // 2 = 2 -> indexes 0 and 2, both in the first batch.
+        texts = _sample_chunks(store, 2)
+        assert texts == ["a", "c"]
+        second.column.assert_not_called()
+
+    def test_full_pass_projects_the_needed_columns(self):
+        from lilbee.retrieval.entities.lifecycle import _full_pass
+
+        batch = mock.MagicMock()
+        batch.to_pylist.return_value = [
+            {"chunk": "part PX4471", "source": "a.txt", "chunk_index": 0, "page_start": 1}
+        ]
+        table = self._projecting_table([batch])
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+        store.add_entities.return_value = 1
+
+        assert _full_pass(store, _part_schema(), None) is True
+        table.search.return_value.select.assert_called_once_with(
+            ["chunk", "source", "chunk_index", "page_start"]
+        )
+        table.to_arrow.assert_not_called()
 
 
 class TestSchemaEvolution:

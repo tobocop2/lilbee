@@ -331,7 +331,10 @@ class Greeter:
         try:
             with patch("lilbee.data.code_chunker._ensure_language", return_value=False):
                 chunks = chunk_code(path)
-                assert isinstance(chunks, list)
+                # Truthiness, not isinstance: a regression returning [] would drop
+                # the file's content from the index and still be a list.
+                assert chunks
+                assert "x = 1" in "\n".join(c.chunk for c in chunks)
         finally:
             path.unlink()
 
@@ -354,7 +357,8 @@ class Greeter:
                 patch("lilbee.data.code_chunker.process", side_effect=RuntimeError("parse fail")),
             ):
                 chunks = chunk_code(path)
-                assert isinstance(chunks, list)
+                assert chunks
+                assert "x = 1" in "\n".join(c.chunk for c in chunks)
         finally:
             path.unlink()
 
@@ -376,8 +380,8 @@ class Greeter:
                 patch("lilbee.data.code_chunker.process", return_value=_FakeResult([])),
             ):
                 chunks = chunk_code(path)
-                assert isinstance(chunks, list)
                 assert chunks  # fell back to non-empty text chunks
+                assert "x = 1" in "\n".join(c.chunk for c in chunks)
         finally:
             path.unlink()
 
@@ -458,6 +462,36 @@ class Greeter:
         assert first.line_start == 1
         assert first.line_end == 2
         assert first.chunk_index == 0
+
+    def test_chunk_code_budget_is_bytes_not_tokens(self):
+        """tree-sitter's chunk_max_size is documented in BYTES while
+        cfg.chunk_size is a token budget, so the parser path must convert the
+        same way the text path does -- otherwise code files split ~4x smaller
+        than prose, and the parser and fallback paths disagree for one file."""
+        from unittest.mock import patch
+
+        from lilbee.core.config import cfg
+        from lilbee.data.chunk import CHARS_PER_TOKEN
+        from lilbee.data.code_chunker import chunk_code
+
+        result = _FakeResult([_FakeTSChunk("x = 1\n", start_line=0, end_line=1, symbols=[])])
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("x = 1\n")
+            f.flush()
+            path = Path(f.name)
+
+        try:
+            with (
+                patch("lilbee.data.code_chunker._ensure_language", return_value=True),
+                patch("lilbee.data.code_chunker.process", return_value=result) as proc,
+                patch("lilbee.data.code_chunker.ProcessConfig") as config_cls,
+            ):
+                chunk_code(path, source_name="m.py")
+        finally:
+            path.unlink()
+
+        proc.assert_called_once()
+        assert config_cls.call_args.kwargs["chunk_max_size"] == cfg.chunk_size * CHARS_PER_TOKEN
 
     def test_chunk_header_omits_symbols_and_never_says_none(self):
         """A symbol-free (anonymous) chunk omits the symbol segment entirely
