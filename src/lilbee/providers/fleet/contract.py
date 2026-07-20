@@ -18,6 +18,26 @@ if TYPE_CHECKING:
     from lilbee.providers.roles import WorkerRole
 
 
+def decoded_launches(state: _SwapState) -> list[InstanceLaunch] | None:
+    """The engine's recorded launches, or ``None`` when the contract is undecodable.
+
+    The single decode site. Callers previously re-decoded launches bare, relying on
+    a preceding contract_matches call to have proven decodability, so reordering or
+    dropping that guard turned a non-match into an unhandled exception in the bind
+    ladder. Returning ``None`` makes "undecodable" a value every caller must handle.
+    """
+    try:
+        return [InstanceLaunch.from_state(item) for item in state.launches]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def served_pairs(state: _SwapState) -> set[tuple[WorkerRole, str]] | None:
+    """The (role, model) pairs the engine behind *state* serves, or ``None``."""
+    launches = decoded_launches(state)
+    return None if launches is None else {(launch.role, launch.model) for launch in launches}
+
+
 def contract_matches(state: _SwapState, wanted: Iterable[tuple[WorkerRole, str]], pin: str) -> bool:
     """Whether the engine behind *state* serves every wanted (role, model) pair.
 
@@ -26,13 +46,7 @@ def contract_matches(state: _SwapState, wanted: Iterable[tuple[WorkerRole, str]]
     """
     if state.engine_pin != pin:
         return False
-    try:
-        served = {
-            (launch.role, launch.model)
-            for launch in (InstanceLaunch.from_state(item) for item in state.launches)
-        }
-    except (KeyError, TypeError, ValueError):
-        return False
+    served = served_pairs(state)
     if not served:
         return False
     return all(pair in served for pair in wanted)

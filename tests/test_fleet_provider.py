@@ -3800,6 +3800,27 @@ def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
     holder.release_and_check_last()
 
 
+def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch, tmp_path) -> None:
+    """The bind path handles an undecodable contract itself, not by call ordering.
+
+    Previously the bare decode was safe only because contract_matches ran first and
+    its except clause proved decodability; reordering or dropping that guard turned
+    a non-match into an unhandled exception in the ladder. With the guard stubbed
+    permissive, an undecodable contract must still yield "not bindable" rather than
+    raise.
+    """
+    state = object()  # opaque: liveness/health/decode are all stubbed below
+    monkeypatch.setattr(prov_mod, "find_live_state", lambda _d, _g: state)
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+    monkeypatch.setattr(prov_mod, "contract_matches", lambda *_a, **_k: True)  # guard removed
+    monkeypatch.setattr(prov_mod, "decoded_launches", lambda _s: None)  # undecodable record
+
+    assert (
+        prov_mod._bindable_group(tmp_path, SwapGroup.CHAT, "pin-a", {(WorkerRole.CHAT, "m")})
+        is None
+    )
+
+
 def test_healthy_groups_ours_is_false_with_no_healthy_group(tmp_path: Path) -> None:
     # The vacuous case: an empty slot is "not ours" (the ladder's occupied
     # check owns that branch); the helper must not claim it.

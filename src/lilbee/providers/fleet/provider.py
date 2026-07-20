@@ -37,7 +37,7 @@ from lilbee.providers.fleet.client import (
     is_connection_failure,
     retry_on_busy,
 )
-from lilbee.providers.fleet.contract import contract_matches
+from lilbee.providers.fleet.contract import contract_matches, decoded_launches, served_pairs
 from lilbee.providers.fleet.groups import SwapGroup, group_for
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
@@ -178,13 +178,31 @@ def _healthy_groups_ours(engine_dir: Path, pin: str, wanted: set[tuple[WorkerRol
     for state in states:
         if not contract_matches(state, (), pin):
             return False
-        pairs = {
-            (launch.role, launch.model)
-            for launch in (InstanceLaunch.from_state(item) for item in state.launches)
-        }
-        if not pairs <= wanted:
+        pairs = served_pairs(state)
+        if pairs is None or not pairs <= wanted:
             return False
     return True
+
+
+def _bindable_group(
+    engine_dir: Path, group: SwapGroup, pin: str, wanted: set[tuple[WorkerRole, str]]
+) -> tuple[_SwapState, list[InstanceLaunch], set[tuple[WorkerRole, str]]] | None:
+    """*group*'s state, launches, and the wanted pairs it covers, or ``None``.
+
+    ``None`` for every reason a group is not bindable by us: no record, unhealthy,
+    a foreign pin, an undecodable contract, or serving nothing we want.
+    """
+    state = find_live_state(engine_dir, group)
+    if state is None or not state_is_healthy(state):
+        return None
+    if not contract_matches(state, (), pin):
+        # Pin mismatch or undecodable contract: not bindable by us.
+        return None
+    launches = decoded_launches(state)
+    if launches is None:
+        return None
+    pairs = {(launch.role, launch.model) for launch in launches} & wanted
+    return (state, launches, pairs) if pairs else None
 
 
 class _PrimedStream:
@@ -872,16 +890,10 @@ class FleetProvider:
         candidates: list[tuple[SwapGroup, _SwapState, list[InstanceLaunch]]] = []
         covered: set[tuple[WorkerRole, str]] = set()
         for group in SwapGroup:
-            state = find_live_state(engine_dir, group)
-            if state is None or not state_is_healthy(state):
+            found = _bindable_group(engine_dir, group, pin, wanted)
+            if found is None:
                 continue
-            if not contract_matches(state, (), pin):
-                # Pin mismatch or undecodable contract: not bindable by us.
-                continue
-            launches = [InstanceLaunch.from_state(item) for item in state.launches]
-            pairs = {(launch.role, launch.model) for launch in launches} & wanted
-            if not pairs:
-                continue
+            state, launches, pairs = found
             candidates.append((group, state, launches))
             covered |= pairs
         if covered != wanted:
