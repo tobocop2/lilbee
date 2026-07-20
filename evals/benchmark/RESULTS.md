@@ -211,3 +211,12 @@ query silently fell back to vector-only. It only surfaced on real data, since
 a tiny local corpus never tripped the LanceDB bug. Fixed by marking an existing,
 queryable index ready before the best-effort optimize, so an optimize failure
 degrades to a warning instead of disabling retrieval corpus-wide.
+
+One caveat on that diagnosis. At the time, collection checkpoints were keyed on
+query id alone and recorded nothing about which arm produced them, so resuming
+or reusing a checkpoint path would have produced exactly the same symptom: a
+complete, plausible run file for one arm containing another arm's hits. The
+evidence needed to tell the two explanations apart was never recorded, so the
+LanceDB defect is the diagnosis that was acted on rather than one the artifacts
+can confirm. Checkpoints now carry an arm and configuration fingerprint and
+refuse to resume across a mismatch, so a future occurrence is distinguishable.

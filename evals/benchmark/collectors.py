@@ -26,7 +26,7 @@ from typing import Any, Protocol
 import httpx
 
 from evals.benchmark.runfile import ChunkHit, collapse_hits, write_run
-from evals.retrieval.checkpoint import JsonlCheckpoint, load_jsonl
+from evals.retrieval.checkpoint import JsonlCheckpoint, load_items, load_jsonl
 
 SEARCH_ROUTE = "/api/search"
 RAGFLOW_RETRIEVAL_ROUTE = "/api/v1/retrieval"
@@ -199,7 +199,14 @@ def collect_run(
     arm is scored at the same document depth regardless of how many chunks it
     had to fetch to get there.
     """
-    checkpoint = JsonlCheckpoint(checkpoint_path, "query_id")
+    checkpoint = JsonlCheckpoint(
+        checkpoint_path,
+        "query_id",
+        fingerprint={
+            "run_tag": collector.run_tag,
+            "target_docs": collector.target_docs,
+        },
+    )
     for query_id, query_text in queries.items():
         if query_id in checkpoint:
             continue
@@ -208,7 +215,7 @@ def collect_run(
         if on_query is not None:
             on_query(query_id)
     all_hits: list[ChunkHit] = []
-    for row in load_jsonl(checkpoint_path):
+    for row in load_items(checkpoint_path):
         all_hits.extend(_row_hits(row["query_id"], row))
     entries = collapse_hits(all_hits, collector.run_tag, limit=collector.target_docs)
     write_run(run_path, entries)

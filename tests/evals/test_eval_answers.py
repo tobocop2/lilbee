@@ -4,8 +4,8 @@ import json
 
 import httpx
 import pytest
-from evals.retrieval.answers import AnswerRow, answer_questions, wait_for_server
-from evals.retrieval.checkpoint import load_jsonl
+from evals.retrieval.answers import AnswerRow, answer_questions, questions_digest, wait_for_server
+from evals.retrieval.checkpoint import load_items
 from evals.retrieval.questions import Question, QuestionKind
 
 
@@ -58,7 +58,7 @@ def test_answer_questions_records_answer_sources_and_citations(tmp_path):
         [_question()], "http://test", "armA", out, retry_delay=0, client=_client(handler)
     )
     assert len(rows) == 1
-    row = AnswerRow.from_dict(load_jsonl(out)[0])
+    row = AnswerRow.from_dict(load_items(out)[0])
     assert row.arm == "armA"
     assert row.answer == "By the pier."
     assert row.sources == ["a.txt"]
@@ -101,7 +101,16 @@ def test_answer_questions_resumes_past_checkpointed_rows(tmp_path):
         seconds=0.1,
         error=None,
     )
-    out.write_text(json.dumps(done.to_dict()) + "\n")
+    questions = [_question("tq000"), _question("tq001")]
+    provenance = {
+        "_checkpoint": {
+            "arm": "armA",
+            "base_url": "http://test",
+            "top_k": 0,
+            "questions": questions_digest(questions),
+        }
+    }
+    out.write_text(json.dumps(provenance) + "\n" + json.dumps(done.to_dict()) + "\n")
     asked: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -110,10 +119,9 @@ def test_answer_questions_resumes_past_checkpointed_rows(tmp_path):
         asked.append(json.loads(request.content)["question"])
         return _ask_response("fresh")
 
-    questions = [_question("tq000"), _question("tq001")]
     rows = answer_questions(
         questions, "http://test", "armA", out, retry_delay=0, client=_client(handler)
     )
     assert [row.qid for row in rows] == ["tq001"]
     assert asked == ["Where?"]
-    assert len(load_jsonl(out)) == 2
+    assert len(load_items(out)) == 2

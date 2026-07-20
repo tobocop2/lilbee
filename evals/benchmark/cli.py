@@ -31,7 +31,7 @@ from evals.benchmark.ragas_tier import (
     score_ragas,
 )
 from evals.benchmark.report import render_report
-from evals.retrieval.checkpoint import JsonlCheckpoint, load_jsonl
+from evals.retrieval.checkpoint import JsonlCheckpoint, load_items, load_jsonl
 
 DEFAULT_METRICS = ["nDCG@10", "Recall@20", "MRR@10"]
 ASK_ROUTE = "/api/ask"
@@ -119,7 +119,11 @@ def _ask(client: httpx.Client, base_url: str, question: str, top_k: int) -> tupl
 def _cmd_answer(args: argparse.Namespace) -> int:
     queries = load_queries(args.queries)
     references = json.loads(args.ground_truth.read_text()) if args.ground_truth else {}
-    checkpoint = JsonlCheckpoint(args.out, "query_id")
+    checkpoint = JsonlCheckpoint(
+        args.out,
+        "query_id",
+        fingerprint={"arm": args.arm, "base_url": args.base_url, "top_k": args.top_k},
+    )
     client = httpx.Client(timeout=ASK_TIMEOUT_SECONDS)
     for query_id, text in queries.items():
         if query_id in checkpoint:
@@ -147,7 +151,7 @@ def _load_samples(path: Path) -> list[Sample]:
             contexts=list(row["contexts"]),
             ground_truth=row.get("ground_truth", ""),
         )
-        for row in load_jsonl(path)
+        for row in load_items(path)
     ]
 
 

@@ -125,6 +125,14 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Manifest:
+        """Build from a manifest payload, verifying a stored fingerprint if present.
+
+        ``freeze`` records the fingerprint alongside the manifest. Reading the
+        known keys and recomputing the fingerprint from whatever the file now
+        says makes any post-hoc edit self-consistent, so the one artifact whose
+        purpose is to be tamper-evident would report no tampering. A payload that
+        carries a fingerprint must still hash to it.
+        """
         manifest = cls(
             run_id=data["run_id"],
             arms=[ArmConfig(**arm) for arm in data["arms"]],
@@ -135,6 +143,13 @@ class Manifest:
             temperature=data.get("temperature", FROZEN_TEMPERATURE),
         )
         manifest.validate()
+        stored = data.get("fingerprint")
+        if stored is not None and stored != manifest.fingerprint():
+            raise ValueError(
+                f"manifest fingerprint does not match its contents (file {stored[:12]}, "
+                f"contents hash to {manifest.fingerprint()[:12]}); the frozen "
+                "preregistration was edited after it was frozen"
+            )
         return manifest
 
     @classmethod

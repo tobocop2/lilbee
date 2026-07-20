@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -88,6 +89,17 @@ def _ask(client: httpx.Client, base_url: str, question: str, top_k: int) -> Answ
     )
 
 
+def questions_digest(questions: list[Question]) -> str:
+    """Stable digest of the question set an answers file was collected against.
+
+    Regenerating questions with a different seed produces the same qids for
+    different questions, so binding the checkpoint to the qids alone would still
+    let one file mix answers to two different batteries.
+    """
+    material = "\x00".join(f"{q.qid}\x1f{q.question}" for q in questions)
+    return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
 def answer_questions(
     questions: list[Question],
     base_url: str,
@@ -101,7 +113,16 @@ def answer_questions(
 ) -> list[AnswerRow]:
     """Answer every question not already checkpointed; return this run's rows."""
     http = client or make_http_client()
-    checkpoint = JsonlCheckpoint(out_path, "qid")
+    checkpoint = JsonlCheckpoint(
+        out_path,
+        "qid",
+        fingerprint={
+            "arm": arm,
+            "base_url": base_url,
+            "top_k": top_k,
+            "questions": questions_digest(questions),
+        },
+    )
     wait_for_server(base_url, http)
     rows: list[AnswerRow] = []
     for question in questions:

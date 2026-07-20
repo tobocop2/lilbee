@@ -4,7 +4,7 @@ import json
 
 from evals.retrieval import cli
 from evals.retrieval.answers import AnswerRow
-from evals.retrieval.checkpoint import load_jsonl
+from evals.retrieval.checkpoint import load_items, load_jsonl
 from evals.retrieval.questions import CountOracle, Question, QuestionKind
 from evals.retrieval.scoring import ResultRowType
 
@@ -179,4 +179,4 @@ def test_answer_subcommand_writes_checkpointed_answers(tmp_path, monkeypatch):
         ]
     )
     assert exit_code == 0
-    assert len(load_jsonl(out)) == 2
+    assert len(load_items(out)) == 2

@@ -174,3 +174,29 @@ def test_arm_and_dataset_name_helpers():
     manifest = _manifest()
     assert manifest.arm_names == {"lilbee-parity", "ragflow-default"}
     assert manifest.dataset_names == {"scifact"}
+
+
+def test_loading_a_frozen_manifest_verifies_its_stored_fingerprint(tmp_path):
+    out = tmp_path / "frozen.json"
+    _manifest().freeze(out)
+    Manifest.load(out)  # unedited: verifies and loads
+
+
+def test_an_edited_frozen_manifest_is_refused(tmp_path):
+    # The one artifact whose entire purpose is to be tamper-evident. Recomputing
+    # the fingerprint from whatever the file now says makes any edit
+    # self-consistent and silent.
+    out = tmp_path / "frozen.json"
+    _manifest().freeze(out)
+    payload = json.loads(out.read_text())
+    payload["stats"]["seed"] = 999
+    out.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="fingerprint"):
+        Manifest.load(out)
+
+
+def test_a_manifest_without_a_stored_fingerprint_still_loads(tmp_path):
+    # Hand-authored source manifests carry no fingerprint until frozen.
+    out = tmp_path / "source.json"
+    out.write_text(json.dumps(_manifest().to_dict()))
+    Manifest.load(out)

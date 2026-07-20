@@ -11,7 +11,7 @@ from typing import Any
 
 from evals.retrieval.answers import AnswerRow, answer_questions, make_http_client
 from evals.retrieval.blinding import BlindAssignment, build_blind_rows, unblind
-from evals.retrieval.checkpoint import load_jsonl
+from evals.retrieval.checkpoint import load_items, load_jsonl
 from evals.retrieval.judging import DIMENSIONS, judge_rows
 from evals.retrieval.llm import judge_backend, lilbee_chat_fn, warm_chat
 from evals.retrieval.questions import (
@@ -42,7 +42,7 @@ def _load_questions(path: Path) -> list[Question]:
 
 
 def _load_answer_arm(path: Path) -> tuple[str, dict[str, AnswerRow]]:
-    rows = [AnswerRow.from_dict(row) for row in load_jsonl(path)]
+    rows = [AnswerRow.from_dict(row) for row in load_items(path)]
     if not rows:
         raise ValueError(f"no answer rows in {path}")
     return rows[0].arm, {row.qid: row for row in rows}
