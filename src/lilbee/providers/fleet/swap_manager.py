@@ -299,12 +299,13 @@ class SwapManager:
         return True
 
     def _proxy_answers(self) -> bool:
-        """Whether the bound proxy port serves llama-swap's running endpoint."""
-        try:
-            resp = httpx.get(f"{self.endpoint()}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
-        except (OSError, httpx.HTTPError):
-            return False
-        return resp.status_code < httpx.codes.BAD_REQUEST
+        """Whether the bound proxy port serves llama-swap's running endpoint.
+
+        Shares state_is_healthy's identity check via _running_endpoint_answers, so
+        bind and reap agree on what "answering" means by construction rather than by
+        two hand-kept-identical copies.
+        """
+        return _running_endpoint_answers(self.endpoint())
 
     def shutdown(self) -> None:
         """Stop every llama-swap this lilbee owns at our config and reap servers.
@@ -469,17 +470,34 @@ def find_live_state(data_dir: Path, group: SwapGroup) -> _SwapState | None:
     return best
 
 
+def _running_endpoint_answers(base_url: str) -> bool:
+    """Whether *base_url* serves llama-swap's ``/running`` endpoint (identity, not
+    just liveness).
+
+    Proxy ports are ephemeral: after an engine dies, any unrelated local service
+    that later binds the recorded port and returns a 2xx/3xx to an unknown path
+    would pass a bare status check, so a dead record would look healthy forever and
+    inference clients would bind to a non-engine endpoint. Requiring the ``running``
+    JSON payload shape that only llama-swap produces makes the probe identity-checked.
+    Total: any transport error or non-conforming body reads as "not our engine".
+    """
+    try:
+        resp = httpx.get(f"{base_url}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
+    except (OSError, httpx.HTTPError):
+        return False
+    if resp.status_code >= httpx.codes.BAD_REQUEST:
+        return False
+    try:
+        return isinstance(resp.json().get(_KEY_RUNNING), list)
+    except (ValueError, AttributeError):
+        return False
+
+
 def state_is_healthy(state: _SwapState) -> bool:
     """Whether the engine behind *state* answers on its recorded proxy port."""
     if state.proxy_port is None:
         return False
-    try:
-        resp = httpx.get(
-            f"http://{_HOST}:{state.proxy_port}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S
-        )
-    except (OSError, httpx.HTTPError):
-        return False
-    return resp.status_code < httpx.codes.BAD_REQUEST
+    return _running_endpoint_answers(f"http://{_HOST}:{state.proxy_port}")
 
 
 def engine_record_exists(data_dir: Path) -> bool:

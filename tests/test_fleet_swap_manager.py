@@ -46,6 +46,12 @@ class _FakeProc:
 
 
 def _fake_response(*, status: int = 200, payload: object = None) -> object:
+    # A live llama-swap answers /running with a {"running": [...]} body; default to
+    # the empty-but-valid shape so "engine answers" fakes pass the identity check
+    # (state_is_healthy/_proxy_answers now validate the payload, not just the status).
+    if payload is None:
+        payload = {"running": []}
+
     class _Resp:
         status_code = status
 
@@ -1349,6 +1355,38 @@ class TestLiveStateHelpers:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_http(monkeypatch, _raise_connect_error)
+        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is False
+
+    def test_error_status_is_unhealthy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A proxy that answers but errors (llama-swap starting up, or a foreign
+        # service refusing the path) is not a live engine.
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=503))
+        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is False
+
+    def test_recycled_port_responder_is_not_our_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A dead engine's port taken over by an unrelated service that 200s an
+        # unknown path (no {"running": [...]} body) must NOT read as healthy, or
+        # inference clients would bind to a non-engine endpoint forever.
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200, payload={"ok": True}))
+        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
+        assert sm.state_is_healthy(state) is False
+
+    def test_non_json_responder_is_not_our_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A 200 with a non-JSON body (a plain HTTP server) also fails the shape check.
+        def _html(_url):
+            resp = _fake_response(status=200)
+            resp.json = lambda: (_ for _ in ()).throw(ValueError("not json"))
+            return resp
+
+        _patch_http(monkeypatch, _html)
         state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is False
 
