@@ -138,7 +138,7 @@ def _slot_gated_sse(generator: AsyncGenerator[str, None], guard: ChatSlotGuard) 
 @read_only
 async def search_route(
     q: str = Parameter(query="q"),
-    top_k: int = Parameter(query="top_k", default=5, le=100),
+    top_k: int = Parameter(query="top_k", default=5, ge=1, le=100),
     chunk_type: str | None = Parameter(query="chunk_type", default=None),
 ) -> list[DocumentResult]:
     """Search indexed documents by semantic similarity. No LLM call required."""

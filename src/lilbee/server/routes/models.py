@@ -98,7 +98,7 @@ async def models_catalog_route(
     installed: bool | None = Parameter(query="installed", default=None),
     featured: bool | None = Parameter(query="featured", default=None),
     sort: str = Parameter(query="sort", default="featured"),
-    limit: int = Parameter(query="limit", default=20, le=1000),
+    limit: int = Parameter(query="limit", default=20, ge=1, le=1000),
     offset: int = Parameter(query="offset", default=0, ge=0),
 ) -> ModelsCatalogResponse:
     """Browse the model catalog with optional filters."""

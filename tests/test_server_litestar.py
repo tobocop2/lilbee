@@ -2000,3 +2000,44 @@ class TestPlacementSetRoute:
         """DELETE placement is refused on the shared HTTP daemon."""
         resp = client.delete("/api/placement")
         assert resp.status_code == 409
+
+
+class TestPaginationAndTopKLowerBounds:
+    """Upper bounds without lower bounds let 0 and negatives through.
+
+    LanceDB's plain-query ``limit`` treats anything <= 0 as no limit, so
+    ``?limit=0`` returned the whole table, which is what pagination exists to
+    prevent. A negative ``top_k`` reached the store and surfaced as a 503,
+    blaming the server for a bad request.
+    """
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_documents_limit_rejects_non_positive(self, client, value):
+        resp = client.get("/api/documents", params={"limit": value})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_catalog_limit_rejects_non_positive(self, client, value):
+        resp = client.get("/api/models/catalog", params={"limit": value})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_search_top_k_rejects_non_positive(self, client, value):
+        resp = client.get("/api/search", params={"q": "x", "top_k": value})
+        assert resp.status_code == 400
+
+    def test_ask_rejects_negative_top_k_but_keeps_zero(self, client):
+        """Zero is a documented pure-LLM call, so only negatives are invalid."""
+        assert client.post("/api/ask", json={"question": "q", "top_k": -1}).status_code == 400
+
+        with mock.patch(
+            "lilbee.server.handlers.ask",
+            new_callable=AsyncMock,
+            return_value={"answer": "a", "sources": []},
+        ):
+            resp = client.post("/api/ask", json={"question": "q", "top_k": 0})
+        assert resp.status_code == 201
+
+    def test_chat_rejects_negative_top_k(self, client):
+        resp = client.post("/api/chat", json={"question": "q", "history": [], "top_k": -1})
+        assert resp.status_code == 400

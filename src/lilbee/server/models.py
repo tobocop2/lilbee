@@ -41,7 +41,7 @@ class AskRequest(BaseModel):
     """Request body for /api/ask."""
 
     question: str
-    top_k: int = Field(default=0, le=100)
+    top_k: int = Field(default=0, ge=0, le=100)
     options: dict[str, Any] | None = None
     chunk_type: ChunkType | None = None
 
@@ -58,7 +58,7 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = []
     # None (unspecified) grounds with the configured top_k; an explicit 0 is a
     # pure-LLM call that skips retrieval entirely.
-    top_k: int | None = Field(default=None, le=100)
+    top_k: int | None = Field(default=None, ge=0, le=100)
     options: dict[str, Any] | None = None
     chunk_type: ChunkType | None = None
     summary: str = ""

@@ -95,7 +95,7 @@ async def add_upload_route(
 @read_only
 async def documents_list_route(
     search: str = Parameter(query="search", default=""),
-    limit: int = Parameter(query="limit", default=50, le=1000),
+    limit: int = Parameter(query="limit", default=50, ge=1, le=1000),
     offset: int = Parameter(query="offset", default=0, ge=0),
 ) -> DocumentListResponse:
     """List indexed documents with metadata, paginated and searchable."""
