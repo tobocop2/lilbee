@@ -265,6 +265,46 @@ class TestReplicaDefaults:
             Config(embed_replicas=-1)
 
 
+class TestTableExtractionSetting:
+    """The table-extraction flag is writable, grouped with ingest, and reindex-marked."""
+
+    def test_table_extraction_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["table_extraction"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is bool
+        assert defn.group == "Ingest"
+        assert get_default("table_extraction") is False
+
+    def test_table_extraction_requires_reindex(self):
+        from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
+
+        assert "table_extraction" in WRITABLE_CONFIG_FIELDS
+        assert "table_extraction" in REINDEX_FIELDS
+
+
+class TestLayoutDetectionSetting:
+    """The layout-detection flag is writable, grouped with ingest, and reindex-marked."""
+
+    def test_layout_detection_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        defn = SETTINGS_MAP["layout_detection"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is bool
+        assert defn.group == "Ingest"
+        assert get_default("layout_detection") is False
+
+    def test_layout_detection_requires_reindex(self):
+        from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
+
+        assert "layout_detection" in WRITABLE_CONFIG_FIELDS
+        assert "layout_detection" in REINDEX_FIELDS
+
+
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 

@@ -125,11 +125,13 @@ def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
 
     Rows written before ``chunk_type`` was populated land as NULL. They
     are semantically raw, so a ``'raw'`` filter still includes them; a
-    ``'wiki'`` filter excludes them.
+    ``'wiki'`` filter excludes them. Table chunks are document content,
+    so the ``'raw'`` scope covers them too; filter on ``'table'`` to
+    isolate them.
     """
     escaped = escape_sql_string(chunk_type)
     if chunk_type == ChunkType.RAW:
-        return f"(chunk_type = '{escaped}' OR chunk_type IS NULL)"
+        return f"(chunk_type IN ('{escaped}', '{ChunkType.TABLE}') OR chunk_type IS NULL)"
     return f"chunk_type = '{escaped}'"
 
 

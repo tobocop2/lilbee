@@ -229,9 +229,9 @@ Or crawl a whole site, not just one page. With recursive crawling on, lilbee fol
 
 lilbee splits indexing by what's being read:
 
-- **Prose and structured documents** (PDFs, Office files, ebooks, HTML, 90+ formats) go through [Kreuzberg] with heading-aware chunking, so each chunk keeps its section context.
+- **Prose and structured documents** (PDFs, Office files, ebooks, HTML, 90+ formats) go through [Xberg] with heading-aware chunking, so each chunk keeps its section context.
 - **Code** goes through [tree-sitter]'s AST-aware splitter across [150+ languages](https://github.com/Goldziher/tree-sitter-language-pack), so chunks map to functions, classes, and modules instead of arbitrary line ranges.
-- **Scanned PDFs and photos** go through OCR: Tesseract for plain text, or a local / remote vision model that keeps tables and layout as markdown.
+- **Scanned PDFs and photos** go through OCR in 100+ languages: Tesseract for plain text (set `LILBEE_OCR_LANGUAGE`, e.g. `eng+deu`), or a local / remote vision model that keeps tables and layout as markdown.
 
 Retrieval returns things that make sense on their own, not fragments cut through an argument or a function signature.
 
@@ -434,7 +434,7 @@ Pre-2013 Intel or pre-Zen AMD CPUs lack [AVX2](https://en.wikipedia.org/wiki/Adv
 | **Scoop**    | `scoop install lilbee-compat`                                                                                                                                                           |
 | **Flatpak**  | `flatpak install lilbee io.github.tobocop2.lilbee.compat`                                                                                                                               |
 | **Snap**     | `curl -LO https://github.com/tobocop2/lilbee/releases/latest/download/lilbee-compat-linux-x86_64.snap && sudo snap install ./lilbee-compat-linux-x86_64.snap --dangerous --classic`    |
-| **Binary**   | [`lilbee-compat-linux-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) or [`lilbee-compat-windows-x86_64.exe`](https://github.com/tobocop2/lilbee/releases/latest)         |
+| **Binary**   | [`lilbee-compat-linux-x86_64`](https://github.com/tobocop2/lilbee/releases/latest), [`lilbee-compat-windows-x86_64.exe`](https://github.com/tobocop2/lilbee/releases/latest), or [`lilbee-compat-macos-x86_64`](https://github.com/tobocop2/lilbee/releases/latest) (pre-AVX2 Intel Macs, e.g. the 2013 Mac Pro) |
 
 Same `lilbee` command after install. The crash is from [lancedb](https://lancedb.github.io/lancedb/)'s AVX2-compiled wheels; this build swaps in a [lancedb fork](https://github.com/tobocop2/lance) that picks instructions at runtime. A 👍 or comment on the upstream [lance PR](https://github.com/lance-format/lance/pull/6630) helps it land.
 
@@ -527,7 +527,7 @@ Pull a chat and embedding model first; all recipes pin the server to `127.0.0.1:
 
 ## Supported formats
 
-Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structured formats (XML, JSON, CSV) get embedding-friendly preprocessing. This list is not exhaustive; Kreuzberg supports additional formats beyond what's listed here.
+Document extraction powered by [Xberg], code chunking by [tree-sitter]. lilbee handles every format Xberg can extract (100+) and tracks its list directly, so support grows as Xberg adds formats. The table below covers the common ones.
 
 <details>
 <summary>Format table</summary>
@@ -535,15 +535,17 @@ Text extraction powered by [Kreuzberg], code chunking by [tree-sitter]. Structur
 | Format       | Extensions                                                                                                                                              | Requires                                                                                                                                                                                         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | PDF          | `.pdf`                                                                                                                                                  | none                                                                                                                                                                                             |
-| Scanned PDF  | `.pdf` (no extractable text)                                                                                                                            | [Tesseract](https://github.com/tesseract-ocr/tesseract) (auto, plain text), or a GGUF vision model via the native mtmd backend (recommended, preserves tables, headings, and layout as markdown) |
-| Office       | `.docx`, `.xlsx`, `.pptx`                                                                                                                               | none                                                                                                                                                                                             |
-| eBook        | `.epub`                                                                                                                                                 | none                                                                                                                                                                                             |
-| Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp`                                                                                                       | [Tesseract](https://github.com/tesseract-ocr/tesseract)                                                                                                                                          |
-| Data         | `.csv`, `.tsv`                                                                                                                                          | none                                                                                                                                                                                             |
-| Structured   | `.xml`, `.json`, `.jsonl`, `.yaml`, `.yml`                                                                                                              | none                                                                                                                                                                                             |
+| Scanned PDF  | `.pdf` (no extractable text)                                                                                                                            | [Tesseract](https://github.com/tesseract-ocr/tesseract) (auto, plain text, 100+ languages via `LILBEE_OCR_LANGUAGE`), or a GGUF vision model via the native mtmd backend (recommended, preserves tables, headings, and layout as markdown) |
+| Office       | `.docx`, `.xlsx`, `.pptx`, `.doc`, `.xls`, `.ppt`, `.odt`, `.ods`, `.rtf`                                                                               | none                                                                                                                                                                                             |
+| eBook        | `.epub`, `.fb2`                                                                                                                                         | none                                                                                                                                                                                             |
+| Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.bmp`, `.webp`, `.gif`, `.heic`, `.avif`, `.jp2`/`.j2k`/`.jpx` (JPEG-2000)                                           | [Tesseract](https://github.com/tesseract-ocr/tesseract) or a vision model                                                                                                                        |
+| Text/markup  | `.md`, `.txt`, `.html`, `.rst`, `.org`, `.tex`, `.typst`                                                                                                | none                                                                                                                                                                                             |
+| Data         | `.csv`, `.tsv`, `.json`, `.jsonl`, `.xml`, `.yaml`, `.toml`                                                                                             | none                                                                                                                                                                                             |
+| Email        | `.eml`, `.msg`                                                                                                                                          | none                                                                                                                                                                                             |
+| Archives     | `.zip`, `.tar`, `.gz`, `.7z`, `.pst` (combined contents extracted)                                                                                      | none                                                                                                                                                                                             |
 | Code         | `.py`, `.js`, `.ts`, `.go`, `.rs`, `.java` and [150+ more](https://github.com/Goldziher/tree-sitter-language-pack) via tree-sitter (AST-aware chunking) | none                                                                                                                                                                                             |
 
-See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](docs/benchmarks/vision-ocr.md).
+Plus notebooks, bibliographies, iWork, and audio/video, among others. See the [usage guide](docs/usage.md#ocr) for OCR setup and [model benchmarks](docs/benchmarks/vision-ocr.md).
 
 </details>
 
@@ -574,7 +576,7 @@ See the [Semantic chunking section of the usage guide](docs/usage.md#semantic-ch
 
 lilbee stands on a stack of established open-source projects, all bundled into one install:
 
-- [Kreuzberg] parses 90+ document formats with heading-aware chunking.
+- [Xberg] parses 90+ document formats with heading-aware chunking.
 - [llama.cpp] is the local model runtime: lilbee bundles its `llama-server` and starts it for you, so every chat, embedding, vision, and reranker call goes through it. [llama-swap] keeps a server per role resident together behind one endpoint, and [gguf-parser] estimates each model's memory footprint so lilbee loads what fits. Without llama.cpp there is no lilbee.
 - [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [LanceDB] is the embedded vector store.
@@ -609,7 +611,7 @@ lilbee is built and maintained by one person. If it is useful to you, you can ch
 
 MIT. See [LICENSE](LICENSE).
 
-[Kreuzberg]: https://github.com/kreuzberg-dev/kreuzberg
+[Xberg]: https://github.com/xberg-io/xberg
 [LanceDB]: https://lancedb.com
 [llama.cpp]: https://github.com/ggml-org/llama.cpp
 [llama-swap]: https://github.com/mostlygeek/llama-swap

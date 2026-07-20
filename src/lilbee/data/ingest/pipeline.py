@@ -42,6 +42,7 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_reasons,
 )
 from lilbee.data.ingest.title import derive_title
+from lilbee.data.ingest.trace import configure_from_env as configure_trace_from_env
 from lilbee.data.ingest.types import (
     ChunkRecord,
     FileChangePlan,
@@ -665,6 +666,9 @@ async def ingest_batch(
     ingesting new ones so the two operations are atomic per file.
     When *cancel* is set, pending files raise CancelledError before starting.
     """
+    # Honor LILBEE_INGEST_TRACE once per batch: it raises the trace loggers above
+    # the default WARNING so per-file extraction lines actually surface.
+    configure_trace_from_env()
     # Throughput is measured in OCR pages, not documents: a document's cost scales
     # with its page count (a 500-page scan is 500x a memo), so pages are the unbiased
     # unit of GPU-feeding work for the adaptive controller to hill-climb on.

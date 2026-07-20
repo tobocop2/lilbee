@@ -244,6 +244,7 @@ class SwapManager:
             _STATE_KEY_DETACHED: detached,
             _STATE_KEY_LAUNCHES: launches or [],
         }
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._state_path.with_name(
             f"{_STATE_TMP_PREFIX}{self._state_path.name}{_STATE_TMP_SUFFIX}"
         )

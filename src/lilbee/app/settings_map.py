@@ -161,6 +161,27 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
     ),
+    "token_sizing": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Size chunks by real embedder tokens, not chars (changes invalidate the index)",
+    ),
+    "table_extraction": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Index each extracted table as its own chunk (changes invalidate the index)",
+    ),
+    "layout_detection": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Layout-aware PDF extraction: reading order plus header/footer "
+            "stripping (changes invalidate the index)"
+        ),
+    ),
     "embedding_model": SettingDef(
         str,
         nullable=False,
@@ -781,6 +802,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
+    ),
+    "ocr_language": SettingDef(
+        list,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text="Tesseract OCR languages when no vision model is set; '+'-join, e.g. eng+deu",
     ),
     "worker_pool_eager_start": SettingDef(
         bool,

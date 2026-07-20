@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
 from pathlib import PurePath
-from typing import Any
+from typing import TYPE_CHECKING
 
 from lilbee.data.store import SourceMeta
+
+if TYPE_CHECKING:
+    from xberg import Metadata
 
 # Filename-stem separators flattened to spaces when no extracted title exists.
 _STEM_SEPARATOR_RE = re.compile(r"[_\-\s]+")
@@ -24,23 +26,26 @@ def derive_title(source_name: str, metadata_title: str | None = None) -> str:
     return _STEM_SEPARATOR_RE.sub(" ", PurePath(source_name).stem).strip()
 
 
-def source_meta_from_extraction(metadata: Mapping[str, Any], source_name: str) -> SourceMeta:
-    """Fold kreuzberg extraction metadata into a :class:`SourceMeta`.
+def source_meta_from_extraction(metadata: Metadata, source_name: str) -> SourceMeta:
+    """Fold xberg extraction metadata into a :class:`SourceMeta`.
 
     The title falls back to the filename stem; authors and creation date stay
-    empty (persisted NULL) when the extractor reports none. Extractor metadata is
-    untyped, so a string ``authors`` is treated as one author (not split into its
-    characters) and non-string entries are coerced.
+    empty (persisted NULL) when the extractor reports none.
+
+    ``Metadata`` annotates ``authors`` as ``list[str] | None``, but the binding
+    does not enforce it: ``Metadata(authors="John Doe")`` keeps a bare string,
+    which is the shape a raw PDF ``/Author`` field arrives in. Joining that
+    directly yields "J, o, h, n", so the entries are still coerced here.
     """
-    raw_authors = metadata.get("authors")
+    raw_authors = metadata.authors
     if isinstance(raw_authors, str):
         authors: list[str] = [raw_authors]
     elif isinstance(raw_authors, (list, tuple)):
-        authors = [str(a) for a in raw_authors if a]
+        authors = [str(author) for author in raw_authors if author]
     else:
         authors = []
     return SourceMeta(
-        title=derive_title(source_name, metadata.get("title")),
-        authors=", ".join(a for a in authors if a),
-        created_at=str(metadata.get("created_at") or ""),
+        title=derive_title(source_name, metadata.title),
+        authors=", ".join(author for author in authors if author),
+        created_at=str(metadata.created_at or ""),
     )

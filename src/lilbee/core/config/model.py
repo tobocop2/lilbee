@@ -137,6 +137,10 @@ class Config(BaseSettings):
 
     # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
     tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
+    # Tesseract OCR language codes for the scanned-document fallback (used when no
+    # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
+    # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.
+    ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
     # Opt-in typed entity extraction (an entities table for exact counting
     # and cross-referencing). Fully automatic: sync induces a schema from the
     # corpus and extracts across the index; new files extract at ingest. Off
@@ -145,6 +149,24 @@ class Config(BaseSettings):
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
+    # Size chunk budgets (chunk_size/chunk_overlap) in real tokens from the
+    # embedder's own tokenizer via xberg's registered tokenizer backend, instead of
+    # the chars-per-token heuristic. Off by default: turning it on re-partitions
+    # chunks, so a library must be reindexed. Applies to the plain and heading
+    # chunkers; the semantic chunker sizes by characters and ignores it.
+    token_sizing: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Index each extracted table as its own chunk: xberg recognizes table
+    # structure during extraction and the markdown serialization is embedded
+    # alongside the prose chunks, so tabular data is retrievable as a unit.
+    # Off by default: recognition costs extraction time, and toggling changes
+    # what gets indexed, so a library must be reindexed.
+    table_extraction: bool = ConfigField(default=False, writable=True, reindex=True)
+    # Layout-aware PDF extraction: xberg's layout detection orders page text
+    # by detected reading order (multi-column PDFs stop interleaving) and the
+    # running header/footer bands are stripped. Off by default: detection runs
+    # an extra model pass per page, and toggling changes extracted text, so a
+    # library must be reindexed.
+    layout_detection: bool = ConfigField(default=False, writable=True, reindex=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)
@@ -805,6 +827,24 @@ class Config(BaseSettings):
             except ValueError:
                 pass  # fall through to bool() coercion below for unrecognised strings
         return bool(v)
+
+    @field_validator("ocr_language", mode="before")
+    @classmethod
+    def _parse_ocr_language(cls, v: Any) -> list[str]:
+        """Accept a list or a ``+``/comma/newline-separated string; never empty.
+
+        Tesseract joins languages with ``+`` (e.g. ``eng+deu``), so that is the
+        canonical user-facing form. Commas are also accepted. Newlines are
+        accepted because ``app.settings`` joins list values with ``\\n`` when it
+        persists them to config.toml; without splitting on it a multi-language
+        value would reload as one malformed token. Blank input falls back to
+        English, since xberg errors on an empty list.
+        """
+        if isinstance(v, str):
+            v = v.replace("+", ",").replace("\n", ",").split(",")
+        items = v or []
+        langs = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        return langs or ["eng"]
 
     @field_validator("flash_attention", mode="before")
     @classmethod

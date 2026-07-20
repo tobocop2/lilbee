@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 from pathlib import Path
 from unittest import mock
-from unittest.mock import Mock
 
 import pytest
 from litestar.testing import AsyncTestClient
@@ -75,22 +74,27 @@ def reset_ingest_locks():
     get_services().ingest_lock_registry.reset()
 
 
-def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks: int = 1):
+def _make_xberg_result(text: str = "Some extracted text. " * 20, num_chunks: int = 1):
     chunks = []
     for i in range(num_chunks):
         chunk_text = text[i * len(text) // num_chunks : (i + 1) * len(text) // num_chunks]
         chunk = mock.MagicMock()
         chunk.content = chunk_text
-        chunk.metadata = {"chunk_index": i}
+        chunk.metadata = mock.MagicMock(chunk_index=i, first_page=None, last_page=None)
         chunks.append(chunk)
     result = mock.MagicMock()
     result.chunks = chunks
     result.content = text
-    result.metadata = {}
+    result.pages = []
+    result.metadata = mock.MagicMock(title=None, authors=None, created_at=None)
     return result
 
 
-@mock.patch("kreuzberg.extract_file_sync", new_callable=Mock, return_value=_make_kreuzberg_result())
+@mock.patch(
+    "lilbee.data.xberg_extract.aextract_document",
+    new_callable=mock.AsyncMock,
+    return_value=_make_xberg_result(),
+)
 class TestAddEndpoint:
     async def test_add_single_file(self, mock_extract_file, isolated_env, tmp_path):
         """POST /api/add with a valid file streams SSE events and adds it."""
@@ -349,9 +353,9 @@ class TestAddValidation:
 
         paths = [f"/fake/file_{i}.txt" for i in range(285)]
         with mock.patch(
-            "kreuzberg.extract_file_sync",
-            new_callable=Mock,
-            return_value=_make_kreuzberg_result(),
+            "lilbee.data.xberg_extract.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=_make_xberg_result(),
         ):
             async with AsyncTestClient(create_app()) as client:
                 resp = await client.post("/api/add", json={"paths": paths}, headers=_auth_headers())
@@ -619,9 +623,9 @@ class TestAddIngestMutex:
         assert lock is not None
         try:
             with mock.patch(
-                "kreuzberg.extract_file_sync",
-                new_callable=Mock,
-                return_value=_make_kreuzberg_result(),
+                "lilbee.data.xberg_extract.aextract_document",
+                new_callable=mock.AsyncMock,
+                return_value=_make_xberg_result(),
             ):
                 events = await self._collect(add_files_stream([str(held), str(free)]))
         finally:
@@ -649,9 +653,9 @@ class TestAddIngestMutex:
         async def _run(path: Path):
             text = ""
             with mock.patch(
-                "kreuzberg.extract_file_sync",
-                new_callable=Mock,
-                return_value=_make_kreuzberg_result(),
+                "lilbee.data.xberg_extract.aextract_document",
+                new_callable=mock.AsyncMock,
+                return_value=_make_xberg_result(),
             ):
                 async for frame in add_files_stream([str(path)]):
                     text += frame
@@ -734,9 +738,9 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "kreuzberg.extract_file_sync",
-            new_callable=Mock,
-            return_value=_make_kreuzberg_result(),
+            "lilbee.data.xberg_extract.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=_make_xberg_result(),
         ):
             await sync(quiet=True)
 
@@ -758,9 +762,9 @@ class TestAddIngestHardening:
         store.get_sources.return_value = []
 
         with mock.patch(
-            "kreuzberg.extract_file_sync",
-            new_callable=Mock,
-            return_value=_make_kreuzberg_result(),
+            "lilbee.data.xberg_extract.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=_make_xberg_result(),
         ):
             await sync(quiet=True)
 

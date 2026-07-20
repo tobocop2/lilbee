@@ -11,9 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, overload, run
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from lilbee.providers.roles import OcrBackend, WorkerRole
+    from lilbee.providers.roles import WorkerRole
     from lilbee.providers.warm_progress import WarmProgress
-    from lilbee.vision import PageText
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -260,6 +259,15 @@ class LLMProvider(Protocol):
         """Embed a batch of texts, return list of vectors."""
         ...
 
+    def count_tokens(self, text: str) -> int:
+        """Exact token count of *text* under the embedding model's tokenizer.
+
+        Raise ``NotImplementedError`` when the backend has no local tokenizer (cloud
+        SDK backends); token-budgeted chunk sizing then falls back to a character
+        estimate.
+        """
+        ...
+
     @overload
     def chat(
         self,
@@ -341,23 +349,6 @@ class LLMProvider(Protocol):
         timeout: float | None = None,
     ) -> str:
         """OCR one page image; ``timeout`` seconds, ``None``/``0`` = no cap."""
-        ...
-
-    def pdf_ocr(
-        self,
-        path: Path,
-        *,
-        backend: OcrBackend,
-        model: str = "",
-        per_page_timeout_s: float | None = None,
-        quiet: bool = True,
-        on_progress: Callable[..., None] | None = None,
-    ) -> list[PageText]:
-        """OCR every page of a PDF, returning per-page text in input order.
-
-        Backends that cannot OCR scanned PDFs locally raise
-        :class:`NotImplementedError`; ingest callers catch and log this.
-        """
         ...
 
     def vision_slot_capacity(self) -> int | None:

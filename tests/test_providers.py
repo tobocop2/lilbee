@@ -436,6 +436,28 @@ class TestRoutingProvider:
         result = rp.embed(["test"])
         assert result == [[0.3, 0.4]]
 
+    def test_routes_count_tokens_to_local_engine_for_local_ref(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.count_tokens.return_value = 11
+        rp._local = mock_llama
+
+        cfg.embedding_model = (
+            "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+        )
+        assert rp.count_tokens("some text") == 11
+        mock_llama.count_tokens.assert_called_once_with("some text")
+
+    def test_routes_count_tokens_to_sdk_for_remote_ref(self) -> None:
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.count_tokens.side_effect = NotImplementedError
+        rp._sdk_provider = mock_sdk
+
+        cfg.embedding_model = "ollama/nomic-embed-text:latest"
+        with pytest.raises(NotImplementedError):
+            rp.count_tokens("some text")
+
     def test_local_ref_never_falls_through_to_litellm(self) -> None:
         """Local HF refs stay on the local engine even when litellm is installed.
 
@@ -3088,6 +3110,17 @@ class TestLiteLLMListModelsRouting:
         assert headers.get("Authorization") == "Bearer sk-secret"
 
 
+def test_sdk_provider_count_tokens_not_implemented() -> None:
+    """Cloud SDK backends have no local tokenizer, so count_tokens raises and chunk
+    sizing degrades to the character estimate."""
+    from lilbee.providers.litellm_sdk import LitellmSdkBackend
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+    provider = SdkLLMProvider(LitellmSdkBackend())
+    with pytest.raises(NotImplementedError):
+        provider.count_tokens("hello")
+
+
 class TestSdkLLMProviderVisionOcr:
     """``SdkLLMProvider.vision_ocr`` translates to a multipart chat call."""
 
@@ -3592,65 +3625,6 @@ class TestRoutingProviderRerank:
         cfg.reranker_model = ""
         with pytest.raises(ProviderError, match="No reranker configured"):
             rp.rerank("q", ["a", "b"])
-
-
-class TestRoutingProviderPdfOcr:
-    """``RoutingProvider.pdf_ocr`` dispatches by ref prefix, like ``vision_ocr``."""
-
-    def test_native_ref_routes_to_local_engine(self) -> None:
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        rp = RoutingProvider()
-        mock_native = mock.MagicMock()
-        mock_native.pdf_ocr.return_value = ["p1", "p2"]
-        rp._local = mock_native
-        progress = mock.MagicMock()
-        native_ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-
-        result = rp.pdf_ocr(
-            Path("/x.pdf"),
-            backend="vision",
-            model=native_ref,
-            per_page_timeout_s=12.5,
-            quiet=False,
-            on_progress=progress,
-        )
-
-        assert result == ["p1", "p2"]
-        mock_native.pdf_ocr.assert_called_once_with(
-            Path("/x.pdf"),
-            backend="vision",
-            model=native_ref,
-            per_page_timeout_s=12.5,
-            quiet=False,
-            on_progress=progress,
-        )
-
-    def test_hosted_ref_routes_to_sdk_which_raises(self) -> None:
-        """A hosted ``cfg.vision_model`` reaches the SDK side, which raises."""
-        from lilbee.providers.routing_provider import RoutingProvider
-
-        rp = RoutingProvider()
-        mock_sdk = mock.MagicMock()
-        mock_sdk.pdf_ocr.side_effect = NotImplementedError("hosted PDF OCR not supported")
-        rp._sdk_provider = mock_sdk
-        cfg.vision_model = ""
-
-        with pytest.raises(NotImplementedError):
-            rp.pdf_ocr(Path("/x.pdf"), backend="vision", model="openai/gpt-4-vision")
-        mock_sdk.pdf_ocr.assert_called_once()
-
-
-class TestSdkLLMProviderPdfOcr:
-    """``SdkLLMProvider.pdf_ocr`` cannot rasterise PDFs and must raise."""
-
-    def test_raises_not_implemented_with_user_facing_message(self) -> None:
-        from lilbee.providers.litellm_sdk import LitellmSdkBackend
-        from lilbee.providers.sdk_llm_provider import SdkLLMProvider
-
-        provider = SdkLLMProvider(LitellmSdkBackend())
-        with pytest.raises(NotImplementedError, match="LILBEE_VISION_MODEL"):
-            provider.pdf_ocr(Path("/scan.pdf"), backend="vision")
 
 
 class TestChatWithToolsRouting:

@@ -81,11 +81,14 @@ class ChunkWrite(NamedTuple):
 class ChunkType(StrEnum):
     """Values for the ``chunk_type`` column.
 
-    Everything ingests as ``RAW`` except wiki pages written by the wiki
-    producer; callers filter with ``Store.search(chunk_type=...)``.
+    Documents ingest as ``RAW``, extracted tables as ``TABLE`` (when table
+    extraction is on), and wiki pages written by the wiki producer as
+    ``WIKI``. Callers filter with ``Store.search(chunk_type=...)``; a ``RAW``
+    filter also covers table chunks, since both are document content.
     """
 
     RAW = "raw"
+    TABLE = "table"
     WIKI = "wiki"
 
 

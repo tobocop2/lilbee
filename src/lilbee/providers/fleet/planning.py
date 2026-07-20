@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.core.system import is_network_path
 from lilbee.providers import model_cache
@@ -213,7 +214,6 @@ def _resolve_vision_slots(
 ) -> int:
     """Largest OCR batching slot count (<= ``cfg.vision_ocr_concurrency``) that fits
     the memory budget; 1 when the ceiling is 1 or nothing larger fits."""
-    from lilbee.core.config import cfg
 
     ceiling = max(1, cfg.vision_ocr_concurrency)
     if ceiling == 1:
@@ -299,7 +299,6 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
     falls back to the single-GPU dynamic chat-ctx picker. A tensor-split chat is
     sized against its per-device headroom instead (see :func:`fit_split_ctx`).
     """
-    from lilbee.core.config import cfg
     from lilbee.providers.engine_params import (
         resolve_chat_ctx,
         resolve_embed_ctx,
@@ -322,7 +321,6 @@ def _role_ctx(role: WorkerRole, model_path: Path, meta: dict[str, str] | None) -
 
 def _rerank_mode_for(meta: dict[str, str] | None) -> RerankMode:
     """Resolve the RERANK serving mode from cfg + the reranker GGUF arch."""
-    from lilbee.core.config import cfg
 
     arch = meta.get("architecture") if meta else None
     return resolve_rerank_mode(cfg.reranker_type, arch)
@@ -362,7 +360,6 @@ def _role_gpu_layers(role: WorkerRole) -> int:
 
 def _flash_enabled() -> bool:
     """Flash attention is on unless ``cfg.flash_attention`` is explicitly ``False``."""
-    from lilbee.core.config import cfg
 
     return cfg.flash_attention is not False
 
@@ -379,7 +376,6 @@ def _role_flash(role: WorkerRole) -> bool:
 
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
     """Chat honors ``cfg.kv_cache_type``; embed/rerank/vision run f16 KV."""
-    from lilbee.core.config import cfg
 
     return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
 
@@ -391,9 +387,6 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
 
 def _cache_type_flag() -> str | None:
     """KV cache type for chat, or ``None`` to leave llama-server's f16 default."""
-    from lilbee.core.config import cfg
-    from lilbee.core.config.enums import KvCacheType
-
     if cfg.kv_cache_type is KvCacheType.F16:
         return None
     return cfg.kv_cache_type.value
@@ -479,7 +472,6 @@ def _chat_serve_budget_footprint(footprint: int) -> int:
     its context. Small models are unaffected -- they fit the serve budget with KV
     room to spare.
     """
-    from lilbee.core.config import cfg
 
     return int(footprint * (USABLE_VRAM_FRACTION / cfg.gpu_memory_fraction))
 
@@ -493,7 +485,6 @@ def _placement_estimate_ctx(role: WorkerRole, model_path: Path, meta: dict[str, 
     single-card placement) nor the full trained ceiling (which over-reserves). A
     model that cannot hold weights + this floor on one card is tensor-split.
     """
-    from lilbee.core.config import cfg
     from lilbee.providers.engine_params import chat_ctx_ceiling
 
     if role is WorkerRole.CHAT:
@@ -511,7 +502,6 @@ def _placement_estimate_slots(role: WorkerRole, meta: dict[str, str] | None) -> 
     A tensor-split chat serves a single full-context sequence, so the placement total
     is the per-sequence ceiling, not ``ceiling x _CHAT_SLOTS`` (KV no launch allocates).
     """
-    from lilbee.core.config import cfg
 
     if role is WorkerRole.CHAT:
         return _SPLIT_CHAT_SLOTS
@@ -842,7 +832,6 @@ def _launch_for(
     model_path = resolve_model_path(model_ref)
     weights_bytes = _weights_bytes(model_path)
     meta = read_gguf_metadata(model_path)
-    from lilbee.core.config import cfg
 
     chosen = tuple(by_index[i] for i in plan.devices)
     is_chat = plan.role is WorkerRole.CHAT
@@ -1076,7 +1065,6 @@ _plan_probe_store = _PlanProbeStore()
 
 def capture_plan_probe() -> None:
     """Snapshot devices and memory for planning; call only on a clean box."""
-    from lilbee.core.config import cfg
     from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
@@ -1105,8 +1093,6 @@ def _plan_devices(binary: Path) -> list[FleetDevice]:
 
 def _plan_available_memory() -> int:
     """Usable VRAM for ctx/slot sizing: the snapshot, else the live read."""
-    from lilbee.core.config import cfg
-
     probe = _plan_probe_store.get()
     if probe is not None:
         return probe.available_vram
@@ -1275,7 +1261,6 @@ def plan_launches(
     devices: list[FleetDevice],
 ) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
-    from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, reservation, skipped_not_installed = _server_model_inputs(

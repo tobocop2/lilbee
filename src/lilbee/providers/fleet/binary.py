@@ -6,6 +6,7 @@ import shutil
 from enum import StrEnum
 from pathlib import Path
 
+from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 
 _INSTALL_HINT = (
@@ -48,14 +49,11 @@ def resolve_engine_tool(tool: EngineTool) -> Path:
     (an explicit setting beats the bundled wheel); the other tools resolve from the
     wheel, then ``PATH``.
     """
-    if tool is EngineTool.LLAMA_SERVER:
-        from lilbee.core.config import cfg
-
-        if cfg.llama_server_path:
-            configured = Path(cfg.llama_server_path)
-            if not configured.is_file():
-                raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
-            return configured
+    if tool is EngineTool.LLAMA_SERVER and cfg.llama_server_path:
+        configured = Path(cfg.llama_server_path)
+        if not configured.is_file():
+            raise ProviderError(f"LILBEE_LLAMA_SERVER_PATH is not a file: {configured}")
+        return configured
 
     bundled = _bundled_tool(tool)
     if bundled is not None:

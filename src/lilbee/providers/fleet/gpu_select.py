@@ -20,6 +20,7 @@ from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_uint64
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
+from lilbee.core.config import cfg
 from lilbee.providers.fleet.vulkan_icd_discovery import (
     iter_vulkan_manifest_paths,
 )
@@ -551,7 +552,6 @@ def disable_conflicting_vulkan_icds() -> str | None:
     from disk (registry on Windows, XDG on Linux); enumerating via
     ``vkCreateInstance`` would pre-load every vendor's ICD before the disable lands.
     """
-    from lilbee.core.config import cfg
 
     if not _platform_supports_icd_pin():
         return None

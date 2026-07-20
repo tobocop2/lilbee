@@ -30,9 +30,14 @@ os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.core.config import cfg
+from lilbee.data import xberg_extract as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+
+# Pristine extraction entry points, captured before any test can patch them.
+_PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
+_PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -224,6 +229,23 @@ def overlay_reads_config_toml(monkeypatch):
     root and asserting it lands on cfg) must clear the flag so overlay runs.
     """
     monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_xberg_extract_globals():
+    """Start every test with the real extraction functions.
+
+    ``extract_document`` (sync) resolves ``aextract_document`` via module-global
+    lookup, so a ``mock.patch`` of ``lilbee.data.xberg_extract.aextract_document``
+    intercepts both the async and the sync path -- and the sync path is what
+    ``chunk_text`` uses. The ingest/handler suites patch that global heavily; under
+    the parallel run a patch occasionally stays active into an unrelated test, and
+    ``chunk_text`` then silently returns mock content ('Some extracted text.'),
+    a nondeterministic cross-test failure. Resetting the globals before each test
+    makes that leak impossible regardless of how a patch escaped. (bb-ql1)
+    """
+    _xberg_extract.extract_document = _PRISTINE_EXTRACT_DOCUMENT
+    _xberg_extract.aextract_document = _PRISTINE_AEXTRACT_DOCUMENT
 
 
 @pytest.fixture(autouse=True)

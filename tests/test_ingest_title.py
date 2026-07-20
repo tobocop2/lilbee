@@ -1,5 +1,7 @@
 """Tests for document title and source-metadata derivation at ingest."""
 
+from xberg import Metadata
+
 from lilbee.data.ingest.title import derive_title, source_meta_from_extraction
 
 
@@ -29,9 +31,11 @@ class TestDeriveTitle:
 
 
 class TestSourceMetaFromExtraction:
+    """Fed real ``xberg.Metadata``: the binding, not a stand-in for it."""
+
     def test_full_metadata(self):
         meta = source_meta_from_extraction(
-            {"title": "The Title", "authors": ["Ada", "Grace"], "created_at": "2021-05-01"},
+            Metadata(title="The Title", authors=["Ada", "Grace"], created_at="2021-05-01"),
             "x.pdf",
         )
         assert meta.title == "The Title"
@@ -39,34 +43,35 @@ class TestSourceMetaFromExtraction:
         assert meta.created_at == "2021-05-01"
 
     def test_empty_metadata_derives_stem_title(self):
-        meta = source_meta_from_extraction({}, "field_notes.pdf")
+        meta = source_meta_from_extraction(Metadata(), "field_notes.pdf")
         assert meta.title == "field notes"
         assert meta.authors == ""
         assert meta.created_at == ""
 
     def test_falsy_authors_are_dropped(self):
-        meta = source_meta_from_extraction({"authors": ["Ada", "", None]}, "x.pdf")
+        meta = source_meta_from_extraction(Metadata(authors=["Ada", "", None]), "x.pdf")
         assert meta.authors == "Ada"
 
     def test_none_values_tolerated(self):
         meta = source_meta_from_extraction(
-            {"title": None, "authors": None, "created_at": None}, "notes.md"
+            Metadata(title=None, authors=None, created_at=None), "notes.md"
         )
         assert meta.title == "notes"
         assert meta.authors == ""
         assert meta.created_at == ""
 
     def test_string_authors_is_one_author_not_split_into_characters(self):
-        # A raw PDF /Author field often arrives as a plain string; it must not
-        # be iterated into "J, o, h, n".
-        meta = source_meta_from_extraction({"authors": "John Doe"}, "x.pdf")
+        # Metadata annotates authors as list[str] but does not enforce it, and a
+        # raw PDF /Author field arrives as a plain string. It must not be
+        # iterated into "J, o, h, n".
+        meta = source_meta_from_extraction(Metadata(authors="John Doe"), "x.pdf")
         assert meta.authors == "John Doe"
 
     def test_non_string_author_entries_are_coerced_not_raised(self):
-        meta = source_meta_from_extraction({"authors": ["Ada", 42]}, "x.pdf")
+        meta = source_meta_from_extraction(Metadata(authors=["Ada", 42]), "x.pdf")
         assert meta.authors == "Ada, 42"
 
     def test_non_string_title_falls_back_to_stem(self):
         # A bytes/number title in malformed metadata must not raise; fall back.
-        meta = source_meta_from_extraction({"title": 123}, "annual_report.pdf")
+        meta = source_meta_from_extraction(Metadata(title=123), "annual_report.pdf")
         assert meta.title == "annual report"

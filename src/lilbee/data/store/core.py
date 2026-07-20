@@ -673,7 +673,8 @@ class Store:
     ) -> list[SearchChunk]:
         """Quick BM25-only search for confidence checking. Returns up to top_k results.
 
-        When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
+        When *chunk_type* is set, only matching chunks are returned; a "raw"
+        filter also covers table chunks.
         """
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
@@ -704,7 +705,8 @@ class Store:
 
         Results with distance > max_distance are filtered out (vector-only path).
         Pass max_distance=0 to disable filtering.
-        When *chunk_type* is set, only chunks of that type ("raw" or "wiki") are returned.
+        When *chunk_type* is set, only matching chunks are returned; a "raw"
+        filter also covers table chunks.
 
         Raises ``EmbeddingModelMismatchError`` if the persisted ``_meta`` row was
         written under a different embedding model than the current ``cfg``.

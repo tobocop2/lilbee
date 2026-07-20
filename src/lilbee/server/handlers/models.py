@@ -280,6 +280,8 @@ async def set_embedding_model(model: str) -> SetModelResponse:
 async def set_vision_model(model: str) -> SetModelResponse:
     """Switch vision OCR model. Empty string unsets it (vision OCR disabled)."""
     normalized = _require_model_for_task(model, ModelTask.VISION, allow_empty=True)
+    # The OCR-backend (un)registration is handled by apply_settings_update's role
+    # reload fan-out inside _set_model, covering REST/MCP/TUI/CLI uniformly.
     return await _set_model("vision_model", normalized)
 
 

@@ -844,6 +844,8 @@ effect on already-indexed material.
 | `LILBEE_CHUNK_OVERLAP` | `100` | Overlap tokens between adjacent chunks |
 | `LILBEE_MAX_EMBED_CHARS` | `2000` | Max characters per chunk passed to the embedder |
 | `LILBEE_SEMANTIC_CHUNKING` | `false` | Experimental topic-aware chunking. See [Semantic chunking](#semantic-chunking) |
+| `LILBEE_TABLE_EXTRACTION` | `false` | Recognize table structure in PDFs and index each table as its own chunk, with long tables split so the header row repeats |
+| `LILBEE_LAYOUT_DETECTION` | `false` | Layout-aware PDF extraction: text follows the detected reading order and running headers/footers are stripped |
 | `LILBEE_TOPIC_THRESHOLD` | `0.75` | Cosine boundary threshold for semantic chunking (lower = more splits) |
 | `LILBEE_EMBEDDING_DIM` | `768` | Embedding dimensionality. Must match the embedding model |
 | `LILBEE_EMBED_REPLICAS` | `1` | Embedding servers to run in parallel, one per spare GPU, for large-scale ingest. Capped at runtime by the GPUs with room after the chat model is placed |
@@ -1207,7 +1209,7 @@ chunk is more likely to contain the full section that matches rather than the
 first half of it plus unrelated setup.
 
 **Trade-off:** Enabling semantic chunking triggers a one-time download of
-kreuzberg's ONNX embedding model (separate from the chunk-to-vector embedder)
+xberg's ONNX embedding model (separate from the chunk-to-vector embedder)
 and runs roughly 9x more downstream embedding calls during indexing. Indexing
 takes longer; retrieval latency is unchanged.
 
@@ -1252,6 +1254,7 @@ vision model is configured, it takes precedence.
 | | Tesseract | Vision model |
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |
+| **Languages** | 100+ via `LILBEE_OCR_LANGUAGE` (e.g. `eng+deu`) | Many scripts (model-dependent) |
 | **Retrieval quality** | Fragments lose context | Chunks preserve semantic boundaries |
 | **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
@@ -1267,6 +1270,19 @@ when no vision model is configured. No flags needed.
 brew install tesseract          # macOS
 sudo apt install tesseract-ocr  # Ubuntu/Debian
 ```
+
+By default Tesseract reads English (`eng`). To OCR other languages, set the
+language codes; xberg downloads the Tesseract data on first use. Join multiple
+languages with `+` (Tesseract's own convention), for example `eng+deu` for
+English and German. The setting is the same value everywhere:
+
+```bash
+export LILBEE_OCR_LANGUAGE=eng+deu   # environment
+lilbee set ocr_language eng+deu      # CLI / persisted to config.toml
+```
+
+You can also set it in the `/settings` screen in the TUI, or over the HTTP and
+MCP settings APIs. Commas work in place of `+` if you prefer (`eng,deu`).
 
 ### Vision models
 
