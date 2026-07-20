@@ -1251,7 +1251,9 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         monkeypatch.setattr(
             planning_mod,
@@ -1280,7 +1282,9 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         monkeypatch.setattr(
             planning_mod,
@@ -1311,7 +1315,9 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         monkeypatch.setattr(
             planning_mod,
@@ -1343,9 +1349,11 @@ class TestBuildFleetWiring:
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        # The engine could not answer at all, which is the only case the fallback
+        # is for; a clean run listing nothing is a verdict and gets believed.
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([], "")
-        )  # can't enumerate
+            planning_mod, "probe_devices", lambda _binary: DeviceProbe([], "", spoke_protocol=False)
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_select.enumerate_gpu_vram",
             lambda: [(0, 24 * _GB, 20 * _GB)],
@@ -1442,7 +1450,11 @@ class TestResolveDevicesProbeFailureWarning:
     def test_warns_when_probe_finds_nothing_on_an_nvidia_host(self, monkeypatch, caplog) -> None:
         # A driver hiccup on a CUDA pod must not silently fall into the unified
         # shared-memory path; the operator needs a loud signal of what to check.
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
@@ -1451,7 +1463,11 @@ class TestResolveDevicesProbeFailureWarning:
         assert any("shared-memory mode" in record.message for record in caplog.records)
 
     def test_no_warning_without_an_nvidia_gpu(self, monkeypatch, caplog) -> None:
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
@@ -1461,7 +1477,9 @@ class TestResolveDevicesProbeFailureWarning:
     def test_no_warning_when_probe_succeeds(self, monkeypatch, caplog) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
             assert planning_mod.resolve_devices(Path("/bin/llama-server")) == [device]
@@ -1474,11 +1492,41 @@ class TestResolveDevicesProbeFailureWarning:
         from lilbee.providers.fleet import cuda_runtime
 
         monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
         monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: True)
         with pytest.raises(ProviderError, match="no CUDA-capable device"):
             planning_mod.resolve_devices(Path("/bin/llama-server"))
+
+    def test_an_engine_that_never_answered_is_not_accused_of_a_broken_driver(
+        self, monkeypatch
+    ) -> None:
+        """The fail-loud guard reads an empty device list as a driver that would
+        not initialize. A binary with no --list-devices support enumerated
+        nothing because it was never asked, so accusing its driver is both wrong
+        and fatal, and it pre-empts the fallback that rescues those engines."""
+        from lilbee.providers.fleet import cuda_runtime, gpu_select
+
+        monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe(
+                [], "error: invalid argument: --list-devices\n", spoke_protocol=False
+            ),
+        )
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: True)
+        monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * _GB, 8 * _GB)])
+        monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+        devices = planning_mod.resolve_devices(Path("/bin/llama-server"))
+
+        assert [(d.backend, d.index) for d in devices] == [("Vulkan", 0)]
 
     def test_probe_timeout_propagates_without_vulkan_fallback(self, monkeypatch) -> None:
         # A wedged probe raises; falling into the in-process Vulkan probe there
