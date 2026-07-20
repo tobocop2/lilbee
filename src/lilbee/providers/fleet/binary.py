@@ -57,11 +57,18 @@ def engine_pin() -> str:
 
 
 def _engine_build_id() -> str:
-    """The engine build's identity: configured path, wheel pin, PATH, or unpinned."""
+    """The engine build's identity: configured path, wheel pin, PATH, or unpinned.
+
+    A BYO (``custom:``) or PATH-resolved (``path:``) binary is identified by its
+    location AND a cheap build fingerprint (size + mtime), so replacing the binary
+    in place (a brew upgrade, a re-download) changes the pin and never binds a new
+    process to an engine spawned from the old build. The bundled wheel needs no
+    fingerprint: its pin already encodes the build.
+    """
     from lilbee.core.config import cfg
 
     if cfg.llama_server_path:
-        return f"custom:{cfg.llama_server_path}"
+        return f"custom:{cfg.llama_server_path}@{_binary_signature(Path(cfg.llama_server_path))}"
     try:
         import lilbee_engine
     except ImportError:
@@ -73,8 +80,22 @@ def _engine_build_id() -> str:
             return f"wheel:{_pkg_version('lilbee-engine')}"
     found = shutil.which(EngineTool.LLAMA_SERVER.value)
     if found is not None:
-        return f"path:{found}"
+        return f"path:{found}@{_binary_signature(Path(found))}"
     return "unpinned"
+
+
+def _binary_signature(path: Path) -> str:
+    """A cheap build fingerprint of the binary at *path*: size and mtime.
+
+    An in-place replacement changes both, so the pin stops matching the old build.
+    Best-effort and total (engine_pin runs on every state write): an unstatable
+    path degrades to a fixed marker rather than raising.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return "unstatable"
+    return f"{st.st_size}-{st.st_mtime_ns}"
 
 
 def _load_config_signature() -> str:

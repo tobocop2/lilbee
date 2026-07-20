@@ -183,7 +183,31 @@ class TestEnginePin:
         original = cfg.llama_server_path
         cfg.llama_server_path = str(exe)
         try:
-            assert _engine_build_id() == f"custom:{exe}"
+            assert _engine_build_id().startswith(f"custom:{exe}@")  # path + build fingerprint
+        finally:
+            cfg.llama_server_path = original
+
+    def test_binary_signature_degrades_on_an_unstatable_path(self) -> None:
+        # engine_pin runs on every state write and must not raise; an unstatable
+        # binary path degrades to a fixed marker.
+        assert binary_mod._binary_signature(Path("/does/not/exist/llama-server")) == "unstatable"
+
+    def test_custom_pin_tracks_an_in_place_binary_replacement(self, tmp_path: Path) -> None:
+        # Replacing the binary at the same path (a brew upgrade) must change the pin,
+        # so a new process never binds to an engine spawned from the old build.
+        import os
+        import time
+
+        exe = tmp_path / "llama-server"
+        exe.write_text("#!/bin/sh\n# build A\n")
+        original = cfg.llama_server_path
+        cfg.llama_server_path = str(exe)
+        try:
+            pin_a = _engine_build_id()
+            time.sleep(0.01)
+            exe.write_text("#!/bin/sh\n# build B is larger than A\n")
+            os.utime(exe, ns=(time.time_ns(), time.time_ns()))  # a real replace bumps mtime
+            assert _engine_build_id() != pin_a
         finally:
             cfg.llama_server_path = original
 
@@ -200,7 +224,8 @@ class TestEnginePin:
     ) -> None:
         monkeypatch.setitem(sys.modules, "lilbee_engine", None)
         monkeypatch.setattr(_WHICH, lambda name: f"/opt/homebrew/bin/{name}")
-        assert _engine_build_id() == "path:/opt/homebrew/bin/llama-server"
+        # path + build fingerprint; the fake path is unstatable so it degrades safely.
+        assert _engine_build_id().startswith("path:/opt/homebrew/bin/llama-server@")
 
     def test_unpinned_when_nothing_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, "lilbee_engine", None)
