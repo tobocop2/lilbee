@@ -736,7 +736,7 @@ class TestModelsPullArchPrecheck:
         from lilbee.catalog.compat import UnsupportedArchError
 
         manager = mock.MagicMock()
-        manager._enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
+        manager.enforce_arch_compat.side_effect = UnsupportedArchError("acme/foo-GGUF", "kimi_k2")
         with mock.patch(
             "lilbee.server.handlers.models.get_services",
             return_value=mock.MagicMock(model_manager=manager),

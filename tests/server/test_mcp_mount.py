@@ -67,6 +67,21 @@ def test_transport_security_loopback_only_for_wildcard_bind(monkeypatch, wildcar
     assert "127.0.0.1:*" in security.allowed_hosts
 
 
+@pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+def test_a_wildcard_bind_warns_that_mcp_stays_loopback_only(monkeypatch, caplog, wildcard) -> None:
+    """The REST API on the same port serves LAN clients fine, so an operator
+    who deliberately exposed the daemon otherwise gets a silently half-working
+    server: only /mcp fails, with an opaque transport-security rejection."""
+    from lilbee.core.config import cfg
+    from lilbee.server.mcp_mount import _transport_security
+
+    monkeypatch.setattr(cfg, "server_host", wildcard)
+    with caplog.at_level("WARNING"):
+        _transport_security()
+    assert "/mcp" in caplog.text
+    assert wildcard in caplog.text
+
+
 def test_handler_mounts_at_mcp_path() -> None:
     handler, _ = build_mcp_mount()
     assert MCP_MOUNT_PATH in handler.paths

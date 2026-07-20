@@ -40,7 +40,7 @@ from lilbee.server.handlers.ingest import (
     import_stream,
     sync_stream,
     validate_add_paths,
-    validate_uploads,
+    validate_upload_names,
 )
 from lilbee.server.handlers.models import (
     TASK_ENDPOINT_PATH,
@@ -284,6 +284,6 @@ __all__ = [
     "sync_stream",
     "update_config",
     "validate_add_paths",
-    "validate_uploads",
+    "validate_upload_names",
     "warm_stream",
 ]

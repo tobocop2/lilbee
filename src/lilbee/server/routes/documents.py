@@ -77,13 +77,15 @@ async def add_upload_route(
     e.g. the plugin or CLI in external mode against a remote lilbee / GPU box --
     ingest its own local files by uploading them straight to the server.
     """
-    files: list[tuple[str, bytes]] = []
-    for upload in data:
-        files.append((upload.filename, await upload.read()))
+    # Names first, bytes second. Reading every part into a list before
+    # validating meant a request that was going to be rejected on filename
+    # still cost a full in-memory copy of the payload, per concurrent
+    # uploader, on a box that is also holding model weights.
     try:
-        cleaned = handlers.validate_uploads(files)
+        names = handlers.validate_upload_names([upload.filename for upload in data])
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
+    cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]
     return Stream(
         handlers.add_uploads_stream(cleaned),
         media_type="text/event-stream",

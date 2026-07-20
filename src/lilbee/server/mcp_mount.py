@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING, cast
@@ -16,6 +17,8 @@ from lilbee.mcp_server import mcp, set_http_mounted
 if TYPE_CHECKING:
     from litestar import Litestar
     from litestar.handlers import ASGIRouteHandler
+
+log = logging.getLogger(__name__)
 
 MCP_MOUNT_PATH = "/mcp"
 
@@ -45,7 +48,19 @@ def _transport_security() -> TransportSecuritySettings:
         f"{scheme}://{_fmt_host(h)}:*" for h in _LOOPBACK_HOSTS for scheme in ("http", "https")
     ]
     bind = cfg.server_host
-    if bind and bind not in _LOOPBACK_HOSTS and bind not in _WILDCARD_BINDS:
+    if bind in _WILDCARD_BINDS:
+        # The REST API on this port serves LAN clients fine, so without this
+        # the operator sees a half-working server: only /mcp fails, and it
+        # fails with an opaque transport-security rejection rather than
+        # anything naming the bind address as the cause.
+        log.warning(
+            "Bound to %s, which cannot be enumerated for a Host allowlist, so %s "
+            "accepts loopback Host headers only. Bind to a specific address to "
+            "reach the MCP endpoint from other machines.",
+            bind,
+            MCP_MOUNT_PATH,
+        )
+    elif bind and bind not in _LOOPBACK_HOSTS:
         hosts.append(f"{_fmt_host(bind)}:*")
         origins.extend(f"{scheme}://{_fmt_host(bind)}:*" for scheme in ("http", "https"))
     return TransportSecuritySettings(
@@ -67,7 +82,18 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     # concurrent in-flight handlers on the process-global Services singleton.
     set_http_mounted(True)
     # FastMCP caches the session manager; clear it so each app owns its own,
-    # since run() is single-use per instance.
+    # since run() is single-use per instance. There is no public reset in the
+    # mcp package (the property only lazily constructs and raises if read
+    # early), so this reaches into the private attribute deliberately, under
+    # the mcp>=1.26,<2 pin in pyproject. Checked rather than assumed: a rename
+    # would otherwise surface much later as an opaque run()-already-entered
+    # error from the lifespan, with nothing pointing at the dependency.
+    if not hasattr(mcp, "_session_manager"):
+        raise RuntimeError(
+            "This mcp release no longer caches the session manager on "
+            "FastMCP._session_manager, so a per-app session manager cannot be "
+            "forced. Check the mcp version pin in pyproject.toml."
+        )
     mcp._session_manager = None
     mcp.settings.streamable_http_path = "/"
     mcp.settings.transport_security = _transport_security()

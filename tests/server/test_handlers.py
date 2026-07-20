@@ -180,23 +180,26 @@ class TestAddEndpoint:
         assert resp.status_code == 201
 
     def test_validate_uploads_rejects_bad_input(self, mock_extract_file, isolated_env):
-        """validate_uploads guards empty/malformed names and keeps relative paths."""
-        from lilbee.server.handlers.ingest import validate_uploads
+        """validate_upload_names guards empty/malformed names and keeps relative paths."""
+        from lilbee.server.handlers.ingest import validate_upload_names
 
         with pytest.raises(ValueError, match="no files"):
-            validate_uploads([])
+            validate_upload_names([])
         with pytest.raises(ValueError, match="invalid upload filename"):
-            validate_uploads([("", b"x")])
+            validate_upload_names([""])
         with pytest.raises(ValueError, match="must be relative"):
-            validate_uploads([("/etc/passwd", b"x")])
+            validate_upload_names(["/etc/passwd"])
         with pytest.raises(ValueError, match="must be relative"):
-            validate_uploads([("C:\\dir\\file.txt", b"x")])
+            validate_upload_names(["C:\\dir\\file.txt"])
         with pytest.raises(ValueError, match="may not contain"):
-            validate_uploads([("../../a/b.txt", b"x")])
+            validate_upload_names(["../../a/b.txt"])
         # Relative paths survive so an uploaded tree keeps its layout.
-        assert validate_uploads([("src/pkg/__init__.py", b"x")]) == [("src/pkg/__init__.py", b"x")]
+        assert validate_upload_names(["src/pkg/__init__.py"]) == ["src/pkg/__init__.py"]
         # Backslash separators and ./ prefixes normalize to POSIX relative form.
-        assert validate_uploads([("./src\\a.py", b"x")]) == [("src/a.py", b"x")]
+        assert validate_upload_names(["./src\\a.py"]) == ["src/a.py"]
+        # A multipart part may carry no filename at all.
+        with pytest.raises(ValueError, match="invalid upload filename"):
+            validate_upload_names([None])
 
     async def test_add_nonexistent_file_in_errors(self, mock_extract_file, isolated_env, tmp_path):
         """Nonexistent paths appear in the summary errors list."""

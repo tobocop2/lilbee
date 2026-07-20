@@ -28,7 +28,7 @@ from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSourc
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
-from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
+from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK, validate_model_task_assignment
 from lilbee.providers.local_servers import canonical_local_ref, local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
@@ -237,8 +237,8 @@ def _require_model_available(model: str) -> str:
 
 
 def _build_task_to_field() -> dict[ModelTask, str]:
-    """Invert config's ``_MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
-    return {ModelTask(task): field for field, task in _MODEL_FIELD_TO_TASK.items()}
+    """Invert ``MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
+    return {ModelTask(task): field for field, task in MODEL_FIELD_TO_TASK.items()}
 
 
 _TASK_TO_FIELD: dict[ModelTask, str] = _build_task_to_field()
@@ -560,7 +560,7 @@ async def enforce_pull_arch_compat(
         return
     manager = get_services().model_manager
     try:
-        await asyncio.to_thread(manager._enforce_arch_compat, model)
+        await asyncio.to_thread(manager.enforce_arch_compat, model)
     except UnsupportedArchError as exc:
         raise HTTPException(
             status_code=409,

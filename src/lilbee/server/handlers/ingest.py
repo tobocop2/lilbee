@@ -255,17 +255,24 @@ def _clean_upload_name(name: str) -> str:
     return relative
 
 
-def validate_uploads(files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
-    """Validate uploaded (filename, content) pairs. Raises ValueError on bad input.
+def validate_upload_names(names: list[str | None]) -> list[str]:
+    """Validate uploaded filenames, returning the cleaned relative paths.
 
-    Filenames keep their relative path, validated to stay inside
-    ``cfg.documents_dir``, so an uploaded source tree preserves its layout
-    instead of colliding on basenames. There is no file-count cap; the
-    resource guard is the app's size-based request_max_body_size.
+    Names only, deliberately: the route validates before reading any part's
+    bytes, so a request that will be rejected never costs a full copy of the
+    payload in the server's own memory. Filenames keep their relative path,
+    validated to stay inside ``cfg.documents_dir``, so an uploaded source tree
+    preserves its layout instead of colliding on basenames. There is no
+    file-count cap; the resource guard is the app's request_max_body_size.
+
+    Raises ValueError on bad input.
     """
-    if not files:
+    if not names:
         raise ValueError("no files uploaded")
-    return [(_clean_upload_name(name), content) for name, content in files]
+    # A multipart part is allowed to carry no filename at all; that is not a
+    # file upload, and the cleaner's message should name it as missing rather
+    # than crash on None.
+    return [_clean_upload_name(name if name is not None else "") for name in names]
 
 
 async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSummary:

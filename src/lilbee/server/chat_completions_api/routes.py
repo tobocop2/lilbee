@@ -99,7 +99,22 @@ def _build_models_list_payload() -> ModelsListResponse:
     )
 
 
-@post("/v1/chat/completions", status_code=200)
+async def _auth_before_request(request: Request) -> Response | None:
+    """Reject an unauthenticated caller before Litestar parses the body.
+
+    The endpoint is marked @read_only so AuthMiddleware waves it through and
+    the bearer check lives in the handler. But binding the body as a handler
+    parameter made Litestar parse and pydantic-validate the whole payload
+    first, so an unauthenticated caller got request_max_body_size worth of
+    JSON processed on every request, and a malformed body was answered with a
+    400 naming the failing fields instead of ever reaching the 401. Litestar
+    runs before_request ahead of kwargs resolution and short-circuits on a
+    returned value, so this is the one place the check can sit.
+    """
+    return _auth_failure(request)
+
+
+@post("/v1/chat/completions", status_code=200, before_request=_auth_before_request)
 @read_only
 async def chat_completions_endpoint(
     request: Request, data: CompletionsRequest
@@ -147,15 +162,13 @@ async def chat_completions_endpoint(
 
 
 def _reject_before_dispatch(request: Request, data: CompletionsRequest) -> Response | None:
-    """Auth, multi-choice, and unsupported-param checks before any dispatch work.
+    """Multi-choice and unsupported-param checks before any dispatch work.
 
     Returns a 4xx Response to short-circuit, or None to proceed. Unmapped OpenAI
     params (``response_format``, ``logprobs``, and any other unknown field) are
-    accepted but logged at debug so a client learns they had no effect.
+    accepted but logged at debug so a client learns they had no effect. Auth is
+    not checked here: it runs in the before_request hook, ahead of body parsing.
     """
-    auth_error = _auth_failure(request)
-    if auth_error is not None:
-        return auth_error
     if data.n is not None and data.n > 1:
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _MULTI_CHOICE_MESSAGE)
     if data.model_extra:
