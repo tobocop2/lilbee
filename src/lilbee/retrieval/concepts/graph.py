@@ -171,16 +171,25 @@ class ConceptGraph:
                 cc_tbl.add(records.chunk_concepts)
 
     def boost_results(self, results: list[Any], query_concepts: list[str]) -> list[Any]:
-        """Boost search results whose chunks overlap with query concepts."""
+        """Boost search results whose chunks overlap with query concepts.
+
+        One batched chunk_concepts query serves the whole result set, grouped
+        back per chunk in Python -- the same batching get_related_concepts
+        uses per depth level. The table has no scalar index, so a per-result
+        predicate would be one full table scan per result.
+        """
         if not query_concepts or not results:
             return results
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if table is None:
             return results
         query_set = set(query_concepts)
+        concepts_by_chunk = self._chunk_concepts_batch(
+            table, {(r.source, r.chunk_index) for r in results}
+        )
         boosted: list[Any] = []
         for r in results:
-            chunk_concepts = set(self._chunk_concepts_from(table, r.source, r.chunk_index))
+            chunk_concepts = concepts_by_chunk.get((r.source, r.chunk_index), set())
             overlap = len(query_set & chunk_concepts)
             if overlap > 0:
                 boost = (overlap / len(query_set)) * self._config.concept_boost_weight
@@ -199,25 +208,45 @@ class ConceptGraph:
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if table is None:
             return []
-        return self._chunk_concepts_from(table, source, chunk_index)
-
-    @staticmethod
-    def _chunk_concepts_from(table: Any, source: str, chunk_index: int) -> list[str]:
-        """Query one chunk's concepts from an already-open table.
-
-        Split out so a batch caller (``boost_results``) opens the table once
-        instead of re-opening it per result (an N+1 LanceDB access).
-        """
         escaped = escape_sql_string(source)
         try:
             rows = (
                 table.search()
-                .where(f"chunk_source = '{escaped}' AND chunk_index = {chunk_index}")
+                .where(f"chunk_source = '{escaped}' AND chunk_index = {int(chunk_index)}")
                 .to_list()
             )
-            return [r["concept"] for r in rows]
         except Exception:
+            log.debug("get_chunk_concepts query failed for %r", source, exc_info=True)
             return []
+        return [r["concept"] for r in rows]
+
+    @staticmethod
+    def _chunk_concepts_batch(
+        table: Any, chunks: set[tuple[str, int]]
+    ) -> dict[tuple[str, int], set[str]]:
+        """Fetch many chunks' concepts in one query, keyed by (source, index).
+
+        The predicate is the cross product of the distinct sources and
+        indexes -- a cheap superset -- and rows are filtered back to the
+        exact requested pairs in Python.
+        """
+        sources = ", ".join(f"'{escape_sql_string(s)}'" for s in sorted({s for s, _ in chunks}))
+        indexes = ", ".join(str(int(i)) for i in sorted({i for _, i in chunks}))
+        try:
+            rows = (
+                table.search()
+                .where(f"chunk_source IN ({sources}) AND chunk_index IN ({indexes})")
+                .to_list()
+            )
+        except Exception:
+            log.debug("chunk concepts batch query failed", exc_info=True)
+            return {}
+        concepts_by_chunk: dict[tuple[str, int], set[str]] = {}
+        for row in rows:
+            key = (row["chunk_source"], row["chunk_index"])
+            if key in chunks:
+                concepts_by_chunk.setdefault(key, set()).add(row["concept"])
+        return concepts_by_chunk
 
     def expand_query(self, query: str) -> list[str]:
         """Expand a query with related concepts from the graph."""

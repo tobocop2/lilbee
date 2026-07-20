@@ -495,6 +495,11 @@ class TestWriteConceptRecords:
         assert len(batched_rows) > 0
 
 
+def _cc_row(source: str, chunk_index: int, concept: str) -> dict:
+    """A chunk_concepts table row as the batched boost query returns it."""
+    return {"chunk_source": source, "chunk_index": chunk_index, "concept": concept}
+
+
 class TestBoostResults:
     def test_boost_scoreless_row_is_untouched(self, cg, mock_svc):
         """A hand-built row without the canonical score has nothing to boost
@@ -503,7 +508,7 @@ class TestBoostResults:
         results = [_make_result(distance=0.5, chunk_index=0)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"},
+            _cc_row("test.pdf", 0, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -518,7 +523,8 @@ class TestBoostResults:
         ]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"},
+            _cc_row("test.pdf", 0, "python"),
+            _cc_row("test.pdf", 1, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -529,7 +535,7 @@ class TestBoostResults:
         results = [_make_result(distance=0.5, chunk_index=0)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "java"},
+            _cc_row("test.pdf", 0, "java"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -542,16 +548,57 @@ class TestBoostResults:
         boosted = cg.boost_results(results, ["python"])
         assert boosted == results
 
-    def test_boost_results_opens_table_once_for_many_results(self, cg, mock_svc):
-        """The chunk_concepts table is opened once per call, not once per result (N+1)."""
-        results = [_make_result(distance=0.5, chunk_index=i) for i in range(4)]
+    def test_boost_results_single_query_for_many_results(self, cg, mock_svc):
+        """The whole result set is served by ONE batched chunk_concepts query
+        (chunk_source IN ... AND chunk_index IN ...), not one query per result:
+        the table has no scalar index, so each per-result predicate was a full
+        table scan."""
+        results = [
+            _make_result(source="a.md", chunk_index=0, score=0.5),
+            _make_result(source="a.md", chunk_index=3, score=0.5),
+            _make_result(source="b.md", chunk_index=1, score=0.5),
+        ]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"}
+            _cc_row("a.md", 0, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
-        cg.boost_results(results, ["python"])
+        boosted = cg.boost_results(results, ["python"])
         mock_svc.store.open_table.assert_called_once()
+        assert mock_table.search.call_count == 1
+        where_arg = mock_table.search.return_value.where.call_args.args[0]
+        assert "chunk_source IN (" in where_arg
+        assert "'a.md'" in where_arg
+        assert "'b.md'" in where_arg
+        assert "chunk_index IN (" in where_arg
+        assert boosted[0].score > 0.5
+
+    def test_boost_ignores_cross_product_rows_for_unrequested_chunks(self, cg, mock_svc):
+        """The batched predicate is a source x index cross product; rows for
+        pairs that were not requested must not leak concepts into any result."""
+        results = [
+            _make_result(source="a.md", chunk_index=0, score=0.5),
+            _make_result(source="b.md", chunk_index=1, score=0.5),
+        ]
+        mock_table = MagicMock()
+        # (a.md, 1) matches the cross product but is not a requested chunk.
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
+            _cc_row("a.md", 1, "python"),
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        boosted = cg.boost_results(results, ["python"])
+        assert boosted[0].score == 0.5
+        assert boosted[1].score == 0.5
+
+    def test_boost_results_unchanged_when_batch_query_fails(self, cg, mock_svc):
+        results = [_make_result(chunk_index=0, score=0.5)]
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.side_effect = RuntimeError(
+            "query failed"
+        )
+        mock_svc.store.open_table.return_value = mock_table
+        boosted = cg.boost_results(results, ["python"])
+        assert boosted[0].score == 0.5
 
     def test_boost_results_empty_query_concepts(self, cg):
         results = [_make_result()]
@@ -568,8 +615,8 @@ class TestBoostResults:
         results = [_make_result(distance=0.1, chunk_index=0, score=0.4)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"},
-            {"concept": "ml"},
+            _cc_row("test.pdf", 0, "python"),
+            _cc_row("test.pdf", 0, "ml"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python", "ml"])
