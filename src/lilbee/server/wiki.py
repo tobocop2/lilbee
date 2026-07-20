@@ -126,9 +126,11 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
     slug = slug.lstrip("/")
     store = svc_mod.get_services().store
     try:
-        # accept_draft re-chunks and embeds the page; offload so it doesn't block
-        # the event loop (and every other REST/MCP request on it).
-        result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
+        # accept_draft overwrites a published page and refreshes the index, the
+        # same artifacts a build writes, so it shares the build mutex. It also
+        # re-chunks and embeds, so it runs off the event loop.
+        async with _wiki_build_lock():
+            result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:
@@ -213,8 +215,11 @@ async def wiki_lint_route() -> WikiLintResult:
 async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    # prune_wiki walks the whole wiki tree and store; offload off the loop.
-    report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
+    # prune archives pages and rewrites the index, so it takes the build mutex
+    # like the other writers. It also walks the whole tree and store, so it runs
+    # off the event loop.
+    async with _wiki_build_lock():
+        report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
     return WikiPruneResult(
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,

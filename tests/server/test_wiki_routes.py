@@ -922,3 +922,60 @@ class TestWikiDisabledStatusIsCheap:
         assert resp.status_code == 200
         assert resp.json()["wiki_enabled"] is False
         lint_all.assert_not_called()
+
+
+class TestEveryWikiWriterSharesTheBuildMutex:
+    """The mutex exists because concurrent writers corrupt the tree and index.
+
+    Build, update and synthesize took it; prune and draft-accept did not, even
+    though prune archives pages and both refresh index.md, which is the file the
+    lock's own comment names.
+
+    Drives the handlers directly rather than through AsyncTestClient, which
+    serializes requests and so cannot tell a held lock from an absent one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def enable_wiki(self):
+        cfg.wiki = True
+
+    async def test_prune_serializes_against_a_build(self, monkeypatch, isolated_env: Path):
+        import asyncio
+        import time
+        from unittest import mock
+
+        from lilbee.server import wiki as _wiki_mod
+
+        _wiki_mod._reset_wiki_build_lock()
+        spans: list[tuple[str, float, float]] = []
+        hold_s = 0.1
+        skew_s = 0.01
+
+        def _record(label, result):
+            def _run(*_args, **_kwargs):
+                start = time.monotonic()
+                time.sleep(hold_s)
+                spans.append((label, start, time.monotonic()))
+                return result
+
+            return _run
+
+        monkeypatch.setattr(
+            "lilbee.server.wiki.run_full_build",
+            _record("build", {"paths": [], "entities": 0, "count": 0}),
+        )
+        monkeypatch.setattr(
+            "lilbee.server.wiki.prune_mod.prune_wiki",
+            _record("prune", mock.MagicMock(records=[], archived_count=0, flagged_count=0)),
+        )
+
+        try:
+            await asyncio.gather(
+                _wiki_mod.wiki_build_route.fn(),
+                _wiki_mod.wiki_prune_route.fn(),
+            )
+            assert len(spans) == 2
+            first, second = sorted(spans, key=lambda s: s[1])
+            assert second[1] >= first[2] - skew_s, f"prune and build overlapped: {spans}"
+        finally:
+            _wiki_mod._reset_wiki_build_lock()

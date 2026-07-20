@@ -14,6 +14,7 @@ from lilbee.app.ingest import copy_files
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
+from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
@@ -173,11 +174,7 @@ async def _ingest_stream(
             return
 
         acquired_names = {name for name, _lock in acquired}
-        locked = [
-            payload
-            for key, payload in items
-            if registry.canonical_source_name(key) in acquired_names
-        ]
+        locked = [payload for key, payload in items if key in acquired_names]
         sse = SseStream()
         task = asyncio.create_task(run(locked, sse))
         try:
@@ -215,7 +212,7 @@ async def add_files_stream(
     request dict is decoded once.
     """
     async for event in _ingest_stream(
-        [(p, p) for p in paths],
+        [(IngestLockRegistry.canonical_source_name(p), p) for p in paths],
         lambda locked, sse: _run_add(locked, force, enable_ocr, ocr_timeout, sse),
         "Add files stream",
     ):

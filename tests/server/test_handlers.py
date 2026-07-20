@@ -573,17 +573,25 @@ class TestAddIngestMutex:
         registry.release(held)
         assert registry._locks == {}
 
-    async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
-        """Duplicate paths in one request collapse to a single acquired lock."""
+    async def test_acquire_dedups_repeated_names(self, isolated_env):
+        """The registry locks each distinct name once."""
         from lilbee.app.services import get_services
 
         registry = get_services().ingest_lock_registry
-        acquired, busy = await registry.acquire(["/x/doc.txt", "/y/doc.txt"])
+        acquired, busy = await registry.acquire(["doc.txt", "doc.txt"])
         try:
             assert busy == []
             assert [name for name, _ in acquired] == ["doc.txt"]
         finally:
             registry.release(acquired)
+
+    def test_add_locks_server_paths_by_basename(self):
+        """/api/add flattens into documents_dir, so two paths sharing a
+        basename are one source and must share one lock."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        assert IngestLockRegistry.canonical_source_name("/x/doc.txt") == "doc.txt"
+        assert IngestLockRegistry.canonical_source_name("/y/doc.txt") == "doc.txt"
 
     async def test_second_concurrent_add_emits_already_ingesting(self, isolated_env, tmp_path):
         """Second /api/add for a held source yields already_ingesting, no done."""
@@ -640,6 +648,24 @@ class TestAddIngestMutex:
         # done as "all ingested" and never retries the contended file.
         assert summary["already_ingesting"] == ["held.txt"]
         assert "held.txt" not in summary["skipped"]
+
+    async def test_distinct_relative_paths_get_distinct_locks(self, isolated_env):
+        """Two uploads that land at different paths must not share one lock.
+
+        The registry reduced every key to its basename. That is right for
+        /api/add, where copy_files flattens into documents_dir, but uploads
+        keep their relative layout, so src/util.py and tests/util.py are
+        different files that were being serialized against each other.
+        """
+        from lilbee.app.services import get_services
+
+        registry = get_services().ingest_lock_registry
+        acquired, busy = await registry.acquire(["src/util.py", "tests/util.py"])
+        try:
+            assert busy == []
+            assert sorted(name for name, _lock in acquired) == ["src/util.py", "tests/util.py"]
+        finally:
+            registry.release(acquired)
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
         """Disjoint sources do not contend: both requests complete with done."""
