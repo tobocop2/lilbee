@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.rule import Rule
 from textual import events, getters, on, work
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.dom import DOMNode
@@ -56,6 +57,8 @@ from lilbee.cli.tui.widgets.autocomplete import (
     path_completion_prefix,
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.context_chip import ContextChip
+from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.help_hint import HelpHint
@@ -68,31 +71,43 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.store import ChunkType, EmbeddingModelMismatchError, scope_to_chunk_type
+from lilbee.data.store import (
+    ChunkType,
+    EmbeddingModelMismatchError,
+    SearchScope,
+    scope_to_chunk_type,
+)
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
-from lilbee.retrieval.query import ChatMessage
-from lilbee.retrieval.query.history_window import windowed_history
+from lilbee.retrieval.query import SOURCES_BLOCK_MARKER, ChatMessage
+from lilbee.retrieval.query.compaction import (
+    compaction_due,
+    foldable,
+    history_budget,
+    overflow,
+    prompt_history,
+    summary_messages,
+)
+from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
 )
+from lilbee.sessions import (
+    MessageRole,
+    SessionMessage,
+    SessionNotFoundError,
+    SessionOrigin,
+    SessionStore,
+    TitleSource,
+    derive_title,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 log = logging.getLogger(__name__)
-
-_HISTORY_TOKEN_BUDGET_FRACTION = 0.5
-"""Fraction of ``cfg.chat_n_ctx_target`` reserved for prior conversation history.
-
-The other half of the working context is for the system prompt, the current
-turn's RAG context (~8 chunks), the user question, and reasoning headroom.
-The windower drops oldest user/assistant pairs once history exceeds this
-fraction so the assembled prompt never approaches ``n_ctx`` and the chat
-server never rejects the request for exceeding the context window.
-"""
 
 # Coalesce per-token UI updates into ~50 ms windows. Tiny reasoning models can
 # emit 100+ tokens/sec; one ``call_from_thread`` per token saturates Textual's
@@ -276,7 +291,14 @@ class ChatScreen(Screen[None]):
     def __init__(self) -> None:
         super().__init__()
         self._history: list[ChatMessage] = []
+        # Rolling summary of the turns compaction has folded out of _history.
+        # Guarded by _history_lock alongside the turns it stands in for.
+        self._summary = ""
         self._history_lock = threading.Lock()
+        # The saved session this conversation persists to. None until the first
+        # user turn creates one; reset to None on /clear so the next turn opens a
+        # fresh session.
+        self._session_id: str | None = None
         self._insert_mode: bool = True
         # Count of programmatic input edits whose (async) Changed events should
         # not re-filter the dropdown. The setter posts Changed after our flag
@@ -294,6 +316,11 @@ class ChatScreen(Screen[None]):
         # The bubble receiving the in-flight response, so a cancel can leave a
         # visible note in it instead of letting the turn die silently.
         self._active_assistant: AssistantMessage | None = None
+        # The live turn's question; a context boundary mounts above it, never
+        # after it. Outlives its turn like _active_assistant (next send
+        # overwrites, reset clears). Never clear it in _finalize_stream: the
+        # input unblocks first, so the clear races the next turn's question.
+        self._active_question: UserMessage | None = None
         self._command_handlers: dict[str, Callable[[str], None]] = self._build_command_handlers()
 
     def _build_command_handlers(self) -> dict[str, Callable[[str], None]]:
@@ -340,7 +367,11 @@ class ChatScreen(Screen[None]):
                 yield ArgHintLine(id="arg-hint")
                 yield ModelBar(id="model-bar")
             yield TaskBar()
-            yield HelpHint(id="help-hint")
+            # The context reading shares the hint band instead of costing the
+            # prompt block its own row.
+            with Horizontal(id="hint-row"):
+                yield HelpHint(id="help-hint")
+                yield ContextChip(id="context-chip")
             yield Footer()
 
     def on_mount(self) -> None:
@@ -457,7 +488,7 @@ class ChatScreen(Screen[None]):
             # mean nothing to those widgets, so they always return to INSERT.
             if event.key == "enter" and isinstance(self.focused, (Select, ModelPickerButton)):
                 return
-            if self._focus_in_fleet_drawer():
+            if self._focus_in_drawer():
                 return
             self._enter_insert_mode()
             if event.key == "enter" and inp.value.strip():
@@ -748,18 +779,30 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_CANCEL)
 
     def _cmd_clear(self, _args: str) -> None:
+        self._reset_conversation()
+        self.notify(msg.CMD_CLEAR)
+
+    def _reset_conversation(self) -> None:
+        """Cancel any stream, empty the log and history, and drop the active session.
+
+        The current session is already persisted, so dropping the id just makes the
+        next user turn open a fresh one.
+        """
         if self.streaming:
             self._cancel_inflight_stream(msg.STREAM_CANCELLED)
         else:
             for worker in self.workers:
                 worker.cancel()
         self.streaming = False
-        chat_log = self._chat_log
-        chat_log.remove_children()
+        self._chat_log.remove_children()
         self._active_assistant = None
+        self._active_question = None
         with self._history_lock:
             self._history.clear()
-        self.notify(msg.CMD_CLEAR)
+            # A new conversation inherits nothing, least of all the last one's
+            # summary: carrying it would leak the old chat into the new prompt.
+            self._summary = ""
+        self._session_id = None
 
     def _cmd_crawl(self, args: str) -> None:
         if not crawler_available():
@@ -1281,6 +1324,9 @@ class ChatScreen(Screen[None]):
             return
         self.app.switch_view("Wiki")
 
+    def _cmd_sessions(self, _args: str) -> None:
+        self.app.action_toggle_sessions()
+
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
         from textual.css.query import NoMatches
@@ -1288,7 +1334,9 @@ class ChatScreen(Screen[None]):
         log = self._chat_log
         with contextlib.suppress(NoMatches):
             log.query_one("#chat-welcome", ChatWelcome).remove()
-        log.mount(UserMessage(text))
+        question = UserMessage(text)
+        log.mount(question)
+        self._active_question = question
 
         # The assistant bubble owns its own ThinkingHeader animator until
         # the first reasoning or content token swaps it out.
@@ -1301,16 +1349,12 @@ class ChatScreen(Screen[None]):
 
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
+        self._persist_user_turn(text)
         self.streaming = True
         self._stream_response(text, assistant_msg, self._current_chunk_type())
 
-    def _current_chunk_type(self) -> ChunkType | None:
-        """Translate the ScopeChip selection into a ``chunk_type`` arg.
-
-        Returns ``None`` for "both" (no filter) and the raw/wiki ``ChunkType``
-        otherwise. Defaults to ``None`` when the ScopeChip isn't mounted
-        (e.g. test apps that compose the screen without it).
-        """
+    def _current_scope_value(self) -> str:
+        """The ScopeChip's selection, or "both" when the chip isn't mounted."""
         from textual.css.query import NoMatches
 
         from lilbee.cli.tui.widgets.scope_chip import ScopeChip
@@ -1318,8 +1362,118 @@ class ChatScreen(Screen[None]):
         try:
             chip = self.query_one("#scope-chip", ScopeChip)
         except NoMatches:
-            return None
-        return scope_to_chunk_type(chip.scope)
+            return SearchScope.BOTH.value
+        return chip.scope
+
+    def _current_chunk_type(self) -> ChunkType | None:
+        """Translate the ScopeChip selection into a ``chunk_type`` arg.
+
+        Returns ``None`` for "both" (no filter) and the raw/wiki ``ChunkType``
+        otherwise.
+        """
+        return scope_to_chunk_type(self._current_scope_value())
+
+    def _open_session(self, store: SessionStore, first_text: str) -> str:
+        """Create the active session, auto-title it, and return its id."""
+        session_id = store.create(model_ref=cfg.chat_model, scope=self._current_scope_value())
+        store.set_title(session_id, derive_title(first_text), TitleSource.AUTO)
+        self._session_id = session_id
+        return session_id
+
+    def _persist_user_turn(self, text: str) -> None:
+        """Open a session on the first turn (auto-titled), then append the message."""
+        if not cfg.sessions_enabled:
+            # Sessions turned off: the conversation stays live in memory but is
+            # never written to disk. _session_id stays None, so the assistant
+            # turn's persist is a no-op too.
+            return
+        store = get_services().session_store
+        session_id = self._session_id or self._open_session(store, text)
+        message = SessionMessage(role=MessageRole.USER, content=text)
+        try:
+            store.add_message(session_id, message, surface=SessionOrigin.TUI)
+        except SessionNotFoundError:
+            # The active session was deleted mid-chat (e.g. from the drawer);
+            # open a fresh one so auto-save keeps working instead of crashing.
+            store.add_message(self._open_session(store, text), message, surface=SessionOrigin.TUI)
+
+    def _persist_assistant_turn(self, content: str, sources: list[str]) -> None:
+        """Append the assistant turn to the active session. Worker thread."""
+        if self._session_id is None or not cfg.sessions_enabled:
+            # Sessions switched off mid-conversation: the id outlives the
+            # setting, so the toggle has to be re-checked here rather than
+            # relying on _persist_user_turn having left the id unset.
+            return
+        # A concurrent delete of the active session must not crash the worker.
+        with contextlib.suppress(SessionNotFoundError):
+            get_services().session_store.add_message(
+                self._session_id,
+                SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=tuple(sources)),
+                surface=SessionOrigin.TUI,
+            )
+
+    def resume_session(self, session_id: str) -> None:
+        """Load a saved session into the chat view and make it the active one."""
+        store = get_services().session_store
+        session = store.get(session_id)
+        self._reset_conversation()
+        self._session_id = session_id
+        for message in session.messages:
+            self._render_restored_message(message)
+        # Load the whole transcript and the summary it was compacted with. What
+        # does not fit is folded into the summary by _compact_history on the next
+        # turn, off the UI thread; windowing it away here would silently lose the
+        # turns between the stored summary and the window, which is precisely
+        # what a resumed conversation must not do.
+        loaded: list[ChatMessage] = [
+            {"role": message.role.value, "content": message.content} for message in session.messages
+        ]
+        with self._history_lock:
+            self._history = loaded
+            self._summary = session.summary
+        self._restore_session_model(session.meta.model_ref)
+        self._refresh_context_usage()
+        self._chat_log.scroll_end(animate=False)
+        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
+
+    def _restore_session_model(self, model_ref: str) -> None:
+        """Switch to the session's chat model if it is still installed.
+
+        A conversation records the model it used, but that model may have been
+        deleted since. Restoring a missing ref would be rejected by the model
+        boundary with a scary error, so only switch when the model is installed;
+        otherwise keep the current model and say the original is gone.
+        """
+        if not model_ref or model_ref == cfg.chat_model:
+            return
+        if get_services().registry.is_installed(model_ref):
+            apply_active_model(self.app, "chat_model", model_ref)
+        else:
+            self.notify(
+                msg.SESSIONS_MODEL_UNAVAILABLE.format(model=model_ref, current=cfg.chat_model),
+                severity="warning",
+            )
+
+    @property
+    def session_id(self) -> str | None:
+        """The saved session this conversation persists to, or None before the first turn."""
+        return self._session_id
+
+    def start_new_conversation(self) -> None:
+        """Clear the conversation and open a fresh session on the next turn."""
+        self._reset_conversation()
+        self.notify(msg.SESSIONS_NEW)
+
+    def _render_restored_message(self, message: SessionMessage) -> None:
+        """Mount a completed message widget for a resumed turn."""
+        log = self._chat_log
+        if message.role == MessageRole.USER:
+            log.mount(UserMessage(message.content))
+            return
+        # Constructed complete, not appended-to after mounting: mount() is async,
+        # so append_content/finish would both no-op against a content widget that
+        # compose has not built yet, and the answer would render empty.
+        log.mount(AssistantMessage(content=message.content, sources=list(message.sources)))
 
     @work(thread=True)
     def _stream_response(
@@ -1338,8 +1492,12 @@ class ChatScreen(Screen[None]):
         try:
             if not self._await_chat_engine(widget):
                 return
+            self._compact_history()
             with self._history_lock:
-                history_snapshot = self._history[:-1]
+                # [:-1] drops the question, which ask_stream takes separately.
+                recent = self._history[:-1]
+                summary = self._summary
+            history_snapshot = prompt_history(recent, summary, max_tokens=self._history_budget())
             stream = get_services().searcher.ask_stream(
                 question, history=history_snapshot, chunk_type=chunk_type
             )
@@ -1567,28 +1725,158 @@ class ChatScreen(Screen[None]):
         if full_response:
             with self._history_lock:
                 self._history.append({"role": "assistant", "content": full_response})
-                self._trim_history()
+            # No trim here: the next turn compacts before it builds its prompt, so
+            # trimming now would drop turns without folding them into the summary.
+            self._persist_assistant_turn(full_response, sources)
+            call_from_thread(self, self._refresh_context_usage)
         call_from_thread(self, widget.finish, sources)
         if (
             cfg.chat_mode == ChatMode.SEARCH.value
             and self._embedding_ready()
             and full_response
-            and "\n\nSources:\n" not in full_response
+            and SOURCES_BLOCK_MARKER not in full_response
         ):
             call_from_thread(self, self._notify_no_results)
 
     def _notify_no_results(self) -> None:
         self.notify(msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning")
 
-    def _trim_history(self) -> None:
-        """Window history to a token budget. Caller must hold _history_lock.
+    @staticmethod
+    def _history_budget() -> int:
+        """Token budget for everything this conversation carries into the prompt."""
+        return history_budget(cfg.chat_n_ctx_target)
 
-        The budget is a fraction of ``cfg.chat_n_ctx_target`` so the
-        assembled prompt (system + history + RAG + user) stays under the
-        loaded model's ``n_ctx`` regardless of how many turns have run.
+    def _compact_history(self) -> None:
+        """Fold turns that no longer fit into the rolling summary. Worker thread only.
+
+        Runs before a prompt is built rather than after a turn lands, so the
+        summary is always current with what is about to be sent, and a resumed
+        conversation compacts what it cannot carry instead of dropping it.
+
+        The summarizing model call is slow, so it happens without the lock held;
+        only the known prefix is removed afterwards, which stays correct if the
+        user sends another turn meanwhile.
         """
-        budget = int(cfg.chat_n_ctx_target * _HISTORY_TOKEN_BUDGET_FRACTION)
-        self._history[:] = windowed_history(self._history, max_tokens=budget)
+        with self._history_lock:
+            history = list(self._history)
+            summary = self._summary
+        budget = self._history_budget()
+        if not cfg.chat_compaction:
+            # Default path, deliberately free: prune exactly to the limit, no
+            # model call. The summary is charged against the same budget so a
+            # session compacted on earlier hardware still carries its notes.
+            reserved = sum(estimate_tokens(m) for m in summary_messages(summary))
+            dropped = overflow(history, max_tokens=max(1, budget - reserved))
+            if not dropped:
+                return
+            with self._history_lock:
+                del self._history[: len(dropped)]
+            call_from_thread(self, self._on_history_trimmed, len(dropped))
+            return
+        # Compaction on: fire early, clear deep (see COMPACT_TRIGGER_FRACTION).
+        if not compaction_due(history, summary, max_tokens=budget):
+            return
+        dropped = foldable(history)
+        if not dropped:
+            # Nothing but the tail, and it alone fills the budget. Folding it
+            # would summarize the very turn being answered; prompt_history windows
+            # it instead.
+            return
+        # Condensing blocks this turn on a model call: seconds on a GPU, tens of
+        # seconds on a CPU-only host. An unannounced pause that long is
+        # indistinguishable from a hang, so say what is happening first.
+        call_from_thread(self, self._set_compacting, True)
+        try:
+            result = get_services().searcher.summarize_history(dropped, summary)
+        finally:
+            call_from_thread(self, self._set_compacting, False)
+        with self._history_lock:
+            del self._history[: len(dropped)]
+            self._summary = result.summary
+        if self._session_id and result.summary and cfg.sessions_enabled:
+            # A summary for a session deleted mid-chat is not worth a crash; the
+            # next user turn reopens one and re-summarizes from there. The
+            # toggle is re-checked because the fold keeps working in memory
+            # after sessions go off, but must not reach the disk.
+            with contextlib.suppress(SessionNotFoundError):
+                get_services().session_store.set_summary(self._session_id, result.summary)
+        call_from_thread(self, self._on_history_compacted, result.condensed, result.stranded)
+
+    def _set_compacting(self, compacting: bool) -> None:
+        """Flip the chip into (or out of) its condensing state. Main thread only."""
+        with contextlib.suppress(NoMatches):
+            self.query_one("#context-chip", ContextChip).compacting = compacting
+
+    def _refresh_context_usage(self) -> None:
+        """Push current history pressure to the chip. Main thread only.
+
+        Cheap: the same char/4 estimate the windower already uses, over messages
+        that are in memory anyway. Recomputed per turn rather than per keystroke.
+        """
+        with self._history_lock:
+            history = list(self._history)
+            summary = self._summary
+        budget = self._history_budget()
+        used = sum(estimate_tokens(m) for m in history)
+        used += sum(estimate_tokens(m) for m in summary_messages(summary))
+        with contextlib.suppress(NoMatches):
+            self.query_one("#context-chip", ContextChip).usage = used / max(1, budget)
+
+    def _mark_context_boundary(self, *titles: str) -> None:
+        """Draw rules in the log where the model's view of the chat changed.
+
+        A rich Rule, not a hand-drawn "-- text --": it draws the line out to the
+        full width itself, which is what makes it read as a boundary rather than
+        as another message. Guarded because the worker can land this after the
+        user has navigated off the chat screen.
+        """
+        # mount() is async: the anchor may not be in the log yet, and mounting
+        # before a non-child raises. Appending reads fine in that race.
+        anchor = self._active_question
+        if anchor is not None and not anchor.is_mounted:
+            anchor = None
+        with contextlib.suppress(NoMatches):
+            for title in titles:
+                rule = Static(
+                    Rule(title=title, characters="─", style="dim"),
+                    classes="compaction-marker",
+                )
+                if anchor is None:
+                    self._chat_log.mount(rule)
+                else:
+                    self._chat_log.mount(rule, before=anchor)
+
+    def _on_history_trimmed(self, dropped: int) -> None:
+        """Mark where turns left the model's view with nothing standing in for them.
+
+        The compaction-off path. Same rule as compaction so the log reads
+        consistently, different words because nothing was summarized.
+        """
+        self._refresh_context_usage()
+        self._mark_context_boundary(msg.CHAT_TRIMMED.format(count=dropped))
+        with contextlib.suppress(NoMatches):
+            self.notify(msg.CHAT_TRIMMED_TOAST, severity="warning")
+
+    def _on_history_compacted(self, condensed: int, stranded: int) -> None:
+        """Mark where the model's memory of this conversation turns into a summary.
+
+        Styling lives in chat.tcss under .compaction-marker. Guarded because the
+        worker can land this after the user navigated off the chat screen.
+
+        Stranded turns get their own line: they are gone from the model's view
+        with nothing standing in for them, and a user whose model has forgotten
+        something is owed the reason rather than left to infer it.
+        """
+        self._refresh_context_usage()
+        titles = [msg.CHAT_COMPACTED.format(count=condensed)]
+        if stranded:
+            titles.append(msg.CHAT_COMPACTION_STRANDED.format(count=stranded))
+        self._mark_context_boundary(*titles)
+        with contextlib.suppress(NoMatches):
+            self.notify(
+                msg.CHAT_COMPACTED_STRANDED_TOAST if stranded else msg.CHAT_COMPACTED_TOAST,
+                severity="warning",
+            )
 
     def action_scroll_up(self) -> None:
         self._chat_log.scroll_page_up()
@@ -1866,12 +2154,16 @@ class ChatScreen(Screen[None]):
             return
         self._preview_next()
 
-    def _focus_in_fleet_drawer(self) -> bool:
-        """True when keyboard focus is inside the open Fleet drawer, so Enter /
-        i / a / o activate the focused toggle instead of entering insert mode."""
+    def _focus_in_drawer(self) -> bool:
+        """True when keyboard focus is inside an open drawer, so Enter / i / a / o
+        reach that drawer's own controls instead of entering insert mode.
+
+        Asked of the Drawer base rather than one drawer class: a drawer that had
+        to name itself here would otherwise swallow its own Enter until someone
+        noticed.
+        """
         focused = self.focused
-        drawers = self.screen.query(FleetDrawer)
-        return bool(focused and drawers and drawers.first() in focused.ancestors_with_self)
+        return bool(focused and any(isinstance(n, Drawer) for n in focused.ancestors_with_self))
 
     def _tab_into_fleet_or_next(self) -> None:
         """Jump Tab into the open Fleet drawer's first toggle so the placement
@@ -1893,7 +2185,9 @@ class ChatScreen(Screen[None]):
     def action_complete_next(self) -> None:
         """Ctrl+N: preview the next match, opening the dropdown if it is closed (vim ``<C-n>``)."""
         if not self._chat_input.has_focus:
-            return
+            # Not a completion here; skip so an open overlay (e.g. the sessions
+            # drawer) can bind Ctrl+N instead of this priority binding eating it.
+            raise SkipAction()
         if self._completion_overlay.is_visible or self._open_completions():
             self._preview_next()
 

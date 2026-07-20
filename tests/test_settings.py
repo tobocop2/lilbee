@@ -56,6 +56,24 @@ class TestSave:
         assert (tmp_path / "config.toml").exists()
         assert 'chat_model = "llama3"' in (tmp_path / "config.toml").read_text()
 
+    def test_scalars_keep_their_toml_types(self, tmp_path):
+        """bb-s9xc: booleans and numbers must not be written as quoted strings."""
+        settings.save(tmp_path, {"chat_compaction": True, "chat_n_ctx_target": 2560})
+
+        written = (tmp_path / "config.toml").read_text()
+        assert "chat_compaction = true" in written
+        assert "chat_n_ctx_target = 2560" in written
+        assert '"True"' not in written
+        assert '"2560"' not in written
+
+    def test_a_load_save_round_trip_does_not_stringify(self, tmp_path):
+        """The drift path: load then save used to quote every value it had read."""
+        (tmp_path / "config.toml").write_text("chat_compaction = true\nchat_n_ctx_target = 2560\n")
+
+        settings.save(tmp_path, settings.load(tmp_path))
+
+        assert settings.load(tmp_path) == {"chat_compaction": True, "chat_n_ctx_target": 2560}
+
     def test_save_creates_parent_dirs(self, tmp_path):
         nested = tmp_path / "nested" / "dir"
         settings.save(nested, {"key": "value"})

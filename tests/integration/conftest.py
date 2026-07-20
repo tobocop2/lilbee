@@ -40,7 +40,11 @@ _INTEGRATION_TIMEOUT_SECONDS = 180
 
 def pytest_collection_modifyitems(items):
     for item in items:
-        item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
+        # Only default items that carry no timeout of their own: add_marker
+        # prepends, so adding unconditionally makes the default the closest
+        # marker and silently overrides every per-test opt-in.
+        if item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
 
 
 @pytest.fixture(autouse=True)

@@ -1,0 +1,63 @@
+SessionListPanel {
+    height: 1fr;
+}
+
+#sessions-title {
+    height: 1;
+    padding: 0 1 1 1;
+    color: $primary;
+    text-style: bold;
+}
+
+#sessions-filter {
+    height: 3;
+    border: tall $primary;
+    margin: 0 0 1 0;
+}
+
+#sessions-list {
+    height: 1fr;
+    border: solid $surface-lighten-2;
+    padding: 0 1;
+}
+
+#sessions-empty {
+    height: auto;
+    padding: 1;
+}
+
+#sessions-hint {
+    height: auto;
+    padding: 1 1 0 1;
+}
+
+SessionRow {
+    height: 2;
+    padding: 0 1;
+    background: $surface;
+}
+
+SessionRow .session-row-head {
+    height: 1;
+}
+
+SessionRow .session-row-title {
+    width: 1fr;
+}
+
+SessionRow .session-row-time {
+    width: auto;
+    color: $text-muted;
+}
+
+SessionRow .session-row-meta {
+    height: 1;
+}
+
+SessionRow.-highlight {
+    background: $panel;
+}
+
+SessionRow.-highlight .session-row-title {
+    text-style: bold;
+}

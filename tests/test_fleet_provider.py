@@ -1431,13 +1431,13 @@ def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
 
 
 def test_ensure_fleet_returns_none_when_engine_binary_unavailable(monkeypatch) -> None:
-    """plan_all_launches raising a NOT_FOUND ProviderError (no engine binary) yields no swap."""
+    """plan_all_launches raising NOT_FOUND (no engine binary) yields no swap."""
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
 
     def _no_binary() -> list:
-        raise ProviderError("Engine binary unavailable", kind=ProviderErrorKind.NOT_FOUND)
+        raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
     p = FleetProvider()
@@ -1724,6 +1724,65 @@ def test_warm_up_blocking_stamps_error_with_the_real_reason(monkeypatch) -> None
     assert snap is not None
     assert snap.phase is WarmPhase.ERROR
     assert "engine exited before it was ready" in (snap.error or "")
+
+
+def test_warm_up_blocking_surfaces_a_probe_failure(monkeypatch) -> None:
+    """A planning ProviderError (e.g. a wedged GPU probe) must not be swallowed.
+
+    The bb-0yf0 silent hang: the old catch logged every planning ProviderError at
+    DEBUG as "binary unavailable" and cleared the warm tracker, so the fleet sat
+    never-ready with no error anywhere. The failure now reaches the tracker (and
+    with it health's chat_status/chat_error and the TUI's warm line).
+    """
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+    from lilbee.providers.warm_progress import WarmPhase
+
+    def _wedged() -> list:
+        raise ProviderError(
+            "The GPU device probe (llama-server --list-devices) did not respond within 60s",
+            kind=ProviderErrorKind.SERVER,
+        )
+
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _wedged)
+    p = FleetProvider()
+    p._warm_up_blocking()
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.phase is WarmPhase.ERROR
+    assert "GPU device probe" in (snap.error or "")
+    assert p._warming is False  # guard cleared so a later warm-up can retry
+
+
+def test_ensure_fleet_propagates_a_probe_failure_to_on_demand_callers(monkeypatch) -> None:
+    # A chat/embed call that triggers the build must see the real reason (the
+    # route layer maps it to a 503), not a generic "no server running".
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
+
+    def _wedged() -> None:
+        raise ProviderError("The GPU device probe did not respond", kind=ProviderErrorKind.SERVER)
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
+    p = FleetProvider()
+    with pytest.raises(ProviderError, match="GPU device probe"):
+        p._ensure_fleet()
+
+
+def test_ensure_fleet_stays_quiet_when_the_binary_is_missing(monkeypatch) -> None:
+    # A host without the engine binary legitimately serves nothing; only the
+    # NOT_FOUND binary resolution keeps the quiet no-fleet path.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _data_dir, **_kw: None)
+
+    def _no_binary() -> None:
+        raise ProviderError("llama-server binary not found.", kind=ProviderErrorKind.NOT_FOUND)
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
+    p = FleetProvider()
+    assert p._ensure_fleet() is False
+    assert p._swaps == {}
 
 
 def test_warm_up_blocking_reports_starting_before_fleet_spawn(monkeypatch) -> None:

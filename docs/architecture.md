@@ -312,6 +312,10 @@ flowchart LR
   `llama-server --list-devices`, so enumeration and pinning share one backend-native
   index space. A device index from one API (Vulkan) is meaningless to another (CUDA),
   so we never cross them; the Vulkan VRAM probe (`gpu_select`) is only a fallback.
+  The probe runs in its own process group with a hard timeout: a probe wedged in
+  GPU-driver I/O is killed (and abandoned if unkillable) and surfaces as a named
+  error through the warm tracker, health, and the TUI, never as an empty device
+  list or a silent never-ready fleet.
 - **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
   CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the
   environment presets another order), ROCm via

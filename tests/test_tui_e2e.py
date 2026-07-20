@@ -20,7 +20,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.cli.tui import messages as msg_module
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 
 @pytest.fixture(autouse=True)
@@ -297,7 +297,16 @@ class TestViewCycling:
                 await pilot.press("escape")
                 await pilot.pause()
 
-                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Fleet", "Chat"]
+                expected = [
+                    "Catalog",
+                    "Status",
+                    "Settings",
+                    "Tasks",
+                    "Wiki",
+                    "Fleet",
+                    "Sessions",
+                    "Chat",
+                ]
                 for view in expected:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
@@ -501,7 +510,16 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                expected = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Fleet", "Chat"]
+                expected = [
+                    "Catalog",
+                    "Status",
+                    "Settings",
+                    "Tasks",
+                    "Wiki",
+                    "Fleet",
+                    "Sessions",
+                    "Chat",
+                ]
                 for view in expected:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
@@ -553,7 +571,7 @@ class TestScreenTransitions:
                 assert app.active_view == "Tasks"
 
     async def test_forward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Catalog->Status->Settings->Tasks->Wiki->Fleet->Chat via nav_next."""
+        """Chat->Catalog->Status->Settings->Tasks->Wiki->Fleet->Sessions->Chat via nav_next."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -565,14 +583,23 @@ class TestScreenTransitions:
                 # Blur the chat input so the app-level ] binding fires.
                 await pilot.press("escape")
                 await pilot.pause()
-                full_cycle = ["Catalog", "Status", "Settings", "Tasks", "Wiki", "Fleet", "Chat"]
+                full_cycle = [
+                    "Catalog",
+                    "Status",
+                    "Settings",
+                    "Tasks",
+                    "Wiki",
+                    "Fleet",
+                    "Sessions",
+                    "Chat",
+                ]
                 for view in full_cycle:
                     await pilot.press("right_square_bracket")
                     await pilot.pause()
                     assert app.active_view == view
 
     async def test_backward_cycle_full_loop(self, _mock_resolve):
-        """Chat->Fleet->Wiki->Tasks->Settings->Status->Catalog->Chat via nav_prev."""
+        """Chat->Sessions->Fleet->Wiki->Tasks->Settings->Status->Catalog->Chat via nav_prev."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with _mock_catalog_deps(), _mock_remote_models():
@@ -585,6 +612,7 @@ class TestScreenTransitions:
                 await pilot.press("escape")
                 await pilot.pause()
                 backward_cycle = [
+                    "Sessions",
                     "Fleet",
                     "Wiki",
                     "Tasks",
@@ -1261,10 +1289,13 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
-                await search.action_submit()
-                await pilot.pause()
-                grid = app.screen.query("#grid-chat ModelGrid").first()
-                assert grid.has_focus
+                # Enter installs the first match; stop the chain before it
+                # spawns a download worker that would outlive the test.
+                with mock.patch.object(app.screen, "_enqueue_download"):
+                    await search.action_submit()
+                    await pilot.pause()
+                    grid = app.screen.query("#grid-chat ModelGrid").first()
+                    assert grid.has_focus
 
     async def test_search_filters_list_view(self, _mock_resolve):
         """Typing in the filter narrows the visible row count in list view."""
@@ -1646,12 +1677,12 @@ class TestCatalogInteractions:
                 await pilot.pause()
                 search = app.screen.query_one("#catalog-search", Input)
                 search.value = "test"
-                await search.action_submit()
-                for _ in range(10):
-                    await pilot.pause()
-                    if app.screen._list_widget.has_focus:
-                        break
-                assert app.screen._list_widget.has_focus
+                # Enter installs the first match; stop the chain before it
+                # spawns a download worker that would outlive the test.
+                with mock.patch.object(app.screen, "_enqueue_download"):
+                    await search.action_submit()
+                    await pump_until(pilot, lambda: app.screen._list_widget.has_focus)
+                    assert app.screen._list_widget.has_focus
 
     async def test_grid_card_count_matches_families(self, _mock_resolve):
         """The Chat task tab surfaces the chat featured family as a card.

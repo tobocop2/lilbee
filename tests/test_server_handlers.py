@@ -141,6 +141,23 @@ class TestHealth:
         mock_svc.provider.warm_progress.return_value = WarmProgress(phase=WarmPhase.ERROR)
         assert (await handlers.health()).chat_status == "error"
 
+    async def test_chat_error_carries_the_warm_failure_reason(self, mock_svc):
+        """A failed warm (e.g. a wedged GPU probe) names its cause in health, so a
+        polling client reports why instead of retrying forever (bb-0yf0)."""
+        from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+
+        mock_svc.provider.role_ready.return_value = False
+        mock_svc.provider.warm_progress.return_value = WarmProgress(
+            phase=WarmPhase.ERROR, error="The GPU device probe did not respond within 60s"
+        )
+        result = await handlers.health()
+        assert result.chat_status == "error"
+        assert result.chat_error == "The GPU device probe did not respond within 60s"
+
+    async def test_chat_error_absent_outside_the_error_state(self, mock_svc):
+        mock_svc.provider.role_ready.return_value = True
+        assert (await handlers.health()).chat_error is None
+
 
 def _parse_warm_events(chunks: list[str]) -> list[dict]:
     """Pull the JSON payloads off ``warm`` SSE chunks, ignoring the [DONE] tail."""
@@ -3111,8 +3128,10 @@ class TestUpdateConfig:
         from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
-        assert stored["temperature"] == "0.7"
-        assert stored["top_k"] == "5"
+        # Persisted with their real types, so config.toml stays valid for its
+        # own fields rather than holding "0.7" and "5" as quoted strings.
+        assert stored["temperature"] == 0.7
+        assert stored["top_k"] == 5
 
     async def test_api_key_update_injects_provider_keys(self, tmp_path):
         with patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject:

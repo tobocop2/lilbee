@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
     from lilbee.runtime.ingest_lock import IngestLockRegistry
+    from lilbee.sessions import SessionStore
 
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,17 @@ log = logging.getLogger(__name__)
 _SIGNAL_EXIT_BASE = 128
 
 _HARD_EXIT_THREAD_NAME = "hard-exit-teardown"
+
+
+def _default_session_store() -> SessionStore:
+    """Build the file-backed session store, importing it lazily.
+
+    ``lilbee.sessions`` pulls in the config/catalog import chain, so importing it
+    at this module's top would form a cycle during CLI config load.
+    """
+    from lilbee.sessions import SessionStore
+
+    return SessionStore()
 
 
 @dataclass
@@ -87,6 +99,7 @@ class Services:
     crawler_semaphore: asyncio.Semaphore | None
     crawler_sync_state: CrawlerSyncState
     known_models: KnownModelCache
+    session_store: SessionStore = field(default_factory=_default_session_store)
 
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. Idempotent.

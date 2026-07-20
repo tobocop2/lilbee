@@ -417,6 +417,25 @@ class Config(BaseSettings):
         writable=True,
     )
 
+    # Condense turns that outgrow chat_n_ctx_target into carried notes instead
+    # of dropping them. Off: zero model calls; the oldest turns drop and the
+    # context chip shows it. On: each firing blocks on a summarize call
+    # (measured: 1.3-2.5s per 60-turn fold on a datacenter GPU, 0.7-2s on an
+    # 8-core CPU with a 0.6B-4B model).
+    chat_compaction: bool = ConfigField(default=False, writable=True)
+
+    # Persist conversations and expose the Sessions drawer, tab, and commands.
+    # On by default; turning it off stops chats being written to disk, hides the
+    # ctrl+o binding from the footer, and gates the Sessions view behind a notice.
+    # Governs the human surfaces (TUI, HTTP, CLI); agent sessions have their own
+    # flag below, so the two domains the store already separates stay separate.
+    sessions_enabled: bool = ConfigField(default=True, writable=True)
+
+    # The agent (MCP) half of the same feature, off by default: agent hosts
+    # generally track their own conversation history, and the seven session
+    # tools cost schema on every request whether or not anything uses them.
+    mcp_sessions_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM

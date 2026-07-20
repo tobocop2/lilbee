@@ -387,19 +387,26 @@ class ChatModeToggle(Widget, can_focus=False):
 
     def __init__(self) -> None:
         super().__init__(id=_CHAT_MODE_TOGGLE_ID)
+        self._search_pill: ChatModePill | None = None
+        self._chat_pill: ChatModePill | None = None
 
     def compose(self) -> ComposeResult:
+        # Keep direct references: on_mount can run while the composed pills
+        # are still being attached to the DOM, so a query there raises
+        # NoMatches on a slow mount. Attributes carry no such ordering.
+        self._search_pill = ChatModePill(
+            msg.CHAT_MODE_SEARCH_LABEL,
+            id=_CHAT_MODE_SEARCH_PILL_ID,
+            classes=_CHAT_MODE_PILL_CLASS,
+        )
+        self._chat_pill = ChatModePill(
+            msg.CHAT_MODE_CHAT_LABEL,
+            id=_CHAT_MODE_CHAT_PILL_ID,
+            classes=_CHAT_MODE_PILL_CLASS,
+        )
         with Horizontal():
-            yield ChatModePill(
-                msg.CHAT_MODE_SEARCH_LABEL,
-                id=_CHAT_MODE_SEARCH_PILL_ID,
-                classes=_CHAT_MODE_PILL_CLASS,
-            )
-            yield ChatModePill(
-                msg.CHAT_MODE_CHAT_LABEL,
-                id=_CHAT_MODE_CHAT_PILL_ID,
-                classes=_CHAT_MODE_PILL_CLASS,
-            )
+            yield self._search_pill
+            yield self._chat_pill
 
     def on_mount(self) -> None:
         self._refresh()
@@ -416,8 +423,10 @@ class ChatModeToggle(Widget, can_focus=False):
         ready = self._embedding_ready()
         mode = cfg.chat_mode if ready else ChatMode.CHAT.value
         active_search = mode == ChatMode.SEARCH.value
-        search_pill = self.query_one(f"#{_CHAT_MODE_SEARCH_PILL_ID}", ChatModePill)
-        chat_pill = self.query_one(f"#{_CHAT_MODE_CHAT_PILL_ID}", ChatModePill)
+        search_pill = self._search_pill
+        chat_pill = self._chat_pill
+        if search_pill is None or chat_pill is None:
+            return
         # Search half is disabled whenever embedding isn't ready; Chat is
         # always reachable so it never carries the disabled class.
         search_pill.set_class(active_search, _CHAT_MODE_ACTIVE_CLASS)

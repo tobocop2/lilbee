@@ -286,7 +286,13 @@ class TestChatRoute:
         resp = client.post("/api/chat", json={"question": "q", "history": history})
         assert resp.status_code == 201
         mock_chat.assert_awaited_once_with(
-            question="q", history=history, top_k=None, options=None, chunk_type=None
+            question="q",
+            history=history,
+            top_k=None,
+            options=None,
+            chunk_type=None,
+            summary="",
+            session_id=None,
         )
 
     @mock.patch(
@@ -297,7 +303,13 @@ class TestChatRoute:
     def test_default_empty_history(self, mock_chat, client):
         client.post("/api/chat", json={"question": "q"})
         mock_chat.assert_awaited_once_with(
-            question="q", history=[], top_k=None, options=None, chunk_type=None
+            question="q",
+            history=[],
+            top_k=None,
+            options=None,
+            chunk_type=None,
+            summary="",
+            session_id=None,
         )
 
     @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
@@ -349,6 +361,21 @@ class TestChatRoute:
         resp = client.post("/api/chat", json={"question": "q", "history": []})
         assert resp.status_code == 503
         assert "downstream broke" in resp.text
+
+    @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
+    def test_engine_that_cannot_start_returns_503_with_the_reason(self, mock_chat, client):
+        """A fleet that failed to start (e.g. a wedged GPU probe) 503s with the
+        cause instead of answering 2xx with a polite refusal a scripted caller
+        cannot tell from a real answer (bb-0yf0)."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_chat.side_effect = ProviderError(
+            "The GPU device probe (llama-server --list-devices) did not respond within 60s",
+            kind=ProviderErrorKind.SERVER,
+        )
+        resp = client.post("/api/chat", json={"question": "q", "history": []})
+        assert resp.status_code == 503
+        assert "GPU device probe" in resp.text
 
     @mock.patch("lilbee.server.handlers.chat", new_callable=AsyncMock)
     def test_upstream_auth_error_stays_503(self, mock_chat, client):

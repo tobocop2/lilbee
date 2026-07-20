@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -23,9 +23,22 @@ from lilbee.data.store import (
     cosine_sim,
     human_recall_predicate,
 )
-from lilbee.providers.base import LLMProvider, ProviderError, ProviderErrorKind
+from lilbee.providers.base import (
+    LLMProvider,
+    ProviderError,
+    ProviderErrorKind,
+    prompt_token_budget,
+)
 from lilbee.retrieval.embedder import Embedder
 from lilbee.retrieval.language import noun_variants, query_language
+from lilbee.retrieval.query.compaction import (
+    COMPACT_PROMPT,
+    CompactionResult,
+    merge_notes,
+    plan_compaction,
+    summary_cap,
+    summary_word_budget,
+)
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
@@ -48,6 +61,7 @@ from lilbee.retrieval.query.formatting import (
     format_sources_block,
     strip_llm_citations,
 )
+from lilbee.retrieval.query.history_window import estimate_text_tokens
 from lilbee.retrieval.query.intent import (
     INTENT_CLASSIFY_MAX_TOKENS,
     INTENT_CLASSIFY_PROMPT,
@@ -66,6 +80,7 @@ from lilbee.retrieval.reasoning import (
     StreamToken,
     cap_events_as_stream_tokens,
     effective_reasoning_cap,
+    split_reasoning,
     stream_chat_with_cap,
     strip_reasoning,
 )
@@ -165,8 +180,6 @@ SEARCH_NEEDS_EMBEDDER = (
     "Add one, or switch to chat mode for an ungrounded reply."
 )
 
-# Token reserve for the generated answer when budgeting RAG context to num_ctx.
-_ANSWER_RESERVE_TOKENS = 1024
 # Chars-per-token assumed when BUDGETING context. Deliberately harsher than
 # the display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars
 # per token, and budgeting at 4 let a document whose real cost exceeded the
@@ -641,6 +654,113 @@ class Searcher:
             log.debug("History condensation failed; using the raw question", exc_info=True)
         return question
 
+    def summarize_history(
+        self,
+        messages: list[ChatMessage],
+        previous_summary: str = "",
+        on_batch: Callable[[int, int], None] | None = None,
+    ) -> CompactionResult:
+        """Condense turns being dropped from the prompt into carry-forward notes.
+
+        Chat calls this when a conversation outgrows its token budget: without it
+        the oldest turns are dropped outright and the model silently loses a
+        conversation the user can still scroll. *previous_summary* is folded in
+        so summaries compound instead of each one forgetting the last.
+
+        Each batch is summarized ONCE, independently, and the notes are merged.
+        Feeding each batch the running summary instead would re-summarize the
+        summary once per batch: at a 2k window a long backlog is ~16 batches, so
+        the earliest turns would be a summary of a summary sixteen deep, which a
+        small model degrades into drift long before the budget runs out. Depth
+        stays at one, plus one merge-compression when the notes outgrow the cap.
+
+        Returns the notes and how many turns they cover; ``stranded`` counts turns
+        dropped without notes, which the caller must surface rather than hide.
+        ``on_batch`` hears ``(batch, total)`` before each model call, for progress UI.
+        """
+        ctx_target = self._config.chat_n_ctx_target
+        plan = plan_compaction(messages, previous_summary, ctx_target=ctx_target)
+        notes: list[str] = []
+        condensed = 0
+        stranded = plan.stranded
+        for index, batch in enumerate(plan.batches):
+            if on_batch is not None:
+                on_batch(index + 1, len(plan.batches))
+            note = self._summarize_batch(batch, "")
+            if note:
+                notes.append(note)
+                condensed += len(batch)
+            else:
+                # Count what landed, not what was planned: these turns are gone
+                # with nothing standing in for them.
+                stranded += len(batch)
+        merged = merge_notes(previous_summary, notes)
+        cap = summary_cap(ctx_target)
+        if estimate_text_tokens(merged) > cap:
+            merged = self._summarize_batch([{"role": "user", "content": merged}], "") or merged
+        return CompactionResult(
+            summary=merged or previous_summary, condensed=condensed, stranded=stranded
+        )
+
+    def _summarize_batch(self, batch: list[ChatMessage], previous_summary: str) -> str:
+        """Fold one batch of dropped turns into *previous_summary*.
+
+        An overflowing batch splits in half and each half folds on its own:
+        batch sizing is estimate-based, and the cost of an estimate miss here
+        is stranded turns, not a slow call. Depth is log2 of the batch.
+
+        Returns *previous_summary* unchanged on any other failure: older notes
+        beat dropping the turns on the floor.
+        """
+        transcript = "\n".join(f"{m['role']}: {m['content']}" for m in batch)
+        previous = f"Earlier notes:\n{previous_summary}\n\n" if previous_summary.strip() else ""
+        prompt = COMPACT_PROMPT.format(
+            words=summary_word_budget(self._config.chat_n_ctx_target),
+            previous=previous,
+            transcript=transcript,
+        )
+        try:
+            response = self._provider.chat(
+                [{"role": "user", "content": prompt}],
+                stream=False,
+                options={
+                    "num_predict": summary_cap(self._config.chat_n_ctx_target),
+                    # A thinking model spends the whole budget in a <think>
+                    # block that llama.cpp force-closes and strip_reasoning
+                    # deletes whole, leaving "" and stranding the batch.
+                    "think": False,
+                    # Deterministic: the same conversation folds the same way.
+                    "temperature": 0,
+                },
+            )
+            summary = strip_reasoning(response.text).strip()
+            if summary:
+                return summary
+            # Only the native llama-server path honors think=False; elsewhere a
+            # reasoning model can leave nothing after the strip. Its reasoning
+            # is itself a summary of these turns, so recover it rather than
+            # strand them. Non-reasoning models never reach here.
+            reasoning = split_reasoning(response.text).reasoning.strip()
+            if reasoning:
+                return reasoning
+            log.warning("History compaction returned nothing; keeping the previous summary")
+        except ProviderError as exc:
+            # A single message too big for the window cannot split; it falls
+            # through to the warning below.
+            if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW and len(batch) > 1:
+                mid = len(batch) // 2
+                first = self._summarize_batch(batch[:mid], previous_summary)
+                second = self._summarize_batch(batch[mid:], "")
+                merged = "\n".join(part for part in (first, second) if part.strip())
+                if merged.strip():
+                    return merged
+            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
+        except Exception:
+            # warning, not debug: the user is told turns were dropped, so the
+            # reason must be in the log by default.
+            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
+        return previous_summary
+
     def _known_item_results(self, question: str) -> list[SearchChunk]:
         """Resolve a document named in *question* to its own chunks.
 
@@ -833,14 +953,16 @@ class Searcher:
         configured = self._config.num_ctx or self._config.chat_n_ctx_target
         served = self._provider.served_chat_ctx()
         ctx = min(configured, served) if served else configured
-        reserve = (
+        # Fit inside what the provider will actually accept: prompt_token_budget
+        # already removes the generation reserve and the engine's margin, so the
+        # sources get what is left after the rest of the prompt.
+        non_source = (
             self._budget_tokens(system)
             + self._budget_tokens(question)
             + sum(self._budget_tokens(m["content"]) for m in history or [])
-            + _ANSWER_RESERVE_TOKENS
             + _CONTEXT_TEMPLATE_TOKENS
         )
-        budget = int((ctx - reserve) * scale)
+        budget = int((prompt_token_budget(ctx) - non_source) * scale)
         kept: list[SearchChunk] = []
         used = 0
         for r in results:

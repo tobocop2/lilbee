@@ -82,6 +82,12 @@ def _make_fleet() -> Screen:
     return FleetScreen()
 
 
+def _make_sessions() -> Screen:
+    from lilbee.cli.tui.screens.sessions import SessionsScreen
+
+    return SessionsScreen()
+
+
 # Screen factory per managed view name (Chat is special-cased in switch_view and
 # has no factory). The active set + order + wiki gate come from msg.get_nav_views,
 # so the view universe lives in exactly one place (messages.ALL_NAV_VIEWS).
@@ -92,6 +98,7 @@ _VIEW_FACTORIES: dict[str, Callable[[], Screen]] = {
     "Tasks": _make_tasks,
     "Wiki": _make_wiki,
     "Fleet": _make_fleet,
+    "Sessions": _make_sessions,
 }
 
 
@@ -153,6 +160,7 @@ class LilbeeApp(App[None]):
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
         Binding("S", "run_sync", "Sync", show=False, priority=True),
         Binding("ctrl+g", "toggle_fleet", "Fleet", show=True, priority=True),
+        Binding("ctrl+o", "toggle_sessions", "Sessions", show=True, priority=True),
     ]
 
     def __init__(self, *, initial_view: str | None = None) -> None:
@@ -450,6 +458,11 @@ class LilbeeApp(App[None]):
         """
         if self._switching:
             return
+        if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
+            # The tab stays visible so the feature is discoverable, but opening it
+            # while off shows why rather than an empty list.
+            self._notify_sessions_disabled()
+            return
         if view_name != "Chat" and get_views().get(view_name) is None:
             return
         self._switching = True
@@ -536,6 +549,11 @@ class LilbeeApp(App[None]):
         # non-priority screen/app bindings see them, so `t` types a literal there.
         if action == "open_tasks" and isinstance(self.focused, (Input, TextArea)):
             return False
+        # None (not False): hide the Sessions binding from the footer entirely
+        # when sessions are off, rather than show it greyed. There is nothing to
+        # toggle, so it should not advertise itself.
+        if action == "toggle_sessions" and not cfg.sessions_enabled:
+            return None
         return super().check_action(action, parameters)
 
     def action_open_tasks(self) -> None:
@@ -555,6 +573,54 @@ class LilbeeApp(App[None]):
         if self.screen.query("FleetBody"):  # Fleet tab already shows placement
             return
         self.screen.mount(FleetDrawer())
+
+    def _notify_sessions_disabled(self) -> None:
+        """Show the modal explaining sessions are off. Every session entry point
+        (ctrl+o, the Sessions tab, /sessions) routes here when disabled."""
+        from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
+
+        # Guard against stacking a second copy if the entry point is hit twice.
+        if isinstance(self.screen, NoticeDialog):
+            return
+        self.push_screen(NoticeDialog(msg.SESSIONS_DISABLED_TITLE, msg.SESSIONS_DISABLED_MESSAGE))
+
+    def action_toggle_sessions(self) -> None:
+        """Toggle the Sessions drawer (ctrl+o), or close it if open. No-op on the
+        Sessions tab, which already shows the full list. Shows a notice when
+        sessions are turned off."""
+        if not cfg.sessions_enabled:
+            self._notify_sessions_disabled()
+            return
+        from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
+
+        drawers = self.screen.query(SessionsDrawer)
+        if drawers:
+            drawers.first().remove()
+            return
+        if self.screen.query("SessionListPanel"):  # Sessions tab already shows the list
+            return
+        self.screen.mount(SessionsDrawer())
+
+    def resume_session(self, session_id: str) -> None:
+        """Load a saved session into chat and switch to the chat view."""
+        chat = self.chat_screen()
+        if chat is None:
+            return
+        chat.resume_session(session_id)
+        self.switch_view(msg.DEFAULT_VIEW)
+
+    def new_chat(self) -> None:
+        """Start a fresh conversation and switch to the chat view."""
+        chat = self.chat_screen()
+        if chat is None:
+            return
+        chat.start_new_conversation()
+        self.switch_view(msg.DEFAULT_VIEW)
+
+    def current_session_id(self) -> str | None:
+        """The id of the conversation the chat screen is currently persisting to."""
+        chat = self.chat_screen()
+        return chat.session_id if chat is not None else None
 
     def action_global_slash_to_chat(self) -> None:
         """Route a slash typed on a non-slash-bound screen back to Chat's prompt.

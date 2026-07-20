@@ -76,6 +76,12 @@ _EMBED_N_SEQ_MAX = 64
 _EMBED_EST_CHARS_PER_TOKEN = 3
 # llama-swap's error body when the spawned llama-server exited before serving.
 _UPSTREAM_DIED_MARKER = "exited prematurely"
+# llama-server's exit line when the port lilbee picked was taken by the time
+# the server bound it (the pick-then-bind gap spans the whole lazy-spawn wait,
+# so a passing ephemeral connection can occupy it). The occupation is
+# transient: llama-swap re-spawns on the next request against the same port
+# and normally binds.
+_BIND_FAILURE_MARKER = "couldn't bind HTTP server socket"
 # llama-server's 500 body when one input exceeds the physical batch (n_batch).
 _BATCH_OVERFLOW_MARKER = "too large to process"
 
@@ -200,6 +206,7 @@ def _raise_for_status(resp: httpx.Response) -> None:
             kind=ProviderErrorKind.RATE_LIMIT,
         )
     detail = f": {body[:600]}" if body else ""
+    kind = _classify_error(resp.status_code, body)
     # llama-swap masks a dead server as "exited prematurely"; surface the server's
     # own captured output (a missing CUDA runtime, a model load failure, a bind
     # error) so the real exit reason reaches the caller, not only the log.
@@ -207,10 +214,15 @@ def _raise_for_status(resp: httpx.Response) -> None:
         tail = _upstream_failure_tail(resp)
         if tail:
             detail = f"{detail}\nupstream server output:\n{tail}"
+        if _BIND_FAILURE_MARKER in tail:
+            # A death from losing the port-bind race is transient, not a dead
+            # replica: the retry re-drives llama-swap's spawn, which normally
+            # binds once the passing connection has released the port.
+            kind = ProviderErrorKind.SERVER
     raise ProviderError(
         f"llama-server returned HTTP {resp.status_code}{detail}",
         provider=_PROVIDER_NAME,
-        kind=_classify_error(resp.status_code, body),
+        kind=kind,
     )
 
 
@@ -222,7 +234,9 @@ def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
     upstream is CONNECTION, so the router can mark the replica unhealthy. The
     body markers win over the status: llama-swap reports a died upstream under
     gateway statuses too, and that case needs the failover path, not a retry
-    against the same dead server. A bare gateway error (502/503/504) is a
+    against the same dead server (except a bind-race death, which
+    ``_raise_for_status`` upgrades to SERVER once the upstream tail proves it).
+    A bare gateway error (502/503/504) is a
     momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
     it is SERVER, which the busy retry treats as transient.
     """

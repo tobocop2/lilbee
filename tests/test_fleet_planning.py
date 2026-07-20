@@ -10,7 +10,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, RerankerType
 from lilbee.providers.fleet import planning as planning_mod
-from lilbee.providers.fleet.devices import FleetDevice, visible_env
+from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice, visible_env
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
@@ -1291,7 +1291,9 @@ class TestBuildFleetWiring:
     def test_plan_all_launches_resolves_devices_and_plans(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+        )
         monkeypatch.setattr(
             planning_mod,
             "_server_model_inputs",
@@ -1318,7 +1320,9 @@ class TestBuildFleetWiring:
         # warm path can fail with a named reason instead of spinning.
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+        )
         monkeypatch.setattr(
             planning_mod,
             "_server_model_inputs",
@@ -1347,7 +1351,9 @@ class TestBuildFleetWiring:
 
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+        )
         monkeypatch.setattr(
             planning_mod,
             "_server_model_inputs",
@@ -1378,7 +1384,9 @@ class TestBuildFleetWiring:
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])  # can't enumerate
+        monkeypatch.setattr(
+            planning_mod, "probe_devices", lambda _binary: DeviceProbe([], "")
+        )  # can't enumerate
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_select.enumerate_gpu_vram",
             lambda: [(0, 24 * _GB)],
@@ -1475,7 +1483,7 @@ class TestResolveDevicesProbeFailureWarning:
     def test_warns_when_probe_finds_nothing_on_an_nvidia_host(self, monkeypatch, caplog) -> None:
         # A driver hiccup on a CUDA pod must not silently fall into the unified
         # shared-memory path; the operator needs a loud signal of what to check.
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
@@ -1484,7 +1492,7 @@ class TestResolveDevicesProbeFailureWarning:
         assert any("shared-memory mode" in record.message for record in caplog.records)
 
     def test_no_warning_without_an_nvidia_gpu(self, monkeypatch, caplog) -> None:
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
@@ -1493,7 +1501,9 @@ class TestResolveDevicesProbeFailureWarning:
 
     def test_no_warning_when_probe_succeeds(self, monkeypatch, caplog) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [device])
+        monkeypatch.setattr(
+            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+        )
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
             assert planning_mod.resolve_devices(Path("/bin/llama-server")) == [device]
         assert not caplog.records
@@ -1505,11 +1515,87 @@ class TestResolveDevicesProbeFailureWarning:
         from lilbee.providers.fleet import cuda_runtime
 
         monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: [])
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
         monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: True)
         with pytest.raises(ProviderError, match="no CUDA-capable device"):
             planning_mod.resolve_devices(Path("/bin/llama-server"))
+
+    def test_probe_timeout_propagates_without_vulkan_fallback(self, monkeypatch) -> None:
+        # A wedged probe raises; falling into the in-process Vulkan probe there
+        # could hang this thread unkillably against the same wedged driver.
+        from lilbee.providers.base import ProviderError
+
+        def _wedged(_binary: Path) -> DeviceProbe:
+            raise ProviderError("The GPU device probe did not respond")
+
+        def _must_not_run() -> list[tuple[int, int]]:
+            raise AssertionError("Vulkan fallback must not run after a probe timeout")
+
+        monkeypatch.setattr(planning_mod, "probe_devices", _wedged)
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", _must_not_run)
+        with pytest.raises(ProviderError, match="did not respond"):
+            planning_mod.resolve_devices(Path("/bin/llama-server"))
+
+
+class TestReadDeviceCacheFailure:
+    """A probe failure is cached and re-raised so a wedged host is not re-probed per poll."""
+
+    def _cache(self) -> planning_mod._ReadDeviceCache:
+        return planning_mod._ReadDeviceCache(ttl_s=0.0, failure_ttl_s=60.0)
+
+    def test_failure_is_cached_and_reraised(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        calls = {"n": 0}
+
+        def _wedged(_binary: Path) -> list[FleetDevice]:
+            calls["n"] += 1
+            raise ProviderError("probe wedged")
+
+        monkeypatch.setattr(planning_mod, "resolve_devices", _wedged)
+        cache = self._cache()
+        for _ in range(3):
+            with pytest.raises(ProviderError, match="probe wedged"):
+                cache.get(Path("/bin/llama-server"))
+        assert calls["n"] == 1  # later reads served from the cached failure
+
+    def test_clear_drops_the_cached_failure(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        outcomes: list[object] = [ProviderError("probe wedged"), [device]]
+
+        def _next(_binary: Path) -> list[FleetDevice]:
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(planning_mod, "resolve_devices", _next)
+        cache = self._cache()
+        with pytest.raises(ProviderError):
+            cache.get(Path("/bin/llama-server"))
+        cache.clear()
+        assert cache.get(Path("/bin/llama-server")) == [device]
+
+    def test_success_after_expired_failure_clears_it(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
+        outcomes: list[object] = [ProviderError("probe wedged"), [device]]
+
+        def _next(_binary: Path) -> list[FleetDevice]:
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(planning_mod, "resolve_devices", _next)
+        cache = planning_mod._ReadDeviceCache(ttl_s=0.0, failure_ttl_s=0.0)
+        with pytest.raises(ProviderError):
+            cache.get(Path("/bin/llama-server"))
+        assert cache.get(Path("/bin/llama-server")) == [device]
 
 
 def _parse_flags(argv: list[str]) -> dict[str, str | None]:
