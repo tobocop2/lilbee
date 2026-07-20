@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -11,6 +12,8 @@ from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
 )
+
+log = logging.getLogger(__name__)
 
 
 class CompletionsErrorCode(StrEnum):
@@ -24,6 +27,8 @@ class CompletionsErrorCode(StrEnum):
     RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     INTERNAL_ERROR = "internal_error"
 
+
+_FALLBACK_ERROR_TYPE = "invalid_request_error"
 
 COMPLETIONS_ERROR_TYPES: dict[CompletionsErrorCode, str] = {
     CompletionsErrorCode.INVALID_REQUEST: "invalid_request_error",
@@ -41,7 +46,10 @@ def completions_error_body(code: CompletionsErrorCode, message: str) -> dict[str
     return {
         "error": {
             "message": message,
-            "type": COMPLETIONS_ERROR_TYPES[code],
+            # .get, not a bare subscript: this map is hand-maintained alongside
+            # the enum, so a new variant without an entry would raise while
+            # building the error response, turning a handled 4xx into a 500.
+            "type": COMPLETIONS_ERROR_TYPES.get(code, _FALLBACK_ERROR_TYPE),
             "code": str(code),
         }
     }
@@ -69,6 +77,17 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
 }
 
 
+# Kinds that describe the backend rather than the caller's request. Their text
+# comes from the fleet boundary and carries internal detail (up to 600 bytes of
+# the upstream body, plus the dead server's captured stderr: loopback ports,
+# engine binary paths, CUDA load failures), so it is logged rather than
+# returned. The client-input kinds above stay pass-through: that text tells the
+# caller what to change about their own request.
+_INFRASTRUCTURE_KINDS = frozenset({ProviderErrorKind.CONNECTION, ProviderErrorKind.SERVER})
+
+_BACKEND_FAILURE_MESSAGE = "The model backend is unavailable. Check the server logs for details."
+
+
 def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
     """Map a typed dispatch/provider failure to ``(status, code, message)``, or None.
 
@@ -84,5 +103,8 @@ def classify_provider_error(exc: BaseException) -> ClassifiedError | None:
         mapped = _PROVIDER_KIND_CLASSIFICATIONS.get(exc.kind)
         if mapped is not None:
             status, code = mapped
+            if exc.kind in _INFRASTRUCTURE_KINDS:
+                log.warning("Chat backend failure (%s)", exc.kind, exc_info=exc)
+                return ClassifiedError(status, code, _BACKEND_FAILURE_MESSAGE)
             return ClassifiedError(status, code, str(exc))
     return None

@@ -65,7 +65,10 @@ async def list_models_endpoint(request: Request) -> Response:
     # list_installed walks the model filesystem and served_chat_ctx may probe the
     # engine; run both off the event loop like the sibling chat-completions route.
     payload = await asyncio.to_thread(_build_models_list_payload)
-    return Response(payload.model_dump(), media_type="application/json")
+    # exclude_none like the sibling completions responses: context_window is
+    # deliberately None for every model but the active one, and emitting it as
+    # null adds a field OpenAI clients do not expect on a model entry.
+    return Response(payload.model_dump(exclude_none=True), media_type="application/json")
 
 
 def _build_models_list_payload() -> ModelsListResponse:

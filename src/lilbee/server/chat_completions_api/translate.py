@@ -168,7 +168,12 @@ class _StreamMapper:
         if isinstance(event.delta, TextDelta):
             return self._text_delta(self._reasoning.feed(event.delta.text))
         if isinstance(event.delta, ToolUseDelta):
-            tool_index = self._tool_index_for_block[event.index]
+            # A delta for a block we never saw start is a provider quirk, not a
+            # server fault; a bare subscript turned it into a KeyError that
+            # surfaced as a stream-level internal error.
+            tool_index = self._tool_index_for_block.get(event.index)
+            if tool_index is None:
+                return None
             return CompletionsStreamDelta(
                 tool_calls=[_tool_call_args(tool_index, event.delta.partial_json)],
             )

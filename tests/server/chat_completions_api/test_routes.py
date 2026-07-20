@@ -204,7 +204,9 @@ class TestListModelsEndpoint:
             resp = await client.get("/v1/models", headers=_h())
         by_id = {m["id"]: m for m in resp.json()["data"]}
         assert by_id[INSTALLED_REF]["context_window"] == 40960
-        assert by_id["z/Other/o.gguf"]["context_window"] is None
+        # Omitted rather than null: the field is dumped with exclude_none, so a
+        # model with no served window simply carries no context_window key.
+        assert "context_window" not in by_id["z/Other/o.gguf"]
 
     async def test_remote_configured_chat_model_is_listed_first(
         self, services_with_chat_model, _auth_token, monkeypatch
@@ -728,8 +730,6 @@ class TestNonStreamingCompletion:
             ("auth", 401, "invalid_api_key"),
             ("rate_limit", 429, "rate_limit_exceeded"),
             ("bad_request", 400, "invalid_request"),
-            ("connection", 503, "internal_error"),
-            ("server", 502, "internal_error"),
         ],
     )
     async def test_classified_provider_error_returns_mapped_envelope(
@@ -755,6 +755,35 @@ class TestNonStreamingCompletion:
         body = resp.json()
         assert body["error"]["code"] == code
         assert body["error"]["message"] == "the provider said no, here is what to do about it"
+        assert chat_gate().in_flight == 0
+
+    @pytest.mark.parametrize(
+        ("kind", "status"), [("connection", 503), ("server", 502)]
+    )
+    async def test_backend_failure_returns_a_generic_envelope(
+        self, services_with_chat_model, _auth_token, kind, status
+    ):
+        """Unlike a request-shaped failure, a backend failure's text carries the
+        fleet's internal detail, so the caller gets the generic message and the
+        slot is still released."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            "bind 127.0.0.1:8137 failed", kind=ProviderErrorKind(kind)
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == status
+        body = resp.json()
+        assert body["error"]["code"] == "internal_error"
+        assert "127.0.0.1" not in body["error"]["message"]
         assert chat_gate().in_flight == 0
 
     async def test_installed_but_not_configured_model_returns_actionable_400(
