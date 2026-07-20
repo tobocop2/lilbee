@@ -285,9 +285,7 @@ def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
     devices = _enumerate_vulkan_devices()
     if devices is None:
         return None
-    return [
-        (d.index, d.vram_bytes) for d in devices if d.device_type != VkDeviceType.CPU
-    ]
+    return [(d.index, d.vram_bytes) for d in devices if d.device_type != VkDeviceType.CPU]
 
 
 def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
