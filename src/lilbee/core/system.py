@@ -78,8 +78,15 @@ def canonical_data_root(root: Path | str) -> Path:
     Every entry point that takes a raw root calls this, so the config and lock
     layers agree by construction. A root that does not exist yet resolves to
     where it will be created.
+
+    Expansion and resolution go through ``os.path`` rather than
+    ``Path.expanduser().resolve()`` so the work happens on strings and only one
+    Path is built, at the end. ``Path.resolve`` rebuilds itself through
+    ``type(self)(...)``, which raises for a ``PosixPath`` that exists on Windows
+    -- reachable because ``Path()`` picks its flavour from ``os.name``, so any
+    code that patches that global mints paths this would then choke on.
     """
-    return Path(root).expanduser().resolve()
+    return Path(os.path.realpath(os.path.expanduser(os.fspath(root))))
 
 
 def canonical_models_dir() -> Path:
