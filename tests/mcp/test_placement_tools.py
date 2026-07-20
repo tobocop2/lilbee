@@ -32,6 +32,15 @@ def test_get_gpus_tool(monkeypatch):
     out = mcp_server.get_gpus_tool()
     assert [g["label"] for g in out["gpus"]] == ["CUDA0"]
     assert out["gpus"][0]["free_bytes"] == 72 * GIB
+    assert out["notice"] is None
+
+
+def test_get_gpus_tool_includes_intel_notice(monkeypatch):
+    """An Intel host with unreadable utilization surfaces the fix, matching HTTP /api/gpus."""
+    monkeypatch.setattr(mcp_server, "get_placement", lambda: _view())
+    monkeypatch.setattr(mcp_server, "intel_util_notice", lambda devices: "INSTALL HINT")
+    out = mcp_server.get_gpus_tool()
+    assert out["notice"] == "INSTALL HINT"
 
 
 def test_get_gpus_tool_returns_error_on_provider_failure(monkeypatch):

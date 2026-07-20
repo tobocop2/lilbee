@@ -75,13 +75,14 @@ from lilbee.server.handlers.sse import (
     sse_event,
 )
 from lilbee.server.models import (
-    GpuInfoResponse,
+    GpusResponse,
     HealthResponse,
     PlacementResponse,
     StatusResponse,
 )
 
 if TYPE_CHECKING:
+    from lilbee.app.placement import PlacementView
     from lilbee.providers.base import LLMProvider
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
@@ -203,16 +204,16 @@ async def placement() -> PlacementResponse:
     """Current effective placement."""
     from lilbee.app.placement import get_placement
 
-    return PlacementResponse.from_view(get_placement())
+    return _placement_response(get_placement())
 
 
 async def placement_preview(spec_json: str | None) -> PlacementResponse:
-    """Preview a candidate spec (or auto when spec_json is None). No persistence."""
+    """Preview a candidate spec (or auto when no spec). No persistence."""
     from lilbee.app.placement import preview_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     spec = PlacementSpec.from_json(spec_json) if spec_json else None
-    return PlacementResponse.from_view(preview_placement(spec))
+    return _placement_response(preview_placement(spec))
 
 
 async def placement_set(spec_json: str) -> PlacementResponse:
@@ -220,21 +221,34 @@ async def placement_set(spec_json: str) -> PlacementResponse:
     from lilbee.app.placement import set_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    return PlacementResponse.from_view(set_placement(PlacementSpec.from_json(spec_json)))
+    return _placement_response(set_placement(PlacementSpec.from_json(spec_json)))
 
 
 async def placement_clear() -> PlacementResponse:
     """Clear manual placement; returns to the auto planner and rebuilds the fleet."""
     from lilbee.app.placement import set_placement
 
-    return PlacementResponse.from_view(set_placement(None))
+    return _placement_response(set_placement(None))
 
 
-async def gpus() -> list[GpuInfoResponse]:
-    """Detected GPUs with free/total VRAM."""
-    from lilbee.app.placement import get_placement
+def _placement_response(view: PlacementView) -> PlacementResponse:
+    """Serialize a placement view with the host-level Intel util notice attached."""
+    from lilbee.app.placement import intel_util_notice
 
-    return PlacementResponse.from_view(get_placement()).gpus
+    resp = PlacementResponse.from_view(view)
+    resp.notice = intel_util_notice(view.gpus)
+    return resp
+
+
+async def gpus() -> GpusResponse:
+    """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
+    from lilbee.app.placement import get_placement, intel_util_notice
+
+    view = get_placement()
+    return GpusResponse(
+        gpus=PlacementResponse.from_view(view).gpus,
+        notice=intel_util_notice(view.gpus),
+    )
 
 
 __all__ = [

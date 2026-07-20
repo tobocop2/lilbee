@@ -21,7 +21,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError
 from lilbee.server import handlers
-from lilbee.server.models import GpuInfoResponse, PlacementResponse, PlacementSpecBody
+from lilbee.server.models import GpusResponse, PlacementResponse, PlacementSpecBody
 
 _HTTP_UNPROCESSABLE = 422
 _HTTP_CONFLICT = 409
@@ -89,8 +89,8 @@ async def placement_clear_route() -> PlacementResponse:
 
 
 @get("/api/gpus")
-async def gpus_route() -> list[GpuInfoResponse]:
-    """Detected GPUs with free/total VRAM."""
+async def gpus_route() -> GpusResponse:
+    """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
     try:
         return await handlers.gpus()
     except ProviderError as exc:

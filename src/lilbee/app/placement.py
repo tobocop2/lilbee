@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from lilbee.app.services import peek_services
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats
 from lilbee.providers.fleet.placement_spec import PlacementSpec
 from lilbee.providers.fleet.planning import (
     ResolvedPlacement,
@@ -130,6 +131,14 @@ def get_placement() -> PlacementView:
     spec = _active_spec()
     resolved = resolve_placement_plan(spec)
     return _view(resolved, manual=spec is not None, spec_json=spec.to_json() if spec else None)
+
+
+def intel_util_notice(devices: Sequence[GpuInfo]) -> str | None:
+    """The localized Intel utilization fix, or None when every Intel GPU reads fine."""
+    from lilbee.cli.tui import messages as msg
+
+    hint = intel_util_hint(devices, probe_gpu_stats(devices))
+    return msg.intel_util_hint_text(hint) if hint else None
 
 
 def preview_placement(spec: PlacementSpec | None = None) -> PlacementView:

@@ -4669,6 +4669,16 @@ class TestPlacementHandlers:
         assert resp.manual is False
         assert resp.gpus == []
         assert resp.roles == []
+        assert resp.notice is None
+
+    async def test_placement_includes_intel_notice_when_hint_fires(self):
+        view = _stub_placement_view()
+        with (
+            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.app.placement.intel_util_notice", return_value="INSTALL HINT"),
+        ):
+            resp = await handlers.placement()
+        assert resp.notice == "INSTALL HINT"
 
     async def test_placement_surfaces_co_tenant_roles(self):
         # Co-tenants are placed but not co-resident; a surface that omits them
@@ -4715,7 +4725,7 @@ class TestPlacementHandlers:
         assert resp.manual is False
         mock_set.assert_called_once_with(None)
 
-    async def test_gpus_returns_list(self):
+    async def test_gpus_returns_envelope(self):
         from lilbee.app.placement import GpuInfo, PlacementView
 
         gpu = GpuInfo(
@@ -4729,8 +4739,28 @@ class TestPlacementHandlers:
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
         with patch("lilbee.app.placement.get_placement", return_value=view):
             result = await handlers.gpus()
-        assert len(result) == 1
-        assert result[0].name == "A100"
+        assert len(result.gpus) == 1
+        assert result.gpus[0].name == "A100"
+        assert result.notice is None
+
+    async def test_gpus_includes_intel_notice_when_hint_fires(self):
+        from lilbee.app.placement import GpuInfo, PlacementView
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
+        with (
+            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.app.placement.intel_util_notice", return_value="INSTALL HINT"),
+        ):
+            result = await handlers.gpus()
+        assert result.notice == "INSTALL HINT"
 
     async def test_gpu_stats_stream_emits_live_snapshots(self):
         from lilbee.app.placement import GpuInfo

@@ -32,6 +32,7 @@ from lilbee.app.memory import (
 from lilbee.app.placement import (
     PlacementView,
     get_placement,
+    intel_util_notice,
     placement_refused_message,
     preview_placement,
     set_placement,
@@ -1299,7 +1300,15 @@ def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
 @_tool_named("get_gpus")
 def get_gpus_tool() -> dict[str, Any]:
     """List detected GPUs with free/total VRAM (the placement HTTP /api/gpus equivalent)."""
-    return _placement_guard(lambda: {"gpus": _placement_dict(get_placement())["gpus"]})
+
+    def _body() -> dict[str, Any]:
+        view = get_placement()
+        return {
+            "gpus": _placement_dict(view)["gpus"],
+            "notice": intel_util_notice(view.gpus),
+        }
+
+    return _placement_guard(_body)
 
 
 @_tool_named("get_placement")

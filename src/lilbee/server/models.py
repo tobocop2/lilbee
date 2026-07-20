@@ -620,6 +620,13 @@ class GpuInfoResponse(BaseModel):
     free_bytes: int
 
 
+class GpusResponse(BaseModel):
+    """GET /api/gpus envelope: detected GPUs plus the host-level util notice."""
+
+    gpus: list[GpuInfoResponse]
+    notice: str | None = None
+
+
 class RolePlacementResponse(BaseModel):
     """Where one role's model is placed in the resolved plan."""
 
@@ -647,6 +654,7 @@ class PlacementResponse(BaseModel):
     spec_json: str | None
     skipped_not_installed: list[SkippedRoleResponse] = []
     co_tenants: list[str] = []
+    notice: str | None = None
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
