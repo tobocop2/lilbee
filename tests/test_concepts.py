@@ -849,9 +849,59 @@ class TestRebuildClusters:
         cg.rebuild_clusters()
         mock_leiden.assert_called_once_with([{"source": "ml", "target": "python", "weight": 1.0}])
         # Nodes are replaced atomically (delete+add under one lock), not a bare add.
-        mock_svc.store.clear_and_add.assert_called_once()
-        node_records = mock_svc.store.clear_and_add.call_args.args[2]
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+
+        rewrites = {call.args[0]: call for call in mock_svc.store.clear_and_add.call_args_list}
+        node_records = rewrites[CONCEPT_NODES_TABLE].args[2]
         assert {r["concept"] for r in node_records} == {"python", "ml"}
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_rewrites_edges_from_corpus(self, mock_leiden, cg, mock_svc):
+        """rebuild_clusters replaces the edges table with the corpus PPMI edge
+        set. Per-file writes only ever append, so without this rewrite the
+        table grows monotonically and expand_query serves edges for concepts
+        that left the corpus long ago."""
+        from lilbee.core.config import CONCEPT_EDGES_TABLE
+
+        _cc, side = self._chunk_concepts(
+            {
+                "chunk_source": ["d.md"] * 6,
+                "chunk_index": [0, 0, 1, 1, 2, 3],
+                "concept": ["python", "ml", "python", "ml", "rust", "rust"],
+            }
+        )
+        mock_svc.store.open_table.side_effect = side
+        mock_leiden.return_value = ({"python": 0, "ml": 0}, {"python": 1, "ml": 1})
+
+        cg.rebuild_clusters()
+        rewrites = {call.args[0]: call for call in mock_svc.store.clear_and_add.call_args_list}
+        assert CONCEPT_EDGES_TABLE in rewrites
+        edge_rows = rewrites[CONCEPT_EDGES_TABLE].args[2]
+        assert edge_rows == [{"source": "ml", "target": "python", "weight": 1.0}]
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_reingest_then_rebuild_leaves_no_stale_or_duplicate_edges(self, mock_leiden, mock_svc):
+        """End-state: re-ingesting a file appends its edges again, and the
+        following rebuild collapses the table back to the corpus edge set."""
+        from lilbee.core.config import CONCEPT_EDGES_TABLE
+        from lilbee.data.store import Store
+
+        mock_leiden.side_effect = lambda edge_rows: (
+            {c: 0 for row in edge_rows for c in (row["source"], row["target"])},
+            {c: 1 for row in edge_rows for c in (row["source"], row["target"])},
+        )
+        store = Store(cfg)
+        graph = ConceptGraph(cfg, store)
+        chunks = [("a.md", 0), ("b.md", 0)]
+        concepts = [["python", "rust"], ["notes"]]
+        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        graph.rebuild_clusters()
+        # A sync re-ingests a.md: its full co-occurrence edge set is appended again.
+        graph.write_concept_records(graph.build_concept_records(chunks[:1], concepts[:1]))
+        graph.rebuild_clusters()
+
+        rows = store.open_table(CONCEPT_EDGES_TABLE).search().limit(None).to_list()
+        assert [(r["source"], r["target"]) for r in rows] == [("python", "rust")]
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_counts_cooccurrence_per_distinct_chunk(self, mock_leiden, cg, mock_svc):

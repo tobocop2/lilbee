@@ -343,8 +343,9 @@ class ConceptGraph:
         chunk_concepts is the ground-truth concept<->chunk map: it is source-scoped
         (re-ingesting a source replaces its rows) and its schema is stable, so PMI
         computed from it stays correct across re-ingests and version upgrades. The
-        edge table is append-only and its ``weight`` is a per-file co-occurrence
-        count, not corpus PMI, so it is not a safe source for these corpus counts.
+        edge table accrues per-file appends between rebuilds and those weights are
+        per-file co-occurrence counts, not corpus PMI, so it is not a safe source
+        for these corpus counts.
 
         Concepts are de-duplicated per chunk, so a concept (or pair) counts once per
         distinct chunk it appears in -- the document frequency PMI is defined on.
@@ -375,6 +376,11 @@ class ConceptGraph:
         co-occurrence and concept counts (see :meth:`_corpus_pmi_inputs`) rather
         than per file; summing per-file PMI would inflate pairs that recur across
         many small files.
+
+        Both the nodes and the edges tables are replaced with the freshly
+        computed corpus graph. Per-file writes only ever append edges, so
+        without this rewrite the edges table grows monotonically across syncs
+        and expand_query keeps serving edges for concepts that left the corpus.
         """
         cooccurrences, concept_counts, total_chunks = self._corpus_pmi_inputs()
         if total_chunks == 0 or not cooccurrences:
@@ -396,11 +402,14 @@ class ConceptGraph:
             for node, cluster_id in partition.items()
         ]
 
-        # Delete the old nodes and add the new ones under one lock so a reader
-        # never sees the nodes table emptied while get_graph() still reports it
-        # present (which would blank top_communities / cluster labels).
+        # Delete the old rows and add the new ones under one lock per table so
+        # a reader never sees a table emptied while get_graph() still reports
+        # it present (which would blank top_communities / cluster labels).
         self._store.clear_and_add(
             CONCEPT_NODES_TABLE, _concept_nodes_schema(), node_records, "concept IS NOT NULL"
+        )
+        self._store.clear_and_add(
+            CONCEPT_EDGES_TABLE, _concept_edges_schema(), edge_rows, "source IS NOT NULL"
         )
         self.compact_tables()
 
