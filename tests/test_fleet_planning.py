@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -2028,3 +2029,47 @@ def test_metal_devices_are_recognised_as_unified() -> None:
     assert _is_unified("MTL", 0) is True
     assert _is_unified("Metal", 0) is True
     assert _is_unified("CUDA", 0) is False
+
+
+def test_engine_reporting_no_devices_is_believed_over_the_host_loader(monkeypatch) -> None:
+    """A CPU-only build on a desktop with mesa must plan as CPU, not as a GPU box.
+
+    --list-devices prints every non-CPU device the engine can use, so an empty
+    list is a fact. Fabricating devices from the host loader plans a fleet onto
+    GPUs the engine cannot see: the pins are no-ops, the shared-RAM guard is off
+    because the list looked non-empty, and every role loads full weights into
+    RAM while running on the CPU anyway.
+    """
+    from pathlib import Path as _Path
+
+    from lilbee.providers.fleet import gpu_select
+
+    probe = SimpleNamespace(devices=[], output="ggml: no GPU backends registered\n")
+    monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
+    monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+    )
+    # The host loader can see a GPU; the engine still cannot use it.
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9)])
+
+    assert planning_mod.resolve_devices(_Path("/fake/llama-server")) == []
+
+
+def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
+    """No output means no information, which is the one case worth guessing in."""
+    from pathlib import Path as _Path
+
+    from lilbee.providers.fleet import gpu_select
+
+    probe = SimpleNamespace(devices=[], output="")
+    monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
+    monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+    )
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+    devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
+    assert [(d.backend, d.index) for d in devices] == [("Vulkan", 0)]

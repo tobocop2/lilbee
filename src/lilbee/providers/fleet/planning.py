@@ -946,8 +946,11 @@ def _launch_for(
 def resolve_devices(binary: Path) -> list[FleetDevice]:
     """Enumerate devices in the binary's index space, or the Vulkan VRAM probe.
 
-    The binary's ``--list-devices`` is authoritative; when it enumerates nothing,
-    fall back to the Vulkan VRAM probe, which reports the same index space. A
+    The binary's ``--list-devices`` is authoritative, including when it lists
+    nothing: it prints every non-CPU device it can use, so an empty list means
+    the engine has no usable GPU rather than that we failed to look. The Vulkan
+    VRAM probe is consulted only when the binary produced no output at all, and
+    it reports the same index space. A
     probe that times out raises instead (a wedged GPU driver); falling through
     to the in-process Vulkan probe there could hang this thread unkillably.
     """
@@ -967,7 +970,15 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
             "CUDA_VISIBLE_DEVICES, and that the llama-server build has CUDA support.",
             binary,
         )
-    if not devices:
+    if not devices and not probe.output:
+        # Only when the binary told us nothing at all. It prints every non-CPU
+        # device it can use, so a probe that ran and listed none is reporting a
+        # fact, not a gap: believing the host loader instead invents devices the
+        # engine cannot see. A CPU-only build on a desktop with mesa is the
+        # clearest case, and the cost is not merely a wrong device list. The
+        # fleet is planned onto GPUs, the pins are no-ops, the shared-RAM guard
+        # is off because devices looked non-empty, and every role then loads its
+        # full weights into system RAM while running on the CPU anyway.
         from lilbee.providers.fleet.gpu_select import integrated_vulkan_indices
 
         integrated = integrated_vulkan_indices()
@@ -975,6 +986,15 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
             FleetDevice("Vulkan", idx, "", vram, vram, unified=idx in integrated)
             for idx, vram in (enumerate_gpu_vram() or [])
         ]
+        if devices:
+            log.warning(
+                "The engine's device probe returned nothing, so placement is using "
+                "the host's Vulkan loader instead and found %d device(s). If the "
+                "engine has no Vulkan backend it will run on CPU regardless; set %s "
+                "to override the engine location if that is wrong.",
+                len(devices),
+                "LILBEE_ENGINE_DIR",
+            )
     return devices
 
 
