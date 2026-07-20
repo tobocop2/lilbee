@@ -1798,6 +1798,12 @@ class TestAuthRequiredRoutes:
         resp = auth_client.put("/api/models/embedding", json={"model": "nomic-embed-text:latest"})
         assert resp.status_code == 401
 
+    def test_shutdown_requires_auth(self, auth_client):
+        # The remote shutdown is the most abuse-sensitive mutating route; pin that
+        # it is bearer-protected so a future @read_only slip fails loud here.
+        resp = auth_client.post("/api/shutdown")
+        assert resp.status_code == 401
+
 
 class _StubEmbedder:
     truncated_total = 0
