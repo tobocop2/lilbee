@@ -121,14 +121,27 @@ class Reranker:
 
 
 def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] | None:
-    """Call the active provider's rerank; return None on error after logging."""
+    """Call the active provider's rerank; return None on error after logging.
+
+    A provider that returns the wrong number of scores is contained here
+    like any other failure: the scores cannot be paired with the candidates,
+    so the pass is skipped and retrieval order stands.
+    """
     # circular: services -> reranker via Searcher; deferred so test-time
     # monkeypatching of ``lilbee.services.get_services`` stays effective.
     from lilbee.app.services import get_services
 
     try:
         provider = get_services().provider
-        return provider.rerank(query, [c.chunk for c in to_rerank])
+        scores = provider.rerank(query, [c.chunk for c in to_rerank])
     except Exception as exc:
         log.warning("Reranker failed; skipping rerank pass: %s", exc, exc_info=True)
         return None
+    if len(scores) != len(to_rerank):
+        log.warning(
+            "Reranker returned %d scores for %d candidates; skipping rerank pass",
+            len(scores),
+            len(to_rerank),
+        )
+        return None
+    return scores
