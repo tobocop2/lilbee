@@ -25,6 +25,7 @@ from lilbee.providers.fleet.adapters import (
 )
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
 from lilbee.providers.fleet.devices import (
+    VULKAN_BACKEND,
     FleetDevice,
     host_lacks_nvlink,
     probe_devices,
@@ -1050,7 +1051,7 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
 
         integrated = integrated_vulkan_indices()
         devices = [
-            FleetDevice("Vulkan", idx, "", vram, free, unified=idx in integrated)
+            FleetDevice(VULKAN_BACKEND, idx, "", vram, free, unified=idx in integrated)
             for idx, vram, free in (enumerate_gpu_vram() or [])
         ]
         if devices:
@@ -1230,7 +1231,7 @@ def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:
     for one card being the clear case. CUDA, ROCm and SYCL compose their
     variables in the same space the probe enumerated, so they keep doing that.
     """
-    if not devices or devices[0].backend != "Vulkan":
+    if not devices or devices[0].backend != VULKAN_BACKEND:
         return ()
     return tuple(f"{d.backend}{d.index}" for d in devices)
 

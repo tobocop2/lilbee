@@ -56,7 +56,11 @@ _DEVICE_RE = re.compile(
 )
 # Pin priority when a build reports more than one GPU backend: a real GPU
 # backend always wins over Vulkan, which wins over CPU.
-_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, "Vulkan": 1}
+# The engine's own name for the backend. Vendor-agnostic, so several rules key
+# on it: a Vulkan device's type has to be asked of the loader, and its util
+# source is chosen by the vendor in its device name rather than by the backend.
+VULKAN_BACKEND = "Vulkan"
+_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, VULKAN_BACKEND: 1}
 # Backends whose memory is always the host's: Apple Silicon reports a working-set
 # slice of system RAM, never a dedicated pool.
 _UNIFIED_BACKENDS = frozenset({"MTL", "Metal"})
@@ -294,7 +298,7 @@ def _free_without_a_suffix(backend: str, name: str, total: int) -> int:
     first, since it exposes the same budget extension to this process; only when
     that has nothing to say does the heap size stand in.
     """
-    if backend != "Vulkan":
+    if backend != VULKAN_BACKEND:
         return total
     from lilbee.providers.fleet.gpu_select import vulkan_free_bytes_by_name
 
@@ -324,7 +328,7 @@ def _is_unusable_vulkan(device: FleetDevice) -> bool:
     more than planning no GPU at all, since a non-empty device list also turns
     off the shared-RAM budget.
     """
-    if device.backend != "Vulkan":
+    if device.backend != VULKAN_BACKEND:
         return False
     device_type = _vulkan_device_type(device.name)
     return device_type is not None and device_type not in USABLE_VULKAN_TYPES
@@ -348,7 +352,7 @@ def _is_unified(backend: str, name: str) -> bool:
     """
     if backend in _UNIFIED_BACKENDS:
         return True
-    if backend == "Vulkan":
+    if backend == VULKAN_BACKEND:
         return _vulkan_device_type(name) is VkDeviceType.INTEGRATED_GPU
     from lilbee.providers.fleet.gpu_select import host_has_no_discrete_gpu
 
@@ -446,7 +450,7 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
         }
     if backend in ("ROCm", "HIP"):
         return _amd_visible_env(indices)
-    if backend == "Vulkan":
+    if backend == VULKAN_BACKEND:
         # Deliberately not GGML_VK_VISIBLE_DEVICES. That variable indexes the raw
         # loader enumeration, while these indices come from the engine's own
         # filtered list, so the two disagree wherever ggml drops or merges a
