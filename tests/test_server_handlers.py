@@ -2834,6 +2834,61 @@ class TestModelsInstalled:
         assert result.models[0].source == "lm_studio"
 
 
+class TestModelHandlersRunBlockingWorkOffLoop:
+    """Backend model discovery/show do blocking HTTP; they must not run inline.
+
+    A slow or unreachable Ollama/LM Studio endpoint would otherwise stall every
+    other request on the single event loop for the HTTP timeout.
+    """
+
+    async def test_set_model_runs_list_models_off_the_loop(self, tmp_path, mock_svc):
+        import threading
+
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def record(*_a, **_k):
+            seen.append(threading.get_ident())
+            return [_CHAT_REF]
+
+        mock_svc.provider.list_models.side_effect = record
+        await handlers.set_chat_model(_CHAT_REF)
+        assert seen and all(tid != loop_tid for tid in seen)
+
+    async def test_models_show_runs_off_the_loop(self, mock_svc):
+        import threading
+
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def record(_model):
+            seen.append(threading.get_ident())
+            return {}
+
+        mock_svc.provider.show_model.side_effect = record
+        await handlers.models_show("ollama/qwen3:0.6b")
+        assert seen and seen[0] != loop_tid
+
+    async def test_models_installed_runs_off_the_loop(self):
+        import threading
+
+        loop_tid = threading.get_ident()
+        seen: list[int] = []
+
+        def record():
+            seen.append(threading.get_ident())
+            return []
+
+        mock_manager = MagicMock()
+        mock_manager.list_installed.side_effect = record
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            await handlers.models_installed()
+        assert seen and seen[0] != loop_tid
+
+
 class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()

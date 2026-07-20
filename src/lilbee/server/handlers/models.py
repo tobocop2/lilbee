@@ -258,7 +258,7 @@ def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: boo
 
 async def set_chat_model(model: str) -> SetModelResponse:
     """Switch active chat model. Validates installation and catalog task."""
-    normalized = _require_model_for_task(model, ModelTask.CHAT)
+    normalized = await asyncio.to_thread(_require_model_for_task, model, ModelTask.CHAT)
     return await _set_model("chat_model", normalized)
 
 
@@ -272,27 +272,33 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     until that happens. The settings boundary pins legacy store meta to
     the OLD ref before the write and computes ``reindex_required`` after.
     """
-    normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
+    normalized = await asyncio.to_thread(_require_model_for_task, model, ModelTask.EMBEDDING)
     result = apply_settings_update({"embedding_model": normalized})
     return SetModelResponse(model=normalized, reindex_required=result.reindex_required)
 
 
 async def set_vision_model(model: str) -> SetModelResponse:
     """Switch vision OCR model. Empty string unsets it (vision OCR disabled)."""
-    normalized = _require_model_for_task(model, ModelTask.VISION, allow_empty=True)
+    normalized = await asyncio.to_thread(
+        _require_model_for_task, model, ModelTask.VISION, allow_empty=True
+    )
     return await _set_model("vision_model", normalized)
 
 
 async def set_reranker_model(model: str) -> SetModelResponse:
     """Switch reranker model. Empty string unsets it (reranking disabled)."""
-    normalized = _require_model_for_task(model, ModelTask.RERANK, allow_empty=True)
+    normalized = await asyncio.to_thread(
+        _require_model_for_task, model, ModelTask.RERANK, allow_empty=True
+    )
     return await _set_model("reranker_model", normalized)
 
 
 async def models_show(model: str) -> ModelsShowResponse:
     """Return model metadata/parameters. Returns empty model if unavailable."""
     provider = get_services().provider
-    result = provider.show_model(model)
+    # show_model dispatches to the SDK backend, which does a network call to the
+    # local server; offload so a hung backend doesn't block the event loop.
+    result = await asyncio.to_thread(provider.show_model, model)
     return ModelsShowResponse(**(result or {}))
 
 
@@ -513,16 +519,24 @@ async def models_catalog(
     )
 
 
-async def models_installed() -> ModelsInstalledResponse:
-    """Return installed models with their granular source and canonical ref."""
+def _installed_entries_sync() -> list[InstalledModelEntry]:
+    """Blocking body of :func:`models_installed`: list installs and their sources."""
     manager = get_services().model_manager
-    models = []
+    entries = []
     for name in manager.list_installed():
         source = manager.get_source(name) or ModelSource.REMOTE
-        models.append(
+        entries.append(
             InstalledModelEntry(name=canonical_local_ref(name, source.value), source=source)
         )
-    return ModelsInstalledResponse(models=models)
+    return entries
+
+
+async def models_installed() -> ModelsInstalledResponse:
+    """Return installed models with their granular source and canonical ref."""
+    # list_installed walks the model filesystem and, on TTL expiry, queries the
+    # configured local servers over HTTP; offload it like list_models does.
+    entries = await asyncio.to_thread(_installed_entries_sync)
+    return ModelsInstalledResponse(models=entries)
 
 
 async def enforce_pull_arch_compat(

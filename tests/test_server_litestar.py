@@ -1923,6 +1923,30 @@ class TestExportRoute:
         resp = client.get("/api/export", params={"format": "csv"})
         assert resp.status_code == 400
 
+    async def test_serialization_runs_off_the_event_loop(self, dataset_store):
+        """export_to_bytes serializes the whole dataset in memory; a large export
+        must not stall every other request, so it runs in a worker thread."""
+        import threading
+
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.app import dataset as dataset_mod
+        from lilbee.server.app import create_app
+
+        real = dataset_mod.export_to_bytes
+        seen: list[int] = []
+
+        def record(fmt, source=None):
+            seen.append(threading.get_ident())
+            return real(fmt, source)
+
+        loop_tid = threading.get_ident()
+        with mock.patch.object(dataset_mod, "export_to_bytes", record):
+            async with AsyncTestClient(create_app()) as client:
+                resp = await client.get("/api/export", params={"format": "jsonl"})
+        assert resp.status_code == 200
+        assert seen and seen[0] != loop_tid
+
 
 class TestImportRoute:
     def test_round_trip_streams_progress_and_done(self, dataset_store, client):

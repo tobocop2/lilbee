@@ -113,10 +113,15 @@ async def export_route(
     source: str = Parameter(query="source", default=""),
 ) -> Response[bytes]:
     """Download the per-page text dataset as a file (parquet by default)."""
+    import asyncio
+
     from lilbee.app.dataset import DatasetError, export_to_bytes
 
     try:
-        payload = export_to_bytes(fmt, source or None)
+        # export_to_bytes serializes the whole per-page dataset into memory;
+        # offload so a large export doesn't stall every other request, matching
+        # get_source_content's own off-loop read.
+        payload = await asyncio.to_thread(export_to_bytes, fmt, source or None)
     except DatasetError as exc:
         raise ValidationException(str(exc)) from exc
     return Response(

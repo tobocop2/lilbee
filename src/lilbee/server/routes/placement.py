@@ -100,10 +100,15 @@ async def gpus_route() -> list[GpuInfoResponse]:
 @get("/api/gpus/stream")
 async def gpu_stats_stream_route() -> Stream:
     """Live per-GPU utilization + free memory as SSE for the placement view."""
+    import asyncio
+
     from lilbee.app.placement import get_placement
 
     try:
-        devices = get_placement().gpus
+        # get_placement runs resolve_placement_plan, which spawns subprocess
+        # device probes that can wedge for the probe timeout on a broken driver;
+        # offload so the probe never blocks the event loop.
+        view = await asyncio.to_thread(get_placement)
     except ProviderError as exc:
         raise HTTPException(status_code=_HTTP_UNAVAILABLE, detail=str(exc)) from exc
-    return Stream(handlers.gpu_stats_stream(devices), media_type="text/event-stream")
+    return Stream(handlers.gpu_stats_stream(view.gpus), media_type="text/event-stream")

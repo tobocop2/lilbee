@@ -294,3 +294,32 @@ def test_gpu_stats_stream_streams_events(monkeypatch):
         r = client.get("/api/gpus/stream")
         assert r.status_code == 200
         assert "text/event-stream" in r.headers["content-type"]
+
+
+def test_gpu_stats_stream_probes_off_the_event_loop(monkeypatch):
+    """get_placement spawns subprocess device probes; a wedged driver must not
+    stall every other request, so the probe runs in a worker thread."""
+    import threading
+
+    import lilbee.app.placement as placement_mod
+    from lilbee.app.placement import PlacementView
+
+    view = PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
+    probe_tid: list[int] = []
+    loop_tid: list[int] = []
+
+    def _probe():
+        probe_tid.append(threading.get_ident())
+        return view
+
+    async def _fake_stream(devices):
+        # The generator runs on the event loop, so this is the loop's thread.
+        loop_tid.append(threading.get_ident())
+        yield "event: gpu_stats\ndata: {}\n\n"
+
+    monkeypatch.setattr(placement_mod, "get_placement", _probe)
+    monkeypatch.setattr(handlers, "gpu_stats_stream", _fake_stream)
+    with create_test_client([gpu_stats_stream_route]) as client:
+        r = client.get("/api/gpus/stream")
+        assert r.status_code == 200
+    assert probe_tid and loop_tid and probe_tid[0] != loop_tid[0]
