@@ -57,6 +57,10 @@ def _compute_config_defaults() -> dict[str, Any]:
     """Materialize Config defaults once per process."""
     defaults: dict[str, Any] = {}
     for name, info in Config.model_fields.items():
+        # The writable conjunct is redundant today, since every public field is
+        # either writable or a model role, and the next clause keeps the roles.
+        # It stays as the guard that keeps a future public-but-not-writable
+        # field out of this payload; dropping it would expose one silently.
         is_writable_public = name in WRITABLE_CONFIG_FIELDS and name in _PUBLIC_CONFIG_FIELDS
         if not is_writable_public and name not in _MODEL_ROLE_FIELDS:
             continue

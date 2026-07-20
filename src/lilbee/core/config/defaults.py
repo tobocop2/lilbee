@@ -1,8 +1,9 @@
 """Default values and constants for :mod:`lilbee.config`.
 
-Holds frozen literal data: directory ignore lists, NER label allow-list,
-LanceDB table names, the crawl URL exclusion patterns (grouped per
-category), and the default system / CORS prompts.
+Holds frozen literal data: directory ignore lists, the NER label allow-list,
+LanceDB table names, the default HTTP timeout and context size, the crawl URL
+exclusion patterns (grouped per category), the default RAG and general system
+prompts, and the CORS allow-origin regex.
 """
 
 DEFAULT_IGNORE_DIRS = frozenset(

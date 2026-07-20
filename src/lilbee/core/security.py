@@ -17,12 +17,19 @@ class PathTraversalError(ValueError):
 
 
 def validate_path_within(path: str | Path, root: Path) -> Path:
-    """Resolve *path* and verify it stays within *root*.
+    """Resolve *path* under *root* and verify it stays within it.
+
+    A relative *path* is taken as relative to *root*.
     Raises :class:`PathTraversalError` if the resolved path escapes the root.
     Returns the resolved path on success.
     """
-    resolved = Path(path).resolve()
     root_resolved = root.resolve()
+    # A relative path resolves against the process CWD, not *root*, so a bare
+    # user-supplied name was judged against wherever the process happened to be
+    # started. Anchor it to root, which is what the docstring describes; a
+    # traversal inside it is still caught by the containment check below.
+    candidate = Path(path)
+    resolved = (candidate if candidate.is_absolute() else root_resolved / candidate).resolve()
     if not resolved.is_relative_to(root_resolved):
         raise PathTraversalError(f"Path escapes allowed directory: {path}")
     return resolved

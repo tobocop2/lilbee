@@ -163,3 +163,26 @@ class TestPersistedTokenIsTotal:
 
         assert token != "a" * 32
         assert len(token) > 32
+
+
+class TestValidatePathWithinAnchorsToRoot:
+    """A relative path resolved against the process CWD, not the root it is
+    being checked into, so a bare name was judged against wherever the process
+    happened to be started."""
+
+    def test_a_relative_path_resolves_under_root(self, tmp_path):
+        from lilbee.core.security import validate_path_within
+
+        assert validate_path_within("notes.txt", tmp_path) == (tmp_path / "notes.txt").resolve()
+
+    def test_a_relative_traversal_is_still_blocked(self, tmp_path):
+        from lilbee.core.security import PathTraversalError, validate_path_within
+
+        with pytest.raises(PathTraversalError):
+            validate_path_within("../escape.txt", tmp_path)
+
+    def test_an_absolute_path_is_unchanged(self, tmp_path):
+        from lilbee.core.security import validate_path_within
+
+        target = tmp_path / "a.txt"
+        assert validate_path_within(str(target), tmp_path) == target.resolve()
