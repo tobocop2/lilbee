@@ -55,6 +55,12 @@ class TestMergeAdjacentTexts:
     def test_fully_contained_text_adds_nothing(self):
         assert merge_adjacent_texts(["alpha beta", "beta"]) == "alpha beta"
 
+    def test_an_empty_side_has_no_overlap(self):
+        # An empty chunk shares nothing, so the seam is a plain join rather than
+        # a scan over a zero-length string.
+        assert merge_adjacent_texts(["", "delta"]) == "\ndelta"
+        assert merge_adjacent_texts(["alpha", ""]) == "alpha"
+
     def test_merging_an_already_merged_passage_is_idempotent(self):
         texts = ["one two", "two three", "three four"]
         merged = merge_adjacent_texts(texts)

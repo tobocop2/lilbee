@@ -4,6 +4,8 @@ from unittest import mock
 
 import pytest
 
+from lilbee.app.settings_map import SETTINGS_MAP, get_default
+from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 
 
@@ -207,14 +209,12 @@ class TestRerankerConfig:
         assert "reranker_type" in LOAD_AFFECTING_KEYS
 
     def test_reranker_fields_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
 
         assert "reranker_type" in SETTINGS_MAP
         assert "reranker_prompt" in SETTINGS_MAP
         assert SETTINGS_MAP["reranker_type"].choices == ("auto", "cross_encoder", "llm")
 
     def test_neighbor_expansion_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["neighbor_expansion"]
         assert defn.writable is True
@@ -226,7 +226,6 @@ class TestRerankerConfig:
         """The four adaptive-fusion / structural-filter knobs (which gate the
         on-by-default fusion behavior) are on the settings surface with their
         shipped defaults, so a dropped or typo'd entry fails CI."""
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         assert get_default("lexical_fusion_weight") == 1.0
         assert get_default("adaptive_fusion") is True
@@ -270,7 +269,6 @@ class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 
     def test_num_ctx_max_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["num_ctx_max"]
         assert defn.writable is True
@@ -279,7 +277,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("num_ctx_max") is None
 
     def test_chat_n_ctx_target_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["chat_n_ctx_target"]
         assert defn.writable is True
@@ -292,7 +289,6 @@ class TestMemoryTuningSettingsMap:
             assert get_default("chat_n_ctx_target") == 8192
 
     def test_flash_attention_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["flash_attention"]
         assert defn.writable is True
@@ -301,7 +297,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("flash_attention") is None
 
     def test_kv_cache_type_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
         from lilbee.core.config.enums import KvCacheType
 
         defn = SETTINGS_MAP["kv_cache_type"]
@@ -309,7 +304,6 @@ class TestMemoryTuningSettingsMap:
         assert defn.choices == tuple(t.value for t in KvCacheType)
 
     def test_n_gpu_layers_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["n_gpu_layers"]
         assert defn.writable is True
@@ -317,7 +311,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("n_gpu_layers") is None
 
     def test_vision_ocr_max_tokens_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["vision_ocr_max_tokens"]
         assert defn.writable is True
@@ -327,7 +320,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("vision_ocr_max_tokens") == 4096
 
     def test_vision_ocr_concurrency_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["vision_ocr_concurrency"]
         assert defn.writable is True
@@ -337,7 +329,6 @@ class TestMemoryTuningSettingsMap:
         assert get_default("vision_ocr_concurrency") == 4
 
     def test_crawl_render_mode_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
         from lilbee.core.config.enums import CrawlRenderMode
 
         defn = SETTINGS_MAP["crawl_render_mode"]
@@ -346,14 +337,12 @@ class TestMemoryTuningSettingsMap:
         assert defn.choices == tuple(m.value for m in CrawlRenderMode)
 
     def test_crawl_render_mode_is_writable_for_programmatic_surfaces(self):
-        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 
         # The TUI checkbox persists the choice via apply_settings_update, so the
         # field must be writable through the HTTP / MCP / programmatic contract.
         assert "crawl_render_mode" in WRITABLE_CONFIG_FIELDS
 
     def test_browser_memory_levers_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         recycle = SETTINGS_MAP["crawl_browser_recycle_pages"]
         assert recycle.writable is True
@@ -485,19 +474,16 @@ class TestAutoSyncConfig:
         assert Config().auto_sync is True
 
     def test_auto_sync_is_writable(self):
-        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 
         assert "auto_sync" in WRITABLE_CONFIG_FIELDS
 
     def test_auto_sync_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
 
         assert "auto_sync" in SETTINGS_MAP
 
 
 class TestListSettingRegexMarker:
     def test_only_regex_list_validates_as_regex(self):
-        from lilbee.app.settings_map import SETTINGS_MAP
 
         assert SETTINGS_MAP["crawl_exclude_patterns"].validate_regex is True
         # Chromium flag list must not be regex-validated.
@@ -530,7 +516,6 @@ class TestTitleSearchSettings:
     """The title-arm knobs are exposed on every settings surface."""
 
     def test_title_search_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["title_search"]
         assert defn.writable is True
@@ -539,7 +524,6 @@ class TestTitleSearchSettings:
         assert get_default("title_search") is False
 
     def test_title_search_weight_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
 
         defn = SETTINGS_MAP["title_search_weight"]
         assert defn.writable is True
@@ -548,7 +532,6 @@ class TestTitleSearchSettings:
         assert get_default("title_search_weight") == 0.5
 
     def test_title_search_fields_are_writable_for_programmatic_surfaces(self):
-        from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 
         assert "title_search" in WRITABLE_CONFIG_FIELDS
         assert "title_search_weight" in WRITABLE_CONFIG_FIELDS

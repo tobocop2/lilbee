@@ -897,7 +897,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "empty.txt"
         f.write_text("   ")
-        result = await ingest_document(f, "empty.txt", "text")
+        result, _ = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
     async def test_ingest_code_empty_chunks(self, isolated_env):
@@ -956,7 +956,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        result = await ingest_document(f, "test.pdf", "pdf")
+        result, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(result) == 2
         assert result[0]["page_start"] == 1
         assert result[1]["page_start"] == 2
@@ -1042,10 +1042,12 @@ class TestSkipMarkerLifecycle:
     until the file changes or retry_skipped / force_rebuild clears the marker."""
 
     @staticmethod
-    def _zero_chunks(*_args, **_kwargs) -> list:
+    def _zero_chunks(*_args, **_kwargs):
         # Simulate "OCR found no usable text": no records produced, so the file
         # is recorded as skipped.
-        return []
+        from lilbee.data.store import SourceMeta
+
+        return [], SourceMeta()
 
     async def test_failed_file_is_skipped_on_next_sync(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
@@ -1099,13 +1101,14 @@ class TestZeroChunkPageTextPersistence:
         quiet=False,
         on_progress=None,
         page_texts_out=None,
-        meta_out=None,
     ):
+        from lilbee.data.store import SourceMeta
+
         if page_texts_out is not None:
             page_texts_out.append(
                 {"source": source_name, "page": 1, "text": " ", "content_type": "pdf"}
             )
-        return []
+        return [], SourceMeta()
 
     async def test_pages_and_source_row_persist_and_replan_stops(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
@@ -2196,7 +2199,7 @@ class TestVisionFallback:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "scanned.pdf", "pdf", quiet=True)
+        result, _ = await ingest_document(f, "scanned.pdf", "pdf", quiet=True)
         mock_svc.provider.pdf_ocr.assert_called_once_with(
             f,
             backend="vision",
@@ -2246,7 +2249,7 @@ class TestVisionFallback:
         from lilbee.data.ingest import ingest_document
 
         with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
-            result = await ingest_document(f, "scanned.pdf", "pdf")
+            result, _ = await ingest_document(f, "scanned.pdf", "pdf")
         mock_svc.provider.pdf_ocr.assert_not_called()
         mock_tess.assert_not_called()
         # Only the initial text-layer extract ran; no Tesseract re-extract.
@@ -2262,7 +2265,7 @@ class TestVisionFallback:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "doc.txt", "text")
+        result, _ = await ingest_document(f, "doc.txt", "text")
         mock_svc.provider.pdf_ocr.assert_not_called()
         assert result == []
 
@@ -2280,7 +2283,7 @@ class TestVisionFallback:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "blank.pdf", "pdf")
+        result, _ = await ingest_document(f, "blank.pdf", "pdf")
         assert result == []
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
@@ -2294,7 +2297,7 @@ class TestVisionFallback:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "good.pdf", "pdf")
+        result, _ = await ingest_document(f, "good.pdf", "pdf")
         mock_svc.provider.pdf_ocr.assert_not_called()
         assert len(result) > 0
 
@@ -2311,7 +2314,7 @@ class TestVisionFallback:
         with mock.patch("lilbee.data.ingest.extract.chunk_text", return_value=[]):
             from lilbee.data.ingest import ingest_document
 
-            result = await ingest_document(f, "nochunks.pdf", "pdf")
+            result, _ = await ingest_document(f, "nochunks.pdf", "pdf")
         assert result == []
 
     @mock.patch("kreuzberg.extract_file_sync", new_callable=Mock)
@@ -2382,7 +2385,7 @@ class TestImageOcr:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "scan.png", "image")
+        result, _ = await ingest_document(f, "scan.png", "image")
         # the single-image path is used, not the PDF page loop
         mock_svc.provider.vision_ocr.assert_called_once()
         mock_svc.provider.pdf_ocr.assert_not_called()
@@ -2390,9 +2393,10 @@ class TestImageOcr:
         assert result[0]["content_type"] == "image"
         assert result[0]["page_start"] == 1
 
-    async def test_image_skips_kreuzberg_markdown_extract(self, isolated_env, mock_svc):
-        # The pre-fix bug: an image went through a markdown extract that yields no
-        # text. The image branch must not call kreuzberg.extract_file_sync at all.
+    async def test_image_text_comes_from_ocr_not_kreuzberg_extraction(self, isolated_env, mock_svc):
+        # The image's text must come from OCR, not a kreuzberg document extract
+        # (the pre-fix bug ran a markdown extract that yielded no text). kreuzberg
+        # is only used for a metadata-only read (title/authors from EXIF).
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         cfg.enable_ocr = True
         mock_svc.provider.vision_ocr.return_value = "text " * 20
@@ -2401,9 +2405,28 @@ class TestImageOcr:
 
         from lilbee.data.ingest import ingest_document
 
-        with mock.patch("kreuzberg.extract_file_sync", new_callable=Mock) as mock_kf:
-            await ingest_document(f, "scan.png", "image")
-        mock_kf.assert_not_called()
+        records, meta = await ingest_document(f, "scan.png", "image")
+        assert records  # chunks were produced from OCR
+        assert mock_svc.provider.vision_ocr.called
+        assert meta.title == "scan"  # no EXIF title in the test png -> stem
+
+    async def test_image_metadata_failure_falls_back_to_the_stem_title(
+        self, isolated_env, mock_svc
+    ):
+        """A metadata read that raises must not fail the image: OCR still runs
+        and the title degrades to the filename stem."""
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.enable_ocr = True
+        mock_svc.provider.vision_ocr.return_value = "text " * 20
+        f = isolated_env / "broken_exif.png"
+        _write_png(f)
+
+        from lilbee.data.ingest import ingest_document
+
+        with mock.patch("kreuzberg.extract_file_sync", side_effect=RuntimeError("bad exif")):
+            records, meta = await ingest_document(f, "broken_exif.png", "image")
+        assert records
+        assert meta.title == "broken exif"
 
     async def test_image_falls_back_to_tesseract_without_vision_model(self, isolated_env, mock_svc):
         cfg.vision_model = ""
@@ -2415,7 +2438,7 @@ class TestImageOcr:
 
         with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
             mock_tess.return_value = _make_kreuzberg_result("Tesseract image text. " * 20)
-            result = await ingest_document(f, "scan.png", "image")
+            result, _ = await ingest_document(f, "scan.png", "image")
         mock_svc.provider.vision_ocr.assert_not_called()
         assert len(result) > 0
         assert result[0]["content_type"] == "image"
@@ -2448,7 +2471,7 @@ class TestImageOcr:
         from lilbee.data.ingest import ingest_document
 
         with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
-            result = await ingest_document(f, "scan.png", "image")
+            result, _ = await ingest_document(f, "scan.png", "image")
         assert result == []
         mock_svc.provider.vision_ocr.assert_not_called()
         mock_tess.assert_not_called()
@@ -2489,7 +2512,8 @@ class TestImageOcr:
 
         with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
             mock_tess.return_value = _make_empty_result()
-            assert await ingest_document(f, "scan.png", "image") == []
+            records, _ = await ingest_document(f, "scan.png", "image")
+            assert records == []
 
     async def test_multipage_image_ocrs_every_frame_end_to_end(self, isolated_env, mock_svc):
         """A multi-frame TIFF routed to vision OCR yields one OCR call and one page
@@ -2505,7 +2529,7 @@ class TestImageOcr:
 
         from lilbee.data.ingest import ingest_document
 
-        records = await ingest_document(f, "multi.tiff", "image")
+        records, _ = await ingest_document(f, "multi.tiff", "image")
         assert mock_svc.provider.vision_ocr.call_count == 3
         assert sorted({r["page_start"] for r in records}) == [1, 2, 3]
 
@@ -2675,7 +2699,7 @@ class TestOcrFallbackBackendDispatch:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "scanned.pdf", "pdf")
+        result, _ = await ingest_document(f, "scanned.pdf", "pdf")
         assert mock_svc.provider.pdf_ocr.call_args.kwargs["backend"] == "vision"
         assert mock_svc.provider.pdf_ocr.call_args.kwargs["per_page_timeout_s"] == 60.0
         assert len(result) > 0
@@ -2698,7 +2722,7 @@ class TestOcrFallbackBackendDispatch:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "scanned.pdf", "pdf")
+        result, _ = await ingest_document(f, "scanned.pdf", "pdf")
         # Pool pdf_ocr is not used for tesseract.
         mock_svc.provider.pdf_ocr.assert_not_called()
         assert mock_kf.call_count == 2
@@ -2720,7 +2744,7 @@ class TestOcrFallbackBackendDispatch:
         from lilbee.data.ingest import ingest_document
 
         with caplog.at_level("WARNING", logger="lilbee.data.ingest.extract"):
-            result = await ingest_document(f, "blank.pdf", "pdf")
+            result, _ = await ingest_document(f, "blank.pdf", "pdf")
         assert result == []
         assert "Skipped blank.pdf" in caplog.text
 
@@ -2756,7 +2780,7 @@ class TestOcrFallbackBackendDispatch:
 
         from lilbee.data.ingest import ingest_document
 
-        result = await ingest_document(f, "scanned.pdf", "pdf")
+        result, _ = await ingest_document(f, "scanned.pdf", "pdf")
         assert mock_kf.call_count == 2
         assert len(result) > 0
 
@@ -2782,7 +2806,7 @@ class TestOcrFallbackBackendDispatch:
             from lilbee.data.ingest import ingest_document
 
             with caplog.at_level("WARNING", logger="lilbee.data.ingest.extract"):
-                result = await ingest_document(f, "scanned.pdf", "pdf")
+                result, _ = await ingest_document(f, "scanned.pdf", "pdf")
         assert result == []
         assert "Tesseract OCR exceeded" in caplog.text
 
@@ -2803,7 +2827,7 @@ class TestOcrFallbackBackendDispatch:
         from lilbee.data.ingest import ingest_document
 
         with caplog.at_level("WARNING", logger="lilbee.data.ingest.extract"):
-            result = await ingest_document(f, "scanned.pdf", "pdf")
+            result, _ = await ingest_document(f, "scanned.pdf", "pdf")
         assert result == []
         assert "OCR via tesseract backend failed" in caplog.text
 
@@ -2868,7 +2892,7 @@ class TestIngestMarkdownEdgeCases:
 
         md = isolated_env / "empty.md"
         md.write_text("   ")
-        result = await ingest_markdown(md, "empty.md")
+        result, _ = await ingest_markdown(md, "empty.md")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
@@ -2877,7 +2901,7 @@ class TestIngestMarkdownEdgeCases:
         md = isolated_env / "blank.md"
         md.write_text("some text")
         with mock.patch("lilbee.data.ingest.extract.chunk_text", return_value=[]):
-            result = await ingest_markdown(md, "blank.md")
+            result, _ = await ingest_markdown(md, "blank.md")
         assert result == []
 
     async def test_frontmatter_only_produces_chunks(self, isolated_env):
@@ -2885,7 +2909,7 @@ class TestIngestMarkdownEdgeCases:
 
         md = isolated_env / "fm_only.md"
         md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
-        result = await ingest_markdown(md, "fm_only.md")
+        result, _ = await ingest_markdown(md, "fm_only.md")
         assert len(result) > 0, "Frontmatter content should be indexed"
 
 
@@ -2956,7 +2980,7 @@ class TestIngestDocumentEdgeCases:
         empty_result = mock.MagicMock(chunks=[])
         mock_extract = Mock(return_value=empty_result)
         with mock.patch("kreuzberg.extract_file_sync", mock_extract):
-            result = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
+            result, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
@@ -2965,7 +2989,7 @@ class TestIngestDocumentEdgeCases:
         no_chunks_result = mock.MagicMock(chunks=[])
         mock_extract = Mock(return_value=no_chunks_result)
         with mock.patch("kreuzberg.extract_file_sync", mock_extract):
-            result = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
+            result, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
 
@@ -3233,12 +3257,21 @@ class TestTitleStamping:
         assert item.meta.authors == ""
         assert all(r["title"] == "annual wildlife survey" for r in item.records)
 
-    async def test_markdown_title_derives_from_stem(self, isolated_env, mock_svc):
-        (isolated_env / "meeting_notes.md").write_text("# Heading\n\nSome content here.")
+    async def test_markdown_title_uses_the_h1_heading(self, isolated_env, mock_svc):
+        (isolated_env / "meeting_notes.md").write_text("# Project Kickoff\n\nSome content here.")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "meeting_notes.md")
+        assert item.meta.title == "Project Kickoff"
+        assert all(r["title"] == "Project Kickoff" for r in item.records)
+
+    async def test_markdown_without_h1_falls_back_to_stem(self, isolated_env, mock_svc):
+        (isolated_env / "meeting_notes.md").write_text("Some content, no heading.")
         from lilbee.data.ingest import sync
 
         await sync(quiet=True)
         items = mock_svc.store.write_chunks_batch.call_args.args[0]
         item = next(it for it in items if it.source == "meeting_notes.md")
         assert item.meta.title == "meeting notes"
-        assert all(r["title"] == "meeting notes" for r in item.records)

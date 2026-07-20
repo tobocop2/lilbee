@@ -11,6 +11,7 @@ from lilbee.data.store import (
     CitationRecord,
     SearchChunk,
     SearchScope,
+    SourceMeta,
     SourceType,
     Store,
     cosine_sim,
@@ -2774,8 +2775,6 @@ class TestSourceMetadata:
     """Extraction-time document metadata persisted on the sources table."""
 
     def test_upsert_source_persists_meta(self, store):
-        from lilbee.data.store import SourceMeta
-
         store.upsert_source(
             "a.pdf",
             "hash1",
@@ -2797,8 +2796,6 @@ class TestSourceMetadata:
     def test_pre_meta_sources_table_evolves_in_place(self, store):
         """An old sources table gains the metadata columns on the next write."""
         import pyarrow as pa
-
-        from lilbee.data.store import SourceMeta
 
         old_schema = pa.schema(
             [
