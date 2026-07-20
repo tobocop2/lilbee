@@ -25,6 +25,11 @@ def _overlap_chars(left: str, right: str) -> int:
     the same document text), so the longest match IS the shared region. A
     fully contained text matches whole, which is what makes merging an
     already-widened passage idempotent instead of duplicating its neighbors.
+
+    Longest length first, so the first match wins. A prefix-function scan is
+    the better complexity on paper but measured slower here on every input
+    shape tried: each ``endswith`` rejects on its first differing character in
+    C, while the linear version pays per-character interpreter overhead.
     """
     for k in range(min(len(left), len(right)), 0, -1):
         if left.endswith(right[:k]):
@@ -65,6 +70,11 @@ def expand_neighbors(
     higher-ranked expansion, is never pulled again, so no passage text is
     duplicated (a document routed whole expands to nothing).
     """
+    if budget <= 0:
+        # Nothing can be spent, so skip the per-source store fetches entirely:
+        # on a tight window every widen attempt would fail against a zero
+        # budget after paying for the reads.
+        return results
     centers: dict[str, set[int]] = {}
     for r in results:
         centers.setdefault(r.source, set()).add(r.chunk_index)
@@ -86,8 +96,9 @@ def _fetch_neighbor_rows(
 ) -> dict[tuple[str, int], SearchChunk]:
     """Every candidate neighbor row, fetched with one store call per source.
 
-    Selected indices are excluded up front (they are already passages);
-    indices past the end of a document are simply absent from the reply.
+    The centers are fetched alongside their neighbors so the caller can tell
+    whether the document was re-ingested since the search snapshot; indices past
+    the end of a document are simply absent from the reply.
     """
     rows: dict[tuple[str, int], SearchChunk] = {}
     for source, owned in centers.items():
@@ -96,7 +107,7 @@ def _fetch_neighbor_rows(
                 index
                 for center in owned
                 for index in range(center - radius, center + radius + 1)
-                if index >= 0 and index not in owned
+                if index >= 0
             }
         )
         for row in store.get_chunks_by_indices(source, wanted):
@@ -138,6 +149,13 @@ def _widen(
     original chunk untouched.
     """
     center = result.chunk_index
+    current = rows.get((result.source, center))
+    if current is not None and current.chunk != result.chunk:
+        # The document was re-ingested between the search and this fetch (reads
+        # take no lock and the store's read-consistency window is seconds), so
+        # the neighbor rows belong to a different chunking of the file. Splicing
+        # them would invent text and a page span that existed in no version.
+        return result, 0
     left = _neighbor_run(result, rows, claimed, -1, radius)
     right = _neighbor_run(result, rows, claimed, +1, radius)
     while left or right:

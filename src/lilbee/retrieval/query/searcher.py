@@ -938,8 +938,9 @@ class Searcher:
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         base_results = list(results)
-        results = self._fit_context_budget(results, system, question, history, scale)
-        results = self._widen_with_neighbors(results, system, question, history, scale)
+        budget = self._context_budget(system, question, history, scale)
+        results, used = self._fit_to_budget(results, budget)
+        results = self._widen_with_neighbors(results, max(0, budget - used))
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
         messages: list[ChatMessage] = [{"role": "system", "content": system}]
@@ -982,21 +983,19 @@ class Searcher:
         )
         return int((prompt_token_budget(ctx) - non_source) * scale)
 
-    def _fit_context_budget(
-        self,
-        results: list[SearchChunk],
-        system: str,
-        question: str,
-        history: list[ChatMessage] | None,
-        scale: float = 1.0,
-    ) -> list[SearchChunk]:
-        """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
+    def _fit_to_budget(
+        self, results: list[SearchChunk], budget: int
+    ) -> tuple[list[SearchChunk], int]:
+        """Fit *results* into *budget*: the kept sources and the tokens they cost.
 
         ``max_context_sources`` caps by count; this caps by tokens so a
         retrieval-heavy query degrades gracefully instead of erroring with
         CONTEXT_OVERFLOW. The top-ranked source is always kept.
+
+        Returning the spent total lets the caller derive the leftover for
+        neighbor expansion instead of re-deriving the same per-chunk cost, so
+        the two stages cannot drift apart on the accounting.
         """
-        budget = self._context_budget(system, question, history, scale)
         kept: list[SearchChunk] = []
         used = 0
         for r in results:
@@ -1011,32 +1010,21 @@ class Searcher:
                 len(kept),
                 len(results),
             )
-        return kept
+        return kept, used
 
-    def _widen_with_neighbors(
-        self,
-        results: list[SearchChunk],
-        system: str,
-        question: str,
-        history: list[ChatMessage] | None,
-        scale: float,
-    ) -> list[SearchChunk]:
+    def _widen_with_neighbors(self, results: list[SearchChunk], leftover: int) -> list[SearchChunk]:
         """Widen each fitted passage with adjacent same-source chunks.
 
-        Runs after the budget fit so neighbors only ever spend leftover
-        budget: a tight window sheds expansion first and never drops an
-        original chunk for a neighbor. Widening changes a passage's text
-        and page/line span only, so citation numbering and the sources
-        block are untouched.
+        Spends only *leftover*, the budget the fit did not use, so a tight
+        window sheds expansion first and never drops an original chunk for a
+        neighbor. Widening keeps each passage's citation number and identity;
+        its text and page/line span do change, so the sources block shows the
+        widened range.
         """
         radius = self._config.neighbor_expansion
-        if radius <= 0:
+        if radius <= 0 or leftover <= 0:
             return results
-        budget = self._context_budget(system, question, history, scale)
-        used = sum(self._budget_tokens(r.chunk) + _PER_SOURCE_TOKENS for r in results)
-        return expand_neighbors(
-            results, self._store, radius, max(0, budget - used), self._budget_tokens
-        )
+        return expand_neighbors(results, self._store, radius, leftover, self._budget_tokens)
 
     def _system_with_memory(self, base_prompt: str, question: str) -> str:
         """Append the local-owner memory block to *base_prompt* when memory is enabled."""
@@ -1413,8 +1401,8 @@ class Searcher:
             return
         results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
-        # been yielded, so the conservative budget in _fit_context_budget is
-        # the streaming path's protection.
+        # been yielded, so the conservative budget the context fit already
+        # applied is the streaming path's protection.
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         events = stream_chat_with_cap(

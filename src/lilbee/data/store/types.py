@@ -260,12 +260,21 @@ class SourceStatBackfill(NamedTuple):
 
 
 class PageTextRecord(TypedDict):
-    """One row of the per-page text dataset, matching ``_page_texts``."""
+    """One row of the per-page text dataset, matching ``_page_texts``.
+
+    The export dataset additionally carries the source's extraction metadata
+    (denormalized onto every page row) so an export/import cycle preserves it;
+    these are absent on rows read from the ``_page_texts`` table and on datasets
+    exported before the columns existed.
+    """
 
     source: str
     page: int
     text: str
     content_type: str
+    title: NotRequired[str | None]
+    authors: NotRequired[str | None]
+    created_at: NotRequired[str | None]
 
 
 class CitationRecord(TypedDict):

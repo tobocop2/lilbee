@@ -180,6 +180,22 @@ class TestEnvVarOverrides:
             assert c2.data_root != Path.cwd()
             assert str(c2.data_root).endswith("lilbee")
 
+    def test_unresolvable_home_still_loads_config(self):
+        """A ~ the OS cannot resolve must not take config construction down.
+
+        Canonicalization delegates to ``os.path.expanduser``, which returns an
+        unknown ``~user`` unchanged rather than raising the way
+        ``Path.expanduser`` does, so the root still resolves to a usable
+        absolute path and the process keeps running.
+        """
+        from lilbee.core.system import canonical_data_root
+
+        root = canonical_data_root("~nosuchuser_lilbee_probe/lilbee")
+        assert root.is_absolute()
+        assert str(root).endswith("lilbee")
+        # The normal case still expands to the real home.
+        assert canonical_data_root("~/lilbee") == Path.home() / "lilbee"
+
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)
         env["LILBEE_OLLAMA_BASE_URL"] = "http://box:11434"

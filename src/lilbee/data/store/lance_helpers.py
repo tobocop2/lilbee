@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# The chunks table's body-text column: FTS-indexed and searched by the lexical
+# arm, named here so the store's query and index code shares one spelling with
+# its sibling _TITLE_COLUMN.
+_CHUNK_COLUMN = "chunk"
+
 
 def install_lancedb_thread_error_suppressor() -> None:
     """Install a ``threading.excepthook`` that swallows lancedb shutdown noise.
@@ -128,7 +133,7 @@ def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     return f"chunk_type = '{escaped}'"
 
 
-def _has_fts_index(table: lancedb.table.Table, column: str = "chunk") -> bool:
+def _has_fts_index(table: lancedb.table.Table, column: str = _CHUNK_COLUMN) -> bool:
     """Return True when an FTS index on *column* already exists."""
     try:
         for idx in table.list_indices():

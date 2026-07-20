@@ -1045,7 +1045,10 @@ class Config(BaseSettings):
         # Canonicalizing here is what makes one directory key one lock: every
         # path below is derived from this value, and the server-lock layer keys
         # on those, so a symlinked or relative spelling that stayed distinct
-        # would let a second server start against data a first one owns.
+        # would let a second server start against data a first one owns. It also
+        # subsumes the bare expanduser this replaced, including its guarantee
+        # that an unresolvable home still loads: the os.path call it delegates
+        # to returns the path unchanged instead of raising.
         root = canonical_data_root(data["data_root"])
         data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):

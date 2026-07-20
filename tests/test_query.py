@@ -136,6 +136,17 @@ def _make_result(
     )
 
 
+def _fit(
+    results: list[SearchChunk],
+    system: str = "sys",
+    question: str = "q",
+    history: list | None = None,
+) -> list[SearchChunk]:
+    """Sources kept by the budget fit, derived exactly as _finalize_context does."""
+    searcher = get_services().searcher
+    return searcher._fit_to_budget(results, searcher._context_budget(system, question, history))[0]
+
+
 class TestDisplaySourcePath:
     """source citations render absolute paths with ~ expansion."""
 
@@ -529,18 +540,14 @@ class TestSearchContext:
         """The filter drops structural chunks from the candidate list before the
         top_k*2 slice, so a real passage past the window backfills into it. If the
         filter ran after the slice, the deeper real passage would be lost."""
-        old_top_k = cfg.top_k
         cfg.top_k = 1  # window is top_k*2 = 2
         cfg.filter_structural_chunks = True
-        try:
-            real0 = _make_result(source="a.pdf", distance=0.1, chunk="Answer prose one.")
-            toc1 = _make_result(source="toc1.pdf", distance=0.2, chunk=self._TOC_CHUNK)
-            toc2 = _make_result(source="toc2.pdf", distance=0.3, chunk=self._TOC_CHUNK)
-            real3 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
-            mock_svc.store.search.return_value = [real0, toc1, toc2, real3]
-            sources = [r.source for r in get_services().searcher.search("q")]
-        finally:
-            cfg.top_k = old_top_k
+        real0 = _make_result(source="a.pdf", distance=0.1, chunk="Answer prose one.")
+        toc1 = _make_result(source="toc1.pdf", distance=0.2, chunk=self._TOC_CHUNK)
+        toc2 = _make_result(source="toc2.pdf", distance=0.3, chunk=self._TOC_CHUNK)
+        real3 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
+        mock_svc.store.search.return_value = [real0, toc1, toc2, real3]
+        sources = [r.source for r in get_services().searcher.search("q")]
         assert "b.pdf" in sources  # backfilled from past the pre-filter window
         assert "toc1.pdf" not in sources and "toc2.pdf" not in sources
 
@@ -894,7 +901,7 @@ class TestContextBudget:
     def test_trims_lowest_ranked_sources_to_fit(self, mock_svc):
         cfg.num_ctx = 1400
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
-        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        kept = _fit(results)
         assert 0 < len(kept) < len(results)
         assert kept == results[: len(kept)]  # keeps the top-ranked prefix
 
@@ -912,7 +919,7 @@ class TestContextBudget:
         system, question = "sys " * 40, "q " * 20
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 900) for i in range(5)]
 
-        kept = get_services().searcher._fit_context_budget(results, system, question, None)
+        kept = _fit(results, system, question)
 
         searcher = get_services().searcher
         assembled = (
@@ -929,12 +936,12 @@ class TestContextBudget:
     def test_keeps_all_when_budget_ample(self, mock_svc):
         cfg.num_ctx = 100_000
         results = [_make_result(source=f"{i}.pdf", chunk="short") for i in range(5)]
-        assert get_services().searcher._fit_context_budget(results, "sys", "q", None) == results
+        assert _fit(results) == results
 
     def test_keeps_top_source_even_if_alone_over_budget(self, mock_svc):
         cfg.num_ctx = 1
         results = [_make_result(source="big.pdf", chunk="x" * 9000), _make_result(source="b.pdf")]
-        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        kept = _fit(results)
         assert len(kept) == 1
 
     def test_history_counts_against_the_budget(self, mock_svc):
@@ -944,26 +951,20 @@ class TestContextBudget:
         cfg.num_ctx = 3000
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 1200) for i in range(5)]
         history = [{"role": "user", "content": "h" * 3000}]
-        no_hist = get_services().searcher._fit_context_budget(results, "sys", "q", None)
-        with_hist = get_services().searcher._fit_context_budget(results, "sys", "q", history)
+        no_hist = _fit(results)
+        with_hist = _fit(results, history=history)
         assert len(with_hist) < len(no_hist)
 
     def test_logs_when_trimming(self, mock_svc, caplog):
         cfg.num_ctx = 1400
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
         with caplog.at_level("INFO"):
-            get_services().searcher._fit_context_budget(results, "sys", "q", None)
+            _fit(results)
         assert "to fit the model context window" in caplog.text
 
 
 class TestNeighborExpansion:
     """Selected chunks widen with adjacent same-source chunks at answer time."""
-
-    @pytest.fixture(autouse=True)
-    def _restore(self):
-        old = (cfg.neighbor_expansion, cfg.num_ctx)
-        yield
-        cfg.neighbor_expansion, cfg.num_ctx = old
 
     def test_off_by_default_never_touches_neighbors(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(chunk="core text")]
@@ -1072,8 +1073,9 @@ class TestNeighborExpansion:
         base = [_make_result(chunk="c" * 1500, chunk_index=2, page_start=3, page_end=3)]
 
         searcher = get_services().searcher
-        fitted = searcher._fit_context_budget(base, system, question, None, 1.0)
-        widened = searcher._widen_with_neighbors(fitted, system, question, None, 1.0)
+        budget = searcher._context_budget(system, question, None, 1.0)
+        fitted, used = searcher._fit_to_budget(base, budget)
+        widened = searcher._widen_with_neighbors(fitted, max(0, budget - used))
 
         # Non-vacuous: at least one neighbor was actually merged in.
         assert widened[0].chunk != "c" * 1500

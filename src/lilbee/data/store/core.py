@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
-import pyarrow.compute as pc
 
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
@@ -30,6 +29,7 @@ from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
+    _CHUNK_COLUMN,
     _chunk_type_predicate,
     _has_fts_index,
     _has_scalar_index,
@@ -125,7 +125,7 @@ def _lexical_rows(
     query_text: str,
     limit: int,
     chunk_type: ChunkType | None,
-    column: str = "chunk",
+    column: str = _CHUNK_COLUMN,
 ) -> list[SearchChunk]:
     """BM25 rows for *query_text* over a single FTS *column*.
 
@@ -480,10 +480,9 @@ class Store:
                 return
             try:
                 if _has_fts_index(table):
-                    # Mark hybrid ready BEFORE optimize(): the existing index
-                    # already serves queries, and optimize() can raise on a large
-                    # corpus. A failure here must not drop every query to
-                    # vector-only.
+                    # An existing index serves queries regardless of how the
+                    # best-effort optimize() below turns out, so hybrid is ready
+                    # either way.
                     self._fts_ready = True
                     try:
                         # One optimize folds new rows into every index on the
@@ -507,7 +506,7 @@ class Store:
                     # encoding on optimize() for a large corpus. Positions only
                     # serve exact-phrase queries, which lilbee never issues (FTS
                     # queries match plain terms), so the index never needs them.
-                    table.create_fts_index("chunk", replace=False, with_position=False)
+                    table.create_fts_index(_CHUNK_COLUMN, replace=False, with_position=False)
                     self._fts_ready = True
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 # Only the opt-in title arm needs the title index; without this a
@@ -547,7 +546,7 @@ class Store:
         title index is rebuilt too when the title arm is enabled.
         """
         try:
-            table.create_fts_index("chunk", replace=True, with_position=False)
+            table.create_fts_index(_CHUNK_COLUMN, replace=True, with_position=False)
             if self._config.title_search and _TITLE_COLUMN in table.schema.names:
                 table.create_fts_index(_TITLE_COLUMN, replace=True, with_position=False)
             log.warning("Rebuilt the FTS index positionless after a positional-index overflow")
@@ -1098,29 +1097,28 @@ class Store:
         return table.count_rows() if table is not None else 0
 
     def get_chunks_by_source(self, source: str) -> list[SearchChunk]:
-        """Return every chunk whose ``source`` equals *source*."""
+        """Return every chunk whose ``source`` equals *source*.
+
+        The database does the filtering, so only the matching rows are read.
+        A query failure raises rather than falling back to a whole-table scan:
+        a document's chunks are a bounded read, and the scan that would rescue
+        it costs the entire index, vectors included, in memory.
+        """
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return []
         escaped = escape_sql_string(source)
-        try:
-            rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
-        except Exception:
-            # FTS-enabled tables return a query builder that cannot
-            # handle .where() on arbitrary columns; fall through to a
-            # pyarrow.compute filter on the Arrow table so the source
-            # match runs in C++ without materializing non-matching rows.
-            log.debug("get_chunks_by_source search() failed, using Arrow fallback", exc_info=True)
-            arrow_tbl = table.to_arrow()
-            filtered = arrow_tbl.filter(pc.equal(arrow_tbl["source"], source))
-            rows = filtered.to_pylist()
+        rows = table.search().where(f"source = '{escaped}'").limit(None).to_list()
         return [SearchChunk(**r) for r in rows]
 
     def get_chunks_by_indices(self, source: str, indices: Sequence[int]) -> list[SearchChunk]:
         """Return *source*'s chunks whose ``chunk_index`` is in *indices*.
 
         Rows come back in ``chunk_index`` order; indices past either end of
-        the document are simply absent from the result.
+        the document are simply absent from the result. Filtering happens in
+        the database for the same reason as :meth:`get_chunks_by_source`:
+        neighbor expansion runs once per hit source per query, so a
+        whole-table rescue would spike memory on the hottest path there is.
         """
         if not indices:
             return []
@@ -1129,19 +1127,8 @@ class Store:
             return []
         escaped = escape_sql_string(source)
         wanted = ", ".join(str(int(i)) for i in indices)
-        try:
-            predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
-            rows = table.search().where(predicate).limit(None).to_list()
-        except Exception:
-            # Same FTS-enabled query-builder limitation as get_chunks_by_source;
-            # fall through to a pyarrow.compute filter on the Arrow table.
-            log.debug("get_chunks_by_indices search() failed, using Arrow fallback", exc_info=True)
-            arrow_tbl = table.to_arrow()
-            mask = pc.and_(
-                pc.equal(arrow_tbl["source"], source),
-                pc.is_in(arrow_tbl["chunk_index"], value_set=pa.array(list(indices), pa.int32())),
-            )
-            rows = arrow_tbl.filter(mask).to_pylist()
+        predicate = f"source = '{escaped}' AND chunk_index IN ({wanted})"
+        rows = table.search().where(predicate).limit(None).to_list()
         return sorted((SearchChunk(**r) for r in rows), key=lambda c: c.chunk_index)
 
     def _delete_by_sources_unlocked(self, sources: list[str]) -> None:
