@@ -539,12 +539,15 @@ async def _handle_image(
     Its EXIF/XMP metadata is captured separately so the title/authors/date are
     not lost to the stem fallback.
     """
-    meta = await to_ingest_thread(_image_meta, path, source_name)
     if _effective_enable_ocr() is False:
         # OCR explicitly disabled: an image has no text layer, so skip it rather
-        # than paying the full Tesseract cost the config says is turned off.
+        # than paying the full Tesseract cost the config says is turned off. The
+        # metadata read is skipped with it -- a file that contributes no text
+        # needs no title beyond its stem, and an image-heavy library would pay
+        # one extraction per skipped file for nothing.
         log.info("OCR disabled; skipping image OCR for %s", source_name)
-        return [], meta
+        return [], SourceMeta(title=derive_title(source_name))
+    meta = await to_ingest_thread(_image_meta, path, source_name)
     vision_model = active_config().vision_model
     if _should_run_ocr() and vision_model:
         log.info("Image: using vision OCR for %s (model=%s)", source_name, vision_model)
@@ -654,7 +657,7 @@ def _markdown_h1(text: str) -> str | None:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("# ") and not stripped.startswith("## "):
+        if stripped.startswith("# "):
             return stripped[2:].strip() or None
         return None
     return None

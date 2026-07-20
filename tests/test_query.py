@@ -136,6 +136,17 @@ def _make_result(
     )
 
 
+def _fit(
+    results: list[SearchChunk],
+    system: str = "sys",
+    question: str = "q",
+    history: list | None = None,
+) -> list[SearchChunk]:
+    """Sources kept by the budget fit, derived exactly as _finalize_context does."""
+    searcher = get_services().searcher
+    return searcher._fit_to_budget(results, searcher._context_budget(system, question, history))[0]
+
+
 class TestDisplaySourcePath:
     """source citations render absolute paths with ~ expansion."""
 
@@ -882,7 +893,7 @@ class TestContextBudget:
     def test_trims_lowest_ranked_sources_to_fit(self, mock_svc):
         cfg.num_ctx = 1400
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
-        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        kept = _fit(results)
         assert 0 < len(kept) < len(results)
         assert kept == results[: len(kept)]  # keeps the top-ranked prefix
 
@@ -900,7 +911,7 @@ class TestContextBudget:
         system, question = "sys " * 40, "q " * 20
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 900) for i in range(5)]
 
-        kept = get_services().searcher._fit_context_budget(results, system, question, None)
+        kept = _fit(results, system, question)
 
         searcher = get_services().searcher
         assembled = (
@@ -917,12 +928,12 @@ class TestContextBudget:
     def test_keeps_all_when_budget_ample(self, mock_svc):
         cfg.num_ctx = 100_000
         results = [_make_result(source=f"{i}.pdf", chunk="short") for i in range(5)]
-        assert get_services().searcher._fit_context_budget(results, "sys", "q", None) == results
+        assert _fit(results) == results
 
     def test_keeps_top_source_even_if_alone_over_budget(self, mock_svc):
         cfg.num_ctx = 1
         results = [_make_result(source="big.pdf", chunk="x" * 9000), _make_result(source="b.pdf")]
-        kept = get_services().searcher._fit_context_budget(results, "sys", "q", None)
+        kept = _fit(results)
         assert len(kept) == 1
 
     def test_history_counts_against_the_budget(self, mock_svc):
@@ -932,15 +943,15 @@ class TestContextBudget:
         cfg.num_ctx = 3000
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 1200) for i in range(5)]
         history = [{"role": "user", "content": "h" * 3000}]
-        no_hist = get_services().searcher._fit_context_budget(results, "sys", "q", None)
-        with_hist = get_services().searcher._fit_context_budget(results, "sys", "q", history)
+        no_hist = _fit(results)
+        with_hist = _fit(results, history=history)
         assert len(with_hist) < len(no_hist)
 
     def test_logs_when_trimming(self, mock_svc, caplog):
         cfg.num_ctx = 1400
         results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
         with caplog.at_level("INFO"):
-            get_services().searcher._fit_context_budget(results, "sys", "q", None)
+            _fit(results)
         assert "to fit the model context window" in caplog.text
 
 

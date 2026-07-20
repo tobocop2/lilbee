@@ -32,18 +32,28 @@ def _overlap_chars(left: str, right: str) -> int:
     """
     if not left or not right:
         return 0
-    # Only left's last len(right) chars can match a prefix of right, so the
-    # probe stays linear in the incoming chunk, not the accumulated passage.
-    probe = f"{right}\0{left[-len(right) :]}"
-    failure = [0] * len(probe)
+    # Prefix function of right alone. Concatenating the two around a sentinel
+    # would be shorter to write but only correct for text that never contains
+    # the sentinel, and extracted document text carries stray control bytes.
+    failure = [0] * len(right)
     length = 0
-    for i in range(1, len(probe)):
-        while length and probe[i] != probe[length]:
+    for i in range(1, len(right)):
+        while length and right[i] != right[length]:
             length = failure[length - 1]
-        if probe[i] == probe[length]:
+        if right[i] == right[length]:
             length += 1
         failure[i] = length
-    return failure[-1]
+    # Only left's last len(right) chars can reach a prefix of right, so the scan
+    # stays linear in the incoming chunk, not the accumulated passage. That
+    # window is also what keeps ``right[length]`` in range: matching right in
+    # full costs len(right) chars, so it can only complete on the last one.
+    length = 0
+    for char in left[-len(right) :]:
+        while length and char != right[length]:
+            length = failure[length - 1]
+        if char == right[length]:
+            length += 1
+    return length
 
 
 def merge_adjacent_texts(texts: list[str]) -> str:

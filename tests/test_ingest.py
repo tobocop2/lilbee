@@ -2470,11 +2470,18 @@ class TestImageOcr:
 
         from lilbee.data.ingest import ingest_document
 
-        with mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess:
-            result, _ = await ingest_document(f, "scan.png", "image")
+        with (
+            mock.patch("lilbee.data.ingest.extract._run_tesseract_sync") as mock_tess,
+            mock.patch("lilbee.data.ingest.extract._image_meta") as mock_meta,
+        ):
+            result, meta = await ingest_document(f, "scan.png", "image")
         assert result == []
         mock_svc.provider.vision_ocr.assert_not_called()
         mock_tess.assert_not_called()
+        # A skipped image contributes no text, so it must not pay for a metadata
+        # extraction either: an image-heavy library would run one per file.
+        mock_meta.assert_not_called()
+        assert meta.title == "scan"
 
     async def test_vision_ocr_cache_key_includes_timeout(self, isolated_env, mock_svc, monkeypatch):
         """The vision OCR cache key carries the per-page timeout so raising it

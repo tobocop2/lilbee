@@ -983,28 +983,14 @@ class Searcher:
         )
         return int((prompt_token_budget(ctx) - non_source) * scale)
 
-    def _fit_context_budget(
-        self,
-        results: list[SearchChunk],
-        system: str,
-        question: str,
-        history: list[ChatMessage] | None,
-        scale: float = 1.0,
-    ) -> list[SearchChunk]:
-        """Drop the lowest-ranked sources until the assembled prompt fits num_ctx.
-
-        ``max_context_sources`` caps by count; this caps by tokens so a
-        retrieval-heavy query degrades gracefully instead of erroring with
-        CONTEXT_OVERFLOW. The top-ranked source is always kept.
-        """
-        return self._fit_to_budget(results, self._context_budget(system, question, history, scale))[
-            0
-        ]
-
     def _fit_to_budget(
         self, results: list[SearchChunk], budget: int
     ) -> tuple[list[SearchChunk], int]:
         """Fit *results* into *budget*: the kept sources and the tokens they cost.
+
+        ``max_context_sources`` caps by count; this caps by tokens so a
+        retrieval-heavy query degrades gracefully instead of erroring with
+        CONTEXT_OVERFLOW. The top-ranked source is always kept.
 
         Returning the spent total lets the caller derive the leftover for
         neighbor expansion instead of re-deriving the same per-chunk cost, so
@@ -1415,8 +1401,8 @@ class Searcher:
             return
         results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
-        # been yielded, so the conservative budget in _fit_context_budget is
-        # the streaming path's protection.
+        # been yielded, so the conservative budget the context fit already
+        # applied is the streaming path's protection.
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
         events = stream_chat_with_cap(

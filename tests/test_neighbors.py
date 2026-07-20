@@ -61,6 +61,12 @@ class TestMergeAdjacentTexts:
         assert merge_adjacent_texts(["", "delta"]) == "\ndelta"
         assert merge_adjacent_texts(["alpha", ""]) == "alpha"
 
+    def test_control_bytes_in_the_text_do_not_confuse_the_overlap(self):
+        # Extracted document text can carry stray control bytes. The shared
+        # region here is the trailing "\0a\0"; a scan that joined the two sides
+        # around a NUL sentinel would match past it and swallow right's tail.
+        assert merge_adjacent_texts(["Xa\0a\0", "\0a\0a"]) == "Xa\0a\0a"
+
     def test_merging_an_already_merged_passage_is_idempotent(self):
         texts = ["one two", "two three", "three four"]
         merged = merge_adjacent_texts(texts)
