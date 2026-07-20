@@ -47,17 +47,15 @@ async def encode_completions_sse(
     finally:
         if not pending.done():
             pending.cancel()
-            current = asyncio.current_task()
             try:
                 await pending
             except asyncio.CancelledError:
-                # Awaiting the future we just cancelled raises here, which is
-                # expected. A cancellation aimed at this task is not: this
-                # cleanup runs during aclose(), which the server calls while
-                # unwinding a request that is often itself being cancelled, and
-                # swallowing that let the task resume as if it never was.
-                if current is not None and current.cancelling() > 0:
-                    raise
+                # Expected: this is the future we just cancelled. Caught by
+                # name rather than as BaseException, which also covered
+                # KeyboardInterrupt and SystemExit, so a Ctrl-C landing on this
+                # await was discarded. A cancellation aimed at this task is
+                # already unwinding through the finally and keeps propagating.
+                pass
             except Exception:
                 # The upstream failed as it was torn down. The request is
                 # already unwinding, so record it rather than mask the unwind.

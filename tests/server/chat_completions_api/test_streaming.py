@@ -207,3 +207,24 @@ class TestCleanupSuppression:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert task.cancelled()
+
+    async def test_upstream_failure_during_cleanup_does_not_mask_the_unwind(self) -> None:
+        """An upstream that errors as it is torn down is recorded, not raised."""
+        import asyncio
+
+        started = asyncio.Event()
+
+        async def _fails_on_cancel() -> AsyncIterator[CompletionsStreamChunk]:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("upstream died during teardown") from None
+            yield _chunk(delta=CompletionsStreamDelta(content="unreachable"))
+
+        encoder = encode_completions_sse(_fails_on_cancel())
+        assert await encoder.__anext__() == _KEEPALIVE_FRAME
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        # aclose() completes rather than surfacing the upstream's error.
+        await encoder.aclose()
