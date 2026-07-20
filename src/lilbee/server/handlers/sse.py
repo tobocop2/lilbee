@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, NamedTuple
 
 from pydantic import BaseModel
@@ -241,6 +241,27 @@ class SseStream:
             leftover = self.queue.get_nowait()
             if leftover is not None:
                 yield leftover
+
+    def terminal_frame(
+        self,
+        task: asyncio.Task[Any] | asyncio.Future[Any],
+        payload: Callable[[Any], dict[str, Any]],
+    ) -> str | None:
+        """The final SSE frame for a finished producer, or None if there is none.
+
+        Every streaming handler ended with the same five lines: check cancel,
+        check the task finished and was not cancelled, turn an exception into
+        sse_error, otherwise sse_done of the result. The copies had drifted --
+        the crawler-setup one skipped the cancel check and so emitted a done
+        frame to a client that had already disconnected -- which is the reason
+        this lives in one place now.
+        """
+        if self.cancel.is_set() or not task.done() or task.cancelled():
+            return None
+        exc = task.exception()
+        if exc is not None:
+            return sse_error(str(exc))
+        return sse_done(payload(task.result()))
 
     @staticmethod
     def _drain_waiters(

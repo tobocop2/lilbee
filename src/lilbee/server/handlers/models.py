@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
 from pydantic import BaseModel
 
@@ -395,28 +395,36 @@ def _hosted_entry(rm: RemoteModel, source: ModelSource) -> CatalogEntryResponse:
 _HOSTED_MODELS_TTL = 60
 
 
-class _HostedModelsCache:
-    """TTL cache for discovered hosted rows (no module-level mutable global)."""
+_CacheT = TypeVar("_CacheT")
 
-    def __init__(self) -> None:
+
+class _TtlCache(Generic[_CacheT]):
+    """Single-entry TTL cache keyed on the config tuple that produced it.
+
+    One class rather than the two near-identical copies this module used to
+    carry: they differed only in the cached type and in whether the freshness
+    check tested the result for truthiness or for None, and the truthiness
+    variant re-fetched every time the answer was legitimately empty.
+    """
+
+    def __init__(self, ttl_seconds: float) -> None:
+        self._ttl = ttl_seconds
         self._time: float = 0.0
         self._key: str = ""
-        self._result: list[CatalogEntryResponse] | None = None
+        self._result: _CacheT | None = None
 
-    def get(self, key: str) -> list[CatalogEntryResponse] | None:
-        now = time.monotonic()
-        fresh = (now - self._time) < _HOSTED_MODELS_TTL
-        if self._result is not None and key == self._key and fresh:
-            return self._result
-        return None
+    def get(self, key: str) -> _CacheT | None:
+        if self._result is None or key != self._key:
+            return None
+        return self._result if (time.monotonic() - self._time) < self._ttl else None
 
-    def set(self, key: str, result: list[CatalogEntryResponse]) -> None:
+    def set(self, key: str, result: _CacheT) -> None:
         self._time = time.monotonic()
         self._key = key
         self._result = result
 
 
-_hosted_cache = _HostedModelsCache()
+_hosted_cache: _TtlCache[list[CatalogEntryResponse]] = _TtlCache(_HOSTED_MODELS_TTL)
 
 
 def _discover_hosted_sync() -> list[CatalogEntryResponse]:
@@ -652,27 +660,7 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
 _EXTERNAL_MODELS_TTL = 60
 
 
-class _ExternalModelsCache:
-    """TTL cache for external model listings (no module-level mutable global)."""
-
-    def __init__(self) -> None:
-        self._time: float = 0.0
-        self._key: str = ""
-        self._result: ExternalModelsResponse | None = None
-
-    def get(self, key: str) -> ExternalModelsResponse | None:
-        now = time.monotonic()
-        if self._result and key == self._key and (now - self._time) < _EXTERNAL_MODELS_TTL:
-            return self._result
-        return None
-
-    def set(self, key: str, result: ExternalModelsResponse) -> None:
-        self._time = time.monotonic()
-        self._key = key
-        self._result = result
-
-
-_external_cache = _ExternalModelsCache()
+_external_cache: _TtlCache[ExternalModelsResponse] = _TtlCache(_EXTERNAL_MODELS_TTL)
 
 
 async def list_external_models() -> ExternalModelsResponse:

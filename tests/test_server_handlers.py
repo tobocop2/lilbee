@@ -4041,9 +4041,9 @@ class TestListExternalModels:
         """Reset the external models cache before each test."""
         from lilbee.server.handlers import models as h
 
-        h._external_cache = h._ExternalModelsCache()
+        h._external_cache = h._TtlCache(h._EXTERNAL_MODELS_TTL)
         yield
-        h._external_cache = h._ExternalModelsCache()
+        h._external_cache = h._TtlCache(h._EXTERNAL_MODELS_TTL)
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_provider_models(self, mock_svc):

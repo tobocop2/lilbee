@@ -186,3 +186,35 @@ class TestValidatePathWithinAnchorsToRoot:
 
         target = tmp_path / "a.txt"
         assert validate_path_within(str(target), tmp_path) == target.resolve()
+
+
+class TestPersistedSettingsAreHardenedOnLoad:
+    """config.toml holds provider API keys and is read indefinitely without
+    ever being rewritten, so a file that arrived world-readable must be
+    narrowed on load, not only when something happens to save it."""
+
+    def test_a_world_readable_config_is_narrowed_on_read(self, tmp_path):
+        from lilbee.core import settings
+
+        settings.set_value(tmp_path, "api_key", "sk-secret")
+        path = tmp_path / "config.toml"
+        path.chmod(0o644)
+
+        assert settings.load(tmp_path) == {"api_key": "sk-secret"}
+        assert _mode(path) == 0o600
+
+    def test_an_unchmoddable_config_warns_instead_of_failing_the_read(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        from lilbee.core import settings
+
+        settings.set_value(tmp_path, "api_key", "sk-secret")
+        (tmp_path / "config.toml").chmod(0o644)
+
+        def refuse(*_args, **_kwargs):
+            raise PermissionError("not owner")
+
+        monkeypatch.setattr(settings.Path, "chmod", refuse)
+        with caplog.at_level("WARNING"):
+            assert settings.load(tmp_path) == {"api_key": "sk-secret"}
+        assert "Could not restrict permissions" in caplog.text

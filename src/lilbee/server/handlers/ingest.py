@@ -16,7 +16,7 @@ from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.progress import SseEvent
-from lilbee.server.handlers.sse import SseStream, sse_done, sse_error, sse_event
+from lilbee.server.handlers.sse import SseStream, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 
 if TYPE_CHECKING:
@@ -70,12 +70,9 @@ async def sync_stream(
     )
     async for event in sse.drain(task, "Sync stream"):
         yield event
-    if not sse.cancel.is_set() and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            yield sse_error(str(exc))
-            return
-        yield sse_done(task.result().model_dump())
+    frame = sse.terminal_frame(task, lambda result: result.model_dump())
+    if frame is not None:
+        yield frame
 
 
 async def _run_add(
@@ -196,16 +193,13 @@ async def _ingest_stream(
         try:
             async for event in sse.drain(task, label):
                 yield event
-            if not sse.cancel.is_set() and task.done() and not task.cancelled():
-                exc = task.exception()
-                if exc is not None:
-                    yield sse_error(str(exc))
-                    return
-                summary = task.result()
-                # Name the sources this run never attempted, so a client
-                # reading only the terminal event still sees a partial batch.
-                summary.already_ingesting = list(busy)
-                yield sse_done(summary.model_dump())
+            # already_ingesting names the sources this run never attempted, so
+            # a client reading only the terminal event still sees a partial batch.
+            frame = sse.terminal_frame(
+                task, lambda s: s.model_copy(update={"already_ingesting": list(busy)}).model_dump()
+            )
+            if frame is not None:
+                yield frame
         finally:
             if not task.done():
                 task.cancel()
@@ -338,9 +332,6 @@ async def import_stream(data: bytes, fmt: str) -> AsyncGenerator[str, None]:
     task = asyncio.create_task(_run_import_with_sentinel(sse, data, fmt))
     async for event in sse.drain(task, "Import stream"):
         yield event
-    if not sse.cancel.is_set() and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            yield sse_error(str(exc))
-            return
-        yield sse_done(task.result().model_dump())
+    frame = sse.terminal_frame(task, lambda result: result.model_dump())
+    if frame is not None:
+        yield frame

@@ -28,7 +28,7 @@ from lilbee.crawler import (
     crawler_browsers_path,
 )
 from lilbee.server.auth import read_only
-from lilbee.server.handlers import SseStream, sse_done, sse_error
+from lilbee.server.handlers import SseStream
 
 
 @get("/setup/crawler/status")
@@ -58,12 +58,11 @@ async def _bootstrap_crawler_stream() -> AsyncGenerator[str, None]:
     task = asyncio.create_task(_run())
     async for event in sse.drain(task, "Crawler setup stream"):
         yield event
-    if task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            yield sse_error(str(exc))
-            return
-    yield sse_done({})
+    # This copy used to skip the cancel check and emit a done frame even to a
+    # client that had already disconnected; the shared helper does not.
+    frame = sse.terminal_frame(task, lambda _: {})
+    if frame is not None:
+        yield frame
 
 
 @post("/setup/crawler")

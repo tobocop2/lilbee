@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.server.handlers.sse import SseStream, sse_done, sse_error
+from lilbee.server.handlers.sse import SseStream
 
 
 async def crawl_stream(
@@ -53,10 +53,6 @@ async def crawl_stream(
     task = asyncio.create_task(_run_crawl())
     async for event in sse.drain(task, "Crawl stream"):
         yield event
-    if not sse.cancel.is_set() and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            yield sse_error(str(exc))
-            return
-        paths = task.result()
-        yield sse_done({"files_written": [str(p) for p in paths]})
+    frame = sse.terminal_frame(task, lambda paths: {"files_written": [str(p) for p in paths]})
+    if frame is not None:
+        yield frame
