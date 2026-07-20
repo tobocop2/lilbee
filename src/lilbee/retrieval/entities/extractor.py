@@ -57,6 +57,7 @@ class ExtractionStats:
     llm_batches: int = 0
     llm_batches_failed: int = 0
 
+
 INDUCTION_PROMPT = (
     "You are designing an entity-extraction schema for a document collection. "
     "Below are sample passages. Propose the 3-8 entity TYPES most useful for "

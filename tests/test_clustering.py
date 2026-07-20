@@ -566,9 +566,7 @@ class TestClustererFacade:
 
         cfg.wiki_clusterer = ClustererBackend.CONCEPTS
         graph_built = {"value": False}
-        monkeypatch.setattr(
-            ConceptGraphClusterer, "available", lambda self: graph_built["value"]
-        )
+        monkeypatch.setattr(ConceptGraphClusterer, "available", lambda self: graph_built["value"])
         clusterer = Clusterer(cfg, MagicMock())
         assert isinstance(clusterer.backend, EmbeddingClusterer)
         graph_built["value"] = True

@@ -231,8 +231,7 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | Non
         written += store.add_entities(rows)
     if stats.llm_batches_failed:
         log.warning(
-            "Entity extraction pass had %d of %d LLM batches fail; "
-            "the next sync redoes the pass",
+            "Entity extraction pass had %d of %d LLM batches fail; the next sync redoes the pass",
             stats.llm_batches_failed,
             stats.llm_batches,
         )
