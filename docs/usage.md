@@ -674,8 +674,8 @@ The surface covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
 saved conversations (`/api/sessions`: list, read, create, append, rename,
-delete, and the compaction summary; reads work with a read-only token,
-writes need a full one), configuration (including a defaults endpoint
+delete, and the compaction summary; every one of these needs the session
+token, reads included), configuration (including a defaults endpoint
 that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server

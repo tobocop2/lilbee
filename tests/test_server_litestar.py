@@ -1632,7 +1632,9 @@ class TestSessionManagerPersistence:
 
     def test_load_or_generate_on_win32_skips_chmod(self, fresh_manager, monkeypatch) -> None:
         """On Windows the chmod branch is skipped; file must still be created and readable."""
-        monkeypatch.setattr("lilbee.server.auth.sys.platform", "win32")
+        # The platform check lives in core.security now, with auth and settings
+        # both calling through it.
+        monkeypatch.setattr("lilbee.core.security.sys.platform", "win32")
         token = fresh_manager.load_or_generate()
         assert isinstance(token, str)
         assert len(token) >= 32

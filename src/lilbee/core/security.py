@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import stat
+import sys
 import tempfile
 from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+_OWNER_ONLY_MODE = 0o600
 
 
 class PathTraversalError(ValueError):
@@ -57,3 +64,28 @@ def write_private_text(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
+
+
+def harden_private_file(path: Path) -> None:
+    """Narrow *path* to owner-only, tolerating a file we do not own.
+
+    :func:`write_private_text` creates these files owner-only, but one can
+    arrive wider: written by a release predating that hardening, restored from
+    a backup, copied between machines. Their contents (a bearer token, provider
+    API keys) are then read indefinitely without the file ever being rewritten,
+    so callers narrow on every load rather than only at creation.
+
+    Never fatal: a file owned by another user must not stop the caller from
+    reading it, so a refused chmod warns and returns.
+
+    Windows has no POSIX mode bits; there these files rely on the inherited
+    ``%LOCALAPPDATA%`` DACL for owner-only access.
+    """
+    if sys.platform == "win32":  # pragma: no cover - Windows uses the DACL
+        return
+    if stat.S_IMODE(path.stat().st_mode) == _OWNER_ONLY_MODE:
+        return
+    try:
+        path.chmod(_OWNER_ONLY_MODE)
+    except OSError:
+        log.warning("Could not restrict permissions on %s.", path, exc_info=True)

@@ -6,7 +6,6 @@ import hmac
 import json
 import logging
 import secrets
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -15,7 +14,7 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp, Receive, Scope, Send
 
 from lilbee.core.config import cfg
-from lilbee.core.security import write_private_text
+from lilbee.core.security import harden_private_file, write_private_text
 
 log = logging.getLogger(__name__)
 
@@ -89,7 +88,7 @@ class SessionManager:
             # predating this hardening, restored from a backup, copied between
             # machines), and the token inside is reused indefinitely, so narrow
             # the mode on every load rather than only at first creation.
-            self._harden(path)
+            harden_private_file(path)
             self.token = existing
             self._initialized = True
             return existing
@@ -97,17 +96,6 @@ class SessionManager:
         write_private_text(path, json.dumps({"token": self.token}))
         self._initialized = True
         return self.token
-
-    @staticmethod
-    def _harden(path: Path) -> None:
-        """Narrow *path* to owner-only, tolerating a file we do not own."""
-        if sys.platform == "win32":  # pragma: no cover - Windows uses the DACL
-            # Windows relies on the inherited %LOCALAPPDATA% DACL instead.
-            return
-        try:
-            path.chmod(0o600)
-        except OSError:
-            log.warning("Could not restrict permissions on %s.", path, exc_info=True)
 
     def disable(self) -> None:
         """Explicitly turn auth off (test harness / embedded read-only use).

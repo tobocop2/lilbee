@@ -231,8 +231,7 @@ class SseStream:
         self.queue.put_nowait(item)
         if self.queue.stalled and not self.cancel.is_set():
             log.warning(
-                "SSE consumer stalled with %d undroppable events queued; "
-                "cancelling the producer.",
+                "SSE consumer stalled with %d undroppable events queued; cancelling the producer.",
                 self.queue.qsize(),
             )
             self.cancel.set()

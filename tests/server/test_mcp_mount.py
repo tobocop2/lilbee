@@ -235,3 +235,19 @@ async def test_search_tool_uses_the_shared_services_singleton(
         set_services(None)
     services.searcher.search.assert_called_once()
     assert services.searcher.search.call_args.args[0] == "hello"
+
+
+def test_a_dependency_without_the_private_session_manager_fails_at_build(monkeypatch) -> None:
+    """The mount clears FastMCP's private _session_manager because the package
+    exposes no public reset. If a release renames it, the failure must name the
+    dependency here rather than surfacing later as run()-already-entered."""
+    import pytest
+
+    from lilbee.server import mcp_mount
+
+    class _NoSessionManager:
+        settings = None
+
+    monkeypatch.setattr(mcp_mount, "mcp", _NoSessionManager())
+    with pytest.raises(RuntimeError, match="mcp version pin"):
+        build_mcp_mount()

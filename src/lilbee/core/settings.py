@@ -2,8 +2,6 @@
 
 import logging
 import os
-import stat
-import sys
 import threading
 import tomllib
 from collections.abc import Generator
@@ -17,7 +15,7 @@ from filelock import Timeout as FileLockTimeout
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import cfg
-from lilbee.core.security import write_private_text
+from lilbee.core.security import harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
 
@@ -25,8 +23,6 @@ _settings_lock = threading.Lock()
 # data root, so the in-process mutex alone lets two of them interleave a
 # read-modify-write and silently drop each other's keys.
 _CONFIG_LOCK_TIMEOUT_S = 10.0
-
-_OWNER_ONLY_MODE = 0o600
 
 
 def _config_path(data_root: Path) -> Path:
@@ -69,31 +65,9 @@ def load(data_root: Path) -> dict[str, Any]:
     path = _config_path(data_root)
     if not path.exists():
         return {}
-    _harden(path)
+    harden_private_file(path)
     with path.open("rb") as f:
         return dict(tomllib.load(f))
-
-
-def _harden(path: Path) -> None:
-    """Narrow *path* to owner-only, tolerating a file we do not own.
-
-    ``save`` writes this file owner-only, but a config.toml can arrive 0644
-    from a release predating that, from a backup, or from a copy between
-    machines, and the API keys inside it are read indefinitely without ever
-    being rewritten. Same treatment server.json gets on every load, for the
-    same reason: hardening once at creation is wrong for a file whose whole
-    point is long-lived secret storage.
-    """
-    if sys.platform == "win32":  # pragma: no cover - Windows uses the DACL
-        return
-    if stat.S_IMODE(path.stat().st_mode) == _OWNER_ONLY_MODE:
-        return
-    try:
-        path.chmod(_OWNER_ONLY_MODE)
-    except OSError:
-        logging.getLogger(__name__).warning(
-            "Could not restrict permissions on %s.", path, exc_info=True
-        )
 
 
 def save(data_root: Path, settings: dict[str, Any]) -> None:

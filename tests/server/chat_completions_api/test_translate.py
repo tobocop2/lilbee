@@ -1033,6 +1033,22 @@ class TestCanonicalStreamToCompletionsChunks:
         )
         assert chunks == []
 
+    async def test_a_tool_delta_for_a_block_that_never_started_is_skipped(self) -> None:
+        """The block index map is populated only by ContentBlockStart for a
+        ToolUseBlock, and the lookup was a bare subscript, so a provider that
+        emitted a delta for a block it never opened raised KeyError inside the
+        stream generator and surfaced as a stream-level internal error."""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockDelta(index=7, delta=ToolUseDelta(partial_json='{"q":1}')),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        assert all(c.choices[0].delta.tool_calls is None for c in chunks if c.choices)
+
     async def test_tool_call_stream_emits_function_chunks(self) -> None:
         events: list[CanonicalStreamEvent] = [
             MessageStart(id="msg_x", model="m"),

@@ -79,9 +79,10 @@ class TestSessionTokenPermissions:
         Pins that the descriptor is created restricted rather than widened by
         the umask and narrowed a moment later, which is the TOCTOU window.
         """
+        from lilbee.core import security
         from lilbee.server import auth
 
-        monkeypatch.setattr(auth.Path, "chmod", lambda *_a, **_k: None)
+        monkeypatch.setattr(security.Path, "chmod", lambda *_a, **_k: None)
         token = fresh_manager.load_or_generate()
         path = auth.server_json_path()
         assert json.loads(path.read_text(encoding="utf-8"))["token"] == token
@@ -91,14 +92,19 @@ class TestSessionTokenPermissions:
         self, fresh_manager, monkeypatch, caplog
     ):
         """A server.json owned by another user must not take the server down."""
+        from lilbee.core import security
         from lilbee.server import auth
 
         first = fresh_manager.load_or_generate()
+        # Widen it first: hardening skips the chmod when the mode is already
+        # right, so without this the refusal below is never reached and the
+        # test passes without exercising anything.
+        auth.server_json_path().chmod(0o644)
 
         def refuse(*_args, **_kwargs):
             raise PermissionError("not owner")
 
-        monkeypatch.setattr(auth.Path, "chmod", refuse)
+        monkeypatch.setattr(security.Path, "chmod", refuse)
         fresh_manager.token = None
         with caplog.at_level("WARNING"):
             assert fresh_manager.load_or_generate() == first
@@ -123,9 +129,9 @@ class TestPersistedSettingsPermissions:
     """config.toml can hold provider API keys and gets the same treatment."""
 
     def test_saved_config_is_never_world_readable(self, tmp_path, permissive_umask, monkeypatch):
-        from lilbee.core import settings
+        from lilbee.core import security, settings
 
-        monkeypatch.setattr(settings.Path, "chmod", lambda *_a, **_k: None)
+        monkeypatch.setattr(security.Path, "chmod", lambda *_a, **_k: None)
         settings.save(tmp_path, {"api_key": "sk-secret"})
         path = tmp_path / "config.toml"
         assert _mode(path) == 0o600
@@ -206,7 +212,7 @@ class TestPersistedSettingsAreHardenedOnLoad:
     def test_an_unchmoddable_config_warns_instead_of_failing_the_read(
         self, tmp_path, monkeypatch, caplog
     ):
-        from lilbee.core import settings
+        from lilbee.core import security, settings
 
         settings.set_value(tmp_path, "api_key", "sk-secret")
         (tmp_path / "config.toml").chmod(0o644)
@@ -214,7 +220,7 @@ class TestPersistedSettingsAreHardenedOnLoad:
         def refuse(*_args, **_kwargs):
             raise PermissionError("not owner")
 
-        monkeypatch.setattr(settings.Path, "chmod", refuse)
+        monkeypatch.setattr(security.Path, "chmod", refuse)
         with caplog.at_level("WARNING"):
             assert settings.load(tmp_path) == {"api_key": "sk-secret"}
         assert "Could not restrict permissions" in caplog.text
