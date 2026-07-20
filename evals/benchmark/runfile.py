@@ -60,8 +60,15 @@ def collapse_hits(
     """Collapse chunk hits to documents (best score wins) and re-rank per query.
 
     Multiple chunks from one document keep only that document's best score.
-    Within each query, documents are ranked by descending score; ties break on
-    doc_id so the ordering is deterministic and reproducible.
+    Within each query, documents are ranked by descending score, ties broken on
+    doc_id descending.
+
+    That tie rule is trec_eval's, and it is chosen to match rather than to be
+    merely deterministic: run_to_pytrec drops the rank column and hands
+    pytrec_eval a doc_id to score map, which it re-sorts with its own rule. An
+    ascending tie-break here would write a rank column stating one order while
+    the scorer used the reverse, which matters wherever rank fusion puts equal
+    scores near a metric's cut depth.
 
     ``limit`` caps each query at that many documents after ranking. A chunk-level
     arm over-fetches chunks to reach the target document depth and can overshoot
@@ -75,7 +82,7 @@ def collapse_hits(
             per_query[hit.doc_id] = hit.score
     entries: list[RunEntry] = []
     for query_id in sorted(best):
-        ranked = sorted(best[query_id].items(), key=lambda item: (-item[1], item[0]))
+        ranked = sorted(best[query_id].items(), key=lambda item: (item[1], item[0]), reverse=True)
         if limit is not None:
             ranked = ranked[:limit]
         for rank, (doc_id, score) in enumerate(ranked, start=1):

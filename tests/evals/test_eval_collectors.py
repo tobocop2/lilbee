@@ -131,3 +131,12 @@ def test_collapse_hits_without_a_limit_keeps_every_document():
 
 def test_default_target_docs_matches_the_published_recall_depth():
     assert DEFAULT_TARGET_DOCS == 20
+
+
+def test_run_file_tie_order_matches_the_scorers_rule():
+    # pytrec_eval drops the rank column and re-sorts, breaking score ties on
+    # doc_id descending. Writing the reverse order would state one ranking while
+    # the scorer used another.
+    hits = [_hit("d1", 1.0), _hit("d2", 1.0), _hit("d3", 1.0)]
+    order = [entry.doc_id for entry in collapse_hits(hits, "arm")]
+    assert order == ["d3", "d2", "d1"]

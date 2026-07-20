@@ -232,9 +232,24 @@ def _cmd_stats(args: argparse.Namespace) -> int:
             "arm_b": arm_b,
         }
     ]
+    missing = [
+        metric
+        for metric in manifest.metrics
+        if metric not in file_a["per_query"] or metric not in file_b["per_query"]
+    ]
+    if missing:
+        # An absent metric would otherwise reach compare() as two empty vectors
+        # and come back n=0, delta 0.0, CI [0,0], p=1.0, which renders as a
+        # measured tie between the arms rather than as data that was never
+        # scored. score-ir takes its own --metrics, so this is a live mismatch.
+        raise ValueError(
+            f"metrics {sorted(missing)} are declared in manifest '{manifest.run_id}' "
+            "but absent from the scored files; re-run score-ir with "
+            f"--metrics {' '.join(manifest.metrics)} rather than reporting them as ties"
+        )
     for metric in manifest.metrics:
-        per_query_a = file_a["per_query"].get(metric, {})
-        per_query_b = file_b["per_query"].get(metric, {})
+        per_query_a = file_a["per_query"][metric]
+        per_query_b = file_b["per_query"][metric]
         result = stats.compare(
             metric,
             per_query_a,

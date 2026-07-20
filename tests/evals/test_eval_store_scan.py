@@ -83,3 +83,17 @@ def test_scan_builds_doc_heads_in_chunk_order():
         rows, passage_count=0, min_passage_chars=400, head_sources={"k.txt"}, rng=random.Random(1)
     )
     assert scan.doc_heads == {"k.txt": "first\nsecond\nthird"}
+
+
+def test_count_oracle_counts_word_mentions_not_substrings():
+    # "How many documents mention report?" is a question about word-level
+    # mentions. Counting "reported"/"reports" marks a correct answer wrong
+    # against ground truth defined a way the question never states.
+    rows = [
+        ChunkRow("a.txt", "the report was filed", 0),
+        ChunkRow("b.txt", "they reported it and reports followed", 0),
+        ChunkRow("c.txt", "Report, capitalised.", 0),
+    ]
+    counts = count_term_hits(rows, ["report"])["report"]
+    assert counts.chunks == 2
+    assert counts.sources == 2

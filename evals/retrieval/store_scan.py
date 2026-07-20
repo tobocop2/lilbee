@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import re
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import NamedTuple, TypeVar
@@ -76,7 +77,12 @@ def reservoir_sample(items: Iterable[T], k: int, rng: random.Random) -> list[T]:
 
 def count_term_hits(rows: Iterable[ChunkRow], terms: Sequence[str]) -> dict[str, TermCounts]:
     """Exact chunk and distinct-source hit counts for every term in one pass."""
-    needles = {term: term.lower() for term in terms}
+    # Word-boundary, not substring. "How many documents mention X?" is a
+    # question about word-level mentions, but unanchored containment also counts
+    # "reported", "reports" and "reporting" for the term "report", so a system
+    # that answers the question correctly is marked wrong against ground truth
+    # defined a different way.
+    needles = {term: re.compile(rf"\b{re.escape(term.lower())}\b") for term in terms}
     chunk_hits = dict.fromkeys(terms, 0)
     source_hits: dict[str, set[str]] = {term: set() for term in terms}
     for row in rows:
@@ -84,7 +90,7 @@ def count_term_hits(rows: Iterable[ChunkRow], terms: Sequence[str]) -> dict[str,
             continue
         text = row.chunk.lower()
         for term, needle in needles.items():
-            if needle in text:
+            if needle.search(text):
                 chunk_hits[term] += 1
                 source_hits[term].add(row.source)
     return {term: TermCounts(chunk_hits[term], len(source_hits[term])) for term in terms}

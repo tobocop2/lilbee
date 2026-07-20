@@ -6,6 +6,8 @@ run_tags so a mislabelled invocation cannot slip a different study past the
 manifest.
 """
 
+import json
+
 import pytest
 from evals.benchmark.cli import resolve_comparison
 from evals.benchmark.manifest import (
@@ -67,3 +69,31 @@ def test_resolve_rejects_a_dataset_absent_from_the_manifest():
     manifest = _manifest(_ABLATION, dataset="scifact")
     with pytest.raises(ValueError, match="not declared in manifest"):
         resolve_comparison(manifest, _file("nfcorpus", "dense"), _file("nfcorpus", "w1.0"))
+
+
+def _scored(dataset, run_tag, metrics):
+    return {
+        "dataset": dataset,
+        "run_tag": run_tag,
+        "per_query": {m: {"q1": 1.0} for m in metrics},
+        "aggregated": {m: 1.0 for m in metrics},
+    }
+
+
+def test_stats_refuses_a_metric_the_scored_files_do_not_carry(tmp_path):
+    # Absent metrics reach compare() as empty vectors and come back as a
+    # measured tie (n=0, delta 0.0, p=1.0), which is data that never existed.
+    import argparse
+
+    from evals.benchmark.cli import _cmd_stats
+
+    manifest_path = tmp_path / "m.json"
+    _manifest(_ABLATION).freeze(manifest_path)
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    a.write_text(json.dumps(_scored("scifact", "dense", ["MRR@10"])) + "\n")
+    b.write_text(json.dumps(_scored("scifact", "w1.0", [])) + "\n")
+    args = argparse.Namespace(
+        manifest=manifest_path, metrics_a=a, metrics_b=b, out=tmp_path / "out.jsonl"
+    )
+    with pytest.raises(ValueError, match="absent from the scored files"):
+        _cmd_stats(args)

@@ -18,7 +18,7 @@ the store. Lives outside `src/` on purpose: it never ships in the package.
      document's head chunks, captured in the same scan.
    - *count*: asks how many documents mention a mid-frequency term, and the
      check verifies exactly that one number. Ground truth is an exact streaming
-     scan of the LanceDB store; no judge involved. The scan also records the
+     scan of the LanceDB store, counting word-level mentions rather than substrings so the oracle answers the question that was asked; no judge involved. The scan also records the
      chunk total as provenance, but the answer is not required to volunteer a
      figure it was never asked for.
 2. **answer** runs the battery against one server (`/api/ask`), one run per
