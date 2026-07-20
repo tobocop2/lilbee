@@ -814,7 +814,7 @@ something feels off.
 | `LILBEE_RERANK_BLEND` | `true` | Blend reranker scores with retrieval fusion; off = the reranker's own ordering stands |
 | `LILBEE_HYDE` | `false` | Enable Hypothetical Document Embeddings: an LLM drafts a hypothetical answer, that's embedded, and results are merged with the original query's. Adds ~500 ms per query; helps on vague questions |
 | `LILBEE_HYDE_WEIGHT` | `0.7` | How much to trust HyDE results relative to the direct query (0.0-1.0) |
-| `LILBEE_TITLE_SEARCH` | `false` | Match queries against document titles as a third hybrid-search arm, so a query naming a document by title surfaces its chunks |
+| `LILBEE_TITLE_SEARCH` | `false` | Match queries against document titles as a third hybrid-search arm, so a query naming a document by title surfaces its chunks. Documents indexed before this feature existed have no stored title; run `lilbee rebuild` to make them title-searchable |
 | `LILBEE_TITLE_SEARCH_WEIGHT` | `0.5` | Title arm weight in rank fusion (1.0 = equal voice with the vector and text arms) |
 | `LILBEE_LEXICAL_FUSION_WEIGHT` | `1.0` | BM25 arm weight in rank fusion (1.0 = equal to the vector arm; lower it when a strong embedder should dominate a corpus where the lexical arm adds noise) |
 | `LILBEE_ADAPTIVE_FUSION` | `true` | Scale the BM25 arm's weight per query by how confident the vector arm is (a peaked dense ranking downweights lexical, a flat one keeps it) instead of using a fixed `LILBEE_LEXICAL_FUSION_WEIGHT`. That weight becomes the ceiling the adaptive rule scales down from. Set to `false` to pin the fixed weight |

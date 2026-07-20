@@ -27,6 +27,8 @@ from lilbee.retrieval.query.formatting import (
     unique_sources,
 )
 from lilbee.retrieval.query.searcher import (
+    _CONTEXT_TEMPLATE_TOKENS,
+    _PER_SOURCE_TOKENS,
     EMPTY_LIBRARY,
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
@@ -991,6 +993,40 @@ class TestNeighborExpansion:
         mock_svc.provider.chat.return_value = _text_result("answer")
         result = get_services().searcher.ask_raw("q")
         assert result.sources[0].chunk == "x" * 300
+
+    def test_widened_prompt_still_fits_the_provider_ceiling(self, mock_svc):
+        """Widening runs after the budget fit, so it must budget against the same
+        provider ceiling: the assembled widened prompt must not exceed
+        prompt_token_budget, and expansion must actually happen (non-vacuous)."""
+        from lilbee.providers.base import prompt_token_budget
+
+        ctx = 4096
+        cfg.neighbor_expansion = 1
+        cfg.num_ctx = ctx
+        mock_svc.provider.served_chat_ctx.return_value = None
+        mock_svc.store.get_chunks_by_indices.return_value = [
+            _make_result(chunk="b" * 3000, chunk_index=1, page_start=2, page_end=2),
+            _make_result(chunk="a" * 3000, chunk_index=3, page_start=4, page_end=4),
+        ]
+        system, question = "sys " * 40, "q " * 20
+        base = [_make_result(chunk="c" * 1500, chunk_index=2, page_start=3, page_end=3)]
+
+        searcher = get_services().searcher
+        fitted = searcher._fit_context_budget(base, system, question, None, 1.0)
+        widened = searcher._widen_with_neighbors(fitted, system, question, None, 1.0)
+
+        # Non-vacuous: at least one neighbor was actually merged in.
+        assert widened[0].chunk != "c" * 1500
+        assembled = (
+            searcher._budget_tokens(system)
+            + searcher._budget_tokens(question)
+            + sum(searcher._budget_tokens(r.chunk) + _PER_SOURCE_TOKENS for r in widened)
+            + _CONTEXT_TEMPLATE_TOKENS
+        )
+        assert assembled <= prompt_token_budget(ctx), (
+            f"widened prompt {assembled} tokens exceeds provider ceiling "
+            f"{prompt_token_budget(ctx)}"
+        )
 
 
 class TestAskRaw:

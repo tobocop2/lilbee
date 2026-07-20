@@ -48,33 +48,38 @@ def vector_similarity(distance: float) -> float:
     return max(0.0, min(1.0, 1.0 - distance))
 
 
-def adaptive_lexical_weight(
-    vector_rows: list[SearchChunk], base_weight: float, margin_scale: float
-) -> float:
-    """Shrink the lexical arm's weight toward zero when the vector arm is
+def adaptive_weight_scale(vector_rows: list[SearchChunk], margin_scale: float) -> float:
+    """A [0, 1] factor to shrink the lexical arms by when the vector arm is
     confident about this query.
 
     A *peaked* vector ranking -- a top hit standing well clear of the field --
-    means the dense embedder already located the answer and the lexical arm
-    mostly adds term-match noise. A *flat* ranking means dense is unsure and
+    means the dense embedder already located the answer and the lexical arms
+    mostly add term-match noise. A *flat* ranking means dense is unsure and
     BM25's exact-term matching is worth trusting. The confidence signal is the
     margin between the top similarity and the mean of the rest, divided by
-    *margin_scale*: at or above that margin the lexical arm is fully silenced,
-    at zero margin it keeps its full *base_weight*, and it scales linearly
-    between. Returns *base_weight* unchanged when there is nothing to measure
-    (fewer than two scored rows) or when *margin_scale* <= 0 (adaptation off).
+    *margin_scale*: at or above that margin the factor is 0 (arms silenced), at
+    zero margin it is 1 (arms kept), scaling linearly between. Returns 1.0 when
+    there is nothing to measure (fewer than two scored rows) or when
+    *margin_scale* <= 0 (adaptation off).
     """
     if margin_scale <= 0:
-        return base_weight
+        return 1.0
     sims = sorted(
         (vector_similarity(r.distance) for r in vector_rows if r.distance is not None),
         reverse=True,
     )
     if len(sims) < _MIN_ROWS_FOR_MARGIN:
-        return base_weight
+        return 1.0
     margin = max(0.0, sims[0] - fmean(sims[1:]))
     confidence = min(1.0, margin / margin_scale)
-    return base_weight * (1.0 - confidence)
+    return 1.0 - confidence
+
+
+def adaptive_lexical_weight(
+    vector_rows: list[SearchChunk], base_weight: float, margin_scale: float
+) -> float:
+    """The lexical arm's *base_weight* scaled by :func:`adaptive_weight_scale`."""
+    return base_weight * adaptive_weight_scale(vector_rows, margin_scale)
 
 
 def normalized_bm25(scores: list[float]) -> list[float]:

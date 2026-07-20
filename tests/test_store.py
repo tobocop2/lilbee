@@ -180,8 +180,23 @@ class TestEnsureFtsIndex:
             store.ensure_fts_index()
         assert store._fts_ready is True
 
-    def test_first_call_creates_without_replace(self, store):
-        """Fresh table creates the chunk and title indexes, both with replace=False."""
+    def test_first_call_creates_chunk_index_only_when_title_search_off(self, store):
+        """With title_search off (default), only the chunk index is built; the
+        title index is not created on a store that never queries it."""
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+
+        with mock.patch.object(type(table), "create_fts_index") as create_spy:
+            store.ensure_fts_index()
+
+        assert [c.args[0] for c in create_spy.call_args_list] == ["chunk"]
+        assert create_spy.call_args_list[0].kwargs.get("with_position") is False
+
+    def test_first_call_creates_both_indexes_when_title_search_on(self, store, test_config):
+        """Fresh table creates the chunk and title indexes, both positionless
+        with replace=False, when the title arm is enabled."""
+        test_config.title_search = True
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         assert table is not None
@@ -690,10 +705,10 @@ class TestHybridSearch:
         assert all(0.0 <= s <= 1.0 for s in scores)
 
     def test_adaptive_fusion_feeds_a_derived_weight_to_fusion(self, store, test_config):
-        """With adaptive_fusion on (the default), the per-query weight from
-        adaptive_lexical_weight -- fed the configured margin -- is what reaches
-        fuse_arms, not the fixed config value. Deleting the adaptive branch would
-        fail this, unlike a smoke test that only checks the score range."""
+        """With adaptive_fusion on (the default), the per-query factor from
+        adaptive_weight_scale -- fed the configured margin -- scales the lexical
+        weight reaching fuse_arms, not the fixed config value. Deleting the
+        adaptive branch would fail this, unlike a smoke test on the score range."""
         assert test_config.adaptive_fusion is True  # shipped default
         test_config.adaptive_fusion_margin = 0.42
         store.add_chunks(_make_records())
@@ -702,25 +717,25 @@ class TestHybridSearch:
         from lilbee.data.store import core as store_core
 
         with (
-            mock.patch.object(store_core, "adaptive_lexical_weight", return_value=0.123) as adapt,
+            mock.patch.object(store_core, "adaptive_weight_scale", return_value=0.5) as scale,
             mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
         ):
             results = store.search(query_vec, top_k=3, query_text="chunk number")
-        adapt.assert_called_once()
-        # adaptive_lexical_weight(vector_rows, base_weight, margin): the base is
-        # lexical_fusion_weight and the margin is the configured value.
-        assert adapt.call_args.args[1] == pytest.approx(test_config.lexical_fusion_weight)
-        assert adapt.call_args.args[2] == pytest.approx(0.42)
-        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(0.123)
+        scale.assert_called_once()
+        # adaptive_weight_scale(vector_rows, margin): the margin is the config value.
+        assert scale.call_args.args[1] == pytest.approx(0.42)
+        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(
+            test_config.lexical_fusion_weight * 0.5
+        )
         # The normalization denominator is the configured budget (constant), not
-        # the adapted 0.123, so scores stay comparable across sub-searches.
+        # the adapted weight, so scores stay comparable across sub-searches.
         assert fuse.call_args.kwargs["weight_total"] == pytest.approx(
             1.0 + test_config.lexical_fusion_weight
         )
         assert len(results) > 0
 
     def test_fixed_fusion_pins_the_config_weight(self, store, test_config):
-        """Opting out of adaptive fusion skips adaptive_lexical_weight and pins
+        """Opting out of adaptive fusion skips adaptive_weight_scale and pins
         the fixed lexical_fusion_weight into fuse_arms; a non-default weight must
         reach fusion verbatim."""
         test_config.adaptive_fusion = False
@@ -731,7 +746,7 @@ class TestHybridSearch:
         from lilbee.data.store import core as store_core
 
         with (
-            mock.patch.object(store_core, "adaptive_lexical_weight") as adapt,
+            mock.patch.object(store_core, "adaptive_weight_scale") as adapt,
             mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
         ):
             results = store.search(query_vec, top_k=3, query_text="chunk number")
@@ -2466,6 +2481,28 @@ class TestTitleSearch:
             1.0 + test_config.lexical_fusion_weight + 0.2
         )
 
+    def test_adaptive_fusion_scales_the_title_arm_too(self, store, test_config):
+        """Adaptive fusion downweights lexical; the title arm is also lexical, so
+        it must be scaled by the same confidence, not left at full weight (which
+        would re-admit the signal adaptive fusion just silenced)."""
+        test_config.title_search = True
+        test_config.title_search_weight = 0.5
+        assert test_config.adaptive_fusion is True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        query_vec = [0.1] * test_config.embedding_dim
+        from lilbee.data.store import core as store_core
+
+        with (
+            mock.patch.object(store_core, "adaptive_weight_scale", return_value=0.25),
+            mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
+        ):
+            store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
+        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(
+            test_config.lexical_fusion_weight * 0.25
+        )
+        assert fuse.call_args.kwargs["title_weight"] == pytest.approx(0.5 * 0.25)
+
     def test_title_arm_off_by_default(self, store, test_config):
         """With title_search off, a title-only term earns no lexical support."""
         assert test_config.title_search is False
@@ -2478,12 +2515,26 @@ class TestTitleSearch:
     def test_title_arm_respects_chunk_type_filter(self, store, test_config):
         from lilbee.data.store.lance_helpers import _has_fts_index
 
+        test_config.title_search = True  # the title index is built only when enabled
         store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
         assert _has_fts_index(table, "title")
         assert store._title_arm(table, "zebra", 5, ChunkType.RAW)
         assert store._title_arm(table, "zebra", 5, ChunkType.WIKI) == []
+
+    def test_title_arm_failure_degrades_to_empty(self, store, test_config):
+        """A query-time title-arm failure returns no rows instead of raising,
+        so a broken title index can't take down the healthy chunk-BM25 arm and
+        collapse the whole hybrid search to vector-only."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        from lilbee.data.store import core as store_core
+
+        with mock.patch.object(store_core, "_lexical_rows", side_effect=RuntimeError("boom")):
+            assert store._title_arm(table, "zebra", 5, None) == []
 
     def test_old_index_without_title_column_still_searches(self, store, test_config):
         """Feature detection: a pre-title index searches fine and the title arm
@@ -2507,6 +2558,17 @@ class TestTitleSearch:
         assert "title" in store.open_table("chunks").schema.names
         rows = store.get_chunks_by_source("new.pdf")
         assert [r.title for r in rows] == ["fresh document"]
+
+    def test_pre_title_migration_warns_to_rebuild(self, store, caplog):
+        """Migrating an old store logs that pre-upgrade docs stay title-blind
+        until a rebuild, so the silence doesn't hide the gap."""
+        import logging
+
+        table = _create_pre_title_chunks_table(store)
+        table.add(_make_records())
+        with caplog.at_level(logging.WARNING):
+            store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
+        assert any("lilbee rebuild" in r.message for r in caplog.records)
 
     def test_bm25_probe_stays_chunk_scoped(self, store):
         """The probe pins the chunk column: a title-only term is not a probe hit."""

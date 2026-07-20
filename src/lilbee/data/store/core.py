@@ -28,7 +28,7 @@ from lilbee.core.config import (
 from lilbee.core.security import validate_path_within
 from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
-from .fusion import adaptive_lexical_weight, fuse_arms, normalized_bm25, vector_similarity
+from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
     _chunk_type_predicate,
     _has_fts_index,
@@ -261,6 +261,13 @@ class Store:
         table = ensure_table(self.get_db(), CHUNKS_TABLE, self._chunks_schema())
         if _TITLE_COLUMN not in table.schema.names:
             table.add_columns({_TITLE_COLUMN: "CAST(NULL AS STRING)"})
+            # Titles are stamped only at ingest, so existing rows stay NULL and
+            # the title arm cannot see them. Point the user at a rebuild.
+            log.warning(
+                "Added the title column to an existing store. Documents indexed "
+                "before this upgrade have no title, so the title-search arm will "
+                "not match them until you run `lilbee rebuild`."
+            )
         return table
 
     def get_meta(self) -> StoreMeta | None:
@@ -474,7 +481,11 @@ class Store:
                     table.create_fts_index("chunk", replace=False, with_position=False)
                     self._fts_ready = True
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
-                self._ensure_title_fts_unlocked(table)
+                # Only the opt-in title arm needs the title index; without this a
+                # second FTS index is built (and optimized) on every store even
+                # though nothing queries it.
+                if self._config.title_search:
+                    self._ensure_title_fts_unlocked(table)
             except Exception:
                 log.debug("FTS index ensure failed (empty table?)", exc_info=True)
 
@@ -706,12 +717,18 @@ class Store:
     ) -> list[SearchChunk]:
         """BM25-arm candidates over the document title column.
 
-        Empty when the store predates the title column or its FTS index: old
-        indexes keep working, the arm simply contributes nothing there.
+        Empty when the store predates the title column or its FTS index (old
+        indexes keep working) and empty on any query-time failure: the optional
+        title arm must never take down the healthy chunk arm, so its failure
+        degrades to no-titles, mirroring ``bm25_probe``.
         """
         if not _has_fts_index(table, _TITLE_COLUMN):
             return []
-        return _lexical_rows(table, query_text, limit, chunk_type, column=_TITLE_COLUMN)
+        try:
+            return _lexical_rows(table, query_text, limit, chunk_type, column=_TITLE_COLUMN)
+        except Exception:
+            log.debug("Title arm search failed; contributing no title rows", exc_info=True)
+            return []
 
     def _hybrid_search(
         self,
@@ -746,24 +763,28 @@ class Store:
             title_rows = self._title_arm(table, query_text, top_k, chunk_type)
         vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type)
         base_lexical_weight = self._config.lexical_fusion_weight
+        base_title_weight = self._config.title_search_weight
         lexical_weight = base_lexical_weight
+        title_weight = base_title_weight
         if self._config.adaptive_fusion:
-            # Gate the lexical arm per query by how peaked the vector ranking is.
-            lexical_weight = adaptive_lexical_weight(
-                vector_rows, lexical_weight, self._config.adaptive_fusion_margin
-            )
+            # Gate the lexical arms per query by how peaked the vector ranking is.
+            # The title arm is lexical too, so the same factor scales it; leaving
+            # it at full weight would re-admit the signal this just silenced.
+            scale = adaptive_weight_scale(vector_rows, self._config.adaptive_fusion_margin)
+            lexical_weight = base_lexical_weight * scale
+            title_weight = base_title_weight * scale
         # Normalize against the configured weight budget, not this query's adapted
-        # weight or whether its title arm happened to return rows, so scores stay
+        # weights or whether its title arm happened to return rows, so scores stay
         # comparable across the sub-searches Searcher merges (query + variants).
         weight_total = 1.0 + base_lexical_weight + (
-            self._config.title_search_weight if self._config.title_search else 0.0
+            base_title_weight if self._config.title_search else 0.0
         )
         fused = fuse_arms(
             vector_rows,
             self._fts_arm(table, query_text, top_k, chunk_type),
             title_rows,
             lexical_weight=lexical_weight,
-            title_weight=self._config.title_search_weight,
+            title_weight=title_weight,
             weight_total=weight_total,
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)
