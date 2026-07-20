@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from diskcache import Cache
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import extract, ocr_cache
@@ -33,18 +34,12 @@ def test_store_then_load_round_trips(cache_dir: Path) -> None:
     pages = [(1, "page one"), (2, "page two")]
     key = ocr_cache.ocr_cache_key("h", backend="vision", model="m")
     ocr_cache.store_ocr_pages(key, pages)
-    assert (cache_dir / f"{key}.json").exists()
+    assert cache_dir.exists()
     assert ocr_cache.load_ocr_pages(key) == pages
 
 
 def test_load_returns_none_on_miss(cache_dir: Path) -> None:
     assert ocr_cache.load_ocr_pages("nope") is None
-
-
-def test_load_returns_none_on_corrupt_entry(cache_dir: Path) -> None:
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "bad.json").write_text("{not json", encoding="utf-8")
-    assert ocr_cache.load_ocr_pages("bad") is None
 
 
 def test_empty_pages_are_not_cached(cache_dir: Path) -> None:
@@ -53,37 +48,32 @@ def test_empty_pages_are_not_cached(cache_dir: Path) -> None:
     assert ocr_cache.load_ocr_pages(key) is None
 
 
-def test_load_returns_none_when_json_is_not_a_list(cache_dir: Path) -> None:
-    # Valid JSON of the wrong shape (a dict, not a list of pairs) is still a miss.
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "wrong.json").write_text('{"page": 1}', encoding="utf-8")
-    assert ocr_cache.load_ocr_pages("wrong") is None
-
-
-def test_load_returns_none_when_any_entry_is_malformed(cache_dir: Path) -> None:
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("not a list", {"page": 1}),
+        ("empty list", []),
+        # Empty results are never stored, so an empty list is corruption.
+        ("one bad entry", [(1, "page one"), ("two", "page two"), (3, "page three")]),
+        ("all bad entries", ["nope", 42, None]),
+    ],
+)
+def test_load_returns_none_for_a_value_of_the_wrong_shape(
+    cache_dir: Path, label: str, value: object
+) -> None:
     """A partially readable entry must be a miss, not a partial result: the
     caller treats not-None as the document's complete OCR output and would
     ingest it with pages silently missing."""
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "partial.json").write_text(
-        '[[1, "page one"], ["two", "page two"], [3, "page three"]]', encoding="utf-8"
-    )
-    assert ocr_cache.load_ocr_pages("partial") is None
+    with Cache(directory=str(cache_dir)) as cache:
+        cache.set("shaped", value)
+    assert ocr_cache.load_ocr_pages("shaped") is None, label
 
 
-def test_load_returns_none_when_every_entry_is_malformed(cache_dir: Path) -> None:
-    """All-bad entries previously read back as [], which is not None, so the
-    file ingested as zero chunks and got skip-marked 'no text extracted'."""
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "junk.json").write_text('["nope", 42, null]', encoding="utf-8")
-    assert ocr_cache.load_ocr_pages("junk") is None
-
-
-def test_load_returns_none_on_empty_list(cache_dir: Path) -> None:
-    """Empty results are never stored, so an empty list on disk is corruption."""
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "empty.json").write_text("[]", encoding="utf-8")
-    assert ocr_cache.load_ocr_pages("empty") is None
+def test_load_swallows_a_read_error(tmp_path: Path, monkeypatch) -> None:
+    data_file = tmp_path / "data"
+    data_file.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(cfg, "data_dir", data_file)
+    assert ocr_cache.load_ocr_pages("anything") is None
 
 
 def test_store_swallows_write_error(tmp_path: Path, monkeypatch) -> None:
@@ -94,6 +84,26 @@ def test_store_swallows_write_error(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(cfg, "data_dir", data_file)
     key = ocr_cache.ocr_cache_key("h", backend="vision", model="m")
     ocr_cache.store_ocr_pages(key, [(1, "page")])  # must not raise
+
+
+def test_the_cache_is_bounded_and_evicts_the_least_recently_used(
+    cache_dir: Path, monkeypatch
+) -> None:
+    """Every file edit, vision-model change, or timeout change mints a new key
+    and leaves the superseded one behind, so without a cap the store grows
+    forever across re-ingests. The cache only makes a retry cheap, so dropping
+    the coldest entry at the cap is the right trade."""
+    limit = 256 * 1024
+    monkeypatch.setattr(ocr_cache, "_SIZE_LIMIT_BYTES", limit)
+    page = "x" * 16384
+    for i in range(100):
+        ocr_cache.store_ocr_pages(f"key{i}", [(1, page)])
+    with Cache(directory=str(cache_dir)) as cache:
+        assert cache.volume() <= limit
+        held = set(cache.iterkeys())
+    assert held, "eviction must not empty the cache"
+    assert "key0" not in held, "the coldest entry is the one evicted"
+    assert "key99" in held, "the newest entry survives"
 
 
 @pytest.mark.asyncio

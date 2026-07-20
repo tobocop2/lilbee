@@ -235,6 +235,10 @@ def decide(
     is falling -- the Universal Scalability Law's retrograde region); (3) otherwise
     hill-climb toward the knee. Always clamped to ``[permit_min, permit_max]``.
 
+    The veto blocks climbing only. A hill-climb step that goes *down* -- the reversal
+    on clearly falling throughput -- still runs under soft pressure, since backing off
+    is exactly what soft pressure should permit.
+
     The latency veto is the leading knee indicator (TCP Vegas / Netflix Gradient2):
     residence time ``W`` is estimated by Little's Law as ``permits / throughput``; once
     ``W`` inflates past its observed minimum (the unloaded baseline) by the profile's
@@ -271,13 +275,18 @@ def decide(
     if gpu_saturated and delta is not None and delta < 0:
         return out(clamp(permits - profile.step(permits)), -1, cool_down)  # USL retrograde
 
-    if _increase_vetoed(
+    vetoed = _increase_vetoed(
         profile, signals, cool_down=cool_down, gpu_saturated=gpu_saturated, w_est=w_est, w_min=w_min
-    ):
+    )
+    climbed, direction = _hill_climb(profile, permits, state.direction, delta, new_ewma, clamp)
+    if vetoed and climbed > permits:
+        # The veto is against climbing, not against retreating: the hill-climb's
+        # step down on falling throughput is the controller's only graceful
+        # decrease, and suppressing it too would pin the limit past the knee
+        # under sustained soft pressure until a critical threshold forced a 50%
+        # cut -- the oscillation the dead band and slew limit exist to avoid.
         return out(permits, state.direction, cool_down)
-
-    permits, direction = _hill_climb(profile, permits, state.direction, delta, new_ewma, clamp)
-    return out(permits, direction, cool_down)
+    return out(climbed, direction, cool_down)
 
 
 class ResizableGate:

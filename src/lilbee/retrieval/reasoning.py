@@ -215,31 +215,49 @@ def stream_chat_with_cap(
     reach the visible answer. Its cap is disabled (the cap already fired
     once, and re-capping would cut the answer off), and every continuation
     token is reported as final-answer text, matching the async HTTP path.
+
+    A run that reasoned but never produced final-answer text closes with
+    ``REASONING_EXHAUSTED_NOTICE``, so the CLI/TUI/library path ends with an
+    explanation rather than silence -- the same close the HTTP path makes.
     """
     cap_fired = False
+    reasoned = False
+    answered = False
 
     def _on_cap() -> None:
-        nonlocal cap_fired
+        nonlocal cap_fired, reasoned
         cap_fired = True
+        reasoned = True
+
+    def _on_reasoning(_chars: int) -> None:
+        nonlocal reasoned
+        reasoned = True
 
     first_stream = provider.chat(messages, stream=True, options=options or None, model=model)
-    yield from filter_reasoning(
+    for token in filter_reasoning(
         _text_only(first_stream),
         show=show_reasoning,
         cap_chars=cap_chars,
         on_cap=_on_cap,
-    )
-    if not cap_fired:
-        return
-    yield CapNotice(cap_chars=cap_chars)
-    nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
-    second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
-    try:
-        for token in filter_reasoning(_text_only(second_stream), show=show_reasoning, cap_chars=0):
-            if token.content:
-                yield StreamToken(content=token.content, is_reasoning=False)
-    finally:
-        _close_iterator(second_stream)
+        on_progress=_on_reasoning,
+    ):
+        answered = answered or not token.is_reasoning
+        yield token
+    if cap_fired:
+        yield CapNotice(cap_chars=cap_chars)
+        nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
+        second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
+        try:
+            for token in filter_reasoning(
+                _text_only(second_stream), show=show_reasoning, cap_chars=0
+            ):
+                if token.content:
+                    answered = True
+                    yield StreamToken(content=token.content, is_reasoning=False)
+        finally:
+            _close_iterator(second_stream)
+    if reasoned and not answered:
+        yield StreamToken(content=REASONING_EXHAUSTED_NOTICE, is_reasoning=False)
 
 
 def _text_only(stream: Iterator[Any]) -> Iterator[str]:

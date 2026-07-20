@@ -1,5 +1,6 @@
 """Tests for the embedding wrapper (mocked -- no live server needed)."""
 
+import logging
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -155,6 +156,21 @@ class TestValidateModel:
     def test_validate_returns_false_on_provider_error(self, embedder, mock_provider):
         mock_provider.list_models.side_effect = RuntimeError("no connection")
         assert embedder.validate_model() is False
+
+    def test_validate_warns_when_the_model_is_missing(self, embedder, mock_provider, caplog):
+        """Every production caller invokes this as a bare statement, so a gate
+        that only returned a bool passed silently and the run failed per-file
+        much later. The warning is what makes it a gate."""
+        mock_provider.list_models.return_value = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.embedder"):
+            embedder.validate_model()
+        assert cfg.embedding_model in caplog.text
+
+    def test_validate_stays_quiet_when_the_model_is_there(self, embedder, mock_provider, caplog):
+        mock_provider.list_models.return_value = [cfg.embedding_model]
+        with caplog.at_level(logging.WARNING, logger="lilbee.retrieval.embedder"):
+            embedder.validate_model()
+        assert not caplog.text
 
     def test_embedding_available_true(self, embedder, mock_provider):
         mock_provider.list_models.return_value = [cfg.embedding_model]

@@ -24,8 +24,17 @@ _INSTRUCT = EmbeddingProfile(
     ),
 )
 _E5 = EmbeddingProfile(query_instruction="query: ", doc_prefix="passage: ")
+_SYMMETRIC = EmbeddingProfile()
 _FAMILY_PROFILES: tuple[tuple[str, EmbeddingProfile], ...] = (
     ("qwen3-embedding", _INSTRUCT),
+    # "instructor" contains "instruct" but is a different dialect: the Instructor
+    # family (hkunlp/instructor-*, a t5encoder the engine can load) prefixes a
+    # "Represent the ... for retrieval:" instruction on the document as well as
+    # the query. Handing it the Instruct/Query query prefix with no doc prefix
+    # would be the asymmetric-in-the-wrong-dialect case this module promises not
+    # to produce, so it takes the symmetric fallback until the real prefixes are
+    # wired.
+    ("instructor", _SYMMETRIC),
     ("instruct", _INSTRUCT),  # any instruction-tuned embedder: Instruct/Query, no doc prefix
     ("multilingual-e5", _E5),
     ("e5-", _E5),

@@ -331,7 +331,10 @@ class Greeter:
         try:
             with patch("lilbee.data.code_chunker._ensure_language", return_value=False):
                 chunks = chunk_code(path)
-                assert isinstance(chunks, list)
+                # Truthiness, not isinstance: a regression returning [] would drop
+                # the file's content from the index and still be a list.
+                assert chunks
+                assert "x = 1" in "\n".join(c.chunk for c in chunks)
         finally:
             path.unlink()
 
@@ -354,7 +357,8 @@ class Greeter:
                 patch("lilbee.data.code_chunker.process", side_effect=RuntimeError("parse fail")),
             ):
                 chunks = chunk_code(path)
-                assert isinstance(chunks, list)
+                assert chunks
+                assert "x = 1" in "\n".join(c.chunk for c in chunks)
         finally:
             path.unlink()
 
@@ -376,8 +380,8 @@ class Greeter:
                 patch("lilbee.data.code_chunker.process", return_value=_FakeResult([])),
             ):
                 chunks = chunk_code(path)
-                assert isinstance(chunks, list)
                 assert chunks  # fell back to non-empty text chunks
+                assert "x = 1" in "\n".join(c.chunk for c in chunks)
         finally:
             path.unlink()
 

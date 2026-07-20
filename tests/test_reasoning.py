@@ -8,6 +8,7 @@ from lilbee.core.config import cfg
 from lilbee.providers.model_defaults import ModelDefaults
 from lilbee.retrieval.reasoning import (
     CAP_CONTINUATION_PROMPT,
+    REASONING_EXHAUSTED_NOTICE,
     CapNotice,
     StreamToken,
     effective_reasoning_cap,
@@ -326,6 +327,62 @@ class TestStreamChatWithCap:
             e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
         )
         assert "the answer" in response
+
+    def test_reasoning_only_run_closes_with_the_exhausted_notice(self):
+        """A model that spends the whole generation inside <think> leaves the
+        sync path with zero visible tokens: the answer would be just the Sources
+        block with nothing explaining why. The HTTP path already closes such a
+        run with the notice; this is the same close."""
+        provider = self._make_provider(["<think>thinking forever"])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "hi"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=0,
+            )
+        )
+        answer = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert answer == REASONING_EXHAUSTED_NOTICE
+
+    def test_an_answered_run_does_not_get_the_notice(self):
+        provider = self._make_provider(["<think>brief</think>", "the answer"])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "hi"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=0,
+            )
+        )
+        answer = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert answer == "the answer"
+
+    def test_a_silent_continuation_still_closes_with_the_notice(self):
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        provider = self._make_provider([long_think], [""])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "explain X"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=512,
+            )
+        )
+        answer = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert answer == REASONING_EXHAUSTED_NOTICE
 
     def test_cap_fire_emits_notice_then_continuation_tokens(self):
         long_think = "<think>" + ("x " * 400) + "</think>not reached"
