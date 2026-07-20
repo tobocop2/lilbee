@@ -58,12 +58,18 @@ def _row(
     }
 
 
-def _mock_table(rows: list[dict[str, object]]) -> MagicMock:
+def _mock_table(*row_batches: list[dict[str, object]]) -> MagicMock:
+    """A chunks table serving *row_batches* through the batched Arrow scan."""
     table = MagicMock()
     arrow = MagicMock()
-    arrow.to_pylist.return_value = rows
+    batches = []
+    for rows in row_batches:
+        batch = MagicMock()
+        batch.to_pylist.return_value = rows
+        batches.append(batch)
+    arrow.to_batches.return_value = batches
     table.to_arrow.return_value = arrow
-    table.count_rows.return_value = len(rows)
+    table.count_rows.return_value = sum(len(rows) for rows in row_batches)
     return table
 
 
@@ -304,6 +310,34 @@ class TestEmbeddingClustererLoad:
         rows = [_row(f"d{i}.md", [0.0, 0.0], chunk="content") for i in range(3)]
         store = _store_with_rows(rows)
         assert EmbeddingClusterer(cfg, store).get_clusters() == []
+
+    def test_scans_in_bounded_row_batches(self):
+        """The chunks table is consumed batch by batch, never materialized as
+        one full to_pylist -- peak Python-object memory must stay bounded by
+        the batch size regardless of corpus size."""
+        from lilbee.retrieval.clustering_embedding.helpers import (
+            _SCAN_BATCH_ROWS,
+            _load_chunk_records,
+        )
+
+        first = [_row("b.md", [0.0, 1.0], chunk="beta", chunk_index=1)]
+        second = [
+            _row("a.md", [1.0, 0.0], chunk="alpha", chunk_index=0),
+            {"source": None, "vector": [9.0, 9.0], "chunk": "bad", "chunk_index": 0},
+        ]
+        table = _mock_table(first, second)
+        store = MagicMock()
+        store.open_table.return_value = table
+
+        records, matrix = _load_chunk_records(store)
+        table.to_arrow.return_value.to_batches.assert_called_once_with(
+            max_chunksize=_SCAN_BATCH_ROWS
+        )
+        # Records from both batches, invalid row skipped, sorted with the
+        # matrix rows kept aligned across the batch boundary.
+        assert [(r.source, r.chunk_index) for r in records] == [("a.md", 0), ("b.md", 1)]
+        assert matrix.tolist() == [[1.0, 0.0], [0.0, 1.0]]
+        assert matrix.dtype == np.float32
 
 
 class TestEmbeddingClustererGetClusters:

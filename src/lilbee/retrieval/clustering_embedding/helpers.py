@@ -26,6 +26,13 @@ from lilbee.retrieval.clustering_embedding.types import ChunkRecord
 # peak float32 memory at block * N * 4 bytes ~= 40 MB.
 _BLOCK_SIZE = 1024
 
+# Rows per record batch when scanning the chunks table. Rows are converted
+# to Python objects one batch at a time, so this bounds the transient boxed
+# working set (row dicts plus vector float lists) while the columnar Arrow
+# data stays compact. At 1024 rows x 768 dims the transient boxing peaks
+# around 25 MB regardless of corpus size.
+_SCAN_BATCH_ROWS = 1024
+
 # Label Propagation hard iteration cap. Convergence is typically reached
 # in well under 10 passes on real corpora.
 _MAX_LPA_ITERATIONS = 30
@@ -115,27 +122,37 @@ def _load_chunk_records(
     Rows with an unparseable vector are skipped. Records are sorted by
     ``(source, chunk_index)`` so downstream cluster IDs are stable
     regardless of LanceDB's row return order. Records are tokenized once
-    here so TF-IDF labeling does not re-tokenize. The vector matrix is
-    preallocated and populated via numpy row-assignment, which pushes
-    the Python-level float cast into numpy's C loop and avoids building
-    a transient ``list[list[float]]``.
+    here so TF-IDF labeling does not re-tokenize.
+
+    The scan consumes the table in bounded row batches (``_SCAN_BATCH_ROWS``):
+    each batch's rows are parsed and its vectors immediately compacted into a
+    float32 block, so the boxed Python working set (row dicts plus vector
+    float lists) is one batch, not the whole table. Only the compact matrix
+    and the text records scale with corpus size.
     """
     table = store.open_table(CHUNKS_TABLE)
     if table is None:
         return [], np.zeros((0, 0), dtype=np.float32)
 
-    parsed = [pair for pair in map(_parse_chunk_row, table.to_arrow().to_pylist()) if pair]
-    if not parsed:
+    records: list[ChunkRecord] = []
+    blocks: list[np.ndarray] = []
+    for batch in table.to_arrow().to_batches(max_chunksize=_SCAN_BATCH_ROWS):
+        batch_vectors: list[list[float] | tuple[float, ...]] = []
+        for row in batch.to_pylist():
+            pair = _parse_chunk_row(row)
+            if pair is None:
+                continue
+            record, vector = pair
+            records.append(record)
+            batch_vectors.append(vector)
+        if batch_vectors:
+            blocks.append(np.asarray(batch_vectors, dtype=np.float32))
+    if not records:
         return [], np.zeros((0, 0), dtype=np.float32)
 
-    parsed.sort(key=lambda pair: (pair[0].source, pair[0].chunk_index))
-    dim = len(parsed[0][1])
-    matrix = np.empty((len(parsed), dim), dtype=np.float32)
-    records: list[ChunkRecord] = []
-    for row_idx, (record, vector) in enumerate(parsed):
-        records.append(record)
-        matrix[row_idx] = vector
-    return records, matrix
+    matrix = np.vstack(blocks)
+    order = sorted(range(len(records)), key=lambda i: (records[i].source, records[i].chunk_index))
+    return [records[i] for i in order], matrix[order]
 
 
 def normalize_rows(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
