@@ -465,7 +465,13 @@ class TestWriteConceptRecords:
 
         per_file = [
             ConceptGraph(cfg, MagicMock()).build_concept_records([(name, 0)], [concepts])
-            for name, concepts in (("a.md", ["python", "rust"]), ("b.md", ["python", "go"]))
+            for name, concepts in (
+                ("a.md", ["python", "rust"]),
+                ("b.md", ["python", "go"]),
+                # A chunk without python keeps the pairs above chance (PPMI > 0);
+                # a concept in every chunk has zero PMI with everything.
+                ("c.md", ["notes"]),
+            )
         ]
         mock_leiden.side_effect = lambda edge_rows: (
             {c: 0 for row in edge_rows for c in (row["source"], row["target"])},
@@ -820,6 +826,24 @@ class TestRebuildClusters:
         mock_leiden.assert_called_once_with([{"source": "ml", "target": "python", "weight": 1.0}])
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_skips_when_all_pairs_at_or_below_chance(self, mock_leiden, cg, mock_svc):
+        """When PPMI drops every pair (all co-occur at or below chance), there
+        is no edge set to cluster and Leiden must not run on an empty graph."""
+        # python co-occurs with ml in both chunks; with only 2 chunks each pair
+        # sits exactly at chance (PMI 0) and is dropped.
+        _cc, side = self._chunk_concepts(
+            {
+                "chunk_source": ["d.md"] * 4,
+                "chunk_index": [0, 0, 1, 1],
+                "concept": ["python", "ml", "python", "ml"],
+            }
+        )
+        mock_svc.store.open_table.side_effect = side
+        cg.rebuild_clusters()
+        mock_leiden.assert_not_called()
+        mock_svc.store.clear_and_add.assert_not_called()
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_skips_when_no_cooccurrence(self, mock_leiden, cg, mock_svc):
         """Chunks that each carry a single concept produce no pairs, so there is
         nothing to cluster."""
@@ -835,7 +859,11 @@ class TestRebuildClusters:
     def test_rebuild_compacts_concept_tables(self, mock_leiden, cg, mock_svc):
         """rebuild_clusters ends with optimize() on the concept tables."""
         cc_tbl, side = self._chunk_concepts(
-            {"chunk_source": ["d.md", "d.md"], "chunk_index": [0, 0], "concept": ["a", "b"]}
+            {
+                "chunk_source": ["d.md"] * 3,
+                "chunk_index": [0, 0, 1],
+                "concept": ["a", "b", "c"],
+            }
         )
         mock_svc.store.open_table.side_effect = side
         mock_leiden.return_value = ({"a": 0}, {"a": 1})
@@ -895,17 +923,34 @@ class TestComputePmi:
         # PPMI: all values >= 0
         assert pmi[("a", "b")] >= 0.0
 
-    def test_ppmi_clamps_negative(self):
-        """Anti-correlated pairs should get PPMI = 0."""
+    def test_ppmi_discards_anticorrelated_pairs(self):
+        """Anti-correlated pairs are dropped, not stored with weight 0.
+
+        A stored 0.0 would later be floored to a positive Leiden weight,
+        actively pulling pairs that co-occur less than chance into the
+        same community.
+        """
         from collections import Counter
 
         from lilbee.retrieval.concepts.community import _compute_pmi
 
-        # a and b rarely co-occur but each appear often -> negative PMI -> clamped to 0
+        # a and b rarely co-occur but each appear often -> negative PMI -> dropped
         cooccurrences = Counter({("a", "b"): 1})
         concept_counts = Counter({"a": 9, "b": 9})
         pmi = _compute_pmi(cooccurrences, concept_counts, 10)
-        assert pmi[("a", "b")] == 0.0
+        assert ("a", "b") not in pmi
+
+    def test_ppmi_discards_independent_pairs(self):
+        """Pairs co-occurring exactly at chance (PMI == 0) carry no signal."""
+        from collections import Counter
+
+        from lilbee.retrieval.concepts.community import _compute_pmi
+
+        # P(a,b) = 0.25 = P(a) * P(b) -> PMI exactly 0 -> dropped
+        cooccurrences = Counter({("a", "b"): 1})
+        concept_counts = Counter({"a": 2, "b": 2})
+        pmi = _compute_pmi(cooccurrences, concept_counts, 4)
+        assert ("a", "b") not in pmi
 
     def test_ppmi_skips_zero_count_concepts(self):
         """Concepts with zero count are skipped (avoid division by zero)."""

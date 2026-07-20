@@ -351,6 +351,9 @@ class ConceptGraph:
         if total_chunks == 0 or not cooccurrences:
             return
         pmi_weights = _compute_pmi(cooccurrences, concept_counts, total_chunks)
+        if not pmi_weights:
+            # Every pair co-occurred at or below chance: no edge set to cluster.
+            return
         edge_rows = [{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()]
 
         partition, degree_map = _leiden_partition(edge_rows)
