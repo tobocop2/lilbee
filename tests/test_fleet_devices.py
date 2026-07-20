@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -510,6 +511,22 @@ class TestAmdPinNeverSetsBothVars:
     gpu_devices=1 on a two-GPU box exposes physical GPU 1 as index 0 through
     ROCr, and HIP then asks for index 1 of a one-device list.
     """
+
+    @pytest.fixture(autouse=True)
+    def _restore_env(self) -> Iterator[None]:
+        # The pin writes os.environ in place, which monkeypatch does not track;
+        # without this the pin leaks into every later test that reads the env.
+        from lilbee.providers.fleet import gpu_env
+
+        snapshot = {name: os.environ.get(name) for name in gpu_env._GPU_VISIBLE_ENV_VARS}
+        try:
+            yield
+        finally:
+            for name, value in snapshot.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def _pin(self, monkeypatch: pytest.MonkeyPatch, value: str) -> dict[str, str]:
         from lilbee.core.config import cfg
