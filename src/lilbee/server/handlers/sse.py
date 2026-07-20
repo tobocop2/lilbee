@@ -146,11 +146,18 @@ class SseEventQueue(asyncio.Queue[str | None]):
         return self._queue.popleft().payload
 
     def _evict_oldest_droppable(self) -> bool:
-        """Shed the queue head when it is a progress event; True when a slot freed."""
-        if self._queue and self._queue[0].droppable:
-            self._queue.popleft()
-            self.dropped_events += 1
-            return True
+        """Shed the oldest progress event anywhere in the queue; True when one went.
+
+        Scans rather than checking only the head. A stream that interleaves
+        tokens with progress puts a non-droppable event at the head almost
+        immediately, and head-only eviction then reported "nothing to shed"
+        while the queue still held progress events it was allowed to drop.
+        """
+        for index, event in enumerate(self._queue):
+            if event.droppable:
+                del self._queue[index]
+                self.dropped_events += 1
+                return True
         return False
 
     def put_nowait(self, item: str | None) -> None:

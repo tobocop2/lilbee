@@ -4925,3 +4925,45 @@ class TestPlacementHandlers:
         event_names = [line.split(":", 1)[1].strip() for line in event_lines]
         assert SseEvent.GPU_STATS in event_names
         assert SseEvent.HEARTBEAT in event_names
+
+
+class TestSseQueueEviction:
+    """The cap only holds if eviction can find the progress events it may shed."""
+
+    def _queue(self, max_events: int = 4):
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        return SseEventQueue(max_events=max_events)
+
+    def test_progress_behind_a_token_is_still_evictable(self):
+        """Head-only eviction gave up whenever a token reached the front.
+
+        A real stream interleaves the two, so the head is non-droppable almost
+        immediately and the queue grew past its cap while still holding
+        progress events it was allowed to drop.
+        """
+        from lilbee.runtime.progress import EventType
+
+        queue = self._queue(max_events=3)
+        queue.put_nowait("token-1")
+        queue.put_event_nowait("progress-1", EventType.EMBED)
+        queue.put_event_nowait("progress-2", EventType.EMBED)
+
+        queue.put_nowait("token-2")
+
+        assert queue.qsize() == 3
+        assert queue.dropped_events == 1
+        # The shed one is the oldest progress, not the token at the head.
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert drained == ["token-1", "progress-2", "token-2"]
+
+    def test_always_delivered_events_are_never_shed(self):
+        """done/error/sentinel must land even when nothing is droppable."""
+        queue = self._queue(max_events=2)
+        queue.put_nowait("token-1")
+        queue.put_nowait("token-2")
+        queue.put_nowait("done")
+
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert drained == ["token-1", "token-2", "done"]
+        assert queue.dropped_events == 0
