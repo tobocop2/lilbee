@@ -50,8 +50,10 @@ def display_source_path(source: str) -> str:
     user's filesystem and substitute ``~`` for the home directory so the path
     is unambiguous without being noisy.
 
-    Falls back to the raw source string if the file no longer exists on disk
-    (e.g. the user moved the documents directory since ingestion).
+    Falls back to the raw source string only if resolution itself fails (an
+    exotic OSError such as a symlink loop). A missing file is not a failure:
+    ``resolve(strict=False)`` still returns the absolute path to where the
+    file would be, so a moved documents directory renders its old location.
     """
     candidate = cfg.documents_dir / source
     try:

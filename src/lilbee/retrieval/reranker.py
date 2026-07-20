@@ -128,7 +128,7 @@ def _score_candidates(query: str, to_rerank: list[SearchChunk]) -> list[float] |
     so the pass is skipped and retrieval order stands.
     """
     # circular: services -> reranker via Searcher; deferred so test-time
-    # monkeypatching of ``lilbee.services.get_services`` stays effective.
+    # monkeypatching of ``lilbee.app.services.get_services`` stays effective.
     from lilbee.app.services import get_services
 
     try:
