@@ -159,7 +159,7 @@ _GPU_STATS_INTERVAL_S = 1.0
 
 
 async def gpu_stats_stream(
-    devices: Sequence[object],
+    devices: Sequence[GpuInfo],
     interval_s: float = _GPU_STATS_INTERVAL_S,
     max_ticks: int | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -178,9 +178,9 @@ async def gpu_stats_stream(
     last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
-        stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
+        stats = probe_gpu_stats(devices)
         payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
-        hint = intel_util_hint(devices, stats)  # type: ignore[arg-type]
+        hint = intel_util_hint(devices, stats)
         if hint:
             payload["notice"] = msg.intel_util_hint_text(hint)
         yield sse_event(SseEvent.GPU_STATS, payload)
