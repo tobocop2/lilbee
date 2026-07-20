@@ -190,10 +190,19 @@ class SwapManager:
     def start(self, launches: list[InstanceLaunch], *, ttl_seconds: int = 0) -> None:
         """Write the config and spawn llama-swap, waiting for its proxy to answer.
 
-        The proxy and every member get a freshly allocated free port; a fixed
-        member port range would collide with a previous instance's server that
-        is still shutting down (the new llama-server then fails its bind and
-        llama-swap reports it only as "exited prematurely").
+        The proxy and every member get a freshly allocated free port, which is
+        why llama-swap's own startPort is not used: that assigns a fixed
+        sequential range at config load, so it would collide with a previous
+        instance's server still shutting down (the new llama-server then fails
+        its bind and llama-swap reports it only as "exited prematurely").
+
+        This narrows that collision rather than removing a race. The ports are
+        picked by binding and closing ephemeral sockets, while llama-swap starts
+        each upstream lazily on its first request, so a member port can sit
+        unbound for as long as it takes that request to arrive and anything else
+        on the box may take it in between. Nothing in llama-swap offers a
+        spawn-time probe to close that window; warming the roles up front
+        shortens it for the roles that are warmed.
         """
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
