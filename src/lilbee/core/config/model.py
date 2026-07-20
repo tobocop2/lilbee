@@ -97,9 +97,9 @@ class Config(BaseSettings):
     max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
     # Abstention floor against the [0, 1] fused relevance score (0.0 = no
     # filtering). When every retrieved chunk falls below it, ask refuses instead
-    # of feeding noise as context. The fused score normalizes against a per-query
-    # weight total under adaptive fusion, so this is a coarse floor, not a value
-    # that means the same thing on every query; tune it against your own corpus.
+    # of feeding noise as context. The fused score normalizes against the
+    # configured weight budget (a constant), so an arm's top hit scores a stable
+    # share of it; useful floors start around 0.4. Tune against your own corpus.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
     adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(

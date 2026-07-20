@@ -12,11 +12,11 @@ neighbors. The vector arm weighs 1; the chunk-BM25 arm weighs
 dominate); the optional title arm weighs ``title_weight``. Weights rescale
 the shares without leaving the canonical range.
 
-When adaptive fusion varies ``lexical_weight`` per query (or the title arm
-toggles on whether it returned rows), the total weight the score normalizes
-against changes query to query, so a fused score is a within-query ranking
-signal, not a value comparable across queries. ``min_relevance_score`` is
-therefore a coarse floor, not a fixed cross-query threshold.
+Scores normalize against the configured weight budget, not the per-query
+adapted ``lexical_weight`` or whether a given query's title arm returned rows
+(see ``fuse_arms``'s *weight_total*). That fixed denominator keeps scores on
+one scale across queries and across the sub-searches a caller merges, so
+``min_relevance_score`` stays a usable floor.
 
 Rank fusion is deliberate. A convex combination of normalized raw scores
 (``alpha * vector_similarity + (1 - alpha) * normalized_bm25``) was tried
@@ -130,6 +130,7 @@ def fuse_arms(
     *,
     lexical_weight: float = 1.0,
     title_weight: float = 1.0,
+    weight_total: float | None = None,
 ) -> list[SearchChunk]:
     """Merge the arms into one list scored by reciprocal rank.
 
@@ -139,15 +140,23 @@ def fuse_arms(
     arms carry every provenance field (``distance`` from the vector arm,
     ``bm25_score`` from the FTS arms). The result is sorted by ``score``
     descending and deduplicated on ``(source, chunk_index)``.
+
+    *weight_total* is the constant this call normalizes scores against. Pass the
+    configured weight budget so scores from separate sub-searches -- whose
+    adaptive *lexical_weight* and per-query title-arm presence differ -- stay on
+    one comparable scale when a caller merges them. It is a uniform divisor, so
+    the ranking within this call is unchanged. When omitted it defaults to the
+    arms present in this call (the standalone behavior).
     """
-    total_weight = 1.0 + lexical_weight + (title_weight if title_rows else 0.0)
+    if weight_total is None:
+        weight_total = 1.0 + lexical_weight + (title_weight if title_rows else 0.0)
     merged: dict[tuple[str, int], SearchChunk] = {}
-    _merge_arm(merged, vector_rows, 1.0 / total_weight)
+    _merge_arm(merged, vector_rows, 1.0 / weight_total)
     # A zero-weight arm contributes nothing, so skip it rather than folding in
     # zero-score rows that would still carry lexical provenance (and its
     # downstream distance/structural exemptions) on no real support.
     if lexical_weight > 0:
-        _merge_arm(merged, fts_rows, lexical_weight / total_weight)
+        _merge_arm(merged, fts_rows, lexical_weight / weight_total)
     if title_rows and title_weight > 0:
-        _merge_arm(merged, title_rows, title_weight / total_weight)
+        _merge_arm(merged, title_rows, title_weight / weight_total)
     return sorted(merged.values(), key=lambda r: r.score or 0.0, reverse=True)

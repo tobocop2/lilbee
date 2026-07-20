@@ -104,6 +104,52 @@ class TestFuseArms:
         assert all(r.score is not None for r in fused)
 
 
+class TestWeightTotalNormalization:
+    """A constant reference denominator keeps scores comparable across the
+    separate sub-searches that Searcher merges. Without it, each sub-search
+    normalizes by its own per-query total_weight, so a peaked sub-search
+    (lexical silenced) inflates its rows against a flat one's."""
+
+    def test_weight_total_pins_the_denominator(self):
+        # Lexical silenced (weight 0): the vector-only top hit must still be
+        # scored against the supplied constant denominator, not 1.0.
+        fused = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.0, weight_total=2.0
+        )
+        assert fused[0].score == pytest.approx(0.5)
+
+    def test_cross_subsearch_scores_share_one_scale(self):
+        # Same identical-strength vector-only top hit, two sub-searches whose
+        # adaptive lexical weight differs: with one shared weight_total they land
+        # on the same score instead of 1.0 vs 0.5.
+        peaked = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=0.0, weight_total=2.0
+        )
+        flat = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)], [], lexical_weight=1.0, weight_total=2.0
+        )
+        assert peaked[0].score == pytest.approx(flat[0].score)
+
+    def test_weight_total_preserves_within_call_order(self):
+        # A uniform denominator is a monotonic rescale, so the ranking inside one
+        # call is identical to the default per-call normalization.
+        vec = [_chunk("near.md", 0, distance=0.1), _chunk("far.md", 1, distance=0.9)]
+        lex = [_chunk("far.md", 1, bm25=30.0)]
+        default = [r.source for r in fuse_arms(vec, lex, lexical_weight=1.0)]
+        pinned = [r.source for r in fuse_arms(vec, lex, lexical_weight=1.0, weight_total=2.0)]
+        assert default == pinned
+
+    def test_weight_total_defaults_to_per_call_when_absent(self):
+        # Direct callers that omit weight_total keep the original behavior.
+        no_arg = fuse_arms([_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)])
+        explicit = fuse_arms(
+            [_chunk("a.md", 0, distance=0.3)],
+            [_chunk("a.md", 0, bm25=9.0)],
+            weight_total=2.0,
+        )
+        assert no_arg[0].score == pytest.approx(explicit[0].score)
+
+
 class TestAdaptiveLexicalWeight:
     """Per-query lexical weight gated by the vector arm's confidence."""
 

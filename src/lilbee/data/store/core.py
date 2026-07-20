@@ -745,18 +745,26 @@ class Store:
         if self._config.title_search:
             title_rows = self._title_arm(table, query_text, top_k, chunk_type)
         vector_rows = self._vector_arm(table, query_vector, top_k, chunk_type)
-        lexical_weight = self._config.lexical_fusion_weight
+        base_lexical_weight = self._config.lexical_fusion_weight
+        lexical_weight = base_lexical_weight
         if self._config.adaptive_fusion:
             # Gate the lexical arm per query by how peaked the vector ranking is.
             lexical_weight = adaptive_lexical_weight(
                 vector_rows, lexical_weight, self._config.adaptive_fusion_margin
             )
+        # Normalize against the configured weight budget, not this query's adapted
+        # weight or whether its title arm happened to return rows, so scores stay
+        # comparable across the sub-searches Searcher merges (query + variants).
+        weight_total = 1.0 + base_lexical_weight + (
+            self._config.title_search_weight if self._config.title_search else 0.0
+        )
         fused = fuse_arms(
             vector_rows,
             self._fts_arm(table, query_text, top_k, chunk_type),
             title_rows,
             lexical_weight=lexical_weight,
             title_weight=self._config.title_search_weight,
+            weight_total=weight_total,
         )
         fused = _drop_unsupported_far_rows(fused, max_distance)
         return fused[:top_k]
