@@ -67,11 +67,19 @@ class TestNetworkPath:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mount-path semantics")
     def test_is_network_path_uses_raw_path_when_resolve_fails(self, mounts_file, monkeypatch):
         # Path.resolve has no injectable seam, so this one branch patches it.
-        def _raise(self):
-            raise OSError("resolve failed")
+        # Raise only for the path under test: an unconditional patch also breaks
+        # the config validator, which resolves the data root on every field
+        # assignment, and so blows up in the cfg-restoring fixture's teardown.
+        target = Path("/workspace/models/m.gguf")
+        real_resolve = Path.resolve
+
+        def _raise(self, strict=False):
+            if self == target:
+                raise OSError("resolve failed")
+            return real_resolve(self, strict=strict)
 
         monkeypatch.setattr(Path, "resolve", _raise)
-        assert is_network_path(Path("/workspace/models/m.gguf")) is True
+        assert is_network_path(target) is True
 
 
 class TestHelpers:

@@ -165,10 +165,18 @@ class TestDisplaySourcePath:
         from lilbee.retrieval.query import display_source_path
 
         cfg.documents_dir = tmp_path / "docs"
+        target = cfg.documents_dir / "anything.md"
 
-        # Force resolve() to raise so the fallback path runs.
+        # Raise only for the path under test, delegating everything else to the
+        # real resolve(): an unconditional patch also breaks the config
+        # validator, which resolves the data root on every field assignment,
+        # and so blows up in the cfg-restoring fixture's teardown.
+        real_resolve = _Path.resolve
+
         def _raise(self, strict=False):
-            raise OSError("simulated")
+            if self == target:
+                raise OSError("simulated")
+            return real_resolve(self, strict=strict)
 
         monkeypatch.setattr(_Path, "resolve", _raise)
         assert display_source_path("anything.md") == "anything.md"
