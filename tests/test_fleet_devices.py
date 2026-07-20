@@ -631,3 +631,52 @@ def test_a_multi_card_backend_beats_one_bigger_card() -> None:
     one_nvidia = FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 4090", 24 * 10**9, 24 * 10**9)
 
     assert _select_backend([one_nvidia, *two_amd]) == two_amd
+
+
+def test_a_listing_without_a_free_figure_asks_the_loader_before_assuming_all_of_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ggml omits the free column when the driver has no VK_EXT_memory_budget.
+
+    Reading the omission as an empty card is how a desktop holding gigabytes of
+    compositor and browser VRAM was planned as fully free.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select, "vulkan_free_bytes_by_name", lambda: {"AMD Radeon RX 7900 XTX": 21 * 1024**3}
+    )
+
+    (device,) = _parse_devices("  Vulkan0: AMD Radeon RX 7900 XTX (24576 MiB)")
+
+    assert device.total_bytes == 24576 * _MIB
+    assert device.free_bytes == 21 * 1024**3
+
+
+def test_a_listing_free_figure_still_wins_over_the_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine's own number describes the process that will allocate."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", lambda: {"AMD": 1})
+
+    (device,) = _parse_devices("  Vulkan0: AMD (24576 MiB, 20000 MiB free)")
+
+    assert device.free_bytes == 20000 * _MIB
+
+
+def test_a_backend_the_loader_cannot_speak_for_keeps_the_heap_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Vulkan loader knows nothing about a CUDA listing's devices."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", lambda: {"NVIDIA H100": 1})
+
+    (device,) = _parse_devices("  CUDA0: NVIDIA H100 (81559 MiB)")
+
+    assert device.free_bytes == device.total_bytes

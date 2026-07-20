@@ -1710,7 +1710,10 @@ class TestVulkanGpuSelect:
                 ),
             ],
         )
-        assert gpu_select.enumerate_gpu_vram() == [(0, 24_000_000_000), (1, 8_000_000_000)]
+        assert gpu_select.enumerate_gpu_vram() == [
+            (0, 24_000_000_000, 24_000_000_000),
+            (1, 8_000_000_000, 8_000_000_000),
+        ]
 
     def test_enumerate_gpu_vram_none_when_probe_unavailable(
         self, monkeypatch: pytest.MonkeyPatch

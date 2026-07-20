@@ -43,6 +43,12 @@ _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 = 1000059000
 _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 = 1000059001
 _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES = 1000071004
 _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES = 1000083000
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 = 1000059006
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT = 1000237000
+# The device extension that turns heap sizes into a live budget. Without it the
+# only figure available is the heap's capacity, which never moves.
+_VK_EXT_MEMORY_BUDGET = b"VK_EXT_memory_budget"
+_VK_MAX_EXTENSION_NAME_SIZE = 256
 
 
 class VkDeviceType(IntEnum):
@@ -111,6 +117,10 @@ class VulkanDevice:
     # feature ggml's Vulkan backend requires of a device before it will use it.
     # ``None`` when the loader could not be asked, which is not a refusal.
     storage_buffer_16bit: bool | None = None
+    # Device-local memory not already committed, from VK_EXT_memory_budget.
+    # ``None`` when the device does not expose that extension, which is the
+    # difference between "nothing else is using this card" and "cannot tell".
+    free_bytes: int | None = None
 
 
 class PCIVendorID(IntEnum):
@@ -280,6 +290,13 @@ class _VkPhysicalDeviceFeatures2(ctypes.Structure):
     ]
 
 
+class _VkExtensionProperties(ctypes.Structure):
+    _fields_ = [
+        ("extensionName", c_char * _VK_MAX_EXTENSION_NAME_SIZE),
+        ("specVersion", c_uint32),
+    ]
+
+
 class _VkPhysicalDeviceIDProperties(ctypes.Structure):
     # VkPhysicalDeviceIDProperties, promoted to core in Vulkan 1.1. Chained onto
     # VkPhysicalDeviceProperties2 via pNext; the driver fills every field, so the
@@ -312,6 +329,26 @@ class _VkPhysicalDeviceMemoryProperties(ctypes.Structure):
     ]
 
 
+class _VkPhysicalDeviceMemoryProperties2(ctypes.Structure):
+    _fields_ = [
+        ("sType", c_uint32),
+        ("pNext", c_void_p),
+        ("memoryProperties", _VkPhysicalDeviceMemoryProperties),
+    ]
+
+
+class _VkPhysicalDeviceMemoryBudgetPropertiesEXT(ctypes.Structure):
+    # heapBudget is what this process may still allocate from each heap and
+    # heapUsage what it already has; the difference across the device-local heaps
+    # is the only cross-vendor figure that moves when another process takes VRAM.
+    _fields_ = [
+        ("sType", c_uint32),
+        ("pNext", c_void_p),
+        ("heapBudget", c_uint64 * _VK_MAX_MEMORY_HEAPS),
+        ("heapUsage", c_uint64 * _VK_MAX_MEMORY_HEAPS),
+    ]
+
+
 def autoselect_best_gpu_index() -> str | None:
     """Return the Vulkan device index of the best-available adapter, or ``None``.
 
@@ -338,8 +375,8 @@ def autoselect_best_gpu_index() -> str | None:
     return str(best.index)
 
 
-def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
-    """Return ``[(device_index, device_local_vram_bytes), ...]`` or ``None``.
+def enumerate_gpu_vram() -> list[tuple[int, int, int]] | None:
+    """Return ``[(device_index, device_local_vram_bytes, free_bytes), ...]`` or ``None``.
 
     Cross-vendor via the Vulkan probe (NVIDIA/AMD/Intel). ``None`` when the
     loader/probe is unavailable (macOS Metal, no Vulkan driver), so the
@@ -366,7 +403,11 @@ def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
     devices = _enumerate_vulkan_devices()
     if devices is None:
         return None
-    return [(d.index, d.vram_bytes) for d in devices if d.device_type in USABLE_VULKAN_TYPES]
+    return [
+        (d.index, d.vram_bytes, d.free_bytes if d.free_bytes is not None else d.vram_bytes)
+        for d in devices
+        if d.device_type in USABLE_VULKAN_TYPES
+    ]
 
 
 @lru_cache(maxsize=1)
@@ -385,6 +426,19 @@ def integrated_vulkan_indices() -> frozenset[int]:
     if not devices:
         return frozenset()
     return frozenset(d.index for d in devices if d.device_type == VkDeviceType.INTEGRATED_GPU)
+
+
+@lru_cache(maxsize=1)
+def vulkan_free_bytes_by_name() -> dict[str, int]:
+    """Device-local memory still free, keyed by the name the loader reports.
+
+    Only devices whose driver exposes ``VK_EXT_memory_budget`` appear; the rest
+    have no live figure to offer and are absent rather than guessed at.
+    """
+    devices = _enumerate_vulkan_devices()
+    if not devices:
+        return {}
+    return {d.device_name: d.free_bytes for d in devices if d.free_bytes is not None}
 
 
 @lru_cache(maxsize=1)
@@ -590,6 +644,73 @@ def _resolve_properties2(lib: ctypes.CDLL) -> ctypes._FuncPointer | None:
     return get_properties2
 
 
+def _resolve_memory_budget(
+    lib: ctypes.CDLL,
+) -> tuple[ctypes._FuncPointer, ctypes._FuncPointer] | None:
+    """``(vkGetPhysicalDeviceMemoryProperties2, vkEnumerateDeviceExtensionProperties)``."""
+    try:
+        get_memory2 = lib.vkGetPhysicalDeviceMemoryProperties2
+        enum_extensions = lib.vkEnumerateDeviceExtensionProperties
+    except AttributeError:
+        return None
+    get_memory2.argtypes = [c_void_p, POINTER(_VkPhysicalDeviceMemoryProperties2)]
+    get_memory2.restype = None
+    enum_extensions.argtypes = [
+        c_void_p,
+        c_char_p,
+        POINTER(c_uint32),
+        POINTER(_VkExtensionProperties),
+    ]
+    enum_extensions.restype = c_uint32
+    return get_memory2, enum_extensions
+
+
+def _supports_memory_budget(handle: c_void_p, enum_extensions: ctypes._FuncPointer) -> bool:
+    """Whether the device advertises ``VK_EXT_memory_budget``.
+
+    Asked rather than assumed: chaining the budget struct onto a device that
+    does not support it leaves it zeroed, and zero budget is indistinguishable
+    from a full card.
+    """
+    count = c_uint32(0)
+    if enum_extensions(handle, None, byref(count), None) != _VK_SUCCESS or count.value == 0:
+        return False
+    props = (_VkExtensionProperties * count.value)()
+    if enum_extensions(handle, None, byref(count), props) != _VK_SUCCESS:
+        return False
+    return any(props[i].extensionName == _VK_EXT_MEMORY_BUDGET for i in range(count.value))
+
+
+def _free_device_local_bytes(
+    handle: c_void_p, memory_budget: tuple[ctypes._FuncPointer, ctypes._FuncPointer] | None
+) -> int | None:
+    """Device-local memory still available, or ``None`` when it cannot be asked.
+
+    ``None`` rather than the heap size on purpose. Reporting capacity as free is
+    how a desktop holding gigabytes of compositor and browser VRAM was planned
+    as an empty card.
+    """
+    if memory_budget is None:
+        return None
+    get_memory2, enum_extensions = memory_budget
+    if not _supports_memory_budget(handle, enum_extensions):
+        return None
+    budget = _VkPhysicalDeviceMemoryBudgetPropertiesEXT(
+        sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT, pNext=None
+    )
+    props2 = _VkPhysicalDeviceMemoryProperties2(
+        sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+        pNext=ctypes.cast(ctypes.pointer(budget), c_void_p),
+    )
+    get_memory2(handle, byref(props2))
+    mem = props2.memoryProperties
+    free = 0
+    for i in range(mem.memoryHeapCount):
+        if mem.memoryHeaps[i].flags & _VK_MEMORY_HEAP_DEVICE_LOCAL_BIT:
+            free += max(0, int(budget.heapBudget[i]) - int(budget.heapUsage[i]))
+    return free
+
+
 def _resolve_features2(lib: ctypes.CDLL) -> ctypes._FuncPointer | None:
     """``vkGetPhysicalDeviceFeatures2`` with argtypes stamped, ``None`` if absent."""
     try:
@@ -666,6 +787,7 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
     core_1_1 = api_version >= _VK_API_VERSION_1_1
     get_properties2 = _resolve_properties2(lib) if core_1_1 else None
     get_features2 = _resolve_features2(lib) if core_1_1 else None
+    memory_budget = _resolve_memory_budget(lib) if core_1_1 else None
 
     try:
         count = c_uint32(0)
@@ -691,6 +813,7 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
                     vram_bytes=_device_local_vram(mem),
                     device_uuid=_device_uuid(handles[i], get_properties2),
                     storage_buffer_16bit=_storage_buffer_16bit(handles[i], get_features2),
+                    free_bytes=_free_device_local_bytes(handles[i], memory_budget),
                 )
             )
         return devices

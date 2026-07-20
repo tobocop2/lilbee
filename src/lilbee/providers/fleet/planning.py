@@ -398,7 +398,7 @@ def _flash_attention_is_trusted() -> bool:
     return backend is None or backend in _TRUSTED_FLASH_BACKENDS
 
 
-def _flash_attn_flag() -> str:
+def flash_attn_flag() -> str:
     """``--flash-attn`` argv value for chat and vision."""
     if not _flash_enabled():
         return _FLASH_OFF
@@ -411,7 +411,7 @@ def _role_flash(role: WorkerRole) -> bool:
     Only a definite ``on``. Under ``auto`` the engine decides at load time, and
     assuming it would size the KV cache below what the launch may need.
     """
-    return role in _FLASH_ROLES and _flash_attn_flag() == _FLASH_ON
+    return role in _FLASH_ROLES and flash_attn_flag() == _FLASH_ON
 
 
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
@@ -438,10 +438,10 @@ def _role_kv_cache_type_v(role: WorkerRole) -> KvCacheType:
     from lilbee.core.config.enums import KvCacheType
 
     configured = _role_kv_cache_type(role)
-    return configured if _flash_attn_flag() == _FLASH_ON else KvCacheType.F16
+    return configured if flash_attn_flag() == _FLASH_ON else KvCacheType.F16
 
 
-def _cache_type_flags() -> tuple[str | None, str | None]:
+def chat_cache_type_flags() -> tuple[str | None, str | None]:
     """``(--cache-type-k, --cache-type-v)`` for chat; ``None`` leaves the f16 default."""
     from lilbee.core.config.enums import KvCacheType
 
@@ -965,7 +965,7 @@ def _launch_for(
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
-    cache_type_k, cache_type_v = _cache_type_flags() if is_chat else (None, None)
+    cache_type_k, cache_type_v = chat_cache_type_flags() if is_chat else (None, None)
     argv = build_server_argv(
         binary=binary,
         spec=spec,
@@ -976,7 +976,7 @@ def _launch_for(
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
-        flash_attn=_flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
+        flash_attn=flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
         cache_type_k=cache_type_k,
         cache_type_v=cache_type_v,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
@@ -1041,8 +1041,8 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
 
         integrated = integrated_vulkan_indices()
         devices = [
-            FleetDevice("Vulkan", idx, "", vram, vram, unified=idx in integrated)
-            for idx, vram in (enumerate_gpu_vram() or [])
+            FleetDevice("Vulkan", idx, "", vram, free, unified=idx in integrated)
+            for idx, vram, free in (enumerate_gpu_vram() or [])
         ]
         if devices:
             log.warning(

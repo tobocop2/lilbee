@@ -223,7 +223,11 @@ def _parse_devices(text: str) -> list[FleetDevice]:
             continue
         backend, index, name, total_mib, free_mib = match.groups()
         total = int(total_mib) * MIB
-        free = int(free_mib) * MIB if free_mib else total
+        free = (
+            int(free_mib) * MIB
+            if free_mib
+            else _free_without_a_suffix(backend, name.strip(), total)
+        )
         devices.append(
             FleetDevice(
                 backend,
@@ -259,6 +263,22 @@ def _is_software_renderer(device: FleetDevice) -> bool:
     """
     name = device.name.casefold()
     return any(marker in name for marker in _SOFTWARE_RENDERER_MARKERS)
+
+
+def _free_without_a_suffix(backend: str, name: str, total: int) -> int:
+    """Free memory for a device whose listing printed no free figure.
+
+    ggml omits it when the driver has no ``VK_EXT_memory_budget``, and treating
+    the omission as "all of it" is how a desktop holding gigabytes of compositor
+    and browser VRAM was planned as an empty card. The loader is asked directly
+    first, since it exposes the same budget extension to this process; only when
+    that has nothing to say does the heap size stand in.
+    """
+    if backend != "Vulkan":
+        return total
+    from lilbee.providers.fleet.gpu_select import vulkan_free_bytes_by_name
+
+    return vulkan_free_bytes_by_name().get(name, total)
 
 
 def _vulkan_device_type(name: str) -> VkDeviceType | None:

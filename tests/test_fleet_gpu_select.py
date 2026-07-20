@@ -51,7 +51,7 @@ def test_enumerate_gpu_vram_omits_software_rasterizers(monkeypatch) -> None:
             ),
         ],
     )
-    assert gpu_select.enumerate_gpu_vram() == [(0, fifteen_gib)]
+    assert gpu_select.enumerate_gpu_vram() == [(0, fifteen_gib, fifteen_gib)]
 
 
 def test_rasterizer_first_keeps_the_real_gpu_at_its_own_index(monkeypatch) -> None:
@@ -72,7 +72,7 @@ def test_rasterizer_first_keeps_the_real_gpu_at_its_own_index(monkeypatch) -> No
         ],
     )
     # Not renumbered to 0: GGML_VK_VISIBLE_DEVICES names the loader's index.
-    assert gpu_select.enumerate_gpu_vram() == [(1, fifteen_gib)]
+    assert gpu_select.enumerate_gpu_vram() == [(1, fifteen_gib, fifteen_gib)]
     assert gpu_select.autoselect_best_gpu_index() == "1"
 
 
@@ -96,7 +96,7 @@ def test_paravirtual_adapters_are_not_offered_to_placement() -> None:
         ),
     ]
     with mock.patch.object(gpu_select, "_enumerate_vulkan_devices", lambda: devices):
-        assert gpu_select.enumerate_gpu_vram() == [(1, 24 * gib)]
+        assert gpu_select.enumerate_gpu_vram() == [(1, 24 * gib, 24 * gib)]
 
 
 def test_integrated_index_probe_runs_once_per_process(monkeypatch) -> None:
@@ -291,3 +291,50 @@ def test_features_are_not_guessed_when_the_loader_cannot_be_asked() -> None:
     from lilbee.providers.fleet.gpu_select import _storage_buffer_16bit
 
     assert _storage_buffer_16bit(None, None) is None
+
+
+def test_free_memory_is_read_back_through_the_budget_chain() -> None:
+    """budget minus usage on the device-local heaps, per VK_EXT_memory_budget."""
+    import ctypes
+
+    from lilbee.providers.fleet import gpu_select
+
+    def _fake_get_memory2(_handle, props2_ref) -> None:
+        props2 = props2_ref._obj
+        mem = props2.memoryProperties
+        mem.memoryHeapCount = 2
+        mem.memoryHeaps[0].flags = gpu_select._VK_MEMORY_HEAP_DEVICE_LOCAL_BIT
+        mem.memoryHeaps[1].flags = 0  # host-visible system memory, not VRAM
+        budget = ctypes.cast(
+            props2.pNext, ctypes.POINTER(gpu_select._VkPhysicalDeviceMemoryBudgetPropertiesEXT)
+        )
+        budget[0].heapBudget[0] = 24 * 1024**3
+        budget[0].heapUsage[0] = 3 * 1024**3
+        budget[0].heapBudget[1] = 64 * 1024**3
+        budget[0].heapUsage[1] = 0
+
+    def _fake_enum_extensions(_handle, _layer, count_ref, props_ref) -> int:
+        if props_ref is None:
+            count_ref._obj.value = 1
+        else:
+            props_ref[0].extensionName = gpu_select._VK_EXT_MEMORY_BUDGET
+        return gpu_select._VK_SUCCESS
+
+    free = gpu_select._free_device_local_bytes(None, (_fake_get_memory2, _fake_enum_extensions))
+
+    assert free == 21 * 1024**3
+
+
+def test_a_device_without_the_budget_extension_reports_unknown(monkeypatch) -> None:
+    """Reporting the heap size as free is how a loaded desktop looked empty."""
+    from lilbee.providers.fleet import gpu_select
+
+    monkeypatch.setattr(gpu_select, "_supports_memory_budget", lambda *_a: False)
+
+    assert gpu_select._free_device_local_bytes(None, (lambda *_a: None, lambda *_a: None)) is None
+
+
+def test_a_loader_too_old_for_the_budget_query_reports_unknown() -> None:
+    from lilbee.providers.fleet.gpu_select import _free_device_local_bytes
+
+    assert _free_device_local_bytes(None, None) is None

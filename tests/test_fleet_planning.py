@@ -159,16 +159,16 @@ def test_role_ctx_vision_uses_vision_picker(monkeypatch) -> None:
     assert planning_mod._role_ctx(WorkerRole.VISION, Path("/m/v.gguf"), {}) == 4321
 
 
-def test_flash_attn_flag_on_by_default(monkeypatch) -> None:
+def testflash_attn_flag_on_by_default(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "flash_attention", None)
-    assert planning_mod._flash_attn_flag() == "on"
+    assert planning_mod.flash_attn_flag() == "on"
     monkeypatch.setattr(cfg, "flash_attention", True)
-    assert planning_mod._flash_attn_flag() == "on"
+    assert planning_mod.flash_attn_flag() == "on"
 
 
-def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
+def testflash_attn_flag_off_when_disabled(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod._flash_attn_flag() == "off"
+    assert planning_mod.flash_attn_flag() == "off"
 
 
 def test_slots_for_aux_roles_are_single_slot() -> None:
@@ -352,7 +352,7 @@ def test_cache_type_flag_none_for_f16(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
-    assert planning_mod._cache_type_flags() == (None, None)
+    assert planning_mod.chat_cache_type_flags() == (None, None)
 
 
 def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
@@ -360,7 +360,7 @@ def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(planning_mod, "_flash_attention_is_trusted", lambda: True)
-    assert planning_mod._cache_type_flags() == ("q8_0", "q8_0")
+    assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
 
 
 def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
@@ -1348,7 +1348,7 @@ class TestBuildFleetWiring:
         )  # can't enumerate
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_select.enumerate_gpu_vram",
-            lambda: [(0, 24 * _GB)],
+            lambda: [(0, 24 * _GB, 20 * _GB)],
         )
         seen: dict[str, list] = {}
         monkeypatch.setattr(
@@ -2063,7 +2063,7 @@ def test_engine_reporting_no_devices_is_believed_over_the_host_loader(monkeypatc
         "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
     )
     # The host loader can see a GPU; the engine still cannot use it.
-    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
 
     assert planning_mod.resolve_devices(_Path("/fake/llama-server")) == []
 
@@ -2080,7 +2080,7 @@ def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
     monkeypatch.setattr(
         "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
     )
-    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
     monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
 
     devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
@@ -2122,13 +2122,13 @@ class TestFlashAttentionIsBackendAware:
     def test_backends_with_full_coverage_are_unchanged(self, monkeypatch, backend: str) -> None:
         """Every host that works today must keep the argv it has now."""
         self._on_backend(monkeypatch, backend)
-        assert planning_mod._flash_attn_flag() == "on"
-        assert planning_mod._cache_type_flags() == ("q8_0", "q8_0")
+        assert planning_mod.flash_attn_flag() == "on"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
 
     def test_an_unknown_backend_keeps_todays_behaviour(self, monkeypatch) -> None:
         self._on_backend(monkeypatch, None)
-        assert planning_mod._flash_attn_flag() == "on"
-        assert planning_mod._cache_type_flags() == ("q8_0", "q8_0")
+        assert planning_mod.flash_attn_flag() == "on"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
 
     @pytest.mark.parametrize("backend", ["Vulkan", "SYCL"])
     def test_lagging_backends_defer_to_the_engine_and_leave_v_unquantized(
@@ -2136,16 +2136,16 @@ class TestFlashAttentionIsBackendAware:
     ) -> None:
         """K quantization needs nothing; only V requires flash attention."""
         self._on_backend(monkeypatch, backend)
-        assert planning_mod._flash_attn_flag() == "auto"
-        assert planning_mod._cache_type_flags() == ("q8_0", None)
+        assert planning_mod.flash_attn_flag() == "auto"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
 
     def test_explicit_off_no_longer_asks_for_an_impossible_v_cache(self, monkeypatch) -> None:
         """flash_attention=false with a quantized KV type asked llama-server for
         'V cache quantization requires flash_attn', so it never started."""
         self._on_backend(monkeypatch, "CUDA")
         monkeypatch.setattr(cfg, "flash_attention", False)
-        assert planning_mod._flash_attn_flag() == "off"
-        assert planning_mod._cache_type_flags() == ("q8_0", None)
+        assert planning_mod.flash_attn_flag() == "off"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
 
     def test_the_estimate_does_not_assume_flash_attention_under_auto(self, monkeypatch) -> None:
         """The engine decides at load; assuming it would size KV below what the
