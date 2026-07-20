@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 
 def test_vulkan_properties_struct_matches_the_driver_abi() -> None:
     """The driver fills this buffer using its own layout, not ours.
@@ -225,3 +227,67 @@ def test_the_probe_itself_returns_deduplicated_devices(monkeypatch) -> None:
 
     assert devices is not None
     assert [d.index for d in devices] == [0]
+
+
+def test_a_device_the_engine_would_refuse_is_not_enumerated(monkeypatch) -> None:
+    """ggml gates its Vulkan pool on storageBuffer16BitAccess and drops failures silently.
+
+    Some Adreno parts expose uniformAndStorageBuffer16BitAccess without it, so
+    lilbee would size a fleet against VRAM the engine never touches while the
+    engine quietly ran on the CPU.
+    """
+    from lilbee.providers.fleet import gpu_select
+
+    supported = replace(_device(0, b"\x01" * 16), storage_buffer_16bit=True)
+    refused = replace(_device(1, b"\x02" * 16), storage_buffer_16bit=False)
+    monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: object())
+    monkeypatch.setattr(
+        gpu_select, "_list_devices_with_instance", lambda _lib: [supported, refused]
+    )
+
+    devices = gpu_select._enumerate_vulkan_devices()
+
+    assert devices is not None
+    assert [d.index for d in devices] == [0]
+
+
+def test_a_loader_that_cannot_report_features_drops_nothing(monkeypatch) -> None:
+    """None means unasked, not refused; a 1.0 loader must not blind the probe."""
+    from lilbee.providers.fleet import gpu_select
+
+    monkeypatch.setattr(gpu_select, "_load_vulkan_loader", lambda: object())
+    monkeypatch.setattr(
+        gpu_select, "_list_devices_with_instance", lambda _lib: [_device(0, b""), _device(1, b"")]
+    )
+
+    devices = gpu_select._enumerate_vulkan_devices()
+
+    assert devices is not None
+    assert [d.index for d in devices] == [0, 1]
+
+
+def test_the_feature_flag_is_read_back_through_the_pnext_chain() -> None:
+    """The driver writes into the chained struct, so follow the real pointer."""
+    import ctypes
+
+    from lilbee.providers.fleet import gpu_select
+
+    def _fake_get_features2(_handle, features2_ref) -> None:
+        storage = ctypes.cast(
+            features2_ref._obj.pNext,
+            ctypes.POINTER(gpu_select._VkPhysicalDevice16BitStorageFeatures),
+        )
+        assert (
+            storage[0].sType == gpu_select._VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES
+        )
+        # An Adreno part: the uniform variant only.
+        storage[0].uniformAndStorageBuffer16BitAccess = 1
+        storage[0].storageBuffer16BitAccess = 0
+
+    assert gpu_select._storage_buffer_16bit(None, _fake_get_features2) is False
+
+
+def test_features_are_not_guessed_when_the_loader_cannot_be_asked() -> None:
+    from lilbee.providers.fleet.gpu_select import _storage_buffer_16bit
+
+    assert _storage_buffer_16bit(None, None) is None

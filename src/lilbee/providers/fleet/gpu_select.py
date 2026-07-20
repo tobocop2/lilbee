@@ -39,8 +39,10 @@ _VK_API_VERSION_1_0 = (1 << 22) | (0 << 12) | 0
 # device UUID it carries) core rather than an extension; a loader that refuses
 # it gets the 1.0 request back and the probe simply has no UUIDs to dedup by.
 _VK_API_VERSION_1_1 = (1 << 22) | (1 << 12) | 0
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 = 1000059000
 _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 = 1000059001
 _VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES = 1000071004
+_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES = 1000083000
 
 
 class VkDeviceType(IntEnum):
@@ -105,6 +107,10 @@ class VulkanDevice:
     # across instances, processes, driver APIs, driver versions and reboots, so
     # two entries sharing one is one piece of silicon behind two drivers.
     device_uuid: bytes = b""
+    # VkPhysicalDeviceVulkan11Features::storageBuffer16BitAccess, the single
+    # feature ggml's Vulkan backend requires of a device before it will use it.
+    # ``None`` when the loader could not be asked, which is not a refusal.
+    storage_buffer_16bit: bool | None = None
 
 
 class PCIVendorID(IntEnum):
@@ -246,6 +252,32 @@ class _VkMemoryType(ctypes.Structure):
 
 class _VkMemoryHeap(ctypes.Structure):
     _fields_ = [("size", c_uint64), ("flags", c_uint32)]
+
+
+class _VkPhysicalDevice16BitStorageFeatures(ctypes.Structure):
+    # Promoted to core in Vulkan 1.1 from VK_KHR_16bit_storage. Chained onto
+    # VkPhysicalDeviceFeatures2; only the first flag is read.
+    _fields_ = [
+        ("sType", c_uint32),
+        ("pNext", c_void_p),
+        ("storageBuffer16BitAccess", c_uint32),
+        ("uniformAndStorageBuffer16BitAccess", c_uint32),
+        ("storagePushConstant16", c_uint32),
+        ("storageInputOutput16", c_uint32),
+    ]
+
+
+class _VkPhysicalDeviceFeatures2(ctypes.Structure):
+    # VkPhysicalDeviceFeatures is a flat run of VkBool32s whose count grows with
+    # no version of the spec but is easy to miscount, and the driver writes the
+    # whole thing into this buffer. Declared larger than the real struct so a
+    # miscount cannot become a heap overrun the way the limits mirror once did;
+    # the field sits last, so the extra words shift nothing the driver reads.
+    _fields_ = [
+        ("sType", c_uint32),
+        ("pNext", c_void_p),
+        ("features", c_uint32 * 128),
+    ]
 
 
 class _VkPhysicalDeviceIDProperties(ctypes.Structure):
@@ -420,11 +452,27 @@ def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
     if lib is None:
         return None
     try:
-        return _deduplicate_by_uuid(_list_devices_with_instance(lib))
+        devices = _list_devices_with_instance(lib)
+        return _deduplicate_by_uuid(_drop_devices_the_engine_refuses(devices))
     except OSError:
         # ctypes argument / call-site errors land here; treat as
         # "probe failed" rather than crashing the host process.
         return None
+
+
+def _drop_devices_the_engine_refuses(devices: list[VulkanDevice]) -> list[VulkanDevice]:
+    """Drop adapters ggml's Vulkan backend would exclude from its device pool.
+
+    ``ggml_vk_device_is_supported`` gates on exactly one feature,
+    ``storageBuffer16BitAccess``, and excludes devices without it silently, with
+    no error anywhere. Some Adreno parts are the documented case. Keeping such a
+    device means placement sizes a fleet against VRAM the engine will never
+    touch, and the engine quietly runs on the CPU or another adapter instead.
+
+    Only a definite ``False`` drops a device: a loader too old to be asked
+    reports ``None``, and that is not a refusal.
+    """
+    return [d for d in devices if d.storage_buffer_16bit is not False]
 
 
 def _deduplicate_by_uuid(devices: list[VulkanDevice]) -> list[VulkanDevice]:
@@ -542,6 +590,40 @@ def _resolve_properties2(lib: ctypes.CDLL) -> ctypes._FuncPointer | None:
     return get_properties2
 
 
+def _resolve_features2(lib: ctypes.CDLL) -> ctypes._FuncPointer | None:
+    """``vkGetPhysicalDeviceFeatures2`` with argtypes stamped, ``None`` if absent."""
+    try:
+        get_features2 = lib.vkGetPhysicalDeviceFeatures2
+    except AttributeError:
+        return None
+    get_features2.argtypes = [c_void_p, POINTER(_VkPhysicalDeviceFeatures2)]
+    get_features2.restype = None
+    return get_features2
+
+
+def _storage_buffer_16bit(
+    handle: c_void_p, get_features2: ctypes._FuncPointer | None
+) -> bool | None:
+    """Whether the adapter supports ``storageBuffer16BitAccess``, ``None`` if unasked.
+
+    The one feature ggml's Vulkan backend requires before it will put a device
+    in its pool, and it drops devices that lack it silently. Some Adreno parts
+    expose ``uniformAndStorageBuffer16BitAccess`` without it, so the two are not
+    interchangeable and only the first flag answers the question.
+    """
+    if get_features2 is None:
+        return None
+    storage = _VkPhysicalDevice16BitStorageFeatures(
+        sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES, pNext=None
+    )
+    features2 = _VkPhysicalDeviceFeatures2(
+        sType=_VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        pNext=ctypes.cast(ctypes.pointer(storage), c_void_p),
+    )
+    get_features2(handle, byref(features2))
+    return bool(storage.storageBuffer16BitAccess)
+
+
 def _device_uuid(handle: c_void_p, get_properties2: ctypes._FuncPointer | None) -> bytes:
     """The adapter's ``deviceUUID``, empty when it cannot be asked for.
 
@@ -581,7 +663,9 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
     instance, api_version = _create_probe_instance(create_instance)
     if instance is None:
         return []
-    get_properties2 = _resolve_properties2(lib) if api_version >= _VK_API_VERSION_1_1 else None
+    core_1_1 = api_version >= _VK_API_VERSION_1_1
+    get_properties2 = _resolve_properties2(lib) if core_1_1 else None
+    get_features2 = _resolve_features2(lib) if core_1_1 else None
 
     try:
         count = c_uint32(0)
@@ -606,6 +690,7 @@ def _list_devices_with_instance(lib: ctypes.CDLL) -> list[VulkanDevice]:
                     vendor_id=int(props.vendorID),
                     vram_bytes=_device_local_vram(mem),
                     device_uuid=_device_uuid(handles[i], get_properties2),
+                    storage_buffer_16bit=_storage_buffer_16bit(handles[i], get_features2),
                 )
             )
         return devices
