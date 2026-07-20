@@ -4764,6 +4764,7 @@ class TestPlacementHandlers:
 
     async def test_gpu_stats_stream_includes_intel_grant_notice(self):
         from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
         from lilbee.providers.fleet.gpu_stats import GpuStat
 
         gpu = GpuInfo(
@@ -4775,12 +4776,10 @@ class TestPlacementHandlers:
             free_bytes=200,
         )
         stat = {0: GpuStat(0, None, 200, 200)}
+        hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
         with (
             patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
-            patch(
-                "lilbee.providers.fleet.gpu_stats.intel_grant_binary",
-                return_value="/usr/bin/intel_gpu_top",
-            ),
+            patch("lilbee.providers.fleet.gpu_stats.intel_util_hint", return_value=hint),
         ):
             chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
         events = [
@@ -4790,6 +4789,34 @@ class TestPlacementHandlers:
             if line.startswith("data:")
         ]
         assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in events[0]["notice"]
+
+    async def test_gpu_stats_stream_includes_intel_install_notice(self):
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        stat = {0: GpuStat(0, None, 200, 200)}
+        hint = IntelUtilHint(IntelHintKind.INSTALL, None)
+        with (
+            patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
+            patch("lilbee.providers.fleet.gpu_stats.intel_util_hint", return_value=hint),
+        ):
+            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
+        events = [
+            json.loads(line[len("data:") :].strip())
+            for chunk in chunks
+            for line in chunk.splitlines()
+            if line.startswith("data:")
+        ]
+        assert "igt-gpu-tools" in events[0]["notice"]
 
     async def test_gpu_stats_stream_emits_heartbeat_when_interval_elapsed(self):
         """A heartbeat event is emitted when the configured interval elapses."""

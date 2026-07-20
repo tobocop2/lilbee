@@ -172,16 +172,16 @@ async def gpu_stats_stream(
     clients don't time out.
     """
     from lilbee.cli.tui import messages as msg
-    from lilbee.providers.fleet.gpu_stats import intel_grant_binary, probe_gpu_stats
+    from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats
 
     last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
         stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
         payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
-        binary = intel_grant_binary(devices, stats)  # type: ignore[arg-type]
-        if binary:
-            payload["notice"] = msg.FLEET_INTEL_UTIL_GRANT.format(binary=binary)
+        hint = intel_util_hint(devices, stats)  # type: ignore[arg-type]
+        if hint:
+            payload["notice"] = msg.intel_util_hint_text(hint)
         yield sse_event(SseEvent.GPU_STATS, payload)
         tick += 1
         if max_ticks is None or tick < max_ticks:
