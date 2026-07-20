@@ -1208,11 +1208,22 @@ class FleetProvider:
         self._engine_holds = {}
 
     def _restart_engines(self) -> None:
-        """A config change stops every used engine; users rediscover and rebuild."""
-        for engine_dir in list(self._engine_holds):
+        """A config change stops this provider's engines so they rebuild with the
+        new config; users rediscover and rebuild.
+
+        Membership is released and the hold map cleared as each engine is stopped.
+        Leaving a stale hold behind is not benign: after the lazy rebuild overflows
+        to a private dir (a foreign process having claimed the machine slot in the
+        gap), the next config change would iterate the stale machine hold and stop
+        that foreign engine mid-use, and the stale flock would keep live_users_exist
+        true so the foreign engine's real last user could never reap it.
+        """
+        for engine_dir, hold in list(self._engine_holds.items()):
             with build_lock(engine_dir, best_effort=True):
+                hold.release_and_check_last()  # drop our membership; we own the teardown
                 stop_engine(engine_dir)
                 log.info("Engine restarted at %s (configuration changed)", engine_dir)
+        self._engine_holds = {}
 
     def _drop_swap_refs(self) -> None:
         """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""

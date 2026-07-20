@@ -331,6 +331,25 @@ def test_drop_swap_refs_clears_the_dir_map() -> None:
     assert p._group_dirs == {}
 
 
+def test_restart_engines_releases_and_prunes_holds(monkeypatch, tmp_path: Path) -> None:
+    # A config-change restart must release membership and clear the hold map: a
+    # stale hold would later evict a foreign engine that claimed the dir, and keep
+    # it falsely live so its real last user could never reap it.
+    from lilbee.runtime.engine_lock import hold_user_lock, live_users_exist
+
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: hold_user_lock(tmp_path)}
+    assert live_users_exist(tmp_path) is True  # we hold membership
+
+    p._restart_engines()
+
+    assert p._engine_holds == {}  # hold map pruned
+    assert live_users_exist(tmp_path) is False  # membership released, not left stale
+    assert stopped == [tmp_path]  # engine stopped for the config change
+
+
 def test_reload_of_a_bound_engine_reacquires_instead_of_duplicating(monkeypatch) -> None:
     # A provider bound to another process's engine owns none of its groups. A model
     # change must not restart the group "in place": a bound manager's shutdown only
