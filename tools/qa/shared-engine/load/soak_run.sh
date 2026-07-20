@@ -16,9 +16,12 @@ echo "round,ok_streams,cli_ok,duration_s,vram_mb,swaps,servers,locks,chaos,failu
 log() { echo "[soak $(date +%H:%M:%S)] $*"; }
 
 vram() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1; }
-swaps() { pgrep -fc "bin/llama-swap" 2>/dev/null || echo 0; }
-servers() { pgrep -fc "bin/llama-server" 2>/dev/null || echo 0; }
-locks() { ls /root/.cache/lilbee/engine/engine-users/ 2>/dev/null | wc -l | tr -d " "; }
+# procps-ng pgrep -c prints the count even when it is 0 and still exits nonzero,
+# so a bare `pgrep -fc ... || echo 0` yields "0\n0" and puts a newline mid-CSV-row.
+count() { local n; n=$(pgrep -fc "$1" 2>/dev/null | head -1); echo "${n:-0}"; }
+swaps() { count "bin/llama-swap"; }
+servers() { count "bin/llama-server"; }
+locks() { ls "$LILBEE_ENGINE_DIR/engine-users/" 2>/dev/null | wc -l | tr -d " "; }
 
 one_stream() { # one_stream <round> <idx>: a multi-turn chat exchange
   local r=$1 idx=$2 out
@@ -47,7 +50,9 @@ chaos() { # kill one engine process; the design must self-heal
 
 export LILBEE_ENGINE_DIR=/root/.cache/lilbee/engine LILBEE_MODELS_DIR=/root/models
 BASE_VRAM=$(vram)
-log "baseline vram=${BASE_VRAM}MB rounds=$ROUNDS streams=$STREAMS chaos every $CHAOS_EVERY"
+BASE_SWAPS=$(swaps)
+BASE_SERVERS=$(servers)
+log "baseline vram=${BASE_VRAM}MB swaps=$BASE_SWAPS servers=$BASE_SERVERS rounds=$ROUNDS streams=$STREAMS chaos every $CHAOS_EVERY"
 
 for r in $(seq 1 "$ROUNDS"); do
   t0=$SECONDS
@@ -71,13 +76,29 @@ for r in $(seq 1 "$ROUNDS"); do
   wait   # chaos timer, if any
   dur=$((SECONDS - t0))
   v=$(vram); sw=$(swaps); sv=$(servers); lk=$(locks)
-  [ "$ok" -lt "$STREAMS" ] && [ "$did_chaos" -eq 0 ] && failures="${failures}streams;"
-  [ "$cli_ok" -eq 0 ] && [ "$did_chaos" -eq 0 ] && failures="${failures}cli;"
+  # A forced kill may legitimately fail the streams it interrupted, but that is
+  # recorded rather than dropped: exempting chaos rounds silently made "zero
+  # invariant breaches" unfalsifiable on exactly the rounds under test. Chaos
+  # degradations get their own markers and their own total.
+  if [ "$did_chaos" -eq 0 ]; then
+    [ "$ok" -lt "$STREAMS" ] && failures="${failures}streams;"
+    [ "$cli_ok" -eq 0 ] && failures="${failures}cli;"
+  else
+    [ "$ok" -lt "$STREAMS" ] && failures="${failures}chaos-streams;"
+    [ "$cli_ok" -eq 0 ] && failures="${failures}chaos-cli;"
+  fi
   [ "$v" -gt $((BASE_VRAM + BASE_VRAM / 10)) ] && failures="${failures}vram-creep;"
   [ "$lk" -gt 3 ] && failures="${failures}lock-leak;"
+  # Documented invariant that was never enforced: process counts return to
+  # baseline. A kill that orphans a llama-server shows up here and nowhere else.
+  [ "$sw" -gt "$BASE_SWAPS" ] && failures="${failures}swap-leak;"
+  [ "$sv" -gt "$BASE_SERVERS" ] && failures="${failures}server-leak;"
   echo "$r,$ok,$cli_ok,$dur,$v,$sw,$sv,$lk,$did_chaos,$failures" >> "$CSV"
   log "round $r: ok=$ok/$STREAMS cli=$cli_ok ${dur}s vram=${v}MB swaps=$sw servers=$sv locks=$lk chaos=$did_chaos ${failures:+FAIL:$failures}"
 done
 
-BAD=$(grep -c "streams;\|cli;\|vram-creep;\|lock-leak;" "$CSV" || true)
-log "SOAK-COMPLETE rounds=$ROUNDS invariant-breaches=$BAD"
+# Anchored to the field so "chaos-streams;" is not counted as a hard "streams;".
+BAD=$(grep -cE "(^|,)([^,]*;)*(streams|cli|vram-creep|lock-leak|swap-leak|server-leak);" "$CSV" || true)
+CHAOS_DEGRADED=$(grep -c "chaos-streams;\|chaos-cli;" "$CSV" || true)
+log "SOAK-COMPLETE rounds=$ROUNDS invariant-breaches=$BAD chaos-round-degradations=$CHAOS_DEGRADED"
+[ "$BAD" -eq 0 ] || exit 1
