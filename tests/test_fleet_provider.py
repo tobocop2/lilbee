@@ -3620,6 +3620,39 @@ def test_ladder_replaces_an_unused_incompatible_private_engine(monkeypatch, tmp_
     holder.release_and_check_last()
 
 
+def test_ladder_does_not_kill_a_live_incompatible_overflow_engine(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The overflow dir never evicts or stacks on a live in-use incompatible engine.
+
+    With the machine slot held by one live setup and the overflow dir held by
+    another, there is nowhere further to go; the ladder serves nothing rather than
+    kill the overflow incumbent or load a second fleet's weights beside it.
+    """
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    machine_holder = hold_user_lock(machine, pid=999_888)  # machine incumbent in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    private = tmp_path / "root" / "data" / "engine"
+    _engine_state_file(private, "chat", pin="pin-OTHER", model="m-chat", role="chat")
+    private_holder = hold_user_lock(private, pid=999_777)  # overflow incumbent in live use too
+
+    p = FleetProvider()
+    assert p._ensure_fleet() is False  # nowhere to serve
+    assert stopped == []  # neither live incumbent was killed
+    assert built == []  # no second fleet stacked into the overflow dir
+
+    machine_holder.release_and_check_last()
+    private_holder.release_and_check_last()
+
+
 def test_ladder_returns_false_when_overflow_has_nothing_to_serve(
     monkeypatch, tmp_path: Path
 ) -> None:

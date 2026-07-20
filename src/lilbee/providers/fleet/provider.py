@@ -824,9 +824,11 @@ class FleetProvider:
         engine with a live user is never reaped or stopped, so a transient probe
         failure (fd exhaustion, host thrash) cannot kill a busy engine. Replace in
         place only when no live user holds it or it is this contract's own engine
-        (pin-equal, serving only wanted models). On the machine slot a live
-        incompatible engine returns ``None`` (overflow); the private overflow dir
-        always builds. Before building, any recorded engine is cleared -- keyed on
+        (pin-equal, serving only wanted models). A live incompatible engine in
+        active use is never evicted or stacked on: on the machine slot it returns
+        ``None`` (overflow), and in the overflow dir it serves nothing rather than
+        duplicate weights beside it. Before building, any recorded engine is cleared
+        -- keyed on
         the state file, not the probe -- so an unprobeable incumbent is stopped
         rather than double-built beside. The stop is gated on ``_can_build_engine``
         so a process that can serve nothing never destroys a warm engine it can't
@@ -839,8 +841,13 @@ class FleetProvider:
             replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
                 engine_dir, pin, wanted
             )
-            if not is_overflow and not replaceable:
-                return None
+            if not replaceable:
+                # A live engine another setup is actively using is never evicted or
+                # stacked on. On the machine slot that means overflow (None); in the
+                # overflow dir there is nowhere further to go, so serve nothing rather
+                # than kill the incumbent or load a second fleet's weights beside it
+                # (an OOM on a small-VRAM box).
+                return None if not is_overflow else False
             if not _can_build_engine(wanted):
                 return False
             # No live user holds this dir now (or it is ours to rebuild): reap dead
