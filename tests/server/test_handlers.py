@@ -86,6 +86,7 @@ def _make_kreuzberg_result(text: str = "Some extracted text. " * 20, num_chunks:
     result = mock.MagicMock()
     result.chunks = chunks
     result.content = text
+    result.metadata = {}
     return result
 
 

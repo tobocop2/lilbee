@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from lilbee.data.ingest.extract import chunk_and_embed_pages
-from lilbee.data.store import ChunkWrite, PageTextRecord, SourceType
+from lilbee.data.ingest.title import derive_title
+from lilbee.data.store import ChunkWrite, PageTextRecord, SourceMeta, SourceType
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
@@ -94,7 +95,25 @@ def build_page_dataset(store: Store, source: str | None = None) -> pa.Table:
         extra = _reconstructed_arrow(store, sorted(names - captured), table.schema)
         if extra.num_rows:
             table = pa.concat_tables([table, extra])
+    table = _with_source_metadata(store, table)
     return table.sort_by([("source", "ascending"), ("page", "ascending")])
+
+
+def _with_source_metadata(store: Store, table: pa.Table) -> pa.Table:
+    """Denormalize each source's extraction metadata onto its page rows.
+
+    The dataset is per page while title/authors/created_at live per source, so
+    without this an export/import cycle drops them and the import can only fall
+    back to the filename stem. Absent metadata stays null.
+    """
+    import pyarrow as pa
+
+    by_name: dict[str, dict] = {s["filename"]: dict(s) for s in store.get_sources()}
+    sources = table.column("source").to_pylist()
+    for column in SourceMeta._fields:
+        values = [by_name.get(name, {}).get(column) for name in sources]
+        table = table.append_column(column, pa.array(values, pa.string()))
+    return table
 
 
 def _reconstructed_arrow(store: Store, sources: list[str], schema: pa.Schema) -> pa.Table:
@@ -200,6 +219,37 @@ def load_page_dataset(path: Path, fmt: DatasetFormat) -> list[PageTextRecord]:
     return deserialize_dataset(path.read_bytes(), fmt)
 
 
+def _page_text_row(row: PageTextRecord) -> dict:
+    """Project a dataset row down to the ``_page_texts`` columns.
+
+    A dataset carries the source's metadata denormalized on every page row; the
+    page-texts table has no such columns, so they are dropped before the write.
+    """
+    return {
+        "source": row["source"],
+        "page": row["page"],
+        "text": row["text"],
+        "content_type": row["content_type"],
+    }
+
+
+def _source_meta_from_rows(rows: list[PageTextRecord], name: str) -> SourceMeta:
+    """Recover a source's extraction metadata from its dataset rows.
+
+    The values are identical on every page row, so the first carries them. A
+    dataset exported before the metadata columns existed has none, in which case
+    the title falls back to the cleaned filename stem.
+    """
+    first: dict = dict(rows[0]) if rows else {}
+    stored = first.get("title")
+    title = stored.strip() if isinstance(stored, str) and stored.strip() else derive_title(name)
+    return SourceMeta(
+        title=title,
+        authors=first.get("authors") or "",
+        created_at=first.get("created_at") or "",
+    )
+
+
 async def import_dataset(
     store: Store,
     rows: list[PageTextRecord],
@@ -225,6 +275,13 @@ async def import_dataset(
         content_type = source_rows[0]["content_type"] or "text"
         page_texts = [(r["page"], r["text"]) for r in source_rows]
         chunks = await chunk_and_embed_pages(page_texts, name, content_type, on_progress)
+        # Datasets exported with the metadata columns round-trip the extracted
+        # title/authors/created_at; older ones carry none, so fall back to the
+        # stem-derived title that keeps imported chunks visible to the title arm.
+        meta = _source_meta_from_rows(source_rows, name)
+        title = meta.title
+        for chunk in chunks:
+            chunk["title"] = title or None
         # One locked transaction (cleanup + chunks + page texts + source row) so a
         # failure can't leave the source with its old rows deleted and no new ones;
         # the embedding-dim check inside runs before the cleanup delete.
@@ -236,8 +293,9 @@ async def import_dataset(
                     file_hash="",
                     records=cast(list[dict], chunks),
                     needs_cleanup=True,
-                    page_texts=[dict(r) for r in source_rows],
+                    page_texts=[_page_text_row(r) for r in source_rows],
                     source_type=SourceType.IMPORTED,
+                    meta=meta,
                 )
             ],
         )

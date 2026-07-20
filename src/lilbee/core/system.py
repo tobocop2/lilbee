@@ -66,6 +66,21 @@ def find_local_root(start: Path | None = None) -> Path | None:
     return None
 
 
+def canonical_data_root(root: Path | str) -> Path:
+    """Resolve a data root to one canonical path.
+
+    Session file, port file, and write lock all derive from the data root, so
+    two spellings of one directory key two locks. Symlinks, relative paths, a
+    leading ``~``, and macOS ``/var`` vs ``/private/var`` each produce a pair.
+    A root that does not exist yet resolves to where it will be created.
+
+    Uses ``os.path`` rather than ``Path.expanduser().resolve()``: ``resolve``
+    rebuilds via ``type(self)``, which raises for a ``PosixPath`` that exists
+    on Windows (``Path()`` picks its flavour from ``os.name``, which tests patch).
+    """
+    return Path(os.path.realpath(os.path.expanduser(os.fspath(root))))
+
+
 def canonical_models_dir() -> Path:
     """Return the shared models directory (always in the platform default, never per-project).
     Multiple lilbee instances share this directory so models are downloaded once.

@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from lilbee.retrieval.query.history_window import (
     chars_for_tokens,
-    estimate_text_tokens,
     estimate_tokens,
     windowed_history,
 )
@@ -28,7 +27,7 @@ COMPACT_PROMPT = (
     "Condense the conversation below into brief factual notes that let an "
     "assistant carry it on. Keep names, numbers, decisions, and anything left "
     "unresolved; drop pleasantries. Under {words} words. Return ONLY the notes.\n\n"
-    "{previous}Conversation:\n{transcript}"
+    "Conversation:\n{transcript}"
 )
 
 # Ceiling on a summary's tokens; ctx/8 governs below it. A tighter ceiling
@@ -219,9 +218,7 @@ def summary_cap(ctx_target: int) -> int:
     return max(_SUMMARY_MIN_TOKENS, min(COMPACT_MAX_TOKENS, ctx_target // _SUMMARY_CTX_FRACTION))
 
 
-def batch_overflow(
-    dropped: list[ChatMessage], previous_summary: str, *, ctx_target: int
-) -> list[list[ChatMessage]]:
+def batch_overflow(dropped: list[ChatMessage], *, ctx_target: int) -> list[list[ChatMessage]]:
     """Split *dropped* into batches whose summarize prompt each fit *ctx_target*.
 
     Compaction usually nibbles a pair at a time, but switching models does not:
@@ -241,12 +238,7 @@ def batch_overflow(
     room = max(
         _MIN_BATCH_TOKENS,
         int(
-            (
-                ctx_target
-                - summary_cap(ctx_target)
-                - estimate_text_tokens(previous_summary)
-                - _PROMPT_OVERHEAD_TOKENS
-            )
+            (ctx_target - summary_cap(ctx_target) - _PROMPT_OVERHEAD_TOKENS)
             * _ESTIMATE_SAFETY_FRACTION
         ),
     )
@@ -271,9 +263,7 @@ def batch_overflow(
     return batches
 
 
-def plan_compaction(
-    dropped: list[ChatMessage], previous_summary: str, *, ctx_target: int
-) -> CompactionPlan:
+def plan_compaction(dropped: list[ChatMessage], *, ctx_target: int) -> CompactionPlan:
     """Decide what one compaction condenses, keeping its cost bounded.
 
     Beyond MAX_COMPACT_CALLS batches the oldest turns are stranded rather than
@@ -282,7 +272,7 @@ def plan_compaction(
     trade. The most recent slice is the part still worth remembering, and the
     caller reports the stranded count instead of pretending it survived.
     """
-    batches = batch_overflow(dropped, previous_summary, ctx_target=ctx_target)
+    batches = batch_overflow(dropped, ctx_target=ctx_target)
     if len(batches) <= MAX_COMPACT_CALLS:
         return CompactionPlan(batches=batches, stranded=0)
     return CompactionPlan(

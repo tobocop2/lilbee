@@ -12,6 +12,7 @@ from litestar.testing import AsyncTestClient
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.providers.base import ChatResult, FinishReason
+from lilbee.retrieval.query.searcher import RagContext
 from lilbee.server import auth as _auth_mod
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
@@ -53,7 +54,7 @@ def services_with_chat_dispatch():
     services = make_mock_services(provider=provider)
     services.registry.list_installed = MagicMock(return_value=[_installed_manifest(cfg.chat_model)])
     services.searcher.build_rag_context = MagicMock(
-        return_value=(
+        return_value=RagContext(
             [],
             [
                 {"role": "system", "content": "ctx"},

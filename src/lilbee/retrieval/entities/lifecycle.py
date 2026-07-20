@@ -210,7 +210,7 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | Non
         from lilbee.retrieval.concepts import concepts_available
 
         if concepts_available():
-            from lilbee.retrieval.concepts import load_spacy_pipeline
+            from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
 
             try:
                 nlp = load_spacy_pipeline()
