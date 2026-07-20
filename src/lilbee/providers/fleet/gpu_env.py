@@ -22,6 +22,10 @@ _GPU_VISIBLE_ENV_VARS = (
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
 )
+# The AMD pair is deliberately absent: ROCr filters before HIP re-indexes within
+# the survivors, so a pin may only ever be written to one of them. Which one is
+# devices.amd_visible_var's decision.
+_NON_AMD_VISIBLE_ENV_VARS = ("GGML_VK_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
 _VK_LOADER_LAYERS_DISABLE_ENV_VAR = "VK_LOADER_LAYERS_DISABLE"
 
@@ -78,10 +82,11 @@ def _apply_gpu_devices_pin() -> bool:
     env var the user already set.
     """
     from lilbee.core.config import cfg
+    from lilbee.providers.fleet.devices import amd_visible_var
 
     if not cfg.gpu_devices:
         return False
-    for name in _GPU_VISIBLE_ENV_VARS:
+    for name in (*_NON_AMD_VISIBLE_ENV_VARS, amd_visible_var()):
         os.environ.setdefault(name, cfg.gpu_devices)
     return True
 

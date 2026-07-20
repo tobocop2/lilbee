@@ -392,23 +392,34 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     return {}
 
 
+def amd_visible_var() -> str:
+    """The one AMD visibility var an index list may be written to.
+
+    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially
+    by the runtime: ROCr filters first, then HIP re-indexes within the survivors.
+    Writing the same indices to both therefore double-filters and selects the
+    wrong cards, or none at all: ``1`` on a two-GPU box exposes physical GPU 1 as
+    index 0 through ROCr, and HIP then asks for index 1 of a one-device list.
+
+    So exactly one is ever written: the one the environment already restricts,
+    or HIP when it restricts neither. Every caller writing an AMD pin asks here,
+    since two callers each picking their own would put the pair back.
+    """
+    if _ROCR_VISIBLE_VAR in os.environ and _HIP_VISIBLE_VAR not in os.environ:
+        return _ROCR_VISIBLE_VAR
+    return _HIP_VISIBLE_VAR
+
+
 def _amd_visible_env(indices: list[int]) -> dict[str, str]:
     """Pin an AMD ROCm/HIP child to the probe's *indices* with one visibility var.
 
-    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially
-    by the runtime: ROCR filters first, then HIP re-indexes within the survivors.
     The probe enumerated a single index space already filtered by whichever var
-    the parent set, so emitting BOTH (each composed against its own parent) would
-    double-filter and select the wrong cards. Emit only the var the parent used,
-    composed against that parent value, and leave the other inherited untouched;
-    default to HIP when the parent restricted neither. The child inherits the
-    parent env, so an unset override keeps any inherited sibling var in force.
+    the parent set, so the chosen var is composed against that parent value and
+    the other is left inherited untouched. The child inherits the parent env, so
+    an unset override keeps any inherited sibling var in force.
     """
-    parent_rocr = os.environ.get(_ROCR_VISIBLE_VAR)
-    parent_hip = os.environ.get(_HIP_VISIBLE_VAR)
-    if parent_rocr is not None and parent_hip is None:
-        return {_ROCR_VISIBLE_VAR: _compose_visible(indices, parent_rocr)}
-    return {_HIP_VISIBLE_VAR: _compose_visible(indices, parent_hip)}
+    var = amd_visible_var()
+    return {var: _compose_visible(indices, os.environ.get(var))}
 
 
 def _compose_sycl(indices: list[int], parent_value: str | None) -> str:

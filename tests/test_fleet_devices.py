@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -500,3 +501,60 @@ def test_no_vulkan_loader_leaves_cuda_devices_dedicated(monkeypatch: pytest.Monk
     parsed = _parse_devices("  CUDA0: NVIDIA H100 80GB HBM3 (81559 MiB, 81000 MiB free)")
 
     assert [d.unified for d in parsed] == [False]
+
+
+class TestAmdPinNeverSetsBothVars:
+    """ROCr filters first and HIP re-indexes within the survivors.
+
+    Writing the same index string to both selects the wrong cards or none:
+    gpu_devices=1 on a two-GPU box exposes physical GPU 1 as index 0 through
+    ROCr, and HIP then asks for index 1 of a one-device list.
+    """
+
+    def _pin(self, monkeypatch: pytest.MonkeyPatch, value: str) -> dict[str, str]:
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import gpu_env
+
+        monkeypatch.setattr(cfg, "gpu_devices", value)
+        assert gpu_env._apply_gpu_devices_pin() is True
+        return {
+            name: os.environ[name] for name in gpu_env._GPU_VISIBLE_ENV_VARS if name in os.environ
+        }
+
+    def test_a_clean_environment_gets_hip_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.fleet import gpu_env
+
+        for name in gpu_env._GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+        applied = self._pin(monkeypatch, "1")
+
+        assert "ROCR_VISIBLE_DEVICES" not in applied
+        assert applied["HIP_VISIBLE_DEVICES"] == "1"
+
+    def test_an_environment_already_masked_by_rocr_is_left_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_env
+
+        for name in gpu_env._GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+
+        applied = self._pin(monkeypatch, "1")
+
+        assert "HIP_VISIBLE_DEVICES" not in applied
+        assert applied["ROCR_VISIBLE_DEVICES"] == "2,3"
+
+    def test_the_pin_still_reaches_the_other_backends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_env
+
+        for name in gpu_env._GPU_VISIBLE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+        applied = self._pin(monkeypatch, "1")
+
+        assert applied["CUDA_VISIBLE_DEVICES"] == "1"
+        assert applied["GGML_VK_VISIBLE_DEVICES"] == "1"

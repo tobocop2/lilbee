@@ -1904,7 +1904,12 @@ def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
     snapshot = {name: os.environ.get(name) for name in _GPU_VISIBLE_ENV_VARS}
     try:
         gpu_env.apply_fleet_gpu_env()
+        # Every backend except the AMD pair, which is written to one var only:
+        # ROCr filters before HIP re-indexes within the survivors.
         for name in _GPU_VISIBLE_ENV_VARS:
+            if name == "ROCR_VISIBLE_DEVICES":
+                assert name not in os.environ
+                continue
             assert os.environ[name] == "0"
     finally:
         for name, value in snapshot.items():
