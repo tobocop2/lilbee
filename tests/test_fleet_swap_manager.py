@@ -1485,13 +1485,3 @@ class TestTeardownHelpers:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
             sm._await_killed([_Immortal()])
         assert any("survived SIGKILL" in record.message for record in caplog.records)
-
-
-def test_teardown_budget_fits_within_the_server_lock_wait() -> None:
-    # A full four-group teardown (4 x _STOP_TIMEOUT_S) must finish inside the
-    # successor server's lock wait, or a restart races the predecessor's stop and
-    # is refused. Restoring _STOP_TIMEOUT_S to a larger value must fail here rather
-    # than silently reintroducing that race.
-    from lilbee.runtime.lock import SERVER_LOCK_TIMEOUT
-
-    assert 4 * sm._STOP_TIMEOUT_S <= SERVER_LOCK_TIMEOUT

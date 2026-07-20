@@ -84,9 +84,11 @@ _HTTP_TIMEOUT_S = 10.0
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
 _BOOT_TIMEOUT_S = 30.0
 _BOOT_POLL_S = 0.25
-# Per-group SIGTERM grace before SIGKILL. A hard kill is safe (llama-server
-# holds no persistent state), and SERVER_LOCK_TIMEOUT assumes a full
-# four-group teardown stays near 4x this value.
+# Per-group SIGTERM grace before SIGKILL on the manager shutdown/reload path. A
+# hard kill is safe (llama-server holds no persistent state). Note this is NOT
+# the constant the serve handoff waits on: that path goes through stop_engine ->
+# _stop_stale_swap and spends _ORPHAN_STOP_TIMEOUT_S plus the kill/reap waits, so
+# SERVER_LOCK_TIMEOUT budgets only a teardown whose SIGTERMs are honored.
 _STOP_TIMEOUT_S = 2.5
 # Grace for a llama-server that outlived llama-swap before it is force-killed.
 _ORPHAN_STOP_TIMEOUT_S = 5.0

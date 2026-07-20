@@ -26,9 +26,15 @@ log = logging.getLogger(__name__)
 # Default timeout (seconds) for acquiring the write lock
 LOCK_TIMEOUT = 30.0
 # Grace (seconds) for a dying predecessor to release the server lock during a
-# restart handoff before a new `lilbee serve` gives up. Must exceed the
-# predecessor's worst-case fleet teardown (~4 groups x _STOP_TIMEOUT_S in
-# lilbee.providers.fleet.swap_manager) with margin for process unwind.
+# restart handoff before a new `lilbee serve` gives up. This budgets the PROMPT
+# path only: a predecessor whose llama-swaps honor SIGTERM releases well inside
+# it. It deliberately does NOT cover SIGKILL escalation -- the teardown that
+# actually holds the lock (_release_engines -> stop_engine -> _stop_stale_swap in
+# lilbee.providers.fleet.swap_manager) can spend _ORPHAN_STOP_TIMEOUT_S plus the
+# kill and reap waits per group, i.e. tens of seconds across four groups on a
+# wedged machine. Sizing this to that worst case would make every ordinary
+# restart wait on a pathological one; instead the successor exits with
+# LOCK_REFUSAL_EXIT_CODE and the operator retries.
 SERVER_LOCK_TIMEOUT = 15.0
 _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
