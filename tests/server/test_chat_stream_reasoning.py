@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
 
 import pytest
 
@@ -41,8 +40,10 @@ def _async_stream(events: list[CanonicalStreamEvent]) -> AsyncIterator[Canonical
     return _gen()
 
 
-def _rag_return() -> tuple[list[Any], list[dict[str, str]]]:
-    return (
+def _rag_return():
+    from lilbee.retrieval.query.searcher import RagContext
+
+    return RagContext(
         [],
         [
             {"role": "system", "content": "ctx"},

@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -179,6 +180,43 @@ class TestInduceSchema:
         assert schema is not None
         assert [t.name for t in schema.types] == ["title", "person", "vessel"]
 
+    def test_drops_empty_pattern_for_pattern_bearing_kinds(self):
+        """An empty pattern compiles fine but makes finditer yield a
+        zero-width match at every position of every chunk in the corpus.
+        The induction prompt tells the model to leave the pattern empty for
+        llm kinds, so a confused model emitting regex+'' is realistic."""
+        provider = MagicMock()
+        provider.chat.return_value = _text_result(
+            json.dumps(
+                {
+                    "types": [
+                        {"name": "empty_regex", "kind": "regex", "pattern": ""},
+                        {"name": "empty_spacy", "kind": "spacy", "pattern": ""},
+                        {"name": "part_number", "kind": "regex", "pattern": r"PX\d{4}"},
+                    ]
+                }
+            )
+        )
+        schema = induce_schema(["text"], provider)
+        assert schema is not None
+        assert [t.name for t in schema.types] == ["part_number"]
+
+    def test_llm_kind_may_keep_an_empty_pattern(self):
+        """llm kinds carry a description instead, exactly as the prompt asks."""
+        provider = MagicMock()
+        provider.chat.return_value = _text_result(
+            json.dumps(
+                {
+                    "types": [
+                        {"name": "vessel", "kind": "llm", "pattern": "", "description": "ships"}
+                    ]
+                }
+            )
+        )
+        schema = induce_schema(["text"], provider)
+        assert schema is not None
+        assert [t.name for t in schema.types] == ["vessel"]
+
     def test_drops_bad_regex_keeps_rest(self):
         provider = MagicMock()
         provider.chat.return_value = _text_result(
@@ -219,6 +257,24 @@ class TestFirstJsonObjectEdges:
         from lilbee.retrieval.entities.extractor import _first_json_object
 
         assert _first_json_object("{unclosed") is None
+
+    def test_braces_inside_string_values_do_not_derail_the_scan(self):
+        """A regex pattern or entity text containing a brace is legal JSON;
+        a naive brace counter truncates mid-string and loses the object."""
+        from lilbee.retrieval.entities.extractor import _first_json_object
+
+        text = '{"types": [{"name": "x", "pattern": "\\\\}"}]}'
+        parsed = _first_json_object(text)
+        assert parsed == {"types": [{"name": "x", "pattern": "\\}"}]}
+
+        assert _first_json_object('{"0": [{"type": "note", "text": "a } b"}]}') == {
+            "0": [{"type": "note", "text": "a } b"}]
+        }
+
+    def test_object_after_stray_brace_in_prose_is_found(self):
+        from lilbee.retrieval.entities.extractor import _first_json_object
+
+        assert _first_json_object('opening { thoughts... {"kind": "x"}') == {"kind": "x"}
 
 
 class TestInduceSchemaEdges:
@@ -261,6 +317,52 @@ class TestExtractEntities:
             ("PX9001", "px9001"),
         }
         assert all(r["confidence"] == 1.0 for r in rows)
+
+    def test_runaway_pattern_is_abandoned_and_named(self, caplog):
+        """An induced pattern that blows its match budget must not stall the
+        pass: the type is dropped with a warning naming it, and the other
+        types still extract."""
+        import lilbee.retrieval.entities.extractor as extractor_mod
+
+        runaway = EntityType(name="runaway", kind=ExtractorKind.REGEX, pattern=r"(a+)+b")
+        real_compile = extractor_mod._compile_pattern
+
+        def fake_compile(pattern):
+            if pattern == r"(a+)+b":
+                stub = MagicMock()
+                stub.finditer.side_effect = TimeoutError("regex timed out")
+                return stub
+            return real_compile(pattern)
+
+        with (
+            mock.patch.object(extractor_mod, "_compile_pattern", fake_compile),
+            caplog.at_level("WARNING"),
+        ):
+            rows = extract_entities(
+                [_chunk("parts PX4471 aaaaaaaaaa")],
+                EntitySchema(types=[runaway, PART]),
+            )
+        assert {r["normalized_value"] for r in rows} == {"px4471"}
+        assert any("runaway" in rec.message for rec in caplog.records)
+
+    def test_runaway_pattern_is_not_retried_across_batches(self):
+        """With stats carried across a full pass, a pattern that timed out
+        once is skipped for the rest of the pass rather than costing the
+        budget again on every chunk."""
+        import lilbee.retrieval.entities.extractor as extractor_mod
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        runaway = EntityType(name="runaway", kind=ExtractorKind.REGEX, pattern=r"(a+)+b")
+        stub = MagicMock()
+        stub.finditer.side_effect = TimeoutError("regex timed out")
+
+        stats = ExtractionStats()
+        with mock.patch.object(extractor_mod, "_compile_pattern", lambda pattern: stub):
+            extract_entities([_chunk("aaaa")], EntitySchema(types=[runaway]), stats=stats)
+            extract_entities([_chunk("aaaa")], EntitySchema(types=[runaway]), stats=stats)
+        assert stats.timed_out_types == {"runaway"}
+        # Two chunks, but the pattern was only ever attempted once.
+        assert stub.finditer.call_count == 1
 
     def test_anchored_pattern_matches_identifiers_inline(self):
         """The OCR-corpus failure: an induced pattern anchored with ^...$
@@ -340,6 +442,40 @@ class TestExtractEntities:
             [_chunk("the Meridian docked")], EntitySchema(types=[VESSEL]), provider=provider
         )
         assert rows == []
+
+    def test_llm_provider_failure_is_reported_through_stats(self):
+        """A caller that passes stats can tell a clean empty result from a
+        provider failure -- the full pass must not mark the schema applied
+        when batches failed."""
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("down")
+        stats = ExtractionStats()
+        rows = extract_entities(
+            [_chunk("the Meridian docked")],
+            EntitySchema(types=[VESSEL]),
+            provider=provider,
+            stats=stats,
+        )
+        assert rows == []
+        assert stats.llm_batches == 1
+        assert stats.llm_batches_failed == 1
+
+    def test_successful_llm_batches_count_zero_failures(self):
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        provider = MagicMock()
+        provider.chat.return_value = _text_result(json.dumps({"0": []}))
+        stats = ExtractionStats()
+        extract_entities(
+            [_chunk("no ships here")],
+            EntitySchema(types=[VESSEL]),
+            provider=provider,
+            stats=stats,
+        )
+        assert stats.llm_batches == 1
+        assert stats.llm_batches_failed == 0
 
     def test_llm_response_edge_shapes_are_ignored(self):
         provider = MagicMock()

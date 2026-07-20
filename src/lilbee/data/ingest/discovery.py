@@ -18,11 +18,8 @@ log = logging.getLogger(__name__)
 
 def file_hash(path: Path) -> str:
     """Compute SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
     with open(path, "rb") as f:
-        for block in iter(lambda: f.read(8192), b""):
-            h.update(block)
-    return h.hexdigest()
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 def _relative_name(path: Path) -> str:

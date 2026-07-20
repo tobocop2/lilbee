@@ -22,6 +22,7 @@ from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.discovery import file_hash
 from lilbee.data.ingest.ocr_cache import load_ocr_pages, ocr_cache_key, store_ocr_pages
 from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.ingest.title import derive_title, source_meta_from_extraction
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
     MARKDOWN_OUTPUT,
@@ -31,7 +32,7 @@ from lilbee.data.ingest.types import (
     ChunkRecord,
     ExtractMode,
 )
-from lilbee.data.store import ChunkType, PageTextRecord
+from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.cpu import cpu_quota
 from lilbee.runtime.progress import (
@@ -507,6 +508,22 @@ async def _handle_scanned_pdf_fallback(
     return chunks
 
 
+def _image_meta(path: Path, source_name: str) -> SourceMeta:
+    """Extraction metadata (EXIF/XMP title, authors, date) for an image.
+
+    The OCR path never touches kreuzberg, so this is a separate metadata-only
+    read; any failure degrades to the stem-derived title.
+    """
+    try:
+        from kreuzberg import extract_file_sync
+
+        result = extract_file_sync(str(path), config=extraction_config(ExtractMode.MARKDOWN))
+        return source_meta_from_extraction(result.metadata or {}, source_name)
+    except Exception:
+        log.debug("Image metadata extraction failed for %s; using the stem title", source_name)
+        return SourceMeta(title=derive_title(source_name))
+
+
 async def _handle_image(
     path: Path,
     source_name: str,
@@ -514,23 +531,30 @@ async def _handle_image(
     *,
     on_progress: DetailedProgressCallback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> list[ChunkRecord]:
+) -> tuple[list[ChunkRecord], SourceMeta]:
     """OCR an image: vision OCR when a vision model is configured, else Tesseract.
 
     An image has no text layer to extract first, so it routes straight to OCR --
     the same downstream call a PDF page hits after it is rasterized to an image.
+    Its EXIF/XMP metadata is captured separately so the title/authors/date are
+    not lost to the stem fallback.
     """
     if _effective_enable_ocr() is False:
         # OCR explicitly disabled: an image has no text layer, so skip it rather
-        # than paying the full Tesseract cost the config says is turned off.
+        # than paying the full Tesseract cost the config says is turned off. The
+        # metadata read is skipped with it -- a file that contributes no text
+        # needs no title beyond its stem, and an image-heavy library would pay
+        # one extraction per skipped file for nothing.
         log.info("OCR disabled; skipping image OCR for %s", source_name)
-        return []
+        return [], SourceMeta(title=derive_title(source_name))
+    meta = await to_ingest_thread(_image_meta, path, source_name)
     vision_model = active_config().vision_model
     if _should_run_ocr() and vision_model:
         log.info("Image: using vision OCR for %s (model=%s)", source_name, vision_model)
-        return await _vision_image_ocr(
+        chunks = await _vision_image_ocr(
             path, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
         )
+        return chunks, meta
 
     log.info("Image: falling back to Tesseract OCR for %s", source_name)
     chunks = await _tesseract_ocr_fallback(
@@ -538,7 +562,7 @@ async def _handle_image(
     )
     if not chunks:
         _warn_empty_ocr(source_name, "images")
-    return chunks
+    return chunks, meta
 
 
 async def ingest_document(
@@ -549,11 +573,12 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> list[ChunkRecord]:
-    """Extract and chunk a document, embed, return records.
+) -> tuple[list[ChunkRecord], SourceMeta]:
+    """Extract and chunk a document, embed, and return (records, metadata).
 
     Vision OCR is controlled by ``cfg.enable_ocr`` (see ``_should_run_ocr``).
-    When ``page_texts_out`` is given, per-page text is appended for export.
+    When ``page_texts_out`` is given, per-page text is appended for export. The
+    returned metadata carries the document's extraction title/authors/date.
     """
     # An image carries no text layer; route it straight to OCR (vision or Tesseract)
     # instead of a no-op kreuzberg markdown extract that yields nothing for a scan.
@@ -567,8 +592,12 @@ async def ingest_document(
     config = extraction_config(content_type_to_mode(content_type))
     result = await to_ingest_thread(extract_file_sync, str(path), config=config)
 
+    # Captured before the scanned-PDF fallback: a scan's PDF metadata (title,
+    # authors) survives even when its text layer is empty.
+    meta = source_meta_from_extraction(result.metadata or {}, source_name)
+
     if content_type == PDF_CONTENT_TYPE and not _has_meaningful_text(result):
-        return await _handle_scanned_pdf_fallback(
+        records = await _handle_scanned_pdf_fallback(
             path,
             source_name,
             content_type,
@@ -577,9 +606,10 @@ async def ingest_document(
             on_progress=on_progress,
             page_texts_out=page_texts_out,
         )
+        return records, meta
 
     if not result.chunks:
-        return []
+        return [], meta
 
     _capture_result_page_texts(result, source_name, content_type, page_texts_out)
 
@@ -599,7 +629,7 @@ async def ingest_document(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
 
-    return [
+    records = [
         ChunkRecord(
             source=source_name,
             content_type=content_type,
@@ -614,6 +644,23 @@ async def ingest_document(
         )
         for idx, (chunk, text, vec) in enumerate(zip(result.chunks, texts, vectors, strict=True))
     ]
+    return records, meta
+
+
+def _markdown_h1(text: str) -> str | None:
+    """The document's leading ``# Heading``, the best title a note carries.
+
+    Only a top-level ATX heading counts; ``##`` and deeper are sections, not the
+    document title. None when the note opens without one.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            return stripped[2:].strip() or None
+        return None
+    return None
 
 
 async def ingest_markdown(
@@ -621,15 +668,18 @@ async def ingest_markdown(
     source_name: str,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> list[ChunkRecord]:
+) -> tuple[list[ChunkRecord], SourceMeta]:
     """Chunk a markdown file with heading context prepended to each chunk.
+
     Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
     prepended for better retrieval context. When ``page_texts_out`` is given,
-    the full text is appended as page 0 for export.
+    the full text is appended as page 0 for export. The returned metadata's
+    title is the note's leading ``# Heading`` when it has one, else the stem.
     """
     raw_text = await to_ingest_thread(path.read_text, encoding="utf-8", errors="replace")
+    meta = SourceMeta(title=derive_title(source_name, _markdown_h1(raw_text)))
     if not raw_text.strip():
-        return []
+        return [], meta
 
     # chunk_text runs kreuzberg's synchronous extractor; offload it so a large
     # markdown doc does not stall sibling files sharing this event loop.
@@ -637,7 +687,7 @@ async def ingest_markdown(
         chunk_text, raw_text, mime_type="text/markdown", heading_context=True
     )
     if not texts:
-        return []
+        return [], meta
 
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
@@ -645,7 +695,7 @@ async def ingest_markdown(
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
-    return [
+    records = [
         ChunkRecord(
             source=source_name,
             content_type="text",
@@ -660,3 +710,4 @@ async def ingest_markdown(
         )
         for idx, (t, vec) in enumerate(zip(texts, vectors, strict=True))
     ]
+    return records, meta

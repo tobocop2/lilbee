@@ -105,11 +105,11 @@ def filter_results(
 ) -> list[SearchChunk]:
     """Drop results below min_relevance_score or above max_distance.
 
-    ``min_relevance_score`` gates on the canonical [0, 1] score, which is what
-    makes an abstention threshold possible. ``max_distance`` additionally drops
-    rows whose only signal is a far vector match (a row with lexical support
-    keeps its standing regardless of distance). Pass max_distance=0 to disable
-    distance filtering.
+    ``min_relevance_score`` gates on the [0, 1] fused score, which normalizes
+    against the configured weight budget (a constant), so the threshold means the
+    same thing across queries. ``max_distance`` additionally drops rows whose only
+    signal is a far vector match (a row with lexical support keeps its standing
+    regardless of distance). Pass max_distance=0 to disable distance filtering.
     """
     if max_distance <= 0 and min_relevance_score <= 0:
         return results
