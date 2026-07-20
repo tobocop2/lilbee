@@ -84,22 +84,22 @@ LLM_EXTRACTION_PROMPT = (
 
 
 def _first_json_object(text: str) -> dict | None:
-    """The first balanced JSON object in *text*, or None."""
+    """The first JSON object in *text*, or None.
+
+    ``raw_decode`` from each ``{`` position lets the stdlib own the parsing
+    state; a hand-rolled brace counter miscounts braces inside string
+    literals (a regex pattern or entity text containing ``}``).
+    """
+    decoder = json.JSONDecoder()
     start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    for i, ch in enumerate(text[start:], start):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    parsed = json.loads(text[start : i + 1])
-                except json.JSONDecodeError:
-                    return None
-                return parsed if isinstance(parsed, dict) else None
+    while start >= 0:
+        try:
+            parsed, _ = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            start = text.find("{", start + 1)
+            continue
+        # A value starting at "{" can only decode to a dict.
+        return parsed
     return None
 
 

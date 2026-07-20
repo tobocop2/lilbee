@@ -220,6 +220,24 @@ class TestFirstJsonObjectEdges:
 
         assert _first_json_object("{unclosed") is None
 
+    def test_braces_inside_string_values_do_not_derail_the_scan(self):
+        """A regex pattern or entity text containing a brace is legal JSON;
+        a naive brace counter truncates mid-string and loses the object."""
+        from lilbee.retrieval.entities.extractor import _first_json_object
+
+        text = '{"types": [{"name": "x", "pattern": "\\\\}"}]}'
+        parsed = _first_json_object(text)
+        assert parsed == {"types": [{"name": "x", "pattern": "\\}"}]}
+
+        assert _first_json_object('{"0": [{"type": "note", "text": "a } b"}]}') == {
+            "0": [{"type": "note", "text": "a } b"}]
+        }
+
+    def test_object_after_stray_brace_in_prose_is_found(self):
+        from lilbee.retrieval.entities.extractor import _first_json_object
+
+        assert _first_json_object('opening { thoughts... {"kind": "x"}') == {"kind": "x"}
+
 
 class TestInduceSchemaEdges:
     def test_non_dict_type_entry_dropped(self):
