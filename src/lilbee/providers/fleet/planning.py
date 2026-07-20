@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
@@ -77,7 +76,6 @@ _EMBED_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.pooled
 _ALL_LAYER_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.offload_all_layers)
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
-_DEFAULT_THREADS = 4
 # Roles to which flash attention applies; embed/rerank run without it.
 _FLASH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.flash_attn)
 
@@ -922,7 +920,6 @@ def _launch_for(
         flash_attn=_flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
         cache_type=_cache_type_flag() if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
-        threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         device_names=_device_names(chosen),
     )

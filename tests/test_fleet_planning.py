@@ -1129,11 +1129,17 @@ class TestBuildFleetWiring:
         launch = self._launch_for_role(tmp_path, monkeypatch, role)
         assert launch.token_cap is None
 
-    def test_launch_for_vision_sets_full_core_threads(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod.os, "cpu_count", lambda: 12)
+    def test_launch_for_vision_leaves_the_thread_count_to_the_engine(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """os.cpu_count() counts SMT siblings, efficiency cores and the host's cores
+        inside a cgroup-limited container. llama.cpp counts physical math cores and
+        skips efficiency cores deliberately, so the override was strictly worse
+        informed than the default it replaced.
+        """
         argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
-        assert argv[argv.index("--threads") + 1] == "12"
-        assert argv[argv.index("--threads-batch") + 1] == "12"
+        assert "--threads" not in argv
+        assert "--threads-batch" not in argv
         assert "--batch-size" not in argv
 
     def test_launch_for_vision_enables_flash_attn(self, tmp_path, monkeypatch) -> None:
@@ -1239,13 +1245,6 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(engine_params, "train_ctx_from_meta", lambda *a, **k: 600)
         assert engine_params.resolve_llm_rerank_ctx({}, tmp_path / "m.gguf") == 600
-
-    def test_launch_for_vision_threads_floor_when_cpu_count_unknown(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        monkeypatch.setattr(planning_mod.os, "cpu_count", lambda: None)
-        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
-        assert argv[argv.index("--threads") + 1] == str(planning_mod._DEFAULT_THREADS)
 
     def test_plan_all_launches_resolves_devices_and_plans(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
@@ -1579,8 +1578,6 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--reasoning-format",
     "--embeddings",
     "--pooling",
-    "--threads",
-    "--threads-batch",
 }
 # Sizing-relevant launch flag -> the gguf-parser flag that must carry the same value.
 _SIZING_FLAG_TO_ESTIMATOR_FLAG = {

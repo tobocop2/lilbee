@@ -316,10 +316,17 @@ def _is_unified(backend: str, name: str) -> bool:
 
 
 def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
-    """Keep one GPU backend's devices (highest rank, ties broken by name).
+    """Keep one GPU backend's devices: highest rank, then most memory.
 
     Returns a single backend so pinning is unambiguous: ``visible_env`` keys off
     one backend, and mixing index spaces is the very hazard this module avoids.
+
+    CUDA, ROCm, HIP and Metal all rank alike, and a build that loads several
+    backends (``ggml_backend_load_all`` does) makes the tie real. Breaking it on
+    the backend's name meant a host with a 4090 beside an RX 6600 planned onto
+    the AMD card because "ROCm" sorts after "CUDA", and the NVIDIA card idled
+    with nothing said. Total memory decides instead; the name is only the last
+    resort that keeps the choice deterministic.
     """
     ranked = [
         d
@@ -330,8 +337,28 @@ def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
     ]
     if not ranked:
         return []
-    backend = max(ranked, key=lambda d: (_BACKEND_RANK[d.backend], d.backend)).backend
-    return [d for d in ranked if d.backend == backend]
+    by_backend: dict[str, list[FleetDevice]] = {}
+    for device in ranked:
+        by_backend.setdefault(device.backend, []).append(device)
+    backend, chosen = max(by_backend.items(), key=_backend_preference)
+    for other, group in by_backend.items():
+        if other != backend:
+            log.info(
+                "Engine reports %d %s device(s) beside %d %s device(s); planning onto %s, "
+                "which has more memory. Backends cannot be mixed: their device indexes "
+                "name different cards.",
+                len(group),
+                other,
+                len(chosen),
+                backend,
+                backend,
+            )
+    return chosen
+
+
+def _backend_preference(item: tuple[str, list[FleetDevice]]) -> tuple[int, int, str]:
+    backend, group = item
+    return _BACKEND_RANK[backend], sum(d.total_bytes for d in group), backend
 
 
 def _compose_visible(indices: list[int], parent_value: str | None) -> str:

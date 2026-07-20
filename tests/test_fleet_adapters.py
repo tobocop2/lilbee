@@ -159,7 +159,12 @@ def test_build_argv_batch_size_raises_both_batch_and_ubatch() -> None:
     assert argv[argv.index("--ubatch-size") + 1] == "8192"
 
 
-def test_build_argv_threads_sets_threads_and_threads_batch() -> None:
+def test_build_argv_never_sets_a_thread_count() -> None:
+    """llama-server counts physical math cores and skips efficiency cores itself.
+
+    Any count lilbee computes here is worse informed than that default, so the
+    knob is gone rather than merely unused.
+    """
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.VISION],
@@ -168,10 +173,9 @@ def test_build_argv_threads_sets_threads_and_threads_batch() -> None:
         n_gpu_layers=-1,
         slots=1,
         ctx_per_slot=4096,
-        threads=12,
     )
-    assert argv[argv.index("--threads") + 1] == "12"
-    assert argv[argv.index("--threads-batch") + 1] == "12"
+    assert "--threads" not in argv
+    assert "--threads-batch" not in argv
 
 
 def test_build_argv_omits_optional_flags_by_default() -> None:

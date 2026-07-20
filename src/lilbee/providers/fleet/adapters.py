@@ -169,7 +169,6 @@ def build_server_argv(
     flash_attn: str | None = None,
     cache_type: str | None = None,
     batch_size: int | None = None,
-    threads: int | None = None,
     no_mmap: bool = False,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
@@ -197,8 +196,6 @@ def build_server_argv(
         argv += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
-    if threads is not None:
-        argv += ["--threads", str(threads), "--threads-batch", str(threads)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
         argv += ["--mmproj", str(mmproj)]
     if device_names:

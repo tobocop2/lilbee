@@ -575,3 +575,59 @@ class TestAmdPinNeverSetsBothVars:
 
         assert applied["CUDA_VISIBLE_DEVICES"] == "1"
         assert applied["GGML_VK_VISIBLE_DEVICES"] == "1"
+
+
+def test_a_dual_vendor_host_plans_onto_the_bigger_card_not_the_later_name() -> None:
+    """A build loading both backends made the rank tie real; "ROCm" > "CUDA" decided it.
+
+    A 4090 beside an RX 6600 planned onto the AMD card and the NVIDIA card
+    idled, with nothing logged to say why.
+    """
+    from lilbee.providers.fleet.devices import _select_backend
+
+    rtx4090 = FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 4090", 24 * 10**9, 24 * 10**9)
+    rx6600 = FleetDevice("ROCm", 0, "AMD Radeon RX 6600", 8 * 10**9, 8 * 10**9)
+
+    assert _select_backend([rtx4090, rx6600]) == [rtx4090]
+
+
+def test_the_dropped_backend_is_named_in_the_log(caplog: pytest.LogCaptureFixture) -> None:
+    """Silently planning half a machine is what made this hard to see."""
+    from lilbee.providers.fleet.devices import _select_backend
+
+    rtx4090 = FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 4090", 24 * 10**9, 24 * 10**9)
+    rx6600 = FleetDevice("ROCm", 0, "AMD Radeon RX 6600", 8 * 10**9, 8 * 10**9)
+
+    with caplog.at_level("INFO", logger="lilbee.providers.fleet.devices"):
+        _select_backend([rtx4090, rx6600])
+
+    assert "ROCm" in caplog.text
+    assert "CUDA" in caplog.text
+
+
+def test_equal_memory_still_resolves_to_one_backend_deterministically() -> None:
+    """Mixing index spaces is the hazard; a tie must still leave exactly one backend."""
+    from lilbee.providers.fleet.devices import _select_backend
+
+    cuda = FleetDevice("CUDA", 0, "NVIDIA", 16 * 10**9, 16 * 10**9)
+    rocm = FleetDevice("ROCm", 0, "AMD", 16 * 10**9, 16 * 10**9)
+
+    first = _select_backend([cuda, rocm])
+    second = _select_backend([rocm, cuda])
+
+    assert len({d.backend for d in first}) == 1
+    assert first == second
+
+
+def test_a_multi_card_backend_beats_one_bigger_card() -> None:
+    """The fleet is planned across every device of the chosen backend, so sum, not max."""
+    from lilbee.providers.fleet.devices import _select_backend
+
+    # Each AMD card is smaller than the NVIDIA one, so only their sum wins.
+    two_amd = [
+        FleetDevice("ROCm", 0, "AMD Radeon RX 7600 XT", 16 * 10**9, 16 * 10**9),
+        FleetDevice("ROCm", 1, "AMD Radeon RX 7600 XT", 16 * 10**9, 16 * 10**9),
+    ]
+    one_nvidia = FleetDevice("CUDA", 0, "NVIDIA GeForce RTX 4090", 24 * 10**9, 24 * 10**9)
+
+    assert _select_backend([one_nvidia, *two_amd]) == two_amd
