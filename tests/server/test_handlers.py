@@ -635,6 +635,11 @@ class TestAddIngestMutex:
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert "free.txt" in summary["copied"]
         assert "held.txt" not in summary["copied"]
+        # The done event is the only frame a client is guaranteed to still have,
+        # so it has to say the batch was partial. Without this a caller reads
+        # done as "all ingested" and never retries the contended file.
+        assert summary["already_ingesting"] == ["held.txt"]
+        assert "held.txt" not in summary["skipped"]
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
         """Disjoint sources do not contend: both requests complete with done."""

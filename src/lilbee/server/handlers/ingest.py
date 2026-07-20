@@ -156,9 +156,11 @@ async def _ingest_stream(
     Shared by /api/add (server paths) and /api/add/upload (uploaded content).
     Each item is ``(lock_key, payload)``: the key is the source identifier used
     for the per-source ingest lock; the payload is what ``run`` receives for the
-    subset whose lock was acquired. Contended sources emit ``already_ingesting``
-    and the stream closes without a ``done`` event, signalling the client to wait
-    rather than retry.
+    subset whose lock was acquired. Contended sources emit ``already_ingesting``.
+    When every source is contended the stream closes with no ``done`` event,
+    signalling the client to wait rather than retry. When only some are, the
+    acquired subset still runs and the ``done`` summary names the contended ones
+    in ``already_ingesting``, so a partial batch never reads as a full success.
     """
     registry = get_services().ingest_lock_registry
     acquired, busy = await registry.acquire([key for key, _payload in items])
@@ -187,6 +189,9 @@ async def _ingest_stream(
                     yield sse_error(str(exc))
                     return
                 summary = task.result()
+                # Name the sources this run never attempted, so a client
+                # reading only the terminal event still sees a partial batch.
+                summary.already_ingesting = list(busy)
                 yield sse_done(summary.model_dump())
         finally:
             if not task.done():

@@ -400,6 +400,14 @@ class AddSummary(BaseModel):
     skipped: list[str]
     errors: list[str]
     sync: SyncSummary | None = None
+    already_ingesting: list[str] = []
+    """Sources another ingest held a lock on, so this run never attempted them.
+
+    Distinct from ``skipped``, which means the file was examined and needed no
+    work. These were not looked at and are worth retrying. Carried on the
+    terminal event so a client that missed the earlier ``already_ingesting``
+    frames can still tell the batch was partial.
+    """
 
 
 class WikiCitationRecord(BaseModel):
