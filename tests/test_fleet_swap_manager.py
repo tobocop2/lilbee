@@ -1473,7 +1473,28 @@ class TestTeardownHelpers:
         assert proc.terminated and proc.killed
 
     def test_live_children_lists_a_real_processes_children(self) -> None:
-        assert isinstance(sm._live_children(os.getpid()), list)
+        """A list-shaped return proves nothing: every stop path reaps by pid.
+
+        _live_children feeds the orphan reaping for llama-servers that outlive
+        their llama-swap, so a version returning [] unconditionally would leave
+        those holding VRAM while the suite stayed green.
+        """
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            assert proc.pid in [child.pid for child in sm._live_children(os.getpid())]
+        finally:
+            proc.terminate()
+            proc.wait(timeout=30)
+
+    def test_live_children_of_an_exited_process_is_empty(self) -> None:
+        """The reaper asks about pids that may already be gone."""
+        import sys
+
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait(timeout=30)
+        assert sm._live_children(proc.pid) == []
 
     def test_await_killed_warns_for_a_sigkill_survivor(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

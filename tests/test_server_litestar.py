@@ -1958,15 +1958,16 @@ class TestPlacementSetRoute:
 
 
 class TestShutdownRoute:
-    @mock.patch("lilbee.server.handlers.threading.Timer")
-    def test_accepts_and_schedules_sigterm(self, mock_timer, client):
+    def test_raises_sigterm_only_after_the_response_is_sent(self, client):
+        """No guessed delay: the ordering is the framework's, not a timer's."""
         import signal as signal_mod
 
-        response = client.post("/api/shutdown")
-        assert response.status_code == 202
-        assert response.json() == {"status": "shutting_down"}
-        mock_timer.assert_called_once()
-        args, kwargs = mock_timer.call_args
-        assert args[1] is signal_mod.raise_signal
-        assert kwargs["args"] == (signal_mod.SIGTERM,)
-        mock_timer.return_value.start.assert_called_once()
+        with mock.patch.object(signal_mod, "raise_signal") as raise_signal:
+            response = client.post("/api/shutdown")
+            assert response.status_code == 202
+            assert response.json() == {"status": "shutting_down"}
+            # The background task runs as part of the same ASGI cycle, after the
+            # body is handed to the transport -- so by the time the client holds
+            # the response the signal has already been raised, with no window in
+            # which a slow flush could lose the race to a wall-clock timer.
+            raise_signal.assert_called_once_with(signal_mod.SIGTERM)

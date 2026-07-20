@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-import signal
-import threading
 import time
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -90,9 +88,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Delay before the API-requested SIGTERM, so the 202 response flushes first.
-_SHUTDOWN_DELAY_S = 0.2
-
 # How often the warm stream re-snapshots provider state; sub-second so the read
 # bar advances smoothly without busy-spinning.
 _WARM_POLL_INTERVAL_S = 0.25
@@ -137,15 +132,14 @@ async def health() -> HealthResponse:
 
 
 async def shutdown() -> ShutdownResponse:
-    """Deliver SIGTERM to this process shortly after the response flushes.
+    """Accept an API-requested stop; the route's background task sends SIGTERM.
 
-    Routes through the same hard-exit path as an external SIGTERM, so the fleet
-    teardown and shutdown logging behave identically however the stop arrives.
+    Litestar runs that task only after the response has been handed to the
+    transport, so the signal cannot beat the 202 out and no wall-clock delay
+    has to be guessed. Routing through SIGTERM keeps the fleet teardown and
+    shutdown logging identical however the stop arrives.
     """
     log.info("Shutdown requested via the API")
-    timer = threading.Timer(_SHUTDOWN_DELAY_S, signal.raise_signal, args=(signal.SIGTERM,))
-    timer.daemon = True
-    timer.start()
     return ShutdownResponse(status="shutting_down")
 
 
