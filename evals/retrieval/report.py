@@ -4,14 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from evals.benchmark.stats import DEFAULT_ALPHA, benjamini_hochberg
 from evals.retrieval.judging import DIMENSIONS
 from evals.retrieval.scoring import ResultRowType
 
 
-def _delta_cell(first: float, second: float, noise: float) -> str:
-    delta = round(second - first, 3)
-    flag = "" if abs(delta) > noise else " (within noise)"
-    return f"{delta:+g}{flag}"
+def _adjusted_p(tests: dict[str, dict[str, Any]]) -> dict[str, float]:
+    """Family-adjusted p per dimension, across the dimensions actually tested."""
+    names = [name for name in DIMENSIONS if name in tests]
+    adjusted = benjamini_hochberg([float(tests[name]["p_value"]) for name in names])
+    return dict(zip(names, adjusted, strict=True))
+
+
+def _verdict(adjusted: float | None) -> str:
+    if adjusted is None:
+        return "not tested"
+    return "significant" if adjusted <= DEFAULT_ALPHA else "n.s."
 
 
 def render_report(rows: list[dict[str, Any]]) -> str:
@@ -35,18 +43,30 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         "Judges saw only question + ground truth + one answer; no arm labels.",
         f"Judge noise floor: plus or minus {noise} per dimension, measured over "
         f"{summary.get('noise_pairs', '?')} questions from {summary.get('noise_arm', '?')} "
-        "graded twice under two equivalent phrasings of the grading prompt. Deltas at "
-        "or below it are labeled within noise.",
+        "graded twice under two equivalent phrasings of the grading prompt. That is a "
+        "per-question disagreement: it describes how steady the judge is on one answer, "
+        "and is not a threshold for a difference of means. Significance below comes "
+        "from a paired test on the per-question grades, family-adjusted across the "
+        "dimensions tested.",
         "",
-        f"| dimension | {first} | {second} | delta |",
-        "| --- | --- | --- | --- |",
+        f"| dimension | {first} | {second} | delta | 95% CI | adj. p | verdict |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
+    tests = {test["metric"]: test for test in summary.get("dimension_tests", [])}
+    adjusted_by_dimension = _adjusted_p(tests)
     for dimension in DIMENSIONS:
         first_mean = arms[first]["means"][dimension]
         second_mean = arms[second]["means"][dimension]
+        test = tests.get(dimension)
+        adjusted = adjusted_by_dimension.get(dimension)
+        interval = (
+            f"[{test['ci_low']:+.3f}, {test['ci_high']:+.3f}]" if test is not None else "-"
+        )
+        shown = f"{adjusted:.3f}" if adjusted is not None else "-"
         lines.append(
             f"| {dimension} (0-2) | {first_mean} | {second_mean} "
-            f"| {_delta_cell(first_mean, second_mean, noise)} |"
+            f"| {round(second_mean - first_mean, 3):+g} | {interval} | {shown} "
+            f"| {_verdict(adjusted)} |"
         )
     lines += [
         "",

@@ -121,4 +121,67 @@ def test_compare_result_round_trips_through_to_dict():
         "ci_high",
         "p_value",
         "significant",
+        "resamples",
+        "bootstrap_seed",
+        "permutation_seed",
+        "p_at_floor",
     }
+
+
+def test_bootstrap_and_permutation_do_not_share_a_random_stream():
+    # Both procedures are reported as corroborating evidence, so they must not
+    # be driven off the same underlying draws.
+    a, b = _const_diffs(0.2, 12)
+    result = stats.compare("nDCG@10", a, b, resamples=200, seed=11)
+    assert result.bootstrap_seed != result.permutation_seed
+
+
+def test_p_value_floor_is_exposed_rather_than_read_as_an_exact_value():
+    # 1/(resamples+1) is the smallest attainable p; reporting it as a point
+    # estimate overstates precision.
+    a, b = _const_diffs(1.0, 10)
+    result = stats.compare("MRR@10", a, b, resamples=50, seed=1)
+    assert result.p_value == pytest.approx(1 / 51)
+    assert result.p_at_floor is True
+    assert result.resamples == 50
+
+
+def test_a_middling_p_is_not_flagged_as_the_floor():
+    a = {"q1": 0.0, "q2": 1.0, "q3": 0.0, "q4": 1.0}
+    b = {"q1": 1.0, "q2": 0.0, "q3": 1.0, "q4": 0.0}
+    result = stats.compare("MRR@10", a, b, resamples=200, seed=3)
+    assert result.p_at_floor is False
+
+
+def test_benjamini_hochberg_leaves_a_single_test_alone():
+    assert stats.benjamini_hochberg([0.04]) == [pytest.approx(0.04)]
+
+
+def test_benjamini_hochberg_preserves_input_order():
+    adjusted = stats.benjamini_hochberg([0.5, 0.01, 0.2])
+    assert adjusted[1] < adjusted[2] < adjusted[0]
+
+
+def test_benjamini_hochberg_raises_borderline_p_above_alpha():
+    # The committed best-of-four claim: p=0.012 selected from a family of 36.
+    family = [0.012] + [0.4] * 35
+    adjusted = stats.benjamini_hochberg(family)
+    assert adjusted[0] > 0.05
+
+
+def test_benjamini_hochberg_keeps_a_strong_effect_significant():
+    family = [0.00001] + [0.4] * 35
+    assert stats.benjamini_hochberg(family)[0] < 0.05
+
+
+def test_benjamini_hochberg_is_monotone():
+    adjusted = stats.benjamini_hochberg([0.01, 0.02, 0.03, 0.04])
+    assert adjusted == sorted(adjusted)
+
+
+def test_benjamini_hochberg_caps_at_one():
+    assert all(value <= 1.0 for value in stats.benjamini_hochberg([0.9, 0.95, 0.99]))
+
+
+def test_empty_family_adjusts_to_nothing():
+    assert stats.benjamini_hochberg([]) == []

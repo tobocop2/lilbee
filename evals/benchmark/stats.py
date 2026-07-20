@@ -23,7 +23,14 @@ SIGN_FLIP_PROBABILITY = 0.5
 
 @dataclass(frozen=True)
 class PairedResult:
-    """The paired comparison of arm B minus arm A on one metric."""
+    """The paired comparison of arm B minus arm A on one metric.
+
+    ``significant`` here is the single-test verdict from the bootstrap CI. It is
+    NOT the verdict to publish when more than one comparison was run: a study
+    that tests four arms on three datasets across three metrics runs 36 tests,
+    and selecting the best of them inflates the type-I rate well past alpha. Feed
+    the whole family through ``benjamini_hochberg`` and decide on the adjusted p.
+    """
 
     metric: str
     n: int
@@ -34,9 +41,42 @@ class PairedResult:
     ci_high: float
     p_value: float
     significant: bool
+    resamples: int = DEFAULT_RESAMPLES
+    bootstrap_seed: int = DEFAULT_SEED
+    permutation_seed: int = DEFAULT_SEED + 1
+
+    @property
+    def p_at_floor(self) -> bool:
+        """True when p sits at 1/(resamples+1), the smallest attainable value.
+
+        At the floor the p-value is a bound, not a measurement: it should be
+        rendered as "< 1/(resamples+1)" rather than quoted as a point estimate.
+        """
+        return self.p_value <= 1.0 / (self.resamples + 1)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), "p_at_floor": self.p_at_floor}
+
+
+def benjamini_hochberg(p_values: list[float]) -> list[float]:
+    """Benjamini-Hochberg adjusted p-values, in the input's order.
+
+    Controls the false-discovery rate across a family of comparisons. Without
+    it, reporting the best of N correlated arms at its raw p-value claims a
+    confidence the study did not earn.
+    """
+    count = len(p_values)
+    if not count:
+        return []
+    ordered = sorted(range(count), key=lambda index: p_values[index])
+    adjusted = [0.0] * count
+    running = 1.0
+    # Step up from the largest p, keeping the sequence monotone non-decreasing.
+    for rank, index in enumerate(reversed(ordered), start=1):
+        position = count - rank + 1
+        running = min(running, p_values[index] * count / position)
+        adjusted[index] = min(1.0, running)
+    return adjusted
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
@@ -104,8 +144,12 @@ def compare(
 ) -> PairedResult:
     """Full paired comparison of arm B minus arm A on one metric's per-query scores."""
     a_vec, b_vec, diffs = _paired_diffs(a_scores, b_scores)
-    ci_low, ci_high = paired_bootstrap_ci(diffs, resamples, seed, alpha)
-    p_value = permutation_test(diffs, resamples, seed)
+    # Distinct sub-seeds: driving both procedures off one stream makes the CI and
+    # the p-value the same draws twice, which defeats reporting them as
+    # corroborating evidence. Both stay reproducible.
+    bootstrap_seed, permutation_seed = seed, seed + 1
+    ci_low, ci_high = paired_bootstrap_ci(diffs, resamples, bootstrap_seed, alpha)
+    p_value = permutation_test(diffs, resamples, permutation_seed)
     mean_diff = statistics.fmean(diffs) if diffs else 0.0
     return PairedResult(
         metric=metric,
@@ -117,4 +161,7 @@ def compare(
         ci_high=ci_high,
         p_value=p_value,
         significant=not (ci_low <= 0.0 <= ci_high),
+        resamples=resamples,
+        bootstrap_seed=bootstrap_seed,
+        permutation_seed=permutation_seed,
     )

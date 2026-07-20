@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from evals.benchmark.stats import DEFAULT_ALPHA, benjamini_hochberg
+
 
 def _rows_of(rows: list[dict[str, Any]], row_type: str) -> list[dict[str, Any]]:
     return [row for row in rows if row.get("row_type") == row_type]
@@ -21,16 +23,23 @@ def _arm_labels(rows: list[dict[str, Any]]) -> tuple[str, str]:
     return "arm A", "arm B"
 
 
-def _sig_cell(row: dict[str, Any]) -> str:
-    ci = f"[{row['ci_low']:+.4f}, {row['ci_high']:+.4f}]"
-    flag = "" if row["significant"] else " (n.s.)"
-    return f"{ci}{flag}"
+def _p_cell(row: dict[str, Any]) -> str:
+    """A p-value at the resampling floor is a bound, not a point estimate."""
+    if row.get("p_at_floor") and row.get("resamples"):
+        return f"< {1 / (int(row['resamples']) + 1):.1e}"
+    return f"{row['p_value']:.3f}"
 
 
 def _ir_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[str]:
     ir_rows = _rows_of(rows, "ir")
     if not ir_rows:
         return []
+    # Significance is decided on the family-adjusted p across every comparison in
+    # the study, not per row. Deciding per row from its own CI while printing a
+    # raw p gives two verdicts that can contradict each other, and quoting the
+    # best of N raw p-values claims a confidence the study did not earn.
+    adjusted = benjamini_hochberg([float(row["p_value"]) for row in ir_rows])
+    family = len(ir_rows)
     lines = [
         "## Tier 1 - retrieval, scored against human labels",
         "",
@@ -38,14 +47,22 @@ def _ir_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[str]
         "labels. No model judges anything, so these numbers are exactly "
         "reproducible from the run files and qrels.",
         "",
-        f"| dataset | metric | {arm_a} | {arm_b} | delta | 95% CI (B - A) | p |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        f"Significance is decided on the Benjamini-Hochberg adjusted p across all "
+        f"{family} comparisons in this study, at alpha {DEFAULT_ALPHA}. The CI is "
+        "the effect size, not a second verdict. A raw p from the best of several "
+        "arms is not evidence at its face value.",
+        "",
+        f"| dataset | metric | {arm_a} | {arm_b} | delta | 95% CI (B - A) | p | "
+        "adj. p | significant |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for row in ir_rows:
+    for row, adj in zip(ir_rows, adjusted, strict=True):
+        verdict = "yes" if adj <= DEFAULT_ALPHA else "no"
         lines.append(
             f"| {row['dataset']} | {row['metric']} | {row['mean_a']:.4f} | "
-            f"{row['mean_b']:.4f} | {row['mean_diff']:+.4f} | {_sig_cell(row)} | "
-            f"{row['p_value']:.3f} |"
+            f"{row['mean_b']:.4f} | {row['mean_diff']:+.4f} | "
+            f"[{row['ci_low']:+.4f}, {row['ci_high']:+.4f}] | {_p_cell(row)} | "
+            f"{adj:.3f} | {verdict} |"
         )
     lines.append("")
     return lines

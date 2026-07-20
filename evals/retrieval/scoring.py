@@ -7,6 +7,7 @@ import statistics
 from enum import StrEnum
 from typing import Any
 
+from evals.benchmark.stats import DEFAULT_SEED, compare
 from evals.retrieval.answers import AnswerRow
 from evals.retrieval.judging import DIMENSIONS
 from evals.retrieval.questions import CountOracle, Question, QuestionKind
@@ -18,6 +19,8 @@ Unblinded = dict[str, dict[int, Grades]]
 
 ARM_REPLICATE = 0
 NOISE_REPLICATE = 1
+# A paired test needs exactly two arms.
+PAIRED_ARMS = 2
 
 
 class ResultRowType(StrEnum):
@@ -27,6 +30,37 @@ class ResultRowType(StrEnum):
 
 class MissingNoiseReplicate(RuntimeError):
     """The second judging pass produced nothing, so no noise floor was measured."""
+
+
+def paired_dimension_tests(
+    unblinded: Unblinded, arms: list[str], *, seed: int = DEFAULT_SEED
+) -> list[dict[str, Any]]:
+    """Paired per-dimension comparison of the two arms, over shared questions.
+
+    The judge grades both arms on the same questions, so every dimension gap is
+    paired and can be tested properly. The noise floor cannot do this job: it is
+    a per-question, per-dimension disagreement, while the reported gap is a
+    difference of means over many questions whose standard error shrinks with
+    the question count, so comparing the two is a scale error in both directions.
+
+    Reuses the benchmark's paired bootstrap and randomization test rather than
+    hand-rolling a second one; p-values are family-adjusted by the caller.
+    """
+    if len(arms) != PAIRED_ARMS:
+        return []
+    first, second = arms
+    tests: list[dict[str, Any]] = []
+    for dimension in DIMENSIONS:
+        a_scores = {
+            qid: float(scores[dimension])
+            for qid, scores in unblinded.get(first, {}).get(ARM_REPLICATE, {}).items()
+        }
+        b_scores = {
+            qid: float(scores[dimension])
+            for qid, scores in unblinded.get(second, {}).get(ARM_REPLICATE, {}).items()
+        }
+        tests.append(compare(dimension, a_scores, b_scores, seed=seed).to_dict())
+    return tests
 
 
 def noise_floor(rep0: Grades, rep1: Grades) -> float:
@@ -154,6 +188,7 @@ def build_results(
             arm: len(unblinded.get(arm, {}).get(ARM_REPLICATE, {}))
             for arm in answers_by_arm
         },
+        "dimension_tests": paired_dimension_tests(unblinded, list(answers_by_arm)),
         "judgeable": sum(
             1 for q in questions if q.kind in (QuestionKind.TOPICAL, QuestionKind.KNOWN_ITEM)
         ),
