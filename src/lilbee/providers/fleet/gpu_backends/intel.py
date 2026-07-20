@@ -8,7 +8,7 @@ kernel, and privileges. We try them in order and take the first that reports:
    xpum_stats_type_enum names. One device per call, no root.
 2. DRM ``fdinfo`` -- the kernel's per-client engine-busy counters. Covers
    consumer iGPUs with no root and no extra tool, but only on kernels new enough
-   to publish i915 engine stats (~6.2+).
+   to publish i915 engine stats (5.19+, or 6.5+ under GuC submission).
 3. ``intel_gpu_top`` (Intel GPU Tools) -- reads the i915 PMU, so it covers
    essentially every consumer iGPU on kernel 4.16+, but needs CAP_PERFMON (or
    root); it falls through cleanly when the permission isn't granted.
@@ -24,6 +24,8 @@ import functools
 import json
 import shutil
 import subprocess
+from dataclasses import dataclass
+from enum import StrEnum
 
 from lilbee.providers.fleet.gpu_backends import fdinfo
 from lilbee.providers.fleet.gpu_backends.base import UtilSample, extract_int, run_smi
@@ -49,6 +51,21 @@ _I915 = "i915"
 # unprivileged, the util reads back empty. A working PMU streams, so the check
 # hits the timeout and reports usable.
 _IGT_PERM_CHECK_S = 1.0
+
+
+class IntelHintKind(StrEnum):
+    """Which fix would make an Intel GPU's utilization readable."""
+
+    GRANT = "grant"  # intel_gpu_top is installed but the i915 PMU is permission-blocked
+    INSTALL = "install"  # intel_gpu_top is not installed at all
+
+
+@dataclass(frozen=True)
+class IntelUtilHint:
+    """An actionable fix for an unreadable Intel GPU utilization reading."""
+
+    kind: IntelHintKind
+    binary: str | None  # the intel_gpu_top path when installed, else None
 
 
 class IntelBackend:
@@ -214,18 +231,20 @@ def _single(indices: frozenset[int], util: int) -> dict[int, UtilSample]:
 
 
 @functools.cache
-def intel_gpu_top_grant_binary() -> str | None:
-    """The intel_gpu_top path a CAP_PERFMON grant would unblock, or None.
+def intel_util_hint() -> IntelUtilHint | None:
+    """The fix that would make Intel GPU util readable, or None when nothing is blocked.
 
-    Returns the binary when it is installed but the i915 PMU is permission-blocked
-    (the caller turns this into a user-facing grant hint); None when the tool is
-    absent or already usable. Cached: the permission state does not change within
-    a run.
+    INSTALL when intel_gpu_top is absent (igt-gpu-tools reads the i915 PMU on
+    kernels too old to publish fdinfo engine counters), GRANT when it is
+    installed but permission-blocked, None when the tool already works. Cached:
+    the install/permission state does not change within a run.
     """
     binary = shutil.which(_TOOL_IGT)
     if binary is None:
-        return None
-    return binary if _igt_permission_denied(binary) else None
+        return IntelUtilHint(IntelHintKind.INSTALL, None)
+    if _igt_permission_denied(binary):
+        return IntelUtilHint(IntelHintKind.GRANT, binary)
+    return None
 
 
 def _igt_permission_denied(binary: str) -> bool:
