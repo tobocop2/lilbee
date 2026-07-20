@@ -208,8 +208,11 @@ def search(
         )
         return [clean_result(r) for r in results]
     except EmbeddingModelMismatchError as exc:
-        # Structured, like the HTTP 409: an agent can offer to adopt the
-        # index's embedder instead of parsing prose out of a generic error.
+        # Structured so an agent can offer to adopt the index's embedder instead
+        # of parsing prose out of a generic error. Names the embedder, which the
+        # HTTP search route deliberately does not: this tool answers a caller
+        # that already reached the MCP surface, while GET /api/search answers
+        # anyone who can reach the port.
         return {
             "error": str(exc),
             "code": "INDEX_EMBEDDER_MISMATCH",
