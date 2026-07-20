@@ -125,6 +125,8 @@ class TestParseLlmAggregate:
             '{"kind": "distinct_type"}',
             '{"kind": "type_association", "noun": "flights"}',
             '{"kind": 3}',
+            '{"kind": ["term_mentions"], "term": "war"}',
+            '{"kind": {"name": "term_mentions"}, "term": "war"}',
             "",
         ],
     )

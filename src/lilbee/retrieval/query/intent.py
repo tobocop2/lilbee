@@ -250,7 +250,10 @@ def parse_llm_aggregate(text: str) -> AggregateQuery | None:
         data = json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
-    kind = _LLM_KINDS.get(data.get("kind", ""))
+    raw_kind = data.get("kind", "")
+    # A non-string kind (list, dict) is malformed, not a crash: an unhashable
+    # value would raise TypeError inside dict.get.
+    kind = _LLM_KINDS.get(raw_kind) if isinstance(raw_kind, str) else None
     if kind is None:
         return None
     term = str(data.get("term", "") or "").strip()
