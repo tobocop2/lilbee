@@ -924,6 +924,7 @@ def _launch_for(
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
+        device_names=_device_names(chosen),
     )
     return InstanceLaunch(
         role=plan.role,
@@ -1152,6 +1153,20 @@ def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
     """
     fraction = _NO_MMAP_NETWORK_RAM_FRACTION if on_network_fs else _NO_MMAP_MAX_RAM_FRACTION
     return weights_bytes <= model_cache.total_system_memory() * fraction
+
+
+def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:
+    """``--device`` names for *devices*, empty when the backend pins through env.
+
+    Only Vulkan. Its visible-devices variable indexes the raw loader enumeration
+    while the names come from the engine's filtered list, so the two disagree
+    on any host where ggml drops or merges a device -- a machine with two ICDs
+    for one card being the clear case. CUDA, ROCm and SYCL compose their
+    variables in the same space the probe enumerated, so they keep doing that.
+    """
+    if not devices or devices[0].backend != "Vulkan":
+        return ()
+    return tuple(f"{d.backend}{d.index}" for d in devices)
 
 
 def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:

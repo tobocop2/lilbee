@@ -242,8 +242,15 @@ def test_visible_env_rocm_emits_single_var_on_clean_env(
     assert env == {"HIP_VISIBLE_DEVICES": "1"}
 
 
-def test_visible_env_vulkan_uses_ggml_var() -> None:
-    assert visible_env((FleetDevice("Vulkan", 0, "", 0, 0),)) == {"GGML_VK_VISIBLE_DEVICES": "0"}
+def test_visible_env_does_not_pin_vulkan_by_raw_index() -> None:
+    """GGML_VK_VISIBLE_DEVICES indexes the raw loader enumeration, not this list.
+
+    These indices come from the engine's filtered device list, so re-emitting
+    them into that variable changes index space wherever ggml drops or merges a
+    device, and setting it also disables ggml's type filter, support check and
+    same-UUID dedup. Vulkan is pinned with --device instead.
+    """
+    assert visible_env((FleetDevice("Vulkan", 0, "", 0, 0),)) == {}
 
 
 def test_visible_env_sycl_uses_oneapi_selector(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,10 +333,17 @@ class TestPresetVisibleDeviceComposition:
         env = visible_env((FleetDevice("ROCm", 1, "", 0, 0),))
         assert env == {"HIP_VISIBLE_DEVICES": "7"}  # relative 1 -> physical 7
 
-    def test_vulkan_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_vulkan_leaves_a_parent_restriction_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe already enumerated under the parent's restriction.
+
+        Composing into the variable would re-filter an already-filtered list;
+        the --device names are relative to what the engine reports under that
+        same restriction, so the parent's value is inherited as-is.
+        """
         monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1,2")
-        env = visible_env((FleetDevice("Vulkan", 1, "", 0, 0),))
-        assert env == {"GGML_VK_VISIBLE_DEVICES": "2"}
+        assert visible_env((FleetDevice("Vulkan", 1, "", 0, 0),)) == {}
 
     def test_sycl_level_zero_parent_list_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", "level_zero:2,3")

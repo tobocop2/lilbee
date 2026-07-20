@@ -2073,3 +2073,20 @@ def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
 
     devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
     assert [(d.backend, d.index) for d in devices] == [("Vulkan", 0)]
+
+
+def test_vulkan_launches_pin_by_name_not_by_raw_index() -> None:
+    """--device takes the names --list-devices printed, the space we parsed from."""
+    from lilbee.providers.fleet.planning import _device_names
+
+    vulkan = (FleetDevice("Vulkan", 0, "", 0, 0), FleetDevice("Vulkan", 2, "", 0, 0))
+    assert _device_names(vulkan) == ("Vulkan0", "Vulkan2")
+
+
+def test_non_vulkan_backends_keep_pinning_through_env() -> None:
+    """CUDA, ROCm and SYCL compose their variables in the probe's own space."""
+    from lilbee.providers.fleet.planning import _device_names
+
+    assert _device_names((FleetDevice("CUDA", 0, "", 0, 0),)) == ()
+    assert _device_names((FleetDevice("ROCm", 0, "", 0, 0),)) == ()
+    assert _device_names(()) == ()

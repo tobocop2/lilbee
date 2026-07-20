@@ -160,6 +160,7 @@ def build_server_argv(
     spec: RoleServerSpec,
     model_path: Path,
     devices: tuple[int, ...],
+    device_names: tuple[str, ...] = (),
     n_gpu_layers: int,
     slots: int,
     ctx_per_slot: int,
@@ -200,6 +201,13 @@ def build_server_argv(
         argv += ["--threads", str(threads), "--threads-batch", str(threads)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
         argv += ["--mmproj", str(mmproj)]
+    if device_names:
+        # Names as --list-devices prints them, which is the space they were parsed
+        # from. The Vulkan visible-devices variable takes RAW loader indices
+        # instead, so re-emitting parsed ordinals into it silently changes index
+        # space, and setting it also turns off ggml's own type filter, support
+        # check and same-UUID dedup. This keeps all of that active.
+        argv += ["--device", ",".join(device_names)]
     if len(devices) > 1:
         ratio = tensor_split or tuple(1 for _ in devices)
         argv += ["--tensor-split", ",".join(str(r) for r in ratio)]

@@ -334,7 +334,13 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
     if backend in ("ROCm", "HIP"):
         return _amd_visible_env(indices)
     if backend == "Vulkan":
-        return {_VK_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_VK_VISIBLE_VAR))}
+        # Deliberately not GGML_VK_VISIBLE_DEVICES. That variable indexes the raw
+        # loader enumeration, while these indices come from the engine's own
+        # filtered list, so the two disagree wherever ggml drops or merges a
+        # device -- two ICDs for one card being the clear case. Setting it also
+        # disables ggml's type filter, support check and dedup. Vulkan is pinned
+        # with --device instead, in the same space the names were parsed from.
+        return {}
     if backend == "SYCL":
         return {_ONEAPI_SELECTOR_VAR: _compose_sycl(indices, os.environ.get(_ONEAPI_SELECTOR_VAR))}
     return {}
