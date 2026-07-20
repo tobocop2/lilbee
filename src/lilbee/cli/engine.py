@@ -6,9 +6,8 @@ import typer
 
 from lilbee.cli.app import console, json_out
 from lilbee.core.config import cfg
-from lilbee.providers.fleet.groups import SwapGroup
-from lilbee.providers.fleet.swap_manager import find_live_state, stop_engine
-from lilbee.runtime.engine_lock import machine_engine_dir, private_engine_dir
+from lilbee.providers.fleet.swap_manager import stop_engine
+from lilbee.runtime.engine_lock import build_lock, machine_engine_dir, private_engine_dir
 
 engine_app = typer.Typer(
     name="engine",
@@ -24,11 +23,17 @@ _NOTHING_RUNNING = "No engine is running."
 def stop() -> None:
     """Stop the shared engine now, whoever started it."""
     stopped: list[str] = []
-    for engine_dir in (machine_engine_dir(), private_engine_dir(cfg.data_root)):
-        for group in SwapGroup:
-            if find_live_state(engine_dir, group) is not None:
-                stopped.append(group.value)
-        stop_engine(engine_dir)
+    # Machine slot, this root's overflow dir, and the pre-upgrade legacy location
+    # (base builds recorded state directly under data_dir): a stale legacy engine
+    # must still be stoppable after an upgrade relocated the engine dirs.
+    dirs = dict.fromkeys((machine_engine_dir(), private_engine_dir(cfg.data_root), cfg.data_dir))
+    for engine_dir in dirs:
+        # Serialize against a concurrent builder, whose spawn + state write + health
+        # wait all run under this lock; an unlocked stop landing mid-build would kill
+        # the just-spawned engine and unlink its fresh record. best_effort so a wedged
+        # builder cannot make the off switch hang.
+        with build_lock(engine_dir, best_effort=True):
+            stopped.extend(stop_engine(engine_dir))
     if cfg.json_mode:
         json_out({"command": "engine stop", "stopped": sorted(set(stopped))})
         return
