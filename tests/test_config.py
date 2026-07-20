@@ -116,6 +116,41 @@ class TestEnvVarOverrides:
             assert c.data_root == Path.home() / "lilbee_expanduser_probe"
             assert c.lancedb_dir == Path.home() / "lilbee_expanduser_probe" / "data" / "lancedb"
 
+    def test_symlinked_data_root_keys_the_same_paths_as_its_target(self, tmp_path):
+        """Two spellings of one directory derive one set of lock paths."""
+        real = tmp_path / "real_root"
+        real.mkdir()
+        link = tmp_path / "link_root"
+        link.symlink_to(real)
+
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(real)}):
+            direct = Config()
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(link)}):
+            through_link = Config()
+
+        assert through_link.data_root == direct.data_root
+        assert through_link.data_dir == direct.data_dir
+        assert through_link.lancedb_dir == direct.lancedb_dir
+
+    def test_padded_data_env_finds_the_same_dir_for_root_and_config(
+        self, tmp_path, overlay_reads_config_toml
+    ):
+        """A padded LILBEE_DATA sends the root and its config.toml to one dir."""
+        (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
+            c = Config()
+        assert c.data_root == tmp_path
+        assert c.top_k == 7
+
+    def test_relative_data_root_resolves_absolute(self, tmp_path, monkeypatch):
+        """A relative root must not re-key on the process working directory."""
+        (tmp_path / "kb").mkdir()
+        monkeypatch.chdir(tmp_path)
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": "kb"}):
+            c = Config()
+        assert c.data_root.is_absolute()
+        assert c.data_root == (tmp_path / "kb").resolve()
+
     def test_empty_data_root_falls_back_to_default_not_cwd(self):
         """An empty LILBEE_DATA_ROOT must resolve to the platform default, not
         the process cwd (which would make the data dir move with the launcher)."""
@@ -135,17 +170,19 @@ class TestEnvVarOverrides:
             assert c2.data_root != Path.cwd()
             assert str(c2.data_root).endswith("lilbee")
 
-    def test_unexpandable_home_keeps_the_literal_path(self):
-        """expanduser() raises when the OS cannot resolve a home directory (no
-        HOME, an unknown ~user). The data root must still resolve rather than
-        taking config construction -- and the whole process -- down."""
-        from lilbee.core.config.model import _expanded
+    def test_unresolvable_home_still_loads_config(self):
+        """An unresolvable ~ still yields a usable root instead of raising.
 
-        literal = Path("~/lilbee")
-        with mock.patch.object(Path, "expanduser", side_effect=OSError("no home")):
-            assert _expanded(literal) == literal
-        # The normal case still expands.
-        assert _expanded(literal) == Path.home() / "lilbee"
+        os.path.expanduser returns an unknown ~user unchanged; Path.expanduser
+        raises.
+        """
+        from lilbee.core.system import canonical_data_root
+
+        root = canonical_data_root("~nosuchuser_lilbee_probe/lilbee")
+        assert root.is_absolute()
+        assert str(root).endswith("lilbee")
+        # The normal case still expands to the real home.
+        assert canonical_data_root("~/lilbee") == Path.home() / "lilbee"
 
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)

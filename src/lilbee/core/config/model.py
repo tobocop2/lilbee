@@ -44,19 +44,6 @@ log = logging.getLogger(__name__)
 _UNSET_PATH = Path()
 
 
-def _expanded(path: Path) -> Path:
-    """``path`` with a leading ``~`` expanded, or unchanged if it cannot be.
-
-    ``expanduser()`` raises when the OS cannot resolve a home directory (no
-    HOME, an unknown ``~user``). Configuration must still load in that case, so
-    the literal path stands rather than taking the whole process down.
-    """
-    try:
-        return path.expanduser()
-    except (OSError, RuntimeError):
-        return path
-
-
 class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
 
@@ -1032,7 +1019,12 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
-        from lilbee.core.system import canonical_models_dir, default_data_dir, find_local_root
+        from lilbee.core.system import (
+            canonical_data_root,
+            canonical_models_dir,
+            default_data_dir,
+            find_local_root,
+        )
 
         if not isinstance(data, dict):
             return data
@@ -1048,14 +1040,10 @@ class Config(BaseSettings):
             else:
                 local = find_local_root()
                 data["data_root"] = local if local is not None else default_data_dir()
-        # data_root may arrive as a raw string (e.g. from LILBEE_DATA_ROOT); the
-        # child-path derivations below use ``/``, so coerce to Path first.
-        # expanduser() so a "~/lilbee" value from a systemd unit or .env (which
-        # do not expand ~) points at the home dir instead of creating a literal
-        # ./~ tree that a server lock keyed on this path would then diverge on.
-        # It raises when the OS cannot resolve a home directory, and config must
-        # still load then, so an unresolvable ~ keeps the literal path.
-        root = _expanded(Path(data["data_root"]))
+        # Every child path below derives from this, and the server lock keys on
+        # those, so canonicalizing here is what makes one directory key one lock.
+        # Also coerces a raw string (LILBEE_DATA_ROOT) to Path.
+        root = canonical_data_root(data["data_root"])
         data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"
@@ -1077,15 +1065,19 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.system import default_data_dir, find_local_root
+        from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
 
-        data_env = os.environ.get("LILBEE_DATA", "")
+        # .strip() to match _resolve_defaults; a padded value would otherwise
+        # send the root and its config.toml to different directories.
+        data_env = os.environ.get("LILBEE_DATA", "").strip()
         if data_env:
             toml_dir = Path(data_env)
         else:
             local = find_local_root()
             toml_dir = local if local else default_data_dir()
-        toml_path = toml_dir / "config.toml"
+        # Same call as the root itself, so this looks where the root resolves to;
+        # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
+        toml_path = canonical_data_root(toml_dir) / "config.toml"
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]
