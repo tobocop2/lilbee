@@ -3603,7 +3603,7 @@ def test_shutdown_latches_regardless_of_warm(monkeypatch, tmp_path: Path) -> Non
     assert p._shut_down is True
 
 
-def test_config_change_restarts_the_engine_but_keeps_membership(
+def test_config_change_restarts_the_engine_and_releases_membership(
     monkeypatch, tmp_path: Path
 ) -> None:
     _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
@@ -3613,7 +3613,12 @@ def test_config_change_restarts_the_engine_but_keeps_membership(
     assert p._ensure_fleet() is True
     p.invalidate_load_cache()
     assert stopped == [machine]  # the shared engine restarts for everyone
-    assert list((machine / "engine-users").glob("*.lock"))  # still a member
+    # Membership is released, not kept: a retained hold would let a later config
+    # change stop a foreign engine that claimed the slot, and keep it falsely live.
+    # The next use re-runs the ladder and re-acquires membership in whatever dir it
+    # rebuilds into.
+    assert not list((machine / "engine-users").glob("*.lock"))
+    assert p._engine_holds == {}
     assert p._shut_down is False  # provider reusable; next use rebuilds
 
 
