@@ -93,3 +93,57 @@ class TestStalledConsumerStopsTheProducer:
             await asyncio.sleep(0)
             sse.queue.get_nowait()
         assert not sse.cancel.is_set()
+
+
+class TestTerminalFrameIsSharedByEveryStream:
+    """Five streaming handlers ended with the same five lines, and the copies
+    had drifted: the crawler-setup one skipped the cancel check, so it emitted
+    a done frame to a client that had already disconnected."""
+
+    async def _finished(self, result=None, exc=None):
+        async def _run():
+            if exc is not None:
+                raise exc
+            return result
+
+        task = asyncio.ensure_future(_run())
+        await asyncio.sleep(0)
+        return task
+
+    async def test_a_cancelled_stream_emits_nothing(self) -> None:
+        from lilbee.server.handlers.sse import SseStream
+
+        sse = SseStream()
+        task = await self._finished(result={"ok": True})
+        sse.cancel.set()
+        assert sse.terminal_frame(task, lambda r: r) is None
+
+    async def test_a_completed_producer_emits_its_done_payload(self) -> None:
+        from lilbee.server.handlers.sse import SseStream
+
+        sse = SseStream()
+        task = await self._finished(result={"files_written": ["a.md"]})
+        frame = sse.terminal_frame(task, lambda r: r)
+        assert frame is not None
+        assert "event: done" in frame
+        assert "a.md" in frame
+
+    async def test_a_failed_producer_emits_an_error(self) -> None:
+        from lilbee.server.handlers.sse import SseStream
+
+        sse = SseStream()
+        task = await self._finished(exc=RuntimeError("network unreachable"))
+        frame = sse.terminal_frame(task, lambda r: r)
+        assert frame is not None
+        assert "event: error" in frame
+        assert "network unreachable" in frame
+
+    async def test_an_unfinished_producer_emits_nothing(self) -> None:
+        from lilbee.server.handlers.sse import SseStream
+
+        sse = SseStream()
+        pending = asyncio.ensure_future(asyncio.sleep(60))
+        try:
+            assert sse.terminal_frame(pending, lambda r: r) is None
+        finally:
+            pending.cancel()
