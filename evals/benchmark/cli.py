@@ -17,7 +17,7 @@ import httpx
 
 from evals.benchmark import ir_metrics, stats
 from evals.benchmark.collectors import (
-    DEFAULT_TOP_K,
+    DEFAULT_TARGET_DOCS,
     LilbeeCollector,
     RagflowCollector,
     collect_run,
@@ -54,11 +54,15 @@ def _cmd_preregister(args: argparse.Namespace) -> int:
 
 def _build_collector(args: argparse.Namespace) -> LilbeeCollector | RagflowCollector:
     if args.system == "lilbee":
-        return LilbeeCollector(args.base_url, run_tag=args.run_tag, top_k=args.top_k)
+        return LilbeeCollector(args.base_url, run_tag=args.run_tag, target_docs=args.target_docs)
     if not args.api_key or not args.dataset_id:
         raise ValueError("ragflow collection needs --api-key and at least one --dataset-id")
     return RagflowCollector(
-        args.base_url, args.api_key, args.dataset_id, run_tag=args.run_tag, top_k=args.top_k
+        args.base_url,
+        args.api_key,
+        args.dataset_id,
+        run_tag=args.run_tag,
+        target_docs=args.target_docs,
     )
 
 
@@ -70,6 +74,7 @@ def _cmd_collect(args: argparse.Namespace) -> int:
         queries,
         args.run,
         args.checkpoint,
+        target_docs=args.target_docs,
         on_query=lambda qid: print(f"[{args.run_tag}] {qid}", flush=True),
     )
     print(f"collected {len(queries)} queries, {len(hits)} hits -> {args.run}")
@@ -235,7 +240,12 @@ def _add_collect(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--run-tag", required=True)
     parser.add_argument("--base-url", required=True)
-    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
+    parser.add_argument(
+        "--target-docs",
+        type=int,
+        default=DEFAULT_TARGET_DOCS,
+        help="distinct parent documents to collect per query; both arms use the same depth",
+    )
     parser.add_argument("--api-key", default="", help="ragflow only")
     parser.add_argument(
         "--dataset-id", action="append", default=[], help="ragflow only, repeatable"

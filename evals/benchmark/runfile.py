@@ -54,12 +54,19 @@ class RunEntry:
         )
 
 
-def collapse_hits(hits: list[ChunkHit], run_tag: str) -> list[RunEntry]:
+def collapse_hits(
+    hits: list[ChunkHit], run_tag: str, *, limit: int | None = None
+) -> list[RunEntry]:
     """Collapse chunk hits to documents (best score wins) and re-rank per query.
 
     Multiple chunks from one document keep only that document's best score.
     Within each query, documents are ranked by descending score; ties break on
     doc_id so the ordering is deterministic and reproducible.
+
+    ``limit`` caps each query at that many documents after ranking. A chunk-level
+    arm over-fetches chunks to reach the target document depth and can overshoot
+    on the final page, so capping here is what makes both arms' runs the same
+    document depth rather than whatever their pagination happened to land on.
     """
     best: dict[str, dict[str, float]] = {}
     for hit in hits:
@@ -69,6 +76,8 @@ def collapse_hits(hits: list[ChunkHit], run_tag: str) -> list[RunEntry]:
     entries: list[RunEntry] = []
     for query_id in sorted(best):
         ranked = sorted(best[query_id].items(), key=lambda item: (-item[1], item[0]))
+        if limit is not None:
+            ranked = ranked[:limit]
         for rank, (doc_id, score) in enumerate(ranked, start=1):
             entries.append(RunEntry(query_id, doc_id, rank, score, run_tag))
     return entries
