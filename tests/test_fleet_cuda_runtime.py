@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -251,3 +252,47 @@ def test_device_probe_diagnostic_when_no_output() -> None:
     assert (
         cuda_runtime._device_probe_diagnostic("") == "(the engine's device probe printed nothing)"
     )
+
+
+def test_rocm_build_enumerating_nothing_on_an_amd_host_fails_loud(monkeypatch, tmp_path) -> None:
+    """ROCm's silent-failure class had no counterpart to the CUDA guard.
+
+    A version mismatch, an unsupported gfx target or no access to /dev/kfd all
+    end with the runtime loaded and zero devices, which used to fall quietly to
+    CPU on a machine bought for its GPU.
+    """
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import cuda_runtime
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: False)
+    monkeypatch.setattr(cuda_runtime, "_links_hip_runtime", lambda *_a: True)
+    monkeypatch.setattr(cuda_runtime, "_amd_gpu_present", lambda: True)
+
+    with pytest.raises(ProviderError) as err:
+        cuda_runtime.assert_gpu_devices_usable(tmp_path / "llama-server", [], "rocBLAS error\n")
+    assert "/dev/kfd" in str(err.value)
+
+
+def test_rocm_build_is_silent_when_the_host_has_no_amd_gpu(monkeypatch, tmp_path) -> None:
+    """A ROCm build on a machine without an AMD card is just a CPU host."""
+    from lilbee.providers.fleet import cuda_runtime
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: False)
+    monkeypatch.setattr(cuda_runtime, "_links_hip_runtime", lambda *_a: True)
+    monkeypatch.setattr(cuda_runtime, "_amd_gpu_present", lambda: False)
+
+    cuda_runtime.assert_gpu_devices_usable(tmp_path / "llama-server", [], "")
+
+
+def test_amd_gpu_present_does_not_depend_on_rocm_tooling(monkeypatch, tmp_path) -> None:
+    """The check must not use amd-smi: ROCm being broken is what it detects."""
+    import inspect
+
+    from lilbee.providers.fleet import cuda_runtime
+
+    source = inspect.getsource(cuda_runtime._amd_gpu_present)
+    body = source.split('"""')[-1]  # drop the docstring, which names the tools it avoids
+    assert "subprocess" not in body  # no shelling out to ROCm tooling
+    assert "/dev/kfd" in body and "/sys/class/drm" in body

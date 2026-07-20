@@ -954,14 +954,14 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
     probe that times out raises instead (a wedged GPU driver); falling through
     to the in-process Vulkan probe there could hang this thread unkillably.
     """
-    from lilbee.providers.fleet.cuda_runtime import assert_cuda_devices_usable
+    from lilbee.providers.fleet.cuda_runtime import assert_gpu_devices_usable
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
 
     probe = probe_devices(binary)
     devices = probe.devices
     # A CUDA build that links a runtime it cannot init a GPU with must fail loud,
     # not silently fall back to CPU (the Vulkan VRAM probe below would mask it).
-    assert_cuda_devices_usable(binary, devices, probe.output)
+    assert_gpu_devices_usable(binary, devices, probe.output)
     if not devices and model_cache.has_nvidia_gpu():
         log.warning(
             "This host has an NVIDIA GPU but the engine's device probe "
