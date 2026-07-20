@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 from collections.abc import AsyncIterator
 
+import pytest
+
 from lilbee.server.chat_completions_api.models import (
     CompletionsStreamChoice,
     CompletionsStreamChunk,
@@ -176,3 +178,32 @@ class TestEncodeCompletionsSse:
         assert text.count(keepalive) >= 2
         assert "finally" in text
         assert text.endswith("data: [DONE]\n\n")
+
+
+class TestCleanupSuppression:
+    """The cleanup cancels its in-flight future and awaits it. Suppressing
+    BaseException there also discarded KeyboardInterrupt and SystemExit."""
+
+    async def test_consumer_cancellation_still_propagates(self) -> None:
+        """Regression guard: cancelling the consumer must cancel the task."""
+        import asyncio
+
+        started = asyncio.Event()
+
+        async def _never_yields() -> AsyncIterator[CompletionsStreamChunk]:
+            started.set()
+            await asyncio.Event().wait()
+            yield _chunk(delta=CompletionsStreamDelta(content="unreachable"))
+
+        async def _consume() -> None:
+            async for _frame in encode_completions_sse(_never_yields()):
+                pass
+
+        task = asyncio.create_task(_consume())
+        await asyncio.wait_for(started.wait(), timeout=5)
+        await asyncio.sleep(0.05)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()

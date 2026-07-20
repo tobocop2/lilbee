@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import logging
 from collections.abc import AsyncIterator
 
 from lilbee.server.chat_completions_api.models import CompletionsStreamChunk
+
+log = logging.getLogger(__name__)
 
 # Cadence for SSE comment frames emitted when no chat token has arrived. Keeps
 # clients (notably opencode) from tripping their idle-stream timeout during
@@ -45,6 +47,19 @@ async def encode_completions_sse(
     finally:
         if not pending.done():
             pending.cancel()
-            with contextlib.suppress(BaseException):
+            current = asyncio.current_task()
+            try:
                 await pending
+            except asyncio.CancelledError:
+                # Awaiting the future we just cancelled raises here, which is
+                # expected. A cancellation aimed at this task is not: this
+                # cleanup runs during aclose(), which the server calls while
+                # unwinding a request that is often itself being cancelled, and
+                # swallowing that let the task resume as if it never was.
+                if current is not None and current.cancelling() > 0:
+                    raise
+            except Exception:
+                # The upstream failed as it was torn down. The request is
+                # already unwinding, so record it rather than mask the unwind.
+                log.debug("upstream chat stream errored during cleanup", exc_info=True)
     yield b"data: [DONE]\n\n"
