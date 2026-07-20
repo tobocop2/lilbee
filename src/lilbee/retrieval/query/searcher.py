@@ -227,10 +227,16 @@ class StructuredQuery(NamedTuple):
 
 
 class RagContext(NamedTuple):
-    """Grounded context for one turn: the chunks and the prompt built on them."""
+    """Grounded context for one turn: the chunks and the prompt built on them.
+
+    ``base_results`` is the pre-widen selected set. An overflow retry refits from
+    it, not from ``results`` (whose neighbor text is baked in and can no longer
+    be shed), so a tighter fit drops expansion before it drops an original chunk.
+    """
 
     results: list[SearchChunk]
     messages: list[ChatMessage]
+    base_results: list[SearchChunk] | None = None
 
 
 class Searcher:
@@ -931,6 +937,7 @@ class Searcher:
         retrieved set tighter without re-running retrieval or condensation.
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
+        base_results = list(results)
         results = self._fit_context_budget(results, system, question, history, scale)
         results = self._widen_with_neighbors(results, system, question, history, scale)
         context = build_context(results)
@@ -939,7 +946,7 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return RagContext(results, messages)
+        return RagContext(results, messages, base_results)
 
     @staticmethod
     def _budget_tokens(text: str) -> int:
@@ -1310,7 +1317,7 @@ class Searcher:
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
             return AskResult(answer=GROUNDED_REFUSAL, sources=[])
-        results, messages = rag
+        results, messages = rag.results, rag.messages
         opts = options if options is not None else self._config.generation_options()
         try:
             result = self._provider.chat(
@@ -1319,13 +1326,18 @@ class Searcher:
         except ProviderError as exc:
             if exc.kind is not ProviderErrorKind.CONTEXT_OVERFLOW or not results:
                 raise
-            # The budget estimator is a heuristic; when the engine still
-            # reports overflow, refit the same retrieved set tighter and
-            # retry once instead of hard-failing the question.
+            # The budget estimator is a heuristic; when the engine still reports
+            # overflow, refit tighter and retry once. Refit from the pre-widen
+            # set so the tighter budget sheds neighbor expansion before it drops
+            # an original chunk, not the reverse.
             log.warning("Context overflow despite budgeting; retrying with a tighter fit")
-            results, messages = self._finalize_context(
-                results, question, history, scale=_OVERFLOW_RETRY_SCALE
+            retry = self._finalize_context(
+                rag.base_results if rag.base_results is not None else results,
+                question,
+                history,
+                scale=_OVERFLOW_RETRY_SCALE,
             )
+            results, messages = retry.results, retry.messages
             result = self._provider.chat(
                 self._messages_for_provider(messages), options=opts or None
             )
@@ -1399,7 +1411,7 @@ class Searcher:
         if rag is None:
             yield StreamToken(content=GROUNDED_REFUSAL, is_reasoning=False)
             return
-        results, messages = rag
+        results, messages = rag.results, rag.messages
         # No overflow retry here: a stream cannot be rebuilt once tokens have
         # been yielded, so the conservative budget in _fit_context_budget is
         # the streaming path's protection.

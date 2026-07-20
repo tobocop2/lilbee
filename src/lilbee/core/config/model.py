@@ -1029,7 +1029,10 @@ class Config(BaseSettings):
                 data["data_root"] = local if local is not None else default_data_dir()
         # data_root may arrive as a raw string (e.g. from LILBEE_DATA_ROOT); the
         # child-path derivations below use ``/``, so coerce to Path first.
-        root = Path(data["data_root"])
+        # expanduser() so a "~/lilbee" value from a systemd unit or .env (which
+        # do not expand ~) points at the home dir instead of creating a literal
+        # ./~ tree that a server lock keyed on this path would then diverge on.
+        root = Path(data["data_root"]).expanduser()
         data["data_root"] = root
         if data.get("documents_dir") in (None, _UNSET_PATH):
             data["documents_dir"] = root / "documents"

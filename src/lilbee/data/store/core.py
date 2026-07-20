@@ -108,6 +108,18 @@ _MAX_THRESHOLD = 1.0
 _MAX_FILTER_ITERATIONS = 20  # safety cap to prevent runaway loops
 
 
+def _is_fts_position_overflow(exc: Exception) -> bool:
+    """True when *exc* is LanceDB's positional-FTS list-encoding overflow.
+
+    A positional index (built by an intermediate dev commit) raises e.g.
+    "Max offset N exceeds length of values M" on optimize(); a positionless
+    rebuild is the remediation. Matched on message because LanceDB raises it
+    as a generic error type.
+    """
+    msg = str(exc).lower()
+    return "offset" in msg and "exceeds" in msg
+
+
 def _lexical_rows(
     table: lancedb.table.Table,
     query_text: str,
@@ -468,11 +480,18 @@ class Store:
                         # table, the title index included.
                         table.optimize()
                         log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
-                    except Exception:
-                        log.warning(
-                            "FTS optimize() failed; the existing index still serves hybrid search",
-                            exc_info=True,
-                        )
+                    except Exception as exc:
+                        if _is_fts_position_overflow(exc):
+                            # A pre-fix positional index overflows LanceDB's list
+                            # encoding on every optimize(). Rebuild it positionless
+                            # once so index maintenance can complete again.
+                            self._rebuild_fts_positionless(table)
+                        else:
+                            log.warning(
+                                "FTS optimize() failed; the existing index still "
+                                "serves hybrid search",
+                                exc_info=True,
+                            )
                 else:
                     # Positionless: with_position=True overflows LanceDB's list
                     # encoding on optimize() for a large corpus. Positions only
@@ -503,6 +522,24 @@ class Store:
             log.debug("Title FTS index created on '%s'", CHUNKS_TABLE)
         except Exception:
             log.debug("Title FTS index create failed", exc_info=True)
+
+    def _rebuild_fts_positionless(self, table: lancedb.table.Table) -> None:
+        """Replace positional FTS indexes with positionless ones. Caller holds the lock.
+
+        The one-shot remediation for a store whose index was built
+        ``with_position=True`` and now overflows on every ``optimize()``. The
+        title index is rebuilt too when the title arm is enabled.
+        """
+        try:
+            table.create_fts_index("chunk", replace=True, with_position=False)
+            if self._config.title_search and _TITLE_COLUMN in table.schema.names:
+                table.create_fts_index(_TITLE_COLUMN, replace=True, with_position=False)
+            log.warning("Rebuilt the FTS index positionless after a positional-index overflow")
+        except Exception:
+            log.warning(
+                "Positionless FTS rebuild failed; the existing index still serves",
+                exc_info=True,
+            )
 
     def ensure_scalar_indexes(self) -> None:
         """Build scalar indexes on the columns lilbee filters by.

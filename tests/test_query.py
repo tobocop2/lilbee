@@ -994,6 +994,37 @@ class TestNeighborExpansion:
         result = get_services().searcher.ask_raw("q")
         assert result.sources[0].chunk == "x" * 300
 
+    def test_overflow_retry_sheds_expansion_not_an_original(self, mock_svc):
+        """On the context-overflow retry the tighter refit must start from the
+        pre-widen originals, so it sheds a chunk's neighbor filler before it
+        drops a whole lower-ranked original chunk."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        cfg.neighbor_expansion = 1
+        cfg.num_ctx = 4096
+        mock_svc.provider.served_chat_ctx.return_value = None
+        a = _make_result(source="a.pdf", chunk="a" * 300, chunk_index=2, distance=0.1)
+        b = _make_result(source="b.pdf", chunk="b" * 300, chunk_index=0, distance=0.2)
+        mock_svc.store.search.return_value = [a, b]
+
+        def neighbors(source, indices):
+            if source == "a.pdf":
+                return [
+                    _make_result(source="a.pdf", chunk="n" * 3000, chunk_index=1),
+                    _make_result(source="a.pdf", chunk="m" * 3000, chunk_index=3),
+                ]
+            return []
+
+        mock_svc.store.get_chunks_by_indices.side_effect = neighbors
+        mock_svc.provider.chat.side_effect = [
+            ProviderError("overflow", kind=ProviderErrorKind.CONTEXT_OVERFLOW),
+            _text_result("fits now"),
+        ]
+        result = get_services().searcher.ask_raw("q")
+        assert mock_svc.provider.chat.call_count == 2
+        # The lower-ranked original b.pdf must survive; only a.pdf's expansion sheds.
+        assert {r.source for r in result.sources} == {"a.pdf", "b.pdf"}
+
     def test_widened_prompt_still_fits_the_provider_ceiling(self, mock_svc):
         """Widening runs after the budget fit, so it must budget against the same
         provider ceiling: the assembled widened prompt must not exceed
@@ -1024,8 +1055,7 @@ class TestNeighborExpansion:
             + _CONTEXT_TEMPLATE_TOKENS
         )
         assert assembled <= prompt_token_budget(ctx), (
-            f"widened prompt {assembled} tokens exceeds provider ceiling "
-            f"{prompt_token_budget(ctx)}"
+            f"widened prompt {assembled} tokens exceeds provider ceiling {prompt_token_budget(ctx)}"
         )
 
 
@@ -2192,7 +2222,7 @@ class TestKnownItemRoute:
         ]
         rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
         assert rag is not None
-        results, _ = rag
+        results = rag.results
         assert [r.chunk for r in results] == ["first", "second"]
         assert all(r.score == 1.0 for r in results)
         mock_svc.store.search.assert_not_called()
@@ -2239,7 +2269,7 @@ class TestKnownItemRoute:
         cfg.num_ctx = None
         rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
         assert rag is not None
-        results, messages = rag
+        results, messages = rag.results, rag.messages
         prompt_tokens = sum(len(m["content"]) // 4 for m in messages)
         assert prompt_tokens <= 8192
         # Document order preserved after trimming: the head survives.
@@ -2259,7 +2289,7 @@ class TestKnownItemRoute:
         cfg.num_ctx = None
         rag = get_services().searcher.build_rag_context("summarize survey_report.pdf")
         assert rag is not None
-        _, messages = rag
+        messages = rag.messages
         # At 2.56 chars/token the real prompt cost must still fit the window.
         real_tokens = sum(len(m["content"]) / 2.56 for m in messages)
         assert real_tokens <= 24576 * 1.05
@@ -2299,7 +2329,7 @@ class TestKnownItemRoute:
         finally:
             cfg.num_ctx = None
         assert rag is not None
-        _, messages = rag
+        messages = rag.messages
         assert sum(len(m["content"]) // 4 for m in messages) <= 4096
 
     def test_docket_reference_resolves_by_content_concentration(self, mock_svc):
@@ -2570,7 +2600,7 @@ class TestHistoryCondensation:
         finally:
             cfg.query_expansion_count = 3
         assert rag is not None
-        _, messages = rag
+        messages = rag.messages
         assert mock_svc.store.search.call_args[1]["query_text"] == rewritten
         assert "and when was it written?" in messages[-1]["content"]
         assert rewritten not in messages[-1]["content"]
@@ -2974,7 +3004,7 @@ class TestChunkTypeScope:
         mock_svc.store.search.return_value = [wiki_chunk, raw_chunk]
         result = get_services().searcher.build_rag_context("question")
         assert result is not None
-        chunks, _ = result
+        chunks = result.results
         assert len(chunks) == 2
 
     def test_build_rag_context_forwards_chunk_type_to_store(self, mock_svc):
@@ -3515,7 +3545,7 @@ class TestBuildRagContextFilters:
         mock_svc.store.search.return_value = [close, far]
         result = get_services().searcher.build_rag_context("question")
         assert result is not None
-        results, _ = result
+        results = result.results
         sources = [r.source for r in results]
         assert "close.pdf" in sources
         assert "far.pdf" not in sources

@@ -180,6 +180,81 @@ class TestEnsureFtsIndex:
             store.ensure_fts_index()
         assert store._fts_ready is True
 
+    def test_positional_index_overflow_rebuilds_positionless(self, store):
+        """A store whose FTS index was built with positions overflows on every
+        optimize(); catching that specific error rebuilds the index positionless
+        (replace=True) so index maintenance can complete instead of failing
+        forever with no remediation short of a full re-ingest."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 1897296 exceeds length of values 1067891")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(type(table), "create_fts_index") as rebuild,
+        ):
+            store.ensure_fts_index()
+        assert any(
+            c.args[:1] == ("chunk",)
+            and c.kwargs.get("replace") is True
+            and c.kwargs.get("with_position") is False
+            for c in rebuild.call_args_list
+        )
+        assert store._fts_ready is True
+
+    def test_generic_optimize_failure_does_not_rebuild(self, store):
+        """An unrelated optimize() failure keeps the existing index and does NOT
+        pay for a full positionless rebuild it cannot fix."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=RuntimeError("disk full")),
+            mock.patch.object(type(table), "create_fts_index") as rebuild,
+        ):
+            store.ensure_fts_index()
+        rebuild.assert_not_called()
+
+    def test_overflow_rebuild_also_rebuilds_the_title_index_when_enabled(self, store, test_config):
+        """With the title arm on, a positional-overflow rebuild replaces the
+        title index too, not just the chunk index."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 9 exceeds length of values 3")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(type(table), "create_fts_index") as rebuild,
+        ):
+            store.ensure_fts_index()
+        rebuilt = {
+            c.args[0]
+            for c in rebuild.call_args_list
+            if c.kwargs.get("replace") is True and c.kwargs.get("with_position") is False
+        }
+        assert rebuilt == {"chunk", "title"}
+
+    def test_overflow_rebuild_failure_is_swallowed(self, store):
+        """If the positionless rebuild itself fails, the store keeps the existing
+        index and does not propagate: a failed self-heal must not crash sync."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 9 exceeds length of values 3")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(
+                type(table), "create_fts_index", side_effect=RuntimeError("rebuild boom")
+            ),
+        ):
+            store.ensure_fts_index()  # must not raise
+        assert store._fts_ready is True
+
     def test_first_call_creates_chunk_index_only_when_title_search_off(self, store):
         """With title_search off (default), only the chunk index is built; the
         title index is not created on a store that never queries it."""
