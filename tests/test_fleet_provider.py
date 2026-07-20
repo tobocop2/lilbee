@@ -478,7 +478,7 @@ def test_drop_swap_refs_closes_retiring_clients() -> None:
     p._clients = {WorkerRole.EMBED: [live]}
     p._retiring_clients = [retiring]
 
-    p._drop_swap_refs()
+    p._drop_swap_refs(close_all=True)
 
     live.close.assert_called_once_with()
     retiring.close.assert_called_once_with()
@@ -3859,6 +3859,20 @@ def _connection_error() -> Exception:
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     return ProviderError("refused", provider="llama-server", kind=ProviderErrorKind.CONNECTION)
+
+
+def test_rediscover_does_not_close_a_client_a_reader_is_using() -> None:
+    # _with_rediscover reaches _drop_swap_refs on any connection blip. A client
+    # another thread is mid-embed or mid-stream on must be retired, not closed
+    # underneath it; only idle clients close.
+    busy, idle = _fake_client(in_flight=1), _fake_client(in_flight=0)
+    p = _provider_with_clients({WorkerRole.CHAT: [busy], WorkerRole.EMBED: [idle]})
+
+    p._drop_swap_refs()
+
+    busy.close.assert_not_called()  # still streaming: severing it would kill the read
+    assert busy in p._retiring_clients  # kept for a later pass
+    idle.close.assert_not_called()  # retired this pass; closes on the next one
 
 
 def test_connection_failure_rediscovers_once_and_recovers(monkeypatch, tmp_path: Path) -> None:

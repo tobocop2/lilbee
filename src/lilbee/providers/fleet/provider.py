@@ -1194,7 +1194,9 @@ class FleetProvider:
             with self._lock:
                 if latch:
                     self._shut_down = True
-            self._drop_swap_refs()
+            # Terminal shutdown closes every client; a config-change teardown
+            # retires them so an in-flight reader is never severed.
+            self._drop_swap_refs(close_all=latch)
             if latch:
                 self._release_engines()
             else:
@@ -1237,18 +1239,32 @@ class FleetProvider:
                 log.info("Engine restarted at %s (configuration changed)", engine_dir)
         self._engine_holds = {}
 
-    def _drop_swap_refs(self) -> None:
-        """Clear every group's swap/clients and the chat capacity so the next call rebuilds."""
+    def _drop_swap_refs(self, *, close_all: bool = False) -> None:
+        """Clear every group's swap/clients and the chat capacity so the next call rebuilds.
+
+        Live pools are RETIRED through the ``in_flight`` check rather than closed
+        outright: ``_with_rediscover`` reaches this on any connection blip, so a
+        chat proxy hiccup must not sever the client another thread is mid-embed or
+        mid-stream on (a streamed response is handed out after the retry returns,
+        and failures past the first frame are not retried). Idle clients close now,
+        busy ones stay retired for a later pass.
+
+        *close_all* is the terminal-shutdown path, where nothing will read again and
+        whatever remains must actually be closed.
+        """
+        doomed: list[LlamaServerClient] = []
         with self._lock:
-            # Close the live pools and any clients still awaiting retirement.
-            clients = [client for pool in self._clients.values() for client in pool]
-            clients.extend(self._retiring_clients)
+            live = [client for pool in self._clients.values() for client in pool]
             self._swaps = {}
             self._launches = {}
             self._role_group = {}
             self._group_dirs = {}
             self._clients = {}
-            self._retiring_clients = []
+            if close_all:
+                doomed = live + self._retiring_clients
+                self._retiring_clients = []
+            else:
+                self._retire_clients(live)
             self._chat_slots = 1
             self._chat_ctx = None
             # A torn-down fleet's load failures describe servers that no longer
@@ -1257,7 +1273,7 @@ class FleetProvider:
         # Full teardown: the next build starts from a clean box, so it must
         # re-snapshot memory rather than plan against this boot's probe.
         planning.clear_plan_probe()
-        for client in clients:
+        for client in doomed:
             client.close()
 
     def _drop_dead_swaps(self) -> None:
