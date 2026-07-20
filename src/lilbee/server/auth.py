@@ -15,6 +15,7 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp, Receive, Scope, Send
 
 from lilbee.core.config import cfg
+from lilbee.core.security import write_private_text
 
 log = logging.getLogger(__name__)
 
@@ -66,18 +67,29 @@ class SessionManager:
         path = server_json_path()
         existing = self._read_persisted_token(path)
         if existing is not None:
+            # A server.json can arrive with permissive bits (written by a release
+            # predating this hardening, restored from a backup, copied between
+            # machines), and the token inside is reused indefinitely, so narrow
+            # the mode on every load rather than only at first creation.
+            self._harden(path)
             self.token = existing
             self._initialized = True
             return existing
         self.token = secrets.token_urlsafe(_TOKEN_BYTES)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"token": self.token}), encoding="utf-8")
-        if sys.platform != "win32":  # pragma: no cover - Windows uses the DACL
-            # POSIX-only; Windows relies on the inherited %LOCALAPPDATA% DACL
-            # for owner-only access control.
-            path.chmod(0o600)
+        write_private_text(path, json.dumps({"token": self.token}))
         self._initialized = True
         return self.token
+
+    @staticmethod
+    def _harden(path: Path) -> None:
+        """Narrow *path* to owner-only, tolerating a file we do not own."""
+        if sys.platform == "win32":  # pragma: no cover - Windows uses the DACL
+            # Windows relies on the inherited %LOCALAPPDATA% DACL instead.
+            return
+        try:
+            path.chmod(0o600)
+        except OSError:
+            log.warning("Could not restrict permissions on %s.", path, exc_info=True)
 
     def disable(self) -> None:
         """Explicitly turn auth off (test harness / embedded read-only use).

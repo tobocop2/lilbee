@@ -490,9 +490,9 @@ class TestUtf8RoundTrip:
         decoded = raw.decode("utf-8")
         assert "key" in decoded
 
-    def test_win32_platform_sim_does_not_break_save(self, tmp_path, monkeypatch) -> None:
-        """Simulate Windows platform: write_text with encoding= must still work."""
-        monkeypatch.setattr("lilbee.core.settings.sys.platform", "win32")
+    def test_overwriting_an_existing_file_round_trips_unicode(self, tmp_path) -> None:
+        """The atomic replace must not lose the UTF-8 encoding on a rewrite."""
+        settings.save(tmp_path, {"key": "value"})
         settings.save(tmp_path, {"key": "value", "unicode": "é"})
         result = settings.load(tmp_path)
         assert result["unicode"] == "é"

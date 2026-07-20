@@ -2,7 +2,6 @@
 
 import logging
 import os
-import sys
 import threading
 import tomllib
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import cfg
+from lilbee.core.security import write_private_text
 
 _settings_lock = threading.Lock()
 
@@ -57,11 +57,10 @@ def _render_toml_value(value: Any) -> str:
 def save(data_root: Path, settings: dict[str, Any]) -> None:
     """Write settings dict as simple TOML key-value pairs."""
     path = _config_path(data_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{k} = {_render_toml_value(v)}\n" for k, v in sorted(settings.items())]
-    path.write_text("".join(lines), encoding="utf-8", newline="\n")
-    if sys.platform != "win32":
-        path.chmod(0o600)  # pragma: no cover - POSIX-only; Windows has no 0600 mode bits
+    # config.toml can hold provider API keys, so it gets the same owner-only
+    # treatment as the session token rather than a post-hoc chmod.
+    write_private_text(path, "".join(lines))
 
 
 def get(data_root: Path, key: str) -> str | None:
