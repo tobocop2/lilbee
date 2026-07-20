@@ -93,6 +93,7 @@ def _no_real_probe(monkeypatch, tmp_path_factory):
     stubbed true so a configured role is placeable unless a test says otherwise.
     """
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda: None)
     monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
     monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
     mslot = tmp_path_factory.mktemp("machine-slot")
@@ -3884,20 +3885,84 @@ def test_can_build_engine_false_when_nothing_placeable() -> None:
 
 
 def test_can_build_engine_false_when_binary_unresolvable(monkeypatch) -> None:
-    from lilbee.providers.base import ProviderError
+    # A NOT_FOUND probe failure (no engine binary) is the quiet serve-nothing case.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     def _boom():
-        raise ProviderError("no engine binary", provider="llama-server")
+        raise ProviderError(
+            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+        )
 
-    monkeypatch.setattr("lilbee.providers.fleet.binary.resolve_llama_server", _boom)
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _boom)
     assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is False
 
 
 def test_can_build_engine_true_with_a_placeable_model_and_binary(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
-    )
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda: None)
     assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is True
+
+
+def test_can_build_engine_false_when_the_probe_raises_oserror(monkeypatch) -> None:
+    # A probe OSError (a device node vanished, a broken pipe) is not a viable
+    # build; stand down quietly rather than propagate a raw OS error.
+    def _oops() -> None:
+        raise OSError("device node gone")
+
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _oops)
+    assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is False
+
+
+def test_can_build_engine_propagates_a_wedged_probe(monkeypatch) -> None:
+    # A wedged GPU probe / unusable CUDA runtime (not a missing binary) must fail
+    # loud here, before any caller stops a replaceable incumbent.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    def _wedged():
+        raise ProviderError(
+            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+        )
+
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
+    with pytest.raises(ProviderError) as excinfo:
+        prov_mod._can_build_engine({(WorkerRole.CHAT, "m")})
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_ladder_does_not_kill_a_replaceable_incumbent_when_the_probe_is_wedged(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A wedged device probe fails loud BEFORE the stop, sparing the incumbent.
+
+    The build precondition captures the probe, so a wedged GPU probe raises before
+    the ladder stops the replaceable incumbent that other members may still hold.
+    Were the probe left to _plan_and_spawn (after the stop), the incumbent would be
+    killed and the raised error would then skip the overflow, leaving zero engines.
+    """
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    real_can_build = prov_mod._can_build_engine  # captured before _install_ladder stubs it
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(prov_mod, "_can_build_engine", real_can_build)  # exercise the real gate
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # bind fails
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+
+    def _wedged() -> None:
+        raise ProviderError(
+            "cuda init failed", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+        )
+
+    monkeypatch.setattr(planning_mod, "assert_engine_probeable", _wedged)
+    # A recorded incumbent with no live users: replaceable, so without the pre-stop
+    # gate the ladder would stop it and then hit the wedge in _plan_and_spawn.
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+
+    with pytest.raises(ProviderError) as excinfo:
+        p._ensure_fleet()
+
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION  # failed loud
+    assert stopped == []  # the incumbent was never stopped
 
 
 def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_path: Path) -> None:

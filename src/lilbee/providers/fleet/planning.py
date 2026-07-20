@@ -1224,18 +1224,42 @@ class _PlanProbeStore:
 _plan_probe_store = _PlanProbeStore()
 
 
-def capture_plan_probe() -> None:
-    """Snapshot devices and memory for planning; call only on a clean box."""
-    from lilbee.core.config import cfg
+def _probe_engine_devices() -> list[FleetDevice]:
+    """Apply the fleet GPU/CUDA env, resolve the binary, and enumerate devices.
+
+    This is the wedge point: a missing binary raises NOT_FOUND, and a CUDA build
+    that cannot init a GPU (a broken-runtime host) raises loud from resolve_devices
+    rather than silently degrading. Device enumeration reads no residency, so it is
+    safe to run while an incumbent engine is still up.
+    """
     from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
 
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env()
+    return resolve_devices(binary)
+
+
+def assert_engine_probeable() -> None:
+    """Raise if the engine cannot be probed; capture no snapshot.
+
+    A build precondition that must run BEFORE stopping a replaceable incumbent:
+    it surfaces a wedged GPU probe or an unusable CUDA runtime without taking the
+    residency-dependent memory snapshot (that belongs on the clean box, after the
+    stop, in capture_plan_probe). resolve_devices caches within its TTL, so the
+    follow-up capture reuses this enumeration rather than re-probing the hardware.
+    """
+    _probe_engine_devices()
+
+
+def capture_plan_probe() -> None:
+    """Snapshot devices and memory for planning; call only on a clean box."""
+    from lilbee.core.config import cfg
+
     _plan_probe_store.set(
         _PlanProbe(
-            devices=tuple(resolve_devices(binary)),
+            devices=tuple(_probe_engine_devices()),
             available_vram=int(model_cache.get_available_memory(cfg.gpu_memory_fraction)),
             free_system=model_cache.free_system_memory(),
         )

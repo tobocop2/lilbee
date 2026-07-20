@@ -643,19 +643,32 @@ def _placeable_wanted() -> set[tuple[WorkerRole, str]]:
 
 
 def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
-    """Cheap preconditions for a viable build, checked before stopping a warm engine.
+    """Preconditions for a viable build, checked before stopping a warm engine.
 
-    A process that can serve nothing (no placeable model, or an unresolvable
-    engine binary) must not stop an engine another setup left warm and then spawn
-    nothing. These checks need no free VRAM, so they run before the stop.
+    A process that can serve nothing (no placeable model, an unresolvable engine
+    binary) must not stop an engine another setup left warm and then spawn nothing.
+    Probing the engine here resolves the binary AND enumerates devices, so a wedged
+    GPU probe or an unusable CUDA runtime raises loud at this point -- before the
+    caller stops a replaceable incumbent. Were the probe left to run only inside
+    ``_plan_and_spawn`` (after the stop), that raise would kill an engine other
+    members still hold and then skip the overflow build, leaving zero engines. This
+    takes no memory snapshot (device enumeration reads no residency); the clean-box
+    sizing snapshot is captured by ``_plan_and_spawn`` after the stop.
     """
-    from lilbee.providers.fleet.binary import resolve_llama_server
+    from lilbee.providers.fleet import planning
 
     if not wanted:
         return False
     try:
-        resolve_llama_server()
-    except (ProviderError, OSError):
+        planning.assert_engine_probeable()
+    except ProviderError as exc:
+        # A genuinely-missing engine binary keeps the quiet serve-nothing path;
+        # every other probe failure must propagate (fail loud) rather than be read
+        # as "cannot build" and silently stand down.
+        if exc.kind is not ProviderErrorKind.NOT_FOUND:
+            raise
+        return False
+    except OSError:
         return False
     return True
 

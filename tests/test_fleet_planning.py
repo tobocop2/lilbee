@@ -2188,3 +2188,14 @@ def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
 
     monkeypatch.setattr(planning_mod, "resolve_llama_server", _boom)
     assert planning_mod.placeable_total_vram() == 0
+
+
+def test_assert_engine_probeable_probes_without_capturing_a_snapshot(monkeypatch) -> None:
+    # The build precondition enumerates devices (surfacing a wedge) but must not
+    # store a plan snapshot; that stays with the clean-box capture after the stop.
+    called: list[bool] = []
+    monkeypatch.setattr(planning_mod, "_probe_engine_devices", lambda: called.append(True) or [])
+    planning_mod._plan_probe_store.clear()
+    planning_mod.assert_engine_probeable()
+    assert called == [True]  # it enumerated devices...
+    assert planning_mod._plan_probe_store.get() is None  # ...but took no snapshot
