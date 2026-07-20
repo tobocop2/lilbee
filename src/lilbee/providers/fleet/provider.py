@@ -57,9 +57,11 @@ from lilbee.runtime.engine_lock import (
     UserLockHold,
     build_lock,
     hold_user_lock,
+    keep_warm_requested,
     live_users_exist,
     machine_engine_dir,
     private_engine_dir,
+    request_keep_warm,
 )
 
 log = logging.getLogger(__name__)
@@ -924,9 +926,20 @@ class FleetProvider:
         return next(iter(dirs)) if dirs else machine_engine_dir()
 
     def _hold_membership(self, engine_dir: Path) -> None:
-        """Record this process as a user of *engine_dir*'s engine."""
+        """Record this process as a user of *engine_dir*'s engine.
+
+        The single point every acquisition passes through, bind and build alike,
+        so it is also where this user's persistence opt-in is recorded against
+        the engine. Marking on bind (not only on build) is what makes the
+        setting mean what it says on a shared slot: a user who asked for a warm
+        engine keeps it warm even when a default-config sibling is last out.
+        """
+        from lilbee.core.config import cfg
+
         if engine_dir not in self._engine_holds:
             self._engine_holds[engine_dir] = hold_user_lock(engine_dir)
+        if cfg.keep_engine_warm:
+            request_keep_warm(engine_dir)
 
     def _plan_and_spawn(self, data_dir: Path) -> bool:
         """Plan placement against the clean box and start one swap per group.
@@ -1208,13 +1221,23 @@ class FleetProvider:
         Runs under each dir's cross-process build lock so a departing last user
         can never race an arriving binder: the arrival either sees the engine
         (and its bind holds it live) or sees the slot empty and builds.
+
+        Whether the engine outlives us is the union of every user's opt-in, not
+        just the exiting process's config: the machine slot is shared by
+        installations that configure it differently, and which one leaves last
+        is arbitrary.
         """
         from lilbee.core.config import cfg
 
         for engine_dir, hold in list(self._engine_holds.items()):
             with build_lock(engine_dir, best_effort=True):
                 last = hold.release_and_check_last()
-                if last and not cfg.keep_engine_warm:
+                # Any user's opt-in keeps the engine: the mark left by a peer, or
+                # this process's own setting, which it may have flipped after
+                # binding (the setting doesn't affect the load, so a flip never
+                # re-acquires and never reaches the mark).
+                keep = keep_warm_requested(engine_dir) or cfg.keep_engine_warm
+                if last and not keep:
                     stop_engine(engine_dir)
                     log.info("Engine stopped at %s (last user out)", engine_dir)
                 elif last:

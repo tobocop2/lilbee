@@ -33,6 +33,9 @@ _BUILD_LOCK_NAME = "engine.lock"
 _BUILD_LOCK_TIMEOUT_S = 90.0
 _USERS_DIRNAME = "engine-users"
 _USER_LOCK_SUFFIX = ".lock"
+# Marks an engine whose users asked it to outlive them. A plain file, not a
+# lock: it outlives every process by design.
+_KEEP_WARM_NAME = "keep-warm"
 # Non-blocking probe: a live peer refuses instantly.
 _PROBE_TIMEOUT_S = 0.0
 # Finite: infinite acquires trip filelock's thread-local deadlock detection
@@ -100,6 +103,31 @@ def build_lock(engine_dir: Path, *, best_effort: bool = False) -> Iterator[None]
 
 def _users_dir(engine_dir: Path) -> Path:
     return engine_dir / _USERS_DIRNAME
+
+
+def request_keep_warm(engine_dir: Path) -> None:
+    """Record that a user of *engine_dir* wants the engine to outlive it.
+
+    The opt-in belongs to the engine, not to a process: the machine slot is
+    shared across installations whose configs differ, so reading the setting
+    from whichever process happens to exit last hands the decision to an
+    arbitrary sibling. Any user that opts in marks the engine, and the mark
+    lasts exactly as long as the engine instance it describes -- ``stop_engine``
+    clears it, so a rebuilt engine starts from whoever opts in next.
+    """
+    marker = engine_dir / _KEEP_WARM_NAME
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+
+def keep_warm_requested(engine_dir: Path) -> bool:
+    """Whether any user of *engine_dir* asked for the engine to stay resident."""
+    return (engine_dir / _KEEP_WARM_NAME).exists()
+
+
+def clear_keep_warm(engine_dir: Path) -> None:
+    """Forget *engine_dir*'s persistence opt-in; the engine it applied to is gone."""
+    (engine_dir / _KEEP_WARM_NAME).unlink(missing_ok=True)
 
 
 def _user_lock_path(engine_dir: Path, pid: int) -> Path:

@@ -29,6 +29,7 @@ from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
+from lilbee.runtime.engine_lock import clear_keep_warm
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.launch import InstanceLaunch
@@ -523,12 +524,17 @@ def stop_engine(data_dir: Path) -> list[str]:
     still has its llama-servers (each in its own process group) reaped by
     recorded port, exactly as reap_stale does -- otherwise the off switch would
     leave those orphans holding VRAM and delete the ports needed to find them.
-    Stale config files for dead owners are cleaned too, so the dir is left as
+    Stale config files for dead owners are cleaned too, and the persistence
+    opt-in is dropped with the engine it described, so the dir is left as
     clean as a reap leaves it. Unparseable files are left alone, as in
     reap_stale: they may be a sibling's in-flight write. Returns the group tokens
     whose engine was actually alive, so a caller reports only real stops.
     """
     _clean_stale_configs(data_dir)
+    # The persistence opt-in describes the engine instance being stopped, so it
+    # dies with it. Cleared here rather than at each call site so no stop path
+    # can leave a mark that makes the next engine sticky-warm.
+    clear_keep_warm(data_dir)
     stopped: list[str] = []
     for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
         state = _load_state(state_path)

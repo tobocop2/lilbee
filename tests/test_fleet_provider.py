@@ -3479,6 +3479,10 @@ def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) 
     assert p._ensure_fleet() is True
     assert len(swap.binds) == 1
     assert swap.started == []  # bound, never built
+    # Binding must take membership too, or a peer's clean exit stops the engine
+    # this process is actively using -- the multi-process bug the ladder exists
+    # to prevent. Only the build path asserted this before.
+    assert list((machine / "engine-users").glob("*.lock"))
 
 
 def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_path: Path) -> None:
@@ -3577,6 +3581,81 @@ def test_not_last_leaves_the_engine(monkeypatch, tmp_path: Path) -> None:
     peer.release_and_check_last()
 
 
+def _bindable_machine(monkeypatch, tmp_path: Path):
+    """A machine slot holding an engine any compatible provider can bind."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    return swap, machine
+
+
+def test_a_default_config_peer_leaving_last_keeps_a_warm_users_engine(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The machine slot is shared; whose config decides must not be exit order."""
+    swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    warm = FleetProvider()
+    assert warm._ensure_fleet() is True
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    plain = FleetProvider()
+    assert plain._ensure_fleet() is True
+    assert swap.started == []  # both bound the one machine engine
+
+    warm.shutdown()
+    plain.shutdown()  # last out, and its own config says stop
+    assert stopped == []
+
+
+def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path: Path) -> None:
+    """The opt-in belongs to the engine, so it outlives the process that made it."""
+    _swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    plain = FleetProvider()
+    assert plain._ensure_fleet() is True
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    warm = FleetProvider()
+    assert warm._ensure_fleet() is True
+
+    warm.shutdown()  # the opt-in user leaves first
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    plain.shutdown()  # last out, reading a config that says stop
+    assert stopped == []
+
+
+def test_opting_in_after_binding_still_keeps_the_engine(monkeypatch, tmp_path: Path) -> None:
+    """The setting doesn't affect the load, so a flip never re-acquires."""
+    _swap, _machine = _bindable_machine(monkeypatch, tmp_path)
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p.shutdown()
+    assert stopped == []
+
+
+def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:
+    """The mark describes one engine instance; the next one starts unmarked."""
+    from lilbee.providers.fleet.swap_manager import stop_engine
+    from lilbee.runtime.engine_lock import keep_warm_requested, request_keep_warm
+
+    request_keep_warm(tmp_path)
+    assert keep_warm_requested(tmp_path) is True
+    stop_engine(tmp_path)
+    assert keep_warm_requested(tmp_path) is False
+
+
 def test_warm_leaves_the_engine_even_when_last(monkeypatch, tmp_path: Path) -> None:
     _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     stopped: list[Path] = []
@@ -3640,6 +3719,7 @@ def test_ladder_binds_in_the_private_dir_when_machine_is_incompatible(
     assert p._ensure_fleet() is True
     assert len(swap.binds) == 1  # bound in the overflow dir
     assert swap.started == []
+    assert list((private / "engine-users").glob("*.lock"))  # membership in the bound dir
     holder.release_and_check_last()
 
 
