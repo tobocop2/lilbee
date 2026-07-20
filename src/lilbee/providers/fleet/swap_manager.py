@@ -451,7 +451,12 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
 
 
 def find_live_state(data_dir: Path, group: SwapGroup) -> _SwapState | None:
-    """The newest state record for *group* at *data_dir*, detached or not."""
+    """The newest recorded state for *group* at *data_dir* (no liveness check).
+
+    A record's presence does not prove the engine is up; callers that need that
+    probe it with ``state_is_healthy``. The name reflects that a record is written
+    only for a running engine, not that this function verifies it.
+    """
     best: _SwapState | None = None
     for state_path in sorted(data_dir.glob(_STATE_FILE_GLOB)):
         if f".{group.value}." not in f".{state_path.name}":

@@ -68,3 +68,14 @@ def test_undecodable_contract_refuses() -> None:
 def test_empty_engine_contract_refuses() -> None:
     state = _state(pin="pin-a")
     assert contract_matches(state, [(WorkerRole.CHAT, "m-chat")], "pin-a") is False
+
+
+def test_empty_wanted_binds_a_pin_equal_nonempty_engine() -> None:
+    # provider._bind_all_in_dir calls contract_matches(state, (), pin) as "is this a
+    # pin-equal, decodable, non-empty engine we could bind?". The vacuous all() over
+    # empty wanted must stay gated on the pin, decodability, and non-empty-served
+    # checks, so an early-return-True refactor for empty wanted would fail here.
+    state = _state(_launch(WorkerRole.CHAT, "m-chat"))
+    assert contract_matches(state, (), "pin-a") is True
+    assert contract_matches(state, (), "pin-b") is False  # pin still gates
+    assert contract_matches(_state(pin="pin-a"), (), "pin-a") is False  # empty served refused
