@@ -408,8 +408,8 @@ def init(path: str = "") -> dict[str, Any]:
             "init is unavailable on the HTTP server: it is bound to one vault and "
             "shared by every connected client. Start a separate server for another vault."
         )
-    # Canonical so the vault this session switches to keys the same lock paths
-    # a CLI or server process would derive for the same directory.
+    # Canonical so this vault keys the same lock paths a CLI or server process
+    # would derive for the same directory.
     base = canonical_data_root(path) if path else canonical_data_root(Path.cwd())
     root = base / LOCAL_ROOT_DIRNAME
 

@@ -2755,12 +2755,10 @@ class TestGetCompletions:
         assert any("testfile.txt" in x for x in r)
 
     def test_path_exists_swallows_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A path the OS refuses to stat must read as missing, not raise.
+        """A path the OS refuses to stat reads as missing, not raise.
 
-        Patches this module's ``Path`` rather than ``pathlib.Path.expanduser``
-        itself: a global patch also breaks the config validator, which expands
-        the data root on every field assignment, and so blows up in the
-        cfg-restoring fixture's teardown before monkeypatch unwinds.
+        Patches this module's Path, not pathlib.Path.expanduser: a global patch
+        also hits the config validator and blows up in fixture teardown.
         """
         from lilbee.cli.tui.widgets import autocomplete
 

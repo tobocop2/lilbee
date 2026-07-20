@@ -178,10 +178,8 @@ class TestDisplaySourcePath:
         cfg.documents_dir = tmp_path / "docs"
         target = cfg.documents_dir / "anything.md"
 
-        # Raise only for the path under test, delegating everything else to the
-        # real resolve(): an unconditional patch also breaks the config
-        # validator, which resolves the data root on every field assignment,
-        # and so blows up in the cfg-restoring fixture's teardown.
+        # Raise only for the path under test; an unconditional patch also hits
+        # the config validator and blows up in fixture teardown.
         real_resolve = _Path.resolve
 
         def _raise(self, strict=False):

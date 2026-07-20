@@ -117,12 +117,7 @@ class TestEnvVarOverrides:
             assert c.lancedb_dir == Path.home() / "lilbee_expanduser_probe" / "data" / "lancedb"
 
     def test_symlinked_data_root_keys_the_same_paths_as_its_target(self, tmp_path):
-        """Two spellings of one directory must derive one set of lock paths.
-
-        Session file, port file, and store write lock are all keyed on paths
-        under the data root, so a symlinked spelling that stayed distinct
-        would let a second server start against data a first one already owns.
-        """
+        """Two spellings of one directory derive one set of lock paths."""
         real = tmp_path / "real_root"
         real.mkdir()
         link = tmp_path / "link_root"
@@ -140,12 +135,7 @@ class TestEnvVarOverrides:
     def test_padded_data_env_finds_the_same_dir_for_root_and_config(
         self, tmp_path, overlay_reads_config_toml
     ):
-        """A whitespace-padded LILBEE_DATA must not split the root from its config.
-
-        The root resolution and the config.toml lookup read the same env var;
-        if only one of them strips, a padded value points them at two
-        different directories and the settings file is silently not found.
-        """
+        """A padded LILBEE_DATA sends the root and its config.toml to one dir."""
         (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
             c = Config()
@@ -181,12 +171,10 @@ class TestEnvVarOverrides:
             assert str(c2.data_root).endswith("lilbee")
 
     def test_unresolvable_home_still_loads_config(self):
-        """A ~ the OS cannot resolve must not take config construction down.
+        """An unresolvable ~ still yields a usable root instead of raising.
 
-        Canonicalization delegates to ``os.path.expanduser``, which returns an
-        unknown ``~user`` unchanged rather than raising the way
-        ``Path.expanduser`` does, so the root still resolves to a usable
-        absolute path and the process keeps running.
+        os.path.expanduser returns an unknown ~user unchanged; Path.expanduser
+        raises.
         """
         from lilbee.core.system import canonical_data_root
 

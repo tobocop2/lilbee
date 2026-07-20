@@ -67,24 +67,16 @@ def find_local_root(start: Path | None = None) -> Path | None:
 
 
 def canonical_data_root(root: Path | str) -> Path:
-    """Return the one true spelling of a data-root path.
+    """Resolve a data root to one canonical path.
 
-    The server session file, the port file, and the store's write lock all sit
-    at paths derived from the data root, so two spellings of one directory key
-    two locks and let two servers run against the same data. Symlinks, relative
-    paths, a leading ``~`` (systemd units and .env files deliver it literally),
-    and macOS's ``/var`` vs ``/private/var`` each produce such a pair.
+    Session file, port file, and write lock all derive from the data root, so
+    two spellings of one directory key two locks. Symlinks, relative paths, a
+    leading ``~``, and macOS ``/var`` vs ``/private/var`` each produce a pair.
+    A root that does not exist yet resolves to where it will be created.
 
-    Every entry point that takes a raw root calls this, so the config and lock
-    layers agree by construction. A root that does not exist yet resolves to
-    where it will be created.
-
-    Expansion and resolution go through ``os.path`` rather than
-    ``Path.expanduser().resolve()`` so the work happens on strings and only one
-    Path is built, at the end. ``Path.resolve`` rebuilds itself through
-    ``type(self)(...)``, which raises for a ``PosixPath`` that exists on Windows
-    -- reachable because ``Path()`` picks its flavour from ``os.name``, so any
-    code that patches that global mints paths this would then choke on.
+    Uses ``os.path`` rather than ``Path.expanduser().resolve()``: ``resolve``
+    rebuilds via ``type(self)``, which raises for a ``PosixPath`` that exists
+    on Windows (``Path()`` picks its flavour from ``os.name``, which tests patch).
     """
     return Path(os.path.realpath(os.path.expanduser(os.fspath(root))))
 
