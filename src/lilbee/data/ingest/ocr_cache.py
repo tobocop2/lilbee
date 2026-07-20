@@ -57,17 +57,22 @@ def load_ocr_pages(key: str) -> list[tuple[int, str]] | None:
     except (OSError, json.JSONDecodeError):
         log.debug("OCR cache read failed for %s", key, exc_info=True)
         return None
-    if not isinstance(raw, list):
+    # An empty list is corruption too: store_ocr_pages never writes one.
+    if not isinstance(raw, list) or not raw:
         return None
     pages: list[tuple[int, str]] = []
     for entry in raw:
-        if (
+        if not (
             isinstance(entry, list)
             and len(entry) == _PAGE_ENTRY_LEN
             and isinstance(entry[0], int)
             and isinstance(entry[1], str)
         ):
-            pages.append((entry[0], entry[1]))
+            # Dropping the bad entry would hand the caller a page-short
+            # document it cannot tell from a complete one.
+            log.debug("OCR cache entry for %s is malformed; treating as a miss", key)
+            return None
+        pages.append((entry[0], entry[1]))
     return pages
 
 

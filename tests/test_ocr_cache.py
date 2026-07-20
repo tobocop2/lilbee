@@ -60,6 +60,32 @@ def test_load_returns_none_when_json_is_not_a_list(cache_dir: Path) -> None:
     assert ocr_cache.load_ocr_pages("wrong") is None
 
 
+def test_load_returns_none_when_any_entry_is_malformed(cache_dir: Path) -> None:
+    """A partially readable entry must be a miss, not a partial result: the
+    caller treats not-None as the document's complete OCR output and would
+    ingest it with pages silently missing."""
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "partial.json").write_text(
+        '[[1, "page one"], ["two", "page two"], [3, "page three"]]', encoding="utf-8"
+    )
+    assert ocr_cache.load_ocr_pages("partial") is None
+
+
+def test_load_returns_none_when_every_entry_is_malformed(cache_dir: Path) -> None:
+    """All-bad entries previously read back as [], which is not None, so the
+    file ingested as zero chunks and got skip-marked 'no text extracted'."""
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "junk.json").write_text('["nope", 42, null]', encoding="utf-8")
+    assert ocr_cache.load_ocr_pages("junk") is None
+
+
+def test_load_returns_none_on_empty_list(cache_dir: Path) -> None:
+    """Empty results are never stored, so an empty list on disk is corruption."""
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "empty.json").write_text("[]", encoding="utf-8")
+    assert ocr_cache.load_ocr_pages("empty") is None
+
+
 def test_store_swallows_write_error(tmp_path: Path, monkeypatch) -> None:
     # data_dir points at a regular file, so creating the cache dir under it raises
     # OSError; store must log and swallow rather than break ingestion.
