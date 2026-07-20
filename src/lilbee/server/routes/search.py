@@ -182,9 +182,10 @@ async def ask_route(data: AskRequest) -> AskResponse:
         )
     except EmbeddingModelMismatchError as exc:
         raise _embedding_mismatch_http(exc) from exc
-    except ValueError as exc:
-        raise ValidationException(str(exc)) from exc
     except Exception as exc:
+        # No separate ValueError arm: _raise_chat_http_error is the single
+        # translation point and its first branch is ValueError -> 422, which is
+        # what chat_route relies on. Two copies drift.
         _raise_chat_http_error(exc)
     finally:
         await release_chat_slot()

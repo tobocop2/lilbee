@@ -39,7 +39,20 @@ _READ_ONLY_HANDLERS: set[Callable[..., Any]] = set()
 
 
 def read_only(fn: F) -> F:
-    """Mark a route handler as read-only (no auth required)."""
+    """Mark a route handler as requiring no auth.
+
+    Must sit *below* the Litestar route decorator so it receives the raw
+    function, which is what ``AuthMiddleware`` looks up via ``handler.fn``.
+    Stacked the other way it registers the handler object instead, the lookup
+    misses, and the route quietly starts requiring a token. Since the same
+    mistake in reverse would quietly open a route, the ordering is enforced
+    rather than left to reviewers.
+    """
+    if hasattr(fn, "fn"):
+        raise TypeError(
+            "@read_only must be applied below the route decorator, so it sees "
+            "the function rather than the route handler."
+        )
     _READ_ONLY_HANDLERS.add(fn)
     return fn
 

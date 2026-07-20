@@ -2041,3 +2041,36 @@ class TestPaginationAndTopKLowerBounds:
     def test_chat_rejects_negative_top_k(self, client):
         resp = client.post("/api/chat", json={"question": "q", "history": [], "top_k": -1})
         assert resp.status_code == 400
+
+
+class TestReadOnlyDecoratorOrdering:
+    """The registry keys on the raw function, so stacking order is load-bearing.
+
+    Applied above the route decorator it registers the handler object instead;
+    the middleware's handler.fn lookup then misses. Reversed, the same class of
+    mistake silently opens a route, so the ordering is enforced.
+    """
+
+    def test_applying_it_above_the_route_decorator_is_rejected(self):
+        from litestar import get
+
+        from lilbee.server.auth import read_only
+
+        with pytest.raises(TypeError, match="below the route decorator"):
+
+            @read_only
+            @get("/api/example")
+            async def _wrong_order() -> dict[str, str]:
+                return {}
+
+    def test_applying_it_below_the_route_decorator_registers(self):
+        from litestar import get
+
+        from lilbee.server.auth import is_read_only, read_only
+
+        @get("/api/example-ok")
+        @read_only
+        async def _right_order() -> dict[str, str]:
+            return {}
+
+        assert is_read_only(_right_order.fn)
