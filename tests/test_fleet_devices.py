@@ -680,3 +680,47 @@ def test_a_backend_the_loader_cannot_speak_for_keeps_the_heap_size(
     (device,) = _parse_devices("  CUDA0: NVIDIA H100 (81559 MiB)")
 
     assert device.free_bytes == device.total_bytes
+
+
+def test_a_rasterizer_only_loader_does_not_make_a_real_card_shared_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mesa reports llvmpipe on any host with it installed, vendor ICD or not.
+
+    That is ordinary on headless CUDA boxes and in containers. Concluding "no
+    discrete GPU" from a list holding only rasterizers marked a real 24 GB card
+    as sharing the host's memory and shrank every budget for it.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {"llvmpipe (LLVM 17.0.6, 256 bits)": gpu_select.VkDeviceType.CPU},
+    )
+
+    (device,) = _parse_devices("  CUDA0: NVIDIA RTX A5000 (24112 MiB, 23899 MiB free)")
+
+    assert device.unified is False
+
+
+def test_an_integrated_adapter_beside_a_rasterizer_still_reads_as_shared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Tiger Lake case: llvmpipe sits next to a real iGPU, which is the signal."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "llvmpipe (LLVM 17.0.6, 256 bits)": gpu_select.VkDeviceType.CPU,
+            "Intel(R) Iris(R) Xe Graphics": gpu_select.VkDeviceType.INTEGRATED_GPU,
+        },
+    )
+
+    (device,) = _parse_devices("  ROCm0: AMD Radeon Graphics (16000 MiB)")
+
+    assert device.unified is True

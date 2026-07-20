@@ -475,14 +475,23 @@ def host_has_no_discrete_gpu() -> bool:
     a machine whose loader reports adapters but no discrete one has no discrete
     GPU for CUDA or ROCm to be enumerating.
 
-    False when the loader is unreachable or any discrete adapter exists, so a
-    host with a real card is never talked into the shared-memory budget. A host
-    holding both a discrete card and an APU also answers False, which leaves the
-    APU sized as dedicated; correlating individual devices across two backends'
-    naming needs more than the type.
+    The verdict rests on an integrated adapter actually being there. Software
+    rasterizers report through the loader on any host with mesa installed, even
+    with no vendor ICD present at all, which is ordinary on headless CUDA boxes
+    and in containers; concluding from a list that holds only those would mark a
+    real discrete card as sharing the host's memory and shrink its budget.
+
+    False when the loader is unreachable, when any discrete adapter exists, or
+    when nothing but rasterizers answered, so a host with a real card is never
+    talked into the shared-memory budget. A host holding both a discrete card
+    and an APU also answers False, which leaves the APU sized as dedicated;
+    correlating individual devices across two backends' naming needs more than
+    the type.
     """
-    types = vulkan_device_types_by_name()
-    return bool(types) and VkDeviceType.DISCRETE_GPU not in types.values()
+    types = set(vulkan_device_types_by_name().values())
+    if VkDeviceType.DISCRETE_GPU in types:
+        return False
+    return VkDeviceType.INTEGRATED_GPU in types
 
 
 def _known_device_type(value: int) -> VkDeviceType | None:

@@ -2034,13 +2034,18 @@ def test_a_discrete_card_beside_an_igpu_still_lifts_the_budget() -> None:
     assert planning_mod._unified_memory_budget([igpu, dgpu]) is None
 
 
-def test_metal_devices_are_recognised_as_unified() -> None:
+def test_metal_devices_are_recognised_as_unified(monkeypatch) -> None:
     """The Apple case is decided by backend, since the size ratio cannot decide it."""
+    from lilbee.providers.fleet import gpu_select
     from lilbee.providers.fleet.devices import _is_unified
 
-    assert _is_unified("MTL", 0) is True
-    assert _is_unified("Metal", 0) is True
-    assert _is_unified("CUDA", 0) is False
+    # The CUDA leg asks the host's real Vulkan loader otherwise, so this passed
+    # on macOS and CI (no loader) and failed on any Linux box with mesa.
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+
+    assert _is_unified("MTL", "Apple M3 Max") is True
+    assert _is_unified("Metal", "Apple M3 Max") is True
+    assert _is_unified("CUDA", "NVIDIA RTX A5000") is False
 
 
 def test_engine_reporting_no_devices_is_believed_over_the_host_loader(monkeypatch) -> None:
