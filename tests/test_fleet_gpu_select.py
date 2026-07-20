@@ -50,3 +50,25 @@ def test_enumerate_gpu_vram_omits_software_rasterizers(monkeypatch) -> None:
         ],
     )
     assert gpu_select.enumerate_gpu_vram() == [(0, fifteen_gib)]
+
+
+def test_rasterizer_first_keeps_the_real_gpu_at_its_own_index(monkeypatch) -> None:
+    """Loader order is the index space the pin uses, so gaps must survive."""
+    from lilbee.providers.fleet import gpu_select
+
+    fifteen_gib = 15 * 1024**3
+    monkeypatch.setattr(
+        gpu_select,
+        "_enumerate_vulkan_devices",
+        lambda: [
+            gpu_select.VulkanDevice(
+                0, gpu_select.VkDeviceType.CPU, "llvmpipe", 0x10005, fifteen_gib
+            ),
+            gpu_select.VulkanDevice(
+                1, gpu_select.VkDeviceType.INTEGRATED_GPU, "Intel Iris Xe", 0x8086, fifteen_gib
+            ),
+        ],
+    )
+    # Not renumbered to 0: GGML_VK_VISIBLE_DEVICES names the loader's index.
+    assert gpu_select.enumerate_gpu_vram() == [(1, fifteen_gib)]
+    assert gpu_select.autoselect_best_gpu_index() == "1"
