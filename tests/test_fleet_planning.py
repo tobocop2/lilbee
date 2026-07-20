@@ -2129,9 +2129,12 @@ def test_ref_is_moe_is_false_for_an_unresolvable_model(monkeypatch) -> None:
     assert planning_mod._ref_is_moe("m/missing") is False
 
 
-def test_estimator_argv_has_no_override_tensor_without_offload() -> None:
+def test_estimator_argv_has_no_override_tensor_without_offload(monkeypatch) -> None:
     from lilbee.providers.fleet import vram as vram_mod
 
+    # Resolve no real binary: this pins argv construction, and CI runners have no
+    # bundled gguf-parser (resolve would raise and fail the test environmentally).
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
     argv = vram_mod.estimator_argv(
         "/m/m.gguf",
         ctx=4096,
@@ -2146,11 +2149,14 @@ def test_estimator_argv_has_no_override_tensor_without_offload() -> None:
     assert "--override-tensor" not in argv
 
 
-def test_estimator_argv_charges_offloaded_experts_to_cpu() -> None:
+def test_estimator_argv_charges_offloaded_experts_to_cpu(monkeypatch) -> None:
     # Without this the estimate charges the GPU for experts the launch keeps in
     # system memory, and the planner sizes slots against a footprint that never exists.
     from lilbee.providers.fleet import vram as vram_mod
 
+    # Resolve no real binary: this pins argv construction, and CI runners have no
+    # bundled gguf-parser (resolve would raise and fail the test environmentally).
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
     argv = vram_mod.estimator_argv(
         "/m/m.gguf",
         ctx=4096,
