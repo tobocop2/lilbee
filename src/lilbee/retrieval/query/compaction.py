@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from lilbee.retrieval.query.history_window import (
     chars_for_tokens,
-    estimate_text_tokens,
     estimate_tokens,
     windowed_history,
 )
@@ -28,7 +27,7 @@ COMPACT_PROMPT = (
     "Condense the conversation below into brief factual notes that let an "
     "assistant carry it on. Keep names, numbers, decisions, and anything left "
     "unresolved; drop pleasantries. Under {words} words. Return ONLY the notes.\n\n"
-    "{previous}Conversation:\n{transcript}"
+    "Conversation:\n{transcript}"
 )
 
 # Ceiling on a summary's tokens; ctx/8 governs below it. A tighter ceiling
@@ -103,9 +102,9 @@ class CompactionResult:
 
     summary: str
     condensed: int
-    """Turns folded into the notes."""
+    """Messages folded into the notes (not exchanges: a user+assistant pair is two)."""
     stranded: int
-    """Turns dropped with no notes. Non-zero means the conversation lost detail
+    """Messages dropped with no notes. Non-zero means the conversation lost detail
     outright, which the UI must say plainly rather than let the model appear to
     have forgotten for no reason."""
 
@@ -116,7 +115,7 @@ class CompactionPlan:
 
     batches: list[list[ChatMessage]]
     stranded: int
-    """Turns dropped with no notes because the backlog exceeded MAX_COMPACT_CALLS.
+    """Messages dropped with no notes because the backlog exceeded MAX_COMPACT_CALLS.
 
     Deliberately no ``condensed`` counterpart: a plan cannot know what will be
     condensed, only what it will try. Whether a batch lands depends on the model
@@ -194,9 +193,24 @@ def foldable(history: list[ChatMessage]) -> list[ChatMessage]:
 
     No ``keep`` parameter: COMPACT_KEEP_RECENT is the policy, and a knob nobody
     turns is just a second place for it to disagree with itself.
+
+    The boundary is aligned forward to a user message so the kept window opens
+    a turn. A history can be odd-length (an interrupted turn persists a user
+    message with no reply), and cutting a fixed count would then leave the
+    window starting on an assistant reply, so the assembled prompt would run
+    user, assistant, assistant -- the non-alternating shape the summary pair
+    and windowed_history both take care to avoid.
     """
     keep = COMPACT_KEEP_RECENT
-    return history[:-keep] if len(history) > keep else []
+    if len(history) <= keep:
+        return []
+    cut = len(history) - keep
+    for i in range(cut, len(history)):
+        if history[i]["role"] == "user":
+            return history[:i]
+    # No user message in the tail at all: keep the plain boundary rather than
+    # folding the entire history away.
+    return history[:cut]
 
 
 def summary_cap(ctx_target: int) -> int:
@@ -204,9 +218,7 @@ def summary_cap(ctx_target: int) -> int:
     return max(_SUMMARY_MIN_TOKENS, min(COMPACT_MAX_TOKENS, ctx_target // _SUMMARY_CTX_FRACTION))
 
 
-def batch_overflow(
-    dropped: list[ChatMessage], previous_summary: str, *, ctx_target: int
-) -> list[list[ChatMessage]]:
+def batch_overflow(dropped: list[ChatMessage], *, ctx_target: int) -> list[list[ChatMessage]]:
     """Split *dropped* into batches whose summarize prompt each fit *ctx_target*.
 
     Compaction usually nibbles a pair at a time, but switching models does not:
@@ -226,12 +238,7 @@ def batch_overflow(
     room = max(
         _MIN_BATCH_TOKENS,
         int(
-            (
-                ctx_target
-                - summary_cap(ctx_target)
-                - estimate_text_tokens(previous_summary)
-                - _PROMPT_OVERHEAD_TOKENS
-            )
+            (ctx_target - summary_cap(ctx_target) - _PROMPT_OVERHEAD_TOKENS)
             * _ESTIMATE_SAFETY_FRACTION
         ),
     )
@@ -256,9 +263,7 @@ def batch_overflow(
     return batches
 
 
-def plan_compaction(
-    dropped: list[ChatMessage], previous_summary: str, *, ctx_target: int
-) -> CompactionPlan:
+def plan_compaction(dropped: list[ChatMessage], *, ctx_target: int) -> CompactionPlan:
     """Decide what one compaction condenses, keeping its cost bounded.
 
     Beyond MAX_COMPACT_CALLS batches the oldest turns are stranded rather than
@@ -267,7 +272,7 @@ def plan_compaction(
     trade. The most recent slice is the part still worth remembering, and the
     caller reports the stranded count instead of pretending it survived.
     """
-    batches = batch_overflow(dropped, previous_summary, ctx_target=ctx_target)
+    batches = batch_overflow(dropped, ctx_target=ctx_target)
     if len(batches) <= MAX_COMPACT_CALLS:
         return CompactionPlan(batches=batches, stranded=0)
     return CompactionPlan(
