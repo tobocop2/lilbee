@@ -161,6 +161,8 @@ def test_answer_subcommand_writes_checkpointed_answers(tmp_path, monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/health":
             return httpx.Response(200)
+        if request.url.path == "/api/memories":
+            return httpx.Response(404)  # memory subsystem off, the default
         return httpx.Response(200, json={"answer": "ok", "sources": [], "cited_sources": []})
 
     client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://test")

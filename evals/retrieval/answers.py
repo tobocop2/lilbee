@@ -15,6 +15,8 @@ from evals.retrieval.questions import Question
 
 HEALTH_ROUTE = "/api/health"
 ASK_ROUTE = "/api/ask"
+MEMORIES_ROUTE = "/api/memories"
+HTTP_NOT_FOUND = 404
 ASK_TIMEOUT_SECONDS = 600.0
 ANSWER_ATTEMPTS = 3
 ANSWER_RETRY_DELAY_SECONDS = 5.0
@@ -100,6 +102,29 @@ def questions_digest(questions: list[Question]) -> str:
     return hashlib.sha256(material.encode()).hexdigest()[:16]
 
 
+def require_memory_disabled(base_url: str, http: httpx.Client) -> None:
+    """Refuse to collect answers from a server with memory enabled.
+
+    The ask handler extracts memories from every answered question and the
+    searcher reads them back on later turns, so with memory on, question N is
+    answered using state produced by questions 1..N-1, and both arms sharing a
+    data dir means one arm seeds the other. The run stops being a comparison
+    under identical conditions and stops being reproducible, with nothing in the
+    results recording which state it ran in.
+
+    The memory routes answer 404 when the subsystem is off, which is the default,
+    so a non-404 here is the operator having switched it on.
+    """
+    response = http.get(f"{base_url.rstrip('/')}{MEMORIES_ROUTE}")
+    if response.status_code != HTTP_NOT_FOUND:
+        raise RuntimeError(
+            f"{base_url} has the memory subsystem enabled. Answers would seed memories "
+            "that later questions and the other arm read back, so the arms would not "
+            "answer under identical conditions and the run would be order-dependent. "
+            "Disable memory on both servers before collecting answers."
+        )
+
+
 def answer_questions(
     questions: list[Question],
     base_url: str,
@@ -124,6 +149,7 @@ def answer_questions(
         },
     )
     wait_for_server(base_url, http)
+    require_memory_disabled(base_url, http)
     rows: list[AnswerRow] = []
     for question in questions:
         if question.qid in checkpoint:

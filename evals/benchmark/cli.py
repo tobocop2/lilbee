@@ -132,6 +132,7 @@ def _cmd_answer(args: argparse.Namespace) -> int:
         checkpoint.append(
             {
                 "query_id": query_id,
+                "arm": args.arm,
                 "question": text,
                 "answer": answer,
                 "contexts": contexts,

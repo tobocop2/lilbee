@@ -50,6 +50,8 @@ def test_answer_questions_records_answer_sources_and_citations(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/health":
             return httpx.Response(200)
+        if request.url.path == "/api/memories":
+            return httpx.Response(404)  # memory subsystem off, the default
         assert json.loads(request.content)["question"] == "Where?"
         return _ask_response()
 
@@ -72,6 +74,8 @@ def test_answer_questions_retries_then_records_the_failure(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/health":
             return httpx.Response(200)
+        if request.url.path == "/api/memories":
+            return httpx.Response(404)  # memory subsystem off, the default
         seen.append(request.url.path)
         return httpx.Response(500)
 
@@ -116,6 +120,8 @@ def test_answer_questions_resumes_past_checkpointed_rows(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/health":
             return httpx.Response(200)
+        if request.url.path == "/api/memories":
+            return httpx.Response(404)  # memory subsystem off, the default
         asked.append(json.loads(request.content)["question"])
         return _ask_response("fresh")
 
@@ -125,3 +131,25 @@ def test_answer_questions_resumes_past_checkpointed_rows(tmp_path):
     assert [row.qid for row in rows] == ["tq001"]
     assert asked == ["Where?"]
     assert len(load_items(out)) == 2
+
+
+def test_collection_refuses_a_server_with_memory_enabled(tmp_path):
+    # With memory on, the ask handler extracts memories that later questions and
+    # the other arm read back, so the arms stop answering under identical
+    # conditions. The memory routes 404 only when the subsystem is off.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/health":
+            return httpx.Response(200)
+        if request.url.path == "/api/memories":
+            return httpx.Response(200, json={"memories": []})  # enabled
+        return _ask_response("never reached")
+
+    with pytest.raises(RuntimeError, match="memory subsystem enabled"):
+        answer_questions(
+            [_question()],
+            "http://test",
+            "armA",
+            tmp_path / "answers.jsonl",
+            retry_delay=0,
+            client=_client(handler),
+        )

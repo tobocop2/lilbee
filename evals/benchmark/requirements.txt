@@ -3,8 +3,10 @@
 # suite, and deliberately kept OUT of the shipped lock so installing them cannot
 # move a core dependency. Install on the benchmark pod with:
 #   uv pip install -r evals/benchmark/requirements.txt
+# Pinned exactly, not floored: a scorer upgrade silently moves every published
+# number, and the frozen manifest cannot notice because it records no versions.
 # pytrec_eval-terrier is the maintained pytrec_eval fork; it imports as pytrec_eval.
-pytrec_eval-terrier>=0.5.6
-ragas>=0.2
-beir>=2.0
-datasets>=2.16
+pytrec_eval-terrier==0.5.10
+ragas==0.2.14
+beir==2.1.0
+datasets==2.21.0

@@ -200,3 +200,23 @@ def test_a_manifest_without_a_stored_fingerprint_still_loads(tmp_path):
     out = tmp_path / "source.json"
     out.write_text(json.dumps(_manifest().to_dict()))
     Manifest.load(out)
+
+
+def test_an_unfilled_identity_field_does_not_change_the_fingerprint():
+    # Adding a field to the schema must not silently re-identify every study
+    # frozen before it existed, or the stamped fingerprints stop matching.
+    base = _manifest()
+    with_empty = _manifest(
+        datasets=[DatasetSpec(name="scifact", loader="scifact", label_kind="native", revision="")]
+    )
+    assert base.fingerprint() == with_empty.fingerprint()
+
+
+def test_a_populated_identity_field_does_change_the_fingerprint():
+    base = _manifest()
+    pinned = _manifest(
+        datasets=[
+            DatasetSpec(name="scifact", loader="scifact", label_kind="native", revision="v1.0.0")
+        ]
+    )
+    assert base.fingerprint() != pinned.fingerprint()

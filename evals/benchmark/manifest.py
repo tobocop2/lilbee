@@ -50,12 +50,23 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class DatasetSpec:
-    """One dataset, its loader, and whether its qrels are native or derived."""
+    """One dataset, its loader, and whether its qrels are native or derived.
+
+    ``revision`` and ``checksum`` identify which copy of the corpus was scored.
+    The BEIR loader fetches an unversioned URL, so without them a republished
+    upstream corpus changes every number while the manifest fingerprint stays
+    identical, and the reproducibility the frozen manifest is supposed to carry
+    would be a claim about the dataset name only. Both are recorded rather than
+    enforced here: they enter the fingerprint, so a run against a different copy
+    is a different preregistration.
+    """
 
     name: str
     loader: str
     label_kind: str
     split: str = "test"
+    revision: str = ""
+    checksum: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,8 +94,17 @@ class Manifest:
         return asdict(self)
 
     def fingerprint(self) -> str:
-        """Stable sha256 over the canonical JSON; the preregistration's identity."""
-        canonical = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        """Stable sha256 over the canonical JSON; the preregistration's identity.
+
+        Optional identity fields that were never filled in are omitted from the
+        canonical form, so adding one to the schema does not silently change the
+        identity of every study that predates it. A populated value does change
+        the fingerprint, which is the point: a run against a different corpus
+        revision is a different preregistration.
+        """
+        canonical = json.dumps(
+            _without_empty_optionals(self.to_dict()), sort_keys=True, separators=(",", ":")
+        )
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     @property
@@ -182,6 +202,26 @@ class Manifest:
             raise ValueError("manifest lists no metrics")
         if self.temperature != FROZEN_TEMPERATURE:
             raise ValueError(f"temperature must be {FROZEN_TEMPERATURE} for a deterministic run")
+
+
+# Identity fields added after manifests were already frozen. Omitting them when
+# empty keeps those fingerprints valid; a populated value still changes the
+# identity. Only fields introduced later belong here: excluding one that was
+# already hashed would change the identity of every study that recorded it.
+OPTIONAL_IDENTITY_FIELDS = ("revision", "checksum")
+
+
+def _without_empty_optionals(payload: Any) -> Any:
+    """Drop optional identity fields left empty, recursively."""
+    if isinstance(payload, dict):
+        return {
+            key: _without_empty_optionals(value)
+            for key, value in payload.items()
+            if not (key in OPTIONAL_IDENTITY_FIELDS and value == "")
+        }
+    if isinstance(payload, list):
+        return [_without_empty_optionals(item) for item in payload]
+    return payload
 
 
 KNOWN_SYSTEMS = frozenset({LILBEE_SYSTEM, RAGFLOW_SYSTEM})
