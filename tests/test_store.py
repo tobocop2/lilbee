@@ -203,9 +203,12 @@ class TestEnsureFtsIndex:
         )
         assert store._fts_ready is True
 
-    def test_generic_optimize_failure_does_not_rebuild(self, store):
+    def test_generic_optimize_failure_does_not_rebuild(self, store, caplog):
         """An unrelated optimize() failure keeps the existing index and does NOT
-        pay for a full positionless rebuild it cannot fix."""
+        pay for a full positionless rebuild it cannot fix. It must also log a
+        warning so an operator debugging a large corpus is not left in silence."""
+        import logging
+
         store.add_chunks(_make_records())
         store.ensure_fts_index()
         table = store.open_table("chunks")
@@ -213,9 +216,11 @@ class TestEnsureFtsIndex:
         with (
             mock.patch.object(type(table), "optimize", side_effect=RuntimeError("disk full")),
             mock.patch.object(type(table), "create_fts_index") as rebuild,
+            caplog.at_level(logging.WARNING),
         ):
             store.ensure_fts_index()
         rebuild.assert_not_called()
+        assert any("optimize()" in r.message for r in caplog.records)
 
     def test_overflow_rebuild_also_rebuilds_the_title_index_when_enabled(self, store, test_config):
         """With the title arm on, a positional-overflow rebuild replaces the

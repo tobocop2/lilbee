@@ -222,6 +222,25 @@ class TestRerankerConfig:
         assert defn.group == "Retrieval"
         assert get_default("neighbor_expansion") == 0
 
+    def test_fusion_knobs_in_settings_map(self):
+        """The four adaptive-fusion / structural-filter knobs (which gate the
+        on-by-default fusion behavior) are on the settings surface with their
+        shipped defaults, so a dropped or typo'd entry fails CI."""
+        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+
+        assert get_default("lexical_fusion_weight") == 1.0
+        assert get_default("adaptive_fusion") is True
+        assert get_default("adaptive_fusion_margin") == 0.15
+        assert get_default("filter_structural_chunks") is False
+        for key in (
+            "lexical_fusion_weight",
+            "adaptive_fusion",
+            "adaptive_fusion_margin",
+            "filter_structural_chunks",
+        ):
+            assert SETTINGS_MAP[key].writable is True, key
+            assert SETTINGS_MAP[key].group == "Retrieval", key
+
 
 class TestReplicaDefaults:
     """embed/vision replica counts default to 0 = auto (one per GPU at placement)."""

@@ -116,6 +116,19 @@ class TestEnvVarOverrides:
             assert c.data_root == Path.home() / "lilbee_expanduser_probe"
             assert c.lancedb_dir == Path.home() / "lilbee_expanduser_probe" / "data" / "lancedb"
 
+    def test_empty_data_root_falls_back_to_default_not_cwd(self):
+        """An empty LILBEE_DATA_ROOT must resolve to the platform default, not
+        the process cwd (which would make the data dir move with the launcher)."""
+        env = _clean_env()
+        env.pop("LILBEE_DATA", None)
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        env["LILBEE_DATA_ROOT"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root != Path()
+            assert c.data_root != Path.cwd()
+            assert str(c.data_root).endswith("lilbee")
+
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)
         env["LILBEE_OLLAMA_BASE_URL"] = "http://box:11434"

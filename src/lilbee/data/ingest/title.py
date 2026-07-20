@@ -19,7 +19,7 @@ def derive_title(source_name: str, metadata_title: str | None = None) -> str:
     The stem cleanup flattens underscore/hyphen separators to spaces so BM25
     tokenizes ``survey_214.pdf`` into the same terms a query would use.
     """
-    if metadata_title and metadata_title.strip():
+    if isinstance(metadata_title, str) and metadata_title.strip():
         return metadata_title.strip()
     return _STEM_SEPARATOR_RE.sub(" ", PurePath(source_name).stem).strip()
 
@@ -28,9 +28,17 @@ def source_meta_from_extraction(metadata: Mapping[str, Any], source_name: str) -
     """Fold kreuzberg extraction metadata into a :class:`SourceMeta`.
 
     The title falls back to the filename stem; authors and creation date stay
-    empty (persisted NULL) when the extractor reports none.
+    empty (persisted NULL) when the extractor reports none. Extractor metadata is
+    untyped, so a string ``authors`` is treated as one author (not split into its
+    characters) and non-string entries are coerced.
     """
-    authors = metadata.get("authors") or []
+    raw_authors = metadata.get("authors")
+    if isinstance(raw_authors, str):
+        authors: list[str] = [raw_authors]
+    elif isinstance(raw_authors, (list, tuple)):
+        authors = [str(a) for a in raw_authors if a]
+    else:
+        authors = []
     return SourceMeta(
         title=derive_title(source_name, metadata.get("title")),
         authors=", ".join(a for a in authors if a),

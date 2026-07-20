@@ -515,6 +515,27 @@ class TestSearchContext:
         results = get_services().searcher.search("q")
         assert [r.source for r in results] == ["body.pdf"]
 
+    def test_structural_filter_runs_before_the_buffer_slice_so_real_passages_backfill(
+        self, mock_svc
+    ):
+        """The filter drops structural chunks from the candidate list before the
+        top_k*2 slice, so a real passage past the window backfills into it. If the
+        filter ran after the slice, the deeper real passage would be lost."""
+        old_top_k = cfg.top_k
+        cfg.top_k = 1  # window is top_k*2 = 2
+        cfg.filter_structural_chunks = True
+        try:
+            real0 = _make_result(source="a.pdf", distance=0.1, chunk="Answer prose one.")
+            toc1 = _make_result(source="toc1.pdf", distance=0.2, chunk=self._TOC_CHUNK)
+            toc2 = _make_result(source="toc2.pdf", distance=0.3, chunk=self._TOC_CHUNK)
+            real3 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
+            mock_svc.store.search.return_value = [real0, toc1, toc2, real3]
+            sources = [r.source for r in get_services().searcher.search("q")]
+        finally:
+            cfg.top_k = old_top_k
+        assert "b.pdf" in sources  # backfilled from past the pre-filter window
+        assert "toc1.pdf" not in sources and "toc2.pdf" not in sources
+
     def test_structural_filter_keeps_query_matched_page(self, mock_svc):
         """A page the query lexically hit is never dropped, whatever its shape:
         it is content the answer may need."""

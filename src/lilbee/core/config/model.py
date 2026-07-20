@@ -205,7 +205,7 @@ class Config(BaseSettings):
     title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
 
     # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
-    # 1.0 keeps the two arms equal (the historical behaviour); lowering it lets
+    # 1.0 gives the two arms equal voice; lowering it lets
     # a strong dense embedder dominate on corpora where the lexical arm adds
     # noise rather than signal. The right value is corpus-dependent and set by
     # the retrieval benchmark, not guessed here.
@@ -1020,6 +1020,10 @@ class Config(BaseSettings):
         if not isinstance(data, dict):
             return data
 
+        # An empty LILBEE_DATA_ROOT (delivered as "") must fall through to default
+        # resolution like an unset one, not become Path(".") = the process cwd.
+        if isinstance(data.get("data_root"), str) and not data["data_root"].strip():
+            data["data_root"] = None
         if data.get("data_root") in (None, _UNSET_PATH):
             data_env = os.environ.get("LILBEE_DATA", "").strip()
             if data_env:

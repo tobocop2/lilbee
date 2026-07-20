@@ -204,7 +204,7 @@ class TestLexicalFusionWeight:
         lex = [_chunk("cat.pdf", 0, bm25=35.0)]
         return next(r for r in fuse_arms(vec, lex, lexical_weight=weight) if r.source == "cat.pdf")
 
-    def test_default_weight_is_the_historical_equal_voice(self):
+    def test_default_weight_gives_the_arms_equal_voice(self):
         vec = [_chunk("noise.md", 0, distance=0.5)]
         lex = [_chunk("cat.pdf", 0, bm25=35.0)]
         default = {r.source: r.score for r in fuse_arms(vec, lex)}

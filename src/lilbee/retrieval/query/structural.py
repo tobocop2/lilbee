@@ -21,6 +21,8 @@ _CLASSIFICATION = re.compile(r"\b(UNCLASSIFIED|CONFIDENTIAL|SECRET|FOR OFFICIAL 
 
 # A chunk needs at least this many non-empty lines before the TOC ratio means anything.
 _MIN_TOC_LINES = 3
+# And at least this many dot-leader lines, so a page with one stray "... 42" is not a TOC.
+_MIN_TOC_HITS = 3
 _TOC_RATIO = 0.30
 
 # Cover/title-page gates: a title page is very short with essentially no prose.
@@ -37,7 +39,7 @@ def _is_toc(nonempty: list[str]) -> bool:
     if len(nonempty) < _MIN_TOC_LINES:
         return False
     hits = sum(1 for line in nonempty if _TOC_LINE.search(line))
-    return hits >= _MIN_TOC_LINES and hits / len(nonempty) >= _TOC_RATIO
+    return hits >= _MIN_TOC_HITS and hits / len(nonempty) >= _TOC_RATIO
 
 
 def _is_cover_page(text: str) -> bool:

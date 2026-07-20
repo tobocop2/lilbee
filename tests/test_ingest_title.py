@@ -55,3 +55,18 @@ class TestSourceMetaFromExtraction:
         assert meta.title == "notes"
         assert meta.authors == ""
         assert meta.created_at == ""
+
+    def test_string_authors_is_one_author_not_split_into_characters(self):
+        # A raw PDF /Author field often arrives as a plain string; it must not
+        # be iterated into "J, o, h, n".
+        meta = source_meta_from_extraction({"authors": "John Doe"}, "x.pdf")
+        assert meta.authors == "John Doe"
+
+    def test_non_string_author_entries_are_coerced_not_raised(self):
+        meta = source_meta_from_extraction({"authors": ["Ada", 42]}, "x.pdf")
+        assert meta.authors == "Ada, 42"
+
+    def test_non_string_title_falls_back_to_stem(self):
+        # A bytes/number title in malformed metadata must not raise; fall back.
+        meta = source_meta_from_extraction({"title": 123}, "annual_report.pdf")
+        assert meta.title == "annual report"
