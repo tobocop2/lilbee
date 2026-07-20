@@ -150,12 +150,14 @@ async def search_route(
         return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
     except EmbeddingModelMismatchError as exc:
         # This route is unauthenticated (@read_only), so unlike ask/chat it must
-        # not hand back the persisted/current embedder names an authenticated
-        # client would use to render its adopt prompt. Report only that the
-        # index and the configured embedder disagree.
+        # not name the persisted and configured embedders. ``adoptable`` is kept:
+        # it is a bare yes/no on whether switching embedder alone would fix the
+        # index, which is what a client renders its recovery hint from, and it
+        # identifies nothing.
         raise HTTPException(
             status_code=409,
             detail="The index was built with a different embedding model than the one configured.",
+            extra={"adoptable": exc.dims_match},
         ) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc

@@ -155,22 +155,6 @@ class TestSearchDoesNotLeakInternals:
         # The operator still needs the real cause; it goes to the log, not the wire.
         assert "no such table" in caplog.text
 
-    def test_embedding_mismatch_hides_the_model_identifiers(self, client):
-        from lilbee.data.store.types import EmbeddingModelMismatchError
-
-        exc = EmbeddingModelMismatchError(
-            persisted_model="nomic-embed-text-v1.5",
-            persisted_dim=768,
-            current_model="bge-m3",
-            current_dim=1024,
-        )
-        with mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, side_effect=exc):
-            resp = client.get("/api/search", params={"q": "x"})
-        assert resp.status_code == 409
-        body = resp.text
-        assert "nomic-embed-text-v1.5" not in body
-        assert "bge-m3" not in body
-
 
 class TestAskRoute:
     @mock.patch(
@@ -651,10 +635,12 @@ class TestStreamSingleFlightGate:
 class TestEmbeddingMismatchSurfacing:
     """A downloaded index built with a different embedder surfaces as an actionable
     error, not a generic 503/stream failure. The store raises
-    EmbeddingModelMismatchError; non-stream routes translate it to a 409 whose
-    ``extra`` carries the index's embedder so the client can offer to adopt it,
-    and the streaming path emits an SSE error carrying the INDEX_EMBEDDER_MISMATCH
-    code plus that embedder in ``detail``."""
+    EmbeddingModelMismatchError; the token-gated non-stream routes translate it to
+    a 409 whose ``extra`` carries the index's embedder so the client can offer to
+    adopt it, and the streaming path emits an SSE error carrying the
+    INDEX_EMBEDDER_MISMATCH code plus that embedder in ``detail``. The
+    unauthenticated search route reports the same 409 with the embedder refs
+    redacted."""
 
     PERSISTED = "orgA/repoA/modelA.gguf"
 
@@ -669,13 +655,20 @@ class TestEmbeddingMismatchSurfacing:
         )
 
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock)
-    def test_search_route_returns_structured_409(self, mock_search, client):
+    def test_search_route_returns_409_without_naming_the_embedders(self, mock_search, client):
+        """Search is the one unauthenticated route here, so it redacts.
+
+        The adoptable flag stays, since a client renders its recovery hint from
+        it and a bare yes/no identifies nothing; the embedder refs do not, since
+        anyone who can reach the port would otherwise learn which models the
+        machine runs.
+        """
         mock_search.side_effect = self._mismatch()
         resp = client.get("/api/search", params={"q": "x"})
         assert resp.status_code == 409
         body = resp.json()
-        assert self.PERSISTED in body["detail"]
-        assert body["extra"]["persisted_model"] == self.PERSISTED
+        assert self.PERSISTED not in resp.text
+        assert "persisted_model" not in body.get("extra", {})
         assert body["extra"]["adoptable"] is True
 
     @mock.patch("lilbee.server.handlers.ask", new_callable=AsyncMock)
