@@ -170,8 +170,12 @@ def _self_check_server(
         flash_attn=None if is_embed else flash_attn_flag(),
         cache_type=None if is_embed else cache_type_flag(),
         batch_size=ctx if is_embed else None,
-        cpu_moe=not is_embed and expert_offload_all(meta),
-        n_cpu_moe=None if is_embed else expert_offload_layers(meta),
+        # Expert offload is role-agnostic in the fleet, so it is here too: an MoE
+        # embedding model with offload configured must get the same command line
+        # from the diagnostic, or the check fails a full-VRAM load the fleet
+        # would have offloaded.
+        cpu_moe=expert_offload_all(meta),
+        n_cpu_moe=expert_offload_layers(meta),
     )
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     launch = InstanceLaunch(

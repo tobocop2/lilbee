@@ -625,22 +625,32 @@ class TestCatalogCommandsNeverWarmTheFleet:
     A pull that warms spawns a fleet mid-download; with only some configured
     models installed yet, that fleet serves a partial contract and poisons
     the machine slot for every later arrival.
+
+    Covered as a chain: every registered catalog command routes through the
+    override helper (test_every_catalog_command_leaves_the_fleet_cold), and the
+    helper leaves get_services unable to warm (below). Asserting the flag after
+    invoking each command tested neither end -- the commands do not reach
+    get_services under these fixtures, so such a test passes with the helper's
+    suppression removed entirely.
     """
 
-    @pytest.mark.parametrize(
-        "argv",
-        [
-            ["model", "pull", "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"],
-            ["model", "show", _CHAT_REF],
-            ["model", "rm", "--yes", _CHAT_REF],
-            ["model", "browse"],
-        ],
-        ids=["pull", "show", "rm", "browse"],
-    )
-    def test_command_suppresses_eager_start(self, argv, fake_manager, native_manifests):
+    def test_the_override_leaves_get_services_unable_to_warm(self, monkeypatch, tmp_path):
+        from unittest import mock
+
+        from lilbee.app.services import get_services, reset_services
+        from lilbee.cli import model as model_mod
+        from lilbee.providers import factory
+
+        provider = mock.MagicMock()
+        monkeypatch.setattr(factory, "create_provider", lambda _config: provider)
+        monkeypatch.setattr(model_mod, "apply_overrides", lambda **_kwargs: None)
         cfg.worker_pool_eager_start = True
-        runner.invoke(app, argv)
-        assert cfg.worker_pool_eager_start is False
+
+        model_mod._apply_catalog_overrides(data_dir=None, use_global=False)
+        reset_services()
+        get_services()
+
+        provider.warm_up_pool.assert_not_called()
 
 
 class TestPullCmd:
