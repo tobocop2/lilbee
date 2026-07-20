@@ -182,3 +182,22 @@ def test_answer_subcommand_writes_checkpointed_answers(tmp_path, monkeypatch):
     )
     assert exit_code == 0
     assert len(load_items(out)) == 2
+
+
+def test_prefail_is_recomputed_from_the_answers_being_scored():
+    # `answer` is resumable, so a question that failed on the first pass and
+    # succeeded on a resume must not keep the zero an earlier judge run recorded.
+    from evals.retrieval.answers import AnswerRow
+    from evals.retrieval.cli import _is_prefailed
+
+    recovered = AnswerRow(
+        qid="q1",
+        arm="A",
+        answer="now it works",
+        sources=["a.txt"],
+        cited_sources=["a.txt"],
+        seconds=0.1,
+        error=None,
+    )
+    assert _is_prefailed(recovered) is False
+    assert _is_prefailed(None) is True

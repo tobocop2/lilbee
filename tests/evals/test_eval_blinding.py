@@ -43,16 +43,20 @@ def test_noise_arm_is_judged_twice_and_other_arm_once():
 
 
 def test_blind_rows_never_leak_arm_or_qid():
+    # Multi-character arm names: a one-letter label matches any hex gid by
+    # chance and would make the arm half of this assertion vacuous.
     questions = [_question("tq000")]
-    blind = build_blind_rows(
-        questions,
-        {"A": _answers(questions, "A"), "B": _answers(questions, "B")},
-        noise_arm="B",
-        rng=random.Random(5),
-    )
+    arms = {
+        "old-build": _answers(questions, "old-build"),
+        "new-build": _answers(questions, "new-build"),
+    }
+    blind = build_blind_rows(questions, arms, noise_arm="new-build", rng=random.Random(5))
+    assert blind.rows
     for row in blind.rows:
-        payload = f"{row.gid}{row.question}{row.ground}{row.answer}"
+        payload = f"{row.gid}{row.question}{row.source}{row.ground}{row.answer}"
         assert "tq000" not in payload
+        for arm in arms:
+            assert arm not in payload
         assert row.gid in blind.assignments
 
 

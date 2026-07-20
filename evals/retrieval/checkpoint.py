@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,29 @@ class CheckpointMismatchError(RuntimeError):
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Parse one JSON object per line, skipping blanks; missing file is empty."""
+    """Parse one JSON object per line, skipping blanks; missing file is empty.
+
+    A process killed mid-append leaves a partial final line. Appends are
+    ordered, so only the last line can be torn: it is dropped with a warning so
+    a resume loses one item's work rather than failing to parse the whole file.
+    An unparseable line anywhere earlier is real corruption and still raises.
+    """
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    lines = [line for line in path.read_text().splitlines() if line.strip()]
+    records: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            if index != len(lines) - 1:
+                raise
+            print(
+                f"{path}: dropping a truncated final line, most likely a run killed "
+                "mid-append; that item will be redone",
+                file=sys.stderr,
+            )
+    return records
 
 
 def load_items(path: Path) -> list[dict[str, Any]]:

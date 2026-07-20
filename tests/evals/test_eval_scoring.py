@@ -5,6 +5,7 @@ from evals.retrieval.answers import AnswerRow
 from evals.retrieval.questions import CountOracle, Question, QuestionKind
 from evals.retrieval.scoring import (
     MissingNoiseReplicateError,
+    NoGradesError,
     ResultRowType,
     build_results,
     count_question_pass,
@@ -45,7 +46,13 @@ def test_noise_floor_fails_when_the_replicates_share_no_question():
 def test_dimension_means():
     means = dimension_means({"q1": _grades(2, 2, 0), "q2": _grades(0, 1, 1)})
     assert means == {"faithfulness": 1.0, "relevance": 1.5, "citation": 0.5}
-    assert dimension_means({}) == {"faithfulness": 0.0, "relevance": 0.0, "citation": 0.0}
+
+
+def test_an_ungraded_arm_raises_rather_than_scoring_zero():
+    # 0 is a real grade, so returning zeros would make an arm that was never
+    # graded look like one graded uniformly worst.
+    with pytest.raises(NoGradesError):
+        dimension_means({})
 
 
 def test_count_question_pass_requires_the_document_count():

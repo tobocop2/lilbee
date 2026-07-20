@@ -1,5 +1,6 @@
 """Markdown report rendering from results rows."""
 
+import pytest
 from evals.retrieval.report import render_report
 from evals.retrieval.scoring import ResultRowType
 
@@ -90,9 +91,5 @@ def test_render_report_includes_exact_truth_and_failures():
 
 
 def test_render_report_requires_a_summary_row():
-    try:
+    with pytest.raises(ValueError, match="summary"):
         render_report([{"row_type": ResultRowType.QUESTION}])
-    except ValueError as exc:
-        assert "summary" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")

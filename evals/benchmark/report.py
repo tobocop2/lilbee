@@ -119,6 +119,8 @@ def _coverage_section(rows: list[dict[str, Any]]) -> list[str]:
 
 def render_report(rows: list[dict[str, Any]]) -> str:
     """Render results rows to the human-readable benchmark markdown report."""
+    if not _rows_of(rows, "ir") and not _rows_of(rows, "ragas"):
+        raise ValueError("results contain no ir or ragas rows; run score-ir first")
     arm_a, arm_b = _arm_labels(rows)
     meta = _rows_of(rows, "meta")
     # Titled from the arms that actually ran. Hardcoding "lilbee vs RAGFlow"
@@ -138,6 +140,4 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         + _ragas_section(rows, arm_a, arm_b)
         + _coverage_section(rows)
     )
-    if not _rows_of(rows, "ir") and not _rows_of(rows, "ragas"):
-        raise ValueError("results contain no ir or ragas rows; run score-ir first")
     return "\n".join(lines).rstrip() + "\n"

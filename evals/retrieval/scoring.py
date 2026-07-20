@@ -85,10 +85,24 @@ def noise_floor(rep0: Grades, rep1: Grades) -> float:
     return round(statistics.mean(per_question), 3)
 
 
+class NoGradesError(RuntimeError):
+    """An arm reached scoring with no grades at all."""
+
+
 def dimension_means(grades: Grades) -> dict[str, float]:
-    """Per-dimension mean scores over every graded question."""
+    """Per-dimension mean scores over every graded question.
+
+    Raises on an empty set rather than returning zeros. The judge's scale
+    includes 0, so an arm that was never graded would otherwise be
+    indistinguishable from one graded uniformly worst, and the paths that reach
+    here do so through .get(arm, {}) chains where a missing arm or an unblinding
+    mismatch is a bug, not a score.
+    """
     if not grades:
-        return dict.fromkeys(DIMENSIONS, 0.0)
+        raise NoGradesError(
+            "no grades for this arm, which is a scoring or unblinding failure "
+            "rather than a score of zero"
+        )
     return {
         d: round(statistics.mean(scores[d] for scores in grades.values()), 3) for d in DIMENSIONS
     }

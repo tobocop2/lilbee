@@ -18,6 +18,9 @@ SCORE_MAX = 2
 JUDGE_ATTEMPTS = 3
 JUDGE_RETRY_DELAY_SECONDS = 5.0
 
+# The LAST brace group, not the first: a judge that emits a worked example or a
+# reasoning artifact before its answer would otherwise have that parsed as the
+# grade.
 _JSON_RE = re.compile(r"\{[^{}]*\}")
 
 
@@ -79,17 +82,31 @@ def judge_prompt_for(row: BlindRow) -> str:
 
 def parse_grade(text: str) -> dict[str, int] | None:
     """Scores clamped to the 0-2 scale, or None when the judge returned junk."""
-    match = _JSON_RE.search(text)
-    if not match:
+    matches = _JSON_RE.findall(text)
+    if not matches:
         return None
+    match = matches[-1]
     try:
-        scores = json.loads(match.group(0))
-        return {
-            dimension: max(SCORE_MIN, min(SCORE_MAX, int(scores[dimension])))
-            for dimension in DIMENSIONS
-        }
+        scores = json.loads(match)
+        graded = {dimension: scores[dimension] for dimension in DIMENSIONS}
     except (KeyError, TypeError, ValueError):
         return None
+    # Reject rather than coerce. A 5 clamped to 2, or a 1.7 truncated to 1, is a
+    # judge that did not follow the rubric being turned into a plausible score
+    # that then flows into the published means. An unusable grade is data the
+    # run does not have.
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in graded.values()):
+        return None
+    if any(value < SCORE_MIN or value > SCORE_MAX for value in graded.values()):
+        return None
+    return graded
+
+
+def _alternate_prompt(row: BlindRow) -> str:
+    """The other equivalent presentation, for a retry that can actually differ."""
+    return JUDGE_PROMPTS[(row.variant + 1) % len(JUDGE_PROMPTS)].format(
+        question=row.question, source=row.source, ground=row.ground, answer=row.answer
+    )
 
 
 def judge_rows(
@@ -105,11 +122,15 @@ def judge_rows(
     for row in rows:
         if row.gid in checkpoint:
             continue
-        prompt = judge_prompt_for(row)
         grade: dict[str, int] | None = None
         for attempt in range(attempts):
+            # Retries re-ask under the other equivalent presentation. Both
+            # backends decode greedily, so re-sending the identical prompt is the
+            # same computation and cannot produce a different parse; only a
+            # transport error would clear on its own.
+            attempt_prompt = judge_prompt_for(row) if attempt == 0 else _alternate_prompt(row)
             try:
-                grade = parse_grade(chat(prompt))
+                grade = parse_grade(chat(attempt_prompt))
             except Exception as exc:  # a failed grade is skipped, not fatal
                 print(f"judge call failed for {row.gid}: {exc}", file=sys.stderr)
                 grade = None

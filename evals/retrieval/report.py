@@ -8,6 +8,8 @@ from evals.benchmark.stats import DEFAULT_ALPHA, benjamini_hochberg
 from evals.retrieval.judging import DIMENSIONS
 from evals.retrieval.scoring import ResultRowType
 
+REPORTED_ARMS = 2
+
 
 def _adjusted_p(tests: dict[str, dict[str, Any]]) -> dict[str, float]:
     """Family-adjusted p per dimension, across the dimensions actually tested."""
@@ -28,6 +30,13 @@ def render_report(rows: list[dict[str, Any]]) -> str:
     if summary is None:
         raise ValueError("results contain no summary row; run score first")
     arms: dict[str, dict[str, Any]] = summary["arms"]
+    if len(arms) != REPORTED_ARMS:
+        # The two-arm assumption is real (the prose says "the second arm was
+        # judged twice"), so state it rather than failing on tuple unpacking.
+        raise ValueError(
+            f"the report renders exactly {REPORTED_ARMS} arms, but the results "
+            f"carry {len(arms)}: {sorted(arms)}"
+        )
     first, second = list(arms)
     noise = summary["noise_floor"]
 

@@ -83,8 +83,15 @@ def _cmd_answer(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         client=make_http_client(),
     )
-    failed = sum(1 for row in rows if row.error)
-    print(f"answered {len(rows)} new questions, {failed} errors -> {args.out}")
+    # Counted over the whole file, not just this invocation: after a resume,
+    # `rows` holds only the newly answered questions, so failures recorded by an
+    # earlier pass would go unreported.
+    on_disk = [AnswerRow.from_dict(row) for row in load_items(args.out)]
+    failed = sum(1 for row in on_disk if row.error)
+    print(
+        f"answered {len(rows)} new questions; {failed} of {len(on_disk)} on disk "
+        f"are failures -> {args.out}"
+    )
     return 0
 
 
@@ -119,6 +126,11 @@ def _cmd_judge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_prefailed(answer: AnswerRow | None) -> bool:
+    """Whether this answer never reached a judge: missing, errored, or empty."""
+    return answer is None or bool(answer.error) or not answer.answer.strip()
+
+
 def _cmd_score(args: argparse.Namespace) -> int:
     questions = _load_questions(args.questions)
     answers_by_arm = _load_arms(args)
@@ -133,7 +145,15 @@ def _cmd_score(args: argparse.Namespace) -> int:
             f"the judge pass graded '{noise_arm}' twice, but the arms given here are "
             f"{sorted(answers_by_arm)}; pass the same --answers-a/--answers-b as judge did"
         )
-    prefailed = json.loads((args.work_dir / PREFAILED_FILE).read_text())
+    # Recomputed from the answer files passed here, not read back from the judge
+    # pass. `answer` is documented as resumable, so a question that hard-failed
+    # on the first pass and succeeded on a resume would otherwise keep the stale
+    # zero the earlier judge run recorded for it.
+    prefailed = [
+        gid
+        for gid, assignment in assignments.items()
+        if _is_prefailed(answers_by_arm.get(assignment.arm, {}).get(assignment.qid))
+    ]
     judged = {
         record["gid"]: {k: v for k, v in record.items() if k != "gid"}
         for record in load_jsonl(args.work_dir / GRADES_FILE)
