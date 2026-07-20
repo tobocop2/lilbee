@@ -93,9 +93,12 @@ def test_the_cache_is_bounded_and_evicts_the_least_recently_used(
     and leaves the superseded one behind, so without a cap the store grows
     forever across re-ingests. The cache only makes a retry cheap, so dropping
     the coldest entry at the cap is the right trade."""
-    limit = 256 * 1024
+    # Entries are sized well past diskcache's inline-vs-file threshold so the
+    # measured volume is dominated by the page text rather than by the index
+    # database, whose baseline size varies with the host.
+    limit = 4 * 1024**2
     monkeypatch.setattr(ocr_cache, "_SIZE_LIMIT_BYTES", limit)
-    page = "x" * 16384
+    page = "x" * 65536
     for i in range(100):
         ocr_cache.store_ocr_pages(f"key{i}", [(1, page)])
     with Cache(directory=str(cache_dir)) as cache:
