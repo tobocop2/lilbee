@@ -178,12 +178,20 @@ class _VkPhysicalDeviceLimits(ctypes.Structure):
     # the driver-populated bytes so the loader can write a vendorID and
     # deviceType into the prefix fields we actually read.
     #
-    # Size = sum of every field in VkPhysicalDeviceLimits in
+    # 504 bytes, per VkPhysicalDeviceLimits in
     # https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vulkan/vulkan_core.h
-    # (104 ULONG32s, plus alignment padding, totals 504 bytes for the
-    # Vulkan 1.0 ABI). The number is part of the frozen Vulkan 1.0 layout
-    # so it doesn't drift across driver versions.
-    _fields_ = [("_opaque", c_uint8 * 504)]
+    # The size is part of the frozen Vulkan 1.0 layout, so it does not drift
+    # across driver versions.
+    #
+    # Declared as uint64 rather than bytes for its ALIGNMENT, not its size. The
+    # real struct mixes uint32, uint64 (VkDeviceSize), size_t and float, so its C
+    # alignment is 8. A c_uint8 array aligns to 1, which let ctypes seat this
+    # field at offset 292 in the parent instead of the 296 the ABI pads it to,
+    # making the mirror 816 bytes against the driver's 824. The driver fills the
+    # caller's buffer using its own layout, so every probe wrote sparseProperties
+    # four bytes past the end of a Python-heap allocation -- absorbed by allocator
+    # slack, which is what kept it silent.
+    _fields_ = [("_opaque", c_uint64 * 63)]
 
 
 class _VkPhysicalDeviceSparseProperties(ctypes.Structure):
