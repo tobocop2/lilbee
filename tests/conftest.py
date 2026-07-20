@@ -214,6 +214,18 @@ def _ignore_user_global_config(monkeypatch):
     monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_playwright_browsers_path(tmp_path_factory, monkeypatch):
+    """Keep the browser cache out of the developer's real Playwright directory.
+
+    Tests that fake ``chromium_installed() -> False`` drive the install path,
+    which creates and locks the browsers directory. Without this they would
+    reach ``~/Library/Caches/ms-playwright`` on the machine running them.
+    ``_browsers_cache_path`` honors this env var ahead of the platform default.
+    """
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path_factory.mktemp("ms-playwright")))
+
+
 @pytest.fixture
 def overlay_reads_config_toml(monkeypatch):
     """Opt a test back into the config.toml overlay path.
