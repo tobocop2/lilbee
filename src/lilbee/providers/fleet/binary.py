@@ -42,12 +42,22 @@ def _bundled_tool(tool: EngineTool) -> Path | None:
 
 
 def engine_pin() -> str:
-    """Identity of the engine build this lilbee would spawn; sharing keys on it.
+    """Identity of the engine this lilbee would spawn; sharing keys on it.
 
-    A configured ``LILBEE_LLAMA_SERVER_PATH`` is its own identity so a
-    bring-your-own engine never silently shares with a bundled one. Total:
-    never raises, because it runs on every state write.
+    Two dimensions must match for two processes to share one engine: the engine
+    BUILD (a configured ``LILBEE_LLAMA_SERVER_PATH`` is its own identity so a
+    bring-your-own engine never silently shares with a bundled one) and the
+    load-affecting CONFIG baked into the launch argv (kv-cache type, expert
+    offload, n-gpu-layers, ctx target, ...). A process whose load config differs
+    computes a different pin, so ``contract_matches`` refuses the bind and it
+    overflows to its own engine rather than silently running on the incumbent's
+    flags. Total: never raises, because it runs on every state write.
     """
+    return f"{_engine_build_id()}|{_load_config_signature()}"
+
+
+def _engine_build_id() -> str:
+    """The engine build's identity: configured path, wheel pin, PATH, or unpinned."""
     from lilbee.core.config import cfg
 
     if cfg.llama_server_path:
@@ -65,6 +75,19 @@ def engine_pin() -> str:
     if found is not None:
         return f"path:{found}"
     return "unpinned"
+
+
+def _load_config_signature() -> str:
+    """A deterministic digest of the settings that require an engine reload.
+
+    These are the same ``LOAD_AFFECTING_KEYS`` a single process reloads on; across
+    processes they decide sharing, since an engine launched with one set cannot
+    serve a peer that configured another.
+    """
+    from lilbee.core.config import cfg
+    from lilbee.core.config.keys import LOAD_AFFECTING_KEYS
+
+    return ";".join(f"{key}={getattr(cfg, key, None)}" for key in sorted(LOAD_AFFECTING_KEYS))
 
 
 def resolve_engine_tool(tool: EngineTool) -> Path:
