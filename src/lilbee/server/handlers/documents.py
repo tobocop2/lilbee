@@ -32,6 +32,12 @@ _RAW_INLINE_RENDER_DENY: frozenset[str] = frozenset(
         "application/xhtml+xml",
         "text/css",
         "image/svg+xml",
+        # An xml-stylesheet processing instruction can pull in XSLT that emits
+        # script. Both spellings are listed because which one a ``.xml`` file
+        # resolves to depends on the host mimetypes database, and only the
+        # ``text/`` spelling would otherwise match the category rule below.
+        "text/xml",
+        "application/xml",
     }
 )
 

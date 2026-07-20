@@ -9,6 +9,9 @@ import re
 import sys
 from pathlib import Path
 
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
+
 from lilbee._frozen import is_frozen
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
@@ -28,6 +31,10 @@ class CrawlerBackendError(RuntimeError):
 
 
 _CHROMIUM_COMPONENT = "chromium"
+
+# A Chromium unpack runs into the minutes on a slow link, so a caller queued
+# behind one waits well past any normal request timeout before giving up.
+_BOOTSTRAP_LOCK_TIMEOUT_S = 900.0
 # Rough size estimate for the Chromium download; Playwright bundles vary
 # slightly per platform but this gives the UI a decent denominator before
 # 'Total bytes' parses out of stdout.
@@ -110,6 +117,13 @@ def chromium_installed() -> bool:
     if expected is None:
         return any(p.is_dir() and p.name.startswith("chromium-") for p in root.iterdir())
     return (root / f"{_CHROMIUM_COMPONENT}-{expected}").is_dir()
+
+
+def _bootstrap_lock_path() -> Path:
+    """Lock file serializing Chromium installs into the browsers cache."""
+    root = _browsers_cache_path()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / ".lilbee-bootstrap.lock"
 
 
 def crawler_browsers_path() -> Path:
@@ -245,6 +259,36 @@ async def bootstrap_chromium(
         _emit_setup_done(on_progress, success=True, error=None)
         return
 
+    # Two callers can get here at once: a second POST /setup/crawler, or a
+    # crawl triggering first-use bootstrap alongside one. Both would unpack a
+    # browser bundle into the same directory and corrupt it. The lock is on
+    # disk, not in memory, because the CLI and MCP processes share this path.
+    # thread_local=False because the acquire runs in a worker thread (so the
+    # wait does not block the event loop) while the release runs on the loop
+    # thread. With the default the release would not count and the lock would
+    # never be freed.
+    lock = FileLock(str(_bootstrap_lock_path()), thread_local=False)
+    try:
+        await asyncio.to_thread(lock.acquire, timeout=_BOOTSTRAP_LOCK_TIMEOUT_S)
+    except FileLockTimeout as exc:
+        message = (
+            "Timed out waiting for another Chromium install to finish. "
+            "If no other lilbee process is installing, retry."
+        )
+        _emit_setup_done(on_progress, success=False, error=message)
+        raise CrawlerBrowserError(message) from exc
+    try:
+        # The install we were queued behind may have been the one we needed.
+        if chromium_installed():
+            _emit_setup_done(on_progress, success=True, error=None)
+            return
+        await _install_chromium(on_progress)
+    finally:
+        lock.release()
+
+
+async def _install_chromium(on_progress: DetailedProgressCallback | None) -> None:
+    """Run the install subprocess. Caller holds the bootstrap lock."""
     _emit_setup_start(on_progress)
 
     try:

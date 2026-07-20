@@ -4617,6 +4617,20 @@ class TestSourceContentRoute:
         assert resp.headers["content-type"].startswith("application/octet-stream")
         assert "attachment" in resp.headers["content-disposition"]
 
+    @pytest.mark.parametrize("content_type", ["text/xml", "application/xml"])
+    def test_xml_is_never_rendered_inline(self, content_type):
+        """XML can carry an xml-stylesheet PI whose XSLT emits script.
+
+        Asserted on the predicate rather than through a ``.xml`` file because
+        the extension's Content-Type comes from the host mimetypes database:
+        it resolves to ``application/xml`` here, which already degrades, but a
+        host whose database says ``text/xml`` would have matched the ``text/``
+        category and rendered. The verdict must not depend on the host.
+        """
+        from lilbee.server.handlers.documents import _is_safe_for_inline_render
+
+        assert _is_safe_for_inline_render(content_type) is False
+
     async def test_raw_svg_source_forces_octet_stream_attachment(self, isolated_env):
         """SVG can carry script; not in the allowlist → forced to octet-stream."""
         from litestar.testing import AsyncTestClient
