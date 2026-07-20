@@ -207,8 +207,13 @@ def stream_chat_with_cap(
     in the first pass. If reasoning exceeds *cap_chars*, the upstream
     iterator is closed, a single ``CapNotice`` is yielded, and the
     continuation stream starts (same messages plus a user message asking
-    the model to answer directly). Continuation tokens stream as
-    ``StreamToken(is_reasoning=False)``.
+    the model to answer directly).
+
+    The continuation is parsed too: a chat template can force-open a
+    ``<think>`` block whatever the nudge asks, and that reasoning must not
+    reach the visible answer. Its cap is disabled (the cap already fired
+    once, and re-capping would cut the answer off), and every continuation
+    token is reported as final-answer text, matching the async HTTP path.
     """
     cap_fired = False
 
@@ -229,9 +234,11 @@ def stream_chat_with_cap(
     nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
     second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
     try:
-        for chunk in _text_only(second_stream):
-            if chunk:
-                yield StreamToken(content=chunk, is_reasoning=False)
+        for token in filter_reasoning(
+            _text_only(second_stream), show=show_reasoning, cap_chars=0
+        ):
+            if token.content:
+                yield StreamToken(content=token.content, is_reasoning=False)
     finally:
         _close_iterator(second_stream)
 

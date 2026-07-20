@@ -349,6 +349,76 @@ class TestStreamChatWithCap:
         assert "final " in response and "answer." in response
         assert provider.chat.call_count == 2
 
+    def test_continuation_reasoning_is_filtered_out(self):
+        """The cap fires because the model over-thinks, and R1/Qwen3-style
+        templates can force-open a <think> block in the continuation whatever
+        the nudge says. That reasoning must not stream into the visible
+        answer -- the HTTP path parses the continuation the same way."""
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        provider = self._make_provider(
+            [long_think], ["<think>still ", "musing</think>", "final answer."]
+        )
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "q"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=512,
+            )
+        )
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "final answer." in response
+        assert "musing" not in response
+        assert "<think>" not in response
+
+    def test_continuation_reasoning_stays_marked_as_answer_text(self):
+        """With show_reasoning on, the continuation's reasoning is still
+        surfaced (nothing is dropped silently), but every continuation token
+        is final-answer text, matching the HTTP path."""
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        provider = self._make_provider([long_think], ["<think>hmm</think>", "answer."])
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "q"}],
+                options=None,
+                model="test-model",
+                show_reasoning=True,
+                cap_chars=512,
+            )
+        )
+        after_notice = events[events.index(next(e for e in events if isinstance(e, CapNotice))) :]
+        continuation = [e for e in after_notice if isinstance(e, StreamToken)]
+        assert continuation, "continuation produced no tokens"
+        assert all(not e.is_reasoning for e in continuation)
+        assert "answer." in "".join(e.content for e in continuation)
+
+    def test_continuation_is_not_re_capped(self):
+        """The cap already fired once; the continuation must run to
+        completion rather than being cut off by a second cap."""
+        long_think = "<think>" + ("x " * 400) + "</think>"
+        continuation = ["<think>" + ("y " * 400) + "</think>", "the real answer"]
+        provider = self._make_provider([long_think], continuation)
+        events = list(
+            stream_chat_with_cap(
+                provider,
+                [{"role": "user", "content": "q"}],
+                options=None,
+                model="test-model",
+                show_reasoning=False,
+                cap_chars=512,
+            )
+        )
+        assert len([e for e in events if isinstance(e, CapNotice)]) == 1
+        response = "".join(
+            e.content for e in events if isinstance(e, StreamToken) and not e.is_reasoning
+        )
+        assert "the real answer" in response
+
     def test_cap_fire_closes_the_first_stream_through_text_only(self):
         # On cap-fire the first stream is closed via _text_only's
         # forwarded close, or its HTTP connection / in_flight slot leaks until GC.
