@@ -44,12 +44,19 @@ happened to come from.
    signal, with its noise floor measured by grading one arm twice under two
    equivalent phrasings of the grading prompt.
 
-Every cross-arm difference is paired per query and gets a bootstrap 95% CI and a
-randomization-test p-value. Because a study runs many such tests at once, the
-p-values are Benjamini-Hochberg adjusted across the whole family and
+Every **Tier-1** cross-arm difference is paired per query and gets a bootstrap
+95% CI and a randomization-test p-value. Because a study runs many such tests at
+once, the p-values are Benjamini-Hochberg adjusted across the whole family and
 significance is decided on the adjusted value; the CI is reported as the effect
 size. Picking the best of several arms and quoting its raw p-value is not
 evidence at that level.
+
+**Tier 2 is not significance-tested.** RAGAS reports a mean per metric per arm
+with the number of answers behind it, and no CI or p-value; a difference between
+those means is not a tested result and must not be described as one. The
+corroborating blind judge does run a paired per-question test on its own grading
+dimensions, adjusted the same way, but that covers the judge's dimensions, not
+the RAGAS metrics.
 
 ## Native vs derived labels
 
