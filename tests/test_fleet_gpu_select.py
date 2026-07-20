@@ -338,3 +338,65 @@ def test_a_loader_too_old_for_the_budget_query_reports_unknown() -> None:
     from lilbee.providers.fleet.gpu_select import _free_device_local_bytes
 
     assert _free_device_local_bytes(None, None) is None
+
+
+def test_free_memory_is_sampled_fresh_not_frozen_for_the_process(monkeypatch) -> None:
+    """Free VRAM is a live number; a process-lifetime cache hands every later
+    probe the first reading ever taken, while the read path re-probes every two
+    seconds expecting a current one."""
+    from lilbee.providers.fleet import gpu_select
+
+    readings = iter(
+        [
+            [replace(_device(0, b"\x01" * 16, "RTX 4090"), free_bytes=20 * 1024**3)],
+            [replace(_device(0, b"\x01" * 16, "RTX 4090"), free_bytes=4 * 1024**3)],
+        ]
+    )
+    monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: next(readings))
+
+    first = gpu_select.vulkan_free_bytes_by_name()
+    second = gpu_select.vulkan_free_bytes_by_name()
+
+    assert first == {"RTX 4090": 20 * 1024**3}
+    assert second == {"RTX 4090": 4 * 1024**3}
+
+
+def test_two_identical_cards_report_no_free_figure_rather_than_one_of_theirs(
+    monkeypatch,
+) -> None:
+    """The map is keyed by name, and two identical cards share one.
+
+    They do not share a free figure, and nothing in the engine's text says which
+    line is which, so reporting either one attributes one card's headroom to the
+    other. Absent means the heap size stands in, which is merely imprecise.
+    """
+    from lilbee.providers.fleet import gpu_select
+
+    monkeypatch.setattr(
+        gpu_select,
+        "_enumerate_vulkan_devices",
+        lambda: [
+            replace(_device(0, b"\x01" * 16, "RTX 4090"), free_bytes=20 * 1024**3),
+            replace(_device(1, b"\x02" * 16, "RTX 4090"), free_bytes=2 * 1024**3),
+        ],
+    )
+
+    assert gpu_select.vulkan_free_bytes_by_name() == {}
+
+
+def test_distinct_cards_still_each_report_their_own(monkeypatch) -> None:
+    from lilbee.providers.fleet import gpu_select
+
+    monkeypatch.setattr(
+        gpu_select,
+        "_enumerate_vulkan_devices",
+        lambda: [
+            replace(_device(0, b"\x01" * 16, "RTX 4090"), free_bytes=20 * 1024**3),
+            replace(_device(1, b"\x02" * 16, "RX 7900 XTX"), free_bytes=2 * 1024**3),
+        ],
+    )
+
+    assert gpu_select.vulkan_free_bytes_by_name() == {
+        "RTX 4090": 20 * 1024**3,
+        "RX 7900 XTX": 2 * 1024**3,
+    }

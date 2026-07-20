@@ -1120,8 +1120,20 @@ _read_device_cache = _ReadDeviceCache(_DEVICE_PROBE_TTL_S, _DEVICE_PROBE_FAILURE
 
 
 def clear_read_device_cache() -> None:
-    """Drop the read-path device probe cache (e.g. after the fleet is reconfigured)."""
+    """Drop the read-path device probe cache (e.g. after the fleet is reconfigured).
+
+    Also drops what the host's Vulkan loader told us about device types, which is
+    otherwise held for the process lifetime and would survive a driver reload or
+    an eGPU being plugged in.
+    """
+    from lilbee.providers.fleet.gpu_select import (
+        integrated_vulkan_indices,
+        vulkan_device_types_by_name,
+    )
+
     _read_device_cache.clear()
+    vulkan_device_types_by_name.cache_clear()
+    integrated_vulkan_indices.cache_clear()
 
 
 @dataclass(frozen=True)

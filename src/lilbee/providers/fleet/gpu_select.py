@@ -16,6 +16,7 @@ import logging
 import ntpath
 import os
 import sys
+from collections import Counter
 from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_uint64, c_void_p
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
@@ -428,17 +429,28 @@ def integrated_vulkan_indices() -> frozenset[int]:
     return frozenset(d.index for d in devices if d.device_type == VkDeviceType.INTEGRATED_GPU)
 
 
-@lru_cache(maxsize=1)
 def vulkan_free_bytes_by_name() -> dict[str, int]:
     """Device-local memory still free, keyed by the name the loader reports.
 
+    Deliberately not cached: free memory is a live number, and freezing it for
+    the process lifetime would hand every later probe the first reading taken.
+    Callers sample it once per parse rather than per device line.
+
     Only devices whose driver exposes ``VK_EXT_memory_budget`` appear; the rest
-    have no live figure to offer and are absent rather than guessed at.
+    have no live figure to offer and are absent rather than guessed at. A name
+    two adapters share is also absent: two identical cards have their own free
+    figures, and nothing in the engine's text says which line is which. Guessing
+    would report one card's headroom for the other.
     """
     devices = _enumerate_vulkan_devices()
     if not devices:
         return {}
-    return {d.device_name: d.free_bytes for d in devices if d.free_bytes is not None}
+    seen = Counter(d.device_name for d in devices)
+    return {
+        d.device_name: d.free_bytes
+        for d in devices
+        if d.free_bytes is not None and seen[d.device_name] == 1
+    }
 
 
 @lru_cache(maxsize=1)

@@ -2234,3 +2234,32 @@ class TestFlashAttentionIsBackendAware:
         assert planning_mod._role_flash(WorkerRole.CHAT) is False
         self._on_backend(monkeypatch, "CUDA")
         assert planning_mod._role_flash(WorkerRole.CHAT) is True
+
+
+def test_clearing_the_device_cache_also_clears_what_the_loader_said(monkeypatch) -> None:
+    """The loader's answers are held for the process lifetime otherwise, so a
+    driver reload or a newly plugged eGPU would never be noticed."""
+    from lilbee.providers.fleet import gpu_select
+
+    readings = iter(
+        [
+            [gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.INTEGRATED_GPU, "iGPU", 0, 0)],
+            [gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.DISCRETE_GPU, "eGPU", 0, 0)],
+        ]
+    )
+    monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: next(readings))
+    gpu_select.vulkan_device_types_by_name.cache_clear()
+    gpu_select.integrated_vulkan_indices.cache_clear()
+    try:
+        assert gpu_select.vulkan_device_types_by_name() == {
+            "iGPU": gpu_select.VkDeviceType.INTEGRATED_GPU
+        }
+
+        planning_mod.clear_read_device_cache()
+
+        assert gpu_select.vulkan_device_types_by_name() == {
+            "eGPU": gpu_select.VkDeviceType.DISCRETE_GPU
+        }
+    finally:
+        gpu_select.vulkan_device_types_by_name.cache_clear()
+        gpu_select.integrated_vulkan_indices.cache_clear()

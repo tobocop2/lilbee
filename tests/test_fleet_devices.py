@@ -797,3 +797,46 @@ class TestAnEngineThatCannotAnswerIsNotTakenAsAuthoritative:
         monkeypatch.setattr(dev_mod, "_run_list_devices", _boom)
 
         assert probe_devices(Path("/bin/llama-server")).spoke_protocol is False
+
+
+def test_the_loader_is_asked_once_per_parse_not_once_per_device_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Free memory is read fresh rather than cached, so the per-line cost is
+    back unless the parse samples it once. An N-device listing must not mean N
+    loader inits to answer one question."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    calls: list[int] = []
+
+    def _counting() -> dict[str, int]:
+        calls.append(1)
+        return {}
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", _counting)
+
+    _parse_devices(
+        "  Vulkan0: Card A (16000 MiB)\n"
+        "  Vulkan1: Card B (16000 MiB)\n"
+        "  Vulkan2: Card C (16000 MiB)\n"
+    )
+
+    assert len(calls) == 1, f"asked the Vulkan loader {len(calls)} times for one parse"
+
+
+def test_a_listing_that_reports_free_never_touches_the_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The engine's own figure wins, so the loader is not opened at all."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    def _must_not_run() -> dict[str, int]:
+        raise AssertionError("the loader was consulted despite a free figure being printed")
+
+    monkeypatch.setattr(gpu_select, "vulkan_free_bytes_by_name", _must_not_run)
+
+    (device,) = _parse_devices("  Vulkan0: Card A (16000 MiB, 9000 MiB free)")
+
+    assert device.free_bytes == 9000 * _MIB
