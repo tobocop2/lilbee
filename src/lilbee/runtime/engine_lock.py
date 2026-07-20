@@ -12,10 +12,11 @@ import logging
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from filelock import FileLock
+from filelock import FileLock, SoftFileLock
 from filelock import Timeout as FileLockTimeout
 
 if TYPE_CHECKING:
@@ -35,6 +36,8 @@ _USER_LOCK_SUFFIX = ".lock"
 # Marks an engine whose users asked it to outlive them. A plain file, not a
 # lock: it outlives every process by design.
 _KEEP_WARM_NAME = "keep-warm"
+# Throwaway per-process file used to ask whether flock really works here.
+_FLOCK_PROBE_PREFIX = ".flock-probe."
 # Non-blocking probe: a live peer refuses instantly.
 _PROBE_TIMEOUT_S = 0.0
 # Finite: infinite acquires trip filelock's thread-local deadlock detection
@@ -96,6 +99,41 @@ def build_lock(engine_dir: Path, *, best_effort: bool = False) -> Iterator[None]
         yield
     finally:
         lock.release()
+
+
+@lru_cache(maxsize=8)
+def kernel_arbitrates_locks(engine_dir: Path) -> bool:
+    """Whether *engine_dir*'s filesystem gives real kernel-arbitrated file locks.
+
+    The whole membership scheme rests on the kernel releasing a lock on any
+    death, so no pid bookkeeping can go stale. On a filesystem where flock
+    returns ENOSYS (FUSE, some NFS mounts) filelock silently rewrites itself to
+    SoftFileLock with only a Python warning, and the guarantee is gone: that
+    fallback path opens the lock file with O_TRUNC and unlinks it before
+    re-acquiring, so a process merely *probing* a live member's lock destroys
+    it. live_users_exist would then report an empty slot while members are
+    serving, and the last-out stop would kill an engine in use.
+
+    Probed by acquiring a throwaway lock in the dir and checking what filelock
+    turned it into; cached, since the answer is a property of the mount.
+    """
+    engine_dir.mkdir(parents=True, exist_ok=True)
+    # Named per process: the probe asks what the filesystem supports, which needs
+    # no mutual exclusion. A shared probe file would make every lilbee queue on
+    # one lock, and this runs while the in-process build lock is held.
+    probe_path = engine_dir / f"{_FLOCK_PROBE_PREFIX}{os.getpid()}"
+    lock = FileLock(probe_path, thread_local=False)
+    try:
+        lock.acquire(timeout=_HOLD_TIMEOUT_S)
+    except (FileLockTimeout, OSError):
+        # An unusable probe file says nothing about flock support; assume the
+        # filesystem is fine rather than refuse the shared slot over it.
+        return True
+    try:
+        return not isinstance(lock, SoftFileLock)
+    finally:
+        lock.release()
+        probe_path.unlink(missing_ok=True)
 
 
 def _users_dir(engine_dir: Path) -> Path:

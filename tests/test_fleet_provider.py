@@ -4007,6 +4007,29 @@ def test_ladder_probes_each_group_once_per_pass(monkeypatch, tmp_path: Path) -> 
     assert len(probed) == len(set(probed))  # and no port twice in one pass
 
 
+def test_ladder_skips_the_shared_slot_without_kernel_arbitrated_locks(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Membership is only meaningful when the kernel releases locks on death.
+
+    On a filesystem where flock is unavailable, probing a live member's lock
+    destroys it, so the shared slot would look free while another setup serves
+    from it. The ladder must keep to this config root's own dir instead.
+    """
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: False)
+
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+
+    assert swap.binds == []  # never bound the shared engine
+    assert machine not in p._engine_holds  # and took no membership in it
+
+
 def test_healthy_groups_ours_is_false_with_no_healthy_group() -> None:
     # The vacuous case: an empty snapshot is "not ours" (live membership owns
     # that branch); the helper must not claim it.

@@ -236,3 +236,61 @@ def test_build_lock_releases_after_use(tmp_path) -> None:
         pass
     with build_lock(tmp_path):  # would block/raise if the first never released
         pass
+
+
+def test_kernel_arbitrates_locks_is_true_on_a_normal_filesystem(tmp_path: Path) -> None:
+    from lilbee.runtime.engine_lock import kernel_arbitrates_locks
+
+    kernel_arbitrates_locks.cache_clear()
+    assert kernel_arbitrates_locks(tmp_path / "engine") is True
+
+
+def test_kernel_arbitrates_locks_detects_the_soft_lock_fallback(monkeypatch, tmp_path) -> None:
+    """filelock rewrites itself to SoftFileLock on ENOSYS with only a warning.
+
+    That fallback's acquire path truncates and unlinks the lock file, so a
+    process probing a live member's lock would destroy it and the slot would
+    look free while another setup is serving from it.
+    """
+    import filelock
+
+    from lilbee.runtime import engine_lock as el
+
+    class _Degraded(filelock.SoftFileLock):
+        pass
+
+    monkeypatch.setattr(el, "FileLock", _Degraded)
+    el.kernel_arbitrates_locks.cache_clear()
+    try:
+        assert el.kernel_arbitrates_locks(tmp_path / "engine") is False
+    finally:
+        el.kernel_arbitrates_locks.cache_clear()
+
+
+def test_kernel_arbitrates_locks_leaves_no_probe_file(tmp_path: Path) -> None:
+    from lilbee.runtime.engine_lock import kernel_arbitrates_locks
+
+    engine_dir = tmp_path / "engine"
+    kernel_arbitrates_locks.cache_clear()
+    kernel_arbitrates_locks(engine_dir)
+    assert not list(engine_dir.glob(".flock-probe*"))
+
+
+def test_kernel_arbitrates_locks_assumes_support_when_the_probe_is_unusable(
+    monkeypatch, tmp_path
+) -> None:
+    """An unusable probe says nothing about flock; do not refuse the slot over it."""
+    from filelock import Timeout as FileLockTimeout
+
+    from lilbee.runtime import engine_lock as el
+
+    class _Unusable(el.FileLock):
+        def acquire(self, *a, **k):
+            raise FileLockTimeout(str(self.lock_file))
+
+    monkeypatch.setattr(el, "FileLock", _Unusable)
+    el.kernel_arbitrates_locks.cache_clear()
+    try:
+        assert el.kernel_arbitrates_locks(tmp_path / "engine") is True
+    finally:
+        el.kernel_arbitrates_locks.cache_clear()

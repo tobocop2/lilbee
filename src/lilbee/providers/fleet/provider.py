@@ -59,10 +59,12 @@ from lilbee.providers.fleet.windowing import window_messages
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, WorkerRole, configured_model_message
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, WarmProgressTracker
 from lilbee.runtime.engine_lock import (
+    ENGINE_DIR_ENV,
     UserLockHold,
     build_lock,
     hold_user_lock,
     keep_warm_requested,
+    kernel_arbitrates_locks,
     live_users_exist,
     machine_engine_dir,
     private_engine_dir,
@@ -840,9 +842,23 @@ class FleetProvider:
         """
         pin = engine_pin()
         wanted = _placeable_wanted()
-        machine = self._acquire_in_dir(machine_engine_dir(), pin, wanted, is_overflow=False)
-        if machine is not None:
-            return machine
+        machine_dir = machine_engine_dir()
+        if kernel_arbitrates_locks(machine_dir):
+            machine = self._acquire_in_dir(machine_dir, pin, wanted, is_overflow=False)
+            if machine is not None:
+                return machine
+        else:
+            # Without kernel-arbitrated locks the membership refcount cannot be
+            # trusted, and sharing is exactly what needs it: a probe would
+            # destroy a live member's lock, so the slot would look free while
+            # another setup is serving from it. Keep to our own dir instead.
+            log.warning(
+                "Engine dir %s is on a filesystem without working file locks; "
+                "using a private engine instead of the shared one. Set %s to a "
+                "path on a local filesystem to share one engine across lilbees.",
+                machine_dir,
+                ENGINE_DIR_ENV,
+            )
         # The machine slot holds a live incompatible engine in active use: overflow
         # to this config root's private dir rather than evict another model setup.
         private = private_engine_dir(config_root)
