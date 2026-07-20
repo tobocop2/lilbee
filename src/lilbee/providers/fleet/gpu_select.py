@@ -271,11 +271,23 @@ def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
     Cross-vendor via the Vulkan probe (NVIDIA/AMD/Intel). ``None`` when the
     loader/probe is unavailable (macOS Metal, no Vulkan driver), so the
     placement planner can degrade to count-only or in-process.
+
+    Adapters the driver reports as ``CPU`` are left out. Mesa's llvmpipe is a
+    software rasterizer that advertises itself through Vulkan and reports system
+    RAM as its device memory, so on a laptop with integrated graphics it appears
+    beside the real adapter at an identical size and is indistinguishable by
+    VRAM alone. Planning against it splits the model across a real GPU and a
+    software renderer, which is far slower than either the GPU alone or the CPU
+    backend. The device type is the only signal that separates them, and the
+    caller has no access to it: this returns sizes, and the ``--list-devices``
+    text this feeds does not carry names on the fallback path.
     """
     devices = _enumerate_vulkan_devices()
     if devices is None:
         return None
-    return [(d.index, d.vram_bytes) for d in devices]
+    return [
+        (d.index, d.vram_bytes) for d in devices if d.device_type != VkDeviceType.CPU
+    ]
 
 
 def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:

@@ -23,3 +23,30 @@ def test_vulkan_properties_struct_matches_the_driver_abi() -> None:
     assert props.limits.offset == 296
     assert props.sparseProperties.offset == 800
     assert ctypes.sizeof(props) == 824
+
+
+def test_enumerate_gpu_vram_omits_software_rasterizers(monkeypatch) -> None:
+    """The exact shape seen on an Intel Iris Xe laptop with mesa installed.
+
+    llvmpipe reports system RAM as device memory, so beside an iGPU that shares
+    the same RAM the two are identical by size and only the device type tells
+    them apart. This enumeration is the fallback the placement path uses when
+    the engine's --list-devices reports nothing, and it drops names, so a
+    name-based filter downstream cannot see the rasterizer at all.
+    """
+    from lilbee.providers.fleet import gpu_select
+
+    fifteen_gib = 15 * 1024**3
+    monkeypatch.setattr(
+        gpu_select,
+        "_enumerate_vulkan_devices",
+        lambda: [
+            gpu_select.VulkanDevice(
+                0, gpu_select.VkDeviceType.INTEGRATED_GPU, "Intel Iris Xe", 0x8086, fifteen_gib
+            ),
+            gpu_select.VulkanDevice(
+                1, gpu_select.VkDeviceType.CPU, "llvmpipe (LLVM 22.1.8)", 0x10005, fifteen_gib
+            ),
+        ],
+    )
+    assert gpu_select.enumerate_gpu_vram() == [(0, fifteen_gib)]
