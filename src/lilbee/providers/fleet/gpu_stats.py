@@ -12,6 +12,8 @@ line; this file is not touched.
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -65,6 +67,35 @@ def _safe_sample(
         return backend.sample(indices)
     except Exception:  # backends must never crash the sampler
         return {}
+
+
+# One in-flight probe per device set, shared by every concurrent caller. The
+# probe shells out to a vendor SMI tool (five-second timeout) and the Intel paths
+# sleep and scan /proc on top, so N open placement views would otherwise mean N
+# concurrent subprocesses every tick against the same hardware. A sample is
+# reused for slightly under one tick, which is fresh enough for a live view and
+# turns the per-client cost back into a per-machine one.
+_SHARED_SAMPLE_TTL_S = 0.9
+_shared_lock = threading.Lock()
+_shared_sample: dict[tuple[int, ...], tuple[float, dict[int, GpuStat]]] = {}
+
+
+def probe_gpu_stats_shared(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
+    """``probe_gpu_stats``, coalesced across concurrent callers.
+
+    Callers arriving while a sample is fresh reuse it; the rest serialise on the
+    lock so exactly one probe runs per device set per interval, rather than one
+    per subscriber. Kept separate from ``probe_gpu_stats`` so one-shot callers
+    still get an uncached reading.
+    """
+    key = tuple(sorted(d.index for d in devices))
+    with _shared_lock:
+        cached = _shared_sample.get(key)
+        if cached is not None and time.monotonic() - cached[0] < _SHARED_SAMPLE_TTL_S:
+            return cached[1]
+        stats = probe_gpu_stats(devices)
+        _shared_sample[key] = (time.monotonic(), stats)
+        return stats
 
 
 def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
