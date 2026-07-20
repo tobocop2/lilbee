@@ -2834,6 +2834,23 @@ class TestModelsInstalled:
         assert result.models[0].source == "lm_studio"
 
 
+def _thread_recorder(result):
+    """Stand in for a blocking call, recording which thread each call ran on.
+
+    Returns ``(threads, stub)``. Takes any signature so it can replace whichever
+    blocking function the test is offloading.
+    """
+    import threading
+
+    threads: list[int] = []
+
+    def stub(*_args, **_kwargs):
+        threads.append(threading.get_ident())
+        return result
+
+    return threads, stub
+
+
 class TestModelHandlersRunBlockingWorkOffLoop:
     """Backend model discovery/show do blocking HTTP; they must not run inline.
 
@@ -2845,48 +2862,39 @@ class TestModelHandlersRunBlockingWorkOffLoop:
         import threading
 
         loop_tid = threading.get_ident()
-        seen: list[int] = []
+        threads, stub = _thread_recorder([_CHAT_REF])
+        mock_svc.provider.list_models.side_effect = stub
 
-        def record(*_a, **_k):
-            seen.append(threading.get_ident())
-            return [_CHAT_REF]
-
-        mock_svc.provider.list_models.side_effect = record
         await handlers.set_chat_model(_CHAT_REF)
-        assert seen and all(tid != loop_tid for tid in seen)
+
+        assert threads and all(tid != loop_tid for tid in threads)
 
     async def test_models_show_runs_off_the_loop(self, mock_svc):
         import threading
 
         loop_tid = threading.get_ident()
-        seen: list[int] = []
+        threads, stub = _thread_recorder({})
+        mock_svc.provider.show_model.side_effect = stub
 
-        def record(_model):
-            seen.append(threading.get_ident())
-            return {}
-
-        mock_svc.provider.show_model.side_effect = record
         await handlers.models_show("ollama/qwen3:0.6b")
-        assert seen and seen[0] != loop_tid
+
+        assert threads and threads[0] != loop_tid
 
     async def test_models_installed_runs_off_the_loop(self):
         import threading
 
         loop_tid = threading.get_ident()
-        seen: list[int] = []
-
-        def record():
-            seen.append(threading.get_ident())
-            return []
-
+        threads, stub = _thread_recorder([])
         mock_manager = MagicMock()
-        mock_manager.list_installed.side_effect = record
+        mock_manager.list_installed.side_effect = stub
+
         with patch(
             "lilbee.server.handlers.models.get_services",
             return_value=MagicMock(model_manager=mock_manager),
         ):
             await handlers.models_installed()
-        assert seen and seen[0] != loop_tid
+
+        assert threads and threads[0] != loop_tid
 
 
 class TestModelsPull:
