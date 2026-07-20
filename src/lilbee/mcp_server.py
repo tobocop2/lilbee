@@ -1209,20 +1209,26 @@ _strip_schema_noise()
 _tune_search_scope_for_corpus()
 
 
-def _exit_on_parent_death() -> None:
-    """Release engine membership, then hard-exit.
+_PARENT_DEATH_CLEANUP_S = 5.0
 
-    ``os._exit`` skips atexit, so without the explicit release a dying agent
-    host would leave this process's engine membership to the kernel and, when
-    this was the last user, leave the engine itself running until the next
-    lilbee cleanup pass. Stopping it here keeps the machine clean.
+
+def _exit_on_parent_death() -> None:
+    """Release engine membership best-effort, then hard-exit promptly.
+
+    ``os._exit`` skips atexit, so an explicit release stops this process's engine
+    when it was the last user and keeps the machine clean. But this watchdog's one
+    contract is to exit promptly on parent death, so the release runs on a daemon
+    thread joined with a short deadline: a peer holding an engine build lock can
+    never keep the orphaned process alive with its models resident. The kernel
+    releases this process's user lock on exit regardless, so a skipped release only
+    defers the engine stop to the peers' reap and the idle TTL.
     """
     from lilbee.app.services import reset_services
 
-    try:
-        reset_services()
-    finally:
-        os._exit(0)
+    cleanup = threading.Thread(target=reset_services, name="parent-death-cleanup", daemon=True)
+    cleanup.start()
+    cleanup.join(timeout=_PARENT_DEATH_CLEANUP_S)
+    os._exit(0)
 
 
 def main() -> None:
