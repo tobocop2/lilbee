@@ -4771,14 +4771,27 @@ class TestPlacementHandlers:
 
     async def test_gpu_stats_stream_emits_live_snapshots(self):
         from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet import gpu_stats as gpu_stats_mod
         from lilbee.providers.fleet.gpu_stats import GpuStat
 
         gpu = GpuInfo(
             index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
         )
         stat = {0: GpuStat(0, 64, 150, 200)}
+        # Ticking faster than the shared-sample TTL is not what a client does;
+        # the stream interval is a second and the TTL is just under it, so every
+        # tick of one stream is a fresh reading. Zero the TTL to keep that true
+        # for a test that ticks immediately.
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(gpu_stats_mod, "_SHARED_SAMPLE_TTL_S", 0.0)
+        monkeypatch.setattr(gpu_stats_mod, "_shared_sample", {})
         with patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat) as probe:
-            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=2)]
+            try:
+                chunks = [
+                    c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=2)
+                ]
+            finally:
+                monkeypatch.undo()
         events = [
             json.loads(line[len("data:") :].strip())
             for chunk in chunks
@@ -4797,6 +4810,57 @@ class TestPlacementHandlers:
                 }
             ]
         }
+        assert probe.call_count == 2
+
+    async def test_concurrent_viewers_share_one_probe(self):
+        """The probe shells out to a vendor SMI tool with a five-second timeout.
+
+        Without coalescing, N open placement views meant N concurrent
+        subprocesses per tick against the same hardware.
+        """
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet import gpu_stats as gpu_stats_mod
+        from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats_shared
+
+        gpu = GpuInfo(
+            index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
+        )
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(gpu_stats_mod, "_shared_sample", {})
+        with patch(
+            "lilbee.providers.fleet.gpu_stats.probe_gpu_stats",
+            return_value={0: GpuStat(0, 64, 150, 200)},
+        ) as probe:
+            try:
+                for _ in range(5):
+                    probe_gpu_stats_shared((gpu,))
+            finally:
+                monkeypatch.undo()
+
+        assert probe.call_count == 1
+
+    async def test_a_one_shot_caller_is_never_served_a_stale_sample(self):
+        """probe_gpu_stats stays uncached; only the stream path coalesces."""
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet import gpu_stats as gpu_stats_mod
+        from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats_shared
+
+        gpu = GpuInfo(
+            index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
+        )
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(gpu_stats_mod, "_SHARED_SAMPLE_TTL_S", 0.0)
+        monkeypatch.setattr(gpu_stats_mod, "_shared_sample", {})
+        with patch(
+            "lilbee.providers.fleet.gpu_stats.probe_gpu_stats",
+            return_value={0: GpuStat(0, 64, 150, 200)},
+        ) as probe:
+            try:
+                probe_gpu_stats_shared((gpu,))
+                probe_gpu_stats_shared((gpu,))
+            finally:
+                monkeypatch.undo()
+
         assert probe.call_count == 2
 
     async def test_gpu_stats_stream_includes_intel_grant_notice(self):
