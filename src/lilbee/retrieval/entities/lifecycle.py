@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from lilbee.core.config import CHUNKS_TABLE, ENTITIES_TABLE, active_config
 from lilbee.retrieval.entities.extractor import (
     INDUCTION_SAMPLE_SIZE,
+    ExtractionStats,
     extract_entities,
     induce_schema,
 )
@@ -186,7 +187,10 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
 def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | None) -> bool:
     """Extract entities across every stored chunk. True when it completed.
 
-    Clears previously extracted rows first so the pass is idempotent.
+    Clears previously extracted rows first so the pass is idempotent. A pass
+    with failed LLM batches (chat model down or erroring) does NOT count as
+    completed: rows are missing for those chunks, and marking the schema
+    applied would make every later sync return early and never retry.
     """
     table = store.open_table(CHUNKS_TABLE)
     if table is None:
@@ -209,6 +213,7 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | Non
 
         provider = get_services().provider
     written = 0
+    stats = ExtractionStats()
     columns = ["chunk", "source", "chunk_index", "page_start"]
     arrow = table.to_arrow().select(columns)
     for batch in arrow.to_batches(max_chunksize=_BACKFILL_BATCH):
@@ -216,7 +221,15 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | Non
             log.info("Entity extraction cancelled; the next sync restarts the pass")
             return False
         records = batch.to_pylist()
-        rows = extract_entities(records, schema, provider=provider, nlp=nlp)
+        rows = extract_entities(records, schema, provider=provider, nlp=nlp, stats=stats)
         written += store.add_entities(rows)
+    if stats.llm_batches_failed:
+        log.warning(
+            "Entity extraction pass had %d of %d LLM batches fail; "
+            "the next sync redoes the pass",
+            stats.llm_batches_failed,
+            stats.llm_batches,
+        )
+        return False
     log.info("Entity extraction complete: %d rows across the index", written)
     return True

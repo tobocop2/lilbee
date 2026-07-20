@@ -341,6 +341,40 @@ class TestExtractEntities:
         )
         assert rows == []
 
+    def test_llm_provider_failure_is_reported_through_stats(self):
+        """A caller that passes stats can tell a clean empty result from a
+        provider failure -- the full pass must not mark the schema applied
+        when batches failed."""
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        provider = MagicMock()
+        provider.chat.side_effect = RuntimeError("down")
+        stats = ExtractionStats()
+        rows = extract_entities(
+            [_chunk("the Meridian docked")],
+            EntitySchema(types=[VESSEL]),
+            provider=provider,
+            stats=stats,
+        )
+        assert rows == []
+        assert stats.llm_batches == 1
+        assert stats.llm_batches_failed == 1
+
+    def test_successful_llm_batches_count_zero_failures(self):
+        from lilbee.retrieval.entities.extractor import ExtractionStats
+
+        provider = MagicMock()
+        provider.chat.return_value = _text_result(json.dumps({"0": []}))
+        stats = ExtractionStats()
+        extract_entities(
+            [_chunk("no ships here")],
+            EntitySchema(types=[VESSEL]),
+            provider=provider,
+            stats=stats,
+        )
+        assert stats.llm_batches == 1
+        assert stats.llm_batches_failed == 0
+
     def test_llm_response_edge_shapes_are_ignored(self):
         provider = MagicMock()
         provider.chat.return_value = _text_result(

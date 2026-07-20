@@ -243,6 +243,45 @@ class TestEnsureEntities:
         assert store.entity_value_counts("part_number") == (1, 1)  # regex still ran
         assert any("spaCy model unavailable" in r.message for r in caplog.records)
 
+    def test_provider_failure_during_full_pass_leaves_schema_unapplied(self, isolated, caplog):
+        """A pass whose LLM batches fail (chat model down) must not mark the
+        schema applied: applied=True with zero rows would make every later
+        sync return early and nothing would ever retry the extraction."""
+        store, services = isolated
+        _index_chunks(store, ["the vessel Meridian docked"])
+        save_schema(
+            EntitySchema(types=[EntityType(name="vessel", kind=ExtractorKind.LLM)]),
+            store,
+            applied=False,
+            source_count=1,
+        )
+        services.provider.chat.side_effect = RuntimeError("model unloaded")
+        with caplog.at_level("WARNING"):
+            ensure_entities()
+        assert not _applied(store)
+        assert any("LLM batch" in r.message for r in caplog.records)
+
+    def test_llm_batch_failure_still_writes_other_kind_rows(self, isolated):
+        """Extractor kinds degrade independently: regex rows land even when
+        the LLM batches fail, and the pass is simply redone next sync."""
+        store, services = isolated
+        _index_chunks(store, ["part PX4471 aboard the Meridian"])
+        save_schema(
+            EntitySchema(
+                types=[
+                    EntityType(name="part_number", kind=ExtractorKind.REGEX, pattern=r"PX\d{4}"),
+                    EntityType(name="vessel", kind=ExtractorKind.LLM),
+                ]
+            ),
+            store,
+            applied=False,
+            source_count=1,
+        )
+        services.provider.chat.side_effect = RuntimeError("model unloaded")
+        ensure_entities()
+        assert store.entity_value_counts("part_number") == (1, 1)
+        assert not _applied(store)
+
     def test_empty_chunks_table_skips_pass(self, isolated):
         store, _services = isolated
         save_schema(_part_schema(), store, applied=False, source_count=1)

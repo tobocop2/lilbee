@@ -16,6 +16,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from lilbee.retrieval.entities.schema import (
@@ -42,6 +43,19 @@ LLM_EXTRACTION_BATCH = 8
 LLM_EXTRACTION_MAX_TOKENS = 800
 
 _CONFIDENCE = {ExtractorKind.REGEX: 1.0, ExtractorKind.SPACY: 0.8, ExtractorKind.LLM: 0.6}
+
+
+@dataclass
+class ExtractionStats:
+    """Mutable counters :func:`extract_entities` fills for its caller.
+
+    Lets the full pass tell a clean zero-entity result from batches the
+    provider failed outright -- the latter must not count as a completed
+    pass, or the schema gets marked applied with rows silently missing.
+    """
+
+    llm_batches: int = 0
+    llm_batches_failed: int = 0
 
 INDUCTION_PROMPT = (
     "You are designing an entity-extraction schema for a document collection. "
@@ -196,7 +210,14 @@ def _extract_llm_batch(
     types: list[EntityType],
     texts: list[str],
     provider: LLMProvider,
-) -> list[list[tuple[EntityType, str]]]:
+) -> list[list[tuple[EntityType, str]]] | None:
+    """One LLM extraction call over a batch of texts.
+
+    Returns ``None`` when the provider call itself fails (model down or
+    unloaded), so the caller can tell a failed batch from a batch with no
+    entities. A response that parses to nothing usable is an empty result,
+    not a failure.
+    """
     by_name = {t.name: t for t in types}
     type_lines = "\n".join(f"- {t.name}: {t.description or t.name}" for t in types)
     passages = "\n".join(f"[{i}] {t[:800]}" for i, t in enumerate(texts))
@@ -210,7 +231,7 @@ def _extract_llm_batch(
         )
     except Exception:
         log.warning("LLM entity extraction failed for a batch", exc_info=True)
-        return empty
+        return None
     payload = _first_json_object(strip_reasoning(response.text))
     if payload is None:
         return empty
@@ -238,6 +259,7 @@ def extract_entities(
     *,
     provider: LLMProvider | None = None,
     nlp: Any = None,
+    stats: ExtractionStats | None = None,
 ) -> list[dict]:
     """Phase 2 over ingest-shaped chunk records; returns entities-table rows.
 
@@ -245,6 +267,8 @@ def extract_entities(
     ``page_start``. Extractor kinds degrade independently: regex always runs,
     spaCy kinds are skipped without a loaded model, LLM kinds without a
     provider, so a partial toolchain yields partial extraction, never failure.
+    Pass ``stats`` to observe how many LLM batches ran and how many the
+    provider failed; a failed batch contributes no rows either way.
     """
     regex_types = [t for t in schema.types if t.kind is ExtractorKind.REGEX]
     spacy_types = [t for t in schema.types if t.kind is ExtractorKind.SPACY]
@@ -264,6 +288,12 @@ def extract_entities(
         for start in range(0, len(chunks), LLM_EXTRACTION_BATCH):
             batch = chunks[start : start + LLM_EXTRACTION_BATCH]
             batch_found = _extract_llm_batch(llm_types, [r["chunk"] for r in batch], provider)
+            if stats is not None:
+                stats.llm_batches += 1
+                if batch_found is None:
+                    stats.llm_batches_failed += 1
+            if batch_found is None:
+                continue
             for offset, found in enumerate(batch_found):
                 per_chunk[start + offset].extend(found)
 
