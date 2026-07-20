@@ -2216,6 +2216,28 @@ def test_resolve_split_chat_slots_falls_to_one_on_a_tight_split() -> None:
     assert ctx == 65536
 
 
+def test_resolve_split_chat_slots_bounds_the_expensive_probes() -> None:
+    """Every fit_fn call is a full search whose probes shell out to gguf-parser.
+
+    They run while this process holds the cross-process build lock other lilbee
+    starts wait on without a deadline, so the count must grow with the log of
+    the slot ceiling, not with the ceiling itself. The tight split is the case
+    that used to pay for every count.
+    """
+    import math
+
+    probes: list[int] = []
+
+    def fit(n: int) -> int:
+        probes.append(n)
+        return 65536 if n == 1 else 20000  # nothing above one slot fits
+
+    slots, _ctx = planning_mod._resolve_split_chat_slots(fit)
+    assert slots == 1
+    budget = 1 + math.ceil(math.log2(planning_mod._CHAT_SLOTS))
+    assert len(probes) <= budget, f"{len(probes)} searches, expected at most {budget}"
+
+
 def test_resolve_split_chat_slots_picks_the_largest_fitting_count() -> None:
     # Two full windows fit but not three or four.
     def fit(n: int) -> int:

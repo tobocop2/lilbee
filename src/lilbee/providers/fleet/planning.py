@@ -196,14 +196,27 @@ def _resolve_split_chat_slots(fit_fn: Callable[[int], int]) -> tuple[int, int]:
     Returns ``(slots, per_slot_ctx)``, falling to one slot when only one full
     window fits (or the fit degenerated to the floor), which preserves the
     max-context single-sequence behaviour on a tight card.
+
+    Found by bisection rather than a scan because every ``fit_fn`` call is a
+    complete binary search whose probes each shell out to gguf-parser, and the
+    whole thing runs while this process holds the cross-process build lock that
+    every other lilbee start waits on without a deadline. A descending scan paid
+    for all of ``_CHAT_SLOTS - 1`` searches in exactly the tight-card case where
+    none of them fit. Bisection is sound here because the fit is non-increasing
+    in the slot count: more sequences divide the same headroom, so once a count
+    fails no larger one can succeed.
     """
     full = fit_fn(1)
     if full <= model_cache._DYNAMIC_CTX_FLOOR:
         return 1, full
-    for n in range(_CHAT_SLOTS, 1, -1):
-        if fit_fn(n) >= full:
-            return n, full
-    return 1, full
+    low, high = 1, _CHAT_SLOTS
+    while low < high:
+        mid = (low + high + 1) // 2
+        if fit_fn(mid) >= full:
+            low = mid
+        else:
+            high = mid - 1
+    return low, full
 
 
 def _resolve_chat_slots(
