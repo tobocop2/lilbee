@@ -22,6 +22,17 @@ def permissive_umask():
     os.umask(previous)
 
 
+@pytest.fixture()
+def fresh_manager():
+    """Yield a new SessionManager with no server.json on either side of the test."""
+    from lilbee.server.auth import SessionManager, server_json_path
+
+    path = server_json_path()
+    path.unlink(missing_ok=True)
+    yield SessionManager()
+    path.unlink(missing_ok=True)
+
+
 def _mode(path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
@@ -59,15 +70,6 @@ class TestWritePrivateText:
 
 class TestSessionTokenPermissions:
     """server.json holds the bearer token: it must never be readable by other users."""
-
-    @pytest.fixture()
-    def fresh_manager(self):
-        from lilbee.server.auth import SessionManager, server_json_path
-
-        path = server_json_path()
-        path.unlink(missing_ok=True)
-        yield SessionManager()
-        path.unlink(missing_ok=True)
 
     def test_generated_token_file_is_never_world_readable(
         self, fresh_manager, permissive_umask, monkeypatch
@@ -131,15 +133,6 @@ class TestPersistedSettingsPermissions:
 
 class TestPersistedTokenIsTotal:
     """Every corruption mode must mint a fresh token, never take the server down."""
-
-    @pytest.fixture()
-    def fresh_manager(self):
-        from lilbee.server.auth import SessionManager, server_json_path
-
-        path = server_json_path()
-        path.unlink(missing_ok=True)
-        yield SessionManager()
-        path.unlink(missing_ok=True)
 
     def test_non_utf8_server_json_regenerates_instead_of_crashing(self, fresh_manager):
         """UnicodeDecodeError subclasses ValueError, not OSError, so it escaped

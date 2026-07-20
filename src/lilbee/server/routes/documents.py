@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from litestar import Request, Response, get, post
 from litestar.datastructures import UploadFile
 from litestar.enums import RequestEncodingType
@@ -113,8 +115,6 @@ async def export_route(
     source: str = Parameter(query="source", default=""),
 ) -> Response[bytes]:
     """Download the per-page text dataset as a file (parquet by default)."""
-    import asyncio
-
     from lilbee.app.dataset import DatasetError, export_to_bytes
 
     try:

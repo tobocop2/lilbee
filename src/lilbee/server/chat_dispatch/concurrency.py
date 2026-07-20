@@ -29,6 +29,16 @@ class ChatGate:
     waiters that are already queued rather than leaving them to time out
     against a backend that now has room.
 
+    Hand-rolled on purpose, and the reason is worth keeping because the obvious
+    replacement almost fits. ``anyio.CapacityLimiter`` has a runtime-settable
+    ``total_tokens`` that would make a capacity increase wake waiters for free,
+    but it binds each token to the borrowing task and raises ``RuntimeError``
+    when another task releases it. Slots here are released from wherever cleanup
+    happens first, including a response's after-send hook, which is not the task
+    that acquired. ``asyncio.Semaphore`` allows the cross-task release but has no
+    live capacity. Neither fits until the streaming cleanup paths are collapsed
+    onto one task.
+
     Slots are *handed to* waiters rather than merely signalled. Waking a waiter
     reserves its slot in the same synchronous step, and a request arriving while
     a waiter is queued joins the back of the queue instead of testing the
