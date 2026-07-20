@@ -15,7 +15,13 @@ from lilbee.providers.fleet import gpu_stats as stats_mod
 from lilbee.providers.fleet.devices import MIB, FleetDevice
 from lilbee.providers.fleet.gpu_backends import util_backend_name
 from lilbee.providers.fleet.gpu_backends.base import UtilSample
-from lilbee.providers.fleet.gpu_stats import GpuStat, intel_grant_binary, probe_gpu_stats
+from lilbee.providers.fleet.gpu_backends.intel import IntelHintKind, IntelUtilHint
+from lilbee.providers.fleet.gpu_stats import (
+    GpuStat,
+    intel_util_hint,
+    probe_gpu_stats,
+    probe_intel_util_hint,
+)
 
 _CUDA = (
     FleetDevice("CUDA", 0, "NVIDIA A40", 48 * 1024 * MIB, 47 * 1024 * MIB),
@@ -238,47 +244,65 @@ def test_util_backend_name_unknown_backend_unchanged() -> None:
 
 
 # ---------------------------------------------------------------------------
-# intel_grant_binary (the binary a grant would unblock, for the surfaces to format)
+# intel_util_hint (the fix a surface formats when an Intel GPU's util is missing)
+# ---------------------------------------------------------------------------
+
+_GRANT_HINT = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
+
+
+def _hint(monkeypatch: pytest.MonkeyPatch, value: IntelUtilHint | None) -> None:
+    monkeypatch.setattr(stats_mod, "_detect_intel_util_hint", lambda: value)
+
+
+def test_intel_util_hint_missing_util_returns_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, _GRANT_HINT)
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert intel_util_hint([dev], {0: GpuStat(0, None, 0, 0)}) == _GRANT_HINT
+
+
+def test_intel_util_hint_vulkan_intel_routes_to_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, _GRANT_HINT)
+    dev = FleetDevice("Vulkan", 0, "Intel(R) UHD Graphics", 0, 0)
+    assert intel_util_hint([dev], {0: GpuStat(0, None, 0, 0)}) == _GRANT_HINT
+
+
+def test_intel_util_hint_silent_when_util_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, _GRANT_HINT)
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert intel_util_hint([dev], {0: GpuStat(0, 50, 0, 0)}) is None
+
+
+def test_intel_util_hint_silent_for_non_intel(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, _GRANT_HINT)
+    dev = FleetDevice("CUDA", 0, "NVIDIA A40", 0, 0)
+    assert intel_util_hint([dev], {0: GpuStat(0, None, 0, 0)}) is None
+
+
+def test_intel_util_hint_silent_when_no_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, None)
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert intel_util_hint([dev], {0: GpuStat(0, None, 0, 0)}) is None
+
+
+def test_intel_util_hint_skips_index_absent_from_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, _GRANT_HINT)
+    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
+    assert intel_util_hint([dev], {}) is None
+
+
+# ---------------------------------------------------------------------------
+# probe_intel_util_hint (probe + gate in one call, for the JSON surfaces)
 # ---------------------------------------------------------------------------
 
 
-def _hint(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
-    monkeypatch.setattr(stats_mod, "intel_gpu_top_grant_binary", lambda: value)
-
-
-def test_intel_grant_binary_intel_missing_util_returns_hint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _hint(monkeypatch, "GRANT ME")
+def test_probe_intel_util_hint_composes_probe_and_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    _hint(monkeypatch, _GRANT_HINT)
+    monkeypatch.setattr(stats_mod, "probe_gpu_stats", lambda devices: {0: GpuStat(0, None, 0, 0)})
     dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
-    assert intel_grant_binary([dev], {0: GpuStat(0, None, 0, 0)}) == "GRANT ME"
+    assert probe_intel_util_hint([dev]) == _GRANT_HINT
 
 
-def test_intel_grant_binary_vulkan_intel_routes_to_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    _hint(monkeypatch, "GRANT ME")
-    dev = FleetDevice("Vulkan", 0, "Intel(R) UHD Graphics", 0, 0)
-    assert intel_grant_binary([dev], {0: GpuStat(0, None, 0, 0)}) == "GRANT ME"
-
-
-def test_intel_grant_binary_silent_when_util_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    _hint(monkeypatch, "GRANT ME")
+def test_probe_intel_util_hint_silent_when_util_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(stats_mod, "probe_gpu_stats", lambda devices: {0: GpuStat(0, 50, 0, 0)})
     dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
-    assert intel_grant_binary([dev], {0: GpuStat(0, 50, 0, 0)}) is None
-
-
-def test_intel_grant_binary_silent_for_non_intel(monkeypatch: pytest.MonkeyPatch) -> None:
-    _hint(monkeypatch, "GRANT ME")
-    dev = FleetDevice("CUDA", 0, "NVIDIA A40", 0, 0)
-    assert intel_grant_binary([dev], {0: GpuStat(0, None, 0, 0)}) is None
-
-
-def test_intel_grant_binary_silent_when_no_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    _hint(monkeypatch, None)
-    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
-    assert intel_grant_binary([dev], {0: GpuStat(0, None, 0, 0)}) is None
-
-
-def test_intel_grant_binary_skips_index_absent_from_stats(monkeypatch: pytest.MonkeyPatch) -> None:
-    _hint(monkeypatch, "GRANT ME")
-    dev = FleetDevice("SYCL", 0, "Intel Arc A770", 0, 0)
-    assert intel_grant_binary([dev], {}) is None
+    assert probe_intel_util_hint([dev]) is None

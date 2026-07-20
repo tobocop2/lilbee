@@ -18,7 +18,7 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.providers.fleet.gpu_stats import GpuStat, intel_grant_binary, probe_gpu_stats
+from lilbee.providers.fleet.gpu_stats import GpuStat, intel_util_hint, probe_gpu_stats
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.gpu_stats import DeviceLike
@@ -267,9 +267,8 @@ class GpuFleetPanel(Static):
             return
         theme = self._resolve_theme()
         markup = _render_stats(stats, labels, roles, theme, probed=self._probed)
-        binary = intel_grant_binary(self._devices, stats)
-        if binary:
+        hint = intel_util_hint(self._devices, stats)
+        if hint:
             muted = _theme_color(theme, "text-muted")
-            hint = msg.FLEET_INTEL_UTIL_GRANT.format(binary=binary)
-            markup += f"\n[{muted}]  {hint}[/]"
+            markup += f"\n[{muted}]  {msg.intel_util_hint_text(hint)}[/]"
         self.update(markup)

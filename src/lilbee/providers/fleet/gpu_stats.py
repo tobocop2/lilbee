@@ -17,10 +17,13 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from lilbee.providers.fleet.gpu_backends import (
+    IntelUtilHint,
     UtilSample,
-    intel_gpu_top_grant_binary,
     resolve_backend,
     util_backend_name,
+)
+from lilbee.providers.fleet.gpu_backends import (
+    intel_util_hint as _detect_intel_util_hint,
 )
 
 
@@ -104,20 +107,24 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     return {i: stats[i] for i in sorted(stats)}
 
 
-def intel_grant_binary(devices: Sequence[DeviceLike], stats: dict[int, GpuStat]) -> str | None:
-    """The intel_gpu_top path a grant would unblock when an Intel GPU's util is
-    missing only for that reason, else None.
+def intel_util_hint(
+    devices: Sequence[DeviceLike], stats: dict[int, GpuStat]
+) -> IntelUtilHint | None:
+    """The fix that would unblock an Intel GPU's missing util reading, else None.
 
-    A surface turns the binary into the localized grant hint. Modern kernels read
-    util with no grant, so this stays silent there, and the None-util gate clears
-    it once a grant makes util read.
+    Fires only when an Intel device's util is actually missing; a surface turns
+    the hint into a localized message (grant when intel_gpu_top is installed but
+    blocked, install when it is absent, e.g. kernels too old for fdinfo).
     """
     for d in devices:
         if util_backend_name(d.backend, d.name) != "SYCL":
             continue
         stat = stats.get(d.index)
         if stat is not None and stat.utilization_pct is None:
-            binary = intel_gpu_top_grant_binary()
-            if binary is not None:
-                return binary
+            return _detect_intel_util_hint()
     return None
+
+
+def probe_intel_util_hint(devices: Sequence[DeviceLike]) -> IntelUtilHint | None:
+    """Probe live stats and evaluate the Intel util hint in one call."""
+    return intel_util_hint(devices, probe_gpu_stats(devices))
