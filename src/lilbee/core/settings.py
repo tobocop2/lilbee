@@ -18,17 +18,37 @@ def _config_path(data_root: Path) -> Path:
     return data_root / "config.toml"
 
 
+# The escapes TOML gives a short name to. Everything else in the C0 range
+# (plus U+007F) has to go out as \uXXXX.
+_TOML_NAMED_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\f": "\\f",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+}
+
+
 def _escape_toml_string(s: str) -> str:
-    """Escape a string for embedding in a TOML double-quoted value."""
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-        .replace("\b", "\\b")
-        .replace("\f", "\\f")
-    )
+    """Escape a string for embedding in a TOML double-quoted value.
+
+    TOML forbids every control character from appearing raw in a basic string,
+    and the reader responds to a parse failure by discarding the whole file, so
+    a single stray ESC or NUL in one setting value would silently wipe every
+    other persisted setting on the next start.
+    """
+    out: list[str] = []
+    for char in s:
+        named = _TOML_NAMED_ESCAPES.get(char)
+        if named is not None:
+            out.append(named)
+        elif char < "\x20" or char == "\x7f":
+            out.append(f"\\u{ord(char):04X}")
+        else:
+            out.append(char)
+    return "".join(out)
 
 
 def load(data_root: Path) -> dict[str, Any]:

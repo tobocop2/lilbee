@@ -167,6 +167,28 @@ class TestTomlEscaping:
         settings.set_value(tmp_path, "key", "")
         assert settings.get(tmp_path, "key") == ""
 
+    @pytest.mark.parametrize(
+        ("label", "value"),
+        [
+            ("escape", "before\x1bafter"),
+            ("nul", "before\x00after"),
+            ("vertical_tab", "before\x0bafter"),
+            ("bell", "before\x07after"),
+            ("delete", "before\x7fafter"),
+            ("every_c0", "".join(chr(c) for c in range(0x20))),
+        ],
+    )
+    def test_control_characters_round_trip(self, tmp_path, label, value):
+        """TOML forbids raw control characters; writing one used to break the whole file."""
+        settings.set_value(tmp_path, label, value)
+        assert settings.get(tmp_path, label) == value
+
+    def test_one_control_character_does_not_discard_the_rest_of_the_config(self, tmp_path):
+        """A parse failure makes the reader drop every setting, not just the bad key."""
+        settings.set_value(tmp_path, "model", "qwen3:8b")
+        settings.set_value(tmp_path, "reranker_prompt", "rank\x1bthese")
+        assert settings.load(tmp_path) == {"model": "qwen3:8b", "reranker_prompt": "rank\x1bthese"}
+
     def test_escape_toml_string_function(self):
         from lilbee.core.settings import _escape_toml_string
 
@@ -176,6 +198,9 @@ class TestTomlEscaping:
         assert _escape_toml_string("a\tb") == r"a\tb"
         assert _escape_toml_string("normal") == "normal"
         assert _escape_toml_string("") == ""
+        assert _escape_toml_string("a\x1bb") == r"a\u001Bb"
+        assert _escape_toml_string("a\x00b") == r"a\u0000b"
+        assert _escape_toml_string("a\x7fb") == r"a\u007Fb"
 
 
 class TestRerankerConfig:
