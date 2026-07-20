@@ -444,3 +444,59 @@ def test_unified_memory_is_read_by_name_not_by_ordinal(monkeypatch: pytest.Monke
     parsed = _parse_devices("  Vulkan0: Intel(R) Iris(R) Xe Graphics (15690 MiB, 15690 MiB free)")
 
     assert [d.unified for d in parsed] == [True]
+
+
+def test_an_amd_apu_on_the_rocm_path_is_not_sized_as_dedicated_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ROCm text output has no device type; hipMemGetInfo on an APU returns system RAM.
+
+    The APU also ships a Vulkan driver, so the loader can answer what the ROCm
+    listing cannot: a machine reporting adapters but no discrete one has no
+    discrete card for ROCm to be enumerating.
+    """
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {"AMD Radeon Graphics (RADV RENOIR)": gpu_select.VkDeviceType.INTEGRATED_GPU},
+    )
+
+    parsed = _parse_devices("  ROCm0: AMD Radeon Graphics (16000 MiB, 15000 MiB free)")
+
+    assert [d.unified for d in parsed] == [True]
+
+
+def test_a_discrete_nvidia_host_is_untouched_by_the_apu_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rule may only ever add the shared-RAM budget to hosts that have no card."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(
+        gpu_select,
+        "vulkan_device_types_by_name",
+        lambda: {
+            "NVIDIA GeForce RTX 3090": gpu_select.VkDeviceType.DISCRETE_GPU,
+            "Intel(R) UHD Graphics 770": gpu_select.VkDeviceType.INTEGRATED_GPU,
+        },
+    )
+
+    parsed = _parse_devices("  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)")
+
+    assert [d.unified for d in parsed] == [False]
+
+
+def test_no_vulkan_loader_leaves_cuda_devices_dedicated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A headless CUDA container has no Vulkan ICD; silence must not read as integrated."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _parse_devices
+
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+
+    parsed = _parse_devices("  CUDA0: NVIDIA H100 80GB HBM3 (81559 MiB, 81000 MiB free)")
+
+    assert [d.unified for d in parsed] == [False]

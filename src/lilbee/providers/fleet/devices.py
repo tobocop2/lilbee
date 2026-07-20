@@ -300,14 +300,19 @@ def _is_unified(backend: str, name: str) -> bool:
     24 GB discrete card in a 32 GB host and an Apple GPU reporting two thirds of
     RAM are indistinguishable by proportion.
 
-    CUDA and ROCm text output carries no such signal, so an APU or a Jetson
-    reads as discrete here and is tracked separately.
+    CUDA, ROCm and SYCL print no type at all, and an AMD APU or a Jetson looks
+    exactly like a discrete card there while reporting system RAM as its memory.
+    Those fall back to a question about the machine rather than the device: a
+    host whose Vulkan loader sees adapters but no discrete one has no discrete
+    GPU for another backend to be enumerating.
     """
     if backend in _UNIFIED_BACKENDS:
         return True
-    if backend != "Vulkan":
-        return False
-    return _vulkan_device_type(name) is VkDeviceType.INTEGRATED_GPU
+    if backend == "Vulkan":
+        return _vulkan_device_type(name) is VkDeviceType.INTEGRATED_GPU
+    from lilbee.providers.fleet.gpu_select import host_has_no_discrete_gpu
+
+    return host_has_no_discrete_gpu()
 
 
 def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:

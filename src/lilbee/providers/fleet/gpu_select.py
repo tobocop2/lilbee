@@ -345,6 +345,26 @@ def vulkan_device_types_by_name() -> dict[str, VkDeviceType]:
     }
 
 
+def host_has_no_discrete_gpu() -> bool:
+    """Whether the Vulkan loader can see adapters and none of them is discrete.
+
+    The vendor-neutral answer to a question CUDA and ROCm cannot be asked
+    through text: their ``--list-devices`` lines carry no device type, so an AMD
+    APU and a Jetson enumerate exactly like a discrete card while reporting
+    system RAM as their memory. Every such part also ships a Vulkan driver, and
+    a machine whose loader reports adapters but no discrete one has no discrete
+    GPU for CUDA or ROCm to be enumerating.
+
+    False when the loader is unreachable or any discrete adapter exists, so a
+    host with a real card is never talked into the shared-memory budget. A host
+    holding both a discrete card and an APU also answers False, which leaves the
+    APU sized as dedicated; correlating individual devices across two backends'
+    naming needs more than the type.
+    """
+    types = vulkan_device_types_by_name()
+    return bool(types) and VkDeviceType.DISCRETE_GPU not in types.values()
+
+
 def _known_device_type(value: int) -> VkDeviceType | None:
     """The enum member for a raw ``deviceType``, ``None`` for a value vk.h doesn't define."""
     try:
