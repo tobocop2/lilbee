@@ -341,3 +341,17 @@ def test_probe_oserror_is_service_unavailable_not_unprocessable(monkeypatch):
         r = client.post("/api/placement/preview", json={"spec": None})
     assert r.status_code == 503
     assert "nvidia-smi" in r.text or "probe" in r.text.lower()
+
+
+def test_put_probe_oserror_is_service_unavailable_when_enabled(monkeypatch):
+    """The apply route maps a failed probe the same way preview does."""
+    _enable_http_placement(monkeypatch)
+
+    async def _boom(_spec):
+        raise PermissionError(13, "Permission denied", "/dev/nvidia0")
+
+    monkeypatch.setattr(handlers, "placement_set", _boom)
+    with create_test_client([placement_set_route]) as client:
+        r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
+    assert r.status_code == 503
+    assert "probe" in r.text.lower() or "nvidia-smi" in r.text

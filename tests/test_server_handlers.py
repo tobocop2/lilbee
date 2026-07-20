@@ -4957,6 +4957,22 @@ class TestSseQueueEviction:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert drained == ["token-1", "progress-2", "token-2"]
 
+    def test_incoming_progress_is_dropped_when_nothing_is_shedable(self):
+        """With the queue full of tokens there is no progress to shed, so the
+        arriving progress event is the one that goes."""
+        from lilbee.runtime.progress import EventType
+
+        queue = self._queue(max_events=2)
+        queue.put_nowait("token-1")
+        queue.put_nowait("token-2")
+
+        queue.put_event_nowait("progress-1", EventType.EMBED)
+
+        assert queue.qsize() == 2
+        assert queue.dropped_events == 1
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert drained == ["token-1", "token-2"]
+
     def test_always_delivered_events_are_never_shed(self):
         """done/error/sentinel must land even when nothing is droppable."""
         queue = self._queue(max_events=2)
