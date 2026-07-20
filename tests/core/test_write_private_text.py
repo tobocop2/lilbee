@@ -11,7 +11,12 @@ import pytest
 
 from lilbee.core.security import write_private_text
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
+# Scoped per class, not module-wide: it used to blanket the file, which also
+# skipped the token-corruption and path-anchoring tests on Windows. Those
+# assert nothing about mode bits, and Windows is exactly where a truncated or
+# clobbered server.json is most likely, so the regeneration path went untested
+# on the platform that needs it most.
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
 
 
 @pytest.fixture()
@@ -38,6 +43,7 @@ def _mode(path) -> int:
 
 
 class TestWritePrivateText:
+    @posix_only
     def test_creates_file_owner_only_under_permissive_umask(self, tmp_path, permissive_umask):
         target = tmp_path / "secret.txt"
         write_private_text(target, "s3cret")
@@ -49,6 +55,7 @@ class TestWritePrivateText:
         write_private_text(target, "s3cret")
         assert target.read_text(encoding="utf-8") == "s3cret"
 
+    @posix_only
     def test_replaces_existing_file_and_narrows_its_mode(self, tmp_path, permissive_umask):
         target = tmp_path / "secret.txt"
         target.write_text("old", encoding="utf-8")
@@ -68,6 +75,7 @@ class TestWritePrivateText:
         assert list(tmp_path.iterdir()) == []
 
 
+@posix_only
 class TestSessionTokenPermissions:
     """server.json holds the bearer token: it must never be readable by other users."""
 
@@ -125,6 +133,7 @@ class TestSessionTokenPermissions:
         assert _mode(path) == 0o600
 
 
+@posix_only
 class TestPersistedSettingsPermissions:
     """config.toml can hold provider API keys and gets the same treatment."""
 
@@ -194,6 +203,7 @@ class TestValidatePathWithinAnchorsToRoot:
         assert validate_path_within(str(target), tmp_path) == target.resolve()
 
 
+@posix_only
 class TestPersistedSettingsAreHardenedOnLoad:
     """config.toml holds provider API keys and is read indefinitely without
     ever being rewritten, so a file that arrived world-readable must be
@@ -224,3 +234,56 @@ class TestPersistedSettingsAreHardenedOnLoad:
         with caplog.at_level("WARNING"):
             assert settings.load(tmp_path) == {"api_key": "sk-secret"}
         assert "Could not restrict permissions" in caplog.text
+
+
+class TestHardeningOnWindows:
+    """The POSIX body has to be exercised on Windows too, or it is only ever
+    measured on the platforms where it runs. Patching ``sys.platform`` is the
+    same technique ``tests/test_system.py`` uses for its platform branches."""
+
+    def test_the_windows_branch_leaves_the_file_alone(self, tmp_path, monkeypatch):
+        """Windows has no POSIX mode bits; the file rides the inherited DACL."""
+        from lilbee.core import security
+
+        target = tmp_path / "secret.txt"
+        target.write_text("s", encoding="utf-8")
+        monkeypatch.setattr(security.sys, "platform", "win32")
+
+        def _fail(*_args, **_kwargs):
+            raise AssertionError("chmod attempted on Windows")
+
+        monkeypatch.setattr(security.Path, "chmod", _fail)
+        security.harden_private_file(target)
+
+    def test_a_refused_chmod_warns_instead_of_raising(self, tmp_path, monkeypatch, caplog):
+        """A file owned by another user must not stop the caller from reading it."""
+        from lilbee.core import security
+
+        target = tmp_path / "secret.txt"
+        target.write_text("s", encoding="utf-8")
+        monkeypatch.setattr(security.sys, "platform", "linux")
+        # Report a mode that needs narrowing, so the chmod is actually reached
+        # on a platform whose real mode bits may already satisfy the check.
+        monkeypatch.setattr(security.stat, "S_IMODE", lambda _mode: 0o644)
+
+        def refuse(*_args, **_kwargs):
+            raise PermissionError("not owner")
+
+        monkeypatch.setattr(security.Path, "chmod", refuse)
+        with caplog.at_level("WARNING"):
+            security.harden_private_file(target)
+        assert "Could not restrict permissions" in caplog.text
+
+    def test_an_already_narrow_file_is_not_chmodded_again(self, tmp_path, monkeypatch):
+        from lilbee.core import security
+
+        target = tmp_path / "secret.txt"
+        target.write_text("s", encoding="utf-8")
+        monkeypatch.setattr(security.sys, "platform", "linux")
+        monkeypatch.setattr(security.stat, "S_IMODE", lambda _mode: 0o600)
+
+        def _fail(*_args, **_kwargs):
+            raise AssertionError("chmod on an already-owner-only file")
+
+        monkeypatch.setattr(security.Path, "chmod", _fail)
+        security.harden_private_file(target)
