@@ -18,7 +18,10 @@ from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTU
 # Extra VRAM held back on the busiest card on top of the gguf-parser estimate.
 # In --split-mode layer, gguf-parser ignores --main-gpu and so under-models the
 # compute graph + logits that real llama.cpp concentrates on the main device.
-# Default 0 (trust the estimate); raise once measured on a multi-GPU pod (bb-ds8).
+# Default 0 (trust the estimate); raise once measured on a multi-GPU pod. This
+# matters more than it used to: a split chat may now serve several full windows
+# where it once served one, so the unclaimed headroom that happened to cushion
+# this skew is what those extra windows are spending.
 _MAIN_GPU_SKEW_RESERVE_BYTES = 0
 
 
@@ -41,9 +44,12 @@ def fit_split_ctx(
     that total and accepts the per-slot value when every device's own share stays
     under that device's usable headroom. *ctx_ceiling* is the working context the
     caller planned for (``planning._placement_estimate_ctx``: a ``cfg.num_ctx`` pin,
-    else ``cfg.chat_n_ctx_target``); the search never exceeds it (nor the model's
-    trained context), so the launch cannot over-commit VRAM past what placement
-    reserved. Falls to the floor when even that overflows.
+    else ``cfg.chat_n_ctx_target``); the search never exceeds it, nor the model's
+    trained context. Note the ceiling bounds the PER-SLOT window, not the total:
+    placement reserves KV for one full window, while a split whose cards hold
+    several may serve up to ``_CHAT_SLOTS`` of them. What keeps that honest is
+    the per-device check below against real free bytes, not the placement
+    reserve. Falls to the floor when even the floor overflows.
     """
     headrooms = [
         int(free * USABLE_VRAM_FRACTION) - _MAIN_GPU_SKEW_RESERVE_BYTES
@@ -51,11 +57,12 @@ def fit_split_ctx(
     ]
     if min(headrooms) <= 0:
         return _DYNAMIC_CTX_FLOOR
-    # Bound the search by the planned working context, not just the model's trained
-    # max: filling VRAM to that max over-committed beyond the placement reserve and
-    # OOM'd large tensor-split models under load (bb-ev9: a 235B took the full
-    # 262144-token ctx and crashed). The caller passes the same target the placement
-    # estimate reserved KV for, so the launch stays within the plan.
+    # Bound the per-slot search by the planned working context, not just the model's
+    # trained max: filling VRAM to that max OOM'd large tensor-split models under
+    # load (a 235B took the full 262144-token ctx and crashed). The caller passes the
+    # target placement sized its reserve against, so no single sequence exceeds the
+    # plan; the total across slots can, and is held instead by the per-device
+    # headroom test, which measures each card's real free bytes at launch.
     upper = min(chat_ctx_ceiling(meta, model_path), ctx_ceiling)
 
     def _peak_fits(per_slot: int) -> bool:

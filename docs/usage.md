@@ -873,6 +873,8 @@ defaults apply only when a value is explicitly unset in code or config.
 | `LILBEE_FLASH_ATTENTION` | *(auto)* | Flash attention for the chat server. Empty/`auto` enables it; `1`/`true`/`on` forces on; `0`/`false`/`off` disables. Resolves the `padding V cache to 1024` warning on models with uneven per-layer V dims |
 | `LILBEE_KV_CACHE_TYPE` | `q8_0` | KV cache element type: `f16`, `f32`, `q8_0`, `q4_0`. `q8_0` (default) halves KV memory vs `f16` with no measurable chat-quality loss; `q4_0` quarters it with a small quality cost. Quantized variants require flash attention to be enabled |
 | `LILBEE_N_GPU_LAYERS` | *(auto)* | Layers to offload to GPU. Empty/`auto` = all (recommended), `cpu` = none, integer = partial offload for tight VRAM |
+| `LILBEE_CPU_MOE` | `false` | Keep a mixture-of-experts model's expert weights in system memory so it fits a smaller GPU. Only the ~3B active parameters stay on the card, which is what lets an 80B MoE run on a single consumer GPU. No effect on dense models, which have no expert tensors |
+| `LILBEE_N_CPU_MOE` | *(none)* | Offload only the first N layers' experts instead of all of them. Takes precedence over `LILBEE_CPU_MOE`; a smaller N keeps more of the model on the GPU, so tune it up until the model fits |
 | `LILBEE_SEED` | *(model default)* | Random seed for reproducibility |
 | `LILBEE_LLAMA_SERVER_PATH` | *(bundled)* | Path to a `llama-server` binary; when set it is always used, even if the `lilbee-engine` wheel is installed. Empty = the bundled wheel's binary, else one found on `PATH` |
 
@@ -885,6 +887,7 @@ Only relevant when running the HTTP server.
 | `LILBEE_SERVER_HOST` | `127.0.0.1` | Bind address |
 | `LILBEE_SERVER_PORT` | random | Port (overridden by `--port`) |
 | `LILBEE_EXCLUSIVE_SCOPE` | *(none)* | Directory that at most one server may serve at a time, on top of the per-data-dir lock. A second `lilbee serve` pointed at the same scope waits up to fifteen seconds, then exits with an error naming the data dir the running server is serving. Managed supervisors set this (the Obsidian plugin passes its shared root) |
+| `LILBEE_ENGINE_DIR` | *(platform default)* | Where the shared engine slot lives. Every lilbee on the machine binds the engine recorded here rather than starting its own, so pointing two installs at the same path makes them share one fleet. Set this when the default lands on a filesystem without working file locks, where lilbee declines to share and logs that it is doing so |
 | `LILBEE_CORS_ORIGINS` | *(none)* | Comma-separated list of extra allowed CORS origins, e.g. `https://my-app.com`. Additive; the default regex below still applies |
 | `LILBEE_CORS_ORIGIN_REGEX` | *(see usage)* | Regex for allowed origins. Default matches `app://obsidian.md`, `capacitor://localhost`, and any `http(s)://localhost`, `127.0.0.1`, or `[::1]` with any port. Set to `^$` to opt out and rely solely on `LILBEE_CORS_ORIGINS` |
 | `LILBEE_ALLOW_HTTP_PLACEMENT` | `false` | Allow `PUT`/`DELETE /api/placement` to apply or clear GPU placement over HTTP. Off by default because applying placement restarts the fleet's moved roles, which is unsafe across concurrent clients. Turn it on only for a single-client or owned deployment (the Obsidian plugin's managed server, or a personally-owned pod where you run `lilbee serve` yourself) |

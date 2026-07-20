@@ -54,16 +54,20 @@ if TYPE_CHECKING:
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
-# A tensor-split chat fills its cards with one full-context sequence; concurrent
-# slots are for a chat that fits a single GPU, not a multi-card giant.
+# Slots the PLACEMENT estimate reserves KV for on a tensor-split chat: one full
+# window, the minimum any split must hold. The launch may serve more than this
+# (see _resolve_split_chat_slots) when the cards measurably have room for several
+# full windows, so this is a planning floor, not the served slot count.
 _SPLIT_CHAT_SLOTS = 1
 # Floor context the PLACEMENT estimate reserves KV for, so a large model is never
 # single-carded into a KV corner too small for real use (a 17GB model on a 24GB
 # card leaves ~no KV room -> n_ctx collapses to a few hundred tokens). Sizing the
 # placement reserve against this floor forces a tensor-split when one card cannot
 # hold weights + a usable context; the served ctx is then grown by resolve_chat_ctx
-# (single) / fit_split_ctx (split) toward the cards' real headroom, capped at the
-# working-context target so the launch never over-commits past the reserve.
+# (single) / fit_split_ctx (split) toward the cards' real headroom, with each
+# sequence capped at the working-context target. A split may then serve several
+# such sequences, so the served total can exceed the single-window reserve; the
+# per-device headroom test in fit_split_ctx is what bounds it.
 _MIN_USABLE_CHAT_CTX = 8192
 _AUX_SLOTS = 1
 # A tensor-split needs at least this many GPUs; below it the chat context objective
