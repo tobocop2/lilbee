@@ -2082,49 +2082,56 @@ class FleetProvider:
                 return
             # Reap dead engines in our dirs before re-planning, as a build would.
             reload_dir = self._reload_dir()
-            reap_stale(reload_dir)
-            try:
-                if not running:
-                    # Nothing loaded (a resurrect after a failed pass): the box is
-                    # clean, so refresh the plan snapshot like a first build would.
-                    planning.capture_plan_probe()
-                plan = planning.plan_all_launches()
-            except ProviderError as exc:
-                # Same policy as the initial build: a genuinely-missing engine
-                # binary aborts the reload quietly (nothing to serve), while any
-                # other planning failure (a wedged GPU probe, an unusable CUDA
-                # runtime) propagates to fail loud. The raise lands before the
-                # stop phase, so a running fleet is left intact rather than half
-                # torn down.
-                if exc.kind is not ProviderErrorKind.NOT_FOUND:
-                    raise
-                log.debug("Engine binary unavailable; reload left the fleet as-is")
-                return
-            new = _launches_by_group(plan)
-            # A group restarts when its launches changed OR its running/planned
-            # presence disagrees (covers a group the new plan drops or adds).
-            changed = {
-                group
-                for group in running | set(new)
-                if (group in running) != (group in new) or old.get(group, ()) != new.get(group, ())
-            }
-            changed |= {group_for(role, plan.co_tenants) for role in force}
-            # Stop phase: free the changed groups' VRAM before their replacements
-            # (or another group's grown plan) spawn against it.
-            for group in sorted(changed, key=lambda g: g.value):
-                with self._lock:
-                    swap = self._drop_group(group)
-                if swap is not None:
-                    swap.shutdown()
-            # Start phase: spawn the changed groups present in the new plan.
-            for group in sorted(changed & set(new), key=lambda g: g.value):
-                group_launches = list(new[group])
-                swap = SwapManager(reload_dir, group)
-                swap.start(group_launches, ttl_seconds=_warm_ttl_seconds())
-                with self._lock:
-                    self._adopt_group(group, swap, group_launches)
-                    self._group_dirs[group] = reload_dir
-                restarted.extend(_by_role(group_launches))
+            # Serialize the reload against peer acquisitions with the same
+            # cross-process lock a build takes. Without it, this reap_stale can kill
+            # a peer's swap that is spawned but not yet answering its proxy, and the
+            # stop-then-spawn gap lets a peer's ladder see a half-stopped slot and
+            # build a second fleet into the same dir, double-allocating VRAM.
+            with build_lock(reload_dir):
+                reap_stale(reload_dir)
+                try:
+                    if not running:
+                        # Nothing loaded (a resurrect after a failed pass): the box is
+                        # clean, so refresh the plan snapshot like a first build would.
+                        planning.capture_plan_probe()
+                    plan = planning.plan_all_launches()
+                except ProviderError as exc:
+                    # Same policy as the initial build: a genuinely-missing engine
+                    # binary aborts the reload quietly (nothing to serve), while any
+                    # other planning failure (a wedged GPU probe, an unusable CUDA
+                    # runtime) propagates to fail loud. The raise lands before the
+                    # stop phase, so a running fleet is left intact rather than half
+                    # torn down.
+                    if exc.kind is not ProviderErrorKind.NOT_FOUND:
+                        raise
+                    log.debug("Engine binary unavailable; reload left the fleet as-is")
+                    return
+                new = _launches_by_group(plan)
+                # A group restarts when its launches changed OR its running/planned
+                # presence disagrees (covers a group the new plan drops or adds).
+                changed = {
+                    group
+                    for group in running | set(new)
+                    if (group in running) != (group in new)
+                    or old.get(group, ()) != new.get(group, ())
+                }
+                changed |= {group_for(role, plan.co_tenants) for role in force}
+                # Stop phase: free the changed groups' VRAM before their replacements
+                # (or another group's grown plan) spawn against it.
+                for group in sorted(changed, key=lambda g: g.value):
+                    with self._lock:
+                        swap = self._drop_group(group)
+                    if swap is not None:
+                        swap.shutdown()
+                # Start phase: spawn the changed groups present in the new plan.
+                for group in sorted(changed & set(new), key=lambda g: g.value):
+                    group_launches = list(new[group])
+                    swap = SwapManager(reload_dir, group)
+                    swap.start(group_launches, ttl_seconds=_warm_ttl_seconds())
+                    with self._lock:
+                        self._adopt_group(group, swap, group_launches)
+                        self._group_dirs[group] = reload_dir
+                    restarted.extend(_by_role(group_launches))
         self._preload_restarted(restarted)
 
     def _preload_restarted(self, restarted: list[WorkerRole]) -> None:
