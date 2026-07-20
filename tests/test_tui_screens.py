@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
+from textual.widgets._tabbed_content import ContentTabs
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
@@ -4710,6 +4711,36 @@ async def test_catalog_load_more_isolates_per_task_offset():
             assert screen._hf_offset_by_task[ModelTask.EMBEDDING] == 0
             assert screen._hf_offset_by_task[ModelTask.VISION] == 0
             assert screen._hf_offset_by_task[ModelTask.RERANK] == 0
+
+
+async def test_catalog_tabs_never_force_an_active_id_at_construction():
+    """The tab strip is composed without a forced-active id, and Chat still wins.
+
+    `TabbedContent(initial=...)` only reaches the strip when the panes are passed
+    to the constructor. Under the `with TabPane(...)` form the panes mount after
+    compose, so the strip is built empty while `initial` still arms
+    `Tabs._on_mount`, whose `self.active = self._first_active` runs unguarded and
+    raises "No Tab with id" whenever the tab children mount a frame late. The
+    no-initial path right below it is the one wrapped in `except NoMatches`.
+    """
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.catalog import TAB_CHAT, CatalogScreen
+
+    app = CatalogTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+            screen = CatalogScreen()
+            app.push_screen(screen)
+            await _pilot.pause()
+            tabs = screen.query_one("#catalog-tabs", TabbedContent)
+            strip = tabs.query_one(ContentTabs)
+            assert strip._first_active is None
+            for _ in range(20):
+                await _pilot.pause()
+                if tabs.active == TAB_CHAT:
+                    break
+            assert tabs.active == TAB_CHAT
 
 
 async def test_catalog_tab_activation_fetches_lazily():
