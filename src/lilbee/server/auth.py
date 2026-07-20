@@ -21,6 +21,11 @@ log = logging.getLogger(__name__)
 
 _TOKEN_BYTES = 32
 
+# Character floor for a persisted token. secrets.token_urlsafe(n) base64url-encodes
+# n bytes, so the entropy count is not a length: reusing _TOKEN_BYTES here accepted
+# tokens roughly a quarter weaker than the ones this module mints.
+_MIN_TOKEN_CHARS = len(secrets.token_urlsafe(_TOKEN_BYTES))
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -102,10 +107,20 @@ class SessionManager:
 
     @staticmethod
     def _read_persisted_token(path: Path) -> str | None:
-        """Return a previously-persisted token if shape-valid, else None."""
+        """Return a previously-persisted token if shape-valid, else None.
+
+        Total by design: every way the file can be unusable returns None so the
+        caller mints a fresh token. A corrupt server.json must never be the
+        reason the server refuses to boot, since nothing would point the user at
+        the file to delete.
+        """
         try:
             raw = path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
+        except OSError:
+            return None
+        except UnicodeDecodeError:
+            # Not an OSError: a truncated write or a file clobbered by another
+            # tool leaves bytes that are not valid UTF-8.
             return None
         try:
             data = json.loads(raw)
@@ -114,7 +129,7 @@ class SessionManager:
         if not isinstance(data, dict):
             return None
         token = data.get("token")
-        if not isinstance(token, str) or len(token) < _TOKEN_BYTES:
+        if not isinstance(token, str) or len(token) < _MIN_TOKEN_CHARS:
             return None
         return token
 

@@ -127,3 +127,46 @@ class TestPersistedSettingsPermissions:
         settings.save(tmp_path, {"api_key": "sk-secret"})
         path = tmp_path / "config.toml"
         assert _mode(path) == 0o600
+
+
+class TestPersistedTokenIsTotal:
+    """Every corruption mode must mint a fresh token, never take the server down."""
+
+    @pytest.fixture()
+    def fresh_manager(self):
+        from lilbee.server.auth import SessionManager, server_json_path
+
+        path = server_json_path()
+        path.unlink(missing_ok=True)
+        yield SessionManager()
+        path.unlink(missing_ok=True)
+
+    def test_non_utf8_server_json_regenerates_instead_of_crashing(self, fresh_manager):
+        """UnicodeDecodeError subclasses ValueError, not OSError, so it escaped
+        both except clauses and killed the app lifespan on a truncated write."""
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'{"token": "\xff\xfe not utf-8"}')
+
+        token = fresh_manager.load_or_generate()
+
+        assert isinstance(token, str)
+        assert json.loads(path.read_text(encoding="utf-8"))["token"] == token
+
+    def test_a_token_shorter_than_the_generator_mints_is_rejected(self, fresh_manager):
+        """The length floor is a character count, so it must match the encoded
+        length, not the raw entropy byte count it used to be compared against."""
+        from lilbee.server.auth import server_json_path
+
+        path = server_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 32 chars: passed the old byte-count floor, but well short of the ~43
+        # characters secrets.token_urlsafe(32) actually produces.
+        path.write_text(json.dumps({"token": "a" * 32}), encoding="utf-8")
+
+        token = fresh_manager.load_or_generate()
+
+        assert token != "a" * 32
+        assert len(token) > 32

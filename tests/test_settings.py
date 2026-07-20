@@ -521,3 +521,58 @@ class TestUtf8RoundTrip:
         settings.save(tmp_path, {"key": "value", "unicode": "é"})
         result = settings.load(tmp_path)
         assert result["unicode"] == "é"
+
+
+class TestConcurrentConfigWrites:
+    """A server, a CLI run, and an MCP process share one data root."""
+
+    def test_a_second_process_does_not_drop_the_first_processes_key(self, tmp_path):
+        """Cross-process read-modify-write must serialize, not interleave.
+
+        A threading.Lock only covers one interpreter, so two processes could
+        both load the same snapshot and each save it back without the other's
+        key. This drives real subprocesses, which a thread test cannot.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        # Each process holds the read-modify-write open for a beat. Under the
+        # lock they queue up and every key survives; without it they all load
+        # the same snapshot and the last writer wins.
+        script = textwrap.dedent(
+            f"""
+            import sys, time
+            from pathlib import Path
+            from lilbee.core import settings
+
+            real_save = settings.save
+            def slow_save(root, values):
+                time.sleep(0.3)
+                real_save(root, values)
+            settings.save = slow_save
+
+            settings.set_value(Path({str(tmp_path)!r}), sys.argv[1], sys.argv[1])
+            """
+        )
+        procs = [subprocess.Popen([sys.executable, "-c", script, f"key{i}"]) for i in range(4)]
+        for proc in procs:
+            assert proc.wait(timeout=120) == 0
+
+        result = settings.load(tmp_path)
+        assert sorted(result) == [f"key{i}" for i in range(4)]
+
+    def test_a_stale_lock_does_not_block_the_write(self, tmp_path, monkeypatch, caplog):
+        """Losing an update to an abandoned lock file is worse than the race."""
+        from lilbee.core import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
+        held = settings_mod.FileLock(str(tmp_path / "config.toml") + ".lock")
+        held.acquire()
+        try:
+            with caplog.at_level("WARNING"):
+                settings.set_value(tmp_path, "key", "value")
+        finally:
+            held.release()
+        assert settings.get(tmp_path, "key") == "value"
+        assert "Timed out waiting" in caplog.text

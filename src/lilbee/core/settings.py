@@ -4,8 +4,13 @@ import logging
 import os
 import threading
 import tomllib
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import cfg
@@ -13,9 +18,40 @@ from lilbee.core.security import write_private_text
 
 _settings_lock = threading.Lock()
 
+# A server, a CLI invocation, and an MCP process routinely run against the same
+# data root, so the in-process mutex alone lets two of them interleave a
+# read-modify-write and silently drop each other's keys.
+_CONFIG_LOCK_TIMEOUT_S = 10.0
+
 
 def _config_path(data_root: Path) -> Path:
     return data_root / "config.toml"
+
+
+@contextmanager
+def _config_write_lock(data_root: Path) -> Generator[None, None, None]:
+    """Serialize a config read-modify-write across threads and processes.
+
+    A lock timeout falls through to the write rather than failing the caller:
+    losing a settings update to a stale lock file is worse than the interleave
+    the lock exists to prevent, which is already rare.
+    """
+    path = _config_path(data_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flock = FileLock(str(path) + ".lock")
+    with _settings_lock:
+        try:
+            flock.acquire(timeout=_CONFIG_LOCK_TIMEOUT_S)
+        except FileLockTimeout:
+            logging.getLogger(__name__).warning(
+                "Timed out waiting for the %s lock; writing anyway.", path.name
+            )
+            yield
+            return
+        try:
+            yield
+        finally:
+            flock.release()
 
 
 # The escapes TOML gives a short name to. Everything else in the C0 range
@@ -90,8 +126,8 @@ def get(data_root: Path, key: str) -> str | None:
 
 
 def set_value(data_root: Path, key: str, value: Any) -> None:
-    """Read-modify-write a single key in config.toml (thread-safe)."""
-    with _settings_lock:
+    """Read-modify-write a single key in config.toml."""
+    with _config_write_lock(data_root):
         current = load(data_root)
         current[key] = value
         save(data_root, current)
@@ -99,7 +135,7 @@ def set_value(data_root: Path, key: str, value: Any) -> None:
 
 def delete_value(data_root: Path, key: str) -> None:
     """Remove a key from config.toml. No-op if key doesn't exist."""
-    with _settings_lock:
+    with _config_write_lock(data_root):
         current = load(data_root)
         current.pop(key, None)
         save(data_root, current)
@@ -107,7 +143,7 @@ def delete_value(data_root: Path, key: str) -> None:
 
 def update_values(data_root: Path, updates: dict[str, Any]) -> None:
     """Batch update multiple keys in config.toml (single write)."""
-    with _settings_lock:
+    with _config_write_lock(data_root):
         current = load(data_root)
         current.update(updates)
         save(data_root, current)
@@ -115,7 +151,7 @@ def update_values(data_root: Path, updates: dict[str, Any]) -> None:
 
 def delete_values(data_root: Path, keys: list[str]) -> None:
     """Batch delete multiple keys from config.toml (single write)."""
-    with _settings_lock:
+    with _config_write_lock(data_root):
         current = load(data_root)
         for key in keys:
             current.pop(key, None)
