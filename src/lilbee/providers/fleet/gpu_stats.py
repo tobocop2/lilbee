@@ -12,6 +12,7 @@ line; this file is not touched.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Sequence
@@ -98,6 +99,44 @@ def probe_gpu_stats_shared(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
         return stats
 
 
+# Which visible-devices variable masks each util backend's index space. The
+# engine numbers its devices after the mask, the SMI tools before it, so under
+# CUDA_VISIBLE_DEVICES=2,3 the fleet holds devices 0 and 1 while nvidia-smi keeps
+# reporting 0..3. Merging those two spaces by ordinal attributes another
+# tenant's cards' utilization, temperature and free memory to this fleet.
+_BACKEND_VISIBLE_VARS: dict[str, tuple[str, ...]] = {
+    "CUDA": ("CUDA_VISIBLE_DEVICES",),
+    # Innermost mask first. ROCr filters, then HIP re-indexes within the
+    # survivors, so walking outward from the fleet's index means undoing HIP
+    # before ROCr.
+    "ROCm": ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"),
+    "HIP": ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"),
+}
+
+
+def _physical_index(backend_name: str, fleet_index: int) -> int:
+    """The index the vendor's SMI tool uses for the fleet's device *fleet_index*.
+
+    Resolved by walking the visible-devices masks outward from the fleet's own
+    index, undoing each one in the reverse of the order the runtime applied it.
+
+    An unset mask, a mask naming devices by UUID, or a backend with no mask
+    leaves the index unchanged, which is what every unmasked host has today.
+    Intel is absent: ONEAPI_DEVICE_SELECTOR is a selector grammar rather than an
+    index list, and xpu-smi is called with the fleet index directly.
+    """
+    index = fleet_index
+    for var in _BACKEND_VISIBLE_VARS.get(backend_name, ()):
+        raw = os.environ.get(var)
+        if not raw:
+            continue
+        entries = [e.strip() for e in raw.split(",")]
+        if not all(e.isdigit() for e in entries) or index >= len(entries):
+            return fleet_index
+        index = int(entries[index])
+    return index
+
+
 def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     """Live stats keyed by device index. Empty when no devices are given.
 
@@ -117,9 +156,12 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
         by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
 
     for backend_name, group in by_backend.items():
-        indices = frozenset(d.index for d in group)
-        for index, sample in _safe_sample(backend_name, indices).items():
-            if index not in stats:
+        # Ask the SMI tool about its own indices, and merge its answers back into
+        # the engine's; the two spaces differ whenever a visible-devices mask is set.
+        fleet_by_physical = {_physical_index(backend_name, d.index): d.index for d in group}
+        for physical, sample in _safe_sample(backend_name, frozenset(fleet_by_physical)).items():
+            index = fleet_by_physical.get(physical)
+            if index is None or index not in stats:
                 continue
             base = stats[index]
             # Keep structural VRAM when the backend returns the 0/0 sentinel
