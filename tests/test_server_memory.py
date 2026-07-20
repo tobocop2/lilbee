@@ -135,3 +135,38 @@ class TestRemove:
         cfg.memory_enabled = False
         assert client.delete("/api/memories/abc123").status_code == 404
         store.delete_memory.assert_not_called()
+
+
+class TestMemoryRoutesRequireAuth:
+    """Memory is the personal-data surface: no route here may bypass the token.
+
+    ``@read_only`` is not "a weaker token is accepted" -- ``AuthMiddleware``
+    short-circuits before any token check for handlers in that registry, so a
+    decorated route serves callers with no Authorization header at all.
+    """
+
+    def test_no_memory_route_bypasses_auth(self):
+        from lilbee.server.auth import is_read_only
+        from lilbee.server.routes.memory import (
+            memories_list_route,
+            memories_remember_route,
+            memories_remove_route,
+            memories_update_route,
+        )
+
+        for route in (
+            memories_list_route,
+            memories_remember_route,
+            memories_update_route,
+            memories_remove_route,
+        ):
+            assert not is_read_only(route.fn), f"{route.fn.__name__} bypasses authentication"
+
+    async def test_listing_memories_without_a_token_is_rejected(self):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as unauthenticated:
+            resp = await unauthenticated.get("/api/memories")
+        assert resp.status_code == 401

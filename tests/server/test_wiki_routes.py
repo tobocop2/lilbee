@@ -192,19 +192,6 @@ class TestWikiEnabled:
         assert "summaries/doc-a" in slugs
         assert "synthesis/typing" in slugs
 
-    async def test_list_regenerates_index(self, isolated_env: Path):
-        """When wiki/index.md exists, listing regenerates it."""
-        wiki_root = isolated_env / "wiki"
-        _make_wiki_page(wiki_root, "summaries", "test-doc")
-        # Create an index.md so the regeneration path triggers
-        (wiki_root / "index.md").write_text("# Wiki Index\n", encoding="utf-8")
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.get("/api/wiki", headers=_h())
-        assert resp.status_code == 200
-        # index.md should be refreshed with actual entries
-        index_text = (wiki_root / "index.md").read_text(encoding="utf-8")
-        assert "test-doc" in index_text
-
     async def test_list_string_sources(self, isolated_env: Path):
         """Pages with sources as a comma-separated string still count correctly."""
         wiki_root = isolated_env / "wiki"
@@ -391,7 +378,7 @@ class TestWikiEnabled:
         loop_tid = threading.get_ident()
         seen: list[int] = []
 
-        def fake_lint(store, config=None):
+        def fake_lint(store, config=None, record_log=True):
             seen.append(threading.get_ident())
             return lint_mod.LintReport()
 
@@ -875,3 +862,63 @@ class TestPydanticModels:
         assert c.excerpt == ""
         assert c.wiki_chunk_index == 0
         assert c.created_at == ""
+
+
+class TestWikiReadPathsDoNotWrite:
+    """A route reachable without a token must not mutate the wiki tree."""
+
+    @pytest.fixture(autouse=True)
+    def enable_wiki(self):
+        cfg.wiki = True
+
+    async def test_listing_pages_does_not_rewrite_the_index(self, isolated_env: Path):
+        """GET /api/wiki is unauthenticated; regenerating index.md there let any
+        caller drive repeated writes and race the build path over the same file."""
+        wiki_root = isolated_env / "wiki"
+        _make_wiki_page(wiki_root, "summaries", "test-doc")
+        index_path = wiki_root / "index.md"
+        index_path.write_text("stale index\n", encoding="utf-8")
+        before = index_path.stat().st_mtime_ns
+
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki")
+
+        assert resp.status_code == 200
+        assert [p["slug"] for p in resp.json()] == ["summaries/test-doc"]
+        assert index_path.read_text(encoding="utf-8") == "stale index\n"
+        assert index_path.stat().st_mtime_ns == before
+
+    async def test_status_requires_a_token(self):
+        """The full-corpus lint behind status must not be an anonymous amplifier."""
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status")
+        assert resp.status_code == 401
+
+    async def test_status_does_not_append_to_the_wiki_log(self, isolated_env: Path):
+        """lint_all grew record_log=False for exactly this read-only caller."""
+        from unittest import mock
+
+        wiki_root = isolated_env / "wiki"
+        _make_wiki_page(wiki_root, "summaries", "s1")
+        with mock.patch("lilbee.server.wiki.lint_mod.lint_all") as lint_all:
+            lint_all.return_value = mock.MagicMock(error_count=0, warning_count=0)
+            async with AsyncTestClient(_create_app()) as client:
+                resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        assert lint_all.call_args.kwargs["record_log"] is False
+
+
+class TestWikiDisabledStatusIsCheap:
+    async def test_status_skips_the_lint_when_the_wiki_is_disabled(self, isolated_env: Path):
+        """A leftover wiki dir from a previous build used to make the disabled
+        status poll run the whole lint anyway."""
+        from unittest import mock
+
+        cfg.wiki = False
+        _make_wiki_page(isolated_env / "wiki", "summaries", "leftover")
+        with mock.patch("lilbee.server.wiki.lint_mod.lint_all") as lint_all:
+            async with AsyncTestClient(_create_app()) as client:
+                resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json()["wiki_enabled"] is False
+        lint_all.assert_not_called()

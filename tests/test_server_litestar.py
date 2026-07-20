@@ -138,6 +138,40 @@ class TestSearchRoute:
         assert resp.status_code == 400
 
 
+class TestSearchDoesNotLeakInternals:
+    """/api/search is reachable without a token, so its errors stay generic."""
+
+    def test_unexpected_failure_hides_the_exception_text(self, client, caplog):
+        boom = RuntimeError("no such table '/home/tobias/data/lancedb/chunks'")
+        with (
+            mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, side_effect=boom),
+            caplog.at_level("ERROR"),
+        ):
+            resp = client.get("/api/search", params={"q": "x"})
+        assert resp.status_code == 503
+        body = resp.text
+        assert "/home/tobias" not in body
+        assert "lancedb" not in body
+        # The operator still needs the real cause; it goes to the log, not the wire.
+        assert "no such table" in caplog.text
+
+    def test_embedding_mismatch_hides_the_model_identifiers(self, client):
+        from lilbee.data.store.types import EmbeddingModelMismatchError
+
+        exc = EmbeddingModelMismatchError(
+            persisted_model="nomic-embed-text-v1.5",
+            persisted_dim=768,
+            current_model="bge-m3",
+            current_dim=1024,
+        )
+        with mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, side_effect=exc):
+            resp = client.get("/api/search", params={"q": "x"})
+        assert resp.status_code == 409
+        body = resp.text
+        assert "nomic-embed-text-v1.5" not in body
+        assert "bge-m3" not in body
+
+
 class TestAskRoute:
     @mock.patch(
         "lilbee.server.handlers.ask",

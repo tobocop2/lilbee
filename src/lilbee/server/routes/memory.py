@@ -1,14 +1,16 @@
 """Memory route handlers: list, remember, update flags, forget.
 
-``GET`` is ``@read_only`` so a read-only session token can list memories;
-the mutating routes are unmarked so read-only tokens cannot write memory.
+Every route here requires the session token. ``@read_only`` does not mean
+"a weaker token is accepted": ``AuthMiddleware`` short-circuits before any
+token check for handlers in that registry, so a decorated route answers
+callers with no ``Authorization`` header at all. Memories are the human's
+own facts and preferences in plain text, so none of these routes carry it.
 """
 
 from __future__ import annotations
 
 from litestar import delete, get, patch, post
 
-from lilbee.server.auth import read_only
 from lilbee.server.handlers.memory import (
     list_local_memories,
     remember_memory,
@@ -26,7 +28,6 @@ from lilbee.server.models import (
 
 
 @get("/api/memories")
-@read_only
 async def memories_list_route() -> MemoryListResponse:
     """List the human's stored memories."""
     return await list_local_memories()

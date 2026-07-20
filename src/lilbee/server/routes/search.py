@@ -149,11 +149,22 @@ async def search_route(
     try:
         return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
     except EmbeddingModelMismatchError as exc:
-        raise _embedding_mismatch_http(exc) from exc
+        # This route is unauthenticated (@read_only), so unlike ask/chat it must
+        # not hand back the persisted/current embedder names an authenticated
+        # client would use to render its adopt prompt. Report only that the
+        # index and the configured embedder disagree.
+        raise HTTPException(
+            status_code=409,
+            detail="The index was built with a different embedding model than the one configured.",
+        ) from exc
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # str(exc) here routinely carries data-root paths, LanceDB table names,
+        # and model ids, and this route has no token gate. Log the real cause
+        # for the operator; return a generic message on the wire.
+        log.exception("Search failed")
+        raise HTTPException(status_code=503, detail="Search is temporarily unavailable.") from exc
 
 
 @post("/api/ask")

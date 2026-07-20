@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,6 @@ from lilbee.wiki.drafts import (
     list_drafts,
     reject_draft,
 )
-from lilbee.wiki.index import update_wiki_index
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
@@ -73,22 +73,18 @@ def _find_page(slug: str) -> Path | None:
 @read_only
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
-    If wiki/index.md exists, regenerate it first to ensure freshness,
-    then build the page list from disk.
+
+    Reads the tree without touching it. This route is unauthenticated, so it
+    used to hand any caller a way to rewrite index.md on repeat and to race the
+    build path over the same file. The listing never depended on that write
+    anyway: it is built by walking pages, and every path that changes the tree
+    (build, update, synthesize, prune, draft-accept) refreshes the index itself.
     """
     _require_wiki()
-    root = _wiki_root()
-    # The index regen walks and rewrites files and list_pages walks the tree;
-    # offload both so the listing doesn't block the event loop.
-    return await asyncio.to_thread(_list_wiki_pages_sync, root)
-
-
-def _list_wiki_pages_sync(root: Path) -> list[dict[str, Any]]:
-    """Blocking body of :func:`wiki_list_route`: refresh index, then walk pages."""
-    index_path = root / "index.md"
-    if index_path.is_file():
-        update_wiki_index()
-    return [p.to_dict() for p in list_pages(root)]
+    # list_pages walks the whole tree; offload so the listing doesn't block
+    # the event loop.
+    pages = await asyncio.to_thread(list_pages, _wiki_root())
+    return [p.to_dict() for p in pages]
 
 
 @get("/api/wiki/drafts")
@@ -287,11 +283,19 @@ async def wiki_synthesize_route() -> WikiSynthesizeResult:
 
 
 @get("/api/wiki/status")
-@read_only
 async def wiki_status_route() -> WikiStatusResult:
-    """Wiki layer status: page counts and recent lint counts."""
+    """Wiki layer status: page counts and recent lint counts.
+
+    Token-gated, unlike the other wiki reads: the lint behind it walks every
+    page and issues a store query each, so leaving it open made it an
+    unauthenticated way to spend the machine's IO budget. It still answers
+    while the wiki is disabled so a client can render the disabled state
+    without a second round trip to /api/config.
+    """
     root = _wiki_root()
-    if not root.exists():
+    if not cfg.wiki or not root.exists():
+        # A disabled wiki can still have a tree left over from an earlier
+        # build; report the disabled state rather than linting it.
         return WikiStatusResult(wiki_enabled=cfg.wiki)
 
     summaries_dir = root / WikiSubdir.SUMMARIES
@@ -299,7 +303,12 @@ async def wiki_status_route() -> WikiStatusResult:
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
-    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
+    # record_log=False: a status poll is a read, and appending a LINT entry to
+    # log.md on every poll is what that flag exists to avoid. The MCP and CLI
+    # status surfaces already pass it.
+    report = await asyncio.to_thread(
+        partial(lint_mod.lint_all, svc_mod.get_services().store, record_log=False)
+    )
     return WikiStatusResult(
         wiki_enabled=cfg.wiki,
         summaries=len(summaries),
