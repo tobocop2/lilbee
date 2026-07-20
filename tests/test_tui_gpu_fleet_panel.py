@@ -248,11 +248,14 @@ async def test_panel_shows_intel_grant_hint_when_present(monkeypatch: pytest.Mon
     """An Intel GPU needing the CAP_PERFMON grant renders the localized setcap line."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+    from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 
     stat = _make_stat(0, utilization_pct=None)
     monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
     monkeypatch.setattr(
-        panel_mod, "intel_grant_binary", lambda devices, stats: "/usr/bin/intel_gpu_top"
+        panel_mod,
+        "intel_util_hint",
+        lambda devices, stats: IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top"),
     )
 
     app = _PanelHost()
@@ -264,6 +267,34 @@ async def test_panel_shows_intel_grant_hint_when_present(monkeypatch: pytest.Mon
         await app.workers.wait_for_complete()
         await pilot.pause()
         assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in str(panel.render())
+
+
+@pytest.mark.asyncio
+async def test_panel_shows_intel_install_hint_when_tool_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An Intel GPU with no util source and no intel_gpu_top renders the install line."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+    from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+    stat = _make_stat(0, utilization_pct=None)
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {0: stat})
+    monkeypatch.setattr(
+        panel_mod,
+        "intel_util_hint",
+        lambda devices, stats: IntelUtilHint(IntelHintKind.INSTALL, None),
+    )
+
+    app = _PanelHost()
+    async with app.run_test(size=(120, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_devices([_make_device(0, backend="SYCL")], labels={0: "SYCL0"})
+        panel._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "igt-gpu-tools" in str(panel.render())
 
 
 @pytest.mark.asyncio
