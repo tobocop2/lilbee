@@ -72,3 +72,26 @@ def test_rasterizer_first_keeps_the_real_gpu_at_its_own_index(monkeypatch) -> No
     # Not renumbered to 0: GGML_VK_VISIBLE_DEVICES names the loader's index.
     assert gpu_select.enumerate_gpu_vram() == [(1, fifteen_gib)]
     assert gpu_select.autoselect_best_gpu_index() == "1"
+
+
+def test_paravirtual_adapters_are_not_offered_to_placement() -> None:
+    """ggml's Vulkan backend runs on discrete and integrated devices only.
+
+    virgl, VMware and VirtIO-GPU report as VIRTUAL_GPU and are typically
+    compute-incapable. Offering one to placement guarantees a disagreement with
+    the engine about which devices exist, which is the shape of the
+    device-count mismatches other launchers have hit on hybrid hosts.
+    """
+    from unittest import mock
+
+    from lilbee.providers.fleet import gpu_select
+
+    gib = 1024**3
+    devices = [
+        gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.VIRTUAL_GPU, "virgl", 0x1AF4, 4 * gib),
+        gpu_select.VulkanDevice(
+            1, gpu_select.VkDeviceType.DISCRETE_GPU, "RTX 4090", 0x10DE, 24 * gib
+        ),
+    ]
+    with mock.patch.object(gpu_select, "_enumerate_vulkan_devices", lambda: devices):
+        assert gpu_select.enumerate_gpu_vram() == [(1, 24 * gib)]

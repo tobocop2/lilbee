@@ -62,6 +62,12 @@ _DEVICE_TYPE_RANK: dict[VkDeviceType, int] = {
 }
 
 
+# The device types ggml's Vulkan backend will actually run on. Anything else --
+# a software rasterizer, a paravirtual adapter, an unknown type -- is not a
+# device the engine would choose, so planning against one guarantees a mismatch.
+_USABLE_DEVICE_TYPES = frozenset({VkDeviceType.DISCRETE_GPU, VkDeviceType.INTEGRATED_GPU})
+
+
 def _rank_for(device_type: int) -> int:
     """Lookup the rank for a ``deviceType`` value, ``0`` if the driver returns an unknown one."""
     try:
@@ -272,20 +278,28 @@ def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
     loader/probe is unavailable (macOS Metal, no Vulkan driver), so the
     placement planner can degrade to count-only or in-process.
 
-    Adapters the driver reports as ``CPU`` are left out. Mesa's llvmpipe is a
-    software rasterizer that advertises itself through Vulkan and reports system
-    RAM as its device memory, so on a laptop with integrated graphics it appears
-    beside the real adapter at an identical size and is indistinguishable by
-    VRAM alone. Planning against it splits the model across a real GPU and a
-    software renderer, which is far slower than either the GPU alone or the CPU
-    backend. The device type is the only signal that separates them, and the
-    caller has no access to it: this returns sizes, and the ``--list-devices``
-    text this feeds does not carry names on the fallback path.
+    Only discrete and integrated adapters are returned, the same rule ggml's
+    Vulkan backend applies when it picks a device, so this cannot offer
+    placement something the engine would refuse to run on. Matching that rule
+    is the point: where the two disagree about which devices exist, placement
+    sizes against a device llama-server never uses.
+
+    Two kinds are excluded. Mesa's llvmpipe is a software rasterizer that
+    advertises itself through Vulkan and reports system RAM as its device
+    memory, so beside integrated graphics it appears at an identical size and
+    is indistinguishable by VRAM alone; planning against it splits the model
+    across a real GPU and a CPU renderer. Paravirtual adapters (virgl, VMware,
+    VirtIO-GPU) report as ``VIRTUAL_GPU`` and are typically compute-incapable
+    or proxies that fail on allocation.
+
+    The device type is the only signal separating any of these, and the caller
+    has no access to it: this returns sizes, and the ``--list-devices`` text it
+    feeds carries no names on the fallback path.
     """
     devices = _enumerate_vulkan_devices()
     if devices is None:
         return None
-    return [(d.index, d.vram_bytes) for d in devices if d.device_type != VkDeviceType.CPU]
+    return [(d.index, d.vram_bytes) for d in devices if d.device_type in _USABLE_DEVICE_TYPES]
 
 
 def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
