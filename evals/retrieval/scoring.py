@@ -94,10 +94,53 @@ def dimension_means(grades: Grades) -> dict[str, float]:
     }
 
 
+def paired_qids(unblinded: Unblinded, arms: list[str]) -> set[str]:
+    """Questions every arm has a scored outcome for.
+
+    A judge that returns junk on one arm's answer leaves that row in neither the
+    judged nor the prefailed map, so per-arm means taken over "whatever survived"
+    sit on different, possibly disjoint, question sets while the report subtracts
+    them as though paired. The bias runs toward whichever arm the judge more
+    often fails to parse.
+    """
+    if not arms:
+        return set()
+    return set.intersection(*(set(unblinded.get(arm, {}).get(ARM_REPLICATE, {})) for arm in arms))
+
+
+def paired_grades(unblinded: Unblinded, arms: list[str]) -> dict[str, Grades]:
+    """Each arm's grades restricted to the questions all arms have an outcome for."""
+    shared = paired_qids(unblinded, arms)
+    return {
+        arm: {
+            qid: scores
+            for qid, scores in unblinded.get(arm, {}).get(ARM_REPLICATE, {}).items()
+            if qid in shared
+        }
+        for arm in arms
+    }
+
+
+def paired_dimension_means(unblinded: Unblinded, arms: list[str]) -> dict[str, dict[str, float]]:
+    """Per-arm dimension means over the questions all arms have an outcome for.
+
+    Shared by both judging paths so the pairing rule cannot drift between them.
+    """
+    return {arm: dimension_means(grades) for arm, grades in paired_grades(unblinded, arms).items()}
+
+
 def count_question_pass(oracle: CountOracle, answer: str) -> bool:
-    """Both oracle numbers must appear in the answer."""
+    """The document count the question asked for must appear in the answer.
+
+    Only the document count, because that is the only number the generated
+    question requests. Requiring the chunk count as well failed every correct
+    answer that reported the documents and nothing else, since a system has no
+    reason to volunteer a chunk total it was never asked for, so the metric read
+    near zero for both arms no matter how retrieval performed. ``oracle.chunks``
+    stays on the record as scan provenance rather than as a pass condition.
+    """
     numbers = set(_NUMBER_RE.findall(answer))
-    return {str(oracle.chunks), str(oracle.sources)} <= numbers
+    return str(oracle.sources) in numbers
 
 
 def known_item_pass(source: str, row: AnswerRow) -> bool:
@@ -180,6 +223,15 @@ def build_results(
             arm_grades = unblinded.get(arm, {}).get(ARM_REPLICATE, {})
             rows.append(_question_row(question, arm, answers.get(question.qid), arm_grades))
     replicates = judged.get(noise_arm, {})
+    # Every arm's mean is taken over the questions all arms have an outcome for.
+    # A judge that returns junk on one arm's answer leaves that row in neither
+    # the judged nor the prefailed map, so averaging per arm over "whatever
+    # survived" puts the two means on different, possibly disjoint, question
+    # sets while the report subtracts them as though they were paired. The bias
+    # runs toward whichever arm the judge more often fails to parse.
+    arms = list(answers_by_arm)
+    paired = paired_qids(unblinded, arms)
+    by_arm = paired_grades(unblinded, arms)
     summary: dict[str, Any] = {
         "row_type": ResultRowType.SUMMARY,
         "noise_floor": noise_floor(
@@ -199,12 +251,13 @@ def build_results(
         "scored": {
             arm: len(unblinded.get(arm, {}).get(ARM_REPLICATE, {})) for arm in answers_by_arm
         },
+        "paired_questions": len(paired),
         "dimension_tests": paired_dimension_tests(unblinded, list(answers_by_arm)),
         "judgeable": sum(
             1 for q in questions if q.kind in (QuestionKind.TOPICAL, QuestionKind.KNOWN_ITEM)
         ),
         "arms": {
-            arm: _arm_summary(questions, answers, unblinded.get(arm, {}).get(ARM_REPLICATE, {}))
+            arm: _arm_summary(questions, answers, by_arm[arm])
             for arm, answers in answers_by_arm.items()
         },
     }

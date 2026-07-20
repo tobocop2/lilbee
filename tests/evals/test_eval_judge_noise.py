@@ -194,3 +194,39 @@ def test_prefailed_answers_are_not_counted_as_judge_graded():
     # The mean still covers both, because the failure counts against the arm.
     assert summary["scored"]["A"] == 2
     assert summary["judgeable"] == 2
+
+
+def test_arm_means_are_computed_over_the_same_question_set():
+    # The judge returned junk for arm A on tq1, so that row is in neither the
+    # judged nor the prefailed map. Averaging each arm over "whatever survived"
+    # puts the two means on different question sets and biases the comparison
+    # toward the arm the judge dislikes. The means must be paired.
+    questions = [
+        Question(
+            qid=f"tq{i}",
+            kind=QuestionKind.TOPICAL,
+            question="Where?",
+            source="a.txt",
+            ground_passage="g",
+        )
+        for i in range(2)
+    ]
+    answers = {
+        "A": {"tq0": _answer("tq0", "A"), "tq1": _answer("tq1", "A")},
+        "B": {"tq0": _answer("tq0", "B"), "tq1": _answer("tq1", "B")},
+    }
+    high = {"faithfulness": 2, "relevance": 2, "citation": 2}
+    low = {"faithfulness": 0, "relevance": 0, "citation": 0}
+    # A graded only on tq0 (high). B graded on tq0 (high) and tq1 (low).
+    unblinded = {
+        "A": {0: {"tq0": high}},
+        "B": {0: {"tq0": high, "tq1": low}, 1: {"tq0": high, "tq1": low}},
+    }
+    summary = build_results(questions, answers, unblinded, noise_arm="B", judged=unblinded)[-1]
+    # Both means must cover the same questions, so B is not punished for tq1
+    # while A silently skips it.
+    assert summary["paired_questions"] == 1
+    assert summary["arms"]["A"]["means"]["faithfulness"] == 2.0
+    assert summary["arms"]["B"]["means"]["faithfulness"] == 2.0
+    # The shortfall is still visible rather than hidden.
+    assert summary["judge_graded"] == {"A": 1, "B": 2}

@@ -42,8 +42,11 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         f"Graded by {judge_model}. Of {summary.get('judgeable', '?')} judgeable "
         f"questions the judge returned a usable grade for {counts}; answers that "
         "failed outright and grades that came back unparseable are not in those "
-        f"counts. The per-dimension means below are over {mean_counts}, since a "
-        "failed answer scores zero rather than being dropped. "
+        f"counts. Answers scored per arm: {mean_counts}, since a failed answer "
+        "scores zero rather than being dropped. The per-dimension means below "
+        f"are over the {summary.get('paired_questions', '?')} questions both arms "
+        "have an outcome for, so the two means cover the same set rather than "
+        "each arm averaging over whatever its judge happened to parse. "
         "Judges saw only question + ground truth + one answer; no arm labels.",
         f"Judge noise floor: plus or minus {noise} per dimension, measured over "
         f"{summary.get('noise_pairs', '?')} questions from {summary.get('noise_arm', '?')} "

@@ -13,7 +13,7 @@ import math
 import random
 import statistics
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,13 @@ from evals.retrieval.blinding import build_blind_rows, unblind
 from evals.retrieval.judging import DIMENSIONS, judge_rows
 from evals.retrieval.llm import ChatFn
 from evals.retrieval.questions import Question
-from evals.retrieval.scoring import ARM_REPLICATE, NOISE_REPLICATE, dimension_means, noise_floor
+from evals.retrieval.scoring import (
+    ARM_REPLICATE,
+    NOISE_REPLICATE,
+    noise_floor,
+    paired_dimension_means,
+    paired_qids,
+)
 
 RAGAS_METRICS = ("faithfulness", "answer_relevancy", "context_precision", "context_recall")
 
@@ -174,9 +180,16 @@ class JudgeSummary:
 
     noise_floor: float
     means: dict[str, dict[str, float]]
+    paired_questions: int = 0
+    per_arm_scored: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"noise_floor": self.noise_floor, "means": self.means}
+        return {
+            "noise_floor": self.noise_floor,
+            "means": self.means,
+            "paired_questions": self.paired_questions,
+            "per_arm_scored": self.per_arm_scored,
+        }
 
 
 def run_corroborating_judge(
@@ -190,22 +203,32 @@ def run_corroborating_judge(
 ) -> JudgeSummary:
     """Run the reused blind judge and summarize per-arm means and its noise floor.
 
-    The noise arm is graded twice under fresh opaque ids; the disagreement
-    between those two passes is the judge's noise floor, so a small answer-tier
-    gap is never oversold.
+    The noise arm is graded twice under two equivalent phrasings of the grading
+    prompt; the disagreement between those passes is the judge's noise floor.
+
+    Keeps the judge-returned grades separate from the scored grades for the same
+    reasons the retrieval scorer does. Prefailed answers never reached a judge,
+    so counting their mechanical zeros as agreement would deflate the floor
+    toward zero, and per-arm means must cover the questions both arms have an
+    outcome for rather than whatever each arm's judge happened to parse.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     blind = build_blind_rows(questions, answers_by_arm, noise_arm, random.Random(seed))
-    grades = judge_rows(blind.rows, chat, work_dir / "grades.jsonl")
+    graded = judge_rows(blind.rows, chat, work_dir / "grades.jsonl")
+    judged = unblind(blind.assignments, graded)
+    scored_grades = dict(graded)
     for gid in blind.prefailed:
-        grades[gid] = dict.fromkeys(DIMENSIONS, 0)
-    unblinded = unblind(blind.assignments, grades)
-    means = {
-        arm: dimension_means(replicates.get(ARM_REPLICATE, {}))
-        for arm, replicates in unblinded.items()
-    }
-    noise_replicates = unblinded.get(noise_arm, {})
+        scored_grades[gid] = dict.fromkeys(DIMENSIONS, 0)
+    unblinded = unblind(blind.assignments, scored_grades)
+    arms = list(answers_by_arm)
+    means = paired_dimension_means(unblinded, arms)
+    noise_replicates = judged.get(noise_arm, {})
     floor = noise_floor(
         noise_replicates.get(ARM_REPLICATE, {}), noise_replicates.get(NOISE_REPLICATE, {})
     )
-    return JudgeSummary(noise_floor=floor, means=means)
+    return JudgeSummary(
+        noise_floor=floor,
+        means=means,
+        paired_questions=len(paired_qids(unblinded, arms)),
+        per_arm_scored={arm: sorted(unblinded.get(arm, {}).get(ARM_REPLICATE, {})) for arm in arms},
+    )

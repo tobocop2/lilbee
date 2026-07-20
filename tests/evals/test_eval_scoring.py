@@ -48,11 +48,14 @@ def test_dimension_means():
     assert dimension_means({}) == {"faithfulness": 0.0, "relevance": 0.0, "citation": 0.0}
 
 
-def test_count_question_pass_requires_both_oracle_numbers():
+def test_count_question_pass_requires_the_document_count():
+    # The question asks how many documents mention the term, so that is the
+    # number the check verifies. A wrong chunk count alongside a right document
+    # count still answers the question that was asked.
     oracle = CountOracle(term="lantern", chunks=14, sources=3)
     assert count_question_pass(oracle, "It appears in 14 chunks across 3 documents.")
+    assert count_question_pass(oracle, "It appears 15 times in 3 documents.")
     assert not count_question_pass(oracle, "It appears in 14 chunks.")
-    assert not count_question_pass(oracle, "It appears 15 times in 3 documents.")
 
 
 def test_known_item_pass_requires_the_expected_citation():
@@ -164,3 +167,22 @@ def test_build_results_counts_hard_failures():
     rows = build_results(questions, answers, unblinded, noise_arm="B", judged=unblinded)
     summary = rows[-1]
     assert summary["arms"]["B"]["errors"] == 2
+
+
+def test_count_pass_accepts_an_answer_to_the_question_actually_asked():
+    # The generated question is "How many documents mention X?", one number.
+    # Requiring the chunk count too fails a perfectly correct answer, which made
+    # the metric read near zero for both arms regardless of retrieval quality.
+    oracle = CountOracle(term="lantern", chunks=14, sources=3)
+    assert count_question_pass(oracle, "It appears in 3 documents.")
+
+
+def test_count_pass_still_accepts_an_answer_that_volunteers_the_chunk_count():
+    oracle = CountOracle(term="lantern", chunks=14, sources=3)
+    assert count_question_pass(oracle, "It appears in 14 chunks across 3 documents.")
+
+
+def test_count_pass_rejects_the_wrong_document_count():
+    oracle = CountOracle(term="lantern", chunks=14, sources=3)
+    assert not count_question_pass(oracle, "It appears in 5 documents.")
+    assert not count_question_pass(oracle, "It appears in 14 chunks.")

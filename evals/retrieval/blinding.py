@@ -14,6 +14,7 @@ to a greedy decoder returns an identical grade, which would make the measured
 
 from __future__ import annotations
 
+import hashlib
 import random
 from dataclasses import asdict, dataclass
 from typing import Any, NamedTuple
@@ -23,7 +24,7 @@ from evals.retrieval.questions import Question, QuestionKind
 
 GROUND_CHARS = 2400
 ANSWER_CHARS = 2400
-GID_SPACE = 10**9
+GID_HEX_CHARS = 16
 NOISE_REPLICATES = 2
 JUDGED_KINDS = (QuestionKind.TOPICAL, QuestionKind.KNOWN_ITEM)
 
@@ -71,11 +72,21 @@ class BlindSet(NamedTuple):
     prefailed: list[str]
 
 
-def _new_gid(rng: random.Random, taken: set[str]) -> str:
-    gid = f"g{rng.randrange(GID_SPACE):09d}"
-    while gid in taken:
-        gid = f"g{rng.randrange(GID_SPACE):09d}"
-    return gid
+def _gid_for(qid: str, arm: str, replicate: int, answer: str) -> str:
+    """An opaque id derived from the row's content, not from its draw position.
+
+    The judge checkpoint is keyed on this and skips any gid it has already
+    graded. A positional id makes that skip unsound: change the question set,
+    re-run an answer, or pass the two arms in the other order, and the k-th id
+    is unchanged while the k-th row is now a different answer, so a stale grade
+    is silently attributed to it. Deriving the id from the content means a
+    genuine resume still hits the checkpoint and a changed row simply misses it.
+
+    Hashed rather than concatenated so the id carries no readable arm or qid,
+    and salted with the replicate so the noise arm's two copies stay distinct.
+    """
+    material = "\x00".join([qid, arm, str(replicate), answer])
+    return "g" + hashlib.sha256(material.encode()).hexdigest()[:GID_HEX_CHARS]
 
 
 def build_blind_rows(
@@ -97,11 +108,13 @@ def build_blind_rows(
             continue
         for arm, answers in answers_by_arm.items():
             replicates = NOISE_REPLICATES if arm == noise_arm else 1
+            answer = answers.get(question.qid)
+            failed = answer is None or answer.error or not answer.answer.strip()
+            text = "" if answer is None else answer.answer
             for replicate in range(replicates):
-                gid = _new_gid(rng, set(assignments))
+                gid = _gid_for(question.qid, arm, replicate, text)
                 assignments[gid] = BlindAssignment(qid=question.qid, arm=arm, replicate=replicate)
-                answer = answers.get(question.qid)
-                if answer is None or answer.error or not answer.answer.strip():
+                if failed:
                     prefailed.append(gid)
                     continue
                 rows.append(

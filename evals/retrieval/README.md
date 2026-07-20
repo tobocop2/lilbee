@@ -16,9 +16,11 @@ the store. Lives outside `src/` on purpose: it never ships in the package.
      large libraries.
    - *known_item*: asks what a sampled document is about; ground truth is the
      document's head chunks, captured in the same scan.
-   - *count*: asks how many chunks and documents mention a mid-frequency
-     term. Ground truth is an exact streaming scan of the LanceDB store; no
-     judge involved.
+   - *count*: asks how many documents mention a mid-frequency term, and the
+     check verifies exactly that one number. Ground truth is an exact streaming
+     scan of the LanceDB store; no judge involved. The scan also records the
+     chunk total as provenance, but the answer is not required to volunteer a
+     figure it was never asked for.
 2. **answer** runs the battery against one server (`/api/ask`), one run per
    arm. It waits for the server's health route, retries each question three
    times, and checkpoints every row to JSONL, so a killed pod run resumes
