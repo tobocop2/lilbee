@@ -46,7 +46,7 @@ nDCG@10.
 | | MRR@10 | 0.6625 | 0.6828 | 0.6836 | 0.6920 | 0.6928 |
 | FiQA (n=648) | nDCG@10 | **0.4598** | 0.4363 | 0.4333 | 0.4289 | 0.4033 |
 | | Recall@20 | 0.6186 | 0.6186 | 0.6186 | 0.6186 | 0.5802 |
-| | MRR@10 | 0.5406 | 0.5045 | 0.5003 | 0.4937 | 0.4726 |
+| | MRR@10 | 0.5406 | 0.5045 | 0.5003 | 0.4937 | 0.4729 |
 | NFCorpus (n=323) | nDCG@10 | 0.3655 | **0.3755** | 0.3744 | 0.3731 | 0.3722 |
 | | Recall@20 | 0.2129 | 0.2129 | 0.2129 | 0.2129 | 0.2153 |
 | | MRR@10 | 0.5863 | 0.5961 | 0.5856 | 0.5832 | 0.5838 |
@@ -63,7 +63,7 @@ Thirteen of the 36 tests survive correction. The full family is in
 
 | Dataset | arm | metric | Δ vs dense | raw p | adj. p |
 |---|---|---|---|---|---|
-| FiQA | w=1.0 | MRR@10 | −0.0680 | ≤1e-4 | 0.0006 |
+| FiQA | w=1.0 | MRR@10 | −0.0677 | ≤1e-4 | 0.0006 |
 | FiQA | w=1.0 | nDCG@10 | −0.0564 | ≤1e-4 | 0.0006 |
 | FiQA | w=0.75 | MRR@10 | −0.0469 | ≤1e-4 | 0.0006 |
 | FiQA | w=0.5 | MRR@10 | −0.0403 | 0.0004 | 0.0016 |
@@ -176,6 +176,12 @@ one moved:
   declares a lilbee-vs-RAGFlow study over seven datasets; these results stamped
   its fingerprint on a weight ablation over three. The stats step now refuses to
   stamp a comparison the manifest does not declare.
+- **Depth truncation used the wrong tie rule.** Cutting a run to depth 10 has to
+  keep the ten documents `pytrec_eval` would itself rank first, and it breaks
+  score ties on doc_id descending (trec_eval's rule), not ascending. Fused runs
+  produce many exactly-tied scores: 210 of FiQA's 648 queries have a tie
+  straddling the rank-10 boundary at w=1.0. Correcting the rule moved FiQA w=1.0
+  MRR@10 from 0.4726 to 0.4729; every other figure was unaffected.
 - **The committed w=1.0 metrics did not reproduce from the committed w=1.0 run
   files.** Fourteen of fifteen committed arms reproduce exactly as uncut
   `recip_rank`; all three w=1.0 arms match neither the cut nor the uncut

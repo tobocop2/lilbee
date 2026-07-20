@@ -93,13 +93,20 @@ def _default_evaluator_factory(qrels: Qrels, measures: set[str]) -> Evaluator:
 
 
 def truncate_run(run: Run, depth: int) -> Run:
-    """Keep each query's top ``depth`` documents, ties broken on doc_id ascending.
+    """Keep each query's top ``depth`` documents under pytrec_eval's own ordering.
 
-    The ordering key matches the one collapse_hits used to rank the run file, so
-    truncating here selects the same documents the run file already ranked first.
+    The tie-break must be pytrec_eval's, not the run file's. pytrec_eval ignores
+    the run file's rank column and re-sorts by score, breaking ties on doc_id
+    *descending* (trec_eval's rule, verified against the scorer). Truncating with
+    any other rule would hand it a different ten documents than it would have
+    chosen itself, so the result would not be "pytrec_eval's MRR at depth 10".
+    This is not hypothetical: fused runs produce many exactly-tied scores, and on
+    the committed FiQA w1.0 run the two tie rules give 0.4729 and 0.4726.
     """
     return {
-        query_id: dict(sorted(docs.items(), key=lambda item: (-item[1], item[0]))[:depth])
+        query_id: dict(
+            sorted(docs.items(), key=lambda item: (item[1], item[0]), reverse=True)[:depth]
+        )
         for query_id, docs in run.items()
     }
 

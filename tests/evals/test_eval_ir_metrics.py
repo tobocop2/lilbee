@@ -24,7 +24,10 @@ class _RecordingEvaluator:
             judged = self._qrels.get(query_id)
             if judged is None:
                 continue
-            ranked = sorted(docs.items(), key=lambda item: (-item[1], item[0]))
+            # Score descending, ties on doc_id descending: trec_eval's rule, which
+            # is what the real scorer applies. A fake that broke ties the other
+            # way would hide a truncation that hands pytrec_eval the wrong ten.
+            ranked = sorted(docs.items(), key=lambda item: (item[1], item[0]), reverse=True)
             values = {}
             if "recip_rank" in self._measures:
                 hit = next(
@@ -80,13 +83,15 @@ def test_mrr_at_10_truncates_the_run_handed_to_the_evaluator():
     assert set(handed) == {f"d{i}" for i in range(1, 11)}
 
 
-def test_truncation_keeps_the_highest_scoring_documents_breaking_ties_on_doc_id():
+def test_truncation_breaks_ties_the_way_pytrec_eval_does():
     calls = []
-    # Eleven documents all tied on score: the deterministic tie-break is doc_id
-    # ascending, so the retained ten are d01..d10 and d11 is dropped.
-    run = {"q1": {f"d{i:02d}": 1.0 for i in range(1, 12)}}
-    score_run({"q1": {"d01": 1}}, run, ["MRR@10"], evaluator_factory=_factory(calls))
-    assert set(calls[0]["run"]["q1"]) == {f"d{i:02d}" for i in range(1, 11)}
+    # Eleven documents all tied on score. pytrec_eval ignores the run file's rank
+    # column and breaks score ties on doc_id DESCENDING, so the ten it would keep
+    # are d02..d12 and the one it drops is d01. Truncating the other way would
+    # hand the scorer a different ten than it would have picked itself.
+    run = {"q1": {f"d{i:02d}": 1.0 for i in range(1, 13)}}
+    score_run({"q1": {"d12": 1}}, run, ["MRR@10"], evaluator_factory=_factory(calls))
+    assert set(calls[0]["run"]["q1"]) == {f"d{i:02d}" for i in range(3, 13)}
 
 
 def test_metrics_that_cut_internally_are_not_truncated():

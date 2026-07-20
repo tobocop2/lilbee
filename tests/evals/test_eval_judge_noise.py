@@ -6,8 +6,16 @@ nobody graded must not count as agreement, and the judge must not be the model
 that wrote the answers.
 """
 
+import random
+
 import pytest
-from evals.retrieval.blinding import BlindRow, build_blind_rows, unblind
+from evals.retrieval.answers import AnswerRow
+from evals.retrieval.blinding import (
+    BlindAssignment,
+    BlindRow,
+    build_blind_rows,
+    unblind,
+)
 from evals.retrieval.judging import JUDGE_PROMPTS, judge_prompt_for
 from evals.retrieval.llm import JUDGE_BASE_URL_ENV, JUDGE_MODEL_ENV, judge_backend
 from evals.retrieval.questions import Question, QuestionKind
@@ -42,8 +50,6 @@ def test_variant_selection_wraps_rather_than_indexing_out_of_range():
 
 
 def _answer(qid, arm, text="an answer", error=None):
-    from evals.retrieval.answers import AnswerRow
-
     return AnswerRow(
         qid=qid,
         arm=arm,
@@ -69,8 +75,6 @@ def test_the_noise_arm_replicates_get_different_variants():
         "A": {"tq000": _answer("tq000", "A")},
         "B": {"tq000": _answer("tq000", "B")},
     }
-    import random
-
     blind = build_blind_rows(questions, answers, "B", random.Random(1))
     noise_rows = [row for row in blind.rows if blind.assignments[row.gid].arm == "B"]
     assert sorted(row.variant for row in noise_rows) == [0, 1]
@@ -146,8 +150,6 @@ def test_judge_backend_records_its_identity(monkeypatch):
 
 
 def test_unblind_keeps_replicates_separate():
-    from evals.retrieval.blinding import BlindAssignment
-
     assignments = {
         "g0": BlindAssignment(qid="q1", arm="B", replicate=0),
         "g1": BlindAssignment(qid="q1", arm="B", replicate=1),
