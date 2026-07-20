@@ -482,6 +482,17 @@ def state_is_healthy(state: _SwapState) -> bool:
     return resp.status_code < httpx.codes.BAD_REQUEST
 
 
+def engine_record_exists(data_dir: Path) -> bool:
+    """Whether any engine state file is present, without probing proxy health.
+
+    A filesystem fact, unlike a proxy HTTP probe: it is true for an engine that
+    is live but momentarily unprobeable (fd exhaustion, host thrash), so the
+    ladder can clear a recorded engine before building rather than double-build
+    beside one an HTTP probe failed to see.
+    """
+    return any(data_dir.glob(_STATE_FILE_GLOB))
+
+
 def stop_engine(data_dir: Path) -> None:
     """Stop every engine the dir's state files record, regardless of liveness.
 

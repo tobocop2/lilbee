@@ -3194,6 +3194,34 @@ def _chat_launch() -> InstanceLaunch:
     )
 
 
+def test_ladder_never_kills_a_live_engine_on_a_probe_failure(monkeypatch, tmp_path: Path) -> None:
+    """A busy engine whose proxy probe transiently fails must survive.
+
+    Membership (a live user lock), not the HTTP health probe, decides whether an
+    engine may be replaced. With every probe failing (fd exhaustion, host thrash)
+    but a live user present, the ladder must not reap or stop the engine; it
+    overflows to the private dir instead.
+    """
+    _swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    reaped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda d, **_k: reaped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # every probe fails
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the engine is in live use
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert machine not in stopped and machine not in reaped  # the live engine is untouched
+    holder.release_and_check_last()
+
+
 def test_ladder_leaves_a_warm_engine_it_cannot_replace(monkeypatch, tmp_path: Path) -> None:
     """A process that can serve nothing must not stop an engine left warm.
 
@@ -3729,3 +3757,22 @@ def test_can_build_engine_true_with_a_placeable_model_and_binary(monkeypatch) ->
         "lilbee.providers.fleet.binary.resolve_llama_server", lambda: Path("/bin/llama-server")
     )
     assert prov_mod._can_build_engine({(WorkerRole.CHAT, "m")}) is True
+
+
+def test_ladder_clears_an_unprobeable_incumbent_before_build(monkeypatch, tmp_path: Path) -> None:
+    """A recorded but unprobeable no-user engine is stopped before build, not
+    double-built beside. The stop is keyed on the state file, not the probe."""
+    _swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _state: False)  # unprobeable
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    # A recorded engine with no live users (keep_warm orphan): probe fails but the
+    # state file exists, so it must be stopped before the fresh build.
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    p = FleetProvider()
+    assert p._ensure_fleet() is True
+    assert stopped == [machine]  # cleared the recorded incumbent...
+    assert built and built[0] == machine  # ...then built fresh in the same slot

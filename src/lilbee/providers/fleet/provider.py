@@ -44,6 +44,7 @@ from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
     SwapManager,
     _SwapState,
+    engine_record_exists,
     find_live_state,
     reap_stale,
     state_is_healthy,
@@ -805,32 +806,35 @@ class FleetProvider:
     ) -> bool | None:
         """Bind or build one engine dir; ``None`` on the slot means overflow next.
 
-        Binds a compatible running engine. Otherwise an incumbent is replaced in
-        place when no live user holds it or it is this contract's own engine
+        Binds a compatible running engine. Whether an incumbent may be replaced
+        is decided by kernel-refcounted membership, not the proxy HTTP probe: an
+        engine with a live user is never reaped or stopped, so a transient probe
+        failure (fd exhaustion, host thrash) cannot kill a busy engine. Replace in
+        place only when no live user holds it or it is this contract's own engine
         (pin-equal, serving only wanted models). On the machine slot a live
-        incompatible engine in active use returns ``None`` (overflow); the private
-        overflow dir always builds. The stop is gated on ``_can_build_engine`` so a
-        process that can serve nothing never destroys a warm engine it can't
+        incompatible engine returns ``None`` (overflow); the private overflow dir
+        always builds. Before building, any recorded engine is cleared -- keyed on
+        the state file, not the probe -- so an unprobeable incumbent is stopped
+        rather than double-built beside. The stop is gated on ``_can_build_engine``
+        so a process that can serve nothing never destroys a warm engine it can't
         replace. Held under the cross-process build lock.
         """
         with build_lock(engine_dir):
             if wanted and self._bind_all_in_dir(engine_dir, pin, wanted):
                 self._hold_membership(engine_dir)
                 return True
-            occupied = self._slot_occupied(engine_dir)
-            replaceable = (
-                not occupied
-                or not live_users_exist(engine_dir)
-                or _healthy_groups_ours(engine_dir, pin, wanted)
+            replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
+                engine_dir, pin, wanted
             )
             if not is_overflow and not replaceable:
                 return None
             if not _can_build_engine(wanted):
                 return False
-            # Reap dead leftovers, then stop any replaceable incumbent, so planning
-            # sees true free VRAM.
+            # No live user holds this dir now (or it is ours to rebuild): reap dead
+            # leftovers and stop any recorded engine so planning sees true free VRAM
+            # and the build never lands beside an unprobeable incumbent.
             reap_stale(engine_dir)
-            if occupied and replaceable:
+            if engine_record_exists(engine_dir):
                 stop_engine(engine_dir)
             if self._plan_and_spawn(engine_dir):
                 self._hold_membership(engine_dir)
@@ -888,13 +892,6 @@ class FleetProvider:
         with self._lock:
             dirs = set(self._group_dirs.values())
         return next(iter(dirs)) if dirs else machine_engine_dir()
-
-    def _slot_occupied(self, engine_dir: Path) -> bool:
-        """Whether any group's engine at *engine_dir* is alive and answering."""
-        return any(
-            (state := find_live_state(engine_dir, group)) is not None and state_is_healthy(state)
-            for group in SwapGroup
-        )
 
     def _hold_membership(self, engine_dir: Path) -> None:
         """Record this process as a user of *engine_dir*'s engine."""
