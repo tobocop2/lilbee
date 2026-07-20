@@ -79,7 +79,7 @@ class TestExpandNeighbors:
         assert (out[0].page_start, out[0].page_end) == (2, 4)
         assert out[0].score == center.score
         assert out[0].chunk_index == center.chunk_index
-        store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [1, 3])
+        store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [1, 2, 3])
 
     def test_recomputes_the_line_span_for_code(self):
         center = _chunk(content_type="code", index=1, text="mid", line_start=10, line_end=20)
@@ -109,7 +109,7 @@ class TestExpandNeighbors:
         out = expand_neighbors([a, b], store, radius=1, budget=1000, cost=_cost)
         assert out[0].chunk == "one two three"
         assert out[1].chunk == "three four five"
-        store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [1, 4])
+        store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [1, 2, 3, 4])
 
     def test_higher_ranked_expansion_claims_the_shared_neighbor(self):
         first = _chunk(index=2, text="bb")
@@ -135,8 +135,37 @@ class TestExpandNeighbors:
     def test_zero_budget_keeps_every_original(self):
         center = _chunk(index=2, text="core")
         rows = [_chunk(index=1, text="left"), _chunk(index=3, text="right")]
-        out = expand_neighbors([center], _store_with(rows), radius=1, budget=0, cost=_cost)
+        store = _store_with(rows)
+        out = expand_neighbors([center], store, radius=1, budget=0, cost=_cost)
         assert out == [center]
+        # A zero budget can buy nothing, so it must not pay for the store reads.
+        store.get_chunks_by_indices.assert_not_called()
+
+    def test_reingested_document_is_not_spliced_across_versions(self):
+        """If the file is re-ingested between the search and the neighbor fetch,
+        the rows describe a different chunking. Splicing them would invent text
+        and a page span that existed in no version, so widening is skipped."""
+        center = _chunk(index=2, text="original center text")
+        rows = [
+            _chunk(index=1, text="new left"),
+            # Same (source, chunk_index), different text: the file was re-chunked.
+            _chunk(index=2, text="re-ingested center text"),
+            _chunk(index=3, text="new right"),
+        ]
+        out = expand_neighbors([center], _store_with(rows), radius=1, budget=1000, cost=_cost)
+        assert out == [center]
+
+    def test_unchanged_center_still_widens(self):
+        """The version guard must not block the normal path: a center whose
+        stored row still matches widens as before."""
+        center = _chunk(index=2, text="beta gamma")
+        rows = [
+            _chunk(index=1, text="alpha beta"),
+            _chunk(index=2, text="beta gamma"),
+            _chunk(index=3, text="gamma delta"),
+        ]
+        out = expand_neighbors([center], _store_with(rows), radius=1, budget=1000, cost=_cost)
+        assert out[0].chunk != "beta gamma"
 
     def test_whole_document_selection_expands_nothing(self):
         # Every index is a selected passage already, so only the off-the-end
@@ -145,7 +174,7 @@ class TestExpandNeighbors:
         store = _store_with([])
         out = expand_neighbors(selected, store, radius=1, budget=1000, cost=_cost)
         assert out == selected
-        store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [3])
+        store.get_chunks_by_indices.assert_called_once_with("doc.pdf", [0, 1, 2, 3])
 
     def test_window_stops_at_a_gap_in_stored_indices(self):
         # Index 3 is missing from the store: index 2 must not leapfrog it,

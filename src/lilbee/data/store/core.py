@@ -30,6 +30,7 @@ from lilbee.runtime.lock import LOCK_TIMEOUT, write_lock
 
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
+    _CHUNK_COLUMN,
     _chunk_type_predicate,
     _has_fts_index,
     _has_scalar_index,
@@ -125,7 +126,7 @@ def _lexical_rows(
     query_text: str,
     limit: int,
     chunk_type: ChunkType | None,
-    column: str = "chunk",
+    column: str = _CHUNK_COLUMN,
 ) -> list[SearchChunk]:
     """BM25 rows for *query_text* over a single FTS *column*.
 
@@ -480,10 +481,9 @@ class Store:
                 return
             try:
                 if _has_fts_index(table):
-                    # Mark hybrid ready BEFORE optimize(): the existing index
-                    # already serves queries, and optimize() can raise on a large
-                    # corpus. A failure here must not drop every query to
-                    # vector-only.
+                    # An existing index serves queries regardless of how the
+                    # best-effort optimize() below turns out, so hybrid is ready
+                    # either way.
                     self._fts_ready = True
                     try:
                         # One optimize folds new rows into every index on the
@@ -507,7 +507,7 @@ class Store:
                     # encoding on optimize() for a large corpus. Positions only
                     # serve exact-phrase queries, which lilbee never issues (FTS
                     # queries match plain terms), so the index never needs them.
-                    table.create_fts_index("chunk", replace=False, with_position=False)
+                    table.create_fts_index(_CHUNK_COLUMN, replace=False, with_position=False)
                     self._fts_ready = True
                     log.debug("FTS index created on '%s'", CHUNKS_TABLE)
                 # Only the opt-in title arm needs the title index; without this a
@@ -547,7 +547,7 @@ class Store:
         title index is rebuilt too when the title arm is enabled.
         """
         try:
-            table.create_fts_index("chunk", replace=True, with_position=False)
+            table.create_fts_index(_CHUNK_COLUMN, replace=True, with_position=False)
             if self._config.title_search and _TITLE_COLUMN in table.schema.names:
                 table.create_fts_index(_TITLE_COLUMN, replace=True, with_position=False)
             log.warning("Rebuilt the FTS index positionless after a positional-index overflow")

@@ -521,18 +521,14 @@ class TestSearchContext:
         """The filter drops structural chunks from the candidate list before the
         top_k*2 slice, so a real passage past the window backfills into it. If the
         filter ran after the slice, the deeper real passage would be lost."""
-        old_top_k = cfg.top_k
         cfg.top_k = 1  # window is top_k*2 = 2
         cfg.filter_structural_chunks = True
-        try:
-            real0 = _make_result(source="a.pdf", distance=0.1, chunk="Answer prose one.")
-            toc1 = _make_result(source="toc1.pdf", distance=0.2, chunk=self._TOC_CHUNK)
-            toc2 = _make_result(source="toc2.pdf", distance=0.3, chunk=self._TOC_CHUNK)
-            real3 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
-            mock_svc.store.search.return_value = [real0, toc1, toc2, real3]
-            sources = [r.source for r in get_services().searcher.search("q")]
-        finally:
-            cfg.top_k = old_top_k
+        real0 = _make_result(source="a.pdf", distance=0.1, chunk="Answer prose one.")
+        toc1 = _make_result(source="toc1.pdf", distance=0.2, chunk=self._TOC_CHUNK)
+        toc2 = _make_result(source="toc2.pdf", distance=0.3, chunk=self._TOC_CHUNK)
+        real3 = _make_result(source="b.pdf", distance=0.4, chunk="Answer prose two.")
+        mock_svc.store.search.return_value = [real0, toc1, toc2, real3]
+        sources = [r.source for r in get_services().searcher.search("q")]
         assert "b.pdf" in sources  # backfilled from past the pre-filter window
         assert "toc1.pdf" not in sources and "toc2.pdf" not in sources
 
@@ -951,12 +947,6 @@ class TestContextBudget:
 class TestNeighborExpansion:
     """Selected chunks widen with adjacent same-source chunks at answer time."""
 
-    @pytest.fixture(autouse=True)
-    def _restore(self):
-        old = (cfg.neighbor_expansion, cfg.num_ctx)
-        yield
-        cfg.neighbor_expansion, cfg.num_ctx = old
-
     def test_off_by_default_never_touches_neighbors(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result(chunk="core text")]
         mock_svc.provider.chat.return_value = _text_result("answer")
@@ -1064,8 +1054,9 @@ class TestNeighborExpansion:
         base = [_make_result(chunk="c" * 1500, chunk_index=2, page_start=3, page_end=3)]
 
         searcher = get_services().searcher
-        fitted = searcher._fit_context_budget(base, system, question, None, 1.0)
-        widened = searcher._widen_with_neighbors(fitted, system, question, None, 1.0)
+        budget = searcher._context_budget(system, question, None, 1.0)
+        fitted, used = searcher._fit_to_budget(base, budget)
+        widened = searcher._widen_with_neighbors(fitted, max(0, budget - used))
 
         # Non-vacuous: at least one neighbor was actually merged in.
         assert widened[0].chunk != "c" * 1500
