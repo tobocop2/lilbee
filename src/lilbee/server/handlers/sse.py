@@ -98,6 +98,10 @@ def _resolve_generation_options(options: dict[str, Any] | None) -> dict[str, Any
 # stream sheds the oldest progress event rather than buffering millions.
 SSE_QUEUE_MAX_EVENTS = 1000
 
+# Poll ceiling once the producer task has finished, for the case where the
+# queue drains empty without the sentinel ever arriving.
+_FINISHED_PRODUCER_POLL_S = 1.0
+
 # Progress-class event types: high-frequency, safe to coalesce under
 # backpressure. Everything else (done, errors, crawl/setup lifecycle) must land.
 _DROPPABLE_EVENT_TYPES: frozenset[EventType | SseEvent] = frozenset(
@@ -238,6 +242,30 @@ class SseStream:
             if leftover is not None:
                 yield leftover
 
+    @staticmethod
+    def _drain_waiters(
+        getter: asyncio.Future[str | None],
+        task: asyncio.Task[Any] | asyncio.Future[Any],
+    ) -> set[asyncio.Future[Any]]:
+        """Futures the drain loop waits on. A finished task is left out: it
+        would resolve the wait instantly on every pass and spin the loop."""
+        return {getter} if task.done() else {getter, task}
+
+    @staticmethod
+    def _drain_timeout(task: asyncio.Task[Any] | asyncio.Future[Any]) -> float | None:
+        """How long one drain pass may sleep.
+
+        While the producer runs, the only thing the timeout serves is the
+        heartbeat, and the task is in the wait set for everything else, so a
+        disabled heartbeat can wait indefinitely. Once the task has finished it
+        is out of the wait set, so this bounds the one remaining case: a queue
+        that empties without the sentinel ever arriving.
+        """
+        if task.done():
+            return _FINISHED_PRODUCER_POLL_S
+        interval = cfg.sse_heartbeat_interval
+        return interval if interval > 0 else None
+
     async def drain(
         self, task: asyncio.Task[Any] | asyncio.Future[Any], label: str
     ) -> AsyncGenerator[str, None]:
@@ -250,6 +278,12 @@ class SseStream:
         The pending ``queue.get`` survives across poll rounds (``asyncio.wait``,
         not ``wait_for``): cancelling a completed get on the timeout boundary
         would drop the event it already popped from the queue.
+
+        The wait covers *task* as well, so a producer that dies without a
+        sentinel wakes the loop directly. That is what lets the timeout be the
+        seconds-scale heartbeat interval rather than a fixed 0.1s tick: the
+        loop used to wake ten times a second per open stream purely to
+        re-evaluate two conditions that neither need that resolution.
         """
         last_yielded = time.monotonic()
         getter: asyncio.Future[str | None] | None = None
@@ -257,8 +291,12 @@ class SseStream:
             while True:
                 if getter is None:
                     getter = asyncio.ensure_future(self.queue.get())
-                done, _ = await asyncio.wait({getter}, timeout=0.1)
-                if not done:
+                done, _ = await asyncio.wait(
+                    self._drain_waiters(getter, task),
+                    timeout=self._drain_timeout(task),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if getter not in done:
                     now = time.monotonic()
                     heartbeat_interval = cfg.sse_heartbeat_interval
                     if heartbeat_interval > 0 and now - last_yielded >= heartbeat_interval:

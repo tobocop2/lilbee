@@ -445,18 +445,23 @@ class TestDispatchChat:
 
 
 class _FakeStream:
-    """Test-only async iterator that mimics ``ClosableIterator[ChatStreamItem]``."""
+    """Test-only ``ClosableIterator[ChatStreamItem]``.
+
+    This used to be an *async* iterator, despite the docstring, so every
+    streaming test drove the async-native branch of the dispatch iterator
+    rather than the sync path every real provider returns.
+    """
 
     def __init__(self, frames):
         self._frames = list(frames)
         self.closed = False
 
-    def __aiter__(self):
+    def __iter__(self):
         return self
 
-    async def __anext__(self):
+    def __next__(self):
         if not self._frames:
-            raise StopAsyncIteration
+            raise StopIteration
         return self._frames.pop(0)
 
     def close(self) -> None:
@@ -762,6 +767,35 @@ class TestDispatchChatStream:
         assert all(isinstance(s.block, ToolUseBlock) for s in starts)
         # Two content blocks opened, two closed.
         assert len(stops) == 2
+
+    async def test_text_between_argument_deltas_keeps_one_call_identity(
+        self, services_with_model
+    ) -> None:
+        """A text frame closes the open tool block, so the next delta for the
+        same call has to open a second one. Continuation deltas carry no id and
+        no name, so that block used to get a fresh synthetic id and an empty
+        name: one logical call split into two blocks, the second matching no
+        tool. Both blocks must at least carry the identity the call announced."""
+        services_with_model.provider.supports_tools.return_value = True
+        frames = [
+            ToolCallDelta(index=0, id="c1", name="search", arguments_delta='{"q":'),
+            "thinking out loud",
+            ToolCallDelta(index=0, id=None, name=None, arguments_delta='"x"}'),
+        ]
+        services_with_model.provider.chat.return_value = _FakeStream(frames)
+        events = await self._drain(
+            dispatch_chat_stream(
+                _req(tools=[CanonicalTool(name="search", description="", input_schema={})])
+            )
+        )
+        tool_starts = [
+            e
+            for e in events
+            if isinstance(e, ContentBlockStart) and isinstance(e.block, ToolUseBlock)
+        ]
+        assert len(tool_starts) == 2
+        assert {s.block.id for s in tool_starts} == {"c1"}
+        assert {s.block.name for s in tool_starts} == {"search"}
 
 
 class _SyncFakeStream:

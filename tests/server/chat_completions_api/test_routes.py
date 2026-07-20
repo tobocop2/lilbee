@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -116,18 +116,23 @@ def _clear_chat_lock():
 
 
 class FakeProviderStream:
-    """Async iterator that mimics the provider streaming protocol."""
+    """``ClosableIterator`` mimicking the provider streaming protocol.
+
+    This was an async iterator, which no provider in the tree returns; the
+    streaming tests therefore drove a dispatch branch that only existed for
+    that shape, and never the sync path production uses.
+    """
 
     def __init__(self, frames: list[Any]) -> None:
         self._frames = list(frames)
         self.closed = False
 
-    def __aiter__(self) -> AsyncIterator[Any]:
+    def __iter__(self) -> Iterator[Any]:
         return self
 
-    async def __anext__(self) -> Any:
+    def __next__(self) -> Any:
         if not self._frames:
-            raise StopAsyncIteration
+            raise StopIteration
         return self._frames.pop(0)
 
     def close(self) -> None:
