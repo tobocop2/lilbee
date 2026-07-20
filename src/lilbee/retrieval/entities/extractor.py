@@ -104,7 +104,7 @@ def _first_json_object(text: str) -> dict | None:
             start = text.find("{", start + 1)
             continue
         # A value starting at "{" can only decode to a dict.
-        return parsed
+        return parsed if isinstance(parsed, dict) else None
     return None
 
 
@@ -217,9 +217,7 @@ def _extract_regex(entity_type: EntityType, text: str) -> list[str] | None:
                 if inner.fullmatch(token.group(0), timeout=_PATTERN_MATCH_TIMEOUT_SECONDS)
             ]
         compiled = _compile_pattern(pattern)
-        return [
-            m.group(0) for m in compiled.finditer(text, timeout=_PATTERN_MATCH_TIMEOUT_SECONDS)
-        ]
+        return [m.group(0) for m in compiled.finditer(text, timeout=_PATTERN_MATCH_TIMEOUT_SECONDS)]
     except TimeoutError:
         return None
 
@@ -282,6 +280,32 @@ def _extract_llm_batch(
     return results
 
 
+def _regex_findings(
+    regex_types: list[EntityType], text: str, timed_out: set[str]
+) -> list[tuple[EntityType, str]]:
+    """Regex-kind findings for one chunk, skipping types that blew their budget.
+
+    A type whose pattern times out is added to *timed_out* so the caller
+    stops attempting it; the ban lasts as long as that set does.
+    """
+    found: list[tuple[EntityType, str]] = []
+    for entity_type in regex_types:
+        if entity_type.name in timed_out:
+            continue
+        matches = _extract_regex(entity_type, text)
+        if matches is None:
+            timed_out.add(entity_type.name)
+            log.warning(
+                "Entity type %s: its pattern exceeded the %.0fs match budget; "
+                "skipping that type. Its regex is likely pathological.",
+                entity_type.name,
+                _PATTERN_MATCH_TIMEOUT_SECONDS,
+            )
+            continue
+        found.extend((entity_type, m) for m in matches)
+    return found
+
+
 def extract_entities(
     chunks: list[Mapping[str, Any]],
     schema: EntitySchema,
@@ -310,21 +334,7 @@ def extract_entities(
     per_chunk: list[list[tuple[EntityType, str]]] = []
     for record in chunks:
         text = record["chunk"]
-        found: list[tuple[EntityType, str]] = []
-        for entity_type in regex_types:
-            if entity_type.name in timed_out:
-                continue
-            matches = _extract_regex(entity_type, text)
-            if matches is None:
-                timed_out.add(entity_type.name)
-                log.warning(
-                    "Entity type %s: its pattern exceeded the %.0fs match budget; "
-                    "skipping that type. Its regex is likely pathological.",
-                    entity_type.name,
-                    _PATTERN_MATCH_TIMEOUT_SECONDS,
-                )
-                continue
-            found.extend((entity_type, m) for m in matches)
+        found = _regex_findings(regex_types, text, timed_out)
         if spacy_types and nlp is not None:
             found.extend(_extract_spacy(spacy_types, text, nlp))
         per_chunk.append(found)
