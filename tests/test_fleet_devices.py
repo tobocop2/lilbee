@@ -105,8 +105,10 @@ class TestNvlinkTopology:
         assert dev_mod.host_lacks_nvlink() is False
 
 
-def _fake_listing(monkeypatch: pytest.MonkeyPatch, output: str) -> None:
-    monkeypatch.setattr(dev_mod, "_run_list_devices", lambda _binary, _timeout: output)
+def _fake_listing(monkeypatch: pytest.MonkeyPatch, output: str, returncode: int = 0) -> None:
+    monkeypatch.setattr(
+        dev_mod, "_run_list_devices", lambda _binary, _timeout: (output, returncode)
+    )
 
 
 def test_probe_parses_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,11 +178,13 @@ def test_probe_runs_the_real_binary(tmp_path: Path) -> None:
 
 def test_run_list_devices_returns_the_child_output(monkeypatch: pytest.MonkeyPatch) -> None:
     class _HealthyProc:
+        returncode = 0
+
         def communicate(self, timeout: float | None = None) -> tuple[str, None]:
             return (_CUDA_LISTING, None)
 
     monkeypatch.setattr(dev_mod.subprocess, "Popen", lambda *_a, **_k: _HealthyProc())
-    assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == _CUDA_LISTING
+    assert dev_mod._run_list_devices(Path("/bin/llama-server"), 1.0) == (_CUDA_LISTING, 0)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
@@ -724,3 +728,72 @@ def test_an_integrated_adapter_beside_a_rasterizer_still_reads_as_shared(
     (device,) = _parse_devices("  ROCm0: AMD Radeon Graphics (16000 MiB)")
 
     assert device.unified is True
+
+
+class TestAnEngineThatCannotAnswerIsNotTakenAsAuthoritative:
+    """The probe merges stderr into stdout, so "it printed something" is not
+    evidence that it understood the question.
+
+    A build predating --list-devices prints usage text and exits non-zero. Read
+    as an authoritative empty device list, that plans a GPU box as CPU-only.
+    """
+
+    _USAGE = (
+        "error: invalid argument: --list-devices\n"
+        "usage: llama-server [options]\n\n"
+        "general:\n  -h, --help    show this help message and exit\n"
+    )
+
+    def test_usage_text_on_a_nonzero_exit_is_not_a_device_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_listing(monkeypatch, self._USAGE, returncode=1)
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.spoke_protocol is False
+
+    def test_a_clean_run_listing_nothing_is_a_device_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The header prints before the loop, so it survives a host with no GPU."""
+        _fake_listing(monkeypatch, "Available devices:\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.spoke_protocol is True
+
+    def test_a_zero_exit_without_the_header_is_not_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Output-format drift: text arrives, no device line parses, and treating
+        that as "no GPUs" plans a GPU box onto the CPU in silence."""
+        _fake_listing(monkeypatch, "ggml_vulkan: no devices found\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.spoke_protocol is False
+
+    def test_a_crash_after_the_header_is_not_a_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An engine that dies partway through enumerating prints the header first.
+
+        Believing the truncated list plans against whatever it managed to name,
+        or against nothing at all, on a host that has GPUs.
+        """
+        _fake_listing(monkeypatch, "Available devices:\n", returncode=-11)
+
+        assert probe_devices(Path("/bin/llama-server")).spoke_protocol is False
+
+    def test_a_probe_that_could_not_run_at_all_claims_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*_a: object, **_k: object) -> tuple[str, int]:
+            raise OSError("no such binary")
+
+        monkeypatch.setattr(dev_mod, "_run_list_devices", _boom)
+
+        assert probe_devices(Path("/bin/llama-server")).spoke_protocol is False

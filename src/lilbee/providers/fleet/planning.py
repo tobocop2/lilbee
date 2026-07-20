@@ -1028,15 +1028,20 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
             "CUDA_VISIBLE_DEVICES, and that the llama-server build has CUDA support.",
             binary,
         )
-    if not devices and not probe.output:
-        # Only when the binary told us nothing at all. It prints every non-CPU
-        # device it can use, so a probe that ran and listed none is reporting a
-        # fact, not a gap: believing the host loader instead invents devices the
-        # engine cannot see. A CPU-only build on a desktop with mesa is the
-        # clearest case, and the cost is not merely a wrong device list. The
-        # fleet is planned onto GPUs, the pins are no-ops, the shared-RAM guard
-        # is off because devices looked non-empty, and every role then loads its
-        # full weights into system RAM while running on the CPU anyway.
+    if not devices and not probe.spoke_protocol:
+        # Only when the binary never answered the question. An engine that ran
+        # and listed nothing is reporting a fact, not a gap: believing the host
+        # loader instead invents devices the engine cannot see. A CPU-only build
+        # on a desktop with mesa is the clearest case, and the cost is not merely
+        # a wrong device list. The fleet is planned onto GPUs, the pins are
+        # no-ops, the shared-RAM guard is off because devices looked non-empty,
+        # and every role then loads its full weights into system RAM while
+        # running on the CPU anyway.
+        #
+        # Keyed on the exit code and the header rather than on there being no
+        # output at all: the probe merges stderr into stdout, so a build that
+        # predates --list-devices prints usage text and would otherwise be read
+        # as an authoritative "no GPUs here".
         from lilbee.providers.fleet.gpu_select import integrated_vulkan_indices
 
         integrated = integrated_vulkan_indices()

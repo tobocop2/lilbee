@@ -30,6 +30,9 @@ _LIST_DEVICES_TIMEOUT_S = 60.0
 _PROBE_KILL_WAIT_S = 5.0
 _TOPO_TIMEOUT_S = 15.0
 _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
+# llama-server prints this before the device loop, so a run that lists no GPUs
+# still prints it. Its absence means the binary never got as far as enumerating.
+_DEVICE_LIST_HEADER = "Available devices:"
 # nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
 # not a tty; strip them or the header's GPU labels never match.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -81,6 +84,13 @@ class DeviceProbe:
 
     devices: list[FleetDevice]
     output: str
+    # Whether the engine answered --list-devices at all: exited cleanly and
+    # printed the header it always prints. False means the binary does not speak
+    # this protocol (a build predating the flag prints usage text and exits
+    # non-zero), so its silence about devices is not a statement that there are
+    # none. Defaults False so a probe that never ran is never mistaken for one
+    # that ran and found nothing.
+    spoke_protocol: bool = False
 
 
 def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
@@ -161,13 +171,23 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     it as "no devices" would silently plan a CPU fleet on a GPU box.
     """
     try:
-        output = _run_list_devices(binary, timeout_s)
+        output, returncode = _run_list_devices(binary, timeout_s)
     except (OSError, subprocess.SubprocessError):
         return DeviceProbe([], "")
-    return DeviceProbe(_select_backend(_parse_devices(output)), output)
+    spoke = returncode == 0 and _DEVICE_LIST_HEADER in output
+    if not spoke:
+        log.warning(
+            "%s --list-devices exited %d without printing its device header, so it "
+            "does not appear to support the flag. Falling back to the host's Vulkan "
+            "loader to find GPUs; set %s if this is not the engine you meant to use.",
+            binary.name,
+            returncode,
+            "LILBEE_ENGINE_DIR",
+        )
+    return DeviceProbe(_select_backend(_parse_devices(output)), output, spoke_protocol=spoke)
 
 
-def _run_list_devices(binary: Path, timeout_s: float) -> str:
+def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
     """Run the probe in its own process group; kill the group and raise on timeout.
 
     ``subprocess.run``'s timeout path waits indefinitely for the killed child to
@@ -194,7 +214,7 @@ def _run_list_devices(binary: Path, timeout_s: float) -> str:
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from None
-    return output or ""
+    return output or "", proc.returncode
 
 
 def _kill_probe(proc: subprocess.Popen[str]) -> None:
