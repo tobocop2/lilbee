@@ -121,7 +121,10 @@ def render_report(rows: list[dict[str, Any]]) -> str:
     """Render results rows to the human-readable benchmark markdown report."""
     arm_a, arm_b = _arm_labels(rows)
     meta = _rows_of(rows, "meta")
-    header = ["# lilbee vs RAGFlow retrieval benchmark", ""]
+    # Titled from the arms that actually ran. Hardcoding "lilbee vs RAGFlow"
+    # labelled every single-system ablation as a cross-system comparison, which
+    # is the same wrong-label problem the metric layer had.
+    header = [f"# Retrieval benchmark: {arm_a} vs {arm_b}", ""]
     if meta:
         header.append(
             f"Run `{meta[0].get('run_id', '?')}` "
