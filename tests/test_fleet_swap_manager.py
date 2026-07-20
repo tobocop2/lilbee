@@ -454,8 +454,6 @@ def _write_state(
     pid: int = 7777,
     pgid: int | None = 7777,
     created_at: float | None = None,
-    owner_pid: int | None = None,
-    owner_created_at: float | None = None,
     member_ports: list[int] | None = None,
     filename: str = "llama-swap.state.json",
 ) -> Path:
@@ -466,8 +464,6 @@ def _write_state(
                 "pid": pid,
                 "pgid": pgid,
                 "created_at": created_at,
-                "owner_pid": owner_pid,
-                "owner_created_at": owner_created_at,
                 "member_ports": member_ports,
                 "name": "llama-swap",
             }
@@ -483,9 +479,7 @@ def _own_state_path(tmp_path: Path) -> Path:
 
 def _swap_state(*, pid: int = 123, created_at: float | None = None) -> sm._SwapState:
     """A minimal _SwapState for swap-liveness checks."""
-    return sm._SwapState(
-        pid=pid, pgid=None, owner_pid=None, owner_created_at=None, created_at=created_at
-    )
+    return sm._SwapState(pid=pid, pgid=None, created_at=created_at)
 
 
 class TestCrossRunReaping:
@@ -654,7 +648,7 @@ class TestCrossRunReaping:
     ) -> None:
         # Reap must never disagree with bind: an engine answering on its proxy
         # is in use (a reload's own groups, or a bindable sibling engine).
-        state_path = _write_state(tmp_path, pid=7777, owner_pid=999)
+        state_path = _write_state(tmp_path, pid=7777)
         original = state_path.read_text()
         monkeypatch.setattr(sm, "state_is_healthy", lambda _state: True)
         stopped: list[object] = []
@@ -666,7 +660,7 @@ class TestCrossRunReaping:
     def test_dead_owner_swap_is_reaped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_state(tmp_path, pid=7777, owner_pid=999)
+        _write_state(tmp_path, pid=7777)
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
         stopped: list[sm._SwapState] = []
@@ -685,8 +679,6 @@ class TestCrossRunReaping:
         a_path = _write_state(
             tmp_path,
             pid=7777,
-            owner_pid=999,
-            owner_created_at=100.0,
             filename=sm._state_filename(999, _GROUP),
         )
         original = a_path.read_text()
@@ -705,9 +697,7 @@ class TestCrossRunReaping:
     def test_dead_owner_per_pid_state_file_is_reaped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        state_path = _write_state(
-            tmp_path, pid=7777, owner_pid=999, filename=sm._state_filename(999, _GROUP)
-        )
+        state_path = _write_state(tmp_path, pid=7777, filename=sm._state_filename(999, _GROUP))
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})  # owner pid 999 is gone
         stopped: list[sm._SwapState] = []
@@ -720,7 +710,7 @@ class TestCrossRunReaping:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Pre-per-owner format: the single shared file is still scanned and reaped.
-        legacy = _write_state(tmp_path, pid=7777, owner_pid=999)
+        legacy = _write_state(tmp_path, pid=7777)
         swap = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: swap})
         stopped: list[sm._SwapState] = []
@@ -742,9 +732,7 @@ class TestStopStaleSwap:
         monkeypatch.setattr(
             sm.os, "killpg", lambda pgid, sig: signals.append((pgid, sig)), raising=False
         )
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=8888, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=8888))
         assert signals == [(8888, sm.signal.SIGTERM)]
 
     def test_escalates_to_sigkill_when_term_is_ignored(
@@ -764,9 +752,7 @@ class TestStopStaleSwap:
             return ([], [])
 
         monkeypatch.setattr(sm.psutil, "wait_procs", _wait_procs)
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=8888, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=8888))
         assert signals == [sm.signal.SIGTERM, sm._SIGKILL]
         # The KILLed swap is awaited so its VRAM is free before the next probe.
         assert [stale] in waits
@@ -775,17 +761,13 @@ class TestStopStaleSwap:
         stale = _FakePsProcess(7777, cmdline=["/opt/llama-swap"])
         _patch_psutil_process(monkeypatch, {7777: stale})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=None, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=None))
         assert stale.signals == [sm.signal.SIGTERM]
 
     def test_noop_when_process_died_between_checks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_psutil_process(monkeypatch, {})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [])
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=None, owner_pid=None, owner_created_at=None)
-        )  # must not raise
+        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=None))  # must not raise
 
     def test_reaps_surviving_servers_of_the_stale_swap(
         self, monkeypatch: pytest.MonkeyPatch
@@ -797,9 +779,7 @@ class TestStopStaleSwap:
         _patch_psutil_process(monkeypatch, {7777: stale})
         monkeypatch.setattr(sm, "_live_children", lambda _pid: [survivor])
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: ([], []))
-        sm._stop_stale_swap(
-            sm._SwapState(pid=7777, pgid=None, owner_pid=None, owner_created_at=None)
-        )
+        sm._stop_stale_swap(sm._SwapState(pid=7777, pgid=None))
         assert survivor.terminated is True
 
 
@@ -903,7 +883,7 @@ class TestOrphanServerReaping:
     ) -> None:
         # The servers outlive a SIGKILLed swap in their own process groups; the
         # sweep must stop exactly the ones on the recorded ports.
-        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001, 5002])
+        _write_state(tmp_path, pid=7777, member_ports=[5001, 5002])
         _patch_psutil_process(monkeypatch, {})  # owner and swap are both gone
         orphan = _FakeServerProc(1, ["/opt/llama-server", "-m", "x.gguf", "--port", "5001"])
         recycled = _FakeServerProc(2, ["/usr/bin/python3", "serve.py", "--port", "5002"])
@@ -928,7 +908,7 @@ class TestOrphanServerReaping:
     ) -> None:
         # A current run can reuse a stale record's port; its server still has a
         # live llama-swap parent, so the sweep must not touch it.
-        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001])
+        _write_state(tmp_path, pid=7777, member_ports=[5001])
         _patch_psutil_process(monkeypatch, {})
         adopted = _FakeServerProc(
             1,
@@ -944,7 +924,7 @@ class TestOrphanServerReaping:
     def test_server_with_a_foreign_parent_is_still_reaped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_state(tmp_path, pid=7777, owner_pid=999, member_ports=[5001, 5002])
+        _write_state(tmp_path, pid=7777, member_ports=[5001, 5002])
         _patch_psutil_process(monkeypatch, {})
         orphan = _FakeServerProc(
             1,
@@ -965,7 +945,7 @@ class TestOrphanServerReaping:
     def test_legacy_state_without_ports_sweeps_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_state(tmp_path, pid=7777, owner_pid=999)
+        _write_state(tmp_path, pid=7777)
         _patch_psutil_process(monkeypatch, {})
 
         def _forbidden() -> object:
@@ -1204,7 +1184,6 @@ class TestBindToLiveEngine:
             json.dumps(
                 {
                     "pid": 999_998,
-                    "owner_pid": 999_999,
                     "member_ports": [4000],
                     "proxy_port": 4100,
                     "launches": [payload],
@@ -1228,7 +1207,7 @@ class TestBindToLiveEngine:
 
     def test_bind_refuses_a_state_without_a_proxy_port(self, tmp_path: Path) -> None:
         mgr = SwapManager(tmp_path, _GROUP)
-        state = sm._SwapState(pid=1, pgid=None, owner_pid=None, owner_created_at=None)
+        state = sm._SwapState(pid=1, pgid=None)
         assert mgr.bind(state) is False
         assert mgr.bound is False
 
@@ -1329,22 +1308,18 @@ class TestLiveStateHelpers:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
-        state = sm._SwapState(
-            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4100
-        )
+        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is True
 
     def test_state_without_a_port_is_unhealthy(self) -> None:
-        state = sm._SwapState(pid=1, pgid=None, owner_pid=None, owner_created_at=None)
+        state = sm._SwapState(pid=1, pgid=None)
         assert sm.state_is_healthy(state) is False
 
     def test_refused_probe_is_unhealthy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_http(monkeypatch, _raise_connect_error)
-        state = sm._SwapState(
-            pid=1, pgid=None, owner_pid=None, owner_created_at=None, proxy_port=4100
-        )
+        state = sm._SwapState(pid=1, pgid=None, proxy_port=4100)
         assert sm.state_is_healthy(state) is False
 
 

@@ -60,8 +60,6 @@ _STATE_FILE_GLOB = f"{_STATE_FILENAME_PREFIX}*"
 _STATE_KEY_PID = "pid"
 _STATE_KEY_PGID = "pgid"
 _STATE_KEY_CREATED_AT = "created_at"
-_STATE_KEY_OWNER_PID = "owner_pid"
-_STATE_KEY_OWNER_CREATED_AT = "owner_created_at"
 _STATE_KEY_NAME = "name"
 _STATE_KEY_MEMBER_PORTS = "member_ports"
 _STATE_KEY_PROXY_PORT = "proxy_port"
@@ -124,8 +122,6 @@ class _SwapState:
 
     pid: int
     pgid: int | None
-    owner_pid: int | None
-    owner_created_at: float | None
     created_at: float | None = None
     member_ports: tuple[int, ...] = ()
     proxy_port: int | None = None
@@ -211,7 +207,7 @@ class SwapManager:
         reap_stale(self._data_dir)
 
     def _process_identity(self) -> tuple[int, int | None, float | None] | None:
-        """(pid, pgid, create time) of the swap this manager runs or adopted."""
+        """(pid, pgid, create time) of the swap this manager runs, or None."""
         if self._proc is not None:
             pid = self._proc.pid
             pgid: int | None = None
@@ -317,9 +313,8 @@ class SwapManager:
         tracked ``Popen``: a warm-up/reset race or a reload can leave several
         llama-swap processes this lilbee spawned, any of them reparented to init
         (still holding the engine binary open) -- trusting one handle would leak
-        them. Every llama-swap running against our config is reaped (sparing a
-        live sibling lilbee at the same data_dir). Unlinks only this owner's state
-        file; another instance's record stays.
+        them. Every llama-swap running against our config is reaped. Unlinks only
+        this owner's state file; another instance's record stays.
         """
         if self._bound:
             # Not ours to stop: drop the binding and leave the engine serving.
@@ -575,13 +570,12 @@ def _stop_own_fleet(config_path: Path, member_ports: tuple[int, ...]) -> None:
     Keyed on config-path identity rather than a tracked Popen or the live process
     tree: a warm-up/reload race can leave several llama-swap processes this lilbee
     started, any of which may be reparented to init, so no single handle or child
-    scan finds them all. Every llama-swap running against our config is reaped
-    EXCEPT one a live *other* owner recorded -- a concurrent sibling lilbee at the
-    same data_dir is left alone. Each swap runs each llama-server in its own
-    process group, so the upstreams are swept separately: captured descendants
-    plus any llama-server still bound to one of our member ports (a respawned
-    upstream the descendant snapshot missed), then confirmed gone. The build
-    lock guarantees one builder per engine dir, so no sibling sparing applies.
+    scan finds them all. Every llama-swap running against our config is reaped:
+    the build lock guarantees one builder per engine dir, so no sibling sparing
+    applies. Each swap runs each llama-server in its own process group, so the
+    upstreams are swept separately: captured descendants plus any llama-server
+    still bound to one of our member ports (a respawned upstream the descendant
+    snapshot missed), then confirmed gone.
     """
     swaps = list(_swaps_for_config(config_path))
     children: list[psutil.Process] = []
@@ -627,16 +621,12 @@ def _load_state(path: Path) -> _SwapState | None:
     try:
         payload = json.loads(path.read_text())
         raw_pgid = payload.get(_STATE_KEY_PGID)
-        raw_owner = payload.get(_STATE_KEY_OWNER_PID)
-        raw_owner_created = payload.get(_STATE_KEY_OWNER_CREATED_AT)
         raw_created = payload.get(_STATE_KEY_CREATED_AT)
         raw_ports = payload.get(_STATE_KEY_MEMBER_PORTS) or []
         raw_proxy = payload.get(_STATE_KEY_PROXY_PORT)
         return _SwapState(
             pid=int(payload[_STATE_KEY_PID]),
             pgid=int(raw_pgid) if raw_pgid is not None else None,
-            owner_pid=int(raw_owner) if raw_owner is not None else None,
-            owner_created_at=float(raw_owner_created) if raw_owner_created is not None else None,
             created_at=float(raw_created) if raw_created is not None else None,
             member_ports=tuple(int(port) for port in raw_ports),
             proxy_port=int(raw_proxy) if raw_proxy is not None else None,

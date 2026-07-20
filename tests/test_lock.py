@@ -1,6 +1,5 @@
 """Tests for write locking and file locking."""
 
-import os
 import threading
 import time
 from pathlib import Path
@@ -206,7 +205,6 @@ class TestScopeLock:
         owner = read_scope_owner(tmp_path)
         assert owner is not None
         assert owner.data_dir == str(tmp_path / "vaults" / "a")
-        assert owner.pid == os.getpid()
         hold.release()
 
     def test_second_acquire_refused_and_owner_readable(self, tmp_path: Path):

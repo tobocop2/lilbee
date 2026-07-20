@@ -9,7 +9,6 @@ data dir.
 
 import json
 import logging
-import os
 import threading
 import time
 from collections.abc import Generator
@@ -73,10 +72,9 @@ def acquire_server_lock(data_dir: Path, timeout: float = SERVER_LOCK_TIMEOUT) ->
 
 @dataclass(frozen=True)
 class ScopeOwner:
-    """Identity of the server holding a scope lock, for messages and take-over."""
+    """The data dir the server holding a scope lock is serving, for the refusal message."""
 
     data_dir: str
-    pid: int
 
 
 @dataclass(frozen=True)
@@ -99,8 +97,8 @@ def acquire_scope_lock(
 
     The scope is a directory shared by several would-be servers (the Obsidian
     plugin's shared root). Like the data-dir lock, the OS releases it the moment
-    the holder exits. The owner sidecar names the holder so a refused starter
-    can report, or gracefully take over from, the server that owns the scope.
+    the holder exits. The owner sidecar records which data dir the holder is
+    serving so a refused starter can name it in its message.
     """
     scope_dir.mkdir(parents=True, exist_ok=True)
     lock = FileLock(scope_dir / _SCOPE_LOCK_NAME)
@@ -109,7 +107,7 @@ def acquire_scope_lock(
     except FileLockTimeout:
         return None
     owner_path = scope_dir / _SCOPE_OWNER_NAME
-    owner_path.write_text(json.dumps({"data_dir": str(data_dir), "pid": os.getpid()}))
+    owner_path.write_text(json.dumps({"data_dir": str(data_dir)}))
     return ScopeHold(lock, owner_path)
 
 
@@ -117,7 +115,7 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
     """The scope's recorded owner, or None when absent or unreadable."""
     try:
         payload = json.loads((scope_dir / _SCOPE_OWNER_NAME).read_text())
-        return ScopeOwner(data_dir=str(payload["data_dir"]), pid=int(payload["pid"]))
+        return ScopeOwner(data_dir=str(payload["data_dir"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
 

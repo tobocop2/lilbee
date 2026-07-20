@@ -16,8 +16,6 @@ def _state(*launches: InstanceLaunch, pin: str = "pin-a") -> _SwapState:
     return _SwapState(
         pid=1,
         pgid=None,
-        owner_pid=None,
-        owner_created_at=None,
         proxy_port=4100,
         launches=tuple(launch.to_state() for launch in launches),
         engine_pin=pin,
@@ -60,8 +58,6 @@ def test_undecodable_contract_refuses() -> None:
     state = _SwapState(
         pid=1,
         pgid=None,
-        owner_pid=None,
-        owner_created_at=None,
         proxy_port=4100,
         launches=({"junk": True},),
         engine_pin="pin-a",
