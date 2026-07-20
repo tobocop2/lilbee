@@ -436,6 +436,29 @@ class TestBuildContext:
         ctx = build_context(results)
         assert "[1] (notes.md)\nhello" in ctx
 
+    def test_header_omits_page_zero(self):
+        """PDF chunks whose page metadata was missing are stored with page 0.
+        The Sources block already suppresses that locator, so the prompt
+        header must too, or the model cites a page the user's list denies."""
+        results = [
+            _make_result(
+                source="scan.pdf", content_type="pdf", chunk="body", page_start=0, page_end=0
+            )
+        ]
+        ctx = build_context(results)
+        assert "[1] (scan.pdf)\nbody" in ctx
+        assert "page 0" not in ctx
+
+    def test_header_omits_line_zero_for_code(self):
+        results = [
+            _make_result(
+                source="app.py", content_type="code", chunk="x = 1", line_start=0, line_end=0
+            )
+        ]
+        ctx = build_context(results)
+        assert "[1] (app.py)\nx = 1" in ctx
+        assert "line 0" not in ctx
+
 
 class TestCitedIndexExtraction:
     def test_single_brackets(self):

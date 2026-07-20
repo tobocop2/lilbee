@@ -94,13 +94,8 @@ def _source_file_url(source: str) -> str | None:
 
 def _source_locator(result: SearchChunk) -> str:
     """The ``, page N`` / ``, lines A-B`` suffix for a source line, or ''."""
-    if result.content_type == "pdf" and (result.page_start or result.page_end):
-        ps, pe = result.page_start, result.page_end
-        return f", page {ps}" if ps == pe else f", pages {ps}-{pe}"
-    if result.content_type == "code" and (result.line_start or result.line_end):
-        ls, le = result.line_start, result.line_end
-        return f", line {ls}" if ls == le else f", lines {ls}-{le}"
-    return ""
+    location = _location_suffix(result)
+    return f", {location}" if location else ""
 
 
 def _format_citation(citation: CitationRecord) -> str:
@@ -118,11 +113,17 @@ def _format_citation(citation: CitationRecord) -> str:
 
 
 def _location_suffix(result: SearchChunk) -> str:
-    """The page or line span of a chunk, or empty when neither applies."""
-    if result.content_type == "pdf":
+    """The page or line span of a chunk, or empty when neither applies.
+
+    Zero means "no location": PDF chunks whose page metadata was missing are
+    stored with page 0, so a locator is only rendered when at least one end
+    of the span is set. Sole owner of the rule -- ``_source_locator`` adds
+    the leading separator and nothing else.
+    """
+    if result.content_type == "pdf" and (result.page_start or result.page_end):
         ps, pe = result.page_start, result.page_end
         return f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-    if result.content_type == "code":
+    if result.content_type == "code" and (result.line_start or result.line_end):
         ls, le = result.line_start, result.line_end
         return f"line {ls}" if ls == le else f"lines {ls}-{le}"
     return ""
