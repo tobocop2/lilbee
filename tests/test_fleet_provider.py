@@ -272,6 +272,82 @@ def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch) -> No
     assert p._skipped_not_installed == {WorkerRole.CHAT: "org/repo/missing-chat.gguf"}
 
 
+def test_ensure_fleet_propagates_a_probe_failure_to_on_demand_callers(monkeypatch) -> None:
+    # A wedged GPU probe (CONNECTION, not a missing binary) must not be swallowed:
+    # planning it away and serving nothing hides the fault behind a silent
+    # not_started. The failure surfaces to the on-demand caller that drove the build.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+
+    def _wedged() -> None:
+        raise ProviderError(
+            "device probe wedged", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+        )
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
+    p = FleetProvider()
+    with pytest.raises(ProviderError) as excinfo:
+        p._ensure_fleet()
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_ensure_fleet_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> None:
+    # The one planning failure that keeps the quiet no-fleet path: a genuinely
+    # missing engine binary (NOT_FOUND). Nothing spawns and no error propagates.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+
+    def _no_binary() -> None:
+        raise ProviderError(
+            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+        )
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
+    p = FleetProvider()
+    assert p._ensure_fleet() is False
+    assert swap.started == []
+
+
+def test_reload_propagates_a_probe_failure_on_the_resurrect_path(monkeypatch) -> None:
+    # A reload with nothing running recaptures the probe like a first build; a
+    # wedged probe there must fail loud, not silently leave the box empty. The
+    # raise lands before the stop phase, so no running group is torn down.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+
+    def _wedged() -> None:
+        raise ProviderError(
+            "device probe wedged", provider="llama-server", kind=ProviderErrorKind.CONNECTION
+        )
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _wedged)
+    p = FleetProvider()  # no swaps: the resurrect path recaptures the probe
+    with pytest.raises(ProviderError) as excinfo:
+        p._reload_pass()
+    assert excinfo.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_reload_stays_quiet_when_the_engine_binary_is_missing(monkeypatch) -> None:
+    # A missing binary on the reload resurrect path aborts quietly (nothing to
+    # serve), mirroring the build path rather than raising.
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+
+    def _no_binary() -> None:
+        raise ProviderError(
+            "no engine binary", provider="llama-server", kind=ProviderErrorKind.NOT_FOUND
+        )
+
+    monkeypatch.setattr(planning_mod, "capture_plan_probe", _no_binary)
+    p = FleetProvider()
+    p._reload_pass()  # must not raise
+    assert p._swaps == {}
+
+
 def test_ensure_fleet_refused_after_shutdown(monkeypatch) -> None:
     """bb-dpp source guard: once shut down (and likely discarded by reset_services),
     a lingering warm-up/reload thread's _ensure_fleet must not spawn a new llama-swap
@@ -1270,13 +1346,13 @@ def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
 
 
 def test_ensure_fleet_returns_none_when_engine_binary_unavailable(monkeypatch) -> None:
-    """plan_all_launches raising ProviderError (no engine binary) yields no swap."""
-    from lilbee.providers.base import ProviderError
+    """plan_all_launches raising a NOT_FOUND ProviderError (no engine binary) yields no swap."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
 
     def _no_binary() -> list:
-        raise ProviderError("Engine binary unavailable")
+        raise ProviderError("Engine binary unavailable", kind=ProviderErrorKind.NOT_FOUND)
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _no_binary)
     p = FleetProvider()

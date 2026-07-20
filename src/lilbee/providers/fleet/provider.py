@@ -912,7 +912,13 @@ class FleetProvider:
             # host must serve nothing, not raise.
             planning.capture_plan_probe()
             plan = planning.plan_all_launches()
-        except ProviderError:
+        except ProviderError as exc:
+            # Only a genuinely-missing engine binary keeps the quiet no-fleet path;
+            # any other planning failure (a wedged GPU probe, an unusable CUDA
+            # runtime) must surface to the warm tracker and on-demand callers
+            # rather than silently serving nothing (#540).
+            if exc.kind is not ProviderErrorKind.NOT_FOUND:
+                raise
             log.debug("Engine binary unavailable; no swap started")
             plan = None
         self._skipped_not_installed = dict(plan.skipped_not_installed) if plan else {}
@@ -2001,11 +2007,23 @@ class FleetProvider:
             # Reap dead engines in our dirs before re-planning, as a build would.
             reload_dir = self._reload_dir()
             reap_stale(reload_dir)
-            if not running:
-                # Nothing loaded (a resurrect after a failed pass): the box is
-                # clean, so refresh the plan snapshot like a first build would.
-                planning.capture_plan_probe()
-            plan = planning.plan_all_launches()
+            try:
+                if not running:
+                    # Nothing loaded (a resurrect after a failed pass): the box is
+                    # clean, so refresh the plan snapshot like a first build would.
+                    planning.capture_plan_probe()
+                plan = planning.plan_all_launches()
+            except ProviderError as exc:
+                # Same policy as the initial build: a genuinely-missing engine
+                # binary aborts the reload quietly (nothing to serve), while any
+                # other planning failure (a wedged GPU probe, an unusable CUDA
+                # runtime) propagates to fail loud. The raise lands before the
+                # stop phase, so a running fleet is left intact rather than half
+                # torn down.
+                if exc.kind is not ProviderErrorKind.NOT_FOUND:
+                    raise
+                log.debug("Engine binary unavailable; reload left the fleet as-is")
+                return
             new = _launches_by_group(plan)
             # A group restarts when its launches changed OR its running/planned
             # presence disagrees (covers a group the new plan drops or adds).
