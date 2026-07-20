@@ -2,7 +2,9 @@
 # Bench pod setup: engine seed + bootstrap + models + a serving lilbee.
 # Run inside a pod tmux.
 set -uo pipefail
-BRANCH=fix/serve-data-dir-singleton
+# Defaults to main so the harness keeps working once this branch merges and is
+# deleted; the bootstrap is fetched from a raw URL that would 404 otherwise.
+BRANCH="${LILBEE_QA_BRANCH:-main}"
 WHEEL_URL="https://github.com/tobocop2/lilbee/releases/download/v0.6.90b420.dev721/lilbee_engine-0.6.90b420.dev721-1.cu124-py3-none-manylinux_2_17_x86_64.whl"
 ENGINE_CACHE=/workspace/engine-cache/cu124
 CHAT="unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-Q8_0.gguf"

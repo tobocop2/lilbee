@@ -21,7 +21,7 @@ agent flailing on camera is worse than no demo.
 |---|---|---|---|---|
 | Consumer, single card | Qwen3-Coder-30B-A3B, Q4_K_M | ~18 GB | One RTX 4090 or 5090; M-series 32 GB | "Runs on the card you already own." Already a verified passing family in this repo's opencode matrix, including on M1 Metal. |
 | Consumer, enthusiast desktop | Qwen3-Coder-Next, 80B-A3B, Q4_K_M | ~48.7 GB | Dual 5090 (64 GB), or Mac Studio M4 Max 64 GB | An 80B agentic coder at ~71% SWE-bench Verified, on a desktop. The Mac path is the least friction: no dual-card power budget, roughly 80 W at load. |
-| Workstation | MiniMax-M2.1, 230B-A10B | ~130 GB | Mac Studio M3 Ultra (large unified memory) | Frontier coding agent on a machine a person can buy. On NVIDIA this tier needs expert offload, which lilbee does not support yet. |
+| Workstation | MiniMax-M2.1, 230B-A10B | ~130 GB | Mac Studio M3 Ultra (large unified memory) | Frontier coding agent on a machine a person can buy. On NVIDIA this tier needs expert offload, which lilbee now does via `cpu_moe`/`n_cpu_moe`. |
 | Warehouse | Kimi K2.6, 1T-A32B | ~340 GB at UD-Q2_K_XL | 4x H200 | The SWE-bench leader at ~80.2%. The one row that is honestly datacenter-only. |
 | Reference | Qwen3.6-35B-A3B, Q8_0 | 37 GB | A100 80GB, already run | Free row, no new pod time. |
 
@@ -29,15 +29,16 @@ agent flailing on camera is worse than no demo.
 
 Qwen3-Coder-Next activates only ~3B of its 80B parameters per token, so in
 principle a 24 GB card could hold the hot weights and park idle experts in
-system RAM. llama.cpp supports exactly that. **lilbee does not**: there is no
-`--n-cpu-moe`, no `--override-tensor`, nothing in the fleet launcher that
-splits experts off the GPU, so every model must fit VRAM entirely. That is the
-single lever between "rent an A100" and "runs on your 4090".
+system RAM. llama.cpp supports exactly that, and **so does lilbee now**: the
+fleet launcher emits `--override-tensor` from the `cpu_moe` setting, or from
+`n_cpu_moe` to offload only the first N layers' experts. That is the single
+lever between "rent an A100" and "runs on your 4090".
 
-Expert offload is tracked in the issue tracker and **this plan is blocked on
-it**, along with the wider audit of what else llama.cpp offers that lilbee
-never emits. When those land, the enthusiast tier collapses onto a single 4090
-and the workstation tier opens up on NVIDIA, so re-read this table before
+What is still open is having the planner choose the split itself from what
+actually fits, rather than a flag someone tunes by hand, along with the wider
+audit of what else llama.cpp offers that lilbee never emits. With the flags in
+place the enthusiast tier collapses onto a single 4090 and the workstation tier
+opens up on NVIDIA, so re-read this table before
 booking any hardware: the whole shopping list changes.
 
 ### What four agents means on a small card
@@ -147,13 +148,14 @@ every chat, but the same query through the cli works fine every time. same box,
 same engine. why would the resident process not recover when a fresh one does?
 ```
 
-Feature, real, the expert-offload issue, and the one that matters most here:
+Feature, already shipped: the agent should find the existing setting rather
+than build a second one. Answering "here is how to add it" is the failure.
 
 ```
 i want lilbee to run big moe models on consumer gpus. only about 3b params are
 active on an 80b so in theory we keep the hot weights on the card and push the
-idle experts out to system ram, and llama.cpp already supports that. we don't
-do any of it. can you work out what it would take and build it?
+idle experts out to system ram, and llama.cpp already supports that. can we do
+that, and if so how do i turn it on?
 ```
 
 Refactor, real, pin `fc6347cc` (fixed by `af85823a`):
@@ -217,7 +219,7 @@ later acquire never comes back. i've been staring at this a while. what's
 actually going on?
 ```
 
-Feature, real, the expert-offload issue at its harder end:
+Feature, real, and still open: expert offload at its harder end.
 
 ```
 same expert offload question as before, but i want the planner to decide the

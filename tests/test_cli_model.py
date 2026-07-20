@@ -816,3 +816,30 @@ class TestNativeManifestIndex:
             index = model_mod._native_manifest_index()
         assert _CHAT_REF in index
         assert index[_CHAT_REF].task == "chat"
+
+
+def test_every_catalog_command_leaves_the_fleet_cold() -> None:
+    """The invariant was five pasted copies; a new command must not miss it.
+
+    Catalog commands browse, read, download and delete model files and never
+    run inference, so none should pay for a fleet warm. Asserted over the
+    registered commands rather than per call site, so a command added later
+    fails here instead of silently eager-starting.
+    """
+    from lilbee.cli.model import model_app
+
+    for command in model_app.registered_commands:
+        callback = command.callback
+        assert callback is not None
+        assert "_apply_catalog_overrides" in callback.__code__.co_names, (
+            f"{callback.__name__} bypasses the cold-fleet override helper"
+        )
+
+
+def test_apply_catalog_overrides_clears_eager_start(monkeypatch) -> None:
+    from lilbee.cli import model as model_mod
+
+    monkeypatch.setattr(model_mod, "apply_overrides", lambda **_kwargs: None)
+    monkeypatch.setattr(model_mod.cfg, "worker_pool_eager_start", True, raising=False)
+    model_mod._apply_catalog_overrides(data_dir=None, use_global=False)
+    assert model_mod.cfg.worker_pool_eager_start is False
