@@ -95,3 +95,23 @@ def test_paravirtual_adapters_are_not_offered_to_placement() -> None:
     ]
     with mock.patch.object(gpu_select, "_enumerate_vulkan_devices", lambda: devices):
         assert gpu_select.enumerate_gpu_vram() == [(1, 24 * gib)]
+
+
+def test_integrated_index_probe_runs_once_per_process(monkeypatch) -> None:
+    """The device parser asks per device line; the answer is a machine property."""
+    from lilbee.providers.fleet import gpu_select
+
+    calls: list[int] = []
+
+    def _counting():
+        calls.append(1)
+        return [gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.INTEGRATED_GPU, "x", 0, 0)]
+
+    gpu_select.integrated_vulkan_indices.cache_clear()
+    monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", _counting)
+    try:
+        for _ in range(4):
+            assert gpu_select.integrated_vulkan_indices() == frozenset({0})
+        assert len(calls) == 1, f"probed the Vulkan loader {len(calls)} times"
+    finally:
+        gpu_select.integrated_vulkan_indices.cache_clear()

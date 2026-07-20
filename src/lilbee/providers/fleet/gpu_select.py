@@ -19,6 +19,7 @@ import sys
 from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_uint64, c_void_p
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
+from functools import lru_cache
 
 from lilbee.providers.fleet.vulkan_icd_discovery import (
     iter_vulkan_manifest_paths,
@@ -302,11 +303,17 @@ def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
     return [(d.index, d.vram_bytes) for d in devices if d.device_type in _USABLE_DEVICE_TYPES]
 
 
+@lru_cache(maxsize=1)
 def integrated_vulkan_indices() -> frozenset[int]:
     """Loader indices of adapters whose memory is the host's.
 
     Empty when the loader is unavailable or the probe fails, which reads as
     "assume dedicated" and preserves the behaviour discrete hosts already have.
+
+    Cached because the device parser asks per device line: without it an
+    N-device host paid N loader loads and N instance creations to answer the
+    same question. Which adapters are integrated is a property of the machine,
+    so one answer per process is right.
     """
     devices = _enumerate_vulkan_devices()
     if not devices:
