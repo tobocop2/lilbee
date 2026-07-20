@@ -1072,14 +1072,14 @@ class Config(BaseSettings):
 
         data_env = os.environ.get("LILBEE_DATA", "")
         if data_env:
-            # Canonical for the same reason the root itself is: a "~/lilbee"
-            # env value would otherwise look for config.toml under a literal
-            # ./~ tree and silently find nothing.
-            toml_dir = canonical_data_root(data_env)
+            toml_dir: Path | str = data_env
         else:
             local = find_local_root()
             toml_dir = local if local else default_data_dir()
-        toml_path = toml_dir / "config.toml"
+        # Canonicalized through the same call as the root itself, so this
+        # looks in the directory the root will resolve to: a "~/lilbee" value
+        # would otherwise search a literal ./~ tree and silently find nothing.
+        toml_path = canonical_data_root(toml_dir) / "config.toml"
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]
