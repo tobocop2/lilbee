@@ -234,9 +234,7 @@ def stream_chat_with_cap(
     nudged = [*messages, {"role": "user", "content": CAP_CONTINUATION_PROMPT}]
     second_stream = provider.chat(nudged, stream=True, options=options or None, model=model)
     try:
-        for token in filter_reasoning(
-            _text_only(second_stream), show=show_reasoning, cap_chars=0
-        ):
+        for token in filter_reasoning(_text_only(second_stream), show=show_reasoning, cap_chars=0):
             if token.content:
                 yield StreamToken(content=token.content, is_reasoning=False)
     finally:
