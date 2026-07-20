@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -36,20 +34,3 @@ def load_config_dict(
         )
         raise typer.Exit(1) from exc
     return parsed if isinstance(parsed, dict) else {}
-
-
-def atomic_write_text(path: Path, text: str) -> None:
-    """Write *text* to *path* atomically (temp file + os.replace), creating parents."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, suffix=".tmp", delete=False, mode="w", encoding="utf-8"
-        ) as tmp:
-            tmp_name = tmp.name
-            tmp.write(text)
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name is not None:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise

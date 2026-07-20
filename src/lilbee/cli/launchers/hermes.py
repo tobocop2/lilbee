@@ -17,6 +17,7 @@ from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
+from lilbee.core.system import atomic_write_text
 
 _HERMES_INSTALL_HINT = (
     "hermes binary not found on PATH. Install it from https://github.com/NousResearch/hermes-agent."
@@ -54,7 +55,7 @@ def _upsert_env_token(path: Path, token: str) -> None:
     line = f"{LILBEE_TOKEN_ENV_VAR}={token}"
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     kept = [ln for ln in existing if not ln.startswith(f"{LILBEE_TOKEN_ENV_VAR}=")]
-    config_file.atomic_write_text(path, "\n".join([*kept, line]) + "\n")
+    atomic_write_text(path, "\n".join([*kept, line]) + "\n")
     if os.name == "posix":
         path.chmod(0o600)
 
@@ -124,9 +125,7 @@ class HermesLauncher:
         deep_merge(config, fragment)
         if not self._include_mcp:
             prune_lilbee(config, _MCP_CONTAINER_KEY)
-        config_file.atomic_write_text(
-            _hermes_config_path(), yaml.safe_dump(config, sort_keys=False)
-        )
+        atomic_write_text(_hermes_config_path(), yaml.safe_dump(config, sort_keys=False))
         _upsert_env_token(_hermes_env_path(), token)
         if self._include_mcp:
             install_bundled_skill(_hermes_skill_dest())

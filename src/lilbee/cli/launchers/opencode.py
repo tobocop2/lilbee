@@ -18,6 +18,7 @@ from lilbee.cli.launchers.launcher import LILBEE_TOKEN_ENV_VAR, run_launcher
 from lilbee.cli.launchers.server import LOOPBACK, client_chat_ctx
 from lilbee.cli.launchers.skill_install import install_bundled_skill
 from lilbee.core.config import cfg
+from lilbee.core.system import atomic_write_text
 
 _OPENCODE_INSTALL_HINT = "opencode binary not found on PATH. Install it from https://opencode.ai/."
 _TOKEN_REF = "{env:" + LILBEE_TOKEN_ENV_VAR + "}"
@@ -148,7 +149,7 @@ class OpencodeLauncher:
         deep_merge(config, block)
         if not self._include_mcp:
             prune_lilbee(config, _MCP_CONTAINER_KEY)
-        config_file.atomic_write_text(_opencode_config_path(), json.dumps(config, indent=2))
+        atomic_write_text(_opencode_config_path(), json.dumps(config, indent=2))
         # The lilbee-mcp guidance skill only helps when the MCP tool is wired in;
         # skip it when MCP is disabled (a previously-installed skill is left alone).
         if self._include_mcp:

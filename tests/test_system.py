@@ -273,3 +273,33 @@ class TestStderrSuppressed:
             original_stat.st_dev,
             original_stat.st_ino,
         )
+
+
+def test_atomic_write_creates_parents_and_writes(tmp_path):
+    import json
+
+    from lilbee.core.system import atomic_write_text
+
+    path = tmp_path / "nested" / "c.json"
+    atomic_write_text(path, '{"a": 1}')
+    assert json.loads(path.read_text()) == {"a": 1}
+    assert not list((tmp_path / "nested").glob("*.tmp"))
+
+
+def test_atomic_write_leaves_no_litter_on_failure(tmp_path, monkeypatch):
+    """A failed rename must leave the destination and the directory as they were."""
+    import pytest
+
+    from lilbee.core import system as system_mod
+
+    path = tmp_path / "c.json"
+    path.write_text("original")
+
+    def _boom(*_a, **_k):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(system_mod.os, "replace", _boom)
+    with pytest.raises(OSError):
+        system_mod.atomic_write_text(path, "new")
+    assert path.read_text() == "original"
+    assert not list(tmp_path.glob("*.tmp"))

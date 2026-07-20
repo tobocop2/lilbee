@@ -790,9 +790,10 @@ class TestStopStaleSwap:
 
 
 class TestAtomicStateWrite:
-    def test_write_state_lands_via_replace_with_no_tmp_leftovers(
+    def test_config_and_state_both_land_via_replace_with_no_tmp_leftovers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A truncating write leaves llama-swap a config it cannot start from."""
         replaced: list[str] = []
         real_replace = os.replace
 
@@ -804,7 +805,8 @@ class TestAtomicStateWrite:
         _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
         SwapManager(tmp_path, _GROUP).start([_launch(WorkerRole.CHAT)])
-        assert replaced == [str(_own_state_path(tmp_path))]
+        config_path = tmp_path / f"llama-swap-{_GROUP.value}.{os.getpid()}.json"
+        assert replaced == [str(config_path), str(_own_state_path(tmp_path))]
         assert json.loads(_own_state_path(tmp_path).read_text())["pid"] == 4321
         assert [path for path in tmp_path.iterdir() if path.name.endswith(".tmp")] == []
 
@@ -1506,3 +1508,14 @@ class TestTeardownHelpers:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.swap_manager"):
             sm._await_killed([_Immortal()])
         assert any("survived SIGKILL" in record.message for record in caplog.records)
+
+
+def test_stale_config_tmp_of_a_dead_writer_is_swept(tmp_path: Path) -> None:
+    """The sweep must see config leftovers too, not just state ones."""
+    dead = tmp_path / ".llama-swap-chat.999999.json.tmp"
+    dead.write_text("half")
+    live = tmp_path / f".llama-swap-chat.{os.getpid()}.json.tmp"
+    live.write_text("in flight")
+    sm._clean_stale_tmp_files(tmp_path)
+    assert not dead.exists()
+    assert live.exists()  # a live writer's file in flight is never touched

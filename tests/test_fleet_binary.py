@@ -270,3 +270,30 @@ class TestEnginePin:
         assert env["ENGINE_LLAMA_CPP_VERSION"] in pin
         assert env["ENGINE_LLAMA_SWAP_VERSION"] in pin
         assert env["ENGINE_GGUF_PARSER_REF"] in pin
+
+
+def test_engine_pin_survives_an_engine_wheel_without_metadata(monkeypatch) -> None:
+    """engine_pin runs on every state write, so it must not raise here.
+
+    lilbee_engine can be importable with nothing to look up: an extracted wheel
+    on sys.path, a vendored copy, or a dist whose name does not normalize to
+    lilbee-engine. A PackageNotFoundError escaping here aborts the state write.
+    """
+    import sys
+    import types
+    from importlib.metadata import PackageNotFoundError
+
+    from lilbee.providers.fleet import binary as binary_mod
+
+    stub = types.ModuleType("lilbee_engine")  # no get_engine_pin -> pre-pin path
+    monkeypatch.setitem(sys.modules, "lilbee_engine", stub)
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "llama_server_path", "", raising=False)
+
+    def _no_metadata(_name: str) -> str:
+        raise PackageNotFoundError("lilbee-engine")
+
+    monkeypatch.setattr(binary_mod, "_pkg_version", _no_metadata)
+    assert binary_mod._engine_build_id() == "wheel:unknown"
+    assert binary_mod.engine_pin()  # total: a pin is still produced

@@ -121,6 +121,24 @@ _CREATE_NEW_PROCESS_GROUP: int = _platform_const(subprocess, "CREATE_NEW_PROCESS
 _SIGKILL: int = _platform_const(signal, "SIGKILL", signal.SIGTERM)
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Write *text* to *path* via a temp file in the same dir, then rename over it.
+
+    A plain write truncates the destination first, so a process dying mid-write
+    (OOM kill, SIGKILL, disk full) leaves an empty or half-written file behind.
+    For the llama-swap config that means the next spawn hands the engine a file
+    it cannot start from; for the state file it means a sibling's reap scan
+    reads a torn record.
+
+    The temp name carries the destination's name, and both config and state
+    filenames embed the writing process's pid, so a crash leftover can be told
+    from a live writer's file in flight -- see ``_clean_stale_tmp_files``.
+    """
+    tmp_path = path.with_name(f"{_STATE_TMP_PREFIX}{path.name}{_STATE_TMP_SUFFIX}")
+    tmp_path.write_text(text)
+    os.replace(tmp_path, path)
+
+
 def _state_filename(owner_pid: int, group: str) -> str:
     """The per-owner, per-group state filename for the lilbee process *owner_pid*."""
     return f"{_STATE_FILENAME_PREFIX}{group}.{owner_pid}{_STATE_FILENAME_SUFFIX}"
@@ -191,10 +209,11 @@ class SwapManager:
         self._member_ports = sorted(member_ports.values())
         self._launches_payload = [launch.to_state() for launch in launches]
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(
+        _atomic_write(
+            self._config_path,
             build_swap_config(
                 launches, member_ports, swap=self._group.swaps, ttl_seconds=ttl_seconds
-            )
+            ),
         )
         self._port = ports[0]
         # Capture llama-swap's stdout/stderr to a file so its access log never
@@ -257,11 +276,7 @@ class SwapManager:
             _STATE_KEY_LAUNCHES: self._launches_payload,
             _STATE_KEY_ENGINE_PIN: engine_pin(),
         }
-        tmp_path = self._state_path.with_name(
-            f"{_STATE_TMP_PREFIX}{self._state_path.name}{_STATE_TMP_SUFFIX}"
-        )
-        tmp_path.write_text(json.dumps(state))
-        os.replace(tmp_path, self._state_path)
+        _atomic_write(self._state_path, json.dumps(state))
 
     def endpoint(self) -> str:
         """Base URL of the llama-swap OpenAI-compatible proxy."""
@@ -595,8 +610,8 @@ def reap_stale(data_dir: Path) -> None:
 
 
 def _clean_stale_tmp_files(data_dir: Path) -> None:
-    """Remove crash-leftover state tmp files whose writer is dead."""
-    tmp_glob = f"{_STATE_TMP_PREFIX}{_STATE_FILE_GLOB}{_STATE_TMP_SUFFIX}"
+    """Remove crash-leftover state and config tmp files whose writer is dead."""
+    tmp_glob = f"{_STATE_TMP_PREFIX}*{_STATE_TMP_SUFFIX}"
     for tmp_path in data_dir.glob(tmp_glob):
         writer_pid = _state_owner_pid(tmp_path.name)
         if writer_pid is not None and not psutil.pid_exists(writer_pid):

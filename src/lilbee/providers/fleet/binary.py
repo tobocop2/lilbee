@@ -77,11 +77,28 @@ def _engine_build_id() -> str:
         try:
             return str(lilbee_engine.get_engine_pin())
         except AttributeError:  # pre-pin wheels lack the accessor
-            return f"wheel:{_pkg_version('lilbee-engine')}"
+            return f"wheel:{_engine_wheel_version()}"
     found = shutil.which(EngineTool.LLAMA_SERVER.value)
     if found is not None:
         return f"path:{found}@{_binary_signature(Path(found))}"
     return "unpinned"
+
+
+def _engine_wheel_version() -> str:
+    """The engine wheel's version, or a marker when it has no distribution metadata.
+
+    ``lilbee_engine`` can be importable with nothing to look up: an extracted
+    wheel on sys.path, a vendored copy, or a distribution registered under a name
+    that does not normalize to ``lilbee-engine``. Since this feeds the pin, and
+    the pin is computed on every state write, a missing version degrades to a
+    marker rather than raising out of ``engine_pin``.
+    """
+    from importlib.metadata import PackageNotFoundError
+
+    try:
+        return _pkg_version("lilbee-engine")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _binary_signature(path: Path) -> str:
