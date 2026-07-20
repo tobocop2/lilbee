@@ -128,7 +128,7 @@ def _pipeline_fixture():
 
 def test_build_results_emits_question_rows_and_a_summary():
     questions, answers, unblinded = _pipeline_fixture()
-    rows = build_results(questions, answers, unblinded, noise_arm="B")
+    rows = build_results(questions, answers, unblinded, noise_arm="B", judged=unblinded)
     summary = rows[-1]
     assert summary["row_type"] == ResultRowType.SUMMARY
     assert summary["noise_floor"] == pytest.approx(1 / 6, abs=1e-3)
@@ -161,6 +161,6 @@ def test_build_results_counts_hard_failures():
         error="ConnectError: refused",
     )
     del answers["B"]["ct000"]
-    rows = build_results(questions, answers, unblinded, noise_arm="B")
+    rows = build_results(questions, answers, unblinded, noise_arm="B", judged=unblinded)
     summary = rows[-1]
     assert summary["arms"]["B"]["errors"] == 2

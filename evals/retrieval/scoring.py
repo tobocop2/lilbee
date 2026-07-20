@@ -154,7 +154,7 @@ def build_results(
     unblinded: Unblinded,
     noise_arm: str,
     *,
-    judged: Unblinded | None = None,
+    judged: Unblinded,
     judge_model: str = "",
 ) -> list[dict[str, Any]]:
     """Per-question rows for every arm, then one summary row, results.jsonl shaped.
@@ -168,14 +168,18 @@ def build_results(
     judge-graded count come from ``judged``; using ``unblinded`` would count
     never-judged rows as perfect self-agreement (deflating the floor to zero) and
     would report prefailed answers as judge-graded.
+
+    ``judged`` is required rather than defaulting to ``unblinded``: a default
+    would silently restore exactly that wrong count for any caller who forgot it,
+    which is an invariant kept by caller discipline instead of by the signature.
+    Pass the same map twice when the run genuinely has no prefailed answers.
     """
     rows: list[dict[str, Any]] = []
     for question in questions:
         for arm, answers in answers_by_arm.items():
             arm_grades = unblinded.get(arm, {}).get(ARM_REPLICATE, {})
             rows.append(_question_row(question, arm, answers.get(question.qid), arm_grades))
-    judged_only = judged if judged is not None else unblinded
-    replicates = judged_only.get(noise_arm, {})
+    replicates = judged.get(noise_arm, {})
     summary: dict[str, Any] = {
         "row_type": ResultRowType.SUMMARY,
         "noise_floor": noise_floor(
@@ -188,7 +192,7 @@ def build_results(
         "judge_model": judge_model,
         # Questions a judge actually returned a usable grade for.
         "judge_graded": {
-            arm: len(judged_only.get(arm, {}).get(ARM_REPLICATE, {})) for arm in answers_by_arm
+            arm: len(judged.get(arm, {}).get(ARM_REPLICATE, {})) for arm in answers_by_arm
         },
         # Questions behind each arm's mean: the judged ones plus the prefailed
         # ones scored zero. Larger than judge_graded whenever answers failed.

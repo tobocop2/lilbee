@@ -99,7 +99,7 @@ def test_ungraded_rows_do_not_count_as_judge_agreement():
         "B": {0: {"tq000": {"faithfulness": 1, "relevance": 1, "citation": 1}}},
     }
     with pytest.raises(MissingNoiseReplicateError):
-        build_results(questions, answers, unblinded, noise_arm="B")
+        build_results(questions, answers, unblinded, noise_arm="B", judged=unblinded)
 
 
 def test_summary_records_the_judge_and_the_pairs_behind_the_floor():
@@ -115,9 +115,9 @@ def test_summary_records_the_judge_and_the_pairs_behind_the_floor():
     answers = {"A": {"tq000": _answer("tq000", "A")}, "B": {"tq000": _answer("tq000", "B")}}
     grades = {"faithfulness": 1, "relevance": 1, "citation": 1}
     unblinded = {"A": {0: {"tq000": grades}}, "B": {0: {"tq000": grades}, 1: {"tq000": grades}}}
-    summary = build_results(questions, answers, unblinded, noise_arm="B", judge_model="some-judge")[
-        -1
-    ]
+    summary = build_results(
+        questions, answers, unblinded, noise_arm="B", judged=unblinded, judge_model="some-judge"
+    )[-1]
     assert summary["judge_model"] == "some-judge"
     assert summary["noise_arm"] == "B"
     assert summary["noise_pairs"] == 1
