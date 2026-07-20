@@ -1361,8 +1361,6 @@ def _exit_on_parent_death() -> None:
     releases this process's user lock on exit regardless, so a skipped release only
     defers the engine stop to the peers' reap and the idle TTL.
     """
-    from lilbee.app.services import reset_services
-
     cleanup = threading.Thread(target=reset_services, name="parent-death-cleanup", daemon=True)
     cleanup.start()
     cleanup.join(timeout=_PARENT_DEATH_CLEANUP_S)

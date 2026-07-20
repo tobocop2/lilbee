@@ -1120,7 +1120,6 @@ class TestStateFilePersistenceKeys:
         state = sm._load_state(mgr._state_path)
         assert state is not None
         assert state.proxy_port == mgr._port
-        assert state.lilbee_version
 
     def test_start_writes_an_owned_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1138,7 +1137,6 @@ class TestStateFilePersistenceKeys:
         state = sm._load_state(legacy)
         assert state is not None
         assert state.proxy_port is None
-        assert state.lilbee_version is None
         assert state.engine_pin is None
 
 

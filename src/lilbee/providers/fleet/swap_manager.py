@@ -17,7 +17,6 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -45,9 +44,11 @@ _HOST = "127.0.0.1"
 # one builder per engine dir, and reaping cleans dead writers' leftovers.
 _CONFIG_FILENAME_TEMPLATE = "llama-swap-{group}.{pid}.json"
 _CONFIG_FILE_GLOB = "llama-swap-*.json"
-# llama-swap's own stdout/stderr (its HTTP access log) is captured to a file under
-# the data root's ``logs/`` (beside server.log etc.) instead of inherited from the
-# parent: a TUI or CLI parent owns the terminal, and an inherited fd would bleed
+# llama-swap's own stdout/stderr (its HTTP access log) is captured to a file in a
+# ``logs/`` dir inside the engine dir, which is the machine slot rather than any
+# one lilbee's data root, so the log sits beside the engine it belongs to instead
+# of beside server.log. Capturing it at all, rather than inheriting the parent's
+# fd, is because a TUI or CLI parent owns the terminal and an inherited fd would bleed
 # llama-swap's request log onto the screen and corrupt the render. Per-model
 # upstream logs are unaffected (those go to llama-swap's /logs API).
 _LOGS_SUBDIR = "logs"
@@ -64,7 +65,6 @@ _STATE_KEY_CREATED_AT = "created_at"
 _STATE_KEY_NAME = "name"
 _STATE_KEY_MEMBER_PORTS = "member_ports"
 _STATE_KEY_PROXY_PORT = "proxy_port"
-_STATE_KEY_LILBEE_VERSION = "lilbee_version"
 _STATE_KEY_LAUNCHES = "launches"
 _STATE_KEY_ENGINE_PIN = "engine_pin"
 # Atomic state writes: the dot prefix keeps half-written tmp files out of the
@@ -159,7 +159,6 @@ class SwapState:
     created_at: float | None = None
     member_ports: tuple[int, ...] = ()
     proxy_port: int | None = None
-    lilbee_version: str | None = None
     launches: tuple[dict, ...] = ()
     engine_pin: str | None = None
 
@@ -272,7 +271,6 @@ class SwapManager:
             _STATE_KEY_NAME: _LLAMA_SWAP_PROCESS_NAME,
             _STATE_KEY_MEMBER_PORTS: self._member_ports,
             _STATE_KEY_PROXY_PORT: self._port,
-            _STATE_KEY_LILBEE_VERSION: _pkg_version("lilbee"),
             _STATE_KEY_LAUNCHES: self._launches_payload,
             _STATE_KEY_ENGINE_PIN: engine_pin(),
         }
@@ -698,7 +696,6 @@ def _load_state(path: Path) -> SwapState | None:
             created_at=float(raw_created) if raw_created is not None else None,
             member_ports=tuple(int(port) for port in raw_ports),
             proxy_port=int(raw_proxy) if raw_proxy is not None else None,
-            lilbee_version=payload.get(_STATE_KEY_LILBEE_VERSION),
             launches=tuple(payload.get(_STATE_KEY_LAUNCHES) or ()),
             engine_pin=payload.get(_STATE_KEY_ENGINE_PIN),
         )

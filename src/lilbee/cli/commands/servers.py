@@ -7,7 +7,7 @@ import contextlib
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
@@ -110,6 +110,13 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
                 await server.shutdown()
 
 
+def _refuse_to_start(message: str) -> NoReturn:
+    """Report why the server will not start, to the log and the terminal, then exit."""
+    logging.getLogger(__name__).error(message)
+    console.print(message)
+    raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
+
+
 def serve(
     host: str = typer.Option(None, "--host", "-H", help="Bind address (default: 127.0.0.1)"),
     port: int = typer.Option(None, "--port", "-p", help="Port (default: 0/random)"),
@@ -139,9 +146,7 @@ def serve(
                 f"Another lilbee server is already running for this installation.{serving}"
                 " Stop it or wait for it to exit, then retry."
             )
-            logging.getLogger(__name__).error(message)
-            console.print(message)
-            raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
+            _refuse_to_start(message)
 
     # One server per data dir: a second instance would overwrite server.port
     # and spawn a second engine fleet against the same models and vector store.
@@ -153,9 +158,7 @@ def serve(
             "Another lilbee server is already running for this data directory. "
             "Stop it or wait for it to exit, then retry."
         )
-        logging.getLogger(__name__).error(message)
-        console.print(message)
-        raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
+        _refuse_to_start(message)
 
     import uvicorn
 

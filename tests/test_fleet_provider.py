@@ -100,16 +100,19 @@ def _no_real_probe(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: mslot)
 
 
-def _install_engine(monkeypatch, *, launches: list, swap: _FakeSwap | None = None) -> _FakeSwap:
+def _install_engine(
+    monkeypatch, tmp_path: Path, *, launches: list, swap: _FakeSwap | None = None
+) -> _FakeSwap:
     """Patch the swap, client, planner, and ladder so _ensure_fleet builds fakes.
 
-    The machine slot points at a fresh temp dir, so tests never touch the real
-    per-user engine slot, and stop_engine is inert (fakes own no processes).
+    The machine slot points at a fresh dir under the test's tmp_path, so tests
+    never touch the real per-user engine slot and leave nothing behind, and
+    stop_engine is inert (fakes own no processes).
     """
     import tempfile
 
     swap = swap or _FakeSwap()
-    machine = Path(tempfile.mkdtemp(prefix="lilbee-test-slot-"))
+    machine = Path(tempfile.mkdtemp(prefix="lilbee-test-slot-", dir=tmp_path))
     monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: swap)
     monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: machine)
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
@@ -248,19 +251,19 @@ def test_embed_routes_to_least_busy_replica() -> None:
     busy.embed.assert_not_called()
 
 
-def test_adopt_group_builds_a_client_per_replica(monkeypatch) -> None:
+def test_adopt_group_builds_a_client_per_replica(monkeypatch, tmp_path: Path) -> None:
     launches = [_fake_launch(WorkerRole.EMBED), _fake_launch(WorkerRole.EMBED)]
-    _install_engine(monkeypatch, launches=launches)
+    _install_engine(monkeypatch, tmp_path, launches=launches)
     p = FleetProvider()
     p._ensure_fleet()
     assert len(p._clients[WorkerRole.EMBED]) == 2  # one client per replica launch
 
 
-def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch) -> None:
+def test_ensure_fleet_records_skipped_not_installed_from_plan(monkeypatch, tmp_path: Path) -> None:
     # The plan reports a configured-but-missing chat model; _plan_and_spawn records
     # it so the warm finalizer can fail chat with a named reason. The installed embed
     # role still starts.
-    _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.EMBED)])
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.EMBED)])
     monkeypatch.setattr(
         planning_mod,
         "plan_all_launches",
@@ -414,22 +417,22 @@ def test_reload_of_a_bound_engine_preloads_the_reacquired_roles(monkeypatch) -> 
     assert kicked and kicked[0]["name"] == "fleet-reload-warm"  # roles warmed off-thread
 
 
-def test_ensure_fleet_refused_after_shutdown(monkeypatch) -> None:
+def test_ensure_fleet_refused_after_shutdown(monkeypatch, tmp_path: Path) -> None:
     """bb-dpp source guard: once shut down (and likely discarded by reset_services),
     a lingering warm-up/reload thread's _ensure_fleet must not spawn a new llama-swap
     on the dead provider -- that is exactly the duplicate that leaks on teardown."""
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
     p = FleetProvider()
     p._shutdown_swap()  # latches _shut_down (and reaps via a fresh SwapManager)
     assert p._ensure_fleet() is False
     assert swap.started == []  # no swap started after shutdown
 
 
-def test_adopt_group_retires_old_clients_without_closing(monkeypatch) -> None:
+def test_adopt_group_retires_old_clients_without_closing(monkeypatch, tmp_path: Path) -> None:
     # Re-adopting (a reload) must not close old clients in place (a
     # reader may still hold one); they are retired for deferred close.
     launch = _fake_launch(WorkerRole.EMBED)
-    swap = _install_engine(monkeypatch, launches=[launch])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[launch])
     p = FleetProvider()
     old = [_fake_client(), _fake_client()]
     p._clients = {WorkerRole.EMBED: old}
@@ -1359,9 +1362,9 @@ def test_pdf_ocr_without_server_raises() -> None:
 # --- llama-swap lifecycle ----------------------------------------------------
 
 
-def test_ensure_fleet_starts_once_and_builds_clients(monkeypatch) -> None:
+def test_ensure_fleet_starts_once_and_builds_clients(monkeypatch, tmp_path: Path) -> None:
     launches = [_fake_launch(WorkerRole.CHAT, slots=4, ctx=32768), _fake_launch(WorkerRole.EMBED)]
-    swap = _install_engine(monkeypatch, launches=launches)
+    swap = _install_engine(monkeypatch, tmp_path, launches=launches)
     p = FleetProvider()
     assert p._ensure_fleet() is True
     assert len(swap.started) == 2  # one start per placed role group
@@ -1372,8 +1375,8 @@ def test_ensure_fleet_starts_once_and_builds_clients(monkeypatch) -> None:
     assert len(swap.started) == 2
 
 
-def test_ensure_fleet_defaults_chat_slots_without_chat_launch(monkeypatch) -> None:
-    _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.EMBED)])
+def test_ensure_fleet_defaults_chat_slots_without_chat_launch(monkeypatch, tmp_path: Path) -> None:
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.EMBED)])
     p = FleetProvider()
     p._ensure_fleet()
     assert p._chat_slots == 1  # no chat launch -> default capacity
@@ -1432,7 +1435,7 @@ def test_reload_pass_reaps_stale_swaps_before_planning(monkeypatch) -> None:
     assert order == ["reap", "plan"]
 
 
-def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
+def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch, tmp_path: Path) -> None:
     # No configured/installed model -> no launches -> no swap process at all
     # (matches the old supervisor, which spawned nothing for an empty launch set).
     started = {"swaps": 0}
@@ -1442,7 +1445,7 @@ def test_ensure_fleet_spawns_nothing_when_no_models(monkeypatch) -> None:
             started["swaps"] += 1
             super().start(launches)
 
-    _install_engine(monkeypatch, launches=[], swap=_CountingSwap())
+    _install_engine(monkeypatch, tmp_path, launches=[], swap=_CountingSwap())
     p = FleetProvider()
     assert p._ensure_fleet() is False
     assert started["swaps"] == 0  # never started
@@ -1597,9 +1600,9 @@ def test_invalidate_load_cache_drops_swap_refs() -> None:
     assert p._swaps == {}
 
 
-def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch) -> None:
+def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch, tmp_path: Path) -> None:
     """A cache drop is not terminal: the next use rebuilds the swap."""
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
     p = FleetProvider()
     assert p._ensure_fleet() is True
     p.invalidate_load_cache()
@@ -1608,14 +1611,14 @@ def test_invalidate_load_cache_leaves_provider_reusable(monkeypatch) -> None:
     assert p._swaps.get(WorkerRole.CHAT) is swap
 
 
-def test_drop_loaded_models_async_leaves_provider_reusable(monkeypatch) -> None:
+def test_drop_loaded_models_async_leaves_provider_reusable(monkeypatch, tmp_path: Path) -> None:
     """The off-thread drop used by settings changes must not latch shutdown.
 
     app.settings routes num_ctx/kv_cache_type changes here while retaining the
     provider; a latched flag would refuse every later chat/embed/rerank call
     until process restart.
     """
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
     p = FleetProvider()
     assert p._ensure_fleet() is True
     p.drop_loaded_models_async()
@@ -1634,7 +1637,7 @@ def _wait_until(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
-def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
+def test_warm_up_pool_starts_swap_off_thread(monkeypatch, tmp_path: Path) -> None:
     # The eager warm-up at TUI mount must not block the caller; it dispatches a
     # background start thread and returns immediately.
     started = threading.Event()
@@ -1646,7 +1649,9 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
             release.wait(timeout=5.0)
             super().start(launches)
 
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)], swap=_SlowSwap())
+    swap = _install_engine(
+        monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)], swap=_SlowSwap()
+    )
     p = FleetProvider()
     p.warm_up_pool()
     assert started.wait(timeout=5.0)  # start runs on a background thread
@@ -1655,7 +1660,7 @@ def test_warm_up_pool_starts_swap_off_thread(monkeypatch) -> None:
     assert _wait_until(lambda: p._swaps.get(WorkerRole.CHAT) is swap)
 
 
-def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
+def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch, tmp_path: Path) -> None:
     starts = {"n": 0}
     in_start = threading.Event()
     release = threading.Event()
@@ -1667,7 +1672,9 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
             release.wait(timeout=5.0)
             super().start(launches)
 
-    swap = _install_engine(monkeypatch, launches=[_fake_launch(WorkerRole.CHAT)], swap=_GatedSwap())
+    swap = _install_engine(
+        monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)], swap=_GatedSwap()
+    )
     p = FleetProvider()
     p.warm_up_pool()
     assert in_start.wait(timeout=5.0)  # first start genuinely in flight
@@ -1677,12 +1684,12 @@ def test_warm_up_pool_single_flight_does_not_double_start(monkeypatch) -> None:
     assert starts["n"] == 1
 
 
-def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch) -> None:
+def test_warm_up_pool_noop_when_swap_already_up_and_ready(monkeypatch, tmp_path: Path) -> None:
     # A fully-loaded fleet (swap up AND its role ready) short-circuits: no swap
     # restart and no re-warm thread. The cold-role counterpart, where the swap is
     # up but the model idle-unloaded, is covered by the rewarm test above.
     starts = {"n": 0}
-    swap = _install_engine(monkeypatch, launches=[])
+    swap = _install_engine(monkeypatch, tmp_path, launches=[])
     monkeypatch.setattr(swap, "start", lambda launches: starts.__setitem__("n", starts["n"] + 1))
     ready_swap = _FakeSwap()
     ready_swap.ready = {WorkerRole.CHAT}
@@ -3111,7 +3118,7 @@ def test_rebuild_role_restarts_only_that_role(monkeypatch) -> None:
     assert live.shutdowns == 0
 
 
-def test_co_tenant_roles_share_one_swap_process(monkeypatch) -> None:
+def test_co_tenant_roles_share_one_swap_process(monkeypatch, tmp_path: Path) -> None:
     """Chat and vision must land in the same llama-swap process; only a shared process
     can evict one to load the other. Separate processes would hold both resident."""
     groups: list[SwapGroup] = []
@@ -3126,7 +3133,9 @@ def test_co_tenant_roles_share_one_swap_process(monkeypatch) -> None:
 
     monkeypatch.setattr(prov_mod, "SwapManager", _factory)
     monkeypatch.setattr(
-        prov_mod, "machine_engine_dir", lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-"))
+        prov_mod,
+        "machine_engine_dir",
+        lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
     )
     monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
     monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
@@ -3222,12 +3231,14 @@ def test_reload_pass_refuses_after_terminal_shutdown(monkeypatch) -> None:
 class TestPlanProbeLifecycle:
     """The provider owns the plan snapshot: captured on clean-box builds only."""
 
-    def _wire(self, monkeypatch, order: list[str]) -> None:
+    def _wire(self, monkeypatch, tmp_path: Path, order: list[str]) -> None:
         import tempfile
 
         monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: _FakeSwap())
         monkeypatch.setattr(
-            prov_mod, "machine_engine_dir", lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-"))
+            prov_mod,
+            "machine_engine_dir",
+            lambda: Path(tempfile.mkdtemp(prefix="lilbee-slot-", dir=tmp_path)),
         )
         monkeypatch.setattr(prov_mod, "engine_pin", lambda: "test-pin")
         monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
@@ -3243,20 +3254,22 @@ class TestPlanProbeLifecycle:
             ),
         )
 
-    def test_first_build_snapshots_after_reaping(self, monkeypatch) -> None:
+    def test_first_build_snapshots_after_reaping(self, monkeypatch, tmp_path: Path) -> None:
         # Capture must follow the reap (a dead owner's servers still hold VRAM
         # before it) and precede planning (the plan sizes against the snapshot).
         order: list[str] = []
-        self._wire(monkeypatch, order)
+        self._wire(monkeypatch, tmp_path, order)
         FleetProvider()._ensure_fleet()
         assert order == ["reap", "capture", "plan"]
 
-    def test_reload_with_a_loaded_fleet_reuses_the_snapshot(self, monkeypatch) -> None:
+    def test_reload_with_a_loaded_fleet_reuses_the_snapshot(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
         # THE #474 follow-up regression guard: re-planning while our own fleet
         # holds VRAM must not re-probe (which would shrink ctx/slots and diff
         # every launch); the boot snapshot stays the sizing basis.
         order: list[str] = []
-        self._wire(monkeypatch, order)
+        self._wire(monkeypatch, tmp_path, order)
         p = FleetProvider()
         monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
         p._swaps = {SwapGroup.CHAT: _FakeSwap()}
@@ -3265,9 +3278,9 @@ class TestPlanProbeLifecycle:
         assert "capture" not in order
         assert "plan" in order
 
-    def test_resurrect_reload_recaptures_the_clean_box(self, monkeypatch) -> None:
+    def test_resurrect_reload_recaptures_the_clean_box(self, monkeypatch, tmp_path: Path) -> None:
         order: list[str] = []
-        self._wire(monkeypatch, order)
+        self._wire(monkeypatch, tmp_path, order)
         p = FleetProvider()
         monkeypatch.setattr(p, "_preload_roles", lambda roles=None: None)
         p._reload_pass(force=frozenset((WorkerRole.CHAT,)))  # nothing running

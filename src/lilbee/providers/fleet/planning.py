@@ -197,10 +197,8 @@ def _resolve_split_chat_slots(fit_fn: Callable[[int], int]) -> tuple[int, int]:
     window fits (or the fit degenerated to the floor), which preserves the
     max-context single-sequence behaviour on a tight card.
     """
-    from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR
-
     full = fit_fn(1)
-    if full <= _DYNAMIC_CTX_FLOOR:
+    if full <= model_cache._DYNAMIC_CTX_FLOOR:
         return 1, full
     for n in range(_CHAT_SLOTS, 1, -1):
         if fit_fn(n) >= full:

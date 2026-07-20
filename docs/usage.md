@@ -292,13 +292,19 @@ adjust that:
   keep_alive). The memory frees itself after that many idle minutes; a small
   proxy process stays behind, a few tens of MB and no VRAM. `0` keeps weights
   loaded until the engine stops.
-- **`lilbee engine stop`** frees everything immediately from any terminal, no
-  TUI needed, whichever process started the engine.
+- **`lilbee engine stop`** frees the shared engine immediately from any
+  terminal, no TUI needed, whichever process started it. It reaches the machine
+  slot and this project root's own overflow engine; a private overflow engine
+  built for a different project root is stopped by running the command from
+  that root.
 
 Both knobs live in the TUI Settings screen, MCP `lilbee_settings_set`, the HTTP
-config API, and `config.toml`. Changing a model restarts the shared engine from
-whichever surface you did it; other lilbee processes reconnect on their next
-prompt. The first launch after a reboot is always a cold one.
+config API, and `config.toml`. Changing a model takes effect on your next
+prompt, from whichever surface you changed it. If no one else is using the
+engine it restarts on the new configuration; if other lilbee processes are
+serving from it, theirs keeps running and yours either rebinds, when the
+running engine already serves what you asked for, or starts its own alongside
+it. The first launch after a reboot is always a cold one.
 
 To stop the engine without opening the TUI:
 
