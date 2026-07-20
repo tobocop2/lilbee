@@ -78,15 +78,21 @@ def _expert_offload_headroom() -> int:
     this budget is global, so it reads optimistically for a dense model pulled on
     an offload-enabled host (a sparse model gains the room, a dense one still
     fails to place); the planner sizes the real placement at load time.
+
+    Scaled from installed RAM, not from what is free this instant, to match the
+    capacity basis of the VRAM budget it is added to. Mixing the two made a
+    catalog entry fit or not fit depending on whatever else the machine happened
+    to be doing when the page was drawn, and shrank the budget exactly when
+    another model was already resident.
     """
-    from lilbee.providers.model_cache import free_system_memory, has_nvidia_gpu
+    from lilbee.providers.model_cache import has_nvidia_gpu, total_system_memory
 
     if not (cfg.cpu_moe or (cfg.n_cpu_moe is not None and cfg.n_cpu_moe >= 1)):
         return 0
     try:
         if not has_nvidia_gpu():
             return 0
-        return int(free_system_memory() * cfg.gpu_memory_fraction)
+        return int(total_system_memory() * cfg.gpu_memory_fraction)
     except Exception:
         return 0
 
