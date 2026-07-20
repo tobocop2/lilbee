@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]")
+_SLUG_WHITESPACE_RE = re.compile(r"\s+")
 
 # Characters that signal markdown-structural noise in a concept label.
 # Single source of truth for both ``is_valid_label`` (membership check)
@@ -30,7 +31,12 @@ def make_slug(label: str) -> str:
     only leading and trailing hyphens (e.g. ``--body`` from a stripped
     ``| | Body``) are removed.
     """
-    slug = label.lower().replace(" ", "-").replace("/", "--")
+    # Collapse whitespace runs first: ``--`` is the reserved encoding for
+    # ``/``, so a double space used to produce it and two different entities
+    # would share one page, the later write silently replacing the earlier.
+    # Non-space whitespace was dropped entirely, welding two words together.
+    slug = _SLUG_WHITESPACE_RE.sub(" ", label.lower()).strip()
+    slug = slug.replace("/", "--").replace(" ", "-")
     slug = _SLUG_CLEAN_RE.sub("", slug)
     return slug.strip("-")
 

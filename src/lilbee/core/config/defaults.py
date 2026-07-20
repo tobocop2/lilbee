@@ -104,27 +104,42 @@ _ATTACHMENT_EXCLUDE: tuple[str, ...] = (
     r"\?attachment_id=",
 )
 
+# These are regexes matched against the whole URL, not globs, so a bare path
+# prefix also matches longer words: /cart excluded /cartography, /account
+# excluded /accounting, /profile excluded /professional-services. Require the
+# segment to end or be followed by a separator.
+_PATH_BOUNDARY = r"(?:/|\?|#|$)"
+
+
+def _whole_segments(*paths: str) -> tuple[str, ...]:
+    """Anchor each path prefix so it matches a whole segment, not a word."""
+    return tuple(path + _PATH_BOUNDARY for path in paths)
+
+
 # Auth and account flows (generic across CMSes and e-commerce platforms).
-_AUTH_EXCLUDE: tuple[str, ...] = (
+_AUTH_EXCLUDE: tuple[str, ...] = _whole_segments(
     r"/login",
     r"/logout",
     r"/register",
     r"/signup",
     r"/signin",
     r"/account",
-    r"/my-account/",
     r"/profile",
     r"/password-reset",
     r"/forgot-password",
 )
+_AUTH_EXCLUDE = (*_AUTH_EXCLUDE, r"/my-account/")
 
 # E-commerce transactional flows (cart / checkout / compare / etc.).
-_ECOMMERCE_EXCLUDE: tuple[str, ...] = (
+_ECOMMERCE_EXCLUDE: tuple[str, ...] = _whole_segments(
     r"/cart",
     r"/checkout",
     r"/wishlist",
     r"/orders?",
     r"/compare",
+)
+_ECOMMERCE_EXCLUDE = (
+    *_ECOMMERCE_EXCLUDE,
     r"/products\.json",
     r"/collections/.+/products/.+\?page=",
 )

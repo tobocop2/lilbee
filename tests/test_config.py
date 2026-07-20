@@ -1816,3 +1816,45 @@ class TestBoolVocabularyMatchesPydantic:
         from lilbee.core.config.model import Config
 
         assert Config(enable_ocr="maybe").enable_ocr is None
+
+
+class TestCrawlExclusionsMatchWholeSegments:
+    """The exclusion patterns are regexes against the whole URL, not globs.
+
+    Bare path prefixes therefore matched longer words and silently dropped
+    legitimate content pages from a crawl.
+    """
+
+    @staticmethod
+    def _excluded(url: str) -> bool:
+        import re
+
+        from lilbee.core.config.defaults import _AUTH_EXCLUDE, _ECOMMERCE_EXCLUDE
+
+        return any(re.search(p, url) for p in _AUTH_EXCLUDE + _ECOMMERCE_EXCLUDE)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/cartography/maps",
+            "https://example.com/accounting/gaap",
+            "https://example.com/professional-services",
+            "https://example.com/registers-of-companies",
+        ],
+    )
+    def test_content_pages_are_not_excluded(self, url):
+        assert not self._excluded(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/cart",
+            "https://example.com/cart/",
+            "https://example.com/cart?step=1",
+            "https://example.com/checkout/step1",
+            "https://example.com/login",
+            "https://example.com/my-account/orders",
+        ],
+    )
+    def test_transactional_and_auth_urls_are_still_excluded(self, url):
+        assert self._excluded(url)
