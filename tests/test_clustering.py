@@ -16,14 +16,13 @@ from lilbee.retrieval.clustering import (
 )
 from lilbee.retrieval.clustering_embedding import EmbeddingClusterer
 from lilbee.retrieval.clustering_embedding.helpers import (
-    _tokenize_for_tf,
     auto_k,
     communities_by_label,
     label_propagation,
     mutual_knn,
     normalize_rows,
 )
-from lilbee.retrieval.clustering_embedding.types import ChunkRecord
+from lilbee.retrieval.clustering_embedding.types import ClusterChunk, _tokenize_for_tf
 
 
 @pytest.fixture(autouse=True)
@@ -35,13 +34,8 @@ def isolated_cfg():
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _record(source: str, chunk_index: int = 0, text: str = "") -> ChunkRecord:
-    return ChunkRecord(
-        source=source,
-        chunk_index=chunk_index,
-        text=text,
-        tokens=_tokenize_for_tf(text),
-    )
+def _record(source: str, chunk_index: int = 0, text: str = "") -> ClusterChunk:
+    return ClusterChunk(source=source, chunk_index=chunk_index, text=text)
 
 
 def _row(
@@ -226,12 +220,40 @@ class TestCommunitiesByLabel:
         assert communities[2] == [5]
 
 
-class TestChunkRecord:
+class TestTokenizeForTf:
+    def test_lowercases_and_strips_non_alphanumerics(self):
+        assert _tokenize_for_tf("Python, TYPING; rules!") == ["python", "typing", "rules"]
+
+    def test_drops_tokens_below_the_minimum_length(self):
+        """Short tokens are articles and single letters: noise for TF-IDF.
+        Three characters keeps useful acronyms."""
+        assert _tokenize_for_tf("a an the sql api") == ["the", "sql", "api"]
+
+    def test_keeps_common_words_for_idf_to_handle(self):
+        """No stopword list by design: a term in nearly every chunk gets an
+        IDF at or below zero and is filtered by the scoring, not a list."""
+        assert "and" in _tokenize_for_tf("indexing and retrieval")
+
+
+class TestClusterChunk:
     def test_holds_cached_tokens(self):
         record = _record("doc.md", 0, "python typing")
         assert record.source == "doc.md"
         assert record.chunk_index == 0
         assert record.tokens == ["python", "typing"]
+
+    def test_tokens_derive_from_text_without_the_caller_supplying_them(self):
+        """The invariant is structural, not caller discipline: TF-IDF labeling
+        silently falls back to the cluster id when a record carries no tokens,
+        so a construction site that forgets to tokenize must not be possible."""
+        record = ClusterChunk(source="doc.md", chunk_index=0, text="python typing rules")
+        assert record.tokens == ["python", "typing", "rules"]
+
+    def test_explicit_tokens_are_respected(self):
+        record = ClusterChunk(
+            source="doc.md", chunk_index=0, text="ignored text", tokens=["preset"]
+        )
+        assert record.tokens == ["preset"]
 
 
 class TestEmbeddingClustererAvailable:

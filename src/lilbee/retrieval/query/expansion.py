@@ -1,4 +1,11 @@
-"""Constants for LLM-driven query expansion and history condensation."""
+"""Constants for LLM-driven query expansion and history condensation.
+
+``EXPANSION_MAX_TOKENS`` additionally caps HyDE hypothetical-passage
+generation in the searcher, which is a semantically different budget (a
+generated answer passage to embed, not a set of query variants). Retuning
+it therefore moves both knobs; splitting out a HYDE_MAX_TOKENS would
+decouple them.
+"""
 
 from __future__ import annotations
 

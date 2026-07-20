@@ -10,6 +10,11 @@ from lilbee.core.config import active_config
 if TYPE_CHECKING:
     from kreuzberg import ChunkingConfig
 
+# Conservative char->token estimator, and the single owner of this ratio.
+# Matches the "4 chars ~= 1 token" rule of thumb for English; it under-counts
+# non-ASCII slightly, but every budget built on it leaves headroom for that.
+# Imported by engine_params, embedder, code_chunker, and history_window rather
+# than being restated, so a recalibration lands in one place.
 CHARS_PER_TOKEN = 4
 
 _SEMANTIC_CHUNKER = "semantic"

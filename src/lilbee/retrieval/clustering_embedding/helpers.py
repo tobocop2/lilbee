@@ -20,7 +20,7 @@ import numpy as np
 from lilbee.core.config import CHUNKS_TABLE
 from lilbee.data.store import Store
 from lilbee.retrieval.clustering import SourceCluster
-from lilbee.retrieval.clustering_embedding.types import ChunkRecord
+from lilbee.retrieval.clustering_embedding.types import ClusterChunk
 
 # Block size for the similarity kernel. With N=10000 and D=768 this caps
 # peak float32 memory at block * N * 4 bytes ~= 40 MB.
@@ -62,29 +62,6 @@ _SHORT_CHUNK_TOKEN_CAP = 20
 _MIN_K = 5
 _MAX_K = 20
 
-# Minimum token length for TF-IDF labeling. Shorter tokens are mostly
-# articles, prepositions, and single letters: noise that inflates term
-# counts without adding topic signal. Three characters keeps useful
-# acronyms (api, xml, sql).
-_MIN_TF_TOKEN_LEN = 3
-
-
-def _tokenize_for_tf(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens for TF-IDF scoring.
-
-    Deliberately has NO stopword list: common words like "the" or "and"
-    get an IDF near zero (they appear in almost every chunk) so TF-IDF
-    filters them automatically. A hand-curated English stoplist would
-    add maintenance burden and break on non-English corpora for no
-    additional quality.
-    """
-    result: list[str] = []
-    for raw in text.lower().split():
-        word = "".join(ch for ch in raw if ch.isalnum())
-        if len(word) >= _MIN_TF_TOKEN_LEN:
-            result.append(word)
-    return result
-
 
 def auto_k(n: int) -> int:
     """Pick a neighborhood size from corpus size via ``clamp(log2(N)+2)``."""
@@ -96,7 +73,7 @@ def auto_k(n: int) -> int:
 
 def _parse_chunk_row(
     row: dict[str, object],
-) -> tuple[ChunkRecord, list[float] | tuple[float, ...]] | None:
+) -> tuple[ClusterChunk, list[float] | tuple[float, ...]] | None:
     """Extract a chunk record + vector from a raw Arrow row, or None on invalid."""
     vector = row.get("vector")
     if not isinstance(vector, (list, tuple)):
@@ -108,18 +85,14 @@ def _parse_chunk_row(
     chunk_text = raw_text if isinstance(raw_text, str) else ""
     raw_index = row.get("chunk_index")
     chunk_index = raw_index if isinstance(raw_index, int) else 0
-    record = ChunkRecord(
-        source=source,
-        chunk_index=chunk_index,
-        text=chunk_text,
-        tokens=_tokenize_for_tf(chunk_text),
-    )
+    # tokens derive from text in ClusterChunk.__post_init__.
+    record = ClusterChunk(source=source, chunk_index=chunk_index, text=chunk_text)
     return record, vector
 
 
 def _load_chunk_records(
     store: Store,
-) -> tuple[list[ChunkRecord], np.ndarray]:
+) -> tuple[list[ClusterChunk], np.ndarray]:
     """Scan the chunks table once and return records plus a float32 matrix.
 
     Rows with an unparseable vector are skipped. Records are sorted by
@@ -137,7 +110,7 @@ def _load_chunk_records(
     if table is None:
         return [], np.zeros((0, 0), dtype=np.float32)
 
-    records: list[ChunkRecord] = []
+    records: list[ClusterChunk] = []
     blocks: list[np.ndarray] = []
     for batch in table.to_arrow().to_batches(max_chunksize=_SCAN_BATCH_ROWS):
         batch_vectors: list[list[float] | tuple[float, ...]] = []
@@ -251,7 +224,7 @@ def communities_by_label(labels: list[int]) -> dict[int, list[int]]:
     return communities
 
 
-def _source_totals(records: list[ChunkRecord]) -> dict[str, int]:
+def _source_totals(records: list[ClusterChunk]) -> dict[str, int]:
     """Return the total chunk count per source across the whole corpus."""
     totals: dict[str, int] = {}
     for record in records:
@@ -261,7 +234,7 @@ def _source_totals(records: list[ChunkRecord]) -> dict[str, int]:
 
 def _filter_sources(
     member_indices: list[int],
-    records: list[ChunkRecord],
+    records: list[ClusterChunk],
     source_totals: dict[str, int],
 ) -> frozenset[str]:
     """Apply the source-membership threshold to a community's members."""
@@ -279,7 +252,7 @@ def _filter_sources(
     return frozenset(kept)
 
 
-def _corpus_document_frequency(records: list[ChunkRecord]) -> dict[str, int]:
+def _corpus_document_frequency(records: list[ClusterChunk]) -> dict[str, int]:
     """Compute document frequency (chunk count containing term) for every term."""
     df: dict[str, int] = {}
     for record in records:
@@ -290,7 +263,7 @@ def _corpus_document_frequency(records: list[ChunkRecord]) -> dict[str, int]:
 
 def _label_community(
     member_indices: list[int],
-    records: list[ChunkRecord],
+    records: list[ClusterChunk],
     df: dict[str, int],
     total_chunks: int,
     fallback: str,
@@ -325,7 +298,7 @@ def _label_community(
 
 def _build_clusters(
     communities: dict[int, list[int]],
-    records: list[ChunkRecord],
+    records: list[ClusterChunk],
     source_totals: dict[str, int],
     df: dict[str, int],
     min_sources: int,

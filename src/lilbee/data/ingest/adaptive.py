@@ -287,6 +287,15 @@ class ResizableGate:
     wakes blocked acquirers, shrinking lowers the ceiling and lets the surplus drain
     as active holders release. The limit never drops below one, so a shrink can never
     deadlock a run.
+
+    Kept hand-rolled rather than adopting ``anyio.CapacityLimiter``, whose
+    settable ``total_tokens`` covers the same resizing need, for two reasons.
+    The caller treats this as a drop-in for ``asyncio.Semaphore`` (the ingest
+    permit is typed as either), and the ingest path is otherwise plain
+    asyncio. And CapacityLimiter is a per-borrower token model: it raises if
+    one task takes a second token, whereas this is a plain counting gate.
+    Revisit if a third resizing need appears, rather than growing a second
+    hand-rolled primitive.
     """
 
     def __init__(self, limit: int) -> None:
