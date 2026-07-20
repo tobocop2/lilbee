@@ -65,6 +65,7 @@ _STOP_REASON_TO_FINISH: dict[StopReason, FinishReason] = {
     StopReason.TOOL_USE: FinishReason.TOOL_CALLS,
 }
 
+_TOOL_CALL_ID_REQUIRED = "A tool message requires tool_call_id naming the call it answers."
 _IMAGE_CONTENT_UNSUPPORTED = (
     "Image content is not supported by /v1/chat/completions yet. Send a text-only request."
 )
@@ -362,11 +363,15 @@ def _message_from_request(msg: CompletionsMessage) -> CanonicalMessage:
     if role == "system":
         raise ValueError("system messages should be extracted by the caller")
     if role == "tool":
+        if not msg.tool_call_id:
+            # Substituting "" produced a tool result no tool call can pair with,
+            # which the provider sees as a result for a call it never made.
+            raise ValueError(_TOOL_CALL_ID_REQUIRED)
         return CanonicalMessage(
             role="tool",
             content=[
                 ToolResultBlock(
-                    tool_use_id=msg.tool_call_id or "",
+                    tool_use_id=msg.tool_call_id,
                     content=_tool_result_content(msg.content),
                 )
             ],

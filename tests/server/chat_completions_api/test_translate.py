@@ -190,6 +190,20 @@ class TestCompletionsToCanonicalRequest:
                 }
             )
 
+    def test_tool_message_without_tool_call_id_is_rejected(self) -> None:
+        # An empty id produced a tool result no tool call can pair with, so the
+        # provider saw a result for a call it never made.
+        with pytest.raises(ValueError, match="tool_call_id"):
+            _translate(
+                {
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "hi"},
+                        {"role": "tool", "content": "42"},
+                    ],
+                }
+            )
+
     def test_assistant_message_with_tool_calls(self) -> None:
         req = _translate(
             {

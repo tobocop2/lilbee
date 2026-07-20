@@ -10,7 +10,11 @@ from pathlib import Path
 #: Directory name for a project-local lilbee knowledge base (sibling of ``.git/``).
 LOCAL_ROOT_DIRNAME = ".lilbee"
 
-_STDERR_LOCK = threading.Lock()
+# Reentrant: a suppressed block can re-enter this, directly or through a
+# native helper that wraps its own stderr, and a plain Lock self-deadlocks
+# there. Nesting restores correctly, the inner exit puts back the outer's
+# devnull and the outer puts back the real stderr.
+_STDERR_LOCK = threading.RLock()
 
 
 @contextmanager
