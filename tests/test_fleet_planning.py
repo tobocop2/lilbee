@@ -1996,3 +1996,35 @@ class TestSizingFailureFallsBackToFileSize:
             budget=8 * _GB,
         )
         assert slots == 1
+
+
+def test_integrated_gpu_keeps_the_shared_ram_budget(monkeypatch) -> None:
+    """An iGPU's reported total is system RAM, not headroom on top of it."""
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 10 * 10**9)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 15 * 10**9)
+    igpu = FleetDevice("Vulkan", 0, "Iris Xe", 15 * 10**9, 15 * 10**9, unified=True)
+    assert planning_mod._unified_memory_budget([igpu]) is not None
+
+
+def test_apple_silicon_keeps_the_shared_ram_budget(monkeypatch) -> None:
+    """Metal reports a working-set slice of system RAM, so the same holds."""
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 20 * 10**9)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 34 * 10**9)
+    metal = FleetDevice("MTL", 0, "Apple M1 Pro", 22 * 10**9, 22 * 10**9, unified=True)
+    assert planning_mod._unified_memory_budget([metal]) is not None
+
+
+def test_a_discrete_card_beside_an_igpu_still_lifts_the_budget() -> None:
+    """One device with memory of its own is enough; VRAM is the constraint then."""
+    igpu = FleetDevice("Vulkan", 0, "Iris Xe", 15 * 10**9, 15 * 10**9, unified=True)
+    dgpu = FleetDevice("Vulkan", 1, "RTX 4090", 24 * 10**9, 24 * 10**9)
+    assert planning_mod._unified_memory_budget([igpu, dgpu]) is None
+
+
+def test_metal_devices_are_recognised_as_unified() -> None:
+    """The Apple case is decided by backend, since the size ratio cannot decide it."""
+    from lilbee.providers.fleet.devices import _is_unified
+
+    assert _is_unified("MTL", 0) is True
+    assert _is_unified("Metal", 0) is True
+    assert _is_unified("CUDA", 0) is False

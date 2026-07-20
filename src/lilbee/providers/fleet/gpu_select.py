@@ -302,6 +302,18 @@ def enumerate_gpu_vram() -> list[tuple[int, int]] | None:
     return [(d.index, d.vram_bytes) for d in devices if d.device_type in _USABLE_DEVICE_TYPES]
 
 
+def integrated_vulkan_indices() -> frozenset[int]:
+    """Loader indices of adapters whose memory is the host's.
+
+    Empty when the loader is unavailable or the probe fails, which reads as
+    "assume dedicated" and preserves the behaviour discrete hosts already have.
+    """
+    devices = _enumerate_vulkan_devices()
+    if not devices:
+        return frozenset()
+    return frozenset(d.index for d in devices if d.device_type == VkDeviceType.INTEGRATED_GPU)
+
+
 def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
     """Open libvulkan, create a throwaway instance, enumerate adapters.
 

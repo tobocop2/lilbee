@@ -53,6 +53,9 @@ _DEVICE_RE = re.compile(
 # Pin priority when a build reports more than one GPU backend: a real GPU
 # backend always wins over Vulkan, which wins over CPU.
 _BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, "Vulkan": 1}
+# Backends whose memory is always the host's: Apple Silicon reports a working-set
+# slice of system RAM, never a dedicated pool.
+_UNIFIED_BACKENDS = frozenset({"MTL", "Metal"})
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,11 @@ class FleetDevice:
     name: str
     total_bytes: int
     free_bytes: int
+    # Whether this device's memory is the host's memory. An integrated GPU or an
+    # Apple Silicon Mac has no dedicated VRAM, so its reported total is a slice
+    # of the same RAM the OS and every other process is using, and placement
+    # must stay inside the system budget rather than treating it as headroom.
+    unified: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,7 +223,16 @@ def _parse_devices(text: str) -> list[FleetDevice]:
         backend, index, name, total_mib, free_mib = match.groups()
         total = int(total_mib) * MIB
         free = int(free_mib) * MIB if free_mib else total
-        devices.append(FleetDevice(backend, int(index), name.strip(), total, free))
+        devices.append(
+            FleetDevice(
+                backend,
+                int(index),
+                name.strip(),
+                total,
+                free,
+                unified=_is_unified(backend, int(index)),
+            )
+        )
     return devices
 
 
@@ -234,6 +251,28 @@ def _is_software_renderer(device: FleetDevice) -> bool:
     """Whether *device* is a CPU rasterizer masquerading as a GPU."""
     name = device.name.casefold()
     return any(marker in name for marker in _SOFTWARE_RENDERER_MARKERS)
+
+
+def _is_unified(backend: str, index: int) -> bool:
+    """Whether *backend*'s device *index* shares its memory with the host.
+
+    Metal is unified by construction on Apple Silicon: the figure it reports is
+    ``recommendedMaxWorkingSetSize``, a slice of system RAM rather than a
+    separate pool. For Vulkan the loader knows the device type, so the type is
+    asked for rather than guessed; a size heuristic cannot work here, since a
+    24 GB discrete card in a 32 GB host and an Apple GPU reporting two thirds of
+    RAM are indistinguishable by proportion.
+
+    CUDA and ROCm text output carries no such signal, so an APU or a Jetson
+    reads as discrete here and is tracked separately.
+    """
+    if backend in _UNIFIED_BACKENDS:
+        return True
+    if backend != "Vulkan":
+        return False
+    from lilbee.providers.fleet.gpu_select import integrated_vulkan_indices
+
+    return index in integrated_vulkan_indices()
 
 
 def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:

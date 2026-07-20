@@ -968,8 +968,12 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
             binary,
         )
     if not devices:
+        from lilbee.providers.fleet.gpu_select import integrated_vulkan_indices
+
+        integrated = integrated_vulkan_indices()
         devices = [
-            FleetDevice("Vulkan", idx, "", vram, vram) for idx, vram in (enumerate_gpu_vram() or [])
+            FleetDevice("Vulkan", idx, "", vram, vram, unified=idx in integrated)
+            for idx, vram in (enumerate_gpu_vram() or [])
         ]
     return devices
 
@@ -1131,10 +1135,18 @@ def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
 
 
 def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
-    """Shared-RAM placement budget (free RAM minus the OS floor) when there is no
-    discrete GPU, else ``None``. Discrete GPUs load into dedicated VRAM, so system
-    RAM is not the constraint there."""
-    if devices:
+    """Shared-RAM placement budget (free RAM minus the OS floor), or ``None``.
+
+    ``None`` once any device has memory of its own, since dedicated VRAM is the
+    constraint there rather than system RAM. A host whose only devices are
+    integrated, and a host with no devices at all, both stay inside the system
+    budget: their GPU memory is the system's memory.
+    """
+    # Only a device with memory of its own lifts the system-RAM constraint. An
+    # integrated GPU or an Apple Silicon Mac reports a slice of the same RAM the
+    # OS is using, so treating its total as headroom over-commits the machine by
+    # roughly the whole system footprint.
+    if any(not device.unified for device in devices):
         return None
     floor = min(
         _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
