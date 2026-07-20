@@ -114,8 +114,11 @@ class VulkanDevice:
     # across instances, processes, driver APIs, driver versions and reboots, so
     # two entries sharing one is one piece of silicon behind two drivers.
     device_uuid: bytes = b""
-    # VkPhysicalDeviceVulkan11Features::storageBuffer16BitAccess, the single
-    # feature ggml's Vulkan backend requires of a device before it will use it.
+    # storageBuffer16BitAccess, the single feature ggml's Vulkan backend requires
+    # of a device before it will use it. Read from
+    # VkPhysicalDevice16BitStorageFeatures rather than the
+    # VkPhysicalDeviceVulkan11Features ggml itself uses: same bit, but the latter
+    # arrived in Vulkan 1.2 and this probe asks for a 1.1 instance.
     # ``None`` when the loader could not be asked, which is not a refusal.
     storage_buffer_16bit: bool | None = None
     # Device-local memory not already committed, from VK_EXT_memory_budget.
