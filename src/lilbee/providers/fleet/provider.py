@@ -166,8 +166,10 @@ def _least_in_flight(clients: list[LlamaServerClient]) -> LlamaServerClient:
     return min(healthy or clients, key=lambda c: c.in_flight)
 
 
-def _healthy_groups_ours(engine_dir: Path, pin: str, wanted: set[tuple[WorkerRole, str]]) -> bool:
-    """Whether every healthy group at *engine_dir* is pin-equal and serves only wanted pairs.
+def _healthy_groups_ours(
+    states: dict[SwapGroup, SwapState], pin: str, wanted: set[tuple[WorkerRole, str]]
+) -> bool:
+    """Whether every healthy group in *states* is pin-equal and serves only wanted pairs.
 
     True marks the incumbent as this contract's own engine that a full bind
     could not cover (a dead group, or config grew a role): the ladder rebuilds
@@ -175,14 +177,9 @@ def _healthy_groups_ours(engine_dir: Path, pin: str, wanted: set[tuple[WorkerRol
     False (a foreign pin or a model outside the contract) keeps the incumbent
     protected while in use. Vacuously False with no healthy group.
     """
-    states = [
-        state
-        for group in SwapGroup
-        if (state := find_live_state(engine_dir, group)) is not None and state_is_healthy(state)
-    ]
     if not states:
         return False
-    for state in states:
+    for state in states.values():
         if not contract_matches(state, (), pin):
             return False
         pairs = served_pairs(state)
@@ -191,17 +188,31 @@ def _healthy_groups_ours(engine_dir: Path, pin: str, wanted: set[tuple[WorkerRol
     return True
 
 
-def _bindable_group(
-    engine_dir: Path, group: SwapGroup, pin: str, wanted: set[tuple[WorkerRole, str]]
-) -> tuple[SwapState, list[InstanceLaunch], set[tuple[WorkerRole, str]]] | None:
-    """*group*'s state, launches, and the wanted pairs it covers, or ``None``.
+def _healthy_states(engine_dir: Path) -> dict[SwapGroup, SwapState]:
+    """One probe pass over *engine_dir*: the recorded, answering group states.
 
-    ``None`` for every reason a group is not bindable by us: no record, unhealthy,
+    The ladder's single view of a dir. Bind eligibility and the replaceability
+    check both read this snapshot, so they cannot disagree about an engine that
+    died between them, and one wedged proxy port is paid for once per ladder
+    pass rather than once per decision -- all of it under the build lock, which
+    every other lilbee start is waiting on.
+    """
+    found: dict[SwapGroup, SwapState] = {}
+    for group in SwapGroup:
+        state = find_live_state(engine_dir, group)
+        if state is not None and state_is_healthy(state):
+            found[group] = state
+    return found
+
+
+def _bindable_group(
+    state: SwapState, pin: str, wanted: set[tuple[WorkerRole, str]]
+) -> tuple[SwapState, list[InstanceLaunch], set[tuple[WorkerRole, str]]] | None:
+    """*state*'s launches and the wanted pairs it covers, or ``None``.
+
+    ``None`` for every reason an already-healthy group is not bindable by us:
     a foreign pin, an undecodable contract, or serving nothing we want.
     """
-    state = find_live_state(engine_dir, group)
-    if state is None or not state_is_healthy(state):
-        return None
     if not contract_matches(state, (), pin):
         # Pin mismatch or undecodable contract: not bindable by us.
         return None
@@ -858,11 +869,12 @@ class FleetProvider:
         replace. Held under the cross-process build lock.
         """
         with build_lock(engine_dir):
-            if wanted and self._bind_all_in_dir(engine_dir, pin, wanted):
+            states = _healthy_states(engine_dir)
+            if wanted and self._bind_all_in_dir(engine_dir, states, pin, wanted):
                 self._hold_membership(engine_dir)
                 return True
             replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
-                engine_dir, pin, wanted
+                states, pin, wanted
             )
             if not replaceable:
                 # A live engine another setup is actively using is never evicted or
@@ -885,7 +897,11 @@ class FleetProvider:
             return False
 
     def _bind_all_in_dir(
-        self, engine_dir: Path, pin: str, wanted: set[tuple[WorkerRole, str]]
+        self,
+        engine_dir: Path,
+        states: dict[SwapGroup, SwapState],
+        pin: str,
+        wanted: set[tuple[WorkerRole, str]],
     ) -> bool:
         """Bind every group needed to cover *wanted*; False leaves nothing bound.
 
@@ -896,12 +912,12 @@ class FleetProvider:
         """
         candidates: list[tuple[SwapGroup, SwapState, list[InstanceLaunch]]] = []
         covered: set[tuple[WorkerRole, str]] = set()
-        for group in SwapGroup:
-            found = _bindable_group(engine_dir, group, pin, wanted)
+        for group, state in states.items():
+            found = _bindable_group(state, pin, wanted)
             if found is None:
                 continue
-            state, launches, pairs = found
-            candidates.append((group, state, launches))
+            bindable, launches, pairs = found
+            candidates.append((group, bindable, launches))
             covered |= pairs
         if covered != wanted:
             return False
@@ -1126,7 +1142,7 @@ class FleetProvider:
     def _with_rediscover(self, call: Callable[[], _T]) -> _T:
         """Run *call*; on a connection-kind failure, re-run the ladder once.
 
-        A vanished engine (an owner's config change restarted it, or it died)
+        A vanished engine (its last user left on a config change, or it died)
         surfaces as ProviderErrorKind.CONNECTION, or as a raw httpx transport
         error when the proxy itself is gone (nothing listening to answer with
         a status). Membership is still held, so dropping the swap refs and

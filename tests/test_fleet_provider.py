@@ -3955,7 +3955,7 @@ def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
     holder.release_and_check_last()
 
 
-def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch, tmp_path) -> None:
+def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch) -> None:
     """The bind path handles an undecodable contract itself, not by call ordering.
 
     Previously the bare decode was safe only because contract_matches ran first and
@@ -3964,22 +3964,53 @@ def test_bindable_group_refuses_an_undecodable_contract_on_its_own(monkeypatch, 
     permissive, an undecodable contract must still yield "not bindable" rather than
     raise.
     """
-    state = object()  # opaque: liveness/health/decode are all stubbed below
-    monkeypatch.setattr(prov_mod, "find_live_state", lambda _d, _g: state)
-    monkeypatch.setattr(prov_mod, "state_is_healthy", lambda _s: True)
+    state = object()  # opaque: the decode is what is under test
     monkeypatch.setattr(prov_mod, "contract_matches", lambda *_a, **_k: True)  # guard removed
     monkeypatch.setattr(prov_mod, "decoded_launches", lambda _s: None)  # undecodable record
 
-    assert (
-        prov_mod._bindable_group(tmp_path, SwapGroup.CHAT, "pin-a", {(WorkerRole.CHAT, "m")})
-        is None
+    assert prov_mod._bindable_group(state, "pin-a", {(WorkerRole.CHAT, "m")}) is None
+
+
+def test_ladder_probes_each_group_once_per_pass(monkeypatch, tmp_path: Path) -> None:
+    """Bind eligibility and replaceability read one snapshot, not two probe passes.
+
+    Every probe runs under the cross-process build lock that gates every other
+    lilbee start, and two passes could also disagree about an engine that died
+    between them.
+    """
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    probed: list[int | None] = []
+    real_healthy = prov_mod.state_is_healthy
+
+    def counting_probe(state):
+        probed.append(state.proxy_port)
+        return real_healthy(state)
+
+    monkeypatch.setattr(prov_mod, "state_is_healthy", counting_probe)
+    # Want a model the recorded engine does not serve, so the bind fails and the
+    # replaceability check runs too -- the path that used to re-probe. A live
+    # peer keeps that check from short-circuiting on membership.
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-other" if role is WorkerRole.CHAT else ""
     )
+    peer = hold_user_lock(machine, pid=555_555)
+
+    p = FleetProvider()
+    try:
+        p._ensure_fleet()
+    finally:
+        peer.release_and_check_last()
+
+    assert probed  # the ladder really did probe
+    assert len(probed) == len(set(probed))  # and no port twice in one pass
 
 
-def test_healthy_groups_ours_is_false_with_no_healthy_group(tmp_path: Path) -> None:
-    # The vacuous case: an empty slot is "not ours" (the ladder's occupied
-    # check owns that branch); the helper must not claim it.
-    assert prov_mod._healthy_groups_ours(tmp_path, "pin-a", {(WorkerRole.CHAT, "m-chat")}) is False
+def test_healthy_groups_ours_is_false_with_no_healthy_group() -> None:
+    # The vacuous case: an empty snapshot is "not ours" (live membership owns
+    # that branch); the helper must not claim it.
+    assert prov_mod._healthy_groups_ours({}, "pin-a", {(WorkerRole.CHAT, "m-chat")}) is False
 
 
 def test_ladder_overflows_when_a_live_used_pin_equal_group_serves_unwanted_models(

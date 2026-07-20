@@ -97,6 +97,13 @@ _ORPHAN_STOP_TIMEOUT_S = 5.0
 # free-memory probe runs.
 _KILL_WAIT_TIMEOUT_S = 5.0
 _PROBE_TIMEOUT_S = 5.0
+# Liveness probes talk to a loopback proxy, so they get their own short budget
+# rather than the module's 10 s general HTTP one. The ladder runs this probe for
+# every group while holding the cross-process build lock, so one wedged port
+# (SYN-accepted but unresponsive) would otherwise stall every other lilbee start
+# for tens of seconds. A local proxy that cannot answer /running this fast is
+# not usable for inference either.
+_LIVENESS_TIMEOUT = httpx.Timeout(connect=0.5, read=2.0, write=2.0, pool=2.0)
 _PROVIDER = "llama-server"
 # /running JSON shape: {"running": [{"model": <id>, "state": "ready", ...}, ...]}.
 _KEY_RUNNING = "running"
@@ -491,7 +498,7 @@ def _running_endpoint_answers(base_url: str) -> bool:
     Total: any transport error or non-conforming body reads as "not our engine".
     """
     try:
-        resp = httpx.get(f"{base_url}{_RUNNING_PATH}", timeout=_HTTP_TIMEOUT_S)
+        resp = httpx.get(f"{base_url}{_RUNNING_PATH}", timeout=_LIVENESS_TIMEOUT)
     except (OSError, httpx.HTTPError):
         return False
     if resp.status_code >= httpx.codes.BAD_REQUEST:
