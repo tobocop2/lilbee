@@ -1,8 +1,7 @@
 """Model management route handlers: catalog, installed, pull, show, delete, set.
 
-Every route here needs the session token. The read routes describe which
-models the user has installed and what their machine can fit, which is
-inventory about the host rather than public catalog data.
+Every route needs the token: the reads describe what the user has installed
+and what their machine fits, which is host inventory.
 """
 
 from __future__ import annotations

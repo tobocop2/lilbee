@@ -1,16 +1,8 @@
 """No HTTP route answers a caller who sent no token.
 
-The old ``@read_only`` marker read like "a read-only token is accepted". There
-is no such token: the marker made AuthMiddleware skip the check entirely, so
-every route carrying it answered callers with no Authorization header at all.
-That is how routes serving chat transcripts, wiki pages built from the user's
-corpus, the document listing, and ``GET /api/export`` (which serializes the
-whole corpus) ended up open, on a daemon documented as binding loopback "to
-keep out other local users".
-
-This test is the line. A new route is authenticated by default because
-middleware covers everything; the only way to opt out is the registry below,
-and anything in it has to prove it does its own check.
+Middleware covers everything, so a new route is authenticated by default. The
+only way out is the registry below, and anything in it must prove it checks
+the token itself.
 """
 
 from __future__ import annotations

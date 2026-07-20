@@ -1439,10 +1439,7 @@ class TestSetupCrawlerRoutes:
         assert resp.json()["installed"] is False
 
     def test_status_route_is_gated_by_the_middleware(self):
-        """It used to skip auth for parity with the other status GETs, back when
-        those skipped it too. It reports whether Chromium is installed, which is
-        inventory about the host, and nothing on this server answers without a
-        token now."""
+        """Reports whether Chromium is installed, which is host inventory."""
         from lilbee.server.auth import authenticates_itself
         from lilbee.server.routes.setup import setup_crawler_status_route
 
@@ -1902,8 +1899,7 @@ class TestExportRoute:
         assert resp.headers["content-disposition"] == 'attachment; filename="pages.jsonl"'
 
     def test_a_caller_without_the_token_gets_nothing(self, dataset_store):
-        """This asserted a 200. /api/export serializes the entire corpus, so it
-        was the widest of the routes that answered an unauthenticated caller."""
+        """/api/export serializes the entire corpus; this asserted a 200."""
         import lilbee.server.auth as auth_mod
         from lilbee.server.app import create_app
 

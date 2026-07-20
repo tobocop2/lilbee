@@ -1,11 +1,8 @@
 """General routes: health, status, config, source, warm.
 
-Every route here needs the session token, ``/api/health`` included. Health
-looks like the one endpoint that could stay open, but it reports the chat
-engine's last error string, which carries model paths and loader failures, so
-an unauthenticated liveness probe would hand out the most useful reconnaissance
-on the box. A local probe runs as the user and can read the token out of
-server.json the same way every other local client does.
+Every route needs the token, ``/api/health`` included: it reports the chat
+engine's last error, which carries model paths and loader failures. A local
+probe reads the token from server.json like every other local client.
 """
 
 from __future__ import annotations

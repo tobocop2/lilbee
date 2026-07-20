@@ -61,9 +61,8 @@ class TestCompletionsErrorCodeEnum:
 
 class TestUnmappedCodeDegrades:
     def test_a_code_with_no_type_mapping_still_builds_a_body(self) -> None:
-        """A bare subscript here turned a handled 4xx into a 500 while building
-        the error body. test_every_code_has_a_type_mapping is the real guard
-        that the map stays complete; this one keeps the failure mode graceful."""
+        """A bare subscript turned a handled 4xx into a 500 while building the
+        error body. test_every_code_has_a_type_mapping guards completeness."""
         body = completions_error_body("zzz_unknown", "wat")  # type: ignore[arg-type]
         assert body["error"]["message"] == "wat"
         assert body["error"]["type"] == "invalid_request_error"
@@ -119,9 +118,8 @@ class TestClassifyProviderError:
         [(ProviderErrorKind.CONNECTION, 503), (ProviderErrorKind.SERVER, 502)],
     )
     def test_backend_failure_text_is_not_returned_to_the_caller(self, kind, status, caplog) -> None:
-        """A backend failure carries up to 600 characters of the upstream body
-        plus the dead server's captured stderr: loopback ports, engine binary
-        paths, CUDA load failures. None of that belongs in a client response."""
+        """Backend failure text carries the upstream body and the dead
+        server's stderr: loopback ports, engine paths, CUDA failures."""
         leak = "HTTP 502: bind 127.0.0.1:8137 failed, /opt/engine/llama-server died"
         with caplog.at_level("WARNING"):
             result = classify_provider_error(ProviderError(leak, kind=kind))

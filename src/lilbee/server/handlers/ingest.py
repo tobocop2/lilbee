@@ -102,12 +102,9 @@ async def _run_add(
             return AddSummary(copied=copy_result.copied, skipped=copy_result.skipped, errors=errors)
 
         if not copy_result.copied and not copy_result.skipped:
-            # Every requested path was missing, so nothing reached the corpus.
-            # sync() is a whole-vault discovery/hash/embed pass holding the
-            # ingest lock, which on a large vault is minutes of work in
-            # response to a request that changed nothing. A *skipped* file is
-            # not the same case: it is already in the documents dir but may
-            # never have been indexed, so that path still needs the sync.
+            # Nothing reached the corpus, and sync() is a whole-vault pass
+            # holding the ingest lock. A *skipped* file is not this case: it is
+            # already in the documents dir but may never have been indexed.
             return AddSummary(copied=[], skipped=[], errors=errors)
 
         with temporary_ocr_config(enable_ocr, ocr_timeout):
@@ -135,10 +132,9 @@ def validate_add_paths(
     # your-codebase use case (hundreds of small files).
 
     for p_str in paths:
-        # Path(x).name is always a bare final component, so joining it onto the
-        # root cannot escape and the traversal check alone could never fail. The
-        # case it does need to catch is a name that is empty ("/", "a/"), which
-        # would resolve to documents_dir itself as the copy destination.
+        # Path(x).name cannot escape the root, so the traversal check alone
+        # never fires. What it catches is an empty name ("/", "a/"), which
+        # would resolve to documents_dir itself as the destination.
         name = Path(p_str).name
         if not name:
             raise ValueError(f"{p_str!r} does not name a file")

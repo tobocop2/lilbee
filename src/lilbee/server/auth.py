@@ -28,35 +28,23 @@ _MIN_TOKEN_CHARS = len(secrets.token_urlsafe(_TOKEN_BYTES))
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-# Route handlers AuthMiddleware skips. Populated at import time by the
-# @auth_checked_in_handler decorator; checked via membership lookup.
-# Module-level set is intentional: route handlers are defined once at import,
-# the registry has no other lifecycle, and the alternative (mutating an
-# attribute on the function object) lands every check on a # type: ignore
-# because mypy cannot see the dynamic attribute on Callable.
+# Route handlers AuthMiddleware skips, registered at import by the decorator
+# below. A module-level set rather than an attribute on the function object,
+# which mypy cannot see and would put a # type: ignore on every check.
 _SELF_AUTHENTICATING_HANDLERS: set[Callable[..., Any]] = set()
 
 
 def auth_checked_in_handler(fn: F) -> F:
     """Mark a route whose token check runs inside the handler, not in middleware.
 
-    This is not an exemption from auth. It exists for the ``/v1/*`` surface,
-    which has to answer a bad token with the OpenAI error envelope rather than
-    Litestar's 401 shape, so the check has to happen somewhere it can build
-    that body. Every route that carries this must still reject an
-    unauthenticated caller itself; ``test_every_route_is_authenticated`` holds
-    the line.
+    Not an exemption: the route must still reject an unauthenticated caller
+    itself. Only ``/v1/*`` uses this, to answer a bad token with the OpenAI
+    error envelope instead of Litestar's 401 shape.
+    ``test_every_route_is_authenticated`` holds the line.
 
-    It was called ``read_only``, which described a token that has never
-    existed: there is one token, and skipping the middleware meant answering
-    callers who sent none. That name is why a reviewer could approve the
-    decorator on a route serving chat transcripts without noticing what it
-    opened.
-
-    Must sit *below* the Litestar route decorator so it receives the raw
-    function, which is what ``AuthMiddleware`` looks up via ``handler.fn``.
-    Stacked the other way it registers the handler object instead and the
-    lookup misses, so the ordering is enforced rather than left to reviewers.
+    Must sit *below* the route decorator so it receives the raw function, which
+    is what ``AuthMiddleware`` looks up via ``handler.fn``; stacked the other
+    way the lookup misses. Enforced below.
     """
     if hasattr(fn, "fn"):
         raise TypeError(
@@ -95,10 +83,8 @@ class SessionManager:
         path = server_json_path()
         existing = self._read_persisted_token(path)
         if existing is not None:
-            # A server.json can arrive with permissive bits (written by a release
-            # predating this hardening, restored from a backup, copied between
-            # machines), and the token inside is reused indefinitely, so narrow
-            # the mode on every load rather than only at first creation.
+            # The token is reused indefinitely and the file can arrive
+            # world-readable (backup, older release), so narrow on every load.
             harden_private_file(path)
             self.token = existing
             self._initialized = True

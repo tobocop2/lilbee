@@ -137,9 +137,8 @@ class TestHealthProbes:
         monkeypatch.setattr(server_mod, "_session_token", lambda: "t")
 
     def test_no_probe_is_attempted_before_the_token_exists(self, monkeypatch) -> None:
-        """server.json is written by the app lifespan, so a probe racing startup
-        finds no token. That is the same answer a refused connection gives, and
-        it must not fire a request that would only come back 401."""
+        """A probe racing startup finds no server.json, which means no server
+        yet; firing a request that can only 401 is pointless."""
         monkeypatch.setattr(server_mod, "_session_token", lambda: None)
 
         def _fail(*_a, **_k):

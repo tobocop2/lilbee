@@ -50,9 +50,7 @@ def _transport_security() -> TransportSecuritySettings:
     bind = cfg.server_host
     if bind in _WILDCARD_BINDS:
         # The REST API on this port serves LAN clients fine, so without this
-        # the operator sees a half-working server: only /mcp fails, and it
-        # fails with an opaque transport-security rejection rather than
-        # anything naming the bind address as the cause.
+        # only /mcp fails, with an opaque transport-security rejection.
         log.warning(
             "Bound to %s, which cannot be enumerated for a Host allowlist, so %s "
             "accepts loopback Host headers only. Bind to a specific address to "
@@ -81,13 +79,10 @@ def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     # (init, reset) refuse runtime vault-switch / teardown that would race
     # concurrent in-flight handlers on the process-global Services singleton.
     set_http_mounted(True)
-    # FastMCP caches the session manager; clear it so each app owns its own,
-    # since run() is single-use per instance. There is no public reset in the
-    # mcp package (the property only lazily constructs and raises if read
-    # early), so this reaches into the private attribute deliberately, under
-    # the mcp>=1.26,<2 pin in pyproject. Checked rather than assumed: a rename
-    # would otherwise surface much later as an opaque run()-already-entered
-    # error from the lifespan, with nothing pointing at the dependency.
+    # run() is single-use per instance, so each app needs its own manager.
+    # The mcp package has no public reset, hence the private attribute, under
+    # the mcp>=1.26,<2 pin. Checked, not assumed: a rename would otherwise
+    # surface as an opaque run()-already-entered error from the lifespan.
     if not hasattr(mcp, "_session_manager"):
         raise RuntimeError(
             "This mcp release no longer caches the session manager on "

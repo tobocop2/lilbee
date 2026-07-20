@@ -105,10 +105,8 @@ _ATTACHMENT_EXCLUDE: tuple[str, ...] = (
     r"\?attachment_id=",
 )
 
-# These are regexes matched against the whole URL, not globs, so a bare path
-# prefix also matches longer words: /cart excluded /cartography, /account
-# excluded /accounting, /profile excluded /professional-services. Require the
-# segment to end or be followed by a separator.
+# Regexes against the whole URL, not globs, so a bare prefix also matches
+# longer words: /cart excluded /cartography. Require a segment boundary.
 _PATH_BOUNDARY = r"(?:/|\?|#|$)"
 
 
@@ -146,10 +144,9 @@ _ECOMMERCE_EXCLUDE = (
 )
 
 # Marketing / tracking query parameters (utm_*, fbclid, gclid, etc.).
-# Only vendor campaign tokens belong here: dropping ?utm_source= costs nothing
-# because the canonical URL is in the frontier too, but ?ref= and ?share= are
-# ordinary content links on docs and forum platforms and dropping one can drop
-# the only URL that reaches a page.
+# Vendor campaign tokens only. Dropping ?utm_source= is free (the canonical
+# URL is in the frontier too), but ?ref= and ?share= are ordinary content
+# links on docs and forum platforms.
 _TRACKING_EXCLUDE: tuple[str, ...] = (
     (
         r"[?&]("

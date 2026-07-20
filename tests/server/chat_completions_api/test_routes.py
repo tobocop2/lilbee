@@ -358,11 +358,9 @@ class TestListModelsEndpoint:
 
 
 class TestAuthRunsBeforeTheBodyIsParsed:
-    """The endpoint is @read_only, so the middleware waves it through and the
-    bearer check happens in the handler. With the body bound as a handler
-    parameter, Litestar parsed and validated it first, so an unauthenticated
-    caller got the whole payload processed and a malformed one was answered
-    with a 400 naming the failing fields, never reaching the 401."""
+    """The check runs in the handler, and Litestar parses the body before
+    calling it, so a malformed body used to 400 with field names instead of
+    reaching the 401."""
 
     async def test_a_malformed_body_without_a_token_is_401_not_400(
         self, services_with_chat_model, _auth_token

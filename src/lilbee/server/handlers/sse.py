@@ -170,12 +170,9 @@ class SseEventQueue(asyncio.Queue[str | None]):
     def put_nowait(self, item: str | None) -> None:
         """Enqueue an always-delivered event, evicting old progress when full."""
         if self.qsize() >= self._max_events and not self._evict_oldest_droppable():
-            # Nothing left that may be shed: the queue is full of events this
-            # class is required to deliver (chat and RAG tokens go through
-            # here), and the consumer has not taken one in _max_events. That
-            # is a stalled or already-gone client, so record it. Growing the
-            # queue for the rest of the generation is the alternative, and it
-            # is unbounded by construction.
+            # Full of undroppable events (chat and RAG tokens come through
+            # here) and the consumer has taken none in _max_events: a stalled
+            # or gone client. The alternative is unbounded growth.
             self.stalled = True
         self._put_droppable = False
         super().put_nowait(item)
@@ -221,12 +218,8 @@ class SseStream:
     def _put_and_check_stall(self, item: str | None) -> None:
         """Enqueue on the loop thread, cancelling the producer if it has stalled.
 
-        Chat and RAG tokens are in the always-deliver class, so a fast
-        generation streaming to a client that has stopped reading fills the
-        queue with events nothing is permitted to shed and it grows until the
-        generation ends. A consumer that has not taken a single event in a
-        full queue's worth is gone or as good as gone; cancelling is the same
-        signal a detected disconnect sends, just reached a different way.
+        A consumer that has taken nothing in a full queue's worth is gone;
+        cancelling is the same signal a detected disconnect sends.
         """
         self.queue.put_nowait(item)
         if self.queue.stalled and not self.cancel.is_set():
@@ -276,12 +269,9 @@ class SseStream:
     ) -> str | None:
         """The final SSE frame for a finished producer, or None if there is none.
 
-        Every streaming handler ended with the same five lines: check cancel,
-        check the task finished and was not cancelled, turn an exception into
-        sse_error, otherwise sse_done of the result. The copies had drifted --
-        the crawler-setup one skipped the cancel check and so emitted a done
-        frame to a client that had already disconnected -- which is the reason
-        this lives in one place now.
+        Shared by all five streaming handlers, which used to carry their own
+        copy of this and had drifted: one skipped the cancel check and emitted
+        a done frame to a client that had already disconnected.
         """
         if self.cancel.is_set() or not task.done() or task.cancelled():
             return None
@@ -295,19 +285,18 @@ class SseStream:
         getter: asyncio.Future[str | None],
         task: asyncio.Task[Any] | asyncio.Future[Any],
     ) -> set[asyncio.Future[Any]]:
-        """Futures the drain loop waits on. A finished task is left out: it
-        would resolve the wait instantly on every pass and spin the loop."""
+        """Futures the drain loop waits on. A finished task is left out or it
+        would resolve the wait instantly every pass and spin the loop."""
         return {getter} if task.done() else {getter, task}
 
     @staticmethod
     def _drain_timeout(task: asyncio.Task[Any] | asyncio.Future[Any]) -> float | None:
         """How long one drain pass may sleep.
 
-        While the producer runs, the only thing the timeout serves is the
-        heartbeat, and the task is in the wait set for everything else, so a
-        disabled heartbeat can wait indefinitely. Once the task has finished it
-        is out of the wait set, so this bounds the one remaining case: a queue
-        that empties without the sentinel ever arriving.
+        While the producer runs the timeout only serves the heartbeat, since
+        the task itself is in the wait set; a disabled heartbeat can wait
+        indefinitely. Once it finishes it leaves the wait set, so this bounds
+        the remaining case: a queue emptying without the sentinel arriving.
         """
         if task.done():
             return _FINISHED_PRODUCER_POLL_S
@@ -323,15 +312,13 @@ class SseStream:
         idle longer than ``cfg.sse_heartbeat_interval`` seconds so
         clients that enforce a stream-idle timeout don't abort.
 
-        The pending ``queue.get`` survives across poll rounds (``asyncio.wait``,
-        not ``wait_for``): cancelling a completed get on the timeout boundary
-        would drop the event it already popped from the queue.
+        The pending ``queue.get`` survives across rounds (``asyncio.wait``, not
+        ``wait_for``): cancelling a completed get on the timeout boundary would
+        drop the event it already popped.
 
-        The wait covers *task* as well, so a producer that dies without a
-        sentinel wakes the loop directly. That is what lets the timeout be the
-        seconds-scale heartbeat interval rather than a fixed 0.1s tick: the
-        loop used to wake ten times a second per open stream purely to
-        re-evaluate two conditions that neither need that resolution.
+        *task* is in the wait set, so a producer dying without a sentinel wakes
+        the loop directly. That is what lets the timeout be the seconds-scale
+        heartbeat interval instead of a 10Hz tick.
         """
         last_yielded = time.monotonic()
         getter: asyncio.Future[str | None] | None = None

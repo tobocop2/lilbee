@@ -31,10 +31,8 @@ def validate_path_within(path: str | Path, root: Path) -> Path:
     Returns the resolved path on success.
     """
     root_resolved = root.resolve()
-    # A relative path resolves against the process CWD, not *root*, so a bare
-    # user-supplied name was judged against wherever the process happened to be
-    # started. Anchor it to root, which is what the docstring describes; a
-    # traversal inside it is still caught by the containment check below.
+    # Relative paths resolve against the CWD, not *root*, so anchor them here;
+    # a traversal inside is still caught by the containment check below.
     candidate = Path(path)
     resolved = (candidate if candidate.is_absolute() else root_resolved / candidate).resolve()
     if not resolved.is_relative_to(root_resolved):
@@ -45,15 +43,13 @@ def validate_path_within(path: str | Path, root: Path) -> Path:
 def write_private_text(path: Path, text: str) -> None:
     """Write *text* to *path* so it is owner-only for its entire existence.
 
-    Writing with the process umask and narrowing to 0600 afterwards leaves a
-    window in which any local user can read the file, which matters because the
-    callers here persist a bearer token and provider API keys. ``mkstemp``
-    creates the temp file 0600 by construction, and ``os.replace`` carries that
-    mode over, so the secret is never observable at wider permissions. The
-    replace is also atomic, so a crash mid-write cannot truncate the original.
+    Writing under the umask and chmod'ing afterwards leaves a window where any
+    local user can read the file, and these callers persist a bearer token and
+    API keys. ``mkstemp`` creates at 0600 and ``os.replace`` keeps that mode,
+    atomically.
 
-    Windows has no POSIX mode bits; there these files rely on the inherited
-    ``%LOCALAPPDATA%`` DACL for owner-only access.
+    Windows has no POSIX mode bits; there these rely on the inherited
+    ``%LOCALAPPDATA%`` DACL.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -69,17 +65,12 @@ def write_private_text(path: Path, text: str) -> None:
 def harden_private_file(path: Path) -> None:
     """Narrow *path* to owner-only, tolerating a file we do not own.
 
-    :func:`write_private_text` creates these files owner-only, but one can
-    arrive wider: written by a release predating that hardening, restored from
-    a backup, copied between machines. Their contents (a bearer token, provider
-    API keys) are then read indefinitely without the file ever being rewritten,
-    so callers narrow on every load rather than only at creation.
+    A secret file can arrive wider than :func:`write_private_text` leaves it
+    (backup, older release) and is then read indefinitely without a rewrite, so
+    callers narrow on every load. A refused chmod warns rather than raising: a
+    file owned by someone else must not stop the caller from reading it.
 
-    Never fatal: a file owned by another user must not stop the caller from
-    reading it, so a refused chmod warns and returns.
-
-    Windows has no POSIX mode bits; there these files rely on the inherited
-    ``%LOCALAPPDATA%`` DACL for owner-only access.
+    No-op on Windows, which has no POSIX mode bits.
     """
     if sys.platform == "win32":  # pragma: no cover - Windows uses the DACL
         return

@@ -81,11 +81,9 @@ class CanonicalToolChoice:
     tool_name: str | None = None
 
     def __post_init__(self) -> None:
-        # The invariant was held only by the discipline of the single caller
-        # that builds this, while the type advertised it as a property of the
-        # type. A mode="tool" with no name reaches the provider payload as
-        # {"function": {"name": None}}, which the backend sees as a malformed
-        # tool choice rather than a rejected request.
+        # Without this the None reaches the provider as
+        # {"function": {"name": None}}, a malformed tool choice rather than a
+        # rejected request.
         if self.mode == "tool" and not self.tool_name:
             raise ValueError('CanonicalToolChoice(mode="tool") requires a tool_name')
 

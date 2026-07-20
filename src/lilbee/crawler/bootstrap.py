@@ -259,14 +259,12 @@ async def bootstrap_chromium(
         _emit_setup_done(on_progress, success=True, error=None)
         return
 
-    # Two callers can get here at once: a second POST /setup/crawler, or a
-    # crawl triggering first-use bootstrap alongside one. Both would unpack a
-    # browser bundle into the same directory and corrupt it. The lock is on
-    # disk, not in memory, because the CLI and MCP processes share this path.
-    # thread_local=False because the acquire runs in a worker thread (so the
-    # wait does not block the event loop) while the release runs on the loop
-    # thread. With the default the release would not count and the lock would
-    # never be freed.
+    # Two callers (a second POST /setup/crawler, or a crawl bootstrapping on
+    # first use) would unpack a browser bundle into the same directory and
+    # corrupt it. On disk, not in memory, because the CLI and MCP are separate
+    # processes sharing this path. thread_local=False because the acquire runs
+    # in a worker thread and the release on the loop thread; with the default
+    # the release would not count and the lock would never be freed.
     lock = FileLock(str(_bootstrap_lock_path()), thread_local=False)
     try:
         await asyncio.to_thread(lock.acquire, timeout=_BOOTSTRAP_LOCK_TIMEOUT_S)

@@ -1,11 +1,7 @@
 """Session routes: list, get, create, append, summary, rename, delete.
 
-Every route requires the bearer token, reads included. A conversation
-transcript is at least as personal as the memory store, which is gated for the
-same reason. The two ``GET`` routes used to be marked read-only, with a
-docstring claiming that let "a read-only session token" browse history; there
-is no such token, and the marker means no auth check at all, so both reads
-answered callers that sent no Authorization header.
+Every route requires the token, reads included: a transcript is at least as
+personal as the memory store next door.
 """
 
 from __future__ import annotations

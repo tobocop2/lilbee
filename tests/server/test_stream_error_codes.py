@@ -1,8 +1,7 @@
-"""The RAG chat stream must carry the same typed error codes as its non-stream sibling.
+"""The RAG chat stream carries the same typed error codes as its non-stream sibling.
 
-The non-streaming /api/chat maps a dispatch failure to a distinct status, but
-the streaming path flattened every failure into one code-less message, so a
-client could not tell "pull the model" from "shorten the prompt".
+The streaming path used to flatten every failure into one code-less message,
+so a client could not tell "pull the model" from "shorten the prompt".
 """
 
 from __future__ import annotations
@@ -55,8 +54,8 @@ class TestStreamErrorCodes:
         assert (await _collect(exc))["code"] == code
 
     async def test_a_backend_failure_stays_generic(self) -> None:
-        """Same redaction as the completions surface: the fleet's message names
-        loopback ports and engine paths, so it is logged rather than streamed."""
+        """Same redaction as the completions surface: the fleet's message
+        names loopback ports and engine paths."""
         payload = await _collect(
             ProviderError("bind 127.0.0.1:8137 failed", kind=ProviderErrorKind.CONNECTION)
         )
@@ -68,10 +67,8 @@ class TestStreamErrorCodes:
 
 
 class TestStalledConsumerStopsTheProducer:
-    """Chat and RAG tokens are in the always-deliver class, so a generation
-    streaming to a client that has stopped reading filled the queue with
-    events nothing was permitted to shed, and it grew until the generation
-    ended."""
+    """Chat and RAG tokens cannot be shed, so a generation streaming to a
+    client that stopped reading grew the queue until it finished."""
 
     async def test_a_full_undroppable_queue_cancels_the_producer(self) -> None:
         from lilbee.server.handlers.sse import SseStream
@@ -96,9 +93,8 @@ class TestStalledConsumerStopsTheProducer:
 
 
 class TestTerminalFrameIsSharedByEveryStream:
-    """Five streaming handlers ended with the same five lines, and the copies
-    had drifted: the crawler-setup one skipped the cancel check, so it emitted
-    a done frame to a client that had already disconnected."""
+    """One helper for all five streaming handlers, which had drifted: one
+    skipped the cancel check and emitted done to a disconnected client."""
 
     async def _finished(self, result=None, exc=None):
         async def _run():

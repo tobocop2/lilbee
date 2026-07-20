@@ -11,11 +11,9 @@ import pytest
 
 from lilbee.core.security import write_private_text
 
-# Scoped per class, not module-wide: it used to blanket the file, which also
-# skipped the token-corruption and path-anchoring tests on Windows. Those
-# assert nothing about mode bits, and Windows is exactly where a truncated or
-# clobbered server.json is most likely, so the regeneration path went untested
-# on the platform that needs it most.
+# Scoped per test, not module-wide: a blanket skip also hid the
+# token-corruption and path-anchoring tests, which assert no mode bits, from
+# Windows -- where a clobbered server.json is most likely.
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
 
 
@@ -237,9 +235,9 @@ class TestPersistedSettingsAreHardenedOnLoad:
 
 
 class TestHardeningOnWindows:
-    """The POSIX body has to be exercised on Windows too, or it is only ever
-    measured on the platforms where it runs. Patching ``sys.platform`` is the
-    same technique ``tests/test_system.py`` uses for its platform branches."""
+    """Drives both platform branches everywhere by patching ``sys.platform``,
+    as ``tests/test_system.py`` does, so the POSIX body is covered on Windows
+    too."""
 
     def test_the_windows_branch_leaves_the_file_alone(self, tmp_path, monkeypatch):
         """Windows has no POSIX mode bits; the file rides the inherited DACL."""

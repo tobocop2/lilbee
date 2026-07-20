@@ -1,7 +1,6 @@
 """Memory routes: list, remember, update, forget.
 
-Every route here requires the session token. Memories are the human's own
-notes about themselves, so they are not part of any open-read surface.
+Every route requires the token: memories are the human's notes about themselves.
 """
 
 from __future__ import annotations

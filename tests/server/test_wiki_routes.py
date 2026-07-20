@@ -402,17 +402,11 @@ class TestWikiEnabled:
         assert body["paths"] == ["wiki/concepts/x.md"]
 
     async def test_build_runs_in_worker_thread_and_serializes(self, monkeypatch):
-        """Concurrent build calls don't run in parallel: the lock serializes them.
+        """Concurrent builds serialize on the lock, off the event loop.
 
-        Asserts that ``run_full_build`` is invoked from a non-loop thread
-        (so an LLM-blocking build won't freeze the event loop) and that
-        two concurrent builds run sequentially.
-
-        Drives the handlers directly rather than through AsyncTestClient: that
-        client serializes gathered requests itself, so the spans never overlap
-        whether or not the lock exists, and deleting the lock from the handler
-        left this test green. See the prune-vs-build sibling, which had the
-        same flaw.
+        Drives the handlers directly: AsyncTestClient serializes gathered
+        requests itself, so through it the spans never overlap whether or not
+        the lock exists, and this test stayed green without it.
         """
         import asyncio
         import threading

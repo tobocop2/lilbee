@@ -1,7 +1,7 @@
 """Document management route handlers: add, list, remove, sync, export.
 
-Every route here needs the session token, reads included: the listing names
-the user's files and ``/api/export`` serializes the whole corpus.
+Every route needs the token, reads included: the listing names the user's
+files and ``/api/export`` serializes the whole corpus.
 """
 
 from __future__ import annotations
@@ -80,10 +80,8 @@ async def add_upload_route(
     e.g. the plugin or CLI in external mode against a remote lilbee / GPU box --
     ingest its own local files by uploading them straight to the server.
     """
-    # Names first, bytes second. Reading every part into a list before
-    # validating meant a request that was going to be rejected on filename
-    # still cost a full in-memory copy of the payload, per concurrent
-    # uploader, on a box that is also holding model weights.
+    # Names first, bytes second: reading every part before validating cost a
+    # full in-memory copy of a payload that was going to be rejected anyway.
     try:
         names = handlers.validate_upload_names([upload.filename for upload in data])
     except ValueError as exc:

@@ -1,7 +1,6 @@
 """Search, ask, ask_stream, chat, and chat_stream route handlers.
 
-Every route here needs the session token. These return the user's own
-documents, so they are not part of the unauthenticated liveness surface.
+Every route needs the token: these return the user's own documents.
 """
 
 from __future__ import annotations
@@ -124,13 +123,10 @@ async def _gated_stream(
             yield chunk
     except Exception as exc:
         log.exception("streaming chat handler failed")
-        # The typed dispatch failures that reach here (unknown model, no tool
-        # support, context overflow) are exactly the ones the SSE error code
-        # vocabulary was widened to cover, and the non-streaming sibling already
-        # maps them to distinct statuses. Without a code the stream flattened
-        # them into one message, so a client could not tell "pull the model"
-        # from "shorten the prompt". classify_provider_error also redacts the
-        # backend-failure kinds, whose text names loopback ports and engine paths.
+        # Same mapper as the non-streaming sibling: without a code the stream
+        # flattened unknown-model, no-tool-support and context-overflow into
+        # one message, so a client could not tell "pull the model" from
+        # "shorten the prompt". It also redacts the backend-failure kinds.
         classified = classify_provider_error(exc)
         if classified is None:
             yield sse_error(str(exc))
@@ -164,10 +160,8 @@ async def search_route(
         return await handlers.search(q, top_k=top_k, chunk_type=parsed_chunk_type)
     except EmbeddingModelMismatchError as exc:
         # ``adoptable`` is a bare yes/no on whether switching embedder alone
-        # would fix the index, which is what a client renders its recovery hint
-        # from. The embedder names stay out: this is the generic-503 path, and
-        # naming them here would make the message depend on which of the two
-        # mismatched sides the caller already knows.
+        # fixes the index, which is what a client renders its hint from. The
+        # embedder names stay out of the generic 503.
         raise HTTPException(
             status_code=409,
             detail="The index was built with a different embedding model than the one configured.",

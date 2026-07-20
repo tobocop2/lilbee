@@ -46,9 +46,8 @@ def completions_error_body(code: CompletionsErrorCode, message: str) -> dict[str
     return {
         "error": {
             "message": message,
-            # .get, not a bare subscript: this map is hand-maintained alongside
-            # the enum, so a new variant without an entry would raise while
-            # building the error response, turning a handled 4xx into a 500.
+            # .get, not a subscript: this map is hand-maintained alongside the
+            # enum, and a missing entry would turn a handled 4xx into a 500.
             "type": COMPLETIONS_ERROR_TYPES.get(code, _FALLBACK_ERROR_TYPE),
             "code": str(code),
         }
@@ -77,12 +76,10 @@ _PROVIDER_KIND_CLASSIFICATIONS: dict[ProviderErrorKind, tuple[int, CompletionsEr
 }
 
 
-# Kinds that describe the backend rather than the caller's request. Their text
-# comes from the fleet boundary and carries internal detail (up to 600 bytes of
-# the upstream body, plus the dead server's captured stderr: loopback ports,
-# engine binary paths, CUDA load failures), so it is logged rather than
-# returned. The client-input kinds above stay pass-through: that text tells the
-# caller what to change about their own request.
+# Kinds describing the backend, not the caller's request. Their text is built
+# at the fleet boundary and carries up to 600 bytes of upstream body plus the
+# dead server's stderr (loopback ports, engine paths), so it is logged rather
+# than returned. The client-input kinds stay pass-through.
 _INFRASTRUCTURE_KINDS = frozenset({ProviderErrorKind.CONNECTION, ProviderErrorKind.SERVER})
 
 _BACKEND_FAILURE_MESSAGE = "The model backend is unavailable. Check the server logs for details."

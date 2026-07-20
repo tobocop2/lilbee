@@ -50,11 +50,8 @@ async def encode_completions_sse(
             try:
                 await pending
             except asyncio.CancelledError:
-                # Expected: this is the future we just cancelled. Caught by
-                # name rather than as BaseException, which also covered
-                # KeyboardInterrupt and SystemExit, so a Ctrl-C landing on this
-                # await was discarded. A cancellation aimed at this task is
-                # already unwinding through the finally and keeps propagating.
+                # Expected: the future we just cancelled. By name, not
+                # BaseException, which also swallowed a Ctrl-C landing here.
                 pass
             except Exception:
                 # The upstream failed as it was torn down. The request is

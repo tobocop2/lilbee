@@ -772,10 +772,9 @@ class TestDispatchChatStream:
         self, services_with_model
     ) -> None:
         """A text frame closes the open tool block, so the next delta for the
-        same call has to open a second one. Continuation deltas carry no id and
-        no name, so that block used to get a fresh synthetic id and an empty
-        name: one logical call split into two blocks, the second matching no
-        tool. Both blocks must at least carry the identity the call announced."""
+        same call opens a second one. Continuation deltas carry no id or name,
+        so it used to get a synthetic id and an empty name, splitting one call
+        across two blocks."""
         services_with_model.provider.supports_tools.return_value = True
         frames = [
             ToolCallDelta(index=0, id="c1", name="search", arguments_delta='{"q":'),

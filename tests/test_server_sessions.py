@@ -174,9 +174,8 @@ class TestDelete:
 
 
 def test_every_session_route_requires_the_token():
-    """Reads included. This used to pin the two GETs as unauthenticated, which
-    served full chat transcripts to any caller that could reach the port; the
-    memory store next door is gated for the same reason."""
+    """Reads included: the two GETs used to serve full chat transcripts to any
+    caller that could reach the port."""
     assert not authenticates_itself(sessions_list_route.fn)
     assert not authenticates_itself(session_get_route.fn)
     assert not authenticates_itself(session_rename_route.fn)
@@ -284,10 +283,9 @@ class TestSessionsDisabled:
 
 
 class TestSessionVanishesMidRequest:
-    """Every mutating handler mutates and then re-reads the session to build
-    its response. The TUI and HTTP surfaces share one store, so a session
-    deleted between those two calls made the trailing read raise an unguarded
-    SessionNotFoundError that escaped as a 500 rather than the promised 404."""
+    """Handlers mutate then re-read to build the response, and the TUI and
+    HTTP surfaces share one store, so a delete landing between the two used to
+    escape as a 500."""
 
     def test_a_delete_between_the_mutation_and_the_read_is_a_404(self, client, store):
         session_id = store.create(model_ref=None, scope=None, origin=SessionOrigin.HTTP)

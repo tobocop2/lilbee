@@ -395,12 +395,8 @@ def _hosted_entry(rm: RemoteModel, source: ModelSource) -> CatalogEntryResponse:
 _HOSTED_MODELS_TTL = 60
 
 
-# Single-entry TTL caches keyed on the config tuple that produced the value.
-# maxsize=1 is the "single entry" part: a lookup under a new key misses and the
-# store evicts the old one, which is the behaviour the two hand-rolled classes
-# here reimplemented. They had already drifted apart, one testing the cached
-# value for truthiness instead of for presence, so a legitimately empty result
-# was never cached and re-fetched on every request.
+# Single-entry TTL caches keyed on the config tuple that produced the value:
+# maxsize=1 means a lookup under a new key evicts the old one.
 _hosted_cache: TTLCache[str, list[CatalogEntryResponse]] = TTLCache(
     maxsize=1, ttl=_HOSTED_MODELS_TTL
 )
@@ -490,12 +486,10 @@ async def models_catalog(
         _build_catalog_entry(e, available_bytes=available_bytes, families_by_repo=families_by_repo)
         for e in enriched
     ]
-    # Hosted rows (frontier + ollama) are selectable and download-free, so
-    # they're shown on the first page only (mirrors the featured first-page
-    # convention) and skipped for featured-only and installed=False filters.
-    # They are an unpaginated overlay, so they stay out of ``total``: adding
-    # them made page 1 report a larger total than page 2 of the same listing,
-    # and total/limit/offset/has_more now all describe the same paginated set.
+    # Hosted rows (frontier + ollama) are selectable and download-free, shown
+    # on the first page only and skipped for featured-only / installed=False.
+    # They stay out of ``total``: as an unpaginated overlay they made page 1
+    # report a larger total than page 2 of the same listing.
     hosted_rows: list[CatalogEntryResponse] = []
     if offset == 0 and not featured and installed is not False:
         hosted_rows = await _collect_hosted_entries(task=parsed_task, search=search)
@@ -579,10 +573,9 @@ async def models_pull(
 
     def _pull_blocking() -> None:
         def _on_bytes(downloaded: int, total: int) -> None:
-            # Raise rather than return: the pull runs in a worker thread that
-            # asyncio cannot interrupt, so returning quietly left a multi-GB
-            # download running for a client that had already gone. This is the
-            # abort path the downloader is written for.
+            # Raise, not return: the pull runs in a worker thread asyncio
+            # cannot interrupt, so returning left a multi-GB download running
+            # for a client that had gone.
             if sse.cancel.is_set():
                 raise TaskCancelledError
             payload = sse_event(SseEvent.PROGRESS, {"current": downloaded, "total": total})
@@ -607,10 +600,9 @@ async def models_pull(
         async for event in sse.drain(task, "Model pull stream"):
             yield event
     finally:
-        # Closing this generator means the client is gone. Set the flag here
-        # rather than relying on drain's own cleanup, which runs only once that
-        # inner generator is collected: until then the worker thread keeps
-        # downloading for a client that has already disconnected.
+        # Closing this generator means the client is gone. Set it here, not in
+        # drain's cleanup, which runs only once that generator is collected;
+        # until then the worker thread keeps downloading.
         sse.cancel.set()
 
 
@@ -647,8 +639,7 @@ _external_cache: TTLCache[str, ExternalModelsResponse] = TTLCache(
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
     key = f"{cfg.ollama_base_url}:{cfg.lm_studio_base_url}:{cfg.llm_api_key or ''}"
-    # ``is not None``, not truthiness: an empty model list is a real answer and
-    # caching it is the point. Testing the value itself re-fetched every time.
+    # ``is not None``, not truthiness: an empty model list is a real answer.
     cached = _external_cache.get(key)
     if cached is not None:
         return cached

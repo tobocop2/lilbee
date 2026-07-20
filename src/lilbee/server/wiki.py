@@ -1,8 +1,7 @@
 """Wiki layer route handlers: page listing, reading, citations, lint, generation, pruning.
 
-Every route here needs the session token. Wiki pages are generated from the
-user's own corpus, so a page body, a citation list, and even the page titles
-in a listing are their content, not public reference material.
+Every route needs the token: pages are generated from the user's own corpus,
+so even the titles in a listing are their content.
 """
 
 from __future__ import annotations
