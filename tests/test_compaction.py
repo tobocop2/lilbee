@@ -179,10 +179,6 @@ def test_a_summary_that_cannot_fit_is_dropped_not_stacked() -> None:
 class TestFoldableAlignment:
     """The fold boundary must leave the kept window opening on a user turn."""
 
-    @staticmethod
-    def _roles(messages):
-        return [m["role"] for m in messages]
-
     def test_odd_history_keeps_alternation_intact(self):
         """An interrupted turn persists an unpaired user message, so a history
         can be odd-length. Cutting a fixed count then leaves the kept window
@@ -208,3 +204,12 @@ class TestFoldableAlignment:
 
     def test_short_history_folds_nothing(self):
         assert foldable(_msgs(COMPACT_KEEP_RECENT)) == []
+
+    def test_a_tail_with_no_user_turn_keeps_the_plain_boundary(self):
+        """Nothing to align to: scanning past the end and folding everything
+        away would throw the whole conversation out to fix its shape."""
+        history = [
+            {"role": "assistant", "content": f"a{i}"} for i in range(COMPACT_KEEP_RECENT + 4)
+        ]
+        dropped = foldable(history)
+        assert len(dropped) == len(history) - COMPACT_KEEP_RECENT
