@@ -121,9 +121,21 @@ def matches_reference(ref: str, filename: str) -> bool:
             continue
         if token == ref_token:
             return True
-        if token.isdigit() and ref_token.isdigit() and int(token) == int(ref_token):
+        if _same_number(token, ref_token):
             return True
     return False
+
+
+def _same_number(token: str, ref_token: str) -> bool:
+    """Whether two tokens are the same number ignoring leading zeros.
+
+    Compares zero-stripped decimal strings rather than calling ``int``:
+    ``str.isdigit()`` is True for Unicode digits like the superscript two,
+    which ``int`` rejects, and the reference pattern matches those.
+    """
+    if not (token.isdecimal() and ref_token.isdecimal()):
+        return False
+    return token.lstrip("0") == ref_token.lstrip("0")
 
 
 def title_candidates(question: str, lang: QueryLanguage | None = None) -> list[str]:

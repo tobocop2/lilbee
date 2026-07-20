@@ -53,6 +53,21 @@ class TestEmbed:
         call_args = mock_provider.embed.call_args[0][0]
         assert len(call_args[0]) == embedder.embed_char_budget
 
+    def test_instruction_prefix_counts_against_the_char_budget(self, embedder, mock_provider):
+        """The budget guards the embed model's context, so the prefix has to
+        fit inside it: prepending after truncation ships budget+len(prefix)
+        chars and the engine silently drops the tail the clamp exists to save."""
+        from lilbee.retrieval.embedding_profiles import EmbeddingProfile
+
+        profile = EmbeddingProfile(query_instruction="Instruct: do the thing\nQuery: ")
+        mock_provider.embed.return_value = [[0.0] * 768]
+        long_text = "a" * (embedder.embed_char_budget + 1000)
+        with mock.patch.object(embedder, "_profile", return_value=profile):
+            embedder.embed_query(long_text)
+        sent = mock_provider.embed.call_args[0][0][0]
+        assert sent.startswith(profile.query_instruction)
+        assert len(sent) == embedder.embed_char_budget
+
 
 class TestEmbedBatch:
     def test_returns_multiple_vectors(self, embedder, mock_provider):

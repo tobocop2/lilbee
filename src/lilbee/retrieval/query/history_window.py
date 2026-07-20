@@ -42,6 +42,11 @@ def windowed_history(
     message; never strands an orphan assistant reply with no preceding user
     turn for the model to anchor to. The newest pair is always kept even
     if it exceeds the budget on its own (caller decides what to do then).
+
+    A non-positive *max_tokens* disables windowing and returns everything,
+    rather than windowing hardest. No production caller can reach it today
+    (the context target has a floor), but a caller deriving a budget that
+    goes non-positive gets the full history, not an empty one.
     """
     if max_tokens <= 0 or not messages:
         return list(messages)

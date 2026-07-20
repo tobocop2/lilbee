@@ -173,7 +173,11 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
     total = table.count_rows()
     if total == 0:
         return []
-    step = max(1, total // limit)
+    # Ceiling division: flooring makes the stride too small, so the sample is
+    # the first `limit` contiguous rows and the table's tail -- the most
+    # recently ingested documents, exactly what re-induction exists to catch --
+    # is never reached.
+    step = max(1, -(-total // limit))
     texts: list[str] = []
     # Projection is pushed into LanceDB: a bare to_arrow() would drag every
     # column, embedding vectors included, into memory before selecting.

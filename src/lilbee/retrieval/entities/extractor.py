@@ -117,6 +117,28 @@ def normalize_value(text: str) -> str:
     return value
 
 
+def _pattern_is_usable(entity_type: EntityType) -> bool:
+    """Whether an induced type's pattern can actually drive its extractor.
+
+    Only llm kinds legitimately leave the pattern blank (they carry a
+    description instead). An empty regex compiles but then matches at every
+    position of every chunk in the corpus, and an empty spaCy label names
+    nothing.
+    """
+    if entity_type.kind is ExtractorKind.LLM:
+        return True
+    if not entity_type.pattern:
+        log.warning("Dropping induced type %s: empty pattern", entity_type.name)
+        return False
+    if entity_type.kind is ExtractorKind.REGEX:
+        try:
+            _compile_pattern(entity_type.pattern)
+        except regex.error:
+            log.warning("Dropping induced type %s: bad regex", entity_type.name)
+            return False
+    return True
+
+
 def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchema | None:
     """Phase 1: propose a schema from sampled chunk texts. None on failure."""
     if not sample_texts:
@@ -148,12 +170,8 @@ def induce_schema(sample_texts: list[str], provider: LLMProvider) -> EntitySchem
         except Exception:
             log.warning("Dropping invalid induced type: %r", raw)
             continue
-        if entity_type.kind is ExtractorKind.REGEX:
-            try:
-                _compile_pattern(entity_type.pattern)
-            except regex.error:
-                log.warning("Dropping induced type %s: bad regex", entity_type.name)
-                continue
+        if not _pattern_is_usable(entity_type):
+            continue
         # Small models sometimes propose several names for one extractor
         # (three types sharing a regex triple the table with identical rows);
         # the first name wins.

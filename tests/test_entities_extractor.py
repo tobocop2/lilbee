@@ -180,6 +180,43 @@ class TestInduceSchema:
         assert schema is not None
         assert [t.name for t in schema.types] == ["title", "person", "vessel"]
 
+    def test_drops_empty_pattern_for_pattern_bearing_kinds(self):
+        """An empty pattern compiles fine but makes finditer yield a
+        zero-width match at every position of every chunk in the corpus.
+        The induction prompt tells the model to leave the pattern empty for
+        llm kinds, so a confused model emitting regex+'' is realistic."""
+        provider = MagicMock()
+        provider.chat.return_value = _text_result(
+            json.dumps(
+                {
+                    "types": [
+                        {"name": "empty_regex", "kind": "regex", "pattern": ""},
+                        {"name": "empty_spacy", "kind": "spacy", "pattern": ""},
+                        {"name": "part_number", "kind": "regex", "pattern": r"PX\d{4}"},
+                    ]
+                }
+            )
+        )
+        schema = induce_schema(["text"], provider)
+        assert schema is not None
+        assert [t.name for t in schema.types] == ["part_number"]
+
+    def test_llm_kind_may_keep_an_empty_pattern(self):
+        """llm kinds carry a description instead, exactly as the prompt asks."""
+        provider = MagicMock()
+        provider.chat.return_value = _text_result(
+            json.dumps(
+                {
+                    "types": [
+                        {"name": "vessel", "kind": "llm", "pattern": "", "description": "ships"}
+                    ]
+                }
+            )
+        )
+        schema = induce_schema(["text"], provider)
+        assert schema is not None
+        assert [t.name for t in schema.types] == ["vessel"]
+
     def test_drops_bad_regex_keeps_rest(self):
         provider = MagicMock()
         provider.chat.return_value = _text_result(

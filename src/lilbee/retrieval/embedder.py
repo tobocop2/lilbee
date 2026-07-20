@@ -92,9 +92,13 @@ class Embedder:
         with self._truncated_lock:
             return self._truncated_total
 
-    def truncate(self, text: str) -> str:
-        """Truncate text to the embed char budget, counting any truncation."""
-        budget = self.embed_char_budget
+    def truncate(self, text: str, reserved: int = 0) -> str:
+        """Truncate text to the embed char budget, counting any truncation.
+
+        *reserved* is charged against the budget so an instruction prefix
+        prepended afterwards still leaves the sent text inside the guard.
+        """
+        budget = max(1, self.embed_char_budget - reserved)
         if len(text) <= budget:
             return text
         log.debug("Truncating chunk from %d to %d chars for embedding", len(text), budget)
@@ -185,7 +189,10 @@ class Embedder:
         batch: list[str] = []
         batch_chars = 0
         for text in texts:
-            truncated = prefix + self.truncate(text)
+            # The prefix is charged against the budget: it is part of what the
+            # embed model receives, so counting only the text would ship
+            # budget+len(prefix) chars and lose the tail the clamp protects.
+            truncated = prefix + self.truncate(text, reserved=len(prefix))
             chunk_len = len(truncated)
             if batch and batch_chars + chunk_len > max_batch_chars:
                 vectors.extend(self._provider.embed(batch))

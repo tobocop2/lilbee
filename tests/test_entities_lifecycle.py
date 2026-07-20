@@ -320,11 +320,35 @@ class TestChunkScanProjection:
         store = mock.MagicMock()
         store.open_table.return_value = table
 
+        # 3 rows into a 2-sample: stride 2 takes the first and the last,
+        # spreading across the table rather than taking the head.
         texts = _sample_chunks(store, 2)
-        assert texts == ["a", "b"]
+        assert texts == ["a", "c"]
         table.search.return_value.select.assert_called_once_with(["chunk"])
         table.search.return_value.select.return_value.limit.assert_called_once_with(None)
         table.to_arrow.assert_not_called()
+
+    def test_sample_spans_the_whole_table_not_just_the_head(self):
+        """Floor division makes the stride too small, so the sample is the
+        first `limit` contiguous rows and the table's tail -- the most
+        recently ingested documents, i.e. exactly the new family that
+        re-induction exists to catch -- can never be sampled."""
+        from lilbee.retrieval.entities.lifecycle import _sample_chunks
+
+        total = 79
+        batch = mock.MagicMock()
+        batch.column.return_value.to_pylist.return_value = [f"chunk-{i}" for i in range(total)]
+        table = self._projecting_table([batch])
+        table.count_rows.return_value = total
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+
+        texts = _sample_chunks(store, 40)
+        sampled = [int(t.split("-")[1]) for t in texts]
+        assert len(sampled) <= 40
+        # Floor division gives stride 1 here, sampling rows 0-39 and leaving
+        # the last half of the table unreachable; an even spread reaches it.
+        assert max(sampled) >= total - 10
 
     def test_sample_chunks_stops_reading_once_the_sample_is_full(self):
         from lilbee.retrieval.entities.lifecycle import _sample_chunks
