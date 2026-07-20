@@ -46,7 +46,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Chunks per extraction batch during a full pass; bounds the working set.
+# Chunks per extraction batch during a full pass; bounds the boxed Python
+# rows in flight (the scan itself is projected and stays columnar).
 _BACKFILL_BATCH = 2000
 
 # Corpus growth that makes the induced taxonomy worth revisiting, as a
@@ -174,12 +175,16 @@ def _sample_chunks(store: Store, limit: int) -> list[str]:
         return []
     step = max(1, total // limit)
     texts: list[str] = []
-    arrow = table.to_arrow().select(["chunk"])
+    # Projection is pushed into LanceDB: a bare to_arrow() would drag every
+    # column, embedding vectors included, into memory before selecting.
+    arrow = table.search().select(["chunk"]).limit(None).to_arrow()
     index = 0
     for batch in arrow.to_batches(max_chunksize=_BACKFILL_BATCH):
         for text in batch.column("chunk").to_pylist():
-            if index % step == 0 and len(texts) < limit:
+            if index % step == 0:
                 texts.append(text)
+                if len(texts) >= limit:
+                    return texts
             index += 1
     return texts
 
@@ -215,7 +220,8 @@ def _full_pass(store: Store, schema: EntitySchema, cancel: threading.Event | Non
     written = 0
     stats = ExtractionStats()
     columns = ["chunk", "source", "chunk_index", "page_start"]
-    arrow = table.to_arrow().select(columns)
+    # Projection pushed into LanceDB; see _sample_chunks.
+    arrow = table.search().select(columns).limit(None).to_arrow()
     for batch in arrow.to_batches(max_chunksize=_BACKFILL_BATCH):
         if cancel is not None and cancel.is_set():
             log.info("Entity extraction cancelled; the next sync restarts the pass")

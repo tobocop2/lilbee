@@ -298,6 +298,69 @@ class TestEnsureEntities:
         services.provider.chat.assert_not_called()
 
 
+class TestChunkScanProjection:
+    """The lifecycle's chunk scans must push column projection into LanceDB;
+    a bare to_arrow() drags the whole table, embedding vectors included,
+    into memory before selecting."""
+
+    @staticmethod
+    def _projecting_table(batches):
+        table = mock.MagicMock()
+        query = table.search.return_value.select.return_value.limit.return_value
+        query.to_arrow.return_value.to_batches.return_value = batches
+        return table
+
+    def test_sample_chunks_projects_only_the_chunk_column(self):
+        from lilbee.retrieval.entities.lifecycle import _sample_chunks
+
+        batch = mock.MagicMock()
+        batch.column.return_value.to_pylist.return_value = ["a", "b", "c"]
+        table = self._projecting_table([batch])
+        table.count_rows.return_value = 3
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+
+        texts = _sample_chunks(store, 2)
+        assert texts == ["a", "b"]
+        table.search.return_value.select.assert_called_once_with(["chunk"])
+        table.search.return_value.select.return_value.limit.assert_called_once_with(None)
+        table.to_arrow.assert_not_called()
+
+    def test_sample_chunks_stops_reading_once_the_sample_is_full(self):
+        from lilbee.retrieval.entities.lifecycle import _sample_chunks
+
+        first = mock.MagicMock()
+        first.column.return_value.to_pylist.return_value = ["a", "b", "c"]
+        second = mock.MagicMock()
+        table = self._projecting_table([first, second])
+        table.count_rows.return_value = 4
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+
+        # step = 4 // 2 = 2 -> indexes 0 and 2, both in the first batch.
+        texts = _sample_chunks(store, 2)
+        assert texts == ["a", "c"]
+        second.column.assert_not_called()
+
+    def test_full_pass_projects_the_needed_columns(self):
+        from lilbee.retrieval.entities.lifecycle import _full_pass
+
+        batch = mock.MagicMock()
+        batch.to_pylist.return_value = [
+            {"chunk": "part PX4471", "source": "a.txt", "chunk_index": 0, "page_start": 1}
+        ]
+        table = self._projecting_table([batch])
+        store = mock.MagicMock()
+        store.open_table.return_value = table
+        store.add_entities.return_value = 1
+
+        assert _full_pass(store, _part_schema(), None) is True
+        table.search.return_value.select.assert_called_once_with(
+            ["chunk", "source", "chunk_index", "page_start"]
+        )
+        table.to_arrow.assert_not_called()
+
+
 class TestSchemaEvolution:
     """The taxonomy keeps up with the corpus without anyone touching it: a
     library that grows a new kind of document gains the types to answer about
