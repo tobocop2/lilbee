@@ -66,6 +66,17 @@ class _CatalogTestApp(LilbeeAppHost):
         yield CatalogScreen()
 
 
+def _unmounted_tab_strip_active(*args: object) -> str:
+    """PropertyMock side_effect for a tab strip whose Tab children never mounted.
+
+    Any get reports "discover"; any set raises the way Textual's active
+    validator does, no matter how many times the code under test retries.
+    """
+    if args:
+        raise ValueError("No Tab with id '--content-tab-chat'")
+    return "discover"
+
+
 def _fake_tabs_query_one(screen: CatalogScreen, fake_tabs: object):
     """A ``query_one`` substitute faking only the ``#catalog-tabs`` strip.
 
@@ -606,13 +617,7 @@ async def test_activate_initial_tab_retries_while_tab_strip_mounts(monkeypatch) 
         screen._activation_settled = False
         screen._active_tab_id_cache = "chat"
         fake_tabs = mock.MagicMock()
-        type(fake_tabs).active = mock.PropertyMock(
-            return_value="discover",
-            side_effect=[  # get, then set raises
-                "discover",
-                ValueError("No Tab with id '--content-tab-chat'"),
-            ],
-        )
+        type(fake_tabs).active = mock.PropertyMock(side_effect=_unmounted_tab_strip_active)
         rescheduled: list[object] = []
         monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
         monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
@@ -634,10 +639,7 @@ async def test_activate_initial_tab_retry_budget_exhausts(monkeypatch) -> None:
         screen._active_tab_id_cache = "chat"
         screen._activation_retries = 0
         fake_tabs = mock.MagicMock()
-        type(fake_tabs).active = mock.PropertyMock(
-            return_value="discover",
-            side_effect=["discover", ValueError("No Tab with id '--content-tab-chat'")],
-        )
+        type(fake_tabs).active = mock.PropertyMock(side_effect=_unmounted_tab_strip_active)
         rescheduled: list[object] = []
         monkeypatch.setattr(screen, "query_one", _fake_tabs_query_one(screen, fake_tabs))
         monkeypatch.setattr(screen, "call_after_refresh", lambda fn, *a: rescheduled.append(fn))
