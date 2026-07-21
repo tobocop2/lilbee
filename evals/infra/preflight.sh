@@ -33,16 +33,18 @@ log "engine binary is present and prebuilt (never compiled here)"
 # Whether the shipped engine covers this card is checked against the card, not
 # assumed from a note. An earlier comment asserted the cu124 build had no sm_90
 # kernels; the build pins 70;75;80;86;89;90, so it does. Ask the box.
-log "engine has kernels for this GPU's compute capability"
 CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '. ')
 log "  compute capability sm_${CAP}, engine backend ${BACKEND:-cu124}"
-"$LILBEE_BIN" models doctor 2>&1 | tee /tmp/engine_doctor.txt || true
-if grep -qiE "no CUDA-capable device|no kernel image" /tmp/engine_doctor.txt; then
-  die "engine has no kernels for sm_${CAP}; pick a GPU the ${BACKEND:-cu124} build covers"
-fi
 
-log "embedding model actually loads and returns a vector"
-"$LILBEE_BIN" models pull "${EMBED_MODEL}" 2>&1 | tail -3
+# use-embedder both downloads the model and points lilbee at it. There is no
+# "models" command -- an earlier version of this check invented one and failed
+# with "No such command", which proved nothing about the GPU.
+log "embedding model downloads and is selected"
+"$LILBEE_BIN" use-embedder "${EMBED_MODEL}" 2>&1 | tail -5
+
+# The real arch check. If the engine has no kernels for this card, loading the
+# model is where it says so, on the same binary the ingest will use.
+log "embedder returns a real vector (this is the CUDA check that matters)"
 "$PYBIN" - <<'PY' || die "the embedder did not return a usable vector; the ingest would produce an empty index"
 import os, sys, httpx, time
 base = os.environ["LILBEE_BASE_URL"].rstrip("/")
