@@ -62,6 +62,8 @@ setup: |
   # branch against a real engine. feat/kreuzberg-5 is needed for
   # data/ingest/trace.py, which never merged to main.
   apt-get update -qq && apt-get install -y -qq git curl python3-venv >/dev/null
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
   python3 -m venv /root/lilbee_venv
   /root/lilbee_venv/bin/pip install -q --upgrade pip
   /root/lilbee_venv/bin/pip install -q --pre lilbee --extra-index-url "https://lilbee.sh/${BACKEND}/"
@@ -82,6 +84,8 @@ setup: |
   rm -rf /tmp/harness
   git clone --depth 1 --branch "$HARNESS_BRANCH" https://github.com/tobocop2/lilbee.git /tmp/harness
   cp -r /tmp/harness/evals /opt/lilbee-src/
+  # The harness runs here now that hydration folded into this pod.
+  cd /opt/lilbee-src && uv sync --project evals
   test -f /opt/lilbee-src/evals/infra/ingest.sh || { echo "FATAL: harness overlay missing"; exit 1; }
   test -f /opt/lilbee-src/src/lilbee/data/ingest/trace.py || { echo "FATAL: no trace.py; wrong lilbee branch"; exit 1; }
   # The record of what actually ran, written where the provenance can find it.
@@ -92,6 +96,7 @@ setup: |
 run: |
   set -euo pipefail
   cd /opt/lilbee-src
+  export PATH="$HOME/.local/bin:$PATH"
   export WORKSPACE=/workspace LOCAL=/root/msmarco
   export LILBEE_INGEST_TRACE=1
   export LILBEE_INGEST_TRACE_FILE=/workspace/logs/ingest_trace.log

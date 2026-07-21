@@ -34,6 +34,25 @@ export UV_PROJECT_ENVIRONMENT=/root/lilbee_venv
 mkdir -p "$DOCS_DIR" "$LOG_DIR" "$LOCAL/data"
 log() { printf '[ingest %s] %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$LOG_DIR/ingest.log"; }
 
+# ---------------------------------------------------------------- phase 0
+# Fetch the corpus if the volume does not already have it. This used to be a
+# separate CPU pod, which was cheaper per hour but cost far more in practice:
+# the CPU-pod stage failed to provision in two of three datacentres (US-WA-1
+# capped container disk at 80G, CA-MTL-3 offers no CPU-only instances at all),
+# and every failure meant another round of provisioning churn.
+#
+# Folding it in trades roughly seven minutes of GPU time for removing an entire
+# provisioning dependency. It is skipped whenever the corpus is already on the
+# volume, so a reclaimed pod resumes rather than re-downloading.
+if [ -s "$CORPUS_JSONL" ]; then
+  log "corpus already on the volume ($(wc -l < "$CORPUS_JSONL") passages), skipping fetch"
+else
+  log "fetching the corpus onto the volume"
+  cd /opt/lilbee-src
+  PYTHONPATH=. uv run --project evals python -m evals.benchmark fetch \
+    --manifest evals/benchmark/manifest.msmarco.yaml --out "$WORKSPACE/datasets"
+fi
+
 # ---------------------------------------------------------------- phase 1
 # One file per passage, because lilbee names a source by its path relative to the
 # documents directory, and the retrieval scoring has to join back to
