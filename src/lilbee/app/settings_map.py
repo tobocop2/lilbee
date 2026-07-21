@@ -151,8 +151,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.CRAWLING,
         help_text=(
-            "Helper processes converting crawled HTML to markdown, keeping that CPU"
-            " work off the server's core; 0 converts in the server process"
+            "Crawled pages converting to markdown outside the server at once, so a"
+            " crawl does not delay requests; 0 converts in the server process"
         ),
     ),
     "auto_sync": SettingDef(

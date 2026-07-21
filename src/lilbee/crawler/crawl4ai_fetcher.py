@@ -12,11 +12,14 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+import anyio.to_process
+from anyio import CapacityLimiter
+
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
-from lilbee.crawler.markdown_pool import MarkdownConversionPool, build_pooled_generator
+from lilbee.crawler.markdown import base_url_for, html_to_markdown
 from lilbee.crawler.models import (
     CancelToken,
     ConcurrencySpec,
@@ -58,14 +61,54 @@ def _build_inner_crawler(*, verbose: bool, render_mode: CrawlRenderMode) -> Any:
     return AsyncWebCrawler(config=config, verbose=verbose)
 
 
-def _markdown_pool() -> MarkdownConversionPool | None:
-    """The crawl's markdown helper pool, or ``None`` to convert in this process.
+def _conversion_limiter() -> CapacityLimiter | None:
+    """How many pages may convert off-process at once, or ``None`` to convert here.
 
-    Reads the setting once per crawl rather than per page, so a crawl keeps the
-    pool it started with even if the setting is edited while it runs.
+    Read once per crawl, so a crawl keeps the setting it started with.
     """
     workers = cfg.crawl_markdown_workers
-    return MarkdownConversionPool(workers) if workers >= 1 else None
+    return CapacityLimiter(workers) if workers >= 1 else None
+
+
+def _silent_markdown_generator() -> Any | None:
+    """A generator that produces nothing, or ``None`` when crawl4ai's base is absent.
+
+    crawl4ai converts every page inside its own async call stack, with no setting
+    to skip it. Handing it a generator that returns immediately leaves the HTML
+    for :func:`html_to_markdown` to convert where lilbee can await it.
+    """
+    try:
+        from crawl4ai.markdown_generation_strategy import MarkdownGenerationStrategy
+        from crawl4ai.models import MarkdownGenerationResult
+    except (ImportError, AttributeError):
+        return None
+
+    class _SilentMarkdownGenerator(MarkdownGenerationStrategy):  # type: ignore[misc]
+        def generate_markdown(self, *args: Any, **kwargs: Any) -> Any:
+            return MarkdownGenerationResult(
+                raw_markdown="",
+                markdown_with_citations="",
+                references_markdown="",
+                fit_markdown="",
+                fit_html="",
+            )
+
+    return _SilentMarkdownGenerator()
+
+
+async def _markdown_for(result: Any, *, silenced: bool, limiter: CapacityLimiter | None) -> str:
+    """The page's markdown, converted here only when the backend was silenced.
+
+    An un-silenced backend already converted the page, so re-converting it would
+    duplicate the work this exists to move.
+    """
+    html = result.cleaned_html or result.html or ""
+    if not silenced or not html:
+        return str(result.markdown or "")
+    base_url = base_url_for(result.html or "", result.url, result.redirected_url)
+    if limiter is None:
+        return html_to_markdown(html, base_url)
+    return await anyio.to_process.run_sync(html_to_markdown, html, base_url, limiter=limiter)
 
 
 def _build_rate_limited_dispatcher(
@@ -278,11 +321,16 @@ class Crawl4aiFetcher:
         """Fetch a single URL via crawl4ai's ``arun``."""
         from crawl4ai import CrawlerRunConfig
 
-        # One page: starting a helper process would cost more than the conversion.
-        config = CrawlerRunConfig(page_timeout=int(timeout * 1000))
+        generator = _silent_markdown_generator()
+        limiter = _conversion_limiter() if generator is not None else None
+        config = CrawlerRunConfig(
+            page_timeout=int(timeout * 1000),
+            **({} if generator is None else {"markdown_generator": generator}),
+        )
         async with _open_crawler(quiet=self._quiet, render_mode=self._render_mode) as crawler:
             result = await crawler.arun(url=url, config=config)
-        markdown = (result.markdown or "").strip()
+        converted = await _markdown_for(result, silenced=generator is not None, limiter=limiter)
+        markdown = converted.strip()
         if markdown:
             return FetchedPage(url=url, markdown=markdown, success=True)
         return FetchedPage(
@@ -332,10 +380,8 @@ class Crawl4aiFetcher:
             should_cancel=_should_cancel,
             filter_chain=filter_chain,
         )
-        pool = _markdown_pool()
-        generator = None if pool is None else build_pooled_generator(pool)
-        if generator is None:
-            pool = None
+        generator = _silent_markdown_generator()
+        limiter = _conversion_limiter() if generator is not None else None
         config = CrawlerRunConfig(
             deep_crawl_strategy=strategy,
             page_timeout=int(timeout * 1000),
@@ -364,7 +410,12 @@ class Crawl4aiFetcher:
                         strategy_cancelled = True
                         break
                     if cr.success:
-                        yield FetchedPage(url=cr.url, markdown=cr.markdown or "")
+                        yield FetchedPage(
+                            url=cr.url,
+                            markdown=await _markdown_for(
+                                cr, silenced=generator is not None, limiter=limiter
+                            ),
+                        )
                     else:
                         yield FetchedPage(
                             url=cr.url,
@@ -372,10 +423,6 @@ class Crawl4aiFetcher:
                             error=cr.error_message or "Unknown error",
                         )
             finally:
-                if pool is not None:
-                    # The helpers exist for this crawl; a daemon that is not
-                    # crawling must not be holding processes open.
-                    pool.shutdown()
                 # If the consumer breaks out before we saw a cancel, still
                 # short-circuit the BFS strategy so any in-flight arun_many
                 # batch stops dispatching. Mirrors the orchestrator's
