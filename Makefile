@@ -1,4 +1,4 @@
-.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
+.PHONY: lint format format-check typecheck test test-ci test-ci-serial test-ci-forked test-integration imports-check engine-archs check clean install demo demo-prep demo-publish build publish release promote release-promote docs docs-api docs-site site site-serve site-tar dns-setup qa-pod-volume qa-pod-up qa-pod-logs qa-pod-down
 
 lint:
 	uv run ruff check src/ tests/ tools/qa/ scripts/qa/
@@ -85,6 +85,9 @@ release-promote:  ## Rewrite notes as headings and mark a release latest (TAG=..
 	  gh release edit "$$tag" --repo tobocop2/lilbee --notes-file "$$notes" --prerelease=false --latest; \
 	  rm -f "$$notes"; \
 	fi
+
+engine-archs:  ## Regenerate the supported-architecture list from the pinned engine
+	uv run python tools/gen_supported_archs.py
 
 docs-api:  ## Generate OpenAPI schema and Redoc static HTML
 	uv run python -c "\
