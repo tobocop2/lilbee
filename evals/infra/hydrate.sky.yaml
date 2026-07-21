@@ -26,7 +26,15 @@ setup: |
   apt-get update -qq && apt-get install -y -qq git curl >/dev/null
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
-  git clone --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git /opt/lilbee-src
+  # Idempotent: setup re-runs on every relaunch and on every pod reclaim, and a
+  # plain clone fails the whole setup the second time with "destination path
+  # already exists".
+  if [ -d /opt/lilbee-src/.git ]; then
+    cd /opt/lilbee-src && git fetch --depth 1 origin "$BRANCH" && git checkout -f FETCH_HEAD
+  else
+    rm -rf /opt/lilbee-src
+    git clone --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git /opt/lilbee-src
+  fi
   cd /opt/lilbee-src
   # --project evals because the harness has its own pyproject and lock, kept
   # separate from lilbee's so a scorer cannot move a core dependency.
