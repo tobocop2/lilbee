@@ -19,8 +19,16 @@ pytrec_eval-terrier==0.5.10
 ir_datasets==0.6.3
 
 # scipy owns the statistics: percentile bootstrap, paired sign-flip permutation
-# test, and Benjamini-Hochberg.
+# test, and Benjamini-Hochberg. PyTerrier ships no confidence intervals (checked
+# against its source, not its docs), so the CI stays here.
 scipy==1.18.0
+
+# PyTerrier owns the multi-arm comparison table: it scores every arm with the
+# same ir_measures measures, runs the paired test against the baseline, and
+# returns one row per arm. Verified against a clone of its source: the
+# Experiment path holds no Java reference and pt.java.started() stays False, so
+# this does not put a JVM on the benchmark pod.
+python-terrier==1.0
 
 # ragas owns model-graded scoring: the tier-2 RAG metrics and the rubric grader
 # the blind judge runs on, including prompt construction, structured output, and
