@@ -13,10 +13,12 @@ set -euo pipefail
 : "${LILBEE_BIN:=/root/lilbee_venv/bin/lilbee}"
 : "${PYBIN:=/root/lilbee_venv/bin/python}"
 
-CORPUS_JSONL="$WORKSPACE/datasets/msmarco/corpus.jsonl"
-DOCS_DIR="$LOCAL/documents"
-LOG_DIR="$WORKSPACE/logs"
-PROVENANCE="$WORKSPACE/provenance.jsonl"
+# Exported, not just assigned: the inline python heredocs read these from
+# os.environ, and a bare shell assignment is invisible to a child process.
+export CORPUS_JSONL="$WORKSPACE/datasets/msmarco/corpus.jsonl"
+export DOCS_DIR="$LOCAL/documents"
+export LOG_DIR="$WORKSPACE/logs"
+export PROVENANCE="$WORKSPACE/provenance.jsonl"
 
 # Tracing is the point of the run, not a nicety: without it the extraction-versus
 # -GPU split is unrecoverable after the fact, and per-document failures are a
