@@ -309,8 +309,12 @@ async def ingest_document(
     xberg extracts native text and, where a page has none, OCRs it through the
     registered backend (lilbee's vision model, or tesseract). Per-page OCR progress
     is streamed as a running count via ``ocr_request``. ``quiet`` is accepted for
-    pipeline call compatibility. The returned metadata carries the document's
-    title/authors/date as xberg reported them.
+    pipeline call compatibility.
+
+    The returned metadata carries the document's title/authors/date where xberg
+    reports them, and the filename stem otherwise. Images are always the latter:
+    the image extractor files EXIF under ``metadata.format.image.exif`` and never
+    populates ``metadata.title``.
     """
     del quiet
     from lilbee.data.xberg_extract import aextract_document
@@ -362,7 +366,7 @@ async def ingest_document(
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
     # One EXTRACT event per file so subscribers (chat /add, /sync, CLI Rich
-    # progress) show "extracted N pages" before the embed phase; result.pages is
+    # progress) show "extracted N pages" before the embed phase; doc.pages is
     # the canonical page list, falling back to the chunk count for non-paginated docs.
     page_count = len(doc.pages or []) or len(doc.chunks or [])
     on_progress(

@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 from litestar.testing import AsyncTestClient
+from xberg import Metadata
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
@@ -86,7 +87,7 @@ def _make_xberg_result(text: str = "Some extracted text. " * 20, num_chunks: int
     result.chunks = chunks
     result.content = text
     result.pages = []
-    result.metadata = mock.MagicMock(title=None, authors=None, created_at=None)
+    result.metadata = Metadata()
     return result
 
 

@@ -7,6 +7,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
+from xberg import Metadata
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
@@ -171,8 +172,12 @@ def _make_xberg_result(
 
 
 def _extraction_metadata(title=None, authors=None, created_at=None):
-    """Build a mock xberg Metadata carrying the fields SourceMeta reads."""
-    return mock.MagicMock(title=title, authors=authors, created_at=created_at)
+    """Build a real xberg Metadata carrying the fields SourceMeta reads.
+
+    The real type rather than a MagicMock, which answers any attribute and so
+    stays green through a renamed or dropped field.
+    """
+    return Metadata(title=title, authors=authors, created_at=created_at)
 
 
 def _make_table(markdown="| h1 | h2 |\n|---|---|\n| a | b |", page_number=1):
