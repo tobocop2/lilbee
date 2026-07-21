@@ -1575,8 +1575,17 @@ class FleetProvider:
         for client in clients:
             try:
                 _warm_role(role, client)
+                client.mark_healthy()
                 warmed = True
             except Exception as exc:
+                # A replica that cannot load is not routable. Marking it takes it
+                # out of the pool so calls go to a sibling on a device that works,
+                # instead of every request picking the dead one again. It is a
+                # device fault as often as a model one: an adapter that enumerates
+                # but cannot allocate fails here and nowhere else. The health flag
+                # carries its own cool-down, so a device that recovers rejoins
+                # without anything having to remember it was bad.
+                client.mark_unhealthy()
                 self._warm_errors[role] = str(exc)
                 log.warning(
                     "The %s model failed to load: %s",

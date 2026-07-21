@@ -32,6 +32,7 @@ def fit_split_ctx(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: KvCacheType,
+    kv_cache_type_v: KvCacheType,
     ctx_ceiling: int,
 ) -> int:
     """Largest quantized per-slot n_ctx that fits every card, capped at *ctx_ceiling*.
@@ -66,6 +67,7 @@ def fit_split_ctx(
             gpu_layers=gpu_layers,
             flash_attn=flash_attn,
             kv_cache_type=kv_cache_type,
+            kv_cache_type_v=kv_cache_type_v,
             tensor_split=ratio,
         )
         shares = est.per_device_vram

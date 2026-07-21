@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,9 @@ _LIST_DEVICES_TIMEOUT_S = 60.0
 _PROBE_KILL_WAIT_S = 5.0
 _TOPO_TIMEOUT_S = 15.0
 _GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
+# llama-server prints this before the device loop, so a run that lists no GPUs
+# still prints it. Its absence means the binary never got as far as enumerating.
+_DEVICE_LIST_HEADER = "Available devices:"
 # nvidia-smi emits SGR escapes (e.g. an underlined header) even when stdout is
 # not a tty; strip them or the header's GPU labels never match.
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -44,15 +48,20 @@ _PCI_BUS_ID_ORDER = "PCI_BUS_ID"
 _ROCR_VISIBLE_VAR = "ROCR_VISIBLE_DEVICES"
 _HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
 _VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
-_ONEAPI_SELECTOR_VAR = "ONEAPI_DEVICE_SELECTOR"
-_LEVEL_ZERO_PREFIX = "level_zero:"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*\((\d+)\s*MiB(?:,\s*(\d+)\s*MiB\s*free)?\)\s*$"
 )
 # Pin priority when a build reports more than one GPU backend: a real GPU
 # backend always wins over Vulkan, which wins over CPU.
-_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, "Vulkan": 1}
+# The engine's own name for the backend. Vendor-agnostic, so several rules key
+# on it: a Vulkan device's type has to be asked of the loader, and its util
+# source is chosen by the vendor in its device name rather than by the backend.
+VULKAN_BACKEND = "Vulkan"
+_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, VULKAN_BACKEND: 1}
+# Backends whose memory is always the host's: Apple Silicon reports a working-set
+# slice of system RAM, never a dedicated pool.
+_UNIFIED_BACKENDS = frozenset({"MTL", "Metal"})
 
 
 @dataclass(frozen=True)
@@ -64,6 +73,16 @@ class FleetDevice:
     name: str
     total_bytes: int
     free_bytes: int
+    # Whether this device's memory is the host's memory. An integrated GPU or an
+    # Apple Silicon Mac has no dedicated VRAM, so its reported total is a slice
+    # of the same RAM the OS and every other process is using, and placement
+    # must stay inside the system budget rather than treating it as headroom.
+    unified: bool = False
+    # Whether this device came from the host's Vulkan loader rather than from the
+    # engine's own listing. Its index is then a raw loader ordinal, which is a
+    # different space from the one the engine names its devices in, so it can be
+    # sized against but never pinned by.
+    from_loader: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +91,17 @@ class DeviceProbe:
 
     devices: list[FleetDevice]
     output: str
+    # Whether the engine answered --list-devices at all: exited cleanly and
+    # printed the header it always prints. False means the binary does not speak
+    # this protocol (a build predating the flag prints usage text and exits
+    # non-zero), so its silence about devices is not a statement that there are
+    # none. Defaults False so a probe that never ran is never mistaken for one
+    # that ran and found nothing.
+    spoke_protocol: bool = False
+    # Whether the engine listed GPU devices and every one was rejected. Distinct
+    # from a host that simply has none: the engine will still pick one of those
+    # devices at launch unless it is told not to.
+    refused_all: bool = False
 
 
 def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
@@ -152,13 +182,28 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
     it as "no devices" would silently plan a CPU fleet on a GPU box.
     """
     try:
-        output = _run_list_devices(binary, timeout_s)
+        output, returncode = _run_list_devices(binary, timeout_s)
     except (OSError, subprocess.SubprocessError):
         return DeviceProbe([], "")
-    return DeviceProbe(_select_backend(_parse_devices(output)), output)
+    parsed = _parse_devices(output)
+    selected = _select_backend(parsed)
+    offered = [d for d in parsed if d.backend in _BACKEND_RANK]
+    spoke = returncode == 0 and _DEVICE_LIST_HEADER in output
+    if not spoke:
+        log.warning(
+            "%s --list-devices exited %d without printing its device header, so it "
+            "does not appear to support the flag. Falling back to the host's Vulkan "
+            "loader to find GPUs; set %s if this is not the engine you meant to use.",
+            binary.name,
+            returncode,
+            "LILBEE_ENGINE_DIR",
+        )
+    return DeviceProbe(
+        selected, output, spoke_protocol=spoke, refused_all=bool(offered) and not selected
+    )
 
 
-def _run_list_devices(binary: Path, timeout_s: float) -> str:
+def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
     """Run the probe in its own process group; kill the group and raise on timeout.
 
     ``subprocess.run``'s timeout path waits indefinitely for the killed child to
@@ -185,7 +230,7 @@ def _run_list_devices(binary: Path, timeout_s: float) -> str:
             provider=_PROVIDER,
             kind=ProviderErrorKind.SERVER,
         ) from None
-    return output or ""
+    return output or "", proc.returncode
 
 
 def _kill_probe(proc: subprocess.Popen[str]) -> None:
@@ -208,28 +253,176 @@ def _kill_probe(proc: subprocess.Popen[str]) -> None:
 
 def _parse_devices(text: str) -> list[FleetDevice]:
     devices: list[FleetDevice] = []
+    # Sampled at most once per parse, and only when a line actually needs it:
+    # free memory is live, so it is read fresh here rather than cached, and the
+    # loader must not be opened once per device line to answer the same question.
+    loader_free: dict[str, int] | None = None
     for line in text.splitlines():
         match = _DEVICE_RE.match(line)
         if match is None:
             continue
         backend, index, name, total_mib, free_mib = match.groups()
         total = int(total_mib) * MIB
-        free = int(free_mib) * MIB if free_mib else total
-        devices.append(FleetDevice(backend, int(index), name.strip(), total, free))
+        if free_mib:
+            free = int(free_mib) * MIB
+        else:
+            if loader_free is None:
+                loader_free = _loader_free_bytes(backend)
+            free = loader_free.get(name.strip(), total)
+        devices.append(
+            FleetDevice(
+                backend,
+                int(index),
+                name.strip(),
+                total,
+                free,
+                unified=_is_unified(backend, name.strip()),
+            )
+        )
     return devices
 
 
+# Mesa and friends expose CPU rasterizers through the Vulkan loader, and
+# llama.cpp's Vulkan backend enumerates them exactly like a GPU: same
+# "VulkanN: <name> (<total> MiB, <free> MiB free)" shape, with system RAM
+# reported as VRAM. Planning against one is worse than having no GPU at all,
+# because the "VRAM" looks enormous: a host with a real iGPU beside lavapipe
+# can be planned as a two-GPU machine and tensor-split across a real adapter
+# and a software renderer, which runs orders of magnitude slower than either
+# CPU inference or the iGPU alone.
+_SOFTWARE_RENDERER_MARKERS = ("llvmpipe", "lavapipe", "softpipe", "swiftshader")
+
+
+def _is_software_renderer(device: FleetDevice) -> bool:
+    """Whether *device* is a CPU rasterizer masquerading as a GPU.
+
+    A name test, so it only recognizes the rasterizers it already knows, and a
+    renamed or newly written one walks past it. It stays as the answer for hosts
+    where the Vulkan loader can't be opened from this process and the device
+    type is therefore unavailable; where the type is available,
+    ``_is_unusable_vulkan`` decides and this never gets the chance to be wrong.
+    """
+    name = device.name.casefold()
+    return any(marker in name for marker in _SOFTWARE_RENDERER_MARKERS)
+
+
+def _loader_free_bytes(backend: str) -> dict[str, int]:
+    """Live free memory per device name, for a listing that printed no free figure.
+
+    ggml omits the figure when the driver has no ``VK_EXT_memory_budget``, and
+    treating the omission as "all of it" is how a desktop holding gigabytes of
+    compositor and browser VRAM was planned as an empty card. The loader exposes
+    that extension to this process even when the engine build cannot use it, so
+    it is asked directly; a name it cannot speak for keeps the heap size.
+
+    Empty for any other backend: the Vulkan loader knows nothing about the
+    devices a CUDA or ROCm listing names.
+    """
+    if backend != VULKAN_BACKEND:
+        return {}
+    from lilbee.providers.fleet.gpu_select import vulkan_free_bytes_by_name
+
+    return vulkan_free_bytes_by_name()
+
+
+def _vulkan_device_type(name: str) -> VkDeviceType | None:
+    """The loader's type for the Vulkan adapter the engine printed as *name*.
+
+    ``None`` when the loader can't be reached or reports no adapter by that
+    name, which reads as "no opinion": the device is kept and assumed dedicated,
+    preserving the behaviour of hosts that never had a type to consult.
+    """
+    from lilbee.providers.fleet.gpu_select import vulkan_device_types_by_name
+
+    return vulkan_device_types_by_name().get(name)
+
+
+def _is_unusable_vulkan(device: FleetDevice) -> bool:
+    """Whether *device* is a Vulkan adapter ggml would not choose to run on.
+
+    ggml's Vulkan backend builds its device pool from discrete and integrated
+    adapters only, and falls back to the first non-CPU adapter when it finds
+    neither. In a VM that fallback is a paravirtual adapter (VMware SVGA,
+    VirtIO-GPU Venus, QXL), which reports guest RAM as VRAM and is typically
+    compute-incomplete or fails at allocation. Planning a fleet onto one costs
+    more than planning no GPU at all, since a non-empty device list also turns
+    off the shared-RAM budget.
+    """
+    if device.backend != VULKAN_BACKEND:
+        return False
+    device_type = _vulkan_device_type(device.name)
+    return device_type is not None and device_type not in USABLE_VULKAN_TYPES
+
+
+def _is_unified(backend: str, name: str) -> bool:
+    """Whether the device *backend* printed as *name* shares its memory with the host.
+
+    Metal is unified by construction on Apple Silicon: the figure it reports is
+    ``recommendedMaxWorkingSetSize``, a slice of system RAM rather than a
+    separate pool. For Vulkan the loader knows the device type, so the type is
+    asked for rather than guessed; a size heuristic cannot work here, since a
+    24 GB discrete card in a 32 GB host and an Apple GPU reporting two thirds of
+    RAM are indistinguishable by proportion.
+
+    CUDA, ROCm and SYCL print no type at all, and an AMD APU or a Jetson looks
+    exactly like a discrete card there while reporting system RAM as its memory.
+    Those fall back to a question about the machine rather than the device: a
+    host whose Vulkan loader sees adapters but no discrete one has no discrete
+    GPU for another backend to be enumerating.
+    """
+    if backend in _UNIFIED_BACKENDS:
+        return True
+    if backend == VULKAN_BACKEND:
+        return _vulkan_device_type(name) is VkDeviceType.INTEGRATED_GPU
+    from lilbee.providers.fleet.gpu_select import host_has_no_discrete_gpu
+
+    return host_has_no_discrete_gpu()
+
+
 def _select_backend(devices: list[FleetDevice]) -> list[FleetDevice]:
-    """Keep one GPU backend's devices (highest rank, ties broken by name).
+    """Keep one GPU backend's devices: highest rank, then most memory.
 
     Returns a single backend so pinning is unambiguous: ``visible_env`` keys off
     one backend, and mixing index spaces is the very hazard this module avoids.
+
+    CUDA, ROCm, HIP and Metal all rank alike, and a build that loads several
+    backends (``ggml_backend_load_all`` does) makes the tie real. Breaking it on
+    the backend's name meant a host with a 4090 beside an RX 6600 planned onto
+    the AMD card because "ROCm" sorts after "CUDA", and the NVIDIA card idled
+    with nothing said. Total memory decides instead; the name is only the last
+    resort that keeps the choice deterministic.
     """
-    ranked = [d for d in devices if d.backend in _BACKEND_RANK]
+    ranked = [
+        d
+        for d in devices
+        if d.backend in _BACKEND_RANK
+        and not _is_software_renderer(d)
+        and not _is_unusable_vulkan(d)
+    ]
     if not ranked:
         return []
-    backend = max(ranked, key=lambda d: (_BACKEND_RANK[d.backend], d.backend)).backend
-    return [d for d in ranked if d.backend == backend]
+    by_backend: dict[str, list[FleetDevice]] = {}
+    for device in ranked:
+        by_backend.setdefault(device.backend, []).append(device)
+    backend, chosen = max(by_backend.items(), key=_backend_preference)
+    for other, group in by_backend.items():
+        if other != backend:
+            log.info(
+                "Engine reports %d %s device(s) beside %d %s device(s); planning onto %s, "
+                "which has more memory. Backends cannot be mixed: their device indexes "
+                "name different cards.",
+                len(group),
+                other,
+                len(chosen),
+                backend,
+                backend,
+            )
+    return chosen
+
+
+def _backend_preference(item: tuple[str, list[FleetDevice]]) -> tuple[int, int, str]:
+    backend, group = item
+    return _BACKEND_RANK[backend], sum(d.total_bytes for d in group), backend
 
 
 def _compose_visible(indices: list[int], parent_value: str | None) -> str:
@@ -277,40 +470,50 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
         }
     if backend in ("ROCm", "HIP"):
         return _amd_visible_env(indices)
-    if backend == "Vulkan":
-        return {_VK_VISIBLE_VAR: _compose_visible(indices, os.environ.get(_VK_VISIBLE_VAR))}
+    if backend == VULKAN_BACKEND:
+        # Deliberately not GGML_VK_VISIBLE_DEVICES. That variable indexes the raw
+        # loader enumeration, while these indices come from the engine's own
+        # filtered list, so the two disagree wherever ggml drops or merges a
+        # device -- two ICDs for one card being the clear case. Setting it also
+        # disables ggml's type filter, support check and dedup. Vulkan is pinned
+        # with --device instead, in the same space the names were parsed from.
+        return {}
     if backend == "SYCL":
-        return {_ONEAPI_SELECTOR_VAR: _compose_sycl(indices, os.environ.get(_ONEAPI_SELECTOR_VAR))}
+        # Deliberately no ONEAPI_DEVICE_SELECTOR. It is a selector grammar over a
+        # backend runtime, not the index space --list-devices numbers, so a
+        # composed level_zero ordinal can name a different physical card than the
+        # one the probe enumerated. SYCL pins by --device instead, in the space
+        # the indices were read from. An inherited parent selector still applies:
+        # the engine enumerated behind it, so its names are already relative to it.
+        return {}
     return {}
+
+
+def amd_visible_var() -> str:
+    """The one AMD visibility var an index list may be written to.
+
+    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially
+    by the runtime: ROCr filters first, then HIP re-indexes within the survivors.
+    Writing the same indices to both therefore double-filters and selects the
+    wrong cards, or none at all: ``1`` on a two-GPU box exposes physical GPU 1 as
+    index 0 through ROCr, and HIP then asks for index 1 of a one-device list.
+
+    So exactly one is ever written: the one the environment already restricts,
+    or HIP when it restricts neither. Every caller writing an AMD pin asks here,
+    since two callers each picking their own would put the pair back.
+    """
+    if _ROCR_VISIBLE_VAR in os.environ and _HIP_VISIBLE_VAR not in os.environ:
+        return _ROCR_VISIBLE_VAR
+    return _HIP_VISIBLE_VAR
 
 
 def _amd_visible_env(indices: list[int]) -> dict[str, str]:
     """Pin an AMD ROCm/HIP child to the probe's *indices* with one visibility var.
 
-    ``ROCR_VISIBLE_DEVICES`` and ``HIP_VISIBLE_DEVICES`` are applied sequentially
-    by the runtime: ROCR filters first, then HIP re-indexes within the survivors.
     The probe enumerated a single index space already filtered by whichever var
-    the parent set, so emitting BOTH (each composed against its own parent) would
-    double-filter and select the wrong cards. Emit only the var the parent used,
-    composed against that parent value, and leave the other inherited untouched;
-    default to HIP when the parent restricted neither. The child inherits the
-    parent env, so an unset override keeps any inherited sibling var in force.
+    the parent set, so the chosen var is composed against that parent value and
+    the other is left inherited untouched. The child inherits the parent env, so
+    an unset override keeps any inherited sibling var in force.
     """
-    parent_rocr = os.environ.get(_ROCR_VISIBLE_VAR)
-    parent_hip = os.environ.get(_HIP_VISIBLE_VAR)
-    if parent_rocr is not None and parent_hip is None:
-        return {_ROCR_VISIBLE_VAR: _compose_visible(indices, parent_rocr)}
-    return {_HIP_VISIBLE_VAR: _compose_visible(indices, parent_hip)}
-
-
-def _compose_sycl(indices: list[int], parent_value: str | None) -> str:
-    """``ONEAPI_DEVICE_SELECTOR`` value naming the same devices the probe saw.
-
-    A parent selector shaped ``level_zero:i,j`` makes the probe's indices
-    relative to its post-colon list, so each index maps through that list like
-    :func:`_compose_visible`; any other shape (or none) emits absolute indices.
-    """
-    if parent_value is not None and parent_value.startswith(_LEVEL_ZERO_PREFIX):
-        parent_list = parent_value[len(_LEVEL_ZERO_PREFIX) :]
-        return _LEVEL_ZERO_PREFIX + _compose_visible(indices, parent_list)
-    return _LEVEL_ZERO_PREFIX + ",".join(str(i) for i in indices)
+    var = amd_visible_var()
+    return {var: _compose_visible(indices, os.environ.get(var))}
