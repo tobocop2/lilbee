@@ -37,6 +37,13 @@ PY
 # The prebuilt cu124 engine ships no sm_90 kernels, so it dies on H100 with a
 # misleading "no CUDA-capable device". A100 is sm_80 and known-good. This is the
 # check that decides whether the ingest can run at all on this box.
+# A prebuilt engine is a release artifact, not a compile: if it is missing the
+# only sane response is to stop, because the fallback is an eight-hour build on
+# a GPU box.
+log "engine binary is present and prebuilt (never compiled here)"
+"$PYBIN" -c 'import lilbee_engine, os, sys; p = lilbee_engine.get_llama_server_path(); sys.exit(0 if os.access(p, os.X_OK) else f"engine missing or not executable at {p}")' \
+  || die "no usable llama-server; the engine wheel is a stub or was not installed"
+
 log "engine has kernels for this GPU's compute capability"
 CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '. ')
 log "  compute capability sm_${CAP}, engine backend ${BACKEND:-cu124}"
