@@ -180,17 +180,54 @@ def make_ragas_evaluator(judge: RagasJudge) -> RagasEvaluateFn:
     return evaluate_fn
 
 
+def metric_kwargs(metric: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """The sample fields this metric's ``ascore`` takes, selected from its signature.
+
+    Each collections metric wants a different subset, so reading the signature
+    keeps one call site instead of a table that drifts from ragas.
+
+    A metric whose required parameters this row cannot fill is a binding error,
+    not a scoring failure, and is raised rather than left to become NaN. A metric
+    declaring ``**kwargs`` is the same bug wearing a disguise: the filter matches
+    nothing, every call raises on a missing argument, and the run dies at the
+    coverage floor saying the metric scored 0 of 300 -- which reads as a broken
+    judge rather than as a harness that passed it no data.
+    """
+    parameters = inspect.signature(metric.ascore).parameters
+    accepted = {
+        name: parameter
+        for name, parameter in parameters.items()
+        if parameter.kind not in (parameter.VAR_KEYWORD, parameter.VAR_POSITIONAL)
+    }
+    kwargs = {key: value for key, value in row.items() if key in accepted}
+    unfilled = sorted(
+        name
+        for name, parameter in accepted.items()
+        if parameter.default is parameter.empty and name not in kwargs
+    )
+    # Empty is checked separately from unfilled: a metric declaring only
+    # ``**kwargs`` has no named parameter to be missing, so the unfilled set is
+    # empty and the mismatch would slip through. No ragas metric scores anything
+    # from no inputs, which makes an empty binding wrong on its own.
+    if unfilled or not kwargs:
+        missing = unfilled or ["any sample field"]
+        raise ValueError(
+            f"{metric.name} requires {missing}, which this harness' samples do not "
+            f"carry (they provide {sorted(row)}); this is a binding mismatch with "
+            "ragas rather than an answer that could not be scored"
+        )
+    return kwargs
+
+
 async def _score_one(metric: Any, row: dict[str, Any]) -> float:  # pragma: no cover - needs ragas
     """One metric on one sample, NaN when it could not be computed.
 
-    Each collections metric takes a different subset of the sample's fields, so
-    the arguments are selected from the metric's own signature. A metric that
-    raises (a refusal, empty contexts, an unparseable response) yields NaN,
-    which ``score_ragas`` counts against that metric's coverage rather than
-    silently averaging over whatever survived.
+    A metric that raises (a refusal, empty contexts, an unparseable response)
+    yields NaN, which ``score_ragas`` counts against that metric's coverage
+    rather than silently averaging over whatever survived. A binding mismatch is
+    not one of those cases and propagates.
     """
-    accepted = inspect.signature(metric.ascore).parameters
-    kwargs = {key: value for key, value in row.items() if key in accepted}
+    kwargs = metric_kwargs(metric, row)
     try:
         result = await metric.ascore(**kwargs)
     except Exception as exc:

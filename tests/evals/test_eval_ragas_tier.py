@@ -171,3 +171,85 @@ def test_corroborating_judge_means_cover_the_same_questions(tmp_path, monkeypatc
     assert summary.paired_questions == len(
         set(summary.per_arm_scored["A"]) & set(summary.per_arm_scored["B"])
     )
+
+
+class _OrderedMetric:
+    """Latency inversely proportional to index: late samples finish first."""
+
+    name = "ordered"
+
+    def __init__(self, total: int, fail_at: int | None = None) -> None:
+        self.total = total
+        self.fail_at = fail_at
+
+    async def ascore(self, user_input: str, response: str, retrieved_contexts=None, reference=None):
+        import asyncio
+
+        index = int(response)
+        if self.fail_at is not None and index == self.fail_at:
+            raise RuntimeError("boom")
+        await asyncio.sleep((self.total - index) * 0.001)
+
+        class _Result:
+            value = float(index)
+
+        return _Result()
+
+
+def _ordered_rows(total: int) -> list[dict]:
+    return [
+        {"user_input": "q", "response": str(i), "retrieved_contexts": ["c"], "reference": "r"}
+        for i in range(total)
+    ]
+
+
+def test_concurrent_scoring_returns_scores_in_sample_order():
+    # score_ragas zips these back against the samples by position, so if
+    # concurrency reordered them every score would be attributed to the wrong
+    # answer and nothing downstream would notice. The metric here finishes in
+    # reverse, which is what makes the assertion mean something.
+    import asyncio
+
+    from evals.benchmark.ragas_tier import _score_all
+
+    total = 20
+    scored = asyncio.run(_score_all({"ordered": _OrderedMetric(total)}, _ordered_rows(total)))
+    assert scored["ordered"] == [float(i) for i in range(total)]
+
+
+def test_a_failed_sample_leaves_its_nan_at_its_own_index():
+    import asyncio
+
+    from evals.benchmark.ragas_tier import _score_all
+
+    total = 20
+    scored = asyncio.run(
+        _score_all({"ordered": _OrderedMetric(total, fail_at=3)}, _ordered_rows(total))
+    )
+    assert [i for i, value in enumerate(scored["ordered"]) if math.isnan(value)] == [3]
+
+
+class _KwargsMetric:
+    """A metric that declares **kwargs rather than named parameters."""
+
+    name = "kwargs_metric"
+
+    async def ascore(self, **kwargs):  # pragma: no cover - never reached
+        raise AssertionError("should not be called")
+
+
+def test_a_metric_the_samples_cannot_fill_is_a_loud_binding_error():
+    # Filtering by signature silently passes nothing to a **kwargs metric. Left
+    # alone that surfaces as "scored 0/300" at the coverage floor, which reads
+    # as a broken judge rather than a harness that sent no data.
+    from evals.benchmark.ragas_tier import metric_kwargs
+
+    with pytest.raises(ValueError, match="binding mismatch"):
+        metric_kwargs(_KwargsMetric(), _ordered_rows(1)[0])
+
+
+def test_a_metric_whose_fields_the_samples_carry_binds_cleanly():
+    from evals.benchmark.ragas_tier import metric_kwargs
+
+    bound = metric_kwargs(_OrderedMetric(1), _ordered_rows(1)[0])
+    assert set(bound) == {"user_input", "response", "retrieved_contexts", "reference"}
