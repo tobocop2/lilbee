@@ -10,10 +10,12 @@ import pytest
 from litestar import Litestar
 from litestar.middleware.base import DefineMiddleware
 from litestar.testing import AsyncTestClient
+from mcp.server.fastmcp import FastMCP
 
 from lilbee.app.services import set_services
-from lilbee.mcp_server import mcp
+from lilbee.mcp_server import build_mcp_server, mcp
 from lilbee.server import auth as auth_mod
+from lilbee.server import mcp_mount
 from lilbee.server.auth import AuthMiddleware
 from lilbee.server.mcp_mount import MCP_MOUNT_PATH, build_mcp_mount
 
@@ -22,13 +24,37 @@ _HTTP_UNAUTHORIZED = 401
 _ACCEPT = "application/json, text/event-stream"
 
 
-def test_configures_localhost_transport_security() -> None:
+def _mounted_server(monkeypatch) -> FastMCP:
+    """Build a mount and hand back the server it mounted."""
+    built: list[FastMCP] = []
+    real = mcp_mount.build_mcp_server
+
+    def _spy() -> FastMCP:
+        server = real()
+        built.append(server)
+        return server
+
+    monkeypatch.setattr(mcp_mount, "build_mcp_server", _spy)
     build_mcp_mount()
-    assert mcp.settings.streamable_http_path == "/"
-    security = mcp.settings.transport_security
+    return built[0]
+
+
+def test_configures_localhost_transport_security(monkeypatch) -> None:
+    server = _mounted_server(monkeypatch)
+    assert server.settings.streamable_http_path == "/"
+    security = server.settings.transport_security
     assert security is not None
     assert security.enable_dns_rebinding_protection
     assert "127.0.0.1:*" in security.allowed_hosts
+
+
+def test_mount_does_not_reconfigure_the_stdio_server() -> None:
+    """The HTTP mount owns its server. Reconfiguring or resetting the stdio one
+    behind its back is what forced the old private session-manager reset."""
+    pristine = build_mcp_server()
+    build_mcp_mount()
+    assert mcp.settings.streamable_http_path == pristine.settings.streamable_http_path
+    assert mcp.settings.transport_security == pristine.settings.transport_security
 
 
 def test_transport_security_includes_configured_bind_host(monkeypatch) -> None:
@@ -87,13 +113,22 @@ def test_handler_mounts_at_mcp_path() -> None:
     assert MCP_MOUNT_PATH in handler.paths
 
 
-def test_fresh_session_manager_per_build() -> None:
+def test_fresh_session_manager_per_build(monkeypatch) -> None:
     """run() is single-use per manager, so a second app in the same process
     needs its own or its lifespan raises."""
-    build_mcp_mount()
-    first = mcp.session_manager
-    build_mcp_mount()
-    assert mcp.session_manager is not first
+    first = _mounted_server(monkeypatch)
+    second = _mounted_server(monkeypatch)
+    assert first.session_manager is not second.session_manager
+
+
+async def test_two_mounts_in_one_process_both_start() -> None:
+    """Several apps per process is the normal test-suite shape, and the CLI can
+    rebuild one. Both lifespans must enter."""
+    _, first = build_mcp_mount()
+    _, second = build_mcp_mount()
+    app = MagicMock(spec=Litestar)
+    async with first(app), second(app):
+        pass
 
 
 @pytest.fixture

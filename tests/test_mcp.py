@@ -1737,14 +1737,12 @@ class TestToolsSchemaSize:
     reviewers can scrutinise.
     """
 
-    def test_tool_if_true_returns_mcp_tool_decorator(self) -> None:
-        """``_tool_if(True)`` returns a real decorator; ``_tool_if(False)``
-        returns a pass-through so the function stays importable but isn't on
-        the MCP wire. Cleans up after itself so the test doesn't pollute the
-        shared FastMCP server with a sentinel tool.
+    def test_tool_if_gates_registration(self) -> None:
+        """``_tool_if(True)`` puts the function on every built server;
+        ``_tool_if(False)`` is a pass-through so it stays importable but off the
+        MCP wire. Trims the registry after so no sentinel leaks into later builds.
         """
-        from lilbee.mcp_server import _tool_if
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import _REGISTRATIONS, _tool_if, build_mcp_server
 
         sentinel_name = "_schema_size_test_sentinel"
 
@@ -1752,14 +1750,15 @@ class TestToolsSchemaSize:
 
         gated_off = _tool_if(False)(_schema_size_test_sentinel)
         assert gated_off is _schema_size_test_sentinel
-        assert sentinel_name not in _mcp._tool_manager._tools
+        assert sentinel_name not in build_mcp_server()._tool_manager._tools
 
+        registered = len(_REGISTRATIONS)
         gated_on = _tool_if(True)(_schema_size_test_sentinel)
         try:
             assert callable(gated_on)
-            assert sentinel_name in _mcp._tool_manager._tools
+            assert sentinel_name in build_mcp_server()._tool_manager._tools
         finally:
-            _mcp._tool_manager._tools.pop(sentinel_name, None)
+            del _REGISTRATIONS[registered:]
 
     async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
         """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""

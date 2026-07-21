@@ -12,7 +12,7 @@ from litestar.types import ASGIApp, Receive, Scope, Send
 from mcp.server.transport_security import TransportSecuritySettings
 
 from lilbee.core.config import cfg
-from lilbee.mcp_server import mcp, set_http_mounted
+from lilbee.mcp_server import build_mcp_server, set_http_mounted
 
 if TYPE_CHECKING:
     from litestar import Litestar
@@ -71,23 +71,19 @@ def _transport_security() -> TransportSecuritySettings:
 def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     """Return the MCP route handler and the session-manager lifespan.
 
-    Every call yields a mount whose lifespan can start. FastMCP caches one
-    session manager on the module-level server and
-    ``StreamableHTTPSessionManager.run()`` is single-use, so the cache is
-    cleared here; without it a second app in the same process gets a manager
-    whose lifespan raises. The package exposes no public reset, so this pokes
-    the attribute ``streamable_http_app()`` populates lazily, under the
-    ``mcp>=1.26,<2`` pin.
+    Builds its own MCP server rather than sharing the stdio one: FastMCP caches
+    a single session manager per server and ``run()`` is single-use, so a shared
+    server's second lifespan would raise.
     """
     # Mark MCP as served over the shared HTTP daemon so single-vault-only tools
     # (init, reset) refuse runtime vault-switch / teardown that would race
     # concurrent in-flight handlers on the process-global Services singleton.
     set_http_mounted(True)
-    mcp._session_manager = None
-    mcp.settings.streamable_http_path = "/"
-    mcp.settings.transport_security = _transport_security()
-    asgi_app = cast("ASGIApp", mcp.streamable_http_app())
-    manager = mcp.session_manager
+    server = build_mcp_server()
+    server.settings.streamable_http_path = "/"
+    server.settings.transport_security = _transport_security()
+    asgi_app = cast("ASGIApp", server.streamable_http_app())
+    manager = server.session_manager
 
     async def _forward(scope: Scope, receive: Receive, send: Send) -> None:
         await asgi_app(scope, receive, send)

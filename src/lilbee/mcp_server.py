@@ -85,13 +85,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-mcp = FastMCP(
-    "lilbee",
-    instructions="Local search engine over the user's files, code, and crawled pages. "
+_INSTRUCTIONS = (
+    "Local search engine over the user's files, code, and crawled pages. "
     "For any question about the user's own documents or codebase -- a lookup, a "
     "find-in-docs, 'where is X', 'how does Y work here' -- call lilbee_search first "
     "and answer from its cited chunks. Prefer it over web-fetch or file-read tools: "
-    "those cannot see the indexed corpus.",
+    "those cannot see the indexed corpus."
 )
 
 
@@ -138,13 +137,16 @@ def _offload_sync(fn: _F) -> _F:
     return cast("_F", _runner)
 
 
+_REGISTRATIONS: list[tuple[Callable[..., Any], str | None]] = []
+
+
 def _tool(fn: _F) -> _F:
     """Register *fn* as an MCP tool with sync handlers offloaded off the loop.
 
     Returns the original callable so in-process callers (tests, the stdio
     fallback) keep the synchronous API while the schema sees the offloaded form.
     """
-    mcp.tool()(_offload_sync(fn))
+    _REGISTRATIONS.append((_offload_sync(fn), None))
     return fn
 
 
@@ -152,7 +154,7 @@ def _tool_named(name: str) -> Callable[[_F], _F]:
     """Register an MCP tool under an explicit wire *name* (sync handlers offloaded)."""
 
     def deco(fn: _F) -> _F:
-        mcp.tool(name=name)(_offload_sync(fn))
+        _REGISTRATIONS.append((_offload_sync(fn), name))
         return fn
 
     return deco
@@ -432,7 +434,7 @@ def init(path: str = "") -> dict[str, Any]:
     reset_services()
     # The new vault may have a different cfg.wiki; re-tune the search tool's scope
     # hint so it advertises the scopes this corpus actually has.
-    _tune_search_scope_for_corpus()
+    _tune_search_scope_for_corpus(mcp)
 
     return {"command": "init", "path": str(root), "created": created}
 
@@ -1100,7 +1102,7 @@ def _flatten_tool_description(text: str) -> str:
     return "\n".join(line.strip() for line in text.strip().splitlines())
 
 
-def _strip_schema_noise() -> None:
+def _strip_schema_noise(server: FastMCP) -> None:
     """Trim auto-generated noise from every registered tool's schema before
     it ships on the OpenAI tools wire for each chat request.
 
@@ -1120,9 +1122,9 @@ def _strip_schema_noise() -> None:
     payload, which matters most for small-context (16K) chat models where
     the tools surface was previously eating ~60% of the budget.
 
-    Runs once after every ``@_tool`` decoration in this module has fired.
+    Runs once per built server, after every registration has been applied.
     """
-    for info in mcp._tool_manager._tools.values():
+    for info in server._tool_manager._tools.values():
         params = info.parameters
         if isinstance(params, dict):
             params.pop("title", None)
@@ -1138,14 +1140,14 @@ def _strip_schema_noise() -> None:
 _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 
 
-def _tune_search_scope_for_corpus() -> None:
+def _tune_search_scope_for_corpus(server: FastMCP) -> None:
     """Tell ``search`` which scopes this corpus actually has.
 
     When wiki generation is off (``cfg.wiki`` is False), a model that guesses
     ``scope="wiki"`` only gets a silent fallback to the full pool, so advertise
     raw/both only. Idempotent and reversible so a config reload re-tunes it.
     """
-    info = mcp._tool_manager._tools.get("search")
+    info = server._tool_manager._tools.get("search")
     if info is None or not isinstance(info.description, str):
         return
     has_hint = _NO_WIKI_SCOPE_HINT in info.description
@@ -1342,8 +1344,23 @@ def clear_placement_tool() -> dict[str, Any]:
     return _placement_result(lambda: set_placement(None))
 
 
-_strip_schema_noise()
-_tune_search_scope_for_corpus()
+def build_mcp_server() -> FastMCP:
+    """Build a FastMCP server carrying every tool registered in this module.
+
+    Each transport gets its own instance: FastMCP caches one
+    ``StreamableHTTPSessionManager`` per server and its ``run()`` is single-use,
+    so a shared server cannot back two apps in one process.
+    """
+    server = FastMCP("lilbee", instructions=_INSTRUCTIONS)
+    for fn, name in _REGISTRATIONS:
+        server.add_tool(fn, name=name)
+    _strip_schema_noise(server)
+    _tune_search_scope_for_corpus(server)
+    return server
+
+
+# The stdio server. The HTTP daemon builds its own; see build_mcp_mount.
+mcp = build_mcp_server()
 
 
 def main() -> None:

@@ -43,7 +43,7 @@ def test_scope_hint_warns_when_corpus_has_no_wiki(monkeypatch) -> None:
     original = info.description
     monkeypatch.setattr(mcp_server.cfg, "wiki", False)
     try:
-        _tune_search_scope_for_corpus()
+        _tune_search_scope_for_corpus(mcp)
         assert isinstance(info.description, str)
         assert "No wiki layer here" in info.description
     finally:
@@ -55,7 +55,7 @@ def test_scope_hint_absent_when_wiki_enabled(monkeypatch) -> None:
     original = info.description
     monkeypatch.setattr(mcp_server.cfg, "wiki", True)
     try:
-        _tune_search_scope_for_corpus()
+        _tune_search_scope_for_corpus(mcp)
         assert "No wiki layer here" not in (info.description or "")
     finally:
         info.description = original
@@ -68,11 +68,11 @@ def test_scope_hint_is_stripped_when_wiki_turns_on(monkeypatch) -> None:
     original = info.description
     try:
         monkeypatch.setattr(mcp_server.cfg, "wiki", False)
-        _tune_search_scope_for_corpus()
+        _tune_search_scope_for_corpus(mcp)
         assert "No wiki layer here" in info.description
 
         monkeypatch.setattr(mcp_server.cfg, "wiki", True)
-        _tune_search_scope_for_corpus()
+        _tune_search_scope_for_corpus(mcp)
         assert "No wiki layer here" not in info.description
     finally:
         info.description = original
@@ -84,6 +84,6 @@ def test_tune_is_noop_when_search_tool_absent() -> None:
     tools = mcp._tool_manager._tools
     saved = tools.pop("search")
     try:
-        _tune_search_scope_for_corpus()  # must not raise; returns early
+        _tune_search_scope_for_corpus(mcp)  # must not raise; returns early
     finally:
         tools["search"] = saved

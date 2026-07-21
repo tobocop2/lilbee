@@ -74,10 +74,12 @@ def test_tool_if_true_registers_and_returns_original() -> None:
     returned = decorator(sample_unique_tool_name)
 
     assert returned is sample_unique_tool_name
+    assert "sample_unique_tool_name" in m.build_mcp_server()._tool_manager._tools
 
 
 @pytest.fixture(autouse=True)
 def _drop_test_tool() -> None:
-    """Remove any tool the registration tests add so the schema stays stable."""
+    """Drop registrations the tests add so later-built servers keep a stable schema."""
+    registered = len(m._REGISTRATIONS)
     yield
-    m.mcp._tool_manager._tools.pop("sample_unique_tool_name", None)
+    del m._REGISTRATIONS[registered:]
