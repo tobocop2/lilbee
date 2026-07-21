@@ -54,32 +54,6 @@ else
 fi
 
 # ---------------------------------------------------------------- phase 1
-# Start lilbee and warm the embedder FIRST, before materialising 8.8M passages.
-# A wrong GPU arch or a broken embedder shows up here in seconds; discovering it
-# after an hour of writing passage files would waste the hour. This is also the
-# real "does CUDA work" check that preflight cannot run, because preflight has no
-# server to probe.
-log "starting lilbee and warming the embedder (fast-fail before materialisation)"
-"$LILBEE_BIN" serve --port 8080 >"$LOG_DIR/serve.log" 2>&1 &
-SERVE_PID=$!
-# lilbee lazy-loads workers on the first request; gating on a readiness flag
-# deadlocks because the flag only flips once a request arrives.
-"$PYBIN" - <<'PY'
-import httpx, os, sys, time
-for attempt in range(90):
-    try:
-        httpx.post("http://127.0.0.1:8080/v1/embeddings",
-                   json={"model": os.environ["EMBED_MODEL"], "input": "warmup"},
-                   timeout=180).raise_for_status()
-        print("  embedder warm"); break
-    except Exception:
-        time.sleep(10)
-else:
-    sys.exit("embedder never came up")
-PY
-
-
-# ---------------------------------------------------------------- phase 2
 # One file per passage, because lilbee names a source by its path relative to the
 # documents directory, and the retrieval scoring has to join back to
 # passage-level qrels. Grouping passages into larger files would make the
@@ -115,7 +89,7 @@ PY
 fi
 log "documents on disk: $(find "$DOCS_DIR" -type f -name '*.txt' | wc -l)"
 
-# ---------------------------------------------------------------- phase 3
+# ---------------------------------------------------------------- phase 2
 log "ingesting (this is the long one; trace at $LILBEE_INGEST_TRACE_FILE)"
 "$PYBIN" - <<'PY'
 import os, pathlib, subprocess, sys
@@ -160,16 +134,15 @@ PY
 # grep -q, never `grep -c || echo 0`: grep -c prints "0" AND exits 1 on no match,
 # so the `|| echo 0` appends a second line and the check false-fires. That
 # powered off a healthy pod mid-run once.
-if grep -qiE "traceback|failed to extract|extraction failed" "$LOG_DIR/serve.log"; then
-  log "FAILURES present - see $LOG_DIR/serve.log"
-  grep -icE "traceback|failed to extract" "$LOG_DIR/serve.log" | xargs -I{} log "  {} failure lines"
+if grep -qiE "traceback|failed to extract|extraction failed" "$LOG_DIR/ingest.log"; then
+  log "FAILURES present - see $LOG_DIR/ingest.log"
+  grep -icE "traceback|failed to extract" "$LOG_DIR/ingest.log" | xargs -I{} log "  {} failure lines"
 fi
 
 # ---------------------------------------------------------------- phase 5
 # One tarball, not thousands of loose files. Large sequential I/O is the only
 # thing MooseFS does well; the index as loose files is what makes it crawl.
 log "archiving the index to the volume"
-kill "$SERVE_PID" 2>/dev/null || true
 tar -C "$LOCAL" -cf "$WORKSPACE/msmarco_index.tar" data
 log "index tar: $(du -h "$WORKSPACE/msmarco_index.tar" | cut -f1)"
 cp "$LILBEE_INGEST_TRACE_FILE" "$WORKSPACE/logs/" 2>/dev/null || true
