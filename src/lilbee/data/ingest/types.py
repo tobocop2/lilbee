@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel
 
@@ -13,6 +13,7 @@ from lilbee.data.store import (
     ChunkType,
     ConceptRecords,
     PageTextRecord,
+    SourceMeta,
     SourceStat,
     SourceStatBackfill,
 )
@@ -91,6 +92,9 @@ class ChunkRecord(TypedDict):
     chunk: str
     chunk_index: int
     vector: list[float]
+    # Stamped once per document by the pipeline (see _produce_records); None
+    # when the title is empty, so chunk rows persist NULL like the _sources table.
+    title: NotRequired[str | None]
 
 
 class SyncResult(BaseModel):
@@ -143,7 +147,8 @@ class _IngestResult:
     travels with the records so the flush can delete the source's old chunks in
     the same transaction. ``page_texts`` carries the per-page text dataset rows
     and ``concept_records`` the file's concept-table rows, and ``entity_rows``
-    the file's typed-entity rows, all written by the same flush.
+    the file's typed-entity rows, all written by the same flush. ``meta``
+    carries the document's extraction-time metadata for the source row.
     """
 
     name: str
@@ -157,3 +162,4 @@ class _IngestResult:
     stat: SourceStat | None = None
     concept_records: ConceptRecords | None = None
     entity_rows: list[dict] | None = None
+    meta: SourceMeta | None = None

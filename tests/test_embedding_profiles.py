@@ -28,6 +28,18 @@ def test_instruct_embedders_use_instruct_query(ref) -> None:
 
 @pytest.mark.parametrize(
     "ref",
+    ["hkunlp/instructor-large-GGUF/i.gguf", "hkunlp/instructor-xl-GGUF/i.gguf"],
+)
+def test_instructor_family_stays_symmetric(ref) -> None:
+    """The Instructor family's name contains "instruct" but it wants a document
+    instruction too, in a different dialect. Giving it the Instruct/Query query
+    prefix and no document prefix is asymmetric prompting in the wrong format --
+    the silently-wrong case the symmetric fallback exists to avoid."""
+    assert resolve_embedding_profile(ref) == EmbeddingProfile()
+
+
+@pytest.mark.parametrize(
+    "ref",
     ["intfloat/e5-large-v2-GGUF/e.gguf", "intfloat/multilingual-e5-large-GGUF/m.gguf"],
 )
 def test_base_e5_uses_query_passage_prefixes(ref) -> None:

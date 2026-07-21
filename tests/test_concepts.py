@@ -465,7 +465,13 @@ class TestWriteConceptRecords:
 
         per_file = [
             ConceptGraph(cfg, MagicMock()).build_concept_records([(name, 0)], [concepts])
-            for name, concepts in (("a.md", ["python", "rust"]), ("b.md", ["python", "go"]))
+            for name, concepts in (
+                ("a.md", ["python", "rust"]),
+                ("b.md", ["python", "go"]),
+                # A chunk without python keeps the pairs above chance (PPMI > 0);
+                # a concept in every chunk has zero PMI with everything.
+                ("c.md", ["notes"]),
+            )
         ]
         mock_leiden.side_effect = lambda edge_rows: (
             {c: 0 for row in edge_rows for c in (row["source"], row["target"])},
@@ -489,6 +495,11 @@ class TestWriteConceptRecords:
         assert len(batched_rows) > 0
 
 
+def _cc_row(source: str, chunk_index: int, concept: str) -> dict:
+    """A chunk_concepts table row as the batched boost query returns it."""
+    return {"chunk_source": source, "chunk_index": chunk_index, "concept": concept}
+
+
 class TestBoostResults:
     def test_boost_scoreless_row_is_untouched(self, cg, mock_svc):
         """A hand-built row without the canonical score has nothing to boost
@@ -497,7 +508,7 @@ class TestBoostResults:
         results = [_make_result(distance=0.5, chunk_index=0)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"},
+            _cc_row("test.pdf", 0, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -512,7 +523,8 @@ class TestBoostResults:
         ]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"},
+            _cc_row("test.pdf", 0, "python"),
+            _cc_row("test.pdf", 1, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -523,7 +535,7 @@ class TestBoostResults:
         results = [_make_result(distance=0.5, chunk_index=0)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "java"},
+            _cc_row("test.pdf", 0, "java"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -536,16 +548,57 @@ class TestBoostResults:
         boosted = cg.boost_results(results, ["python"])
         assert boosted == results
 
-    def test_boost_results_opens_table_once_for_many_results(self, cg, mock_svc):
-        """The chunk_concepts table is opened once per call, not once per result (N+1)."""
-        results = [_make_result(distance=0.5, chunk_index=i) for i in range(4)]
+    def test_boost_results_single_query_for_many_results(self, cg, mock_svc):
+        """The whole result set is served by ONE batched chunk_concepts query
+        (chunk_source IN ... AND chunk_index IN ...), not one query per result:
+        the table has no scalar index, so each per-result predicate was a full
+        table scan."""
+        results = [
+            _make_result(source="a.md", chunk_index=0, score=0.5),
+            _make_result(source="a.md", chunk_index=3, score=0.5),
+            _make_result(source="b.md", chunk_index=1, score=0.5),
+        ]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"}
+            _cc_row("a.md", 0, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
-        cg.boost_results(results, ["python"])
+        boosted = cg.boost_results(results, ["python"])
         mock_svc.store.open_table.assert_called_once()
+        assert mock_table.search.call_count == 1
+        where_arg = mock_table.search.return_value.where.call_args.args[0]
+        assert "chunk_source IN (" in where_arg
+        assert "'a.md'" in where_arg
+        assert "'b.md'" in where_arg
+        assert "chunk_index IN (" in where_arg
+        assert boosted[0].score > 0.5
+
+    def test_boost_ignores_cross_product_rows_for_unrequested_chunks(self, cg, mock_svc):
+        """The batched predicate is a source x index cross product; rows for
+        pairs that were not requested must not leak concepts into any result."""
+        results = [
+            _make_result(source="a.md", chunk_index=0, score=0.5),
+            _make_result(source="b.md", chunk_index=1, score=0.5),
+        ]
+        mock_table = MagicMock()
+        # (a.md, 1) matches the cross product but is not a requested chunk.
+        mock_table.search.return_value.where.return_value.to_list.return_value = [
+            _cc_row("a.md", 1, "python"),
+        ]
+        mock_svc.store.open_table.return_value = mock_table
+        boosted = cg.boost_results(results, ["python"])
+        assert boosted[0].score == 0.5
+        assert boosted[1].score == 0.5
+
+    def test_boost_results_unchanged_when_batch_query_fails(self, cg, mock_svc):
+        results = [_make_result(chunk_index=0, score=0.5)]
+        mock_table = MagicMock()
+        mock_table.search.return_value.where.return_value.to_list.side_effect = RuntimeError(
+            "query failed"
+        )
+        mock_svc.store.open_table.return_value = mock_table
+        boosted = cg.boost_results(results, ["python"])
+        assert boosted[0].score == 0.5
 
     def test_boost_results_empty_query_concepts(self, cg):
         results = [_make_result()]
@@ -562,8 +615,8 @@ class TestBoostResults:
         results = [_make_result(distance=0.1, chunk_index=0, score=0.4)]
         mock_table = MagicMock()
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            {"concept": "python"},
-            {"concept": "ml"},
+            _cc_row("test.pdf", 0, "python"),
+            _cc_row("test.pdf", 0, "ml"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python", "ml"])
@@ -796,9 +849,59 @@ class TestRebuildClusters:
         cg.rebuild_clusters()
         mock_leiden.assert_called_once_with([{"source": "ml", "target": "python", "weight": 1.0}])
         # Nodes are replaced atomically (delete+add under one lock), not a bare add.
-        mock_svc.store.clear_and_add.assert_called_once()
-        node_records = mock_svc.store.clear_and_add.call_args.args[2]
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+
+        rewrites = {call.args[0]: call for call in mock_svc.store.clear_and_add.call_args_list}
+        node_records = rewrites[CONCEPT_NODES_TABLE].args[2]
         assert {r["concept"] for r in node_records} == {"python", "ml"}
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_rewrites_edges_from_corpus(self, mock_leiden, cg, mock_svc):
+        """rebuild_clusters replaces the edges table with the corpus PPMI edge
+        set. Per-file writes only ever append, so without this rewrite the
+        table grows monotonically and expand_query serves edges for concepts
+        that left the corpus long ago."""
+        from lilbee.core.config import CONCEPT_EDGES_TABLE
+
+        _cc, side = self._chunk_concepts(
+            {
+                "chunk_source": ["d.md"] * 6,
+                "chunk_index": [0, 0, 1, 1, 2, 3],
+                "concept": ["python", "ml", "python", "ml", "rust", "rust"],
+            }
+        )
+        mock_svc.store.open_table.side_effect = side
+        mock_leiden.return_value = ({"python": 0, "ml": 0}, {"python": 1, "ml": 1})
+
+        cg.rebuild_clusters()
+        rewrites = {call.args[0]: call for call in mock_svc.store.clear_and_add.call_args_list}
+        assert CONCEPT_EDGES_TABLE in rewrites
+        edge_rows = rewrites[CONCEPT_EDGES_TABLE].args[2]
+        assert edge_rows == [{"source": "ml", "target": "python", "weight": 1.0}]
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_reingest_then_rebuild_leaves_no_stale_or_duplicate_edges(self, mock_leiden, mock_svc):
+        """End-state: re-ingesting a file appends its edges again, and the
+        following rebuild collapses the table back to the corpus edge set."""
+        from lilbee.core.config import CONCEPT_EDGES_TABLE
+        from lilbee.data.store import Store
+
+        mock_leiden.side_effect = lambda edge_rows: (
+            {c: 0 for row in edge_rows for c in (row["source"], row["target"])},
+            {c: 1 for row in edge_rows for c in (row["source"], row["target"])},
+        )
+        store = Store(cfg)
+        graph = ConceptGraph(cfg, store)
+        chunks = [("a.md", 0), ("b.md", 0)]
+        concepts = [["python", "rust"], ["notes"]]
+        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        graph.rebuild_clusters()
+        # A sync re-ingests a.md: its full co-occurrence edge set is appended again.
+        graph.write_concept_records(graph.build_concept_records(chunks[:1], concepts[:1]))
+        graph.rebuild_clusters()
+
+        rows = store.open_table(CONCEPT_EDGES_TABLE).search().limit(None).to_list()
+        assert [(r["source"], r["target"]) for r in rows] == [("python", "rust")]
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_counts_cooccurrence_per_distinct_chunk(self, mock_leiden, cg, mock_svc):
@@ -820,6 +923,24 @@ class TestRebuildClusters:
         mock_leiden.assert_called_once_with([{"source": "ml", "target": "python", "weight": 1.0}])
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_rebuild_skips_when_all_pairs_at_or_below_chance(self, mock_leiden, cg, mock_svc):
+        """When PPMI drops every pair (all co-occur at or below chance), there
+        is no edge set to cluster and Leiden must not run on an empty graph."""
+        # python co-occurs with ml in both chunks; with only 2 chunks each pair
+        # sits exactly at chance (PMI 0) and is dropped.
+        _cc, side = self._chunk_concepts(
+            {
+                "chunk_source": ["d.md"] * 4,
+                "chunk_index": [0, 0, 1, 1],
+                "concept": ["python", "ml", "python", "ml"],
+            }
+        )
+        mock_svc.store.open_table.side_effect = side
+        cg.rebuild_clusters()
+        mock_leiden.assert_not_called()
+        mock_svc.store.clear_and_add.assert_not_called()
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_skips_when_no_cooccurrence(self, mock_leiden, cg, mock_svc):
         """Chunks that each carry a single concept produce no pairs, so there is
         nothing to cluster."""
@@ -835,7 +956,11 @@ class TestRebuildClusters:
     def test_rebuild_compacts_concept_tables(self, mock_leiden, cg, mock_svc):
         """rebuild_clusters ends with optimize() on the concept tables."""
         cc_tbl, side = self._chunk_concepts(
-            {"chunk_source": ["d.md", "d.md"], "chunk_index": [0, 0], "concept": ["a", "b"]}
+            {
+                "chunk_source": ["d.md"] * 3,
+                "chunk_index": [0, 0, 1],
+                "concept": ["a", "b", "c"],
+            }
         )
         mock_svc.store.open_table.side_effect = side
         mock_leiden.return_value = ({"a": 0}, {"a": 1})
@@ -895,17 +1020,34 @@ class TestComputePmi:
         # PPMI: all values >= 0
         assert pmi[("a", "b")] >= 0.0
 
-    def test_ppmi_clamps_negative(self):
-        """Anti-correlated pairs should get PPMI = 0."""
+    def test_ppmi_discards_anticorrelated_pairs(self):
+        """Anti-correlated pairs are dropped, not stored with weight 0.
+
+        A stored 0.0 would later be floored to a positive Leiden weight,
+        actively pulling pairs that co-occur less than chance into the
+        same community.
+        """
         from collections import Counter
 
         from lilbee.retrieval.concepts.community import _compute_pmi
 
-        # a and b rarely co-occur but each appear often -> negative PMI -> clamped to 0
+        # a and b rarely co-occur but each appear often -> negative PMI -> dropped
         cooccurrences = Counter({("a", "b"): 1})
         concept_counts = Counter({"a": 9, "b": 9})
         pmi = _compute_pmi(cooccurrences, concept_counts, 10)
-        assert pmi[("a", "b")] == 0.0
+        assert ("a", "b") not in pmi
+
+    def test_ppmi_discards_independent_pairs(self):
+        """Pairs co-occurring exactly at chance (PMI == 0) carry no signal."""
+        from collections import Counter
+
+        from lilbee.retrieval.concepts.community import _compute_pmi
+
+        # P(a,b) = 0.25 = P(a) * P(b) -> PMI exactly 0 -> dropped
+        cooccurrences = Counter({("a", "b"): 1})
+        concept_counts = Counter({"a": 2, "b": 2})
+        pmi = _compute_pmi(cooccurrences, concept_counts, 4)
+        assert ("a", "b") not in pmi
 
     def test_ppmi_skips_zero_count_concepts(self):
         """Concepts with zero count are skipped (avoid division by zero)."""

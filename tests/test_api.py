@@ -59,6 +59,16 @@ class TestCreate:
         assert bee.config.data_dir.exists()
         assert "myproject" in str(bee.config.data_root)
 
+    def test_documents_dir_tilde_expands_instead_of_literal_dir(self, tmp_path, monkeypatch):
+        """A "~/vault" root must reach the home directory, not a literal ./~ tree."""
+        from lilbee import Lilbee
+
+        # POSIX expanduser reads HOME; the Windows one reads USERPROFILE.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        bee = Lilbee("~/tilde_vault")
+        assert bee.config.data_root == (tmp_path / "tilde_vault").resolve()
+
     def test_create_with_config(self, tmp_path):
         from lilbee import Lilbee
 

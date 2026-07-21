@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# The chunks table's body-text column: FTS-indexed and searched by the lexical
+# arm, named here so the store's query and index code shares one spelling with
+# its sibling _TITLE_COLUMN.
+_CHUNK_COLUMN = "chunk"
+
 
 def install_lancedb_thread_error_suppressor() -> None:
     """Install a ``threading.excepthook`` that swallows lancedb shutdown noise.
@@ -130,15 +135,28 @@ def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     return f"chunk_type = '{escaped}'"
 
 
-def _has_fts_index(table: lancedb.table.Table) -> bool:
-    """Return True when an FTS index on the chunk column already exists."""
+def _has_fts_index(table: lancedb.table.Table, column: str = _CHUNK_COLUMN) -> bool:
+    """Return True when an FTS index on *column* already exists."""
     try:
         for idx in table.list_indices():
-            if idx.index_type == "FTS" and "chunk" in idx.columns:
+            if idx.index_type == "FTS" and column in idx.columns:
                 return True
     except Exception:
         return False
     return False
+
+
+def _has_scalar_index(table: lancedb.table.Table, column: str) -> bool:
+    """Return True when a scalar index on *column* already exists.
+
+    lilbee only builds scalar indexes on ``source`` and ``chunk_type``, and
+    never an FTS or vector index on those columns, so any index touching the
+    column is the scalar one.
+    """
+    try:
+        return any(column in idx.columns for idx in table.list_indices())
+    except Exception:
+        return False
 
 
 def _has_vector_index(table: lancedb.table.Table) -> bool:

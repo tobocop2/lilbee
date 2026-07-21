@@ -7,9 +7,11 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
+from xberg import Metadata
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
+from tests.conftest import make_pdf
 
 
 @pytest.fixture(autouse=True)
@@ -138,6 +140,7 @@ def _make_xberg_result(
     has_pages=False,
     document=None,
     tables=None,
+    metadata=None,
 ):
     """Build a mock xberg ExtractionResult."""
     chunks = []
@@ -161,6 +164,7 @@ def _make_xberg_result(
     result.content = text
     result.document = document
     result.tables = tables if tables is not None else []
+    result.metadata = metadata if metadata is not None else Metadata()
     result.pages = (
         [mock.MagicMock(page_number=i + 1, content=chunks[i].content) for i in range(num_chunks)]
         if has_pages
@@ -185,6 +189,7 @@ def _make_empty_result():
     result.document = None
     result.tables = []
     result.pages = []
+    result.metadata = Metadata()
     return result
 
 
@@ -941,7 +946,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "empty.txt"
         f.write_text("   ")
-        result = await ingest_document(f, "empty.txt", "text")
+        result, _ = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
     async def test_ingest_code_empty_chunks(self, isolated_env):
@@ -1000,7 +1005,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        result = await ingest_document(f, "test.pdf", "pdf")
+        result, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(result) == 2
         assert result[0]["page_start"] == 1
         assert result[1]["page_start"] == 2
@@ -1090,10 +1095,12 @@ class TestSkipMarkerLifecycle:
     until the file changes or retry_skipped / force_rebuild clears the marker."""
 
     @staticmethod
-    def _zero_chunks(*_args, **_kwargs) -> list:
+    def _zero_chunks(*_args, **_kwargs):
         # Simulate "OCR found no usable text": no records produced, so the file
         # is recorded as skipped.
-        return []
+        from lilbee.data.store import SourceMeta
+
+        return [], SourceMeta()
 
     async def test_failed_file_is_skipped_on_next_sync(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
@@ -1140,13 +1147,21 @@ class TestZeroChunkPageTextPersistence:
 
     @staticmethod
     async def _pages_no_chunks(
-        path, source_name, content_type, *, quiet=False, on_progress=None, page_texts_out=None
+        path,
+        source_name,
+        content_type,
+        *,
+        quiet=False,
+        on_progress=None,
+        page_texts_out=None,
     ):
+        from lilbee.data.store import SourceMeta
+
         if page_texts_out is not None:
             page_texts_out.append(
                 {"source": source_name, "page": 1, "text": " ", "content_type": "pdf"}
             )
-        return []
+        return [], SourceMeta()
 
     async def test_pages_and_source_row_persist_and_replan_stops(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
@@ -2190,7 +2205,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records = await ingest_document(f, "test.pdf", "pdf")
+        records, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert all(r["chunk_type"] == ChunkType.RAW for r in records)
 
@@ -2210,7 +2225,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records = await ingest_document(f, "test.pdf", "pdf")
+        records, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 3
         table_records = [r for r in records if r["chunk_type"] == ChunkType.TABLE]
         assert len(table_records) == 2
@@ -2238,7 +2253,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records = await ingest_document(f, "test.pdf", "pdf")
+        records, _ = await ingest_document(f, "test.pdf", "pdf")
         assert records[-1]["chunk_type"] == ChunkType.TABLE
         assert records[-1]["chunk"] == spanned
 
@@ -2254,7 +2269,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records = await ingest_document(f, "test.pdf", "pdf")
+        records, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.RAW
 
@@ -2274,7 +2289,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records = await ingest_document(f, "test.pdf", "pdf")
+        records, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.TABLE
         assert records[0]["chunk_index"] == 0
@@ -2519,7 +2534,7 @@ class TestIngestMarkdownEdgeCases:
 
         md = isolated_env / "empty.md"
         md.write_text("   ")
-        result = await ingest_markdown(md, "empty.md")
+        result, _ = await ingest_markdown(md, "empty.md")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
@@ -2528,7 +2543,7 @@ class TestIngestMarkdownEdgeCases:
         md = isolated_env / "blank.md"
         md.write_text("some text")
         with mock.patch("lilbee.data.ingest.extract.chunk_text", return_value=[]):
-            result = await ingest_markdown(md, "blank.md")
+            result, _ = await ingest_markdown(md, "blank.md")
         assert result == []
 
     async def test_frontmatter_only_produces_chunks(self, isolated_env):
@@ -2536,7 +2551,7 @@ class TestIngestMarkdownEdgeCases:
 
         md = isolated_env / "fm_only.md"
         md.write_text("---\ntitle: Just Frontmatter\ntags: [test]\n---\n")
-        result = await ingest_markdown(md, "fm_only.md")
+        result, _ = await ingest_markdown(md, "fm_only.md")
         assert len(result) > 0, "Frontmatter content should be indexed"
 
 
@@ -2604,20 +2619,20 @@ class TestIngestDocumentEdgeCases:
         from lilbee.data.ingest import ingest_document
 
         (isolated_env / "e.xml").write_bytes(b"<x/>")  # ingest_document reads the file bytes
-        empty_result = mock.MagicMock(chunks=[])
+        empty_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=empty_result)
         with mock.patch("lilbee.data.xberg_extract.aextract_document", mock_extract):
-            result = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
+            result, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
         from lilbee.data.ingest import ingest_document
 
         (isolated_env / "s.xml").write_bytes(b"<x/>")  # ingest_document reads the file bytes
-        no_chunks_result = mock.MagicMock(chunks=[])
+        no_chunks_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=no_chunks_result)
         with mock.patch("lilbee.data.xberg_extract.aextract_document", mock_extract):
-            result = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
+            result, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
 
@@ -2977,21 +2992,6 @@ class _CountingVisionBackend:
         raise NotImplementedError
 
 
-def _born_digital_pdf() -> bytes:
-    """A 2-page PDF with a clean native text layer (no OCR needed to read it)."""
-    import io
-
-    from reportlab.pdfgen import canvas
-
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf)
-    for i in range(2):
-        c.drawString(72, 720, f"Page {i + 1} with a perfectly clean native text layer.")
-        c.showPage()
-    c.save()
-    return buf.getvalue()
-
-
 class TestForceOcrRoutesToBackend:
     """Behavioral contract against real xberg: LILBEE_OCR_FORCE must OCR every page
     of a born-digital PDF through the registered vision backend, defeating xberg's
@@ -3020,7 +3020,7 @@ class TestForceOcrRoutesToBackend:
         monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
-        calls, content = self._extract(_born_digital_pdf(), config)
+        calls, content = self._extract(make_pdf(pages=2), config)
         assert calls == 0
         assert "clean native text layer" in content
 
@@ -3030,7 +3030,7 @@ class TestForceOcrRoutesToBackend:
         monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
-        calls, content = self._extract(_born_digital_pdf(), config)
+        calls, content = self._extract(make_pdf(pages=2), config)
         assert calls == 2  # one OCR call per page, text layer notwithstanding
         assert "OCR-TEXT" in content
         assert "clean native text layer" not in content
@@ -3053,12 +3053,12 @@ class TestChunkAndEmbedPagesEmpty:
 class TestIngestDocumentOcrPath:
     @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
     async def test_empty_pdf_warns_no_usable_text(self, mock_kf, isolated_env, mock_svc, caplog):
-        mock_kf.return_value = mock.MagicMock(chunks=[])
+        mock_kf.return_value = mock.MagicMock(chunks=[], metadata=Metadata())
         from lilbee.data.ingest import ingest_document
 
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
-        result = await ingest_document(f, "scan.pdf", "pdf")
+        result, _ = await ingest_document(f, "scan.pdf", "pdf")
         assert result == []
         assert "no usable text" in caplog.text
 
@@ -3089,3 +3089,81 @@ class TestIngestDocumentOcrPath:
         f.write_bytes(b"x")
         await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
         assert 1 in seen and 2 in seen  # two per-page running-count ticks
+
+
+class TestTitleStamping:
+    """Every produced record carries the document title; the source row its metadata.
+
+    Guards the title path end to end: xberg's typed Metadata is folded into
+    SourceMeta, stamped on every chunk row, and written to the source row. This is
+    the test that catches titles silently breaking, which would poison title_search.
+    """
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_extracted_metadata_flows_to_records_and_source_row(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        mock_kf.return_value = _make_xberg_result(
+            metadata=Metadata(
+                title="Extracted Title",
+                authors=["Ada", "Grace"],
+                created_at="2020-01-01",
+            )
+        )
+        (isolated_env / "report_2021.txt").write_text("body text")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "report_2021.txt")
+        assert item.meta.title == "Extracted Title"
+        assert item.meta.authors == "Ada, Grace"
+        assert item.meta.created_at == "2020-01-01"
+        assert all(r["title"] == "Extracted Title" for r in item.records)
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_bare_string_author_is_one_author_not_characters(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        # xberg annotates authors as list[str] | None but does not enforce it: a PDF
+        # /Author field arrives as a bare str. Joining it naively yields "A, d, a".
+        mock_kf.return_value = _make_xberg_result(metadata=Metadata(authors="Ada Lovelace"))
+        (isolated_env / "paper.txt").write_text("body text")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "paper.txt")
+        assert item.meta.authors == "Ada Lovelace"
+
+    @mock.patch("lilbee.data.xberg_extract.aextract_document", new_callable=mock.AsyncMock)
+    async def test_missing_metadata_falls_back_to_stem(self, mock_kf, isolated_env, mock_svc):
+        mock_kf.return_value = _make_xberg_result()
+        (isolated_env / "annual_wildlife_survey.txt").write_text("body text")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "annual_wildlife_survey.txt")
+        assert item.meta.title == "annual wildlife survey"
+        assert item.meta.authors == ""
+        assert all(r["title"] == "annual wildlife survey" for r in item.records)
+
+    async def test_markdown_title_uses_the_h1_heading(self, isolated_env, mock_svc):
+        (isolated_env / "meeting_notes.md").write_text("# Project Kickoff\n\nSome content here.")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "meeting_notes.md")
+        assert item.meta.title == "Project Kickoff"
+        assert all(r["title"] == "Project Kickoff" for r in item.records)
+
+    async def test_markdown_without_h1_falls_back_to_stem(self, isolated_env, mock_svc):
+        (isolated_env / "meeting_notes.md").write_text("Some content, no heading.")
+        from lilbee.data.ingest import sync
+
+        await sync(quiet=True)
+        items = mock_svc.store.write_chunks_batch.call_args.args[0]
+        item = next(it for it in items if it.source == "meeting_notes.md")
+        assert item.meta.title == "meeting notes"

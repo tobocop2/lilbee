@@ -11,6 +11,7 @@ from lilbee.data.store import (
     CitationRecord,
     SearchChunk,
     SearchScope,
+    SourceMeta,
     SourceType,
     Store,
     cosine_sim,
@@ -163,8 +164,107 @@ class TestEnsureFtsIndex:
         create_spy.assert_not_called()
         optimize_spy.assert_called_once()
 
-    def test_first_call_creates_without_replace(self, store):
-        """Fresh table goes through create_fts_index path with replace=False."""
+    def test_optimize_failure_keeps_hybrid_ready(self, store):
+        """An optimize() crash on an already-built index (a LanceDB encoding
+        bug bites large corpora) must not disable hybrid search: the index
+        still serves queries, so _fts_ready stays True instead of silently
+        dropping every query to the vector-only fallback."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()  # builds the index
+        store._fts_ready = False  # a fresh process is unaware the index exists yet
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(
+            type(table),
+            "optimize",
+            side_effect=RuntimeError("lance list offset overflow"),
+        ):
+            store.ensure_fts_index()
+        assert store._fts_ready is True
+
+    def test_positional_index_overflow_rebuilds_positionless(self, store):
+        """A store whose FTS index was built with positions overflows on every
+        optimize(); catching that specific error rebuilds the index positionless
+        (replace=True) so index maintenance can complete instead of failing
+        forever with no remediation short of a full re-ingest."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 1897296 exceeds length of values 1067891")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(type(table), "create_fts_index") as rebuild,
+        ):
+            store.ensure_fts_index()
+        assert any(
+            c.args[:1] == ("chunk",)
+            and c.kwargs.get("replace") is True
+            and c.kwargs.get("with_position") is False
+            for c in rebuild.call_args_list
+        )
+        assert store._fts_ready is True
+
+    def test_generic_optimize_failure_does_not_rebuild(self, store, caplog):
+        """An unrelated optimize() failure keeps the existing index and does NOT
+        pay for a full positionless rebuild it cannot fix. It must also log a
+        warning so an operator debugging a large corpus is not left in silence."""
+        import logging
+
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=RuntimeError("disk full")),
+            mock.patch.object(type(table), "create_fts_index") as rebuild,
+            caplog.at_level(logging.WARNING),
+        ):
+            store.ensure_fts_index()
+        rebuild.assert_not_called()
+        assert any("optimize()" in r.message for r in caplog.records)
+
+    def test_overflow_rebuild_also_rebuilds_the_title_index_when_enabled(self, store, test_config):
+        """With the title arm on, a positional-overflow rebuild replaces the
+        title index too, not just the chunk index."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 9 exceeds length of values 3")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(type(table), "create_fts_index") as rebuild,
+        ):
+            store.ensure_fts_index()
+        rebuilt = {
+            c.args[0]
+            for c in rebuild.call_args_list
+            if c.kwargs.get("replace") is True and c.kwargs.get("with_position") is False
+        }
+        assert rebuilt == {"chunk", "title"}
+
+    def test_overflow_rebuild_failure_is_swallowed(self, store):
+        """If the positionless rebuild itself fails, the store keeps the existing
+        index and does not propagate: a failed self-heal must not crash sync."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        overflow = RuntimeError("Max offset 9 exceeds length of values 3")
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=overflow),
+            mock.patch.object(
+                type(table), "create_fts_index", side_effect=RuntimeError("rebuild boom")
+            ),
+        ):
+            store.ensure_fts_index()  # must not raise
+        assert store._fts_ready is True
+
+    def test_first_call_creates_chunk_index_only_when_title_search_off(self, store):
+        """With title_search off (default), only the chunk index is built; the
+        title index is not created on a store that never queries it."""
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         assert table is not None
@@ -172,10 +272,40 @@ class TestEnsureFtsIndex:
         with mock.patch.object(type(table), "create_fts_index") as create_spy:
             store.ensure_fts_index()
 
-        create_spy.assert_called_once()
+        assert [c.args[0] for c in create_spy.call_args_list] == ["chunk"]
+        assert create_spy.call_args_list[0].kwargs.get("with_position") is False
+
+    def test_first_call_creates_both_indexes_when_title_search_on(self, store, test_config):
+        """Fresh table creates the chunk and title indexes, both positionless
+        with replace=False, when the title arm is enabled."""
+        test_config.title_search = True
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+
+        with mock.patch.object(type(table), "create_fts_index") as create_spy:
+            store.ensure_fts_index()
+
+        assert [c.args[0] for c in create_spy.call_args_list] == ["chunk", "title"]
         # Verify replace was NOT True (would defeat the purpose of incremental)
-        _args, kwargs = create_spy.call_args
-        assert kwargs.get("replace") is False
+        assert all(c.kwargs.get("replace") is False for c in create_spy.call_args_list)
+        # Both indexes are positionless: with_position=True overflows LanceDB's
+        # list encoding on a large corpus, and no lilbee query needs exact-phrase
+        # matching.
+        assert all(c.kwargs.get("with_position") is False for c in create_spy.call_args_list)
+
+    def test_fts_quoted_query_matches_terms_not_a_phrase(self, store):
+        """A quoted query must return term matches, not raise on the positionless index.
+
+        The chunk index carries no token positions, so a phrase query would
+        error. FTS goes through ``MatchQuery``, which matches the quoted span's
+        plain terms instead of parsing it as a phrase.
+        """
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        results = store.bm25_probe('"some text"')
+        assert results
+        assert all("some text" in r.chunk for r in results)
 
     def test_bm25_probe_populates_bm25_score(self, store):
         """LanceDB FTS returns rows keyed on ``_score``; the probe must surface it as
@@ -197,6 +327,15 @@ class TestEnsureFtsIndex:
         results = store.bm25_probe("text", chunk_type=ChunkType.WIKI)
         assert results
         assert all(r.chunk_type == ChunkType.WIKI for r in results)
+
+    def test_bm25_probe_survives_a_failing_search(self, store):
+        """A probe whose LanceDB query raises degrades to no hits, not an error."""
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "search", side_effect=RuntimeError("boom")):
+            assert store.bm25_probe("text") == []
 
 
 class TestSearchChunkScoreAlias:
@@ -255,6 +394,108 @@ def _make_indexable_records(n, dim):
         }
         for i in range(n)
     ]
+
+
+class TestEnsureScalarIndexes:
+    """source and chunk_type get scalar indexes so their prefilters are lookups."""
+
+    def test_creates_btree_on_source_and_bitmap_on_chunk_type(self, store):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "create_scalar_index") as spy:
+            store.ensure_scalar_indexes()
+        assert [c.args[0] for c in spy.call_args_list] == ["source", "chunk_type"]
+        kinds = {c.args[0]: c.kwargs.get("index_type") for c in spy.call_args_list}
+        assert kinds == {"source": "BTREE", "chunk_type": "BITMAP"}
+        assert all(c.kwargs.get("replace") is False for c in spy.call_args_list)
+
+    def test_idempotent_once_the_indexes_exist(self, store):
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()  # builds them for real
+        table = store.open_table("chunks")
+        with mock.patch.object(type(table), "create_scalar_index") as spy:
+            store.ensure_scalar_indexes()
+        spy.assert_not_called()
+
+    def test_handles_exception_gracefully(self, store):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(
+            type(table), "create_scalar_index", side_effect=RuntimeError("boom")
+        ):
+            store.ensure_scalar_indexes()  # must not raise
+
+    def test_noop_when_no_table(self, store):
+        store.ensure_scalar_indexes()  # empty store, no chunks table yet
+
+    def test_has_scalar_index_is_false_when_listing_raises(self, store):
+        from lilbee.data.store.lance_helpers import _has_scalar_index
+
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
+            assert _has_scalar_index(table, "source") is False
+
+    def test_indexes_chunk_concepts_source_column(self, store):
+        """The concept-boost path filters chunk_concepts by chunk_source per
+        result, so that column gets its own BTree index too."""
+        from lilbee.core.config import CHUNK_CONCEPTS_TABLE
+        from lilbee.data.store import ensure_table
+        from lilbee.data.store.lance_helpers import _has_scalar_index
+        from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
+
+        store.add_chunks(_make_records())
+        cc = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
+        cc.add([{"chunk_source": "doc.md", "chunk_index": 0, "concept": "alpha"}])
+        store.ensure_scalar_indexes()
+        assert _has_scalar_index(store.open_table(CHUNK_CONCEPTS_TABLE), "chunk_source")
+
+    def test_one_column_failure_does_not_skip_the_other(self, store):
+        """A BTree failure on 'source' must not skip the independent Bitmap on
+        'chunk_type' -- each column gets its own try."""
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        attempted = []
+
+        def _record(self, column, **kwargs):
+            attempted.append(column)
+            if column == "source":
+                raise RuntimeError("boom")
+
+        with mock.patch.object(type(table), "create_scalar_index", _record):
+            store.ensure_scalar_indexes()
+        assert attempted == ["source", "chunk_type"]
+
+    def test_scalar_index_failure_on_populated_table_warns(self, store, caplog):
+        """A create failure on a non-empty table warns (it silently loses the
+        prefilter speedup), unlike the benign empty-table case."""
+        import logging
+
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with (
+            mock.patch.object(type(table), "create_scalar_index", side_effect=RuntimeError("boom")),
+            caplog.at_level(logging.WARNING),
+        ):
+            store.ensure_scalar_indexes()
+        warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("Scalar index create failed" in r.message for r in warns)
+
+    def test_search_builds_scalar_indexes_on_a_serve_only_store(self, store, test_config):
+        """A store served without a fresh ingest never ran the ingest path that
+        builds scalar indexes, so the first search must build them once."""
+        store.add_chunks(_make_records())
+        assert store._scalar_ready is False  # ingest path did not run here
+        with mock.patch.object(
+            store, "ensure_scalar_indexes", wraps=store.ensure_scalar_indexes
+        ) as spy:
+            store.search([0.5] * test_config.embedding_dim, top_k=3)
+            store.search([0.5] * test_config.embedding_dim, top_k=3)
+        spy.assert_called_once()  # built once, then the guard skips it
+        assert store._scalar_ready is True
 
 
 class TestEnsureVectorIndex:
@@ -602,6 +843,56 @@ class TestHybridSearch:
         assert all(r.score is not None for r in results)
         scores = [r.score for r in results]
         assert all(0.0 <= s <= 1.0 for s in scores)
+
+    def test_adaptive_fusion_feeds_a_derived_weight_to_fusion(self, store, test_config):
+        """With adaptive_fusion on (the default), the per-query factor from
+        adaptive_weight_scale -- fed the configured margin -- scales the lexical
+        weight reaching fuse_arms, not the fixed config value. Deleting the
+        adaptive branch would fail this, unlike a smoke test on the score range."""
+        assert test_config.adaptive_fusion is True  # shipped default
+        test_config.adaptive_fusion_margin = 0.42
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        query_vec = [0.5] * test_config.embedding_dim
+        from lilbee.data.store import core as store_core
+
+        with (
+            mock.patch.object(store_core, "adaptive_weight_scale", return_value=0.5) as scale,
+            mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
+        ):
+            results = store.search(query_vec, top_k=3, query_text="chunk number")
+        scale.assert_called_once()
+        # adaptive_weight_scale(vector_rows, margin): the margin is the config value.
+        assert scale.call_args.args[1] == pytest.approx(0.42)
+        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(
+            test_config.lexical_fusion_weight * 0.5
+        )
+        # The normalization denominator is the configured budget (constant), not
+        # the adapted weight, so scores stay comparable across sub-searches.
+        assert fuse.call_args.kwargs["weight_total"] == pytest.approx(
+            1.0 + test_config.lexical_fusion_weight
+        )
+        assert len(results) > 0
+
+    def test_fixed_fusion_pins_the_config_weight(self, store, test_config):
+        """Opting out of adaptive fusion skips adaptive_weight_scale and pins
+        the fixed lexical_fusion_weight into fuse_arms; a non-default weight must
+        reach fusion verbatim."""
+        test_config.adaptive_fusion = False
+        test_config.lexical_fusion_weight = 0.3
+        store.add_chunks(_make_records())
+        store.ensure_fts_index()
+        query_vec = [0.5] * test_config.embedding_dim
+        from lilbee.data.store import core as store_core
+
+        with (
+            mock.patch.object(store_core, "adaptive_weight_scale") as adapt,
+            mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
+        ):
+            results = store.search(query_vec, top_k=3, query_text="chunk number")
+        adapt.assert_not_called()
+        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(0.3)
+        assert len(results) > 0
 
     def test_fallback_to_vector_when_no_query_text(self, store, test_config):
         records = _make_records()
@@ -1192,31 +1483,58 @@ class TestChunkTypeField:
         results = store.get_chunks_by_source("doc0.md")
         assert results[0].chunk_type == "raw"
 
-    def test_get_chunks_by_source_fallback(self, store):
-        """Fallback path when table.search() raises (e.g. incompatible FTS builder)."""
-        from unittest.mock import patch
+    def test_get_chunks_by_source_filters_with_fts_index_built(self, store):
+        """The filtered query still selects rows once the chunks table is FTS-indexed.
 
-        records = _make_records(n=2)
-        store.add_chunks(records)
+        Both chunk-fetch paths rely on the database doing the filtering, so an
+        FTS-indexed table that rejected ``.where()`` would silently regress them
+        into whole-table reads. Pin the behavior the fetch paths depend on.
+        """
+        store.add_chunks(_make_records(n=3))
+        store.ensure_fts_index()
+        results = store.get_chunks_by_source("doc1.md")
+        assert [r.source for r in results] == ["doc1.md"]
 
-        # Make table.search() raise to trigger the Arrow fallback
-        original_open = store.open_table
 
-        def _broken_open(name):
-            table = original_open(name)
-            if table is None:
-                return None
+def _one_source_records(source: str, n: int) -> list[dict]:
+    """*n* sequential chunks all belonging to *source*."""
+    records = _make_records(n=n)
+    for record in records:
+        record["source"] = source
+    return records
 
-            def _raise_search(*args, **kwargs):
-                raise AttributeError("LanceFtsQueryBuilder has no attribute 'metric'")
 
-            table.search = _raise_search
-            return table
+class TestGetChunksByIndices:
+    def test_returns_requested_indices_in_order(self, store):
+        store.add_chunks(_one_source_records("a.md", 5))
+        results = store.get_chunks_by_indices("a.md", [3, 1])
+        assert [r.chunk_index for r in results] == [1, 3]
+        assert all(r.source == "a.md" for r in results)
 
-        with patch.object(store, "open_table", side_effect=_broken_open):
-            results = store.get_chunks_by_source("doc0.md")
-        assert len(results) == 1
-        assert results[0].source == "doc0.md"
+    def test_missing_indices_are_absent(self, store):
+        store.add_chunks(_one_source_records("a.md", 2))
+        results = store.get_chunks_by_indices("a.md", [1, 99])
+        assert [r.chunk_index for r in results] == [1]
+
+    def test_other_sources_are_excluded(self, store):
+        store.add_chunks(_one_source_records("a.md", 2) + _one_source_records("b.md", 2))
+        results = store.get_chunks_by_indices("a.md", [0, 1])
+        assert {r.source for r in results} == {"a.md"}
+
+    def test_empty_indices_returns_empty(self, store):
+        store.add_chunks(_one_source_records("a.md", 1))
+        assert store.get_chunks_by_indices("a.md", []) == []
+
+    def test_no_table_returns_empty(self, store):
+        assert store.get_chunks_by_indices("a.md", [0]) == []
+
+    def test_filters_with_fts_index_built(self, store):
+        """The compound source+index predicate survives an FTS-indexed table."""
+        store.add_chunks(_one_source_records("a.md", 3) + _one_source_records("b.md", 3))
+        store.ensure_fts_index()
+        results = store.get_chunks_by_indices("a.md", [0, 2])
+        assert [r.chunk_index for r in results] == [0, 2]
+        assert {r.source for r in results} == {"a.md"}
 
     def test_search_chunk_default_is_raw(self):
         chunk = SearchChunk(
@@ -2209,3 +2527,304 @@ class TestAnnNprobesScaling:
         from lilbee.data.store.core import _ANN_NPROBES_FLOOR, _ann_nprobes
 
         assert _ann_nprobes(-5) == _ANN_NPROBES_FLOOR
+
+
+def _titled_records(source, n, *, title, base=0.1, dim=None):
+    """Chunk records for one source with a document title on every row."""
+    if dim is None:
+        dim = cfg.embedding_dim
+    return [
+        {
+            "source": source,
+            "content_type": "text",
+            "chunk_type": "raw",
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": f"plain body words {source} {i}",
+            "chunk_index": i,
+            "title": title,
+            "vector": [base + i / 100] * dim,
+        }
+        for i in range(n)
+    ]
+
+
+def _create_pre_title_chunks_table(store):
+    """Create the chunks table with the pre-title schema, as an old index would have."""
+    import pyarrow as pa
+
+    schema = pa.schema(
+        [
+            pa.field("source", pa.utf8()),
+            pa.field("content_type", pa.utf8()),
+            pa.field("chunk_type", pa.utf8()),
+            pa.field("page_start", pa.int32()),
+            pa.field("page_end", pa.int32()),
+            pa.field("line_start", pa.int32()),
+            pa.field("line_end", pa.int32()),
+            pa.field("chunk", pa.utf8()),
+            pa.field("chunk_index", pa.int32()),
+            pa.field("vector", pa.list_(pa.float32(), cfg.embedding_dim)),
+        ]
+    )
+    return store.get_db().create_table("chunks", schema=schema)
+
+
+class TestTitleSearch:
+    """The title lexical arm: BM25 over document titles fused into hybrid search."""
+
+    def test_title_arm_surfaces_title_only_match(self, store, test_config):
+        """A term that lives only in a document's title reaches hybrid results
+        with lexical support (bm25_score) when title_search is on. The title arm
+        surfaces one representative chunk per matched document, so the document
+        appears with lexical support even though not every chunk carries it."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto", base=0.9))
+        store.add_chunks(_titled_records("b.pdf", 2, title="meeting notes", base=0.1))
+        store.ensure_fts_index()
+        query_vec = [0.1] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
+        matched = [r for r in results if r.source == "a.pdf"]
+        assert matched
+        assert any(r.bm25_score is not None for r in matched)
+
+    def test_title_arm_collapses_to_one_deterministic_row_per_document(self, store, test_config):
+        """Every chunk of a document shares its title, so all tie on BM25. The
+        arm must collapse each matched document to one deterministic row (its
+        first chunk), not return an arbitrary tie-ordered subset of that doc."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 5, title="zebra manifesto"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        rows = store._title_arm(table, "zebra", 5, None)
+        assert [(r.source, r.chunk_index) for r in rows] == [("a.pdf", 0)]
+        # Deterministic across repeated calls (no implementation-defined tie order).
+        again = store._title_arm(table, "zebra", 5, None)
+        assert [(r.source, r.chunk_index) for r in again] == [("a.pdf", 0)]
+
+    def test_title_arm_one_row_per_matched_document(self, store, test_config):
+        """Two matched documents surface one representative row each, not an
+        arbitrary flood of one document's chunks."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("zebra.pdf", 4, title="zebra"))
+        store.add_chunks(_titled_records("safari.pdf", 4, title="zebra safari"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        rows = store._title_arm(table, "zebra", 5, None)
+        assert sorted(r.source for r in rows) == ["safari.pdf", "zebra.pdf"]
+        assert all(r.chunk_index == 0 for r in rows)
+
+    def test_title_search_weight_reaches_fusion(self, store, test_config):
+        """A non-default title_search_weight is threaded into fuse_arms, not
+        hardcoded: the config value is what weights the title arm."""
+        test_config.title_search = True
+        test_config.title_search_weight = 0.2
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        query_vec = [0.1] * test_config.embedding_dim
+        from lilbee.data.store import core as store_core
+
+        with mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse:
+            store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
+        assert fuse.call_args.kwargs["title_weight"] == pytest.approx(0.2)
+        # With the title arm enabled, its weight is part of the constant
+        # denominator whether or not this query's title arm returned rows.
+        assert fuse.call_args.kwargs["weight_total"] == pytest.approx(
+            1.0 + test_config.lexical_fusion_weight + 0.2
+        )
+
+    def test_adaptive_fusion_scales_the_title_arm_too(self, store, test_config):
+        """Adaptive fusion downweights lexical; the title arm is also lexical, so
+        it must be scaled by the same confidence, not left at full weight (which
+        would re-admit the signal adaptive fusion just silenced)."""
+        test_config.title_search = True
+        test_config.title_search_weight = 0.5
+        assert test_config.adaptive_fusion is True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        query_vec = [0.1] * test_config.embedding_dim
+        from lilbee.data.store import core as store_core
+
+        with (
+            mock.patch.object(store_core, "adaptive_weight_scale", return_value=0.25),
+            mock.patch.object(store_core, "fuse_arms", wraps=store_core.fuse_arms) as fuse,
+        ):
+            store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
+        assert fuse.call_args.kwargs["lexical_weight"] == pytest.approx(
+            test_config.lexical_fusion_weight * 0.25
+        )
+        assert fuse.call_args.kwargs["title_weight"] == pytest.approx(0.5 * 0.25)
+
+    def test_title_arm_off_by_default(self, store, test_config):
+        """With title_search off, a title-only term earns no lexical support."""
+        assert test_config.title_search is False
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        query_vec = [0.1] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=4, max_distance=0, query_text="zebra")
+        assert all(r.bm25_score is None for r in results)
+
+    def test_title_arm_respects_chunk_type_filter(self, store, test_config):
+        from lilbee.data.store.lance_helpers import _has_fts_index
+
+        test_config.title_search = True  # the title index is built only when enabled
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        assert _has_fts_index(table, "title")
+        assert store._title_arm(table, "zebra", 5, ChunkType.RAW)
+        assert store._title_arm(table, "zebra", 5, ChunkType.WIKI) == []
+
+    def test_title_arm_failure_degrades_to_empty(self, store, test_config):
+        """A query-time title-arm failure returns no rows instead of raising,
+        so a broken title index can't take down the healthy chunk-BM25 arm and
+        collapse the whole hybrid search to vector-only."""
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        table = store.open_table("chunks")
+        from lilbee.data.store import core as store_core
+
+        with mock.patch.object(store_core, "_lexical_rows", side_effect=RuntimeError("boom")):
+            assert store._title_arm(table, "zebra", 5, None) == []
+
+    def test_old_index_without_title_column_still_searches(self, store, test_config):
+        """Feature detection: a pre-title index searches fine and the title arm
+        silently contributes nothing."""
+        test_config.title_search = True
+        table = _create_pre_title_chunks_table(store)
+        table.add(_make_records())
+        store.ensure_fts_index()
+        assert store._title_arm(table, "chunk", 5, None) == []
+        query_vec = [0.5] * test_config.embedding_dim
+        results = store.search(query_vec, top_k=3, max_distance=0, query_text="chunk number")
+        assert results
+        assert all(r.title is None for r in results)
+
+    def test_add_chunks_evolves_pre_title_table(self, store):
+        """A write to an old index adds the title column in place."""
+        table = _create_pre_title_chunks_table(store)
+        table.add(_make_records())
+        assert "title" not in table.schema.names
+        store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
+        assert "title" in store.open_table("chunks").schema.names
+        rows = store.get_chunks_by_source("new.pdf")
+        assert [r.title for r in rows] == ["fresh document"]
+
+    def test_pre_title_migration_warns_to_rebuild(self, store, caplog):
+        """Migrating an old store logs that pre-upgrade docs stay title-blind
+        until a rebuild, so the silence doesn't hide the gap."""
+        import logging
+
+        table = _create_pre_title_chunks_table(store)
+        table.add(_make_records())
+        with caplog.at_level(logging.WARNING):
+            store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
+        assert any("lilbee rebuild" in r.message for r in caplog.records)
+
+    def test_bm25_probe_stays_chunk_scoped(self, store):
+        """The probe pins the chunk column: a title-only term is not a probe hit."""
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        assert store.bm25_probe("zebra") == []
+        assert store.bm25_probe("plain body words")
+
+    def test_title_index_failure_never_blocks_chunk_index(self, store, test_config, caplog):
+        """A failing title index leaves chunk FTS ready; the arm degrades to
+        empty. Because the arm is enabled, the failure warns (not debug) so an
+        opted-in title arm that cannot build is not a silent no-op."""
+        import logging
+
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 1, title="zebra manifesto"))
+        table = store.open_table("chunks")
+        real_create = type(table).create_fts_index
+
+        def _fail_title(self, column, **kwargs):
+            if column == "title":
+                raise RuntimeError("boom")
+            return real_create(self, column, **kwargs)
+
+        with (
+            mock.patch.object(type(table), "create_fts_index", _fail_title),
+            caplog.at_level(logging.WARNING),
+        ):
+            store.ensure_fts_index()
+        assert store._fts_ready
+        assert store._title_arm(store.open_table("chunks"), "zebra", 5, None) == []
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("title" in r.message.lower() for r in warnings)
+
+
+class TestSourceMetadata:
+    """Extraction-time document metadata persisted on the sources table."""
+
+    def test_upsert_source_persists_meta(self, store):
+        store.upsert_source(
+            "a.pdf",
+            "hash1",
+            3,
+            meta=SourceMeta(title="The Title", authors="Ada, Grace", created_at="2021-05-01"),
+        )
+        row = store.get_sources()[0]
+        assert row["title"] == "The Title"
+        assert row["authors"] == "Ada, Grace"
+        assert row["created_at"] == "2021-05-01"
+
+    def test_absent_meta_persists_null(self, store):
+        store.upsert_source("a.pdf", "hash1", 3)
+        row = store.get_sources()[0]
+        assert row["title"] is None
+        assert row["authors"] is None
+        assert row["created_at"] is None
+
+    def test_pre_meta_sources_table_evolves_in_place(self, store):
+        """An old sources table gains the metadata columns on the next write."""
+        import pyarrow as pa
+
+        old_schema = pa.schema(
+            [
+                pa.field("filename", pa.utf8()),
+                pa.field("file_hash", pa.utf8()),
+                pa.field("ingested_at", pa.utf8()),
+                pa.field("chunk_count", pa.int32()),
+                pa.field("source_type", pa.utf8()),
+            ]
+        )
+        table = store.get_db().create_table("_sources", schema=old_schema)
+        table.add(
+            [
+                {
+                    "filename": "old.pdf",
+                    "file_hash": "h0",
+                    "ingested_at": "2020-01-01T00:00:00+00:00",
+                    "chunk_count": 1,
+                    "source_type": "document",
+                }
+            ]
+        )
+        store.upsert_source("new.pdf", "h1", 2, meta=SourceMeta(title="New Doc"))
+        rows = {r["filename"]: r for r in store.get_sources()}
+        assert rows["old.pdf"]["title"] is None
+        assert rows["new.pdf"]["title"] == "New Doc"
+
+    def test_batched_write_persists_meta(self, store):
+        from lilbee.data.store import ChunkWrite, SourceMeta
+
+        records = _titled_records("doc.pdf", 1, title="Batched Title")
+        store.write_chunks_batch(
+            [
+                ChunkWrite(
+                    "doc.pdf",
+                    "h",
+                    records,
+                    needs_cleanup=False,
+                    meta=SourceMeta(title="Batched Title", authors="Ada"),
+                )
+            ]
+        )
+        row = store.get_sources()[0]
+        assert row["title"] == "Batched Title"
+        assert row["authors"] == "Ada"

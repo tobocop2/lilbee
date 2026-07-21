@@ -174,10 +174,9 @@ def verify_citations(
 def render_provenance(config: Config, chunks: list[SearchChunk]) -> str:
     """Render the provenance block: chunk references + extraction method.
 
-    Routes through ``yaml.safe_dump`` rather than hand-rolled string
-    formatting so a chunk source containing a quote, backslash,
-    colon, or newline does not produce invalid YAML that
-    ``parse_frontmatter`` would silently drop on read.
+    Uses ``yaml.safe_dump`` so a chunk source containing a quote, backslash,
+    colon, or newline cannot produce invalid YAML that ``parse_frontmatter``
+    would silently drop on read.
     """
     block = {
         "provenance": {

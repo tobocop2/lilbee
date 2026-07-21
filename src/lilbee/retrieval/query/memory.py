@@ -25,16 +25,19 @@ def format_memory_block(
 ) -> str:
     """Render preferences (always) then facts (by relevance) within *token_budget*.
 
-    Preferences claim the budget first; facts fill the remainder. Returns an empty
-    string when nothing fits.
+    Preferences claim the budget first; facts fill the remainder. The budget
+    covers the whole rendered block, framing included, so the header and footer
+    are charged up front. An entry too large for the remaining room is skipped
+    rather than ending the fill, so one oversized preference cannot strand
+    every fact behind it. Returns an empty string when nothing fits.
     """
-    used = estimate_text_tokens(MEMORY_BLOCK_HEADER)
+    used = estimate_text_tokens(MEMORY_BLOCK_HEADER) + estimate_text_tokens(MEMORY_BLOCK_FOOTER)
     lines: list[str] = []
     for memory in [*preferences, *facts]:
         line = f"- {memory.text}"
         cost = estimate_text_tokens(line)
         if used + cost > token_budget:
-            break
+            continue
         lines.append(line)
         used += cost
     if not lines:

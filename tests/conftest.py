@@ -607,3 +607,26 @@ def install_fake_model(hf_repo: str, gguf_filename: str, task: str) -> str:
         ),
     )
     return format_native_gguf_ref(hf_repo, gguf_filename)
+
+
+def make_pdf(*, pages: int = 1, title: str | None = None, author: str | None = None) -> bytes:
+    """A born-digital PDF with a real text layer, for extraction tests.
+
+    reportlab always writes a ``/Title``, defaulting to "untitled", so a PDF built
+    without an explicit ``title`` still carries one rather than reporting none.
+    """
+    import io
+
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    if title is not None:
+        c.setTitle(title)
+    if author is not None:
+        c.setAuthor(author)
+    for i in range(pages):
+        c.drawString(72, 720, f"Page {i + 1} with a perfectly clean native text layer.")
+        c.showPage()
+    c.save()
+    return buf.getvalue()

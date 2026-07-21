@@ -137,7 +137,7 @@ def save_schema(schema: EntitySchema, store: Store, *, applied: bool, source_cou
     store.save_entity_schema(payload, applied=applied, source_count=source_count)
 
 
-def _entities_schema(dim_unused: int | None = None) -> pa.Schema:
+def _entities_schema() -> pa.Schema:
     return pa.schema(
         [
             pa.field("entity", pa.utf8()),

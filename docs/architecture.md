@@ -641,7 +641,7 @@ flowchart TD
     SM -->|No prefix| PROBE[BM25 Confidence Probe]
 
     PROBE --> CONF{Confident AND separated?}
-    CONF -->|Yes| DUAL[Dual-Arm Retrieval]
+    CONF -->|Yes| DUAL[Hybrid Retrieval]
     CONF -->|No| EXPAND[LLM Query Expansion]
 
     EXPAND --> GEXP[+ Graph Expansion]
@@ -677,19 +677,20 @@ flowchart TD
 #### History Condensation
 **On by default** (`LILBEE_HISTORY_REWRITE`). A follow-up question is condensed into a standalone retrieval query using the recent chat history (one small LLM call, skipped when there is no history). Retrieval sees only the query text: without this, "what about his brother?" is embedded and BM25-matched with its pronouns. The user's original wording still reaches the answering prompt.
 
-#### Hybrid Search (Dual-Arm Reciprocal-Rank Fusion)
-**Always on.** Retrieves the BM25 arm (LanceDB FTS) and the vector arm independently, each fetched exactly `top_k` deep, then fuses by reciprocal rank into one canonical [0, 1] score:
+#### Hybrid Search (Weighted Reciprocal-Rank Fusion)
+**Always on.** Retrieves a vector arm and a BM25 chunk arm (LanceDB FTS) independently, each fetched exactly `top_k` deep, then fuses by weighted reciprocal rank into one [0, 1] score. An optional third BM25 arm over document titles joins when `LILBEE_TITLE_SEARCH` is on:
 
 ```
-score = (rank_weight(vector_rank) + rank_weight(bm25_rank)) / 2,  rank_weight(r) = 61 / (60 + r)
+score = Σ_arm weight_arm × rank_weight(rank_arm) / Σ_arm weight_arm,  rank_weight(r) = 61 / (60 + r)
 ```
 
-A row ranked first by both arms scores 1.0; a row one arm never retrieved contributes 0 for that arm, so an arm's top hit still scores 0.5 and stays visible next to rows deep in the other arm. The fused ordering is final: no diversity selection runs on the hybrid path.
+The vector arm weighs 1.0, the lexical arm `LILBEE_LEXICAL_FUSION_WEIGHT`, the title arm `LILBEE_TITLE_SEARCH_WEIGHT`. A row ranked first by every arm scores 1.0; a row only one arm retrieved scores that arm's share of the total weight, so a peaked single-arm hit stays visible next to rows deep in the other arms. The fused ordering is final: no diversity selection runs on the hybrid path.
 
-- **Why rank fusion and not score fusion**: a convex combination of normalized raw scores (`alpha × vector_similarity + (1 − alpha) × normalized_bm25`) was tried here and regressed graded precision about 20% against RRF, at every blend weight. Cosine similarities sit in a high narrow band, giving every dense neighbor a score floor that crowds out lexically-certain rows; ranks are scale-free, so neither arm's score distribution can drown the other. (On the rank-vs-score question, see Bruch et al. 2024, "[An Analysis of Fusion Functions for Hybrid Retrieval](https://dl.acm.org/doi/10.1145/3596512)".) Arm depth matters as much as the formula: a row one arm is certain about scores a fixed 0.5, while rows both arms rank mid-pool accumulate two contributions, so deep candidate pools flood the fused top-k with both-arm mediocrity; arms therefore stay `top_k` deep.
+- **Adaptive fusion** (`LILBEE_ADAPTIVE_FUSION`, on by default): the lexical arm's weight is scaled per query by how peaked the vector ranking is, so a confident dense arm downweights lexical and a flat one keeps it. `LILBEE_LEXICAL_FUSION_WEIGHT` is the ceiling the rule scales down from. Scores still normalize against that configured budget (a constant), not the per-query adapted weight, so scores from the separate sub-searches expansion merges stay on one comparable scale.
+- **Why rank fusion and not score fusion**: a convex combination of normalized raw scores (`alpha × vector_similarity + (1 − alpha) × normalized_bm25`) was tried here and regressed graded precision about 20% against RRF, at every blend weight. Cosine similarities sit in a high narrow band, giving every dense neighbor a score floor that crowds out lexically-certain rows; ranks are scale-free, so neither arm's score distribution can drown the other. (On the rank-vs-score question, see Bruch et al. 2024, "[An Analysis of Fusion Functions for Hybrid Retrieval](https://dl.acm.org/doi/10.1145/3596512)".) Arm depth matters as much as the formula: rows both arms rank mid-pool accumulate two contributions, so deep candidate pools flood the fused top-k with both-arm mediocrity; arms therefore stay `top_k` deep.
 - **Why no MMR on this path**: for lexical queries the relevant passages are often mutually similar (they quote the same identifiers), which is exactly what diversity selection penalizes; running MMR over the fused pool measurably traded relevant lexical hits for diverse off-topic neighbors. MMR still runs on the vector-only fallback path.
 - **Canonical score**: every search path sets `SearchChunk.score`, and every downstream stage (sorting, filtering, greedy set cover, concept boost, reranker blending) compares only that field. `distance`, `bm25_score`, and the legacy `relevance_score` remain as provenance.
-- **Abstention**: the canonical score is [0, 1] with fixed meaning (0.5 = top of one arm), so `min_relevance_score` is a usable floor: when every retrieved chunk falls below it, ask refuses instead of feeding noise as context. Raw RRF sums (~0.016-0.033 total range) made any threshold meaningless.
+- **Abstention**: `min_relevance_score` gates on the fused [0, 1] score. The score normalizes against the configured weight budget (a constant), so an arm's top hit scores a stable share of it and the threshold is a usable floor: when every retrieved chunk falls below it, ask refuses instead of feeding noise as context. Raw RRF sums (~0.016-0.033 total range) made any threshold meaningless.
 - **max_distance** applies to rows whose *only* signal is a far vector match; a row the BM25 arm also matched keeps its standing regardless of distance, since dropping it would re-bury exactly the identifier hits fusion exists to preserve.
 - **When it helps**: queries with specific terms, function names, error messages, exact phrases, document identifiers.
 

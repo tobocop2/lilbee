@@ -235,6 +235,10 @@ def decide(
     is falling -- the Universal Scalability Law's retrograde region); (3) otherwise
     hill-climb toward the knee. Always clamped to ``[permit_min, permit_max]``.
 
+    The veto blocks climbing only. A hill-climb step that goes *down* -- the reversal
+    on clearly falling throughput -- still runs under soft pressure, since backing off
+    is exactly what soft pressure should permit.
+
     The latency veto is the leading knee indicator (TCP Vegas / Netflix Gradient2):
     residence time ``W`` is estimated by Little's Law as ``permits / throughput``; once
     ``W`` inflates past its observed minimum (the unloaded baseline) by the profile's
@@ -271,13 +275,18 @@ def decide(
     if gpu_saturated and delta is not None and delta < 0:
         return out(clamp(permits - profile.step(permits)), -1, cool_down)  # USL retrograde
 
-    if _increase_vetoed(
+    vetoed = _increase_vetoed(
         profile, signals, cool_down=cool_down, gpu_saturated=gpu_saturated, w_est=w_est, w_min=w_min
-    ):
+    )
+    climbed, direction = _hill_climb(profile, permits, state.direction, delta, new_ewma, clamp)
+    if vetoed and climbed > permits:
+        # The veto is against climbing, not against retreating: the hill-climb's
+        # step down on falling throughput is the controller's only graceful
+        # decrease, and suppressing it too would pin the limit past the knee
+        # under sustained soft pressure until a critical threshold forced a 50%
+        # cut -- the oscillation the dead band and slew limit exist to avoid.
         return out(permits, state.direction, cool_down)
-
-    permits, direction = _hill_climb(profile, permits, state.direction, delta, new_ewma, clamp)
-    return out(permits, direction, cool_down)
+    return out(climbed, direction, cool_down)
 
 
 class ResizableGate:
@@ -287,6 +296,15 @@ class ResizableGate:
     wakes blocked acquirers, shrinking lowers the ceiling and lets the surplus drain
     as active holders release. The limit never drops below one, so a shrink can never
     deadlock a run.
+
+    Kept hand-rolled rather than adopting ``anyio.CapacityLimiter``, whose
+    settable ``total_tokens`` covers the same resizing need, for two reasons.
+    The caller treats this as a drop-in for ``asyncio.Semaphore`` (the ingest
+    permit is typed as either), and the ingest path is otherwise plain
+    asyncio. And CapacityLimiter is a per-borrower token model: it raises if
+    one task takes a second token, whereas this is a plain counting gate.
+    Revisit if a third resizing need appears, rather than growing a second
+    hand-rolled primitive.
     """
 
     def __init__(self, limit: int) -> None:
@@ -325,8 +343,10 @@ class AdaptiveController:
     """Drives a :class:`ResizableGate`'s limit from live signals until cancelled.
 
     ``sample(throughput)`` returns the current :class:`Signals`; ``completed()`` is a
-    monotonic count of finished documents, from which per-interval throughput is
-    derived. Both are injected so the controller runs in tests with no clock or GPU.
+    monotonic count of finished work units, from which per-interval throughput is
+    derived. The production wiring counts OCR pages, not documents (a per-document
+    count would bias the controller toward files of a given size). Both are injected
+    so the controller runs in tests with no clock or GPU.
     """
 
     def __init__(

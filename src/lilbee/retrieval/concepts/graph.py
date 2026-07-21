@@ -171,16 +171,25 @@ class ConceptGraph:
                 cc_tbl.add(records.chunk_concepts)
 
     def boost_results(self, results: list[Any], query_concepts: list[str]) -> list[Any]:
-        """Boost search results whose chunks overlap with query concepts."""
+        """Boost search results whose chunks overlap with query concepts.
+
+        One batched chunk_concepts query serves the whole result set, grouped
+        back per chunk in Python -- the same batching get_related_concepts
+        uses per depth level. The table has no scalar index, so a per-result
+        predicate would be one full table scan per result.
+        """
         if not query_concepts or not results:
             return results
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if table is None:
             return results
         query_set = set(query_concepts)
+        concepts_by_chunk = self._chunk_concepts_batch(
+            table, {(r.source, r.chunk_index) for r in results}
+        )
         boosted: list[Any] = []
         for r in results:
-            chunk_concepts = set(self._chunk_concepts_from(table, r.source, r.chunk_index))
+            chunk_concepts = concepts_by_chunk.get((r.source, r.chunk_index), set())
             overlap = len(query_set & chunk_concepts)
             if overlap > 0:
                 boost = (overlap / len(query_set)) * self._config.concept_boost_weight
@@ -199,25 +208,45 @@ class ConceptGraph:
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if table is None:
             return []
-        return self._chunk_concepts_from(table, source, chunk_index)
-
-    @staticmethod
-    def _chunk_concepts_from(table: Any, source: str, chunk_index: int) -> list[str]:
-        """Query one chunk's concepts from an already-open table.
-
-        Split out so a batch caller (``boost_results``) opens the table once
-        instead of re-opening it per result (an N+1 LanceDB access).
-        """
         escaped = escape_sql_string(source)
         try:
             rows = (
                 table.search()
-                .where(f"chunk_source = '{escaped}' AND chunk_index = {chunk_index}")
+                .where(f"chunk_source = '{escaped}' AND chunk_index = {int(chunk_index)}")
                 .to_list()
             )
-            return [r["concept"] for r in rows]
         except Exception:
+            log.debug("get_chunk_concepts query failed for %r", source, exc_info=True)
             return []
+        return [r["concept"] for r in rows]
+
+    @staticmethod
+    def _chunk_concepts_batch(
+        table: Any, chunks: set[tuple[str, int]]
+    ) -> dict[tuple[str, int], set[str]]:
+        """Fetch many chunks' concepts in one query, keyed by (source, index).
+
+        The predicate is the cross product of the distinct sources and
+        indexes -- a cheap superset -- and rows are filtered back to the
+        exact requested pairs in Python.
+        """
+        sources = ", ".join(f"'{escape_sql_string(s)}'" for s in sorted({s for s, _ in chunks}))
+        indexes = ", ".join(str(int(i)) for i in sorted({i for _, i in chunks}))
+        try:
+            rows = (
+                table.search()
+                .where(f"chunk_source IN ({sources}) AND chunk_index IN ({indexes})")
+                .to_list()
+            )
+        except Exception:
+            log.debug("chunk concepts batch query failed", exc_info=True)
+            return {}
+        concepts_by_chunk: dict[tuple[str, int], set[str]] = {}
+        for row in rows:
+            key = (row["chunk_source"], row["chunk_index"])
+            if key in chunks:
+                concepts_by_chunk.setdefault(key, set()).add(row["concept"])
+        return concepts_by_chunk
 
     def expand_query(self, query: str) -> list[str]:
         """Expand a query with related concepts from the graph."""
@@ -314,8 +343,9 @@ class ConceptGraph:
         chunk_concepts is the ground-truth concept<->chunk map: it is source-scoped
         (re-ingesting a source replaces its rows) and its schema is stable, so PMI
         computed from it stays correct across re-ingests and version upgrades. The
-        edge table is append-only and its ``weight`` is a per-file co-occurrence
-        count, not corpus PMI, so it is not a safe source for these corpus counts.
+        edge table accrues per-file appends between rebuilds and those weights are
+        per-file co-occurrence counts, not corpus PMI, so it is not a safe source
+        for these corpus counts.
 
         Concepts are de-duplicated per chunk, so a concept (or pair) counts once per
         distinct chunk it appears in -- the document frequency PMI is defined on.
@@ -346,11 +376,19 @@ class ConceptGraph:
         co-occurrence and concept counts (see :meth:`_corpus_pmi_inputs`) rather
         than per file; summing per-file PMI would inflate pairs that recur across
         many small files.
+
+        Both the nodes and the edges tables are replaced with the freshly
+        computed corpus graph. Per-file writes only ever append edges, so
+        without this rewrite the edges table grows monotonically across syncs
+        and expand_query keeps serving edges for concepts that left the corpus.
         """
         cooccurrences, concept_counts, total_chunks = self._corpus_pmi_inputs()
         if total_chunks == 0 or not cooccurrences:
             return
         pmi_weights = _compute_pmi(cooccurrences, concept_counts, total_chunks)
+        if not pmi_weights:
+            # Every pair co-occurred at or below chance: no edge set to cluster.
+            return
         edge_rows = [{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()]
 
         partition, degree_map = _leiden_partition(edge_rows)
@@ -364,11 +402,14 @@ class ConceptGraph:
             for node, cluster_id in partition.items()
         ]
 
-        # Delete the old nodes and add the new ones under one lock so a reader
-        # never sees the nodes table emptied while get_graph() still reports it
-        # present (which would blank top_communities / cluster labels).
+        # Delete the old rows and add the new ones under one lock per table so
+        # a reader never sees a table emptied while get_graph() still reports
+        # it present (which would blank top_communities / cluster labels).
         self._store.clear_and_add(
             CONCEPT_NODES_TABLE, _concept_nodes_schema(), node_records, "concept IS NOT NULL"
+        )
+        self._store.clear_and_add(
+            CONCEPT_EDGES_TABLE, _concept_edges_schema(), edge_rows, "source IS NOT NULL"
         )
         self.compact_tables()
 

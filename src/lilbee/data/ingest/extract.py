@@ -15,6 +15,7 @@ from lilbee.app.services import get_services
 from lilbee.core.config import active_config
 from lilbee.data.chunk import build_chunking_config, chunk_text
 from lilbee.data.ingest.offload import to_ingest_thread
+from lilbee.data.ingest.title import derive_title, source_meta_from_extraction
 from lilbee.data.ingest.trace import ExtractionTrace, trace_extraction, trace_log
 from lilbee.data.ingest.types import (
     IMAGE_CONTENT_TYPE,
@@ -25,7 +26,7 @@ from lilbee.data.ingest.types import (
     OcrBackendName,
 )
 from lilbee.data.ingest.vision_ocr_backend import backend_options_for, ocr_request
-from lilbee.data.store import ChunkType, PageTextRecord
+from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -302,13 +303,14 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> list[ChunkRecord]:
-    """Extract, chunk, and embed a document in a single xberg pass.
+) -> tuple[list[ChunkRecord], SourceMeta]:
+    """Extract, chunk, and embed a document in a single xberg pass, with its metadata.
 
     xberg extracts native text and, where a page has none, OCRs it through the
     registered backend (lilbee's vision model, or tesseract). Per-page OCR progress
     is streamed as a running count via ``ocr_request``. ``quiet`` is accepted for
-    pipeline call compatibility.
+    pipeline call compatibility. The returned metadata carries the document's
+    extraction title/authors/date and is derived even when extraction yields nothing.
     """
     del quiet
     from lilbee.data.xberg_extract import aextract_document
@@ -347,11 +349,16 @@ async def ingest_document(
         )
     )
 
+    # Derived before the empty-result return: a scan's metadata (title, authors)
+    # survives even when the extraction yields no chunks, so the source row and
+    # the title stamped on its chunks stay populated.
+    meta = source_meta_from_extraction(doc.metadata, source_name)
+
     tables = _document_tables(doc)
     if not doc.chunks and not tables:
         if content_type in (PDF_CONTENT_TYPE, IMAGE_CONTENT_TYPE):
             _warn_empty_ocr(source_name, "scanned documents")
-        return []
+        return [], meta
 
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 
@@ -408,7 +415,23 @@ async def ingest_document(
             zip(tables, table_texts, vectors[len(texts) :], strict=True)
         )
     )
-    return records
+    return records, meta
+
+
+def _markdown_h1(text: str) -> str | None:
+    """The document's leading ``# Heading``, the best title a note carries.
+
+    Only a top-level ATX heading counts; ``##`` and deeper are sections, not the
+    document title. None when the note opens without one.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# "):
+            return stripped[2:].strip() or None
+        return None
+    return None
 
 
 async def ingest_markdown(
@@ -416,15 +439,18 @@ async def ingest_markdown(
     source_name: str,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> list[ChunkRecord]:
+) -> tuple[list[ChunkRecord], SourceMeta]:
     """Chunk a markdown file with heading context prepended to each chunk.
+
     Each chunk gets the heading hierarchy path (e.g. "# Setup > ## Install")
     prepended for better retrieval context. When ``page_texts_out`` is given,
-    the full text is appended as page 0 for export.
+    the full text is appended as page 0 for export. The returned metadata's
+    title is the note's leading ``# Heading`` when it has one, else the stem.
     """
     raw_text = await to_ingest_thread(path.read_text, encoding="utf-8", errors="replace")
+    meta = SourceMeta(title=derive_title(source_name, _markdown_h1(raw_text)))
     if not raw_text.strip():
-        return []
+        return [], meta
 
     # chunk_text runs xberg's synchronous extractor; offload it so a large
     # markdown doc does not stall sibling files sharing this event loop.
@@ -432,7 +458,7 @@ async def ingest_markdown(
         chunk_text, raw_text, mime_type="text/markdown", heading_context=True
     )
     if not texts:
-        return []
+        return [], meta
 
     if page_texts_out is not None:
         page_texts_out.append(_page_text_record(source_name, 0, raw_text, "text"))
@@ -440,7 +466,7 @@ async def ingest_markdown(
     vectors = await to_ingest_thread(
         get_services().embedder.embed_batch, texts, source=source_name, on_progress=on_progress
     )
-    return [
+    records = [
         ChunkRecord(
             source=source_name,
             content_type="text",
@@ -455,3 +481,4 @@ async def ingest_markdown(
         )
         for idx, (t, vec) in enumerate(zip(texts, vectors, strict=True))
     ]
+    return records, meta

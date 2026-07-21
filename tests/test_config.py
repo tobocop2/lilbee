@@ -104,6 +104,86 @@ class TestEnvVarOverrides:
             assert c.data_dir == tmp_path / "data"
             assert c.lancedb_dir == tmp_path / "data" / "lancedb"
 
+    def test_data_root_expands_user_home(self):
+        """A ~ in LILBEE_DATA_ROOT expands: systemd/.env deliver a literal '~'
+        that would otherwise create a './~' tree and split a path-keyed lock."""
+        env = _clean_env()
+        env.pop("LILBEE_DATA", None)
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        env["LILBEE_DATA_ROOT"] = "~/lilbee_expanduser_probe"
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root == Path.home() / "lilbee_expanduser_probe"
+            assert c.lancedb_dir == Path.home() / "lilbee_expanduser_probe" / "data" / "lancedb"
+
+    def test_symlinked_data_root_keys_the_same_paths_as_its_target(self, tmp_path):
+        """Two spellings of one directory derive one set of lock paths."""
+        real = tmp_path / "real_root"
+        real.mkdir()
+        link = tmp_path / "link_root"
+        link.symlink_to(real)
+
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(real)}):
+            direct = Config()
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": str(link)}):
+            through_link = Config()
+
+        assert through_link.data_root == direct.data_root
+        assert through_link.data_dir == direct.data_dir
+        assert through_link.lancedb_dir == direct.lancedb_dir
+
+    def test_padded_data_env_finds_the_same_dir_for_root_and_config(
+        self, tmp_path, overlay_reads_config_toml
+    ):
+        """A padded LILBEE_DATA sends the root and its config.toml to one dir."""
+        (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
+            c = Config()
+        assert c.data_root == tmp_path
+        assert c.top_k == 7
+
+    def test_relative_data_root_resolves_absolute(self, tmp_path, monkeypatch):
+        """A relative root must not re-key on the process working directory."""
+        (tmp_path / "kb").mkdir()
+        monkeypatch.chdir(tmp_path)
+        with mock.patch.dict(os.environ, {"LILBEE_DATA": "kb"}):
+            c = Config()
+        assert c.data_root.is_absolute()
+        assert c.data_root == (tmp_path / "kb").resolve()
+
+    def test_empty_data_root_falls_back_to_default_not_cwd(self):
+        """An empty LILBEE_DATA_ROOT must resolve to the platform default, not
+        the process cwd (which would make the data dir move with the launcher)."""
+        env = _clean_env()
+        env.pop("LILBEE_DATA", None)
+        env["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        env["LILBEE_DATA_ROOT"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root != Path()
+            assert c.data_root != Path.cwd()
+            assert str(c.data_root).endswith("lilbee")
+            # A raw blank string (direct construction / a string env source) hits
+            # the same fall-through instead of resolving to Path(".") = cwd.
+            c2 = Config(data_root="   ")
+            assert c2.data_root != Path()
+            assert c2.data_root != Path.cwd()
+            assert str(c2.data_root).endswith("lilbee")
+
+    def test_unresolvable_home_still_loads_config(self):
+        """An unresolvable ~ still yields a usable root instead of raising.
+
+        os.path.expanduser returns an unknown ~user unchanged; Path.expanduser
+        raises.
+        """
+        from lilbee.core.system import canonical_data_root
+
+        root = canonical_data_root("~nosuchuser_lilbee_probe/lilbee")
+        assert root.is_absolute()
+        assert str(root).endswith("lilbee")
+        # The normal case still expands to the real home.
+        assert canonical_data_root("~/lilbee") == Path.home() / "lilbee"
+
     def test_local_server_urls_from_env(self, tmp_path):
         env = _clean_env(tmp_path)
         env["LILBEE_OLLAMA_BASE_URL"] = "http://box:11434"
@@ -218,6 +298,24 @@ class TestOcrLanguage:
             cfg.chat_model = "   "
         with pytest.raises(ValidationError, match="embedding_model must not be blank"):
             cfg.embedding_model = "\t"
+
+    def test_fusion_config_fields_enforce_their_bounds(self):
+        """The new fusion/expansion knobs reject out-of-range values, so a bad
+        config surfaces at assignment instead of silently mis-weighting fusion."""
+        from pydantic import ValidationError
+
+        for field, bad in [
+            ("lexical_fusion_weight", 1.5),
+            ("lexical_fusion_weight", -0.1),
+            ("adaptive_fusion_margin", 2.5),
+            ("adaptive_fusion_margin", -0.1),
+            ("title_search_weight", 1.5),
+            ("title_search_weight", -0.1),
+            ("neighbor_expansion", -1),
+            ("neighbor_expansion", 101),  # upper bound guards against a token-count misread
+        ]:
+            with pytest.raises(ValidationError):
+                setattr(cfg, field, bad)
 
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
@@ -780,6 +878,17 @@ class TestResolveDefaultsValidator:
         env["LILBEE_SEMANTIC_CHUNKING"] = "true"
         with mock.patch.dict(os.environ, env, clear=True):
             assert Config().semantic_chunking is True
+
+    def test_data_root_env_var_is_coerced_to_path(self, tmp_path) -> None:
+        """LILBEE_DATA_ROOT sets the data_root field directly as a string;
+        deriving the child paths from it must not raise on str / str."""
+        env = _clean_env()
+        env["LILBEE_DATA_ROOT"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            c = Config()
+            assert c.data_root == tmp_path
+            assert c.documents_dir == tmp_path / "documents"
+            assert c.data_dir == tmp_path / "data"
 
 
 class TestTopicThresholdConfig:
