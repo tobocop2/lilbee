@@ -137,6 +137,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
     ),
+    "mcp_tool_threads": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.LOCAL_SERVERS,
+        help_text=(
+            "Threads for synchronous MCP tool handlers; the ceiling on how many agents"
+            " one daemon serves before retrieval calls queue"
+        ),
+    ),
     "auto_sync": SettingDef(
         bool,
         nullable=False,

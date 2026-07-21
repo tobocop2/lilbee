@@ -133,9 +133,27 @@ def _offload_sync(fn: _F) -> _F:
 
     @functools.wraps(fn)
     async def _runner(*args: Any, **kwargs: Any) -> Any:
-        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        return await anyio.to_thread.run_sync(
+            functools.partial(fn, *args, **kwargs), limiter=_tool_thread_limiter()
+        )
 
     return cast("_F", _runner)
+
+
+@functools.lru_cache(maxsize=1)
+def _tool_thread_limiter() -> anyio.CapacityLimiter:
+    """The pool sync tool handlers share, sized by ``cfg.mcp_tool_threads``.
+
+    anyio's default limiter is per-event-loop and holds 40 threads, which is the
+    real ceiling on how many agents one daemon serves: past it, retrieval calls
+    queue while the disk and CPU sit idle. Owning the limiter makes that ceiling
+    a setting rather than a constant in someone else's library.
+
+    Read once, because a limiter handed out mid-flight would leave earlier
+    callers waiting on a different pool than later ones; the daemon re-reads it
+    on restart.
+    """
+    return anyio.CapacityLimiter(cfg.mcp_tool_threads)
 
 
 def _tool(fn: _F) -> _F:

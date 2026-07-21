@@ -104,9 +104,41 @@ from lilbee.server.wiki import (
 log = logging.getLogger(__name__)
 
 
+# Each connected agent holds a socket, and the daemon needs descriptors of its
+# own for the engine, the store and the log. macOS still defaults to 256 open
+# files and most Linux distributions to 1024, so a large fleet meets the limit
+# as a connection failure long before it meets anything to do with the GPU.
+_FD_SOFT_LIMIT_NUDGE = 4096
+
+
+def _warn_if_few_file_descriptors() -> None:
+    """Say so when the descriptor limit would cap the fleet before the hardware does.
+
+    Advisory only. Raising the soft limit from inside the process would apply to
+    this process alone and not to the shell the next one starts from, so the
+    operator is told the number rather than having it changed under them.
+    """
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - Windows has no resource module
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft == resource.RLIM_INFINITY or soft >= _FD_SOFT_LIMIT_NUDGE:
+        return
+    log.info(
+        "Open-file limit is %d. Each connected agent holds a socket, so a large "
+        "fleet will hit this before it saturates the machine; raise it with "
+        "'ulimit -n %d' before starting the server (this shell allows up to %s).",
+        soft,
+        _FD_SOFT_LIMIT_NUDGE,
+        "unlimited" if hard == resource.RLIM_INFINITY else hard,
+    )
+
+
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
+    _warn_if_few_file_descriptors()
     session_manager.load_or_generate()
 
     inject_provider_keys()
