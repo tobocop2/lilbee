@@ -24,7 +24,7 @@
 #   sky volumes apply evals/infra/volume.sky.yaml
 name: msmarco-eu
 type: runpod-network-volume
-infra: runpod/EU/EU-RO-1
+infra: runpod/ro/EU-RO-1
 # Corpus 3G + 8.8M passage files ~35G + index ~135G at f32 + tarball ~135G,
 # with headroom for the tar to exist beside the thing it archives.
 size: 600Gi
