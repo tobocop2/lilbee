@@ -30,18 +30,12 @@ resources:
     - accelerators: A100-80GB:2
     - accelerators: A100-80GB-SXM:1
     - accelerators: A100-80GB:1
-# No network volume, deliberately.
-#
-# A RunPod volume cannot change datacentre, so it pins the GPU search to one
-# region. That constraint blocked this run in three regions in turn: US-MD-1
-# offers no volumes at all, US-WA-1's A100 stock went to zero mid-run, and
-# CA-MTL-3 reports A100 at Low that will not actually provision. With the volume
-# gone, sky picks any region that has a card -- a dryrun found one in AU within
-# seconds.
-#
-# The cost of losing persistence is one seven-minute corpus fetch, which now
-# runs on this pod anyway. The deliverable is the benchmark numbers, not the
-# index, and the run reaches those before it needs to survive anything.
+# The volume lives in CA-MTL-3, which is the region that actually delivered an
+# A100 after US-MD-1 (no volumes at all) and US-WA-1 (stock went to zero
+# mid-run). "Low" in the availability API is not the same as grabbable, and
+# CA-MTL-3 was the one that provisioned.
+volumes:
+  /workspace: msmarco-ca
 envs:
   # Two branches, because neither has everything. lilbee comes from
   # feat/kreuzberg-5, which carries data/ingest/trace.py -- the per-document
@@ -107,15 +101,15 @@ setup: |
   # The record of what actually ran, written where the provenance can find it.
   { echo "lilbee_branch=$BRANCH lilbee_sha=$(git -C /opt/lilbee-src rev-parse HEAD)";
     echo "harness_branch=$HARNESS_BRANCH harness_sha=$(git -C /tmp/harness rev-parse HEAD)"; } \
-    | tee /root/bench/logs/commits.txt
+    | tee /workspace/logs/commits.txt
 run: |
   set -euo pipefail
   cd /opt/lilbee-src
   export PATH="$HOME/.local/bin:$PATH"
-  export WORKSPACE=/root/bench LOCAL=/root/msmarco
-  mkdir -p /root/bench/datasets /root/bench/logs
+  export WORKSPACE=/workspace LOCAL=/root/msmarco
+  mkdir -p /workspace/datasets /workspace/logs
   export LILBEE_INGEST_TRACE=1
-  export LILBEE_INGEST_TRACE_FILE=/root/bench/logs/ingest_trace.log
+  export LILBEE_INGEST_TRACE_FILE=/workspace/logs/ingest_trace.log
   export WORK_DIR=/root MIN_DISK_GB=400
   export LILBEE_BASE_URL=http://127.0.0.1:8080
   # One embed server per card that actually provisioned. lilbee's auto setting
@@ -127,5 +121,5 @@ run: |
   export LILBEE_EMBED_REPLICAS="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
   echo "embed replicas: $LILBEE_EMBED_REPLICAS (one per detected GPU)"
   # Fails before the hours start, not during them.
-  bash evals/infra/preflight.sh 2>&1 | tee /root/bench/logs/preflight.log
-  bash evals/infra/ingest.sh    2>&1 | tee -a /root/bench/logs/ingest.log
+  bash evals/infra/preflight.sh 2>&1 | tee /workspace/logs/preflight.log
+  bash evals/infra/ingest.sh    2>&1 | tee -a /workspace/logs/ingest.log
