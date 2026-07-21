@@ -6,6 +6,7 @@ import pytest
 
 from lilbee.modelhub import models
 from lilbee.modelhub.models import MODEL_CATALOG, ModelInfo
+from tests._mock_effects import repeat_last
 
 
 class TestModelCatalog:
@@ -182,7 +183,7 @@ class TestPromptModelChoice:
 
     @mock.patch.object(models, "get_free_disk_gb", return_value=50.0)
     def test_invalid_then_valid(self, mock_disk_estimate):
-        with mock.patch("builtins.input", side_effect=["abc", "99", "2"]):
+        with mock.patch("builtins.input", side_effect=repeat_last("abc", "99", "2")):
             result = models.prompt_model_choice(8.0)
         assert result == MODEL_CATALOG[1]
 
