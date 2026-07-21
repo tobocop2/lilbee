@@ -33,24 +33,13 @@ from evals.benchmark.ragas_tier import (
 )
 from evals.benchmark.report import render_report
 from evals.benchmark.stats import DEFAULT_SEED
+from evals.cli_support import append_jsonl, render_to_file, write_jsonl
 from evals.deps import scorer_versions
 from evals.retrieval.checkpoint import JsonlCheckpoint, load_items, load_jsonl
 
 DEFAULT_METRICS = ["nDCG@10", "Recall@20", "MRR@10"]
 ASK_ROUTE = "/api/ask"
 ASK_TIMEOUT_SECONDS = 600.0
-
-
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
-
-
-def _append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
-        for row in rows:
-            fh.write(json.dumps(row) + "\n")
 
 
 def _cmd_preregister(args: argparse.Namespace) -> int:
@@ -108,7 +97,7 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
                 for doc_id, grade in sorted(judged.items())
             )
         )
-        _write_jsonl(
+        write_jsonl(
             out / "corpus.jsonl",
             [{"doc_id": doc_id, **fields} for doc_id, fields in dataset.corpus.items()],
         )
@@ -125,7 +114,7 @@ def _cmd_score_ir(args: argparse.Namespace) -> int:
     qrels = read_qrels(args.qrels)
     run = read_run(args.run)
     scores = metrics.score_run(qrels, run, args.metrics)
-    _write_jsonl(
+    write_jsonl(
         args.out,
         [
             {
@@ -227,7 +216,7 @@ def _cmd_score_ragas(args: argparse.Namespace) -> int:
             "scorers": scorer_versions(),
         }
     )
-    _append_jsonl(args.out, rows)
+    append_jsonl(args.out, rows)
     print(
         f"scored {len(samples_a)} and {len(samples_b)} answers with RAGAS "
         f"(judge {manifest.models.judge}) -> {args.out}"
@@ -307,7 +296,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         )
         row = {"row_type": "ir", "dataset": dataset, **result.to_dict()}
         rows.append(row)
-    _append_jsonl(args.out, rows)
+    append_jsonl(args.out, rows)
     print(f"wrote {len(rows) - 1} paired IR comparisons -> {args.out}")
     return 0
 
@@ -330,7 +319,7 @@ def _cmd_score_ragchecker(args: argparse.Namespace) -> int:
         query_ids = [row["query_id"] for row in load_items(path)]
         scored[label] = score_ragchecker(samples, query_ids, evaluate_fn=evaluate_fn)
     deltas = attribution(scored["arm_a"], scored["arm_b"])
-    _append_jsonl(
+    append_jsonl(
         args.out,
         [
             {
@@ -381,7 +370,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
     random.Random(args.seed).shuffle(rows)
     graded = judge_rows(rows, judge.llm, args.work_dir / "calibration_grades.jsonl")
     results = calibrate(graded, pairs)
-    _append_jsonl(args.out, [{"row_type": "calibration", **r.to_dict()} for r in results])
+    append_jsonl(args.out, [{"row_type": "calibration", **r.to_dict()} for r in results])
     for result in results:
         print(
             f"{result.dimension}: spearman {result.spearman:+.3f} vs expert ceiling "
@@ -392,11 +381,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    report = render_report(load_jsonl(args.results))
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(report)
-    print(f"wrote {args.out}")
-    return 0
+    return render_to_file(args.results, args.out, render_report)
 
 
 def _add_preregister(sub: argparse._SubParsersAction) -> None:

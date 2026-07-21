@@ -7,8 +7,8 @@ import json
 import random
 import sys
 from pathlib import Path
-from typing import Any
 
+from evals.cli_support import render_to_file, write_jsonl
 from evals.retrieval.answers import AnswerRow, answer_questions, make_http_client
 from evals.retrieval.blinding import BlindAssignment, build_blind_rows, unblind
 from evals.retrieval.checkpoint import load_items, load_jsonl
@@ -30,11 +30,6 @@ PREFAILED_FILE = "prefailed.json"
 JUDGE_META_FILE = "judge_meta.json"
 BLIND_ROWS_FILE = "blind_rows.jsonl"
 GRADES_FILE = "grades.jsonl"
-
-
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
 def _load_questions(path: Path) -> list[Question]:
@@ -68,7 +63,7 @@ def _cmd_questions(args: argparse.Namespace) -> int:
         count=args.count,
         seed=args.seed,
     )
-    _write_jsonl(args.out, [question.to_dict() for question in questions])
+    write_jsonl(args.out, [question.to_dict() for question in questions])
     print(f"wrote {len(questions)} questions -> {args.out}")
     return 0
 
@@ -105,7 +100,7 @@ def _cmd_judge(args: argparse.Namespace) -> int:
         json.dumps({gid: a.to_dict() for gid, a in blind.assignments.items()}, indent=1)
     )
     (args.work_dir / PREFAILED_FILE).write_text(json.dumps(blind.prefailed, indent=1))
-    _write_jsonl(args.work_dir / BLIND_ROWS_FILE, [row.to_dict() for row in blind.rows])
+    write_jsonl(args.work_dir / BLIND_ROWS_FILE, [row.to_dict() for row in blind.rows])
     judge = judge_backend()
     warm_chat(judge.chat)
     grades = judge_rows(blind.rows, judge.llm, args.work_dir / GRADES_FILE)
@@ -174,17 +169,13 @@ def _cmd_score(args: argparse.Namespace) -> int:
         judged=judged_only,
         judge_model=judge_meta.get("judge_model", ""),
     )
-    _write_jsonl(args.out, results)
+    write_jsonl(args.out, results)
     print(f"wrote {len(results)} result rows -> {args.out}")
     return 0
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    report = render_report(load_jsonl(args.results))
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(report)
-    print(f"wrote {args.out}")
-    return 0
+    return render_to_file(args.results, args.out, render_report)
 
 
 def _add_arm_io_arguments(parser: argparse.ArgumentParser) -> None:
