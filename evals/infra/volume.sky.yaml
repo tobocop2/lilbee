@@ -2,9 +2,14 @@
 # coming out. Both survive pod teardown, which matters because a secure pod can
 # be reclaimed mid-ingest and the alternative is re-downloading 8.8M passages.
 #
-# Pinned to US-MD-1 because that is where A100-80GB had live stock when the run
-# was placed (evals/infra/gpu_availability.py). A RunPod volume cannot move
-# datacentre, so the GPU has to be found first and the volume built around it.
+# Pinned to US-WA-1: it has A100-SXM4-80GB and it is one of the datacentres that
+# actually offers network volumes, which is a smaller set than the ones with
+# GPUs. Choosing on GPU stock alone lands on a region where the volume cannot be
+# created at all, and the API only says so at apply time -- US-MD-1 had the best
+# A100 stock and rejected the volume outright.
+#
+# A RunPod volume cannot change datacentre, so the intersection of "has the GPU"
+# and "offers volumes" has to be resolved before anything else exists.
 #
 # A100 rather than H100 deliberately: the prebuilt cu124 engine ships no sm_90
 # kernels and dies on H100 with a misleading "no CUDA-capable device". A100 is
@@ -13,7 +18,7 @@
 #   sky volumes apply evals/infra/volume.sky.yaml
 name: msmarco-bench
 type: runpod-network-volume
-infra: runpod/US/US-MD-1
+infra: runpod/US/US-WA-1
 # Corpus 3G + 8.8M passage files ~35G + index ~135G at f32 + tarball ~135G,
 # with headroom for the tar to exist beside the thing it archives.
 size: 600Gi

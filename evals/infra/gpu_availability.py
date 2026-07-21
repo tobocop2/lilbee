@@ -22,7 +22,39 @@ BROWSER_UA = (
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 )
 QUERY = '{"query":"query{ dataCenters{ id gpuAvailability{ id available stockStatus } } }"}'
-USABLE_STOCK = ("High", "Medium")
+# Low is included deliberately. RunPod multi-GPU flaps under contention even in
+# High-stock datacentres, and the retry loop costs nothing because billing
+# starts only when a box actually provisions. Excluding Low would report "no
+# capacity" while capacity exists intermittently.
+USABLE_STOCK = ("High", "Medium", "Low")
+# Not every datacentre offers network volumes, and the ones that do are a
+# different set from the ones with GPUs. Picking on GPU stock alone gets a
+# region where the volume cannot be created at all, which the API only reveals
+# at apply time. This list is what the API returns when the placement is
+# rejected; RunPod does not expose it as a query.
+VOLUME_CAPABLE = frozenset(
+    {
+        "AP-IN-2",
+        "AP-JP-1",
+        "CA-MTL-3",
+        "CA-MTL-4",
+        "EU-CZ-1",
+        "EU-FR-1",
+        "EU-NL-1",
+        "EU-RO-1",
+        "EUR-IS-1",
+        "EUR-IS-3",
+        "EUR-NO-1",
+        "EUR-NO-2",
+        "US-CA-2",
+        "US-IL-1",
+        "US-MO-2",
+        "US-NC-1",
+        "US-NE-1",
+        "US-TX-3",
+        "US-WA-1",
+    }
+)
 # A100 is sm_80, which the prebuilt cu124 engine has kernels for. H100 is sm_90
 # and it does not, so an H100 box needs the preflight to clear before use.
 WANTED = ("A100", "H100")
@@ -53,15 +85,25 @@ def availability() -> list[tuple[str, str, str]]:
         if gpu.get("available")
         and gpu.get("stockStatus") in USABLE_STOCK
         and any(want in (gpu.get("id") or "") for want in WANTED)
+        and centre["id"] in VOLUME_CAPABLE
     ]
     # A100 first, then High before Medium: the known-good engine target wins.
-    return sorted(rows, key=lambda row: ("A100" not in row[1], row[2] != "High", row[0]))
+    return sorted(
+        rows,
+        key=lambda row: (
+            "A100" not in row[1],
+            "SXM" not in row[1],
+            row[2] != "High",
+            row[2] != "Medium",
+            row[0],
+        ),
+    )
 
 
 def main() -> int:
     rows = availability()
     if not rows:
-        print("no A100 or H100 at usable stock right now; the volume cannot be placed yet")
+        print("no A100 or H100 at usable stock in a volume-capable datacentre")
         return 1
     print(f"{'datacentre':<12} {'gpu':<30} stock")
     for centre, gpu, stock in rows:
