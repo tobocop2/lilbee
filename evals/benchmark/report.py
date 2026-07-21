@@ -133,27 +133,34 @@ def _audit_section(rows: list[dict[str, Any]]) -> list[str]:
     another model. The kappa is chance-corrected and quadratically weighted, so
     a near miss counts far less than a gross one, which suits an ordinal rubric.
     """
-    audit_rows = _rows_of(rows, "human_audit")
+    audit_rows = _rows_of(rows, "calibration")
     if not audit_rows:
         return []
     lines = [
-        "## Judge agreement with human annotators",
+        "## Judge agreement with human raters",
         "",
-        "A stratified sample of graded answers was re-scored by a person who did "
-        "not see the judge's grade. Quadratic-weighted Cohen's kappa is the "
-        "headline; Spearman travels with it because kappa alone cannot separate a "
-        "judge that is biased but correctly ordered from one that is unordered.",
+        "The same rubric that grades this study's answers was run over SummEval, "
+        "whose summaries were rated 1-5 by three experts years before this "
+        "harness existed. The ceiling is how well those experts agreed with each "
+        "other: a judge cannot track people more closely than they track "
+        "themselves, so the raw correlation is reported against it rather than "
+        "on its own.",
         "",
-        "| dimension | n | weighted kappa | Spearman | exact match | mean abs. error |",
+        "| dimension | n | Spearman | Kendall | expert ceiling | share of ceiling |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for row in audit_rows:
         lines.append(
-            f"| {row['dimension']} | {row['n']} | {row['quadratic_weighted_kappa']:.3f} "
-            f"| {row['spearman']:.3f} | {row['exact_match']:.0%} "
-            f"| {row['mean_absolute_error']:.2f} |"
+            f"| {row['dimension']} | {row['n']} | {row['spearman']:+.3f} "
+            f"| {row['kendall']:+.3f} | {row['expert_ceiling']:.3f} "
+            f"| {row['fraction_of_ceiling']:.0%} |"
         )
-    lines.append("")
+    lines += [
+        "",
+        "Citation is not calibrated here: a summary cites nothing, so SummEval "
+        "carries no human label for it.",
+        "",
+    ]
     return lines
 
 

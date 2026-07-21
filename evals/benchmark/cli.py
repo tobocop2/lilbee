@@ -348,51 +348,45 @@ def _cmd_score_ragchecker(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_audit_sample(args: argparse.Namespace) -> int:
-    """Draw the blind human-audit sheet from a finished judging pass."""
-    from evals.benchmark.human_audit import AuditRow, stratified_sample, write_audit_sheet
-    from evals.retrieval.judging import load_grades
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    """Grade a public human-rated set with this judge and report the agreement.
 
-    grades = load_grades(args.grades)
-    blind = {record["gid"]: record for record in load_jsonl(args.blind_rows)}
-    chosen = stratified_sample(grades, args.size, dimension=args.dimension, seed=args.seed)
-    missing = [gid for gid in chosen if gid not in blind]
-    if missing:
-        raise ValueError(
-            f"{len(missing)} sampled rows are absent from {args.blind_rows} "
-            f"(first: {missing[0]}); the grades and blind rows are from different runs"
+    No annotator is involved: SummEval's ratings were produced by three experts
+    years before this harness existed, so the judge is measured against labels
+    nobody here could have tuned.
+    """
+    import random
+
+    from evals.benchmark.calibration import calibrate, load_summeval
+    from evals.retrieval.blinding import BlindRow
+    from evals.retrieval.judging import judge_rows
+    from evals.retrieval.llm import judge_backend, warm_chat
+
+    pairs = load_summeval(limit=args.articles)
+    judge = judge_backend()
+    warm_chat(judge.chat)
+    # Reuses the blind grading path, so the judge scores these exactly as it
+    # scores a real run: same rubric, same presentations, same checkpointing.
+    rows = [
+        BlindRow(
+            gid=pair.pair_id,
+            question="Summarise the ground material.",
+            source="summeval",
+            ground=pair.ground,
+            answer=pair.response,
+            variant=index % 2,
         )
-    write_audit_sheet(
-        args.out,
-        [
-            AuditRow(
-                gid=gid,
-                question=blind[gid]["question"],
-                source=blind[gid]["source"],
-                ground=blind[gid]["ground"],
-                answer=blind[gid]["answer"],
-            )
-            for gid in chosen
-        ],
-    )
-    print(f"wrote {len(chosen)} rows to audit (judge scores withheld) -> {args.out}")
-    return 0
-
-
-def _cmd_audit_score(args: argparse.Namespace) -> int:
-    """Report how closely the judge tracked the human sample."""
-    from evals.benchmark.human_audit import agreement, read_audit_sheet
-    from evals.retrieval.judging import load_grades
-
-    results = agreement(load_grades(args.grades), read_audit_sheet(args.audited))
-    _append_jsonl(
-        args.out,
-        [{"row_type": "human_audit", **result.to_dict()} for result in results],
-    )
+        for index, pair in enumerate(pairs)
+    ]
+    random.Random(args.seed).shuffle(rows)
+    graded = judge_rows(rows, judge.llm, args.work_dir / "calibration_grades.jsonl")
+    results = calibrate(graded, pairs)
+    _append_jsonl(args.out, [{"row_type": "calibration", **r.to_dict()} for r in results])
     for result in results:
         print(
-            f"{result.dimension}: kappa {result.kappa:.3f}, spearman {result.spearman:.3f}, "
-            f"exact {result.exact_match:.0%} over {result.n} audited"
+            f"{result.dimension}: spearman {result.spearman:+.3f} vs expert ceiling "
+            f"{result.expert_ceiling:.3f} ({result.fraction_of_ceiling:.0%} of it), "
+            f"n={result.n}"
         )
     return 0
 
@@ -507,29 +501,13 @@ def _add_score_ragchecker(sub: argparse._SubParsersAction) -> None:
     parser.set_defaults(handler=_cmd_score_ragchecker)
 
 
-def _add_audit_sample(sub: argparse._SubParsersAction) -> None:
-    parser = sub.add_parser(
-        "audit-sample", help="draw a blind human-audit sheet from a judging pass"
-    )
-    parser.add_argument("--grades", type=Path, required=True, help="grades.jsonl from judge")
-    parser.add_argument("--blind-rows", type=Path, required=True, help="blind_rows.jsonl")
-    parser.add_argument("--size", type=int, default=100)
-    parser.add_argument(
-        "--dimension",
-        default="faithfulness",
-        help="the dimension the sample is stratified across",
-    )
+def _add_calibrate(sub: argparse._SubParsersAction) -> None:
+    parser = sub.add_parser("calibrate", help="measure the judge against SummEval's expert ratings")
+    parser.add_argument("--articles", type=int, default=None, help="cap articles, not pairs")
+    parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--out", type=Path, required=True)
-    parser.set_defaults(handler=_cmd_audit_sample)
-
-
-def _add_audit_score(sub: argparse._SubParsersAction) -> None:
-    parser = sub.add_parser("audit-score", help="judge-vs-human agreement on the audited sample")
-    parser.add_argument("--grades", type=Path, required=True)
-    parser.add_argument("--audited", type=Path, required=True, help="the filled-in audit sheet")
-    parser.add_argument("--out", type=Path, required=True)
-    parser.set_defaults(handler=_cmd_audit_score)
+    parser.set_defaults(handler=_cmd_calibrate)
 
 
 def _add_report(sub: argparse._SubParsersAction) -> None:
@@ -551,8 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_score_ragas,
         _add_stats,
         _add_score_ragchecker,
-        _add_audit_sample,
-        _add_audit_score,
+        _add_calibrate,
         _add_report,
     ):
         register(sub)

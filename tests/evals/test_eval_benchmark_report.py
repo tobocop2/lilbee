@@ -41,13 +41,13 @@ def test_title_follows_a_cross_system_pairing_too():
 
 def _audit_row(**over):
     row = {
-        "row_type": "human_audit",
+        "row_type": "calibration",
         "dimension": "faithfulness",
-        "n": 100,
-        "quadratic_weighted_kappa": 0.71,
-        "spearman": 0.68,
-        "exact_match": 0.62,
-        "mean_absolute_error": 0.44,
+        "n": 1600,
+        "spearman": 0.61,
+        "kendall": 0.52,
+        "expert_ceiling": 0.798,
+        "fraction_of_ceiling": 0.7644,
     }
     return {**row, **over}
 
@@ -66,8 +66,12 @@ def test_the_report_states_the_judges_agreement_with_humans():
     # The answer tier otherwise rests entirely on one model's opinion of
     # another model's output, with no stated error rate.
     report = render_report([*_rows("a", "b"), _audit_row()])
-    assert "Judge agreement with human annotators" in report
-    assert "0.710" in report
+    assert "Judge agreement with human raters" in report
+    assert "+0.610" in report
+    # The ceiling has to travel with it: the same correlation means different
+    # things against a 0.80 ceiling and a 0.40 one.
+    assert "0.798" in report
+    assert "76%" in report
 
 
 def test_the_report_names_the_judge_and_the_scorer_versions():
