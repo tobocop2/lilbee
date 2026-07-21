@@ -7,11 +7,36 @@ import os
 import stat
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 log = logging.getLogger(__name__)
 
 _OWNER_ONLY_MODE = 0o600
+
+
+@contextmanager
+def file_lock_or_warn(path: Path, timeout_s: float) -> Iterator[None]:
+    """Serialize access to *path* across processes via a sibling ``.lock`` file.
+
+    On timeout the caller proceeds unserialized: losing coordination to a stale
+    lock file is worse than the rare interleave the lock prevents.
+    """
+    flock = FileLock(str(path) + ".lock")
+    try:
+        flock.acquire(timeout=timeout_s)
+    except FileLockTimeout:
+        log.warning("Timed out waiting for the %s lock; proceeding without it.", path.name)
+        yield
+        return
+    try:
+        yield
+    finally:
+        flock.release()
 
 
 class PathTraversalError(ValueError):

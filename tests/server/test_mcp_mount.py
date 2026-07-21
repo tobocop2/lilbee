@@ -111,6 +111,14 @@ def test_fresh_session_manager_per_build(monkeypatch) -> None:
     assert first.session_manager is not second.session_manager
 
 
+def test_mount_is_stateful(monkeypatch) -> None:
+    # Stateful sessions carry clientInfo across requests, which memory owner
+    # derivation reads. Stateless serving is a future scale-out deployment
+    # mode, not a flag on this one.
+    server = _mounted_server(monkeypatch)
+    assert server.settings.stateless_http is False
+
+
 async def test_two_mounts_in_one_process_both_start() -> None:
     """Several apps per process is the normal test-suite shape, and the CLI can
     rebuild one. Both lifespans must enter."""

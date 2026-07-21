@@ -10,12 +10,10 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-from filelock import FileLock
-from filelock import Timeout as FileLockTimeout
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import cfg
-from lilbee.core.security import harden_private_file, write_private_text
+from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
 
@@ -39,20 +37,8 @@ def _config_write_lock(data_root: Path) -> Generator[None, None, None]:
     """
     path = _config_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    flock = FileLock(str(path) + ".lock")
-    with _settings_lock:
-        try:
-            flock.acquire(timeout=_CONFIG_LOCK_TIMEOUT_S)
-        except FileLockTimeout:
-            logging.getLogger(__name__).warning(
-                "Timed out waiting for the %s lock; writing anyway.", path.name
-            )
-            yield
-            return
-        try:
-            yield
-        finally:
-            flock.release()
+    with _settings_lock, file_lock_or_warn(path, _CONFIG_LOCK_TIMEOUT_S):
+        yield
 
 
 def load(data_root: Path) -> dict[str, Any]:

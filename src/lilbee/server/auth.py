@@ -14,11 +14,13 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp, Receive, Scope, Send
 
 from lilbee.core.config import cfg
-from lilbee.core.security import harden_private_file, write_private_text
+from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 log = logging.getLogger(__name__)
 
 _TOKEN_BYTES = 32
+
+_BOOT_LOCK_TIMEOUT_S = 30
 
 # Character floor for a persisted token. secrets.token_urlsafe(n) base64url-encodes
 # n bytes, so the entropy count is not a length: reusing _TOKEN_BYTES here accepted
@@ -79,20 +81,26 @@ class SessionManager:
         self._initialized: bool = False
 
     def load_or_generate(self) -> str:
-        """Return the persisted token if shape-valid; generate a new one otherwise."""
+        """Return the persisted token if shape-valid; generate a new one otherwise.
+
+        Read and write happen under a file lock so concurrent boots converge on
+        one token: without it both see no file, both mint, and the last write
+        rejects every client that read the other's file.
+        """
         path = server_json_path()
-        existing = self._read_persisted_token(path)
-        if existing is not None:
-            # The token is reused indefinitely and the file can arrive
-            # world-readable (backup, older release), so narrow on every load.
-            harden_private_file(path)
-            self.token = existing
+        with file_lock_or_warn(path, _BOOT_LOCK_TIMEOUT_S):
+            existing = self._read_persisted_token(path)
+            if existing is not None:
+                # The token is reused indefinitely and the file can arrive
+                # world-readable (backup, older release), so narrow on every load.
+                harden_private_file(path)
+                self.token = existing
+                self._initialized = True
+                return existing
+            self.token = secrets.token_urlsafe(_TOKEN_BYTES)
+            write_private_text(path, json.dumps({"token": self.token}))
             self._initialized = True
-            return existing
-        self.token = secrets.token_urlsafe(_TOKEN_BYTES)
-        write_private_text(path, json.dumps({"token": self.token}))
-        self._initialized = True
-        return self.token
+            return self.token
 
     def disable(self) -> None:
         """Explicitly turn auth off (test harness / embedded read-only use).

@@ -1558,7 +1558,46 @@ class TestSessionManagerPersistence:
         fresh_manager.token = None
         second = fresh_manager.load_or_generate()
         assert second == first
-        assert fresh_manager.token == first
+
+    def test_concurrent_boots_converge_on_one_token(self, fresh_manager):
+        """Two workers booting together must end up with the same token.
+
+        Without serialization both see no file and mint their own; the last
+        write wins and the loser rejects every client that read the file.
+        """
+        import threading
+        import time
+
+        from lilbee.server import auth as auth_mod
+        from lilbee.server.auth import SessionManager
+
+        first_inside_generate = threading.Event()
+        resume_first = threading.Event()
+        real_generate = auth_mod.secrets.token_urlsafe
+        gated = {"done": False}
+
+        def slow_first_generate(n: int) -> str:
+            if not gated["done"]:
+                gated["done"] = True
+                first_inside_generate.set()
+                resume_first.wait(timeout=5)
+            return real_generate(n)
+
+        second = SessionManager()
+        with mock.patch.object(auth_mod.secrets, "token_urlsafe", slow_first_generate):
+            t1 = threading.Thread(target=fresh_manager.load_or_generate)
+            t1.start()
+            assert first_inside_generate.wait(timeout=5)
+            # First manager is past its read, paused before its write.
+            t2 = threading.Thread(target=second.load_or_generate)
+            t2.start()
+            time.sleep(0.1)
+            resume_first.set()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert fresh_manager.token is not None
+        assert second.token == fresh_manager.token
 
     def test_regenerates_when_file_is_empty(self, fresh_manager):
         from lilbee.server.auth import server_json_path

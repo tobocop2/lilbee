@@ -573,10 +573,12 @@ class TestConcurrentConfigWrites:
 
     def test_a_stale_lock_does_not_block_the_write(self, tmp_path, monkeypatch, caplog):
         """Losing an update to an abandoned lock file is worse than the race."""
+        from filelock import FileLock
+
         from lilbee.core import settings as settings_mod
 
         monkeypatch.setattr(settings_mod, "_CONFIG_LOCK_TIMEOUT_S", 0.01)
-        held = settings_mod.FileLock(str(tmp_path / "config.toml") + ".lock")
+        held = FileLock(str(tmp_path / "config.toml") + ".lock")
         held.acquire()
         try:
             with caplog.at_level("WARNING"):
