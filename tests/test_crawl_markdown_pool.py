@@ -109,8 +109,18 @@ class TestThePoolNeverFailsACrawl:
 
         assert pool.convert("<h1>raw</h1>", "", True) == ("# raw", "# cited")
 
-    def test_shutdown_is_safe_before_anything_started(self) -> None:
-        MarkdownConversionPool(2).shutdown()
+    def test_shutdown_is_safe_before_anything_started(self, monkeypatch) -> None:
+        """A daemon that never crawls must not start helpers, nor fail to stop."""
+        started: list[int] = []
+        monkeypatch.setattr(
+            "lilbee.crawler.markdown_pool.ProcessPoolExecutor",
+            lambda **_kw: started.append(1),
+        )
+        pool = MarkdownConversionPool(2)
+
+        pool.shutdown()
+
+        assert started == []
 
     def test_shutdown_twice_stops_the_helpers_once(self, monkeypatch) -> None:
         executor = _FakeExecutor(value=("x", "x"))

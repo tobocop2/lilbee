@@ -12,6 +12,13 @@ MCP and HTTP requests, which is what makes searches feel sluggish mid-crawl.
 Only the conversion moves. The pool is stateless (HTML in, markdown out), so it
 needs none of the shared state a multi-process server would; the daemon stays a
 single process and keeps owning the crawl, its cancellation and its output.
+
+Deliberately a ``ProcessPoolExecutor`` and not ``anyio.to_process``, which is
+otherwise the house style for offloading. crawl4ai calls its markdown generator
+synchronously from inside its own async crawl, and ``anyio.to_process.run_sync``
+is a coroutine: awaiting it from that callback would mean driving the loop from
+a callback the loop is already running, which deadlocks. A blocking submit is
+what a synchronous seam can use.
 """
 
 from __future__ import annotations

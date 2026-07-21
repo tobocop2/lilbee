@@ -378,8 +378,9 @@ fallback](#json-cli-fallback) below.
 ### Serving a large agent fleet
 
 One daemon serves many agents at once, and two limits bite before the GPU does.
-Synchronous MCP tool handlers run in a thread pool holding `mcp_tool_threads`
-threads (40 by default); past that, retrieval calls queue while the disk and CPU
+Synchronous work is run off the event loop in a thread pool sized by
+`mcp_tool_threads` (40 by default, which is what the async runtime uses when
+nothing says otherwise); past that, retrieval calls queue while the disk and CPU
 sit idle, so raise it when a lot of agents search at the same time. Each
 connected agent also holds a socket, and macOS still defaults to 256 open files
 (most Linux distributions to 1024), which shows up as connection failures rather
