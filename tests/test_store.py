@@ -1034,6 +1034,43 @@ class TestRemoveDocuments:
             assert result.removed == ["a.md"]
             assert not f.exists()
 
+    def test_delete_files_prunes_emptied_dirs(self, store, tmp_path):
+        """A folder --delete leaves no empty directory tree behind."""
+        (tmp_path / "myrepo" / "sub").mkdir(parents=True)
+        a = tmp_path / "myrepo" / "a.txt"
+        a.write_text("x")
+        b = tmp_path / "myrepo" / "sub" / "b.txt"
+        b.write_text("y")
+        with (
+            mock.patch.object(
+                store,
+                "get_sources",
+                return_value=[{"filename": "myrepo/a.txt"}, {"filename": "myrepo/sub/b.txt"}],
+            ),
+            mock.patch.object(store, "_remove_many_unlocked"),
+        ):
+            store.remove_documents(
+                ["myrepo/a.txt", "myrepo/sub/b.txt"], delete_files=True, documents_dir=tmp_path
+            )
+        assert not (tmp_path / "myrepo").exists()  # whole emptied tree pruned
+        assert tmp_path.exists()  # documents_dir itself is never removed
+
+    def test_delete_files_keeps_nonempty_dirs(self, store, tmp_path):
+        """Pruning stops at a directory that still holds a sibling file."""
+        (tmp_path / "myrepo").mkdir()
+        a = tmp_path / "myrepo" / "a.txt"
+        a.write_text("x")
+        keep = tmp_path / "myrepo" / "keep.txt"
+        keep.write_text("z")
+        with (
+            mock.patch.object(store, "get_sources", return_value=[{"filename": "myrepo/a.txt"}]),
+            mock.patch.object(store, "_remove_many_unlocked"),
+        ):
+            store.remove_documents(["myrepo/a.txt"], delete_files=True, documents_dir=tmp_path)
+        assert not a.exists()
+        assert (tmp_path / "myrepo").exists()  # sibling keeps the dir
+        assert keep.exists()
+
     def test_blocks_path_traversal(self, store, tmp_path):
         with (
             mock.patch.object(

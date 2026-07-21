@@ -118,6 +118,29 @@ _ANN_REFINE_FACTOR = 10
 # in place with the SOURCE_STAT_UNKNOWN sentinel.
 _SOURCE_STAT_COLUMNS = ("size_bytes", "mtime_ns", "stat_captured_ns")
 
+def _prune_empty_dirs(dirs: list[Path], *, stop: Path) -> None:
+    """Remove now-empty directories under *stop* after their files were deleted.
+
+    Climbs upward from each directory, removing empty ones until a non-empty
+    directory or *stop* is reached; *stop* (the documents dir) is never removed.
+    Nested trees prune fully because each path climbs the whole chain, so a
+    parent emptied only by removing its last child directory still gets cleaned.
+
+    ``os.removedirs`` climbs the same way but has no lower bound, so an emptied
+    documents dir would be deleted and the climb would continue above it; the
+    ``stop`` guard is why this is hand-rolled rather than that one call.
+    """
+    stop = stop.resolve()
+    for start in dirs:
+        current = start
+        while current != stop and stop in current.parents:
+            try:
+                current.rmdir()
+            except OSError:
+                break  # still holds entries, or already gone; stop climbing
+            current = current.parent
+
+
 # (table, source column) pairs deleted when a source's rows are replaced. The
 # concept nodes/edges tables carry no source column (corpus-level aggregates),
 # so only the per-chunk concept mapping is source-scoped.
@@ -1160,6 +1183,7 @@ class Store:
             self._invalidate_source_cache()
 
         if delete_files:
+            emptied: list[Path] = []
             for name in removed:
                 try:
                     path = validate_path_within(documents_dir / name, documents_dir)
@@ -1168,6 +1192,8 @@ class Store:
                     continue
                 if path.exists():
                     path.unlink()
+                emptied.append(path.parent)
+            _prune_empty_dirs(emptied, stop=documents_dir)
 
         return RemoveResult(removed=removed, not_found=not_found)
 
