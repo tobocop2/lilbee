@@ -39,6 +39,14 @@ log "  compute capability sm_${CAP}, engine backend ${BACKEND:-cu124}"
 # use-embedder both downloads the model and points lilbee at it. There is no
 # "models" command -- an earlier version of this check invented one and failed
 # with "No such command", which proved nothing about the GPU.
+# The branch's extraction stack is a compiled extension, so the image's glibc
+# has to be new enough for it. Checking here turns an undefined-symbol error at
+# first extraction -- which reads as a broken package -- into a named image
+# problem before anything is embedded.
+log "extraction stack imports against this image's glibc"
+"$PYBIN" -c 'import xberg' 2>/dev/null \
+  || die "xberg will not import: glibc is $(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$'), and its wheel needs 2.38+. Use an ubuntu 24.04 image."
+
 log "embedding model downloads and is selected"
 "$LILBEE_BIN" use-embedder "${EMBED_MODEL}" 2>&1 | tail -5
 

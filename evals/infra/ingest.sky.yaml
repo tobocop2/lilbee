@@ -12,8 +12,21 @@
 #
 #   sky launch -c msmarco-ingest evals/infra/ingest.sky.yaml --retry-until-up -y
 name: msmarco-ingest
+# Idle pods must stop themselves. This run left an A100 billing across several
+# exchanges while waiting on a human, which is exactly the failure autostop
+# exists to prevent: a question asked of a person is an unbounded wait, and the
+# meter does not care that the work is blocked.
+#
+# down rather than stop, because a stopped RunPod pod still holds its container
+# disk. 20 minutes is longer than any gap inside the run and far shorter than a
+# conversation.
 resources:
   cloud: runpod
+  # Ubuntu 24.04 for glibc 2.39. The default 22.04 image ships glibc 2.35, and
+  # xberg's wheel needs __isoc23_strtoll, which arrived in 2.38 -- so lilbee
+  # imported and died at first extraction with an undefined-symbol error that
+  # reads like a broken package rather than an old base image.
+  image_id: docker:runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu24.04
   # Everything lives on container disk now: corpus, passage files, index.
   disk_size: 600
   # A100 only. The volume lives in US-WA-1 and a RunPod volume cannot change
@@ -36,6 +49,11 @@ resources:
 # CA-MTL-3 was the one that provisioned.
 volumes:
   /workspace: msmarco-ca
+# Stop the pod after 20 idle minutes, no matter what the operator is doing.
+autostop:
+  idle_minutes: 20
+  down: true
+
 envs:
   # Two branches, because neither has everything. lilbee comes from
   # feat/kreuzberg-5, which carries data/ingest/trace.py -- the per-document
