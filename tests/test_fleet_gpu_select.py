@@ -55,7 +55,12 @@ def test_enumerate_gpu_vram_omits_software_rasterizers(monkeypatch) -> None:
 
 
 def test_rasterizer_first_keeps_the_real_gpu_at_its_own_index(monkeypatch) -> None:
-    """Loader order is the index space the pin uses, so gaps must survive."""
+    """Filtering a device must not renumber the ones that survive.
+
+    These are loader ordinals, and the fallback that consumes them pairs each
+    with the memory it reported. Renumbering after a drop would pair the iGPU's
+    index with the rasterizer's size, or point at a device that is not there.
+    """
     from lilbee.providers.fleet import gpu_select
 
     fifteen_gib = 15 * 1024**3
@@ -71,9 +76,8 @@ def test_rasterizer_first_keeps_the_real_gpu_at_its_own_index(monkeypatch) -> No
             ),
         ],
     )
-    # Not renumbered to 0: GGML_VK_VISIBLE_DEVICES names the loader's index.
+
     assert gpu_select.enumerate_gpu_vram() == [(1, fifteen_gib, fifteen_gib)]
-    assert gpu_select.autoselect_best_gpu_index() == "1"
 
 
 def test_paravirtual_adapters_are_not_offered_to_placement() -> None:

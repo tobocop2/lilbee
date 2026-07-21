@@ -112,10 +112,11 @@ def _clear_empty_visible_device_vars() -> None:
 def apply_fleet_gpu_env() -> None:
     """Fleet engine bootstrap: loader safety plus the ``cfg.gpu_devices`` pin only.
 
-    The single-device Vulkan autodetect is skipped: the fleet selects devices via
-    its own placement, and autodetect would pin ``GGML_VK_VISIBLE_DEVICES`` to one
-    adapter before ``probe_devices`` runs and hide every other GPU. A
-    ``cfg.gpu_devices`` pin is still honored (the probe inherits this environment).
+    Nothing here chooses a device. The fleet selects through its own placement,
+    and anything pinning ``GGML_VK_VISIBLE_DEVICES`` before ``probe_devices``
+    runs would hide every other GPU from it and switch off ggml's own device
+    filtering besides. A ``cfg.gpu_devices`` pin is still honored, since there
+    the user is naming their own indexes (the probe inherits this environment).
     An empty backend visible-devices var from the orchestrator is cleared first so it
     does not hide a present GPU, and so a pin can replace it rather than be blocked.
     """

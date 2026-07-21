@@ -1877,20 +1877,6 @@ def test_drop_loaded_models_async_noop_without_swap() -> None:
     assert p._swaps == {}
 
 
-def test_apply_fleet_gpu_env_skips_autoselect(monkeypatch) -> None:
-    # The fleet selects devices via placement; the in-process single-device
-    # Vulkan autoselect must NOT run here or it would pin one adapter and hide
-    # the rest from placement.
-    from lilbee.providers.fleet import gpu_env
-
-    monkeypatch.setattr(cfg, "gpu_devices", None)
-    monkeypatch.setattr(
-        "lilbee.providers.fleet.gpu_select.autoselect_best_gpu_index",
-        lambda: pytest.fail("autoselect must not run for the fleet"),
-    )
-    gpu_env.apply_fleet_gpu_env()  # no autoselect call -> no failure
-
-
 def test_apply_fleet_gpu_env_honors_gpu_devices_pin(monkeypatch) -> None:
     from lilbee.providers.fleet import gpu_env
     from lilbee.providers.fleet.gpu_env import _GPU_VISIBLE_ENV_VARS

@@ -1,10 +1,16 @@
-"""Best-GPU autodetection for the Vulkan backend.
+"""Ask the host's Vulkan loader what ggml is going to see.
 
-Vulkan enumerates discrete and integrated adapters without sorting, so a model
-can land on the integrated GPU. This module probes the loader via ``ctypes``,
-ranks adapters by type (discrete > integrated > virtual > CPU), and returns the
-index to pin via ``GGML_VK_VISIBLE_DEVICES``. CUDA/ROCm are out of scope: each
-sees only its vendor's devices, so neither hits the dual-GPU mis-pick.
+Probes the loader via ``ctypes`` for the facts the engine's ``--list-devices``
+text does not carry: each adapter's device type, its ``deviceUUID``, whether it
+supports the one feature ggml requires of it, and how much of its memory is
+actually free. Placement uses these to agree with the engine about which devices
+exist and how big they are; where the two disagree, a fleet gets sized against
+hardware llama-server never uses.
+
+It deliberately does not choose a device. Selection belongs to ggml, which
+applies its own type filter, support check and same-UUID dedup at launch;
+pinning through ``GGML_VK_VISIBLE_DEVICES`` would switch all three off, so
+Vulkan devices are pinned by the name the engine printed or not at all.
 """
 
 from __future__ import annotations
@@ -66,30 +72,10 @@ class VkDeviceType(IntEnum):
     CPU = 4
 
 
-# Preference order for picking the best adapter; higher is better.
-# Software rendering (CPU) is never the right pick, so it ranks 0
-# and ``_pick_best_device`` rejects it.
-_DEVICE_TYPE_RANK: dict[VkDeviceType, int] = {
-    VkDeviceType.DISCRETE_GPU: 4,
-    VkDeviceType.INTEGRATED_GPU: 3,
-    VkDeviceType.VIRTUAL_GPU: 2,
-    VkDeviceType.OTHER: 1,
-    VkDeviceType.CPU: 0,
-}
-
-
 # The device types ggml's Vulkan backend will actually run on. Anything else --
 # a software rasterizer, a paravirtual adapter, an unknown type -- is not a
 # device the engine would choose, so planning against one guarantees a mismatch.
 USABLE_VULKAN_TYPES = frozenset({VkDeviceType.DISCRETE_GPU, VkDeviceType.INTEGRATED_GPU})
-
-
-def _rank_for(device_type: int) -> int:
-    """Lookup the rank for a ``deviceType`` value, ``0`` if the driver returns an unknown one."""
-    try:
-        return _DEVICE_TYPE_RANK[VkDeviceType(device_type)]
-    except ValueError:
-        return 0
 
 
 # vk.h sizes for the inline char arrays inside VkPhysicalDeviceProperties.
@@ -351,32 +337,6 @@ class _VkPhysicalDeviceMemoryBudgetPropertiesEXT(ctypes.Structure):
         ("heapBudget", c_uint64 * _VK_MAX_MEMORY_HEAPS),
         ("heapUsage", c_uint64 * _VK_MAX_MEMORY_HEAPS),
     ]
-
-
-def autoselect_best_gpu_index() -> str | None:
-    """Return the Vulkan device index of the best-available adapter, or ``None``.
-
-    Returns ``None`` when the Vulkan loader is unavailable, the probe
-    fails, or only one adapter is visible (no decision to make). The
-    string format matches ``GGML_VK_VISIBLE_DEVICES`` (``"0"`` /
-    ``"1"`` etc.). CUDA / HIP / ROCm enumeration are out of scope:
-    those backends are single-vendor and the env vars don't mean the
-    same thing as the Vulkan loader's enumeration order.
-    """
-    devices = _enumerate_vulkan_devices()
-    if devices is None:
-        return None
-    best = _pick_best_device(devices)
-    if best is None:
-        return None
-    # Only emit a pin when there's a real choice between adapter types:
-    # if every visible device has the same rank, the loader's default
-    # ordering is already correct and forcing the index would hide a
-    # user's manual override on rebuild.
-    ranks = {_rank_for(d.device_type) for d in devices}
-    if len(ranks) <= 1:
-        return None
-    return str(best.index)
 
 
 def enumerate_gpu_vram() -> list[tuple[int, int, int]] | None:
@@ -913,22 +873,6 @@ def _device_local_vram(mem_props: _VkPhysicalDeviceMemoryProperties) -> int:
         if heap.flags & _VK_MEMORY_HEAP_DEVICE_LOCAL_BIT:
             total += int(heap.size)
     return total
-
-
-def _pick_best_device(devices: list[VulkanDevice]) -> VulkanDevice | None:
-    """Return the highest-ranked device, preferring lower indexes on ties.
-
-    Sort is stable so the loader's enumeration order acts as the
-    tie-breaker; this matches user expectation that "device 0" wins
-    when two adapters are the same type.
-    """
-    if not devices:
-        return None
-    ranked = sorted(devices, key=lambda d: (-_rank_for(d.device_type), d.index))
-    best = ranked[0]
-    if _rank_for(best.device_type) <= 0:
-        return None
-    return best
 
 
 # Single-vendor boxes don't need a pin -- only that vendor's ICD loads,
