@@ -32,6 +32,8 @@ from evals.benchmark.ragas_tier import (
     score_ragas,
 )
 from evals.benchmark.report import render_report
+from evals.benchmark.stats import DEFAULT_SEED
+from evals.deps import scorer_versions
 from evals.retrieval.checkpoint import JsonlCheckpoint, load_items, load_jsonl
 
 DEFAULT_METRICS = ["nDCG@10", "Recall@20", "MRR@10"]
@@ -213,6 +215,18 @@ def _cmd_score_ragas(args: argparse.Namespace) -> int:
         }
         for metric in scores_a.means
     ]
+    # Stamped at score time, not at freeze time. ragas is a fast-moving product
+    # whose metric prompts change between releases, so "which ragas produced
+    # this number" is a question the requirements pin cannot answer for a run
+    # that has already finished.
+    rows.append(
+        {
+            "row_type": "versions",
+            "judge_model": manifest.models.judge,
+            "judge_base_url": args.judge_base_url,
+            "scorers": scorer_versions(),
+        }
+    )
     _append_jsonl(args.out, rows)
     print(
         f"scored {len(samples_a)} and {len(samples_b)} answers with RAGAS "
@@ -295,6 +309,60 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         rows.append(row)
     _append_jsonl(args.out, rows)
     print(f"wrote {len(rows) - 1} paired IR comparisons -> {args.out}")
+    return 0
+
+
+def _cmd_audit_sample(args: argparse.Namespace) -> int:
+    """Draw the blind human-audit sheet from a finished judging pass."""
+    from evals.benchmark.human_audit import AuditRow, stratified_sample, write_audit_sheet
+
+    grades = {
+        record["gid"]: {key: value for key, value in record.items() if key != "gid"}
+        for record in load_jsonl(args.grades)
+    }
+    blind = {record["gid"]: record for record in load_jsonl(args.blind_rows)}
+    chosen = stratified_sample(grades, args.size, dimension=args.dimension, seed=args.seed)
+    missing = [gid for gid in chosen if gid not in blind]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} sampled rows are absent from {args.blind_rows} "
+            f"(first: {missing[0]}); the grades and blind rows are from different runs"
+        )
+    write_audit_sheet(
+        args.out,
+        [
+            AuditRow(
+                gid=gid,
+                question=blind[gid]["question"],
+                source=blind[gid]["source"],
+                ground=blind[gid]["ground"],
+                answer=blind[gid]["answer"],
+            )
+            for gid in chosen
+        ],
+    )
+    print(f"wrote {len(chosen)} rows to audit (judge scores withheld) -> {args.out}")
+    return 0
+
+
+def _cmd_audit_score(args: argparse.Namespace) -> int:
+    """Report how closely the judge tracked the human sample."""
+    from evals.benchmark.human_audit import agreement, read_audit_sheet
+
+    grades = {
+        record["gid"]: {key: value for key, value in record.items() if key != "gid"}
+        for record in load_jsonl(args.grades)
+    }
+    results = agreement(grades, read_audit_sheet(args.audited))
+    _append_jsonl(
+        args.out,
+        [{"row_type": "human_audit", **result.to_dict()} for result in results],
+    )
+    for result in results:
+        print(
+            f"{result.dimension}: kappa {result.kappa:.3f}, spearman {result.spearman:.3f}, "
+            f"exact {result.exact_match:.0%} over {result.n} audited"
+        )
     return 0
 
 
@@ -391,6 +459,31 @@ def _add_stats(sub: argparse._SubParsersAction) -> None:
     parser.set_defaults(handler=_cmd_stats)
 
 
+def _add_audit_sample(sub: argparse._SubParsersAction) -> None:
+    parser = sub.add_parser(
+        "audit-sample", help="draw a blind human-audit sheet from a judging pass"
+    )
+    parser.add_argument("--grades", type=Path, required=True, help="grades.jsonl from judge")
+    parser.add_argument("--blind-rows", type=Path, required=True, help="blind_rows.jsonl")
+    parser.add_argument("--size", type=int, default=100)
+    parser.add_argument(
+        "--dimension",
+        default="faithfulness",
+        help="the dimension the sample is stratified across",
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.set_defaults(handler=_cmd_audit_sample)
+
+
+def _add_audit_score(sub: argparse._SubParsersAction) -> None:
+    parser = sub.add_parser("audit-score", help="judge-vs-human agreement on the audited sample")
+    parser.add_argument("--grades", type=Path, required=True)
+    parser.add_argument("--audited", type=Path, required=True, help="the filled-in audit sheet")
+    parser.add_argument("--out", type=Path, required=True)
+    parser.set_defaults(handler=_cmd_audit_score)
+
+
 def _add_report(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("report", help="render results.jsonl as markdown")
     parser.add_argument("--results", type=Path, required=True)
@@ -409,6 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
         _add_answer,
         _add_score_ragas,
         _add_stats,
+        _add_audit_sample,
+        _add_audit_score,
         _add_report,
     ):
         register(sub)

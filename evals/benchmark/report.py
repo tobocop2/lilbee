@@ -98,6 +98,65 @@ def _ragas_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[s
     return lines
 
 
+def _provenance_section(rows: list[dict[str, Any]]) -> list[str]:
+    """Which judge and which scorer builds produced the numbers above.
+
+    A model-graded number is only reproducible if the reader knows what graded
+    it. The judge model is frozen in the manifest; the scorer versions are
+    recorded at score time, since a pinned requirements file states an intention
+    and this states what actually ran.
+    """
+    version_rows = _rows_of(rows, "versions")
+    if not version_rows:
+        return []
+    record = version_rows[0]
+    lines = [
+        "## What produced these numbers",
+        "",
+        f"Answers graded by `{record.get('judge_model', '?')}`, served at "
+        f"`{record.get('judge_base_url', '?')}`. The judge is held constant across "
+        "arms and differs from the model that generated the answers.",
+        "",
+        "| scorer | version |",
+        "| --- | --- |",
+    ]
+    for package, version in sorted(record.get("scorers", {}).items()):
+        lines.append(f"| {package} | {version} |")
+    lines.append("")
+    return lines
+
+
+def _audit_section(rows: list[dict[str, Any]]) -> list[str]:
+    """Judge-versus-human agreement on the audited sample.
+
+    Without this the answer-tier numbers rest entirely on a model's opinion of
+    another model. The kappa is chance-corrected and quadratically weighted, so
+    a near miss counts far less than a gross one, which suits an ordinal rubric.
+    """
+    audit_rows = _rows_of(rows, "human_audit")
+    if not audit_rows:
+        return []
+    lines = [
+        "## Judge agreement with human annotators",
+        "",
+        "A stratified sample of graded answers was re-scored by a person who did "
+        "not see the judge's grade. Quadratic-weighted Cohen's kappa is the "
+        "headline; Spearman travels with it because kappa alone cannot separate a "
+        "judge that is biased but correctly ordered from one that is unordered.",
+        "",
+        "| dimension | n | weighted kappa | Spearman | exact match | mean abs. error |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in audit_rows:
+        lines.append(
+            f"| {row['dimension']} | {row['n']} | {row['quadratic_weighted_kappa']:.3f} "
+            f"| {row['spearman']:.3f} | {row['exact_match']:.0%} "
+            f"| {row['mean_absolute_error']:.2f} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _coverage_section(rows: list[dict[str, Any]]) -> list[str]:
     coverage_rows = _rows_of(rows, "coverage")
     if not coverage_rows:
@@ -139,6 +198,8 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         header
         + _ir_section(rows, arm_a, arm_b)
         + _ragas_section(rows, arm_a, arm_b)
+        + _audit_section(rows)
+        + _provenance_section(rows)
         + _coverage_section(rows)
     )
     return "\n".join(lines).rstrip() + "\n"
