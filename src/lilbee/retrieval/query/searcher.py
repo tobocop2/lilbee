@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, cast
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
@@ -22,9 +23,22 @@ from lilbee.data.store import (
     cosine_sim,
     human_recall_predicate,
 )
-from lilbee.providers.base import LLMProvider, ProviderError, ProviderErrorKind
+from lilbee.providers.base import (
+    LLMProvider,
+    ProviderError,
+    ProviderErrorKind,
+    prompt_token_budget,
+)
 from lilbee.retrieval.embedder import Embedder
-from lilbee.retrieval.entities.schema import noun_variants
+from lilbee.retrieval.language import noun_variants, query_language
+from lilbee.retrieval.query.compaction import (
+    COMPACT_PROMPT,
+    CompactionResult,
+    merge_notes,
+    plan_compaction,
+    summary_cap,
+    summary_word_budget,
+)
 from lilbee.retrieval.query.dedup import (
     _greedy_cover,
     _relevance_weight,
@@ -47,12 +61,18 @@ from lilbee.retrieval.query.formatting import (
     format_sources_block,
     strip_llm_citations,
 )
+from lilbee.retrieval.query.history_window import estimate_text_tokens
 from lilbee.retrieval.query.intent import (
+    INTENT_CLASSIFY_MAX_TOKENS,
+    INTENT_CLASSIFY_PROMPT,
     AggregateKind,
     AggregateQuery,
     document_references,
     matches_reference,
+    matches_title,
     parse_aggregate,
+    parse_llm_aggregate,
+    title_candidates,
 )
 from lilbee.retrieval.query.memory import format_memory_block
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
@@ -60,6 +80,7 @@ from lilbee.retrieval.reasoning import (
     StreamToken,
     cap_events_as_stream_tokens,
     effective_reasoning_cap,
+    split_reasoning,
     stream_chat_with_cap,
     strip_reasoning,
 )
@@ -86,10 +107,19 @@ _KNOWN_ITEM_CANDIDATES = 50
 _KNOWN_ITEM_PROBE_K = 6
 _KNOWN_ITEM_PROBE_MAJORITY = 0.75
 
+
 # Structured-query mode names (the ``mode:`` prefix shortcut). Single source for
 # both the prefix parser and the dispatch in ``_search_structured``. "term"/"vec"/
 # "hyde" pick a retrieval strategy; "wiki"/"raw" are ChunkType scope shortcuts.
-_STRUCTURED_QUERY_MODES = ("term", "vec", "hyde", ChunkType.WIKI.value, ChunkType.RAW.value)
+class QueryMode(StrEnum):
+    """Structured-query prefixes: ``term:``, ``vec:``, ``hyde:``, ``wiki:``, ``raw:``."""
+
+    TERM = "term"
+    VEC = "vec"
+    HYDE = "hyde"
+    WIKI = ChunkType.WIKI.value
+    RAW = ChunkType.RAW.value
+
 
 # Leading list markers models prepend to expansion output despite the prompt:
 # "1.", "2)", "-", "*", "•".
@@ -131,7 +161,7 @@ def _noun_names_type(noun: str, type_name: str) -> bool:
 # RAG mode answer when retrieval finds no usable sources: a grounded refusal
 # instead of free-wheeling on the model's parametric knowledge. Users who want
 # off-corpus answers can switch to chat mode.
-_GROUNDED_REFUSAL = "I couldn't find anything in the indexed documents that answers that."
+GROUNDED_REFUSAL = "I couldn't find anything in the indexed documents that answers that."
 
 # Ask/search answer when the library holds nothing yet. Distinct from the
 # grounded refusal, which implies a search ran and came up empty: here there is
@@ -150,8 +180,6 @@ SEARCH_NEEDS_EMBEDDER = (
     "Add one, or switch to chat mode for an ungrounded reply."
 )
 
-# Token reserve for the generated answer when budgeting RAG context to num_ctx.
-_ANSWER_RESERVE_TOKENS = 1024
 # Chars-per-token assumed when BUDGETING context. Deliberately harsher than
 # the display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars
 # per token, and budgeting at 4 let a document whose real cost exceeded the
@@ -187,6 +215,20 @@ class AskResult(BaseModel):
     answer: str
     sources: list[SearchChunk]
     cited_sources: list[SearchChunk] = Field(default_factory=list)
+
+
+class StructuredQuery(NamedTuple):
+    """A mode-prefixed query split from its mode (see ``QueryMode``)."""
+
+    mode: QueryMode | None
+    query: str
+
+
+class RagContext(NamedTuple):
+    """Grounded context for one turn: the chunks and the prompt built on them."""
+
+    results: list[SearchChunk]
+    messages: list[ChatMessage]
 
 
 class Searcher:
@@ -355,11 +397,9 @@ class Searcher:
             if not query_concepts:
                 return results
             boosted = self._concepts.boost_results(results, query_concepts)
-            # boost_results returns copies with adjusted relevance_score/distance in
-            # input order; re-sort so the boost actually re-ranks for callers that
-            # consume search() order directly (CLI search, MCP lilbee_search).
-            # order_by_fusion normalizes per scoring family so HyDE (distance) hits
-            # can't outrank a strong hybrid (RRF) hit purely on scale.
+            # boost_results returns copies with the canonical score raised, in
+            # input order; re-sort so the boost actually re-ranks for callers
+            # that consume search() order directly (CLI search, MCP search).
             return order_by_fusion(boosted)
         except Exception:
             log.debug("Concept boost failed", exc_info=True)
@@ -410,41 +450,38 @@ class Searcher:
             return None
         return chunk_type
 
-    def _parse_structured_query(self, question: str) -> tuple[str | None, str]:
+    def _parse_structured_query(self, question: str) -> StructuredQuery:
         stripped = question.strip()
-        for mode in _STRUCTURED_QUERY_MODES:
-            prefix = f"{mode}:"
+        for mode in QueryMode:
+            prefix = f"{mode.value}:"
             if stripped.lower().startswith(prefix):
-                return mode, stripped[len(prefix) :].strip()
-        return None, question
+                return StructuredQuery(mode, stripped[len(prefix) :].strip())
+        return StructuredQuery(None, question)
 
     def _search_structured(
         self,
-        mode: str,
+        mode: QueryMode,
         query: str,
         top_k: int,
         chunk_type: ChunkType | None = None,
     ) -> list[SearchChunk]:
-        if mode == "term":
+        if mode is QueryMode.TERM:
             return self._store.bm25_probe(query, top_k=top_k, chunk_type=chunk_type)
-        if mode == "vec":
+        if mode is QueryMode.VEC:
             query_vec = self._embedder.embed_query(query)
             return self._store.search(
                 query_vec, top_k=top_k, query_text=None, chunk_type=chunk_type
             )
-        if mode == "hyde":
+        if mode is QueryMode.HYDE:
             return self._hyde_search(query, top_k, chunk_type=chunk_type)
-        if mode in (ChunkType.WIKI, ChunkType.RAW):
-            # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
-            # Route the prefix-derived type through the same wiki-disabled guard the
-            # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
-            requested = chunk_type if chunk_type is not None else ChunkType(mode)
-            effective = self._normalize_chunk_type(requested)
-            query_vec = self._embedder.embed_query(query)
-            return self._store.search(
-                query_vec, top_k=top_k, query_text=query, chunk_type=effective
-            )
-        return []
+        # QueryMode.WIKI / QueryMode.RAW: a chunk-type scope shortcut.
+        # Explicit ``chunk_type`` arg beats the ``wiki:``/``raw:`` prefix shortcut.
+        # Route the prefix-derived type through the same wiki-disabled guard the
+        # explicit arg gets, so ``wiki:`` doesn't bypass it and search an empty pool.
+        requested = chunk_type if chunk_type is not None else ChunkType(mode.value)
+        effective = self._normalize_chunk_type(requested)
+        query_vec = self._embedder.embed_query(query)
+        return self._store.search(query_vec, top_k=top_k, query_text=query, chunk_type=effective)
 
     def select_context(
         self, results: list[SearchChunk], question: str, max_sources: int | None = None
@@ -584,6 +621,11 @@ class Searcher:
         # Apply the date-range filter here so the bare search() path (e.g. /api/search)
         # honors a "recent"/"today" query, matching the chat/ask path.
         results = self._apply_temporal_filter(results, question)
+        # One relevance cutoff for every surface. The rule lives here (with
+        # the lexical-support exemption) rather than per surface: the CLI,
+        # HTTP, and MCP copies of a bare distance cutoff dropped both-arm
+        # rows the fusion layer deliberately keeps past max_distance.
+        results = filter_results(results, self._config.max_distance)
         return results[: top_k * 2]
 
     def _condense_question(self, question: str, history: list[ChatMessage]) -> str:
@@ -613,6 +655,113 @@ class Searcher:
             log.debug("History condensation failed; using the raw question", exc_info=True)
         return question
 
+    def summarize_history(
+        self,
+        messages: list[ChatMessage],
+        previous_summary: str = "",
+        on_batch: Callable[[int, int], None] | None = None,
+    ) -> CompactionResult:
+        """Condense turns being dropped from the prompt into carry-forward notes.
+
+        Chat calls this when a conversation outgrows its token budget: without it
+        the oldest turns are dropped outright and the model silently loses a
+        conversation the user can still scroll. *previous_summary* is folded in
+        so summaries compound instead of each one forgetting the last.
+
+        Each batch is summarized ONCE, independently, and the notes are merged.
+        Feeding each batch the running summary instead would re-summarize the
+        summary once per batch: at a 2k window a long backlog is ~16 batches, so
+        the earliest turns would be a summary of a summary sixteen deep, which a
+        small model degrades into drift long before the budget runs out. Depth
+        stays at one, plus one merge-compression when the notes outgrow the cap.
+
+        Returns the notes and how many turns they cover; ``stranded`` counts turns
+        dropped without notes, which the caller must surface rather than hide.
+        ``on_batch`` hears ``(batch, total)`` before each model call, for progress UI.
+        """
+        ctx_target = self._config.chat_n_ctx_target
+        plan = plan_compaction(messages, previous_summary, ctx_target=ctx_target)
+        notes: list[str] = []
+        condensed = 0
+        stranded = plan.stranded
+        for index, batch in enumerate(plan.batches):
+            if on_batch is not None:
+                on_batch(index + 1, len(plan.batches))
+            note = self._summarize_batch(batch, "")
+            if note:
+                notes.append(note)
+                condensed += len(batch)
+            else:
+                # Count what landed, not what was planned: these turns are gone
+                # with nothing standing in for them.
+                stranded += len(batch)
+        merged = merge_notes(previous_summary, notes)
+        cap = summary_cap(ctx_target)
+        if estimate_text_tokens(merged) > cap:
+            merged = self._summarize_batch([{"role": "user", "content": merged}], "") or merged
+        return CompactionResult(
+            summary=merged or previous_summary, condensed=condensed, stranded=stranded
+        )
+
+    def _summarize_batch(self, batch: list[ChatMessage], previous_summary: str) -> str:
+        """Fold one batch of dropped turns into *previous_summary*.
+
+        An overflowing batch splits in half and each half folds on its own:
+        batch sizing is estimate-based, and the cost of an estimate miss here
+        is stranded turns, not a slow call. Depth is log2 of the batch.
+
+        Returns *previous_summary* unchanged on any other failure: older notes
+        beat dropping the turns on the floor.
+        """
+        transcript = "\n".join(f"{m['role']}: {m['content']}" for m in batch)
+        previous = f"Earlier notes:\n{previous_summary}\n\n" if previous_summary.strip() else ""
+        prompt = COMPACT_PROMPT.format(
+            words=summary_word_budget(self._config.chat_n_ctx_target),
+            previous=previous,
+            transcript=transcript,
+        )
+        try:
+            response = self._provider.chat(
+                [{"role": "user", "content": prompt}],
+                stream=False,
+                options={
+                    "num_predict": summary_cap(self._config.chat_n_ctx_target),
+                    # A thinking model spends the whole budget in a <think>
+                    # block that llama.cpp force-closes and strip_reasoning
+                    # deletes whole, leaving "" and stranding the batch.
+                    "think": False,
+                    # Deterministic: the same conversation folds the same way.
+                    "temperature": 0,
+                },
+            )
+            summary = strip_reasoning(response.text).strip()
+            if summary:
+                return summary
+            # Only the native llama-server path honors think=False; elsewhere a
+            # reasoning model can leave nothing after the strip. Its reasoning
+            # is itself a summary of these turns, so recover it rather than
+            # strand them. Non-reasoning models never reach here.
+            reasoning = split_reasoning(response.text).reasoning.strip()
+            if reasoning:
+                return reasoning
+            log.warning("History compaction returned nothing; keeping the previous summary")
+        except ProviderError as exc:
+            # A single message too big for the window cannot split; it falls
+            # through to the warning below.
+            if exc.kind is ProviderErrorKind.CONTEXT_OVERFLOW and len(batch) > 1:
+                mid = len(batch) // 2
+                first = self._summarize_batch(batch[:mid], previous_summary)
+                second = self._summarize_batch(batch[mid:], "")
+                merged = "\n".join(part for part in (first, second) if part.strip())
+                if merged.strip():
+                    return merged
+            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
+        except Exception:
+            # warning, not debug: the user is told turns were dropped, so the
+            # reason must be in the log by default.
+            log.warning("History compaction failed; keeping the previous summary", exc_info=True)
+        return previous_summary
+
     def _known_item_results(self, question: str) -> list[SearchChunk]:
         """Resolve a document named in *question* to its own chunks.
 
@@ -626,15 +775,44 @@ class Searcher:
         """
         for ref in document_references(question):
             filename = self._resolve_reference_filename(ref)
-            if filename is None:
-                continue
-            chunks = self._store.get_chunks_by_source(filename)
-            if not chunks:
-                continue
-            chunks.sort(key=lambda c: c.chunk_index)
-            log.info("Known-item route: %r resolved to %s", ref, filename)
-            return [c.model_copy(update={"score": 1.0}) for c in chunks]
+            chunks = self._document_chunks(filename)
+            if chunks:
+                log.info("Known-item route: %r resolved to %s", ref, filename)
+                return chunks
+        # No explicit reference: a known-item question shape may name the
+        # document by its human title ("summarize Frankenstein" against
+        # Frankenstein.txt), which has no filename, quote, or number cue.
+        for title in title_candidates(question):
+            filename = self._resolve_title_filename(title)
+            chunks = self._document_chunks(filename)
+            if chunks:
+                log.info("Known-item title route: %r resolved to %s", title, filename)
+                return chunks
         return []
+
+    def _document_chunks(self, filename: str | None) -> list[SearchChunk]:
+        """A resolved document's chunks in document order at full confidence,
+        or empty for no resolution. Relevance is established by the name
+        match, not similarity, hence the canonical 1.0."""
+        if filename is None:
+            return []
+        chunks = self._store.get_chunks_by_source(filename)
+        chunks.sort(key=lambda c: c.chunk_index)
+        return [c.model_copy(update={"score": 1.0}) for c in chunks]
+
+    def _resolve_title_filename(self, title: str) -> str | None:
+        """The one source whose stem *title* names token-exactly, or ``None``.
+
+        The article-stripped title pre-filters candidates by substring, then
+        the token-exact stem comparison decides; only a unique winner routes,
+        so shared titles fall back to topical retrieval.
+        """
+        stripped = query_language().leading_article_pattern.sub("", title.strip())
+        candidates = self._store.get_sources(search=stripped, limit=_KNOWN_ITEM_CANDIDATES)
+        matches = [s for s in candidates if matches_title(title, s["filename"])]
+        if len(matches) == 1:
+            return str(matches[0]["filename"])
+        return None
 
     def _resolve_reference_filename(self, ref: str) -> str | None:
         """The one source *ref* names, or ``None`` when nothing resolves uniquely.
@@ -680,7 +858,7 @@ class Searcher:
         history: list[ChatMessage] | None = None,
         *,
         chunk_type: ChunkType | None = None,
-    ) -> tuple[list[SearchChunk], list[ChatMessage]] | None:
+    ) -> RagContext | None:
         """Build RAG context from search results.
 
         ``chunk_type`` restricts the pool to ``"raw"`` (which covers table
@@ -712,8 +890,15 @@ class Searcher:
                 results, self._config.max_distance, self._config.min_relevance_score
             )
             if not results:
+                # No relevant documents, but the user's stored memories may
+                # still ground the turn ("what's my name?"): facts recalled
+                # for this question answer via the memory-injected direct
+                # prompt instead of a refusal. Facts only -- always-injected
+                # preferences say nothing about answerability.
+                if self._memory_facts(question):
+                    return RagContext([], self.direct_messages(question, history))
                 return None
-            results = prepare_results(results)
+            results = prepare_results(results, self._config.diversity_max_per_source)
             if self._config.reranker_model:
                 results = self._reranker.rerank(retrieval_query, results)
             # Temporal filtering already ran inside search(); no need to repeat it here.
@@ -726,7 +911,7 @@ class Searcher:
         question: str,
         history: list[ChatMessage] | None,
         scale: float = 1.0,
-    ) -> tuple[list[SearchChunk], list[ChatMessage]]:
+    ) -> RagContext:
         """Fit *results* to the context budget and assemble the prompt.
 
         Split from build_rag_context so an overflow retry can refit the same
@@ -740,7 +925,7 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return results, messages
+        return RagContext(results, messages)
 
     @staticmethod
     def _budget_tokens(text: str) -> int:
@@ -770,14 +955,16 @@ class Searcher:
         configured = self._config.num_ctx or self._config.chat_n_ctx_target
         served = self._provider.served_chat_ctx()
         ctx = min(configured, served) if served else configured
-        reserve = (
+        # Fit inside what the provider will actually accept: prompt_token_budget
+        # already removes the generation reserve and the engine's margin, so the
+        # sources get what is left after the rest of the prompt.
+        non_source = (
             self._budget_tokens(system)
             + self._budget_tokens(question)
             + sum(self._budget_tokens(m["content"]) for m in history or [])
-            + _ANSWER_RESERVE_TOKENS
             + _CONTEXT_TEMPLATE_TOKENS
         )
-        budget = int((ctx - reserve) * scale)
+        budget = int((prompt_token_budget(ctx) - non_source) * scale)
         kept: list[SearchChunk] = []
         used = 0
         for r in results:
@@ -809,21 +996,31 @@ class Searcher:
         if not self._config.memory_enabled:
             return ""
         # The human's answers see their own memories plus any an agent shared.
-        owner_predicate = human_recall_predicate()
         preferences = self._store.get_memories(
-            owner_predicate=owner_predicate,
+            owner_predicate=human_recall_predicate(),
             kind=MemoryKind.PREFERENCE,
         )
-        facts: list[MemoryRow] = []
-        if self._config.memory_top_k > 0 and self._embedder.embedding_available():
-            vector = self._embedder.embed_query(question)
-            facts = self._store.search_memories(
-                vector,
-                owner_predicate=owner_predicate,
-                top_k=self._config.memory_top_k,
-                max_distance=self._config.memory_max_distance,
-            )
+        facts = self._memory_facts(question)
         return format_memory_block(preferences, facts, self._config.memory_token_budget)
+
+    def _memory_facts(self, question: str) -> list[MemoryRow]:
+        """Similarity-recalled facts for *question*, or empty.
+
+        A non-empty result means memory can ground this turn on its own:
+        facts are distance-gated against the question, unlike preferences,
+        which are always injected and say nothing about answerability.
+        """
+        if not self._config.memory_enabled:
+            return []
+        if self._config.memory_top_k <= 0 or not self._embedder.embedding_available():
+            return []
+        vector = self._embedder.embed_query(question)
+        return self._store.search_memories(
+            vector,
+            owner_predicate=human_recall_predicate(),
+            top_k=self._config.memory_top_k,
+            max_distance=self._config.memory_max_distance,
+        )
 
     def _answer_aggregate(self, aggregate: AggregateQuery) -> str:
         """Answer a count-shaped question with an exact full-corpus scan.
@@ -938,10 +1135,39 @@ class Searcher:
         if not self._config.intent_routing:
             return None
         aggregate = parse_aggregate(question)
+        if self._config.intent_llm and (
+            aggregate is None or aggregate.kind is AggregateKind.UNSUPPORTED
+        ):
+            # The deterministic patterns found no answerable count shape; let
+            # the chat model classify phrasings (and languages) they miss. A
+            # ``None`` here keeps whatever the patterns concluded, so an LLM
+            # failure can never lose a deterministic decline.
+            aggregate = self._llm_classify_aggregate(question) or aggregate
         if aggregate is None:
             return None
         log.info("Aggregate route: %s for %r", aggregate.kind.value, question)
         return self._answer_aggregate(aggregate)
+
+    def _llm_classify_aggregate(self, question: str) -> AggregateQuery | None:
+        """One short classification call, mapped conservatively to a route.
+
+        Any provider failure or malformed reply means no route -- the same
+        harmless degrade to topical retrieval as a deterministic miss.
+        """
+        prompt = INTENT_CLASSIFY_PROMPT.format(question=question)
+        try:
+            response = self._provider.chat(
+                [{"role": "user", "content": prompt}],
+                stream=False,
+                options={"num_predict": INTENT_CLASSIFY_MAX_TOKENS},
+            )
+        except Exception:
+            log.debug("LLM intent classification failed; using pattern result", exc_info=True)
+            return None
+        parsed = parse_llm_aggregate(strip_reasoning(response.text))
+        if parsed is not None:
+            log.info("LLM intent route: %s for %r", parsed.kind.value, question)
+        return parsed
 
     def skip_retrieval(self) -> bool:
         """Whether this turn should bypass RAG: chat-only mode or no embedder."""
@@ -999,6 +1225,20 @@ class Searcher:
         raw = result.text
         return raw if self._config.show_reasoning else strip_reasoning(raw)
 
+    def pre_retrieval_answer(self, question: str) -> str | None:
+        """The canned answer a grounded turn gives before retrieval runs:
+        the empty-library guidance, or a count question's exact scan.
+        ``None`` means retrieval should proceed. One ladder shared by every
+        surface (ask, stream, HTTP) so they cannot drift.
+
+        An empty library with recalled memory facts falls through: memory is
+        the user's own ground truth, so build_rag_context answers from it
+        instead of this method telling the user to add documents.
+        """
+        if self.library_empty() and not self._memory_facts(question):
+            return EMPTY_LIBRARY
+        return self.route_direct_answer(question)
+
     def ask_raw(
         self,
         question: str,
@@ -1014,14 +1254,12 @@ class Searcher:
             return AskResult(answer=SEARCH_NEEDS_EMBEDDER, sources=[])
         if self.skip_retrieval():
             return AskResult(answer=self._direct_chat(question, history, options), sources=[])
-        if self.library_empty():
-            return AskResult(answer=EMPTY_LIBRARY, sources=[])
-        aggregate_answer = self.route_direct_answer(question)
-        if aggregate_answer is not None:
-            return AskResult(answer=aggregate_answer, sources=[])
+        pre_answer = self.pre_retrieval_answer(question)
+        if pre_answer is not None:
+            return AskResult(answer=pre_answer, sources=[])
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            return AskResult(answer=_GROUNDED_REFUSAL, sources=[])
+            return AskResult(answer=GROUNDED_REFUSAL, sources=[])
         results, messages = rag
         opts = options if options is not None else self._config.generation_options()
         try:
@@ -1102,17 +1340,14 @@ class Searcher:
         if self.skip_retrieval():
             yield from self._stream_direct(question, history, options)
             return
-        if self.library_empty():
-            yield StreamToken(content=EMPTY_LIBRARY, is_reasoning=False)
-            return
-        aggregate_answer = self.route_direct_answer(question)
-        if aggregate_answer is not None:
-            yield StreamToken(content=aggregate_answer, is_reasoning=False)
+        pre_answer = self.pre_retrieval_answer(question)
+        if pre_answer is not None:
+            yield StreamToken(content=pre_answer, is_reasoning=False)
             return
 
         rag = self.build_rag_context(question, top_k=top_k, history=history, chunk_type=chunk_type)
         if rag is None:
-            yield StreamToken(content=_GROUNDED_REFUSAL, is_reasoning=False)
+            yield StreamToken(content=GROUNDED_REFUSAL, is_reasoning=False)
             return
         results, messages = rag
         # No overflow retry here: a stream cannot be rebuilt once tokens have
@@ -1120,7 +1355,6 @@ class Searcher:
         # the streaming path's protection.
         provider_messages = self._messages_for_provider(messages)
         opts = options if options is not None else self._config.generation_options()
-        cite_filter = StreamingCitationFilter()
         events = stream_chat_with_cap(
             self._provider,
             cast("list[dict[str, Any]]", provider_messages),
@@ -1129,6 +1363,24 @@ class Searcher:
             show_reasoning=self._config.show_reasoning,
             cap_chars=effective_reasoning_cap(),
         )
+        yield from self._filtered_answer_tokens(events)
+        # A model that emits its own trailing Sources block has had it dropped by
+        # the filter above; this authoritative list is numbered to match the
+        # ``[n]`` markers the model used, so every citation resolves to a line.
+        block = format_sources_block(results)
+        if block:
+            yield StreamToken(content=block, is_reasoning=False)
+
+    def _filtered_answer_tokens(
+        self, events: Generator[Any, None, None]
+    ) -> Generator[StreamToken, None, None]:
+        """Pump model events through the streaming citation filter.
+
+        Reasoning tokens pass through untouched; answer tokens are withheld
+        while they could still be the start of a model-authored Sources
+        block, and any held-back tail is released when the stream ends.
+        """
+        cite_filter = StreamingCitationFilter()
         try:
             for token in cap_events_as_stream_tokens(events):
                 if token.is_reasoning:
@@ -1142,9 +1394,3 @@ class Searcher:
         tail = cite_filter.flush()
         if tail:
             yield StreamToken(content=tail, is_reasoning=False)
-        # A model that emits its own trailing Sources block has had it dropped by
-        # the filter above; this authoritative list is numbered to match the
-        # ``[n]`` markers the model used, so every citation resolves to a line.
-        block = format_sources_block(results)
-        if block:
-            yield StreamToken(content=block, is_reasoning=False)

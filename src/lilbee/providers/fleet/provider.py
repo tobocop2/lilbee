@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
 from lilbee.catalog import clean_display_name
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.base import ProviderError, ProviderErrorKind
+from lilbee.providers.base import ProviderError, ProviderErrorKind, prompt_token_budget
 from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
@@ -66,8 +66,6 @@ if TYPE_CHECKING:
 _PROVIDER_NAME = "llama-server"
 # Tokens held back from the served context for the model's own generation when the
 # request does not cap it, plus a margin for chat-template overhead and estimate drift.
-_DEFAULT_GENERATION_RESERVE = 1024
-_CONTEXT_WINDOW_MARGIN = 128
 # Minimal input used to pre-load a role's upstream during warm-up (llama-swap
 # starts an upstream on its first request, so warming issues one cheap call).
 _WARM_PROMPT = "warm"
@@ -650,10 +648,15 @@ class FleetProvider:
             # ctx, slots, and budgets against it (a live probe under a loaded
             # fleet would report our own residency as unavailable). Inside the
             # try: capturing resolves the engine binary, and a binary-less
-            # host must serve nothing, not raise.
+            # host must serve nothing, not raise. Every other planning failure
+            # (a wedged GPU probe, an unusable CUDA runtime) propagates so the
+            # warm tracker and the caller report the real reason instead of a
+            # silent never-ready fleet.
             planning.capture_plan_probe()
             plan = planning.plan_all_launches()
-        except ProviderError:
+        except ProviderError as exc:
+            if exc.kind is not ProviderErrorKind.NOT_FOUND:
+                raise
             log.debug("Engine binary unavailable; no swap started")
             plan = None
         self._skipped_not_installed = dict(plan.skipped_not_installed) if plan else {}
@@ -752,6 +755,14 @@ class FleetProvider:
                     timeout=_request_timeout_s(launch.weights_bytes),
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
+                    # A cold embed replica 429s bulk ingest until its slots load; wait
+                    # out the same cold-load budget llama-swap keeps it alive for so a
+                    # burst never drops files while the server is legitimately warming.
+                    embed_busy_deadline_s=(
+                        cold_load_timeout_s(launch.weights_bytes)
+                        if role is WorkerRole.EMBED
+                        else None
+                    ),
                 )
                 for launch in role_launches
             ]
@@ -1084,8 +1095,7 @@ class FleetProvider:
         # a real per-slot context is always positive, so skip windowing.
         if not self._chat_ctx:
             return messages
-        reserve = (options or {}).get("num_predict") or _DEFAULT_GENERATION_RESERVE
-        budget = self._chat_ctx - reserve - _CONTEXT_WINDOW_MARGIN
+        budget = prompt_token_budget(self._chat_ctx, (options or {}).get("num_predict"))
         result = window_messages(messages, tools, budget)
         if not result.fits:
             raise ProviderError(
@@ -1320,7 +1330,7 @@ class FleetProvider:
                 # keep the full traceback at debug: a WARNING carrying exc_info
                 # reads like a crash for a condition the next real call recovers
                 # from.
-                log.warning("Engine warm-up failed; roles will load on first use: %s", exc)
+                log.warning("Engine warm-up failed: %s", exc)
                 log.debug("Engine warm-up failure detail.", exc_info=True)
             self._fail_warm_unless_ready(str(exc))
         finally:

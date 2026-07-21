@@ -15,6 +15,33 @@ class LilbeeAppHost(LilbeeApp):
 
 _GATE_HANDOVER_TIMEOUT_S = 20.0
 _GATE_POLL_S = 0.02
+_PUMP_TIMEOUT_S = 5.0
+
+
+async def pump_until(pilot, predicate, *, timeout_s: float = _PUMP_TIMEOUT_S) -> bool:
+    """Pump Textual's message bus until *predicate* holds; return whether it did.
+
+    One ``pilot.pause()`` flushes a single hop of the bus. An effect that spans
+    two or more hops (focus change, the widget's blur handler, the message it
+    posts, the screen's handler, the write) is not guaranteed to have landed
+    after one pause, which is why a bare pause passes locally and fails on a
+    loaded runner. Bounded by wall clock rather than a pump count so a slow
+    runner gets more attempts rather than the same fixed few.
+
+    Returns a bool instead of asserting so the caller keeps its own assertion,
+    and with it the failure message that says what was actually expected.
+    """
+    import asyncio
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        await pilot.pause()
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(_GATE_POLL_S)
 
 
 async def await_chat(app, pilot) -> object:

@@ -333,6 +333,46 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.GENERATION,
         help_text="System prompt sent when there are no documents to ground the answer",
     ),
+    "chat_compaction": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): when a chat outgrows the model's context window the oldest "
+            "turns are dropped. They stay on screen but the model stops seeing them, and "
+            "the context chip by the prompt shows the window filling. Costs nothing. "
+            "On: those turns are condensed into a short summary the model keeps reading, "
+            "so it still knows roughly what was said. That costs one extra model call each "
+            "time it fires, pausing the reply for a few seconds on a GPU and considerably "
+            "longer on a CPU-only machine. Worth turning on if your hardware is quick."
+        ),
+    ),
+    "sessions_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "On (default): conversations are saved automatically, and you can list, "
+            "resume, rename, and delete them from the Sessions drawer (ctrl+o), the "
+            "Sessions tab, and the /sessions command. Off: nothing is written to disk, "
+            "the ctrl+o binding leaves the footer, and opening the Sessions view shows a "
+            "notice that sessions are turned off. Turn it off if you would rather your "
+            "chats not persist. Covers the TUI, the HTTP server, and the CLI; agent "
+            "sessions have their own setting."
+        ),
+    ),
+    "mcp_sessions_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the session tools are not offered over MCP, and a connected "
+            "agent cannot create or read agent sessions. On: an agent can keep its own "
+            "saved conversations, separate from yours. Most agent hosts already track "
+            "their own history, and the tools cost context on every request, so this "
+            "stays off unless you want an agent owning conversations."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,
@@ -856,6 +896,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Route document-name lookups to exact retrieval, count questions to a scan",
     ),
+    "intent_llm": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text=(
+            "Classify count questions with the chat model when the fast patterns "
+            "miss (covers phrasing variants and other languages; adds one short "
+            "LLM call to those turns)"
+        ),
+    ),
     "ann_index_threshold": SettingDef(
         int,
         nullable=False,
@@ -936,6 +986,12 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.RETRIEVAL,
         help_text="Drop expansions that diverge from the original intent",
     ),
+    "adaptive_threshold": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.RETRIEVAL,
+        help_text="Widen the distance cutoff when too few results pass (vector-only fallback path)",
+    ),
     "adaptive_threshold_step": SettingDef(
         float,
         nullable=False,
@@ -953,12 +1009,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.RETRIEVAL,
         help_text="Maximum boost (0-1) the concept graph can add to a chunk's relevance",
-    ),
-    "concept_boost_floor": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.RETRIEVAL,
-        help_text="Minimum cosine similarity needed before the concept graph boosts a chunk",
     ),
     "concept_max_per_chunk": SettingDef(
         int,

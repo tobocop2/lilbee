@@ -233,9 +233,14 @@ class FleetBody(Widget):
             view = get_placement()
         except Exception as exc:
             log.debug("Failed to load placement", exc_info=True)
-            call_from_thread(self, self.notify, str(exc), severity="error")
+            call_from_thread(self, self._render_load_failure, str(exc))
             return
         call_from_thread(self, self._render_view, view)
+
+    def _render_load_failure(self, reason: str) -> None:
+        """Name the placement-load failure in the panel instead of probing forever."""
+        self.query_one(_FLEET_PANEL_ID, GpuFleetPanel).set_probe_failed(reason)
+        self.notify(reason, severity="error")
 
     # -- rendering -------------------------------------------------------
 

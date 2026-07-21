@@ -38,6 +38,7 @@ from lilbee.crawler.save import (
     normalize_crawled_markdown,
 )
 from lilbee.runtime.progress import EventType
+from tests._mock_effects import repeat_last
 from tests._sys_modules import inject_modules
 
 
@@ -524,7 +525,7 @@ class TestCrawlSingle:
             side_effect=RuntimeError("launch: Executable doesn't exist at chromium-1208/...")
         )
         fail_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(side_effect=[fail_instance, ok_instance])
+        mock_crawler_cls = MagicMock(side_effect=repeat_last(fail_instance, ok_instance))
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
         bootstrapped: list[bool] = []
 
@@ -548,7 +549,7 @@ class TestCrawlSingle:
         retry_fail = AsyncMock()
         retry_fail.__aenter__ = AsyncMock(side_effect=RuntimeError("still broken after bootstrap"))
         retry_fail.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(side_effect=[fail_instance, retry_fail])
+        mock_crawler_cls = MagicMock(side_effect=repeat_last(fail_instance, retry_fail))
         mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
         async def fake_bootstrap(on_progress):

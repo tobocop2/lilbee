@@ -47,11 +47,11 @@ def _blend_scores(
 ) -> list[ScoredChunk]:
     """Blend fusion scores with reranker scores using position-aware weights.
 
-    Both inputs are already min-max normalized to [0, 1] (``fusion_norms`` within
-    each scoring family, ``norm_scores`` across the reranker scores), so a strong
-    hybrid hit whose raw RRF score is tiny in absolute terms still earns real
-    fusion weight. Each chunk is copied with ``rerank_score`` set to its blended
-    score; the input chunks are left untouched.
+    Both inputs are already min-max normalized to [0, 1] (``fusion_norms``
+    across the pool's canonical scores, ``norm_scores`` across the reranker
+    scores), so the blend weights compare like with like. Each chunk is
+    copied with ``rerank_score`` set to its blended score; the input chunks
+    are left untouched.
     """
     blended: list[ScoredChunk] = []
     for i, (chunk, rerank_score, fusion_norm) in enumerate(

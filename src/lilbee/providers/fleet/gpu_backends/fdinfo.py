@@ -16,7 +16,8 @@ so a workload split across processes still reads correctly.
 
 This needs no elevated privileges (a process can read its own and same-user
 clients' fdinfo) and no extra tool, but the engine counters only exist on kernels
-new enough to publish them (i915 landed them in ~6.2); older kernels omit the
+new enough to publish them (i915 landed them in 5.19 for execlists submission,
+6.5 where GuC submission is active); older kernels omit the
 ``drm-engine-*`` lines and this reader reports nothing, letting a caller fall back.
 """
 

@@ -18,7 +18,7 @@ from textual.widgets import Static
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.thread_safe import call_from_thread
-from lilbee.providers.fleet.gpu_stats import GpuStat, intel_grant_binary, probe_gpu_stats
+from lilbee.providers.fleet.gpu_stats import GpuStat, intel_util_hint, probe_gpu_stats
 
 if TYPE_CHECKING:
     from lilbee.providers.fleet.gpu_stats import DeviceLike
@@ -178,6 +178,9 @@ class GpuFleetPanel(Static):
         # False until the parent device probe reports its result via set_devices;
         # gates the empty-GPUs text so a cold start holds the probing placeholder.
         self._probed = False
+        # The device probe's failure reason; while set, ticks pause and the panel
+        # shows the failure instead of stats.
+        self._probe_error: str | None = None
 
     def set_devices(
         self,
@@ -195,6 +198,15 @@ class GpuFleetPanel(Static):
         self._labels = dict(labels)
         self._roles = dict(roles) if roles is not None else {}
         self._probed = True
+        self._probe_error = None
+
+    def set_probe_failed(self, reason: str) -> None:
+        """Render the device probe's failure instead of the probing placeholder."""
+        self._probed = True
+        self._probe_error = reason
+        theme = self._resolve_theme()
+        error = _theme_color(theme, "error")
+        self.update(f"[{error}]  {msg.FLEET_GPU_PROBE_FAILED.format(reason=reason)}[/]")
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(_TICK_INTERVAL_S, self._request_stats)
@@ -208,7 +220,7 @@ class GpuFleetPanel(Static):
 
     def _request_stats(self) -> None:
         """Kick off an off-thread stats probe unless one is already in flight."""
-        if self._probing:
+        if self._probing or self._probe_error is not None:
             return
         self._probing = True
         self._probe_worker(
@@ -249,11 +261,14 @@ class GpuFleetPanel(Static):
         roles: dict[int, str],
     ) -> None:
         """Update the rendered content with fresh stat data (main thread)."""
+        if self._probe_error is not None:
+            # A stats worker already in flight when the probe failure landed
+            # must not repaint the empty state over the failure message.
+            return
         theme = self._resolve_theme()
         markup = _render_stats(stats, labels, roles, theme, probed=self._probed)
-        binary = intel_grant_binary(self._devices, stats)
-        if binary:
+        hint = intel_util_hint(self._devices, stats)
+        if hint:
             muted = _theme_color(theme, "text-muted")
-            hint = msg.FLEET_INTEL_UTIL_GRANT.format(binary=binary)
-            markup += f"\n[{muted}]  {hint}[/]"
+            markup += f"\n[{muted}]  {msg.intel_util_hint_text(hint)}[/]"
         self.update(markup)

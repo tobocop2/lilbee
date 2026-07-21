@@ -9,6 +9,7 @@ from lilbee.retrieval.query.dedup import (
     sort_by_relevance,
 )
 from lilbee.retrieval.query.formatting import (
+    SOURCES_BLOCK_MARKER,
     build_context,
     display_source_path,
     format_source,
@@ -18,6 +19,7 @@ from lilbee.retrieval.query.formatting import (
 from lilbee.retrieval.query.searcher import AskResult, ChatMessage, Searcher
 
 __all__ = [
+    "SOURCES_BLOCK_MARKER",
     "AskResult",
     "ChatMessage",
     "Searcher",

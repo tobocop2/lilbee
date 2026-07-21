@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from lilbee.cli.launchers import hermes_mcp
+from tests._mock_effects import repeat_last
 
 
 def _script(tmp_path, shebang: str):
@@ -70,7 +71,7 @@ def test_ensure_installs_pinned_extra_when_missing_and_allowed(tmp_path):
     binary = _script(tmp_path, "#!/opt/venv/bin/python")
     msgs: list[str] = []
     with (
-        patch.object(hermes_mcp, "has_http_mcp", side_effect=[False, True]),
+        patch.object(hermes_mcp, "has_http_mcp", side_effect=repeat_last(False, True)),
         patch.object(hermes_mcp, "_mcp_extra_requirements", return_value=["mcp==1.26.0"]),
         patch.object(hermes_mcp.subprocess, "run") as run,
     ):
@@ -96,13 +97,30 @@ def test_ensure_respects_security_gate_and_guides(tmp_path):
 def test_ensure_guides_when_install_did_not_take(tmp_path):
     binary = _script(tmp_path, "#!/opt/venv/bin/python")
     msgs: list[str] = []
+    proc = SimpleNamespace(returncode=1, stderr="error: externally-managed-environment", stdout="")
     with (
-        patch.object(hermes_mcp, "has_http_mcp", side_effect=[False, False]),
+        patch.object(hermes_mcp, "has_http_mcp", side_effect=repeat_last(False, False)),
         patch.object(hermes_mcp, "_mcp_extra_requirements", return_value=["mcp"]),
-        patch.object(hermes_mcp.subprocess, "run"),
+        patch.object(hermes_mcp.subprocess, "run", return_value=proc),
     ):
         assert _ensure(binary, msgs) is False
+    # Surfaces WHY the install did not take (the common pip-less / externally-managed
+    # tool env), so the operator can fix it instead of running silently ungrounded.
+    assert any("externally-managed-environment" in m for m in msgs)
+    assert any("exit 1" in m for m in msgs)
     assert any("hermes-agent[mcp]" in m for m in msgs)
+
+
+def test_install_failure_reason_empty_when_no_output():
+    proc = SimpleNamespace(returncode=1, stderr="", stdout="")
+    assert hermes_mcp._install_failure_reason(proc) == ""
+
+
+def test_install_failure_reason_uses_last_stderr_line():
+    proc = SimpleNamespace(returncode=2, stderr="noise\nfinal cause line\n", stdout="")
+    reason = hermes_mcp._install_failure_reason(proc)
+    assert "final cause line" in reason
+    assert "exit 2" in reason
 
 
 def test_ensure_guides_when_interpreter_unknown(tmp_path):

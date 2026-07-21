@@ -327,6 +327,9 @@ def _isolate_cfg(tmp_path, request):
     snapshot = cfg.model_copy()
     cfg.models_dir = tmp_path / "models"
     cfg.data_root = tmp_path / "data_root"
+    # data_dir defaults to the real platform dir; isolate it like its siblings so
+    # tests that persist under it (e.g. chat session auto-save) stay hermetic.
+    cfg.data_dir = tmp_path / "data"
     # Clear any provider API keys the developer has in their real config.toml
     # so tests run hermetically, as CI does (no keys). Otherwise a configured
     # key makes a cloud model "available" and leaks into model discovery and

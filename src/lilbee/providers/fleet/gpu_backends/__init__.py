@@ -14,7 +14,12 @@ from lilbee.providers.fleet.gpu_backends.amd import AmdBackend
 from lilbee.providers.fleet.gpu_backends.apple import BACKEND_KEY as _APPLE_KEY
 from lilbee.providers.fleet.gpu_backends.apple import AppleBackend
 from lilbee.providers.fleet.gpu_backends.base import UtilBackend, UtilSample
-from lilbee.providers.fleet.gpu_backends.intel import IntelBackend, intel_gpu_top_grant_binary
+from lilbee.providers.fleet.gpu_backends.intel import (
+    IntelBackend,
+    IntelHintKind,
+    IntelUtilHint,
+    intel_util_hint,
+)
 from lilbee.providers.fleet.gpu_backends.nvidia import NvidiaBackend
 
 # Maps the backend string that llama-server --list-devices emits to the backend
@@ -67,9 +72,11 @@ def util_backend_name(backend: str, name: str) -> str:
 
 
 __all__ = [
+    "IntelHintKind",
+    "IntelUtilHint",
     "UtilBackend",
     "UtilSample",
-    "intel_gpu_top_grant_binary",
+    "intel_util_hint",
     "resolve_backend",
     "util_backend_name",
 ]

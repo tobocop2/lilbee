@@ -21,6 +21,7 @@ from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import list_installed_models
+from tests._mock_effects import repeat_last
 
 runner = CliRunner()
 
@@ -1234,19 +1235,18 @@ class TestSearch:
         assert result.exit_code != 0
         assert "must not be empty" in result.output
 
-    def test_search_applies_max_distance_filter(self, mock_svc, monkeypatch):
-        """CLI search drops chunks beyond cfg.max_distance, like REST and MCP."""
-        from lilbee.core.config import cfg
-
-        monkeypatch.setattr(cfg, "max_distance", 0.5)
-        near = _MOCK_SEARCH_RESULTS[0]  # distance 0.25
-        far = _MOCK_SEARCH_RESULTS[0].model_copy(update={"source": "far.pdf", "distance": 0.9})
-        mock_svc.searcher.search.return_value = [near, far]
+    def test_search_returns_searcher_results_unfiltered(self, mock_svc):
+        """The relevance cutoff lives in Searcher.search (with the
+        lexical-support exemption); the CLI must not re-filter on bare
+        distance, which dropped both-arm rows fusion deliberately keeps."""
+        supported = _MOCK_SEARCH_RESULTS[0].model_copy(
+            update={"source": "far-but-lexical.pdf", "distance": 1.4, "bm25_score": 12.0}
+        )
+        mock_svc.searcher.search.return_value = [supported]
         result = runner.invoke(app, ["--json", "search", "q"])
         assert result.exit_code == 0
         sources = [r["source"] for r in json.loads(result.output.strip())["results"]]
-        assert "manual.pdf" in sources
-        assert "far.pdf" not in sources
+        assert sources == ["far-but-lexical.pdf"]
 
     def test_search_human_output(self, mock_svc):
         mock_svc.searcher.search.return_value = _MOCK_SEARCH_RESULTS
@@ -3865,7 +3865,7 @@ class TestSelfCheck:
         with (
             mock.patch(
                 "lilbee.cli.commands.setup._download_self_check_model",
-                side_effect=[chat, emb],
+                side_effect=repeat_last(chat, emb),
             ),
             chat_patch,
             embed_patch,
@@ -4347,7 +4347,7 @@ class TestDownloadSelfCheckModel:
                 return b"ok"
 
         urlopen = mock.Mock(
-            side_effect=[urllib.error.URLError("flaky"), _Resp()],
+            side_effect=repeat_last(urllib.error.URLError("flaky"), _Resp()),
         )
         with (
             mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),

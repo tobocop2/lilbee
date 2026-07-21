@@ -241,7 +241,25 @@ jobs:
           key: nuitka-${{ matrix.os }}-${{ matrix.backend }}
           max-size: '2G'
           # Tag-scoped cache saves are unrestorable by future runs; don't evict useful ones.
+          # warm-executables-cache.yml runs this workflow on main so these saves happen.
           save: ${{ github.ref_type != 'tag' }}
+
+      # Windows has no ccache; Nuitka's own cache (MSVC object caching plus its
+      # dependency-analysis caches) is what cuts the ~4h cold compile. Restored
+      # from main-saved caches (warm-executables-cache.yml) -- tag-scoped saves
+      # are unrestorable, same story as ccache above.
+      - name: Restore Nuitka cache (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
+          restore-keys: nuitka-${{ matrix.asset_name }}-
+
+      - name: Point Nuitka at the cache dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "NUITKA_CACHE_DIR=${GITHUB_WORKSPACE}/nuitka-cache" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         if: matrix.os != 'macos-15-intel'
@@ -277,7 +295,19 @@ jobs:
       - name: Verify extras installed in build venv
         shell: bash
         # --no-sync is load-bearing: re-syncing reinstalls python-multipart and shadows the shim.
-        run: uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"
+        # One retry with a purged uv cache: a hardlink-fallback race can leave a
+        # mixed-version package on disk (one litellm's redis_cache.py beside an
+        # older constants.py) that only an import catches. Without the purge the
+        # re-sync relinks the same corrupted cache entries.
+        run: |
+          check() { uv run --no-sync python -c "import crawl4ai, litellm, spacy, graspologic_native; print('extras OK')"; }
+          if ! check; then
+            echo "extras import failed; purging the uv cache and re-syncing once"
+            uv cache clean
+            uv sync --reinstall --extra release
+            uv pip install 'nuitka[onefile]>=4.0,<5' pip
+            check
+          fi
 
       # Nuitka bundles these dylibs, and dyld enforces each one's minos separately
       # from the launcher's, so one dep built on a newer runner silently ships a
@@ -331,6 +361,15 @@ jobs:
           CXXFLAGS: ${{ matrix.march && format('-march={0}', matrix.march) || '' }}
         run: bash tools/wheel-build/build_lilbee_binary.sh
 
+      # Save even when the build's smoke test later fails -- the objects are
+      # still valid and make the retry fast. Non-tag only, like ccache.
+      - name: Save Nuitka cache (Windows)
+        if: runner.os == 'Windows' && github.ref_type != 'tag'
+        uses: actions/cache/save@v4
+        with:
+          path: nuitka-cache
+          key: nuitka-${{ matrix.asset_name }}-${{ github.run_id }}
+
       # The manylinux container ships no gh CLI; the model-mirror restore below
       # and the release attach at the end both need it.
       - name: Install gh CLI in the build container
@@ -342,6 +381,18 @@ jobs:
           dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
           dnf install -y gh
           gh --version
+
+      # The onefile build leaves multi-GB intermediates beside the final binary,
+      # and a runner has died of a full disk while restoring the smoke models
+      # after a SUCCESSFUL build. Drop them before the models come down; runs
+      # after the Windows Nuitka cache save so nothing cache-worthy is lost.
+      # ccache stays: its post-job hook still has to save it.
+      - name: Reclaim build-intermediate disk before the smoke models
+        shell: bash
+        run: |
+          df -h . 2>/dev/null || true
+          rm -rf dist/*.build dist/*.dist dist/*.onefile-build nuitka-cache
+          df -h . 2>/dev/null || true
 
       - name: Restore CI models (inference smoke)
         uses: ./.github/actions/restore-ci-models

@@ -16,6 +16,7 @@ import pytest
 
 from lilbee.cli.launchers import server as server_mod
 from lilbee.core.config import cfg
+from tests._mock_effects import repeat_last
 
 
 @pytest.fixture()
@@ -23,10 +24,11 @@ def _capture_popen():
     """Patch Popen to record the stdout/stderr kwargs without spawning."""
     captured: dict = {}
 
-    def fake_popen(cmd, *, stdout, stderr):
+    def fake_popen(cmd, *, stdout, stderr, env=None):
         captured["cmd"] = cmd
         captured["stdout"] = stdout
         captured["stderr"] = stderr
+        captured["env"] = env
         return mock.MagicMock()
 
     with mock.patch.object(server_mod.subprocess, "Popen", side_effect=fake_popen):
@@ -192,20 +194,27 @@ class TestEnsureServerRunningRetries:
     def test_retries_with_a_fresh_port_then_succeeds(self, monkeypatch) -> None:
         first, second = self._proc(), self._proc()
         monkeypatch.setattr(
-            server_mod, "running_server_session", mock.MagicMock(side_effect=[None, ("tok", 2222)])
+            server_mod,
+            "running_server_session",
+            mock.MagicMock(side_effect=repeat_last(None, ("tok", 2222))),
         )
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1111, 2222]))
-        spawn = mock.MagicMock(side_effect=[first, second])
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(1111, 2222))
+        )
+        spawn = mock.MagicMock(side_effect=repeat_last(first, second))
         monkeypatch.setattr(server_mod, "spawn_server", spawn)
         monkeypatch.setattr(
-            server_mod, "wait_for_health", mock.MagicMock(side_effect=[False, True])
+            server_mod, "wait_for_health", mock.MagicMock(side_effect=repeat_last(False, True))
         )
 
         session, spawned = server_mod.ensure_server_running()
 
         assert session == ("tok", 2222)
         assert spawned is second
-        assert spawn.call_args_list == [mock.call(1111), mock.call(2222)]
+        assert spawn.call_args_list == [
+            mock.call(1111, env_overrides=None),
+            mock.call(2222, env_overrides=None),
+        ]
         first.terminate.assert_called_once()
         second.terminate.assert_not_called()
 
@@ -214,7 +223,9 @@ class TestEnsureServerRunningRetries:
 
         procs = [self._proc() for _ in range(server_mod._SPAWN_ATTEMPTS)]
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1, 2, 3]))
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(1, 2, 3))
+        )
         spawn = mock.MagicMock(side_effect=procs)
         monkeypatch.setattr(server_mod, "spawn_server", spawn)
         monkeypatch.setattr(server_mod, "wait_for_health", lambda _p: False)
@@ -232,9 +243,13 @@ class TestEnsureServerRunningRetries:
 
         monkeypatch.setattr(cfg, "server_port", 8080)
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1, 2, 3]))
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(1, 2, 3))
+        )
         seen: list[int] = []
-        monkeypatch.setattr(server_mod, "_spawn_and_wait", lambda port: seen.append(port) or None)
+        monkeypatch.setattr(
+            server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
+        )
         with pytest.raises(typer.Exit):
             server_mod.ensure_server_running()
         # The pinned port is used every attempt so a persisted URL stays valid.
@@ -245,9 +260,13 @@ class TestEnsureServerRunningRetries:
 
         monkeypatch.setattr(cfg, "server_port", 0)
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[7, 8, 9]))
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(7, 8, 9))
+        )
         seen: list[int] = []
-        monkeypatch.setattr(server_mod, "_spawn_and_wait", lambda port: seen.append(port) or None)
+        monkeypatch.setattr(
+            server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
+        )
         with pytest.raises(typer.Exit):
             server_mod.ensure_server_running()
         assert seen == [7, 8, 9]

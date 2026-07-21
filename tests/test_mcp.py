@@ -165,38 +165,45 @@ class TestSearch:
         assert call_kwargs["chunk_type"] is None
         assert any("unknown scope" in record.message for record in caplog.records)
 
-    def test_filters_irrelevant_results(self, mock_svc):
-        """Results with distance > max_distance are excluded."""
-        cfg.max_distance = 0.8
+    def test_returns_searcher_results_unfiltered(self, mock_svc):
+        """The relevance cutoff lives in Searcher.search (with the
+        lexical-support exemption); MCP must not re-filter on bare distance,
+        which dropped both-arm rows the fusion layer deliberately keeps."""
         mock_svc.searcher.search.return_value = [
             SearchChunk(
-                source="good.md",
+                source="far-but-lexical.md",
                 content_type="text",
                 page_start=0,
                 page_end=0,
                 line_start=0,
                 line_end=0,
-                chunk="relevant",
+                chunk="PX4471 spotted",
                 chunk_index=0,
                 vector=[0.1],
-                distance=0.5,
-            ),
-            SearchChunk(
-                source="bad.md",
-                content_type="text",
-                page_start=0,
-                page_end=0,
-                line_start=0,
-                line_end=0,
-                chunk="irrelevant",
-                chunk_index=0,
-                vector=[0.1],
-                distance=0.95,
+                distance=1.4,
+                bm25_score=12.0,
             ),
         ]
-        results = search("test")
-        assert len(results) == 1
-        assert results[0]["source"] == "good.md"
+        results = search("PX4471")
+        assert [r["source"] for r in results] == ["far-but-lexical.md"]
+
+    def test_embedder_mismatch_returns_structured_error(self, mock_svc):
+        """An agent gets the same adoptable-embedder fields the HTTP 409
+        carries, not just prose it would have to parse."""
+        from lilbee.data.store import EmbeddingModelMismatchError
+
+        mock_svc.searcher.search.side_effect = EmbeddingModelMismatchError(
+            persisted_model="orgA/repoA/modelA.gguf",
+            persisted_dim=768,
+            current_model="orgB/repoB/modelB.gguf",
+            current_dim=768,
+        )
+        result = search("q")
+        assert result["code"] == "INDEX_EMBEDDER_MISMATCH"
+        assert result["persisted_model"] == "orgA/repoA/modelA.gguf"
+        assert result["persisted_dim"] == 768
+        assert result["adoptable"] is True
+        assert "modelA" in result["error"]
 
     def test_omitted_top_k_falls_back_to_cfg(self, mock_svc):
         """settings_set top_k must govern search calls that omit the arg."""
@@ -1678,6 +1685,48 @@ class TestCatalogBrowseMcp:
         assert result == {"error": "bad filter"}
 
 
+# Tool families whose registration depends on ambient state: ``wiki_`` on
+# ``cfg.wiki``, ``memory_`` on ``cfg.memory_enabled``, ``session`` on
+# ``cfg.mcp_sessions_enabled``, ``crawl`` on whether the crawl4ai extra is
+# installed. They are excluded from the budget so it measures
+# one fixed surface. Counting them made the same commit measure 9672 bytes in
+# the docs-site job and 10143 on a developer box, which is how a schema
+# regression took down a website deploy while every release job stayed green.
+_AMBIENT_TOOL_PREFIXES = ("wiki_", "memory_", "session", "crawl")
+
+# Every tool a default install puts on the wire. Pinned by name so an
+# unconditionally-registered addition fails here and names itself, rather than
+# silently inflating a byte count in whichever environment happens to run it.
+_DEFAULT_TOOL_NAMES = frozenset(
+    {
+        "add",
+        "catalog_browse",
+        "clear_placement",
+        "export_dataset",
+        "get_gpus",
+        "get_placement",
+        "import_dataset",
+        "init",
+        "list_documents",
+        "model_list",
+        "model_pull",
+        "model_rm",
+        "model_show",
+        "preview_placement",
+        "remove",
+        "reset",
+        "search",
+        "set_placement",
+        "settings_get",
+        "settings_list",
+        "settings_reset",
+        "settings_set",
+        "status",
+        "sync",
+    }
+)
+
+
 class TestToolsSchemaSize:
     """Schema budget: keep the per-request OpenAI tools schema under a ceiling
     so any model with ``n_ctx >= ~16K`` has room for system + history + content
@@ -1722,12 +1771,30 @@ class TestToolsSchemaSize:
         wiki_tool_names = [t.name for t in tools if t.name.startswith("wiki_")]
         assert wiki_tool_names == []
 
+    async def test_default_install_registers_exactly_the_pinned_tools(self) -> None:
+        """The unconditionally-registered surface is exactly ``_DEFAULT_TOOL_NAMES``.
+
+        Adding a tool without gating it on a config flag or an installed extra
+        lands here first, named, instead of surfacing as a byte overflow in
+        whichever job happens to register the most tools.
+        """
+        from lilbee.mcp_server import mcp as _mcp
+
+        tools = await _mcp.list_tools()
+        registered = {t.name for t in tools if not t.name.startswith(_AMBIENT_TOOL_PREFIXES)}
+        assert registered == _DEFAULT_TOOL_NAMES, (
+            "default MCP tool surface changed: "
+            f"added {sorted(registered - _DEFAULT_TOOL_NAMES)}, "
+            f"removed {sorted(_DEFAULT_TOOL_NAMES - registered)}. Gate optional "
+            "tools with _tool_if(...) like wiki/memory/crawler, or pin the new "
+            "name here and check the budget below."
+        )
+
     async def test_default_tools_schema_under_budget(self) -> None:
-        """Default schema (wiki off, crawler off unless the extra is installed)
-        must stay under the cap so small-context (16K) chat models keep room
-        for the user's actual content. _strip_schema_noise removes title /
-        default / null-arm-anyOf / additionalProperties=true noise, hitting
-        ~5.2 KB today.
+        """The pinned default surface must stay under the cap so small-context
+        (16K) chat models keep room for the user's actual content.
+        ``_strip_schema_noise`` removes title / default / null-arm-anyOf /
+        additionalProperties=true noise.
         """
         import json as _json
 
@@ -1736,19 +1803,19 @@ class TestToolsSchemaSize:
         tools = await _mcp.list_tools()
         payload = [
             {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
-            for t in tools
+            for t in sorted(tools, key=lambda t: t.name)
+            if t.name in _DEFAULT_TOOL_NAMES
         ]
         total_bytes = len(_json.dumps(payload))
-        # Bumped 6_000 -> 7_000 (export/import tools) -> 8_800 when merging the
-        # local-model-api fleet/model-management tools with the crawl-render-mode
-        # feature (render_mode params; 23 tools total). Verbose Args sections were
-        # trimmed first (add/crawl/memory_remember). ~2.1K tokens still leaves a
-        # 16K-context model ample room for system + history + content.
-        ceiling = 8_800
+        # 8_800 originally, measured over whatever the environment registered.
+        # Pinning the surface put it at 8_799; moving the session tools behind
+        # mcp_sessions_enabled (off by default) takes them off the default wire
+        # and drops it to 6_996. 7_500 leaves room for a tool or two. Each
+        # tool's docstring becomes its schema description, so trim verbose Args
+        # sections before raising this.
+        ceiling = 7_500
         assert total_bytes <= ceiling, (
-            f"Default OpenAI tools schema is {total_bytes} bytes, exceeds "
-            f"{ceiling}. Each MCP tool's docstring becomes the schema "
-            "description; trim verbose Args sections before bumping the cap."
+            f"Default OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}."
         )
 
     async def test_no_title_noise_in_input_schema(self) -> None:

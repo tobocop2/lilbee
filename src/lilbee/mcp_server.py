@@ -13,6 +13,7 @@ import re
 import threading
 import uuid
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
@@ -54,11 +55,23 @@ from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import (
+    EmbeddingModelMismatchError,
     MemoryKind,
     MemorySource,
     SearchScope,
     agent_owner,
     scope_to_chunk_type,
+)
+from lilbee.sessions import (
+    AGENT_SESSIONS_DISABLED_HINT,
+    MessageRole,
+    Session,
+    SessionMessage,
+    SessionNotFoundError,
+    SessionOrigin,
+    SessionOwnershipError,
+    TitleSource,
+    agent_sessions_enabled,
 )
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
@@ -193,8 +206,17 @@ def search(
         results = get_services().searcher.search(
             query, top_k=effective_top_k, chunk_type=chunk_type
         )
-        results = [r for r in results if r.distance is None or r.distance <= cfg.max_distance]
         return [clean_result(r) for r in results]
+    except EmbeddingModelMismatchError as exc:
+        # Structured, like the HTTP 409: an agent can offer to adopt the
+        # index's embedder instead of parsing prose out of a generic error.
+        return {
+            "error": str(exc),
+            "code": "INDEX_EMBEDDER_MISMATCH",
+            "persisted_model": exc.persisted_model,
+            "persisted_dim": exc.persisted_dim,
+            "adoptable": exc.dims_match,
+        }
     except Exception as exc:
         return _error(str(exc))
 
@@ -433,6 +455,132 @@ def list_documents() -> dict[str, Any]:
         ],
         "total": len(sources),
     }
+
+
+_AGENT_ORIGINS = frozenset({SessionOrigin.MCP})
+
+
+def _require_agent_session(session_id: str) -> Session:
+    """Human conversations are private: foreign ids answer not-found, so an
+    agent cannot even probe which ones exist."""
+    session = get_services().session_store.get(session_id)
+    if session.meta.origin is not SessionOrigin.MCP:
+        raise SessionNotFoundError(session_id)
+    return session
+
+
+@_tool_if(agent_sessions_enabled())
+def sessions_list() -> dict[str, Any]:
+    """List the agent's sessions, newest first."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    metas = get_services().session_store.list(origins=_AGENT_ORIGINS)
+    return {"sessions": [asdict(meta) for meta in metas], "total": len(metas)}
+
+
+@_tool_if(agent_sessions_enabled())
+def session_get(session_id: str) -> dict[str, Any]:
+    """Return one agent session: metadata, transcript, summary."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    try:
+        session = _require_agent_session(session_id)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {
+        "meta": asdict(session.meta),
+        "messages": [
+            {
+                "role": message.role.value,
+                "content": message.content,
+                "sources": list(message.sources),
+                "ts": message.ts,
+            }
+            for message in session.messages
+        ],
+        # What compaction folded the older turns into (empty if never compacted).
+        # An agent that resumes and continues the conversation needs it, or it
+        # rebuilds history without what was already condensed.
+        "summary": session.summary,
+    }
+
+
+@_tool_if(agent_sessions_enabled())
+def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
+    """Start a saved chat session; returns its id."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    session_id = get_services().session_store.create(
+        model_ref=model_ref, scope=scope, origin=SessionOrigin.MCP
+    )
+    return {"id": session_id, "model_ref": model_ref, "scope": scope}
+
+
+@_tool_if(agent_sessions_enabled())
+def session_add_message(
+    session_id: str,
+    role: MessageRole,
+    content: str,
+    sources: list[str] | None = None,
+    claim: bool = False,
+) -> dict[str, Any]:
+    """Append one turn; a foreign session errors unless claim=True (ask first)."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    store = get_services().session_store
+    try:
+        # Re-coerce: the MCP layer passes the enum, but a raw string still
+        # arrives via direct library calls, and a bad one must error cleanly.
+        message = SessionMessage(
+            role=MessageRole(role), content=content, sources=tuple(sources or ())
+        )
+        if claim:
+            store.transfer(session_id, SessionOrigin.MCP)
+        store.add_message(session_id, message, surface=SessionOrigin.MCP)
+    except (SessionNotFoundError, SessionOwnershipError) as exc:
+        return _error(str(exc))
+    except ValueError as exc:
+        return _error(f"invalid role {role!r}: {exc}")
+    return {"id": session_id, "added": True}
+
+
+@_tool_if(agent_sessions_enabled())
+def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
+    """Replace an agent session's compaction summary."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    try:
+        _require_agent_session(session_id)
+        get_services().session_store.set_summary(session_id, summary)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {"id": session_id, "summary": summary}
+
+
+@_tool_if(agent_sessions_enabled())
+def session_rename(session_id: str, title: str) -> dict[str, Any]:
+    """Rename an agent session."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    try:
+        _require_agent_session(session_id)
+        get_services().session_store.set_title(session_id, title, TitleSource.CUSTOM)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {"id": session_id, "title": title}
+
+
+@_tool_if(agent_sessions_enabled())
+def session_delete(session_id: str) -> dict[str, Any]:
+    """Delete an agent session."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    try:
+        _require_agent_session(session_id)
+        get_services().session_store.delete(session_id)
+    except SessionNotFoundError as exc:
+        return _error(str(exc))
+    return {"id": session_id, "deleted": True}
 
 
 @_tool
@@ -1151,7 +1299,19 @@ def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
 @_tool_named("get_gpus")
 def get_gpus_tool() -> dict[str, Any]:
     """List detected GPUs with free/total VRAM (the placement HTTP /api/gpus equivalent)."""
-    return _placement_guard(lambda: {"gpus": _placement_dict(get_placement())["gpus"]})
+
+    def _body() -> dict[str, Any]:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
+
+        view = get_placement()
+        hint = probe_intel_util_hint(view.gpus)
+        return {
+            "gpus": _placement_dict(view)["gpus"],
+            "notice": msg.intel_util_hint_text(hint) if hint else None,
+        }
+
+    return _placement_guard(_body)
 
 
 @_tool_named("get_placement")

@@ -75,13 +75,14 @@ from lilbee.server.handlers.sse import (
     sse_event,
 )
 from lilbee.server.models import (
-    GpuInfoResponse,
+    GpusResponse,
     HealthResponse,
     PlacementResponse,
     StatusResponse,
 )
 
 if TYPE_CHECKING:
+    from lilbee.app.placement import GpuInfo, PlacementView
     from lilbee.providers.base import LLMProvider
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
@@ -93,30 +94,36 @@ _WARM_POLL_INTERVAL_S = 0.25
 _WARM_STREAM_TIMEOUT_S = 1800.0
 
 
-def _chat_status(provider: LLMProvider) -> Literal["ready", "loading", "not_started", "error"]:
-    """Classify the chat engine's readiness for /api/health.
+def _chat_status(
+    provider: LLMProvider,
+) -> tuple[Literal["ready", "loading", "not_started", "error"], str | None]:
+    """Classify the chat engine's readiness for /api/health, with the error reason.
 
-    ``ready`` once the role serves; ``error`` when warm-up failed; ``loading``
-    while a warm is in flight; ``not_started`` when nothing is warming and the role
-    isn't up (no chat model planned, or chat is swapped out for its co-tenant; the
-    next chat request loads it).
+    ``ready`` once the role serves; ``error`` when warm-up failed (paired with the
+    warm tracker's reason); ``loading`` while a warm is in flight; ``not_started``
+    when nothing is warming and the role isn't up (no chat model planned, or chat
+    is swapped out for its co-tenant; the next chat request loads it).
     """
     if provider.role_ready(WorkerRole.CHAT):
-        return "ready"
+        return "ready", None
     snapshot = provider.warm_progress()
     if snapshot is None:
-        return "not_started"
-    return "error" if snapshot.phase is WarmPhase.ERROR else "loading"
+        return "not_started", None
+    if snapshot.phase is WarmPhase.ERROR:
+        return "error", snapshot.error
+    return "loading", None
 
 
 async def health() -> HealthResponse:
     """Return service health, version, and whether the chat engine is warm."""
     provider = get_services().provider
+    chat_status, chat_error = _chat_status(provider)
     return HealthResponse(
         status="ok",
         version=get_version(),
         chat_ready=provider.role_ready(WorkerRole.CHAT),
-        chat_status=_chat_status(provider),
+        chat_status=chat_status,
+        chat_error=chat_error,
         chat_ctx=provider.served_chat_ctx(),
     )
 
@@ -152,7 +159,7 @@ _GPU_STATS_INTERVAL_S = 1.0
 
 
 async def gpu_stats_stream(
-    devices: Sequence[object],
+    devices: Sequence[GpuInfo],
     interval_s: float = _GPU_STATS_INTERVAL_S,
     max_ticks: int | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -166,16 +173,16 @@ async def gpu_stats_stream(
     clients don't time out.
     """
     from lilbee.cli.tui import messages as msg
-    from lilbee.providers.fleet.gpu_stats import intel_grant_binary, probe_gpu_stats
+    from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats
 
     last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
-        stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
+        stats = probe_gpu_stats(devices)
         payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
-        binary = intel_grant_binary(devices, stats)  # type: ignore[arg-type]
-        if binary:
-            payload["notice"] = msg.FLEET_INTEL_UTIL_GRANT.format(binary=binary)
+        hint = intel_util_hint(devices, stats)
+        if hint:
+            payload["notice"] = msg.intel_util_hint_text(hint)
         yield sse_event(SseEvent.GPU_STATS, payload)
         tick += 1
         if max_ticks is None or tick < max_ticks:
@@ -197,16 +204,16 @@ async def placement() -> PlacementResponse:
     """Current effective placement."""
     from lilbee.app.placement import get_placement
 
-    return PlacementResponse.from_view(get_placement())
+    return _placement_response(get_placement())
 
 
 async def placement_preview(spec_json: str | None) -> PlacementResponse:
-    """Preview a candidate spec (or auto when spec_json is None). No persistence."""
+    """Preview a candidate spec (or auto when no spec). No persistence."""
     from lilbee.app.placement import preview_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     spec = PlacementSpec.from_json(spec_json) if spec_json else None
-    return PlacementResponse.from_view(preview_placement(spec))
+    return _placement_response(preview_placement(spec))
 
 
 async def placement_set(spec_json: str) -> PlacementResponse:
@@ -214,21 +221,41 @@ async def placement_set(spec_json: str) -> PlacementResponse:
     from lilbee.app.placement import set_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    return PlacementResponse.from_view(set_placement(PlacementSpec.from_json(spec_json)))
+    return _placement_response(set_placement(PlacementSpec.from_json(spec_json)))
 
 
 async def placement_clear() -> PlacementResponse:
     """Clear manual placement; returns to the auto planner and rebuilds the fleet."""
     from lilbee.app.placement import set_placement
 
-    return PlacementResponse.from_view(set_placement(None))
+    return _placement_response(set_placement(None))
 
 
-async def gpus() -> list[GpuInfoResponse]:
-    """Detected GPUs with free/total VRAM."""
+def _placement_response(view: PlacementView) -> PlacementResponse:
+    """Serialize a placement view with the host-level Intel util notice attached."""
+    resp = PlacementResponse.from_view(view)
+    resp.notice = _intel_notice_text(view.gpus)
+    return resp
+
+
+def _intel_notice_text(devices: Sequence[GpuInfo]) -> str | None:
+    """Formatted Intel util fix for the JSON surfaces, or None when util reads fine."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
+
+    hint = probe_intel_util_hint(devices)
+    return msg.intel_util_hint_text(hint) if hint else None
+
+
+async def gpus() -> GpusResponse:
+    """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
     from lilbee.app.placement import get_placement
 
-    return PlacementResponse.from_view(get_placement()).gpus
+    view = get_placement()
+    return GpusResponse(
+        gpus=PlacementResponse.from_view(view).gpus,
+        notice=_intel_notice_text(view.gpus),
+    )
 
 
 __all__ = [

@@ -14,6 +14,7 @@ from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.data.store import ChunkType, MemoryKind, scope_to_chunk_type
 from lilbee.providers.roles import WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
+from lilbee.sessions import MessageRole
 
 if TYPE_CHECKING:
     from lilbee.app.placement import PlacementView
@@ -60,6 +61,10 @@ class ChatRequest(BaseModel):
     top_k: int | None = Field(default=None, le=100)
     options: dict[str, Any] | None = None
     chunk_type: ChunkType | None = None
+    summary: str = ""
+    """Carry-forward notes from earlier compactions, folded into the prompt."""
+    session_id: str | None = None
+    """Session that receives the new summary when this turn compacts."""
 
     @field_validator("chunk_type", mode="before")
     @classmethod
@@ -199,9 +204,23 @@ class HealthResponse(BaseModel):
     so it will not come up on its own) or failed (``error``). Without this a bare
     ``chat_ready:false`` reads the same for "loading" and "hung", which looked like a
     silent hang on a fresh box with no chat model installed."""
+    chat_error: str | None = None
+    """The reason the chat engine failed to come up when ``chat_status`` is
+    ``error`` (e.g. a wedged GPU device probe), so a polling client can report
+    the cause instead of retrying forever."""
     chat_ctx: int | None = None
     """Per-slot context the chat engine serves, so a launcher can tell the client
     its window and the client trims history to fit. None until the engine is up."""
+
+
+class CompactionInfo(BaseModel):
+    """What one pre-turn compaction folded out of a conversation."""
+
+    summary: str
+    condensed: int
+    """Turns folded into the notes."""
+    stranded: int
+    """Turns dropped with no notes; a client must say so rather than hide it."""
 
 
 class AskResponse(BaseModel):
@@ -214,6 +233,8 @@ class AskResponse(BaseModel):
     answer: str
     sources: list[CleanedChunk]
     cited_sources: list[CleanedChunk] = Field(default_factory=list)
+    compaction: CompactionInfo | None = None
+    """Set when a /api/chat turn compacted its history before answering."""
 
 
 class SetModelResponse(BaseModel):
@@ -599,6 +620,13 @@ class GpuInfoResponse(BaseModel):
     free_bytes: int
 
 
+class GpusResponse(BaseModel):
+    """GET /api/gpus envelope: detected GPUs plus the host-level util notice."""
+
+    gpus: list[GpuInfoResponse]
+    notice: str | None = None
+
+
 class RolePlacementResponse(BaseModel):
     """Where one role's model is placed in the resolved plan."""
 
@@ -626,6 +654,7 @@ class PlacementResponse(BaseModel):
     spec_json: str | None
     skipped_not_installed: list[SkippedRoleResponse] = []
     co_tenants: list[str] = []
+    notice: str | None = None
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -656,3 +685,89 @@ class PlacementSpecBody(BaseModel):
     """Request body for placement routes that accept a manual spec."""
 
     spec: dict[str, dict[str, object]] | None = None
+
+
+class SessionMetaItem(BaseModel):
+    """A session's metadata in a list or detail response."""
+
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    model_ref: str
+    scope: str
+    message_count: int
+    origin: str = "tui"
+    """Owning surface. tui/http/cli are one domain and append freely to each
+    other's sessions; appends across the human/agent (mcp) boundary are 409."""
+
+
+class SessionListResponse(BaseModel):
+    """Body for ``GET /api/sessions``."""
+
+    sessions: list[SessionMetaItem]
+
+
+class SessionMessageItem(BaseModel):
+    """One message in a session transcript."""
+
+    role: MessageRole
+    content: str
+    sources: list[str]
+    ts: str
+
+
+class SessionDetailResponse(BaseModel):
+    """Body for ``GET /api/sessions/{session_id}``: metadata plus transcript.
+
+    ``summary`` carries what compaction folded the oldest turns into (empty when
+    a conversation has not been compacted). A client that resumes and continues
+    the conversation needs it: without it, it rebuilds history from the raw
+    transcript, re-sending turns the summary had already condensed and risking
+    the context overflow compaction exists to prevent.
+    """
+
+    meta: SessionMetaItem
+    messages: list[SessionMessageItem]
+    summary: str = ""
+
+
+class SessionCreateRequest(BaseModel):
+    """Request body for ``POST /api/sessions``."""
+
+    model_ref: str
+    scope: str
+
+
+class SessionMessageCreateRequest(BaseModel):
+    """Request body for ``POST /api/sessions/{session_id}/messages``."""
+
+    role: MessageRole
+    content: str
+    sources: list[str] = []
+
+
+class SessionSummaryRequest(BaseModel):
+    """Request body for ``PUT /api/sessions/{session_id}/summary``."""
+
+    summary: str
+
+
+class SessionRenameRequest(BaseModel):
+    """Request body for ``PATCH /api/sessions/{session_id}``."""
+
+    title: str
+
+
+class SessionRenameResponse(BaseModel):
+    """Outcome of a rename."""
+
+    id: str
+    title: str
+
+
+class SessionDeleteResponse(BaseModel):
+    """Outcome of a delete."""
+
+    id: str
+    deleted: bool

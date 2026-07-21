@@ -100,7 +100,7 @@ class Config(BaseSettings):
     # refuses instead of feeding noise as context. On the fused reciprocal-rank
     # scale an arm's top hit scores 0.5, so useful floors start around 0.4.
     min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
-    adaptive_threshold: bool = Field(default=False)
+    adaptive_threshold: bool = ConfigField(default=False, writable=True)
     rag_system_prompt: str = ConfigField(
         default=DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
     )
@@ -232,6 +232,11 @@ class Config(BaseSettings):
     # runs a full-corpus scan (a count is a corpus property top-k cannot
     # answer). Unrecognized shapes take the topical path unchanged.
     intent_routing: bool = ConfigField(default=True, writable=True)
+
+    # Ask the chat model to classify count questions the deterministic
+    # patterns miss (phrasing variants, other languages). Adds one short LLM
+    # call to every turn the patterns don't already route, so it's opt-in.
+    intent_llm: bool = ConfigField(default=False, writable=True)
 
     # LLM-generated alternative queries for expansion. 0 disables.
     query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
@@ -436,6 +441,25 @@ class Config(BaseSettings):
         writable=True,
     )
 
+    # Condense turns that outgrow chat_n_ctx_target into carried notes instead
+    # of dropping them. Off: zero model calls; the oldest turns drop and the
+    # context chip shows it. On: each firing blocks on a summarize call
+    # (measured: 1.3-2.5s per 60-turn fold on a datacenter GPU, 0.7-2s on an
+    # 8-core CPU with a 0.6B-4B model).
+    chat_compaction: bool = ConfigField(default=False, writable=True)
+
+    # Persist conversations and expose the Sessions drawer, tab, and commands.
+    # On by default; turning it off stops chats being written to disk, hides the
+    # ctrl+o binding from the footer, and gates the Sessions view behind a notice.
+    # Governs the human surfaces (TUI, HTTP, CLI); agent sessions have their own
+    # flag below, so the two domains the store already separates stay separate.
+    sessions_enabled: bool = ConfigField(default=True, writable=True)
+
+    # The agent (MCP) half of the same feature, off by default: agent hosts
+    # generally track their own conversation history, and the seven session
+    # tools cost schema on every request whether or not anything uses them.
+    mcp_sessions_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM
@@ -619,9 +643,6 @@ class Config(BaseSettings):
 
     # Weight of concept overlap boost relative to vector similarity.
     concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
-
-    # Floor on post-boost distance to stop weak boosts from promoting marginal hits.
-    concept_boost_floor: float = ConfigField(default=0.05, ge=0.0, writable=True)
 
     # Max noun-phrase concepts extracted per chunk.
     concept_max_per_chunk: int = ConfigField(default=5, ge=1, writable=True)

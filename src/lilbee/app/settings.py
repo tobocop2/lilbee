@@ -228,10 +228,10 @@ def _coerce_value(key: str, value: Any) -> Any:
 
 def _apply_with_rollback(
     updates: dict[str, Any],
-) -> tuple[dict[str, str], list[str], dict[str, Any]]:
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
     """Set each key on cfg with snapshot/rollback. Returns (persist, delete, snapshot)."""
     snapshot = {k: getattr(cfg, k) for k in updates}
-    to_persist: dict[str, str] = {}
+    to_persist: dict[str, Any] = {}
     to_delete: list[str] = []
     try:
         for key, raw in updates.items():
@@ -244,7 +244,9 @@ def _apply_with_rollback(
             if isinstance(normalized, list):
                 to_persist[key] = "\n".join(str(x) for x in normalized)
             else:
-                to_persist[key] = str(normalized)
+                # Hand the scalar over with its type intact so config.toml holds
+                # `true` and `2560`, not `"True"` and `"2560"`.
+                to_persist[key] = normalized
     except Exception:
         _restore_snapshot(snapshot)
         raise
