@@ -1,11 +1,8 @@
-"""Tier-1 metric scoring: cut depth and the aggregation denominator.
+"""Tier-1 metric scoring: the choices this harness makes around ir_measures.
 
-These run the real ir_measures, not a stand-in. The bug this file exists to
-prevent was invisible to a fake evaluator: the previous hand-rolled layer
-selected each query's top N itself and rescored the survivors, which is not the
-same computation as scoring the full run under a cutoff, and it disagreed with
-the reference on 99 of FiQA's 648 topics. A test double would have agreed with
-whatever the harness did.
+Whether RR@10 cuts at ten is ir_measures' business and is tested there. What is
+tested here is what the harness decides on top of it: which topics form the
+denominator, which are excluded, and which metric names it will accept.
 """
 
 import pytest
@@ -22,35 +19,6 @@ def _run_with_relevant_at(rank: int) -> tuple[dict, dict]:
     docs["REL"] = 100.0 - rank
     docs.update({f"d{i}": 100.0 - i for i in range(rank + 1, rank + 30)})
     return qrels, {"q1": docs}
-
-
-def test_mrr_at_10_scores_zero_when_the_first_relevant_doc_is_past_depth():
-    # The original defect: uncut reciprocal rank credits 1/11 to a metric
-    # labelled MRR@10.
-    qrels, run = _run_with_relevant_at(11)
-    scores = score_run(qrels, run, ["MRR@10"])
-    assert scores["aggregated"]["MRR@10"] == 0.0
-
-
-def test_mrr_at_10_credits_a_relevant_doc_inside_the_depth():
-    qrels, run = _run_with_relevant_at(4)
-    scores = score_run(qrels, run, ["MRR@10"])
-    assert scores["aggregated"]["MRR@10"] == pytest.approx(0.25)
-
-
-def test_ndcg_at_10_scores_zero_when_the_relevant_doc_is_past_depth():
-    qrels, run = _run_with_relevant_at(11)
-    scores = score_run(qrels, run, ["nDCG@10"])
-    assert scores["aggregated"]["nDCG@10"] == 0.0
-
-
-def test_recall_at_20_reaches_further_than_the_at_10_metrics():
-    # Same run, different depths: the document at rank 11 is outside nDCG@10 but
-    # inside Recall@20, which is what makes the depths worth declaring.
-    qrels, run = _run_with_relevant_at(11)
-    scores = score_run(qrels, run, ["nDCG@10", "Recall@20"])
-    assert scores["aggregated"]["nDCG@10"] == 0.0
-    assert scores["aggregated"]["Recall@20"] == pytest.approx(1.0)
 
 
 def test_a_topic_the_run_missed_scores_zero_rather_than_vanishing():

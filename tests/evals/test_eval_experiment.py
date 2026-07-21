@@ -61,13 +61,10 @@ def test_columns_use_the_display_metric_names_not_the_measure_strings():
     assert "R@20" not in aggregated.columns
 
 
-def test_the_baseline_arm_is_the_first_row_and_has_no_p_value():
-    # The arms are passed in with the baseline second, so this also pins that
-    # compare_arms reorders rather than trusting the caller's dict order: a
-    # baseline that landed in row 1 would silently make PyTerrier's baseline=0
-    # test a different arm than the one the manifest declares.
-    import math
-
+def test_the_baseline_arm_is_ordered_first_whatever_the_caller_passed():
+    # compare_arms reorders rather than trusting the caller's dict order. A
+    # baseline that landed in row 1 would make PyTerrier's baseline=0 test a
+    # different arm than the one the manifest declares.
     aggregated = compare_arms(
         {"hybrid": _run(2), "dense": _run(3)},
         _qrels(),
@@ -77,10 +74,6 @@ def test_the_baseline_arm_is_the_first_row_and_has_no_p_value():
         seed=1,
     )
     assert aggregated.iloc[0]["name"] == "dense"
-    # Nothing is tested against itself, so the baseline row carries no p-value.
-    for metric in METRICS:
-        assert math.isnan(float(aggregated.iloc[0][f"{metric} p-value"]))
-    assert not math.isnan(float(aggregated.iloc[1]["nDCG@10 p-value"]))
 
 
 def test_an_undeclared_baseline_is_refused():

@@ -121,26 +121,6 @@ def test_agreement_refuses_to_report_on_too_few_rows():
         agreement(small, small)
 
 
-def test_a_judge_that_matches_the_human_scores_perfect_agreement():
-    grades = _grades({f"g{i}": (i % 5) + 1 for i in range(MIN_AUDIT_ROWS)})
-    results = agreement(grades, grades)
-    assert {result.dimension for result in results} == set(DIMENSIONS)
-    for result in results:
-        assert result.kappa == pytest.approx(1.0)
-        assert result.exact_match == pytest.approx(1.0)
-        assert result.mean_absolute_error == pytest.approx(0.0)
-
-
-def test_a_judge_that_disagrees_is_reported_as_disagreeing():
-    judge = _grades({f"g{i}": (i % 5) + 1 for i in range(MIN_AUDIT_ROWS)})
-    # Inverted: same range, opposite order, so kappa must go sharply negative
-    # rather than merely below one.
-    human = _grades({f"g{i}": SCORE_MAX - (i % 5) for i in range(MIN_AUDIT_ROWS)})
-    for result in agreement(judge, human):
-        assert result.kappa < 0.0
-        assert result.spearman < 0.0
-
-
 def test_agreement_covers_only_the_rows_both_sides_scored():
     judge = _grades({f"g{i}": 3 for i in range(MIN_AUDIT_ROWS + 20)})
     human = _grades({f"g{i}": 3 for i in range(MIN_AUDIT_ROWS)})

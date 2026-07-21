@@ -7,15 +7,20 @@ requirements path, which is the part that actually moves.
 
 from __future__ import annotations
 
-REQUIREMENTS_PATH = "evals/benchmark/requirements.txt"
+# Which uv extra carries which scorer, so the error names the one command that
+# would actually install the missing package rather than a blanket sync.
+PACKAGE_EXTRAS = {
+    "ragas": "generation",
+    "ragchecker": "generation",
+    "scikit-learn": "audit",
+}
 
 
 def install_hint(package: str, purpose: str) -> str:
     """The error text for ``package`` being absent, naming what it was needed for."""
-    return (
-        f"{package} is required {purpose}; install the benchmark deps: "
-        f"uv pip install -r {REQUIREMENTS_PATH}"
-    )
+    extra = PACKAGE_EXTRAS.get(package)
+    command = "uv sync --project evals" + (f" --extra {extra}" if extra else "")
+    return f"{package} is required {purpose}; install the benchmark deps: {command}"
 
 
 # Every package whose version can move a published number. ragas is the sharp

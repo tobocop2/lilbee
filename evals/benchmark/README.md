@@ -155,13 +155,36 @@ without this harness.
 
 ## Optional dependencies
 
-The heavy scorers and dataset loaders are imported lazily, so the harness (and
-its tests) load without them. They are kept out of the shipped lock on purpose
-(installing them would otherwise drag core dependencies backward), so install
-them from the standalone requirements file on the benchmark pod:
+The harness is its own uv project (`evals/pyproject.toml`) with its own lock,
+deliberately separate from lilbee's. A dependency group in the root would
+resolve together with lilbee's dependencies, so ragchecker's torch, transformers
+and spaCy would enter the resolution for the shipped package; and the root build
+packages `src/lilbee` only, so the harness has no business in that lock either
+way.
+
+The lock is the reason this is not a requirements file. Pinning direct
+dependencies while every transitive one floats is how the answer tier broke
+before: ragas declares no upper bound on langchain-community, 0.4 removed a
+module ragas imports unconditionally, and a fresh install of the *pinned* ragas
+raised ImportError on every call. A resolved lock covers the whole graph.
 
 ```bash
-uv pip install -r evals/benchmark/requirements.txt   # ir_measures, ir_datasets, scipy, ragas
+uv sync --project evals                      # tier 1: retrieval scoring
+uv sync --project evals --extra generation   # adds the answer tier (heavy: torch, spaCy)
+uv sync --project evals --all-extras         # everything, including the audit statistics
+```
+
+Every scorer is imported lazily, so the harness and its tests still load without
+the extras. Run from the repository root so both packages are importable:
+
+```bash
+PYTHONPATH=. uv run --project evals python -m evals.benchmark --help
+```
+
+The answer tier's RAGChecker needs its spaCy model as a separate step:
+
+```bash
+uv run --project evals python -m spacy download en_core_web_sm
 ```
 
 ## Determinism and resume

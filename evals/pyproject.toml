@@ -1,0 +1,104 @@
+# The evaluation harness' own uv project, deliberately separate from lilbee's.
+#
+# Two reasons it is not a dependency-group in the root pyproject. A group there
+# resolves together with lilbee's own dependencies in the shared lock, so
+# ragchecker's torch, transformers and spaCy would enter the resolution for the
+# shipped package. And the harness is not part of the wheel: the root build
+# packages src/lilbee only, so evals has no business in that lock either way.
+#
+# The lock file beside this is the point of the change. The requirements.txt it
+# replaces pinned direct dependencies and let every transitive one float, which
+# is not a hypothetical weakness: ragas pins no upper bound on
+# langchain-community, 0.4 removed a module ragas imports unconditionally, and a
+# fresh install of the pinned ragas therefore raised ImportError on every call.
+# A resolved lock covers the whole graph, so that class of break is caught at
+# lock time instead of on the pod.
+#
+#   uv sync --project evals                        # tier 1: retrieval scoring
+#   uv sync --project evals --extra generation     # adds the answer tier (heavy)
+#   uv sync --project evals --all-extras           # everything, including audit
+#
+# Run from the repository root so `evals` and `lilbee` are both importable:
+#   PYTHONPATH=. uv run --project evals python -m evals.benchmark --help
+
+[project]
+name = "lilbee-evals"
+version = "0"
+description = "Evaluation harness for lilbee retrieval and generation; never shipped."
+# Higher than lilbee's own >=3.11, because scipy 1.18 requires >=3.12 and this
+# pins scipy exactly. The old requirements.txt claimed nothing about the
+# interpreter and pip would have quietly resolved a different scipy on 3.11,
+# which is a scorer version moving without anyone deciding to move it. The
+# harness runs on a benchmark pod rather than a user's machine, so a newer
+# floor costs nothing here that it would cost in the shipped package.
+requires-python = ">=3.12"
+
+# Tier 1, the reproducible core. Everything here is needed to score a run
+# against published labels, and none of it is heavy.
+#
+# ir_measures owns metric computation including cut depths: RR@10 is reciprocal
+# rank cut at 10, so nothing in the harness truncates a run or breaks ties
+# itself. It pulls pytrec_eval-terrier, the maintained fork, as its backend, and
+# it reads and writes TREC run and qrels files.
+#
+# ir_datasets owns corpus download, caching and parsing. It ships all 48 BEIR
+# sets pinned to a published copy and checksummed, which the unversioned zip URL
+# it replaced could not offer.
+#
+# python-terrier owns the multi-arm comparison table: it scores every arm with
+# the same ir_measures measures and runs the paired test against the baseline.
+# Verified against a clone of its source that the Experiment path holds no Java
+# reference and pt.java.started() stays False, so this puts no JVM on the pod.
+#
+# scipy owns the statistics: percentile bootstrap, paired sign-flip permutation
+# test, and Benjamini-Hochberg. PyTerrier ships no confidence intervals, checked
+# against its source rather than its docs, so the interval stays here.
+dependencies = [
+    "ir_measures==0.4.3",
+    "pytrec_eval-terrier==0.5.10",
+    "ir_datasets==0.6.3",
+    "python-terrier==1.0",
+    "scipy==1.18.0",
+    "httpx",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# Tier 2, model-graded answer quality. Separated because it is heavy and because
+# a tier-1 run should not have to wait for torch to download.
+#
+# ragas owns the rubric grader and the RAG metrics: prompt construction,
+# structured output through instructor, and retry on a response that does not
+# validate.
+#
+# langchain-community is pinned below 0.4 because ragas imports
+# langchain_community.chat_models.vertexai unconditionally at import time and
+# 0.4 removed that module. The lock now covers this, but the explicit bound
+# documents why the version matters.
+#
+# ragchecker cross-checks ragas and, unlike it, separates retriever-side from
+# generator-side failure, which is the diagnosis a retrieval A/B most needs.
+# Its last release is September 2024 and its last commit December 2024, so it is
+# a cross-check rather than the primary scorer. It is also the heaviest entry
+# here, pulling spaCy, transformers and torch. No GPU is needed on the default
+# path, which reaches the judge over litellm; only the optional local NLI
+# checker wants one. Its spaCy model is a separate step:
+#   uv run --project evals python -m spacy download en_core_web_sm
+generation = [
+    "ragas==0.4.3",
+    "langchain-community==0.3.31",
+    "ragchecker==0.1.9",
+]
+
+# The human-audit sample's agreement statistics: quadratic-weighted Cohen's
+# kappa and the exact-match and mean-absolute-error rates beside it.
+audit = ["scikit-learn==1.9.0"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.uv]
+# A dependency manifest, not a distributable. The harness is imported from the
+# repository root as `evals`, and the root build packages src/lilbee only, so
+# there is nothing here to build a wheel from.
+package = false

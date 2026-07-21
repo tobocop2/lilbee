@@ -8,9 +8,15 @@ asking a reader to accept the judge on faith, and the standard answer to "how do
 you know your faithfulness score tracks a human" is a small audited sample
 reported alongside.
 
-This draws that sample, writes a sheet a person fills in, and computes the
-agreement. It does not make the judge correct; it makes the judge's error rate a
-published number instead of an open question.
+``agreement`` is the part that matters and it does not care where the human
+scores came from: a sheet somebody filled in, or a published dataset that was
+annotated long before this harness existed. The second source is the one to
+prefer, because it needs no annotator on this project and because a label
+somebody else produced cannot be accused of being tuned to make these numbers
+look good.
+
+``stratified_sample`` and the sheet functions serve the first source only. They
+are the fallback for a corpus with no public analogue, not the default path.
 
 The statistics are sklearn's and scipy's. Quadratic-weighted Cohen's kappa is
 the standard instrument for an ordinal scale, because it counts a 4-vs-5
