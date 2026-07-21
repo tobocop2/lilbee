@@ -103,7 +103,6 @@ def test_fetch_writes_trec_qrels_a_third_party_can_rescore_with(tmp_path, monkey
     # The qrels ship with the report, so the artifact must be the format every
     # other IR tool reads rather than this harness' own JSON.
     from evals.benchmark import cli
-    from evals.benchmark.datasets import Dataset
 
     manifest = tmp_path / "m.yaml"
     manifest.write_text(
@@ -116,15 +115,16 @@ def test_fetch_writes_trec_qrels_a_third_party_can_rescore_with(tmp_path, monkey
         "  - {name: scifact, loader: beir/scifact/test, label_kind: native}\n"
         "metrics: [nDCG@10]\n"
     )
+    # The corpus streams and the rest is materialised, so the two seams are
+    # patched separately. That split is the fix for MS MARCO: holding 8.8M
+    # passages as a dict was killed by the container's memory monitor.
     monkeypatch.setattr(
-        "evals.benchmark.datasets.load_dataset",
-        lambda spec, **_: Dataset(
-            name=spec.name,
-            label_kind="native",
-            corpus={"d1": {"title": "T", "text": "body"}},
-            queries={"q1": "question?"},
-            qrels={"q1": {"d1": 2, "d0": 1}},
-        ),
+        "evals.benchmark.datasets.load_ir_dataset",
+        lambda loader, documents=True: ({}, {"q1": "question?"}, {"q1": {"d1": 2, "d0": 1}}),
+    )
+    monkeypatch.setattr(
+        "evals.benchmark.datasets.iter_documents",
+        lambda loader: iter([("d1", "T", "body")]),
     )
     out = tmp_path / "datasets"
     assert cli.main(["fetch", "--manifest", str(manifest), "--out", str(out)]) == 0

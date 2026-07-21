@@ -80,30 +80,38 @@ def _cmd_collect(args: argparse.Namespace) -> int:
 def _cmd_fetch(args: argparse.Namespace) -> int:
     """Materialize every dataset the manifest declares, from ir_datasets."""
     from evals.benchmark.collectors import write_queries
-    from evals.benchmark.datasets import load_dataset
+    from evals.benchmark.datasets import iter_documents, load_ir_dataset
 
     manifest = Manifest.load(args.manifest)
     for spec in manifest.datasets:
-        dataset = load_dataset(spec)
         out = args.out / spec.name
         out.mkdir(parents=True, exist_ok=True)
-        write_queries(out / "queries.jsonl", dataset.queries)
+        # Queries and qrels are small enough to hold; the corpus is not. MS
+        # MARCO's 8.8M passages as a dict were killed by the container's
+        # out-of-memory monitor, so documents stream straight to disk.
+        _, queries, qrels = load_ir_dataset(spec.loader, documents=False)
+        write_queries(out / "queries.jsonl", queries)
         # TREC qrels, not JSON: the published artifact should be the format
         # every other IR tool reads, since these files travel with the report.
         (out / "qrels.trec").write_text(
             "".join(
                 f"{qid} 0 {doc_id} {grade}\n"
-                for qid, judged in sorted(dataset.qrels.items())
+                for qid, judged in sorted(qrels.items())
                 for doc_id, grade in sorted(judged.items())
             )
         )
-        write_jsonl(
-            out / "corpus.jsonl",
-            [{"doc_id": doc_id, **fields} for doc_id, fields in dataset.corpus.items()],
-        )
+        written = 0
+        with (out / "corpus.jsonl").open("w") as handle:
+            for doc_id, title, text in iter_documents(spec.loader):
+                handle.write(json.dumps({"doc_id": doc_id, "title": title, "text": text}) + "\n")
+                written += 1
+                # A silent hour is indistinguishable from a hang on a corpus
+                # this size, and the run is watched from a tmux pane.
+                if written % 1_000_000 == 0:
+                    print(f"  {spec.name}: {written:,} passages written", flush=True)
         print(
-            f"{spec.name}: {len(dataset.corpus)} docs, {len(dataset.queries)} queries, "
-            f"{len(dataset.qrels)} judged -> {out}"
+            f"{spec.name}: {written:,} docs, {len(queries):,} queries, "
+            f"{len(qrels):,} judged -> {out}"
         )
     return 0
 

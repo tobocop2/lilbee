@@ -19,7 +19,7 @@ Two label kinds:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,7 +68,37 @@ def derive_qrels_from_evidence(
     return qrels
 
 
-def load_ir_dataset(dataset_id: str) -> tuple[Corpus, Queries, Qrels]:
+def _load_source(dataset_id: str) -> Any:
+    """The ir_datasets handle, with one install hint rather than three copies."""
+    try:
+        import ir_datasets
+    except ImportError as exc:
+        raise RuntimeError(IR_DATASETS_INSTALL_HINT) from exc
+    return ir_datasets.load(dataset_id)
+
+
+def iter_documents(dataset_id: str) -> Iterator[tuple[str, str, str]]:
+    """Stream ``(doc_id, title, text)`` without holding the corpus in memory.
+
+    ``load_ir_dataset`` builds the whole corpus as a dict, which is fine for
+    BEIR's thousands and fatal for MS MARCO's 8.8 million: the first attempt was
+    killed by the container's out-of-memory monitor part-way through, on a box
+    whose host had a terabyte free but whose cgroup did not.
+
+    Anything that writes a corpus straight to disk should come through here.
+    Only callers that genuinely need random access to the whole collection
+    should pay for the dict.
+    """
+    for doc in _load_source(dataset_id).docs_iter():
+        title = str(getattr(doc, "title", "") or "").strip()
+        text = str(doc.text or "").strip()
+        # A document with neither title nor text can never be a relevant hit and
+        # only inflates the index.
+        if title or text:
+            yield str(doc.doc_id), title, text
+
+
+def load_ir_dataset(dataset_id: str, *, documents: bool = True) -> tuple[Corpus, Queries, Qrels]:
     """Read one ir_datasets dataset into the harness' triple.
 
     Document fields vary across BEIR: scifact and nfcorpus carry a title, fiqa
@@ -78,20 +108,19 @@ def load_ir_dataset(dataset_id: str) -> tuple[Corpus, Queries, Qrels]:
 
     Non-positive relevance grades are dropped so the qrels hold only
     judged-relevant documents, matching how trec_eval treats them.
+
+    ``documents=False`` returns an empty corpus and reads only the queries and
+    qrels. A caller writing the corpus straight to disk should use that and
+    ``iter_documents``: materialising MS MARCO's 8.8 million passages as a dict
+    is what the container's out-of-memory monitor killed.
     """
-    try:
-        import ir_datasets
-    except ImportError as exc:
-        raise RuntimeError(IR_DATASETS_INSTALL_HINT) from exc
-    source = ir_datasets.load(dataset_id)
+    source = _load_source(dataset_id)
     corpus: Corpus = {}
-    for doc in source.docs_iter():
-        title = str(getattr(doc, "title", "") or "").strip()
-        text = str(doc.text or "").strip()
-        # A document with neither title nor text can never be a relevant hit and
-        # only inflates the index.
-        if title or text:
-            corpus[str(doc.doc_id)] = {"title": title, "text": text}
+    if documents:
+        corpus = {
+            doc_id: {"title": title, "text": text}
+            for doc_id, title, text in iter_documents(dataset_id)
+        }
     queries = {
         str(query.query_id): query.text.strip()
         for query in source.queries_iter()
