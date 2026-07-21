@@ -16,6 +16,7 @@ import pytest
 
 from lilbee.cli.launchers import server as server_mod
 from lilbee.core.config import cfg
+from tests._mock_effects import repeat_last
 
 
 @pytest.fixture()
@@ -193,13 +194,17 @@ class TestEnsureServerRunningRetries:
     def test_retries_with_a_fresh_port_then_succeeds(self, monkeypatch) -> None:
         first, second = self._proc(), self._proc()
         monkeypatch.setattr(
-            server_mod, "running_server_session", mock.MagicMock(side_effect=[None, ("tok", 2222)])
+            server_mod,
+            "running_server_session",
+            mock.MagicMock(side_effect=repeat_last(None, ("tok", 2222))),
         )
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1111, 2222]))
-        spawn = mock.MagicMock(side_effect=[first, second])
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(1111, 2222))
+        )
+        spawn = mock.MagicMock(side_effect=repeat_last(first, second))
         monkeypatch.setattr(server_mod, "spawn_server", spawn)
         monkeypatch.setattr(
-            server_mod, "wait_for_health", mock.MagicMock(side_effect=[False, True])
+            server_mod, "wait_for_health", mock.MagicMock(side_effect=repeat_last(False, True))
         )
 
         session, spawned = server_mod.ensure_server_running()
@@ -218,7 +223,9 @@ class TestEnsureServerRunningRetries:
 
         procs = [self._proc() for _ in range(server_mod._SPAWN_ATTEMPTS)]
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1, 2, 3]))
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(1, 2, 3))
+        )
         spawn = mock.MagicMock(side_effect=procs)
         monkeypatch.setattr(server_mod, "spawn_server", spawn)
         monkeypatch.setattr(server_mod, "wait_for_health", lambda _p: False)
@@ -236,7 +243,9 @@ class TestEnsureServerRunningRetries:
 
         monkeypatch.setattr(cfg, "server_port", 8080)
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[1, 2, 3]))
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(1, 2, 3))
+        )
         seen: list[int] = []
         monkeypatch.setattr(
             server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
@@ -251,7 +260,9 @@ class TestEnsureServerRunningRetries:
 
         monkeypatch.setattr(cfg, "server_port", 0)
         monkeypatch.setattr(server_mod, "running_server_session", lambda: None)
-        monkeypatch.setattr(server_mod, "free_port", mock.MagicMock(side_effect=[7, 8, 9]))
+        monkeypatch.setattr(
+            server_mod, "free_port", mock.MagicMock(side_effect=repeat_last(7, 8, 9))
+        )
         seen: list[int] = []
         monkeypatch.setattr(
             server_mod, "_spawn_and_wait", lambda port, **_kw: seen.append(port) or None
