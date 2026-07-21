@@ -9,11 +9,17 @@ name: msmarco-hydrate
 resources:
   cloud: runpod
   cpus: 8+
-  disk_size: 100
+  # RunPod caps a CPU pod's container disk at 80G. This stage writes everything
+  # to the network volume, so local disk only has to hold the checkout and
+  # ir_datasets' scratch space during extraction.
+  disk_size: 60
 volumes:
   /workspace: msmarco-bench
 envs:
-  BRANCH: feat/kreuzberg-5
+  # The harness branch, not the lilbee feature branch. This stage runs
+  # ir_datasets and writes files; it never touches lilbee's ingest, so it needs
+  # evals/ and nothing else. The ingest stage is the one that needs both.
+  BRANCH: feat/rag-eval-harness
   LILBEE_POD_HOURLY_USD: "0.20"
 setup: |
   set -euo pipefail
@@ -22,7 +28,10 @@ setup: |
   export PATH="$HOME/.local/bin:$PATH"
   git clone --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git /opt/lilbee-src
   cd /opt/lilbee-src
+  # --project evals because the harness has its own pyproject and lock, kept
+  # separate from lilbee's so a scorer cannot move a core dependency.
   uv sync --project evals
+  test -d evals || { echo "FATAL: branch $BRANCH has no evals/ directory"; exit 1; }
 run: |
   set -euo pipefail
   export PATH="$HOME/.local/bin:$PATH"
