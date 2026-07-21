@@ -28,13 +28,10 @@ resources:
   image_id: docker:runpod/pytorch:1.0.7-rc.138-cu1281-torch271-ubuntu2404
   # Everything lives on container disk now: corpus, passage files, index.
   disk_size: 600
-  # A100 only. The volume lives in US-WA-1 and a RunPod volume cannot change
-  # datacentre; US-WA-1 has A100-SXM4-80GB and no H100, so switching GPU family
-  # would mean rebuilding the volume and re-fetching the corpus.
-  #
-  # Widest A100 ladder rather than a single shape, because stock is Low: four
-  # cards is the fast path, but a single card still ingests, just slower. The
-  # embedding is data-parallel, so cards trade directly against wall time.
+  # On-demand A100 (sky's default; not spot), widest ladder because stock is Low.
+  # Four cards is the fast path and one still ingests, just slower -- embedding
+  # is data-parallel so cards trade directly against wall time. The volume in
+  # EU-RO-1 pins the region, so every rung is an EU-RO-1 A100.
   ordered:
     - accelerators: A100-80GB-SXM:4
     - accelerators: A100-80GB:4
@@ -42,12 +39,14 @@ resources:
     - accelerators: A100-80GB:2
     - accelerators: A100-80GB-SXM:1
     - accelerators: A100-80GB:1
-# The volume lives in CA-MTL-3, which is the region that actually delivered an
-# A100 after US-MD-1 (no volumes at all) and US-WA-1 (stock went to zero
-# mid-run). "Low" in the availability API is not the same as grabbable, and
-# CA-MTL-3 was the one that provisioned.
+# Volume in EU-RO-1, which has A100-SXM4-80GB and offers volumes. Persistence is
+# the point now: an on-demand box can still be reclaimed, and phase 0 of the
+# ingest re-fetches the corpus onto the volume only if it is not already there,
+# so a reclaim resumes from whatever the volume already holds instead of
+# restarting. The volume follows availability rather than pinning the run to a
+# dead region -- the lesson from US-WA-1, whose A100 vanished twice mid-run.
 volumes:
-  /workspace: msmarco-ca
+  /workspace: msmarco-eu
 envs:
   # Two branches, because neither has everything. lilbee comes from
   # feat/kreuzberg-5, which carries data/ingest/trace.py -- the per-document
@@ -67,54 +66,54 @@ envs:
   HF_TOKEN: ""
 setup: |
   set -euo pipefail
-  # Install the PREBUILT engine, never compile it. A git checkout's
-  # packaging/engine-wheel is a 32K stub whose lilbee_engine/bin/ is empty -- CI
-  # fills it at release time -- so a source install silently falls back to
-  # building llama.cpp. That is what happened on the first attempt: the A100 sat
-  # at 0% utilisation for fifty minutes running nvcc, on track for eight hours
-  # and roughly nineteen dollars to compile an engine that ships prebuilt.
-  #
-  # Release first for the engine and dependencies, then the branch's python
-  # overlaid with --no-deps, which is the documented way to run an unmerged
-  # branch against a real engine. feat/kreuzberg-5 is needed for
-  # data/ingest/trace.py, which never merged to main.
-  apt-get update -qq && apt-get install -y -qq git curl >/dev/null
-  curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
-  # uv supplies the interpreter. The pod image ships a system python older than
-  # 3.11, and every lilbee release requires >=3.11, so `python3 -m venv` built an
-  # environment where "pip install lilbee" reported no matching distribution --
-  # which reads as a missing package and is a too-old interpreter.
-  # --clear because setup re-runs on every relaunch and every pod reclaim, and
-  # uv refuses an existing environment. That is the third idempotency failure in
-  # this block: git clone, then the harness overlay, now the venv. Setup is
-  # re-entrant by default here, not by exception.
-  uv venv --clear --python 3.12 /root/lilbee_venv
-  uv pip install -q --python /root/lilbee_venv/bin/python --upgrade pip
-  /root/lilbee_venv/bin/python -m pip install -q --pre lilbee \
-    --extra-index-url "https://lilbee.sh/${BACKEND}/"
-  /root/lilbee_venv/bin/python -m pip install -q --no-deps --force-reinstall \
+  command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  mkdir -p /workspace/logs
+
+  # uv supplies python 3.12: the pod's system python is older than 3.11 and every
+  # lilbee release requires >=3.11, so a system venv made "pip install lilbee"
+  # report no matching distribution. --clear and --seed: setup re-runs on every
+  # reclaim so it must be re-entrant, and uv venv omits pip without --seed.
+  uv venv --clear --seed --python 3.12 /root/lilbee_venv
+  VPY=/root/lilbee_venv/bin/python
+
+  # The lilbee package. Its engine is installed separately below, because
+  # resolving the engine through an index yields a 0.0.0 STUB with an empty bin/.
+  uv pip install -q --python "$VPY" --prerelease=allow lilbee
+
+  # The PREBUILT engine, from the exact release asset. Never compiled: a git
+  # checkout's packaging/engine-wheel is a 32K stub, so a source install falls
+  # back to an eight-hour llama.cpp build on the GPU box. The wheel bundles its
+  # own cudart, so the image's CUDA 12.8 does not conflict with the cu124 engine.
+  TAG=v0.6.90b420.dev724
+  WHEEL="lilbee_engine-0.6.90b420.dev724-1.${BACKEND}-py3-none-manylinux_2_17_x86_64.whl"
+  curl -fsSL -o "/tmp/$WHEEL" "https://github.com/tobocop2/lilbee/releases/download/${TAG}/${WHEEL}"
+  uv pip install -q --python "$VPY" --reinstall "/tmp/$WHEEL"
+
+  # The branch's python for trace.py, deps kept from the release so the engine
+  # survives, then the deps the branch ADDED that the release lacks (xberg's
+  # extraction stack). --no-deps alone left xberg missing and lilbee died at
+  # first extraction.
+  uv pip install -q --python "$VPY" --no-deps --reinstall \
     "git+https://github.com/tobocop2/lilbee@${BRANCH}"
-  # The engine binary must exist and be executable. Without this assert the run
-  # gets a lilbee that starts, reports ok, launches zero workers, and 503s every
-  # request -- which reads as a broken lilbee and is a missing engine.
-  ENGINE_BIN="$(/root/lilbee_venv/bin/python -c 'import lilbee_engine; print(lilbee_engine.get_llama_server_path())')"
+  uv pip install -q --python "$VPY" --prerelease=allow "xberg>=1.0.0rc30"
+
+  ENGINE_BIN="$($VPY -c 'import lilbee_engine; print(lilbee_engine.get_llama_server_path())')"
   test -x "$ENGINE_BIN" || { echo "FATAL: no engine at $ENGINE_BIN (stub wheel?)"; exit 1; }
-  echo "engine: $ENGINE_BIN"
-  # The source checkout supplies the harness and the ingest scripts only; the
-  # installed package supplies lilbee itself.
-  rm -rf /opt/lilbee-src
-  git clone --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git /opt/lilbee-src
-  # Overlay the harness onto the lilbee checkout. Idempotent, because setup
-  # re-runs on every relaunch and on every pod reclaim.
-  rm -rf /tmp/harness
-  git clone --depth 1 --branch "$HARNESS_BRANCH" https://github.com/tobocop2/lilbee.git /tmp/harness
+  $VPY -c 'import xberg' || { echo "FATAL: xberg import failed (glibc too old?)"; exit 1; }
+  echo "engine OK: $ENGINE_BIN ; xberg OK"
+
+  rm -rf /opt/lilbee-src /tmp/harness
+  git clone -q --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git /opt/lilbee-src
+  git clone -q --depth 1 --branch "$HARNESS_BRANCH" https://github.com/tobocop2/lilbee.git /tmp/harness
   cp -r /tmp/harness/evals /opt/lilbee-src/
-  # The harness runs here now that hydration folded into this pod.
+  test -f /opt/lilbee-src/src/lilbee/data/ingest/trace.py || { echo "FATAL: no trace.py; wrong branch"; exit 1; }
+  # NOT exporting UV_PROJECT_ENVIRONMENT: pointed at lilbee_venv it makes
+  # `uv sync --project evals` rewrite that venv to the harness project and
+  # uninstall the engine. Two projects, two environments.
   cd /opt/lilbee-src && uv sync --project evals
-  test -f /opt/lilbee-src/evals/infra/ingest.sh || { echo "FATAL: harness overlay missing"; exit 1; }
-  test -f /opt/lilbee-src/src/lilbee/data/ingest/trace.py || { echo "FATAL: no trace.py; wrong lilbee branch"; exit 1; }
-  # The record of what actually ran, written where the provenance can find it.
+  "$VPY" -c "import lilbee_engine" || { echo "FATAL: uv sync removed the engine"; exit 1; }
   { echo "lilbee_branch=$BRANCH lilbee_sha=$(git -C /opt/lilbee-src rev-parse HEAD)";
     echo "harness_branch=$HARNESS_BRANCH harness_sha=$(git -C /tmp/harness rev-parse HEAD)"; } \
     | tee /workspace/logs/commits.txt
