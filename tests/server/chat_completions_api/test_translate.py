@@ -166,6 +166,44 @@ class TestCompletionsToCanonicalRequest:
                 }
             )
 
+    def test_image_content_in_system_message_is_rejected(self) -> None:
+        # The same part is a 400 in a user message. The system path filtered it
+        # out instead, so an identical payload was rejected in one role and
+        # silently honoured minus the image in the other.
+        with pytest.raises(ValueError, match="Image content is not supported"):
+            _translate(
+                {
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": [
+                                {"type": "text", "text": "you are terse"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+                                },
+                            ],
+                        },
+                        {"role": "user", "content": "hi"},
+                    ],
+                }
+            )
+
+    def test_tool_message_without_tool_call_id_is_rejected(self) -> None:
+        # An empty id produced a tool result no tool call can pair with, so the
+        # provider saw a result for a call it never made.
+        with pytest.raises(ValueError, match="tool_call_id"):
+            _translate(
+                {
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "hi"},
+                        {"role": "tool", "content": "42"},
+                    ],
+                }
+            )
+
     def test_assistant_message_with_tool_calls(self) -> None:
         req = _translate(
             {
@@ -995,6 +1033,22 @@ class TestCanonicalStreamToCompletionsChunks:
         )
         assert chunks == []
 
+    async def test_a_tool_delta_for_a_block_that_never_started_is_skipped(self) -> None:
+        """The block index map is populated only by ContentBlockStart for a
+        ToolUseBlock, and the lookup was a bare subscript, so a provider that
+        emitted a delta for a block it never opened raised KeyError inside the
+        stream generator and surfaced as a stream-level internal error."""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            ContentBlockDelta(index=7, delta=ToolUseDelta(partial_json='{"q":1}')),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x"
+            )
+        )
+        assert all(c.choices[0].delta.tool_calls is None for c in chunks if c.choices)
+
     async def test_tool_call_stream_emits_function_chunks(self) -> None:
         events: list[CanonicalStreamEvent] = [
             MessageStart(id="msg_x", model="m"),
@@ -1127,3 +1181,40 @@ def test_message_from_request_rejects_system_role_defensively() -> None:
     system_msg = CompletionsMessage(role="system", content="be terse")
     with pytest.raises(ValueError, match="system messages"):
         _message_from_request(system_msg)
+
+
+class TestStreamCreatedIsConstant:
+    async def test_every_chunk_of_one_completion_shares_created(self) -> None:
+        """OpenAI holds created constant across a stream; it was recomputed per
+        chunk, so one completion reported several creation times."""
+        import time
+        from unittest import mock
+
+        from lilbee.server.chat_completions_api.translate import (
+            canonical_stream_to_completions_chunks,
+        )
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalUsage,
+            ContentBlockDelta,
+            MessageDelta,
+            TextDelta,
+        )
+
+        async def _events():
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="a"))
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="b"))
+            yield MessageDelta(
+                stop_reason=None, usage=CanonicalUsage(input_tokens=1, output_tokens=1)
+            )
+
+        ticking = iter([1000.0, 1001.0, 1002.0, 1003.0, 1004.0, 1005.0])
+        with mock.patch.object(time, "time", lambda: next(ticking)):
+            chunks = [
+                c
+                async for c in canonical_stream_to_completions_chunks(
+                    _events(), model="m", response_id="chatcmpl-x", include_usage=True
+                )
+            ]
+
+        assert len(chunks) >= 3
+        assert len({c.created for c in chunks}) == 1

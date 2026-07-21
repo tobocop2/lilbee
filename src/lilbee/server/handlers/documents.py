@@ -32,6 +32,11 @@ _RAW_INLINE_RENDER_DENY: frozenset[str] = frozenset(
         "application/xhtml+xml",
         "text/css",
         "image/svg+xml",
+        # An xml-stylesheet PI can pull in XSLT that emits script. Both
+        # spellings, because which one a ``.xml`` file resolves to depends on
+        # the host mimetypes database.
+        "text/xml",
+        "application/xml",
     }
 )
 
@@ -97,6 +102,9 @@ async def list_documents(
         total=total,
         limit=limit,
         offset=offset,
+        # Gated on a non-empty page: a concurrent writer shrinking SOURCES
+        # between count and fetch leaves a stale total, and a client reading
+        # has_more would spin past the end.
         has_more=len(page) > 0 and (offset + len(page)) < total,
     )
 

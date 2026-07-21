@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -116,18 +116,23 @@ def _clear_chat_lock():
 
 
 class FakeProviderStream:
-    """Async iterator that mimics the provider streaming protocol."""
+    """``ClosableIterator`` mimicking the provider streaming protocol.
+
+    This was an async iterator, which no provider in the tree returns; the
+    streaming tests therefore drove a dispatch branch that only existed for
+    that shape, and never the sync path production uses.
+    """
 
     def __init__(self, frames: list[Any]) -> None:
         self._frames = list(frames)
         self.closed = False
 
-    def __aiter__(self) -> AsyncIterator[Any]:
+    def __iter__(self) -> Iterator[Any]:
         return self
 
-    async def __anext__(self) -> Any:
+    def __next__(self) -> Any:
         if not self._frames:
-            raise StopAsyncIteration
+            raise StopIteration
         return self._frames.pop(0)
 
     def close(self) -> None:
@@ -204,7 +209,9 @@ class TestListModelsEndpoint:
             resp = await client.get("/v1/models", headers=_h())
         by_id = {m["id"]: m for m in resp.json()["data"]}
         assert by_id[INSTALLED_REF]["context_window"] == 40960
-        assert by_id["z/Other/o.gguf"]["context_window"] is None
+        # Omitted rather than null: the field is dumped with exclude_none, so a
+        # model with no served window simply carries no context_window key.
+        assert "context_window" not in by_id["z/Other/o.gguf"]
 
     async def test_remote_configured_chat_model_is_listed_first(
         self, services_with_chat_model, _auth_token, monkeypatch
@@ -348,6 +355,39 @@ class TestListModelsEndpoint:
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.get("/v1/models", headers=_h())
         assert resp.json()["data"][0]["created"] == 0
+
+
+class TestAuthRunsBeforeTheBodyIsParsed:
+    """The check runs in the handler, and Litestar parses the body before
+    calling it, so a malformed body used to 400 with field names instead of
+    reaching the 401."""
+
+    async def test_a_malformed_body_without_a_token_is_401_not_400(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/chat/completions", json={"messages": "not a list"})
+        assert resp.status_code == 401
+
+    async def test_an_unparseable_body_without_a_token_is_401(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                content=b"{not json",
+                headers={"content-type": "application/json"},
+            )
+        assert resp.status_code == 401
+
+    async def test_a_malformed_body_with_a_token_is_still_400(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions", headers=_h(), json={"messages": "not a list"}
+            )
+        assert resp.status_code == 400
 
 
 class TestNonStreamingCompletion:
@@ -728,8 +768,6 @@ class TestNonStreamingCompletion:
             ("auth", 401, "invalid_api_key"),
             ("rate_limit", 429, "rate_limit_exceeded"),
             ("bad_request", 400, "invalid_request"),
-            ("connection", 503, "internal_error"),
-            ("server", 502, "internal_error"),
         ],
     )
     async def test_classified_provider_error_returns_mapped_envelope(
@@ -755,6 +793,33 @@ class TestNonStreamingCompletion:
         body = resp.json()
         assert body["error"]["code"] == code
         assert body["error"]["message"] == "the provider said no, here is what to do about it"
+        assert chat_gate().in_flight == 0
+
+    @pytest.mark.parametrize(("kind", "status"), [("connection", 503), ("server", 502)])
+    async def test_backend_failure_returns_a_generic_envelope(
+        self, services_with_chat_model, _auth_token, kind, status
+    ):
+        """Unlike a request-shaped failure, a backend failure's text carries the
+        fleet's internal detail, so the caller gets the generic message and the
+        slot is still released."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.chat.side_effect = ProviderError(
+            "bind 127.0.0.1:8137 failed", kind=ProviderErrorKind(kind)
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+            )
+        assert resp.status_code == status
+        body = resp.json()
+        assert body["error"]["code"] == "internal_error"
+        assert "127.0.0.1" not in body["error"]["message"]
         assert chat_gate().in_flight == 0
 
     async def test_installed_but_not_configured_model_returns_actionable_400(
@@ -1648,3 +1713,52 @@ class TestIgnoredParamsLogged:
             )
         assert resp.status_code == 200
         spy.assert_not_called()
+
+
+class TestStreamErrorFrameKeepsTheStreamId:
+    """SDK accumulators key on chunk id.
+
+    The error frame is deliberately shaped as a real chat.completion.chunk so
+    OpenAI clients parse it, but it minted a fresh chatcmpl id, so it read as a
+    chunk of some other completion and the error could be dropped.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_error_reuses_the_id_of_the_preceding_chunks(
+        self, monkeypatch
+    ) -> None:
+        import json
+
+        from lilbee.server.chat_completions_api.routes import _gated_completions_stream
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalChatRequest,
+            CanonicalMessage,
+            ContentBlockDelta,
+            TextDelta,
+        )
+
+        async def _one_chunk_then_boom(req: object, *, canonical_model: str | None = None) -> Any:
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="partial"))
+            raise RuntimeError("upstream died mid-stream")
+
+        monkeypatch.setattr(
+            "lilbee.server.chat_completions_api.routes.dispatch_chat_stream", _one_chunk_then_boom
+        )
+        req = CanonicalChatRequest(
+            model="vendor/model",
+            messages=(CanonicalMessage(role="user", content="hi"),),
+            stream=True,
+        )
+        frames = [
+            frame
+            async for frame in _gated_completions_stream(req, ChatSlotGuard(), model=req.model)
+        ]
+
+        ids = []
+        for line in b"".join(frames).decode().splitlines():
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            ids.append(json.loads(line[len("data: ") :])["id"])
+
+        assert len(ids) >= 2, f"expected content and error frames, got {ids}"
+        assert len(set(ids)) == 1, f"error frame changed the completion id: {ids}"

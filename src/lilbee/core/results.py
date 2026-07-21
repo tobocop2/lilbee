@@ -44,6 +44,15 @@ def _to_excerpt(chunk: SearchChunk) -> Excerpt:
     )
 
 
+def _best_content_type(source_chunks: list[SearchChunk]) -> str:
+    """Content type of the highest-scoring chunk for a source.
+
+    score is optional on the model, so an unscored chunk sorts last rather
+    than raising.
+    """
+    return max(source_chunks, key=lambda c: c.score if c.score is not None else -1.0).content_type
+
+
 def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
     """Group raw LanceDB chunks into document-centric results."""
     from lilbee.app.search import resolve_vault_path
@@ -63,7 +72,10 @@ def group(chunks: list[SearchChunk]) -> list[DocumentResult]:
         results.append(
             DocumentResult(
                 source=source,
-                content_type=source_chunks[0].content_type,
+                # From the best-scoring chunk, not whichever the store returned
+                # first: excerpts are already sorted by relevance and a source
+                # can carry chunks of more than one type.
+                content_type=_best_content_type(source_chunks),
                 excerpts=excerpts,
                 best_relevance=excerpts[0].relevance,
                 vault_path=resolve_vault_path(source),

@@ -6,7 +6,6 @@ import hmac
 import json
 import logging
 import secrets
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -15,32 +14,52 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.types import ASGIApp, Receive, Scope, Send
 
 from lilbee.core.config import cfg
+from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 log = logging.getLogger(__name__)
 
 _TOKEN_BYTES = 32
 
+_BOOT_LOCK_TIMEOUT_S = 30
+
+# Character floor for a persisted token. secrets.token_urlsafe(n) base64url-encodes
+# n bytes, so the entropy count is not a length: reusing _TOKEN_BYTES here accepted
+# tokens roughly a quarter weaker than the ones this module mints.
+_MIN_TOKEN_CHARS = len(secrets.token_urlsafe(_TOKEN_BYTES))
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-# Set of route-handler functions that bypass auth. Populated at import time by
-# the @read_only decorator; checked by AuthMiddleware via membership lookup.
-# Module-level set is intentional: route handlers are defined once at import,
-# the registry has no other lifecycle, and the alternative (mutating an
-# attribute on the function object) lands every check on a # type: ignore
-# because mypy cannot see the dynamic attribute on Callable.
-_READ_ONLY_HANDLERS: set[Callable[..., Any]] = set()
+# Route handlers AuthMiddleware skips, registered at import by the decorator
+# below. A module-level set rather than an attribute on the function object,
+# which mypy cannot see and would put a # type: ignore on every check.
+_SELF_AUTHENTICATING_HANDLERS: set[Callable[..., Any]] = set()
 
 
-def read_only(fn: F) -> F:
-    """Mark a route handler as read-only (no auth required)."""
-    _READ_ONLY_HANDLERS.add(fn)
+def auth_checked_in_handler(fn: F) -> F:
+    """Mark a route whose token check runs inside the handler, not in middleware.
+
+    Not an exemption: the route must still reject an unauthenticated caller
+    itself. Only ``/v1/*`` uses this, to answer a bad token with the OpenAI
+    error envelope instead of Litestar's 401 shape.
+    ``test_every_route_is_authenticated`` holds the line.
+
+    Must sit *below* the route decorator so it receives the raw function, which
+    is what ``AuthMiddleware`` looks up via ``handler.fn``; stacked the other
+    way the lookup misses. Enforced below.
+    """
+    if hasattr(fn, "fn"):
+        raise TypeError(
+            "@auth_checked_in_handler must be applied below the route decorator, "
+            "so it sees the function rather than the route handler."
+        )
+    _SELF_AUTHENTICATING_HANDLERS.add(fn)
     return fn
 
 
-def is_read_only(fn: Callable[..., Any]) -> bool:
-    """True iff *fn* was decorated with :func:`read_only`."""
-    return fn in _READ_ONLY_HANDLERS
+def authenticates_itself(fn: Callable[..., Any]) -> bool:
+    """True iff *fn* was decorated with :func:`auth_checked_in_handler`."""
+    return fn in _SELF_AUTHENTICATING_HANDLERS
 
 
 def server_json_path() -> Path:
@@ -62,22 +81,26 @@ class SessionManager:
         self._initialized: bool = False
 
     def load_or_generate(self) -> str:
-        """Return the persisted token if shape-valid; generate a new one otherwise."""
+        """Return the persisted token if shape-valid; generate a new one otherwise.
+
+        Read and write happen under a file lock so concurrent boots converge on
+        one token: without it both see no file, both mint, and the last write
+        rejects every client that read the other's file.
+        """
         path = server_json_path()
-        existing = self._read_persisted_token(path)
-        if existing is not None:
-            self.token = existing
+        with file_lock_or_warn(path, _BOOT_LOCK_TIMEOUT_S):
+            existing = self._read_persisted_token(path)
+            if existing is not None:
+                # The token is reused indefinitely and the file can arrive
+                # world-readable (backup, older release), so narrow on every load.
+                harden_private_file(path)
+                self.token = existing
+                self._initialized = True
+                return existing
+            self.token = secrets.token_urlsafe(_TOKEN_BYTES)
+            write_private_text(path, json.dumps({"token": self.token}))
             self._initialized = True
-            return existing
-        self.token = secrets.token_urlsafe(_TOKEN_BYTES)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"token": self.token}), encoding="utf-8")
-        if sys.platform != "win32":  # pragma: no cover - Windows uses the DACL
-            # POSIX-only; Windows relies on the inherited %LOCALAPPDATA% DACL
-            # for owner-only access control.
-            path.chmod(0o600)
-        self._initialized = True
-        return self.token
+            return self.token
 
     def disable(self) -> None:
         """Explicitly turn auth off (test harness / embedded read-only use).
@@ -90,10 +113,20 @@ class SessionManager:
 
     @staticmethod
     def _read_persisted_token(path: Path) -> str | None:
-        """Return a previously-persisted token if shape-valid, else None."""
+        """Return a previously-persisted token if shape-valid, else None.
+
+        Total by design: every way the file can be unusable returns None so the
+        caller mints a fresh token. A corrupt server.json must never be the
+        reason the server refuses to boot, since nothing would point the user at
+        the file to delete.
+        """
         try:
             raw = path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
+        except OSError:
+            return None
+        except UnicodeDecodeError:
+            # Not an OSError: a truncated write or a file clobbered by another
+            # tool leaves bytes that are not valid UTF-8.
             return None
         try:
             data = json.loads(raw)
@@ -102,7 +135,7 @@ class SessionManager:
         if not isinstance(data, dict):
             return None
         token = data.get("token")
-        if not isinstance(token, str) or len(token) < _TOKEN_BYTES:
+        if not isinstance(token, str) or len(token) < _MIN_TOKEN_CHARS:
             return None
         return token
 
@@ -152,7 +185,7 @@ class AuthMiddleware:
             return
 
         handler = scope.get("route_handler")
-        if handler and is_read_only(handler.fn):
+        if handler and authenticates_itself(handler.fn):
             await self.app(scope, receive, send)
             return
 

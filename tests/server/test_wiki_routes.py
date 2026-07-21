@@ -192,19 +192,6 @@ class TestWikiEnabled:
         assert "summaries/doc-a" in slugs
         assert "synthesis/typing" in slugs
 
-    async def test_list_regenerates_index(self, isolated_env: Path):
-        """When wiki/index.md exists, listing regenerates it."""
-        wiki_root = isolated_env / "wiki"
-        _make_wiki_page(wiki_root, "summaries", "test-doc")
-        # Create an index.md so the regeneration path triggers
-        (wiki_root / "index.md").write_text("# Wiki Index\n", encoding="utf-8")
-        async with AsyncTestClient(_create_app()) as client:
-            resp = await client.get("/api/wiki", headers=_h())
-        assert resp.status_code == 200
-        # index.md should be refreshed with actual entries
-        index_text = (wiki_root / "index.md").read_text(encoding="utf-8")
-        assert "test-doc" in index_text
-
     async def test_list_string_sources(self, isolated_env: Path):
         """Pages with sources as a comma-separated string still count correctly."""
         wiki_root = isolated_env / "wiki"
@@ -391,7 +378,7 @@ class TestWikiEnabled:
         loop_tid = threading.get_ident()
         seen: list[int] = []
 
-        def fake_lint(store, config=None):
+        def fake_lint(store, config=None, record_log=True):
             seen.append(threading.get_ident())
             return lint_mod.LintReport()
 
@@ -415,11 +402,11 @@ class TestWikiEnabled:
         assert body["paths"] == ["wiki/concepts/x.md"]
 
     async def test_build_runs_in_worker_thread_and_serializes(self, monkeypatch):
-        """Concurrent build calls don't run in parallel: the lock serializes them.
+        """Concurrent builds serialize on the lock, off the event loop.
 
-        Asserts that ``run_full_build`` is invoked from a non-loop thread
-        (so an LLM-blocking build won't freeze the event loop) and that
-        two concurrent POSTs run sequentially.
+        Drives the handlers directly: AsyncTestClient serializes gathered
+        requests itself, so through it the spans never overlap whether or not
+        the lock exists, and this test stayed green without it.
         """
         import asyncio
         import threading
@@ -441,29 +428,30 @@ class TestWikiEnabled:
         skew_s = 0.01
 
         def fake_build(*args, **kwargs):
-            invocations.append((threading.get_ident(), time.monotonic(), 0.0))
+            # One append after the sleep, with start held locally: the earlier
+            # version appended a placeholder first and then rewrote
+            # invocations[-1], so with two threads actually overlapping the
+            # second one rewrote the first one's entry and the spans came out
+            # looking serialized either way.
+            start = time.monotonic()
             time.sleep(sleep_s)
-            invocations[-1] = (invocations[-1][0], invocations[-1][1], time.monotonic())
+            invocations.append((threading.get_ident(), start, time.monotonic()))
             return {"paths": [], "entities": 0, "count": 0}
 
         monkeypatch.setattr("lilbee.server.wiki.run_full_build", fake_build)
 
-        async with AsyncTestClient(_create_app()) as client:
-            r1, r2 = await asyncio.gather(
-                client.post("/api/wiki/build", headers=_h()),
-                client.post("/api/wiki/build", headers=_h()),
-            )
         try:
-            assert r1.status_code == 201
-            assert r2.status_code == 201
+            await asyncio.gather(
+                _wiki_mod.wiki_build_route.fn(),
+                _wiki_mod.wiki_build_route.fn(),
+            )
             assert len(invocations) == 2
             # Worker thread is not the event-loop thread.
             for tid, _start, _end in invocations:
                 assert tid != loop_thread_id
             # Lock serialized: second invocation starts at or after first ends.
-            first_end = invocations[0][2]
-            second_start = invocations[1][1]
-            assert second_start >= first_end - skew_s
+            first, second = sorted(invocations, key=lambda i: i[1])
+            assert second[1] >= first[2] - skew_s, f"builds overlapped: {invocations}"
         finally:
             _wiki_mod._reset_wiki_build_lock()
 
@@ -875,3 +863,121 @@ class TestPydanticModels:
         assert c.excerpt == ""
         assert c.wiki_chunk_index == 0
         assert c.created_at == ""
+
+
+class TestWikiReadPathsDoNotWrite:
+    """A route reachable without a token must not mutate the wiki tree."""
+
+    @pytest.fixture(autouse=True)
+    def enable_wiki(self):
+        cfg.wiki = True
+
+    async def test_listing_pages_does_not_rewrite_the_index(self, isolated_env: Path):
+        """A read must not write. GET /api/wiki regenerated index.md, so a
+        listing raced the build path over the same file; at the time the route
+        was also unauthenticated, which let any caller drive those writes."""
+        wiki_root = isolated_env / "wiki"
+        _make_wiki_page(wiki_root, "summaries", "test-doc")
+        index_path = wiki_root / "index.md"
+        index_path.write_text("stale index\n", encoding="utf-8")
+        before = index_path.stat().st_mtime_ns
+
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki", headers=_h())
+
+        assert resp.status_code == 200
+        assert [p["slug"] for p in resp.json()] == ["summaries/test-doc"]
+        assert index_path.read_text(encoding="utf-8") == "stale index\n"
+        assert index_path.stat().st_mtime_ns == before
+
+    async def test_status_requires_a_token(self):
+        """The full-corpus lint behind status must not be an anonymous amplifier."""
+        async with AsyncTestClient(_create_app()) as client:
+            resp = await client.get("/api/wiki/status")
+        assert resp.status_code == 401
+
+    async def test_status_does_not_append_to_the_wiki_log(self, isolated_env: Path):
+        """lint_all grew record_log=False for exactly this read-only caller."""
+        from unittest import mock
+
+        wiki_root = isolated_env / "wiki"
+        _make_wiki_page(wiki_root, "summaries", "s1")
+        with mock.patch("lilbee.server.wiki.lint_mod.lint_all") as lint_all:
+            lint_all.return_value = mock.MagicMock(error_count=0, warning_count=0)
+            async with AsyncTestClient(_create_app()) as client:
+                resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        assert lint_all.call_args.kwargs["record_log"] is False
+
+
+class TestWikiDisabledStatusIsCheap:
+    async def test_status_skips_the_lint_when_the_wiki_is_disabled(self, isolated_env: Path):
+        """A leftover wiki dir from a previous build used to make the disabled
+        status poll run the whole lint anyway."""
+        from unittest import mock
+
+        cfg.wiki = False
+        _make_wiki_page(isolated_env / "wiki", "summaries", "leftover")
+        with mock.patch("lilbee.server.wiki.lint_mod.lint_all") as lint_all:
+            async with AsyncTestClient(_create_app()) as client:
+                resp = await client.get("/api/wiki/status", headers=_h())
+        assert resp.status_code == 200
+        assert resp.json()["wiki_enabled"] is False
+        lint_all.assert_not_called()
+
+
+class TestEveryWikiWriterSharesTheBuildMutex:
+    """The mutex exists because concurrent writers corrupt the tree and index.
+
+    Build, update and synthesize took it; prune and draft-accept did not, even
+    though prune archives pages and both refresh index.md, which is the file the
+    lock's own comment names.
+
+    Drives the handlers directly rather than through AsyncTestClient, which
+    serializes requests and so cannot tell a held lock from an absent one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def enable_wiki(self):
+        cfg.wiki = True
+
+    async def test_prune_serializes_against_a_build(self, monkeypatch, isolated_env: Path):
+        import asyncio
+        import time
+        from unittest import mock
+
+        from lilbee.server import wiki as _wiki_mod
+
+        _wiki_mod._reset_wiki_build_lock()
+        spans: list[tuple[str, float, float]] = []
+        hold_s = 0.1
+        skew_s = 0.01
+
+        def _record(label, result):
+            def _run(*_args, **_kwargs):
+                start = time.monotonic()
+                time.sleep(hold_s)
+                spans.append((label, start, time.monotonic()))
+                return result
+
+            return _run
+
+        monkeypatch.setattr(
+            "lilbee.server.wiki.run_full_build",
+            _record("build", {"paths": [], "entities": 0, "count": 0}),
+        )
+        monkeypatch.setattr(
+            "lilbee.server.wiki.prune_mod.prune_wiki",
+            _record("prune", mock.MagicMock(records=[], archived_count=0, flagged_count=0)),
+        )
+
+        try:
+            await asyncio.gather(
+                _wiki_mod.wiki_build_route.fn(),
+                _wiki_mod.wiki_prune_route.fn(),
+            )
+            assert len(spans) == 2
+            first, second = sorted(spans, key=lambda s: s[1])
+            assert second[1] >= first[2] - skew_s, f"prune and build overlapped: {spans}"
+        finally:
+            _wiki_mod._reset_wiki_build_lock()
