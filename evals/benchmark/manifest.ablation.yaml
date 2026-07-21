@@ -18,9 +18,13 @@ arms:
     config:
       lexical_fusion_weight: 0.0
       title_search: true
+  # On scifact and nfcorpus this isolates title_search against dense. On fiqa it
+  # is an A/A null control: BEIR's fiqa corpus carries no title field, so the two
+  # arms are the same system and any significant difference between them is a
+  # defect in the harness, not a finding about retrieval.
   - name: dense-notitle
     system: lilbee
-    description: vector-only with the title arm off; isolates title_search against dense
+    description: vector-only with the title arm off; isolates title_search, and is an A/A null on fiqa
     config:
       lexical_fusion_weight: 0.0
       title_search: false
