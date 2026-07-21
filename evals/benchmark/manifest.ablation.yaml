@@ -1,0 +1,82 @@
+# Preregistration for the lexical-fusion weight ablation on BEIR.
+#
+# One baseline (dense, vector-only) against four fixed lexical fusion weights,
+# on the three BEIR passage sets that ship native qrels. This is a single-system
+# ablation, not the cross-system parity study: see manifest.example.yaml for
+# that one. The stats step refuses to stamp this fingerprint on any comparison
+# whose arms and dataset are not declared here.
+run_id: fusion-weight-ablation-2026-07
+
+arms:
+  # The baseline differs from every weighted arm in ONE variable, the lexical
+  # fusion weight. The previous run silenced title_search here and nowhere else,
+  # so every "-vs-dense" comparison moved two knobs at once and no delta could be
+  # attributed to the weight. title_search gets its own arm below instead.
+  - name: dense
+    system: lilbee
+    description: vector-only baseline; lexical arm silenced, title arm on
+    config:
+      lexical_fusion_weight: 0.0
+      title_search: true
+  # On scifact and nfcorpus this isolates title_search against dense. On fiqa it
+  # is an A/A null control: BEIR's fiqa corpus carries no title field, so the two
+  # arms are the same system and any significant difference between them is a
+  # defect in the harness, not a finding about retrieval.
+  - name: dense-notitle
+    system: lilbee
+    description: vector-only with the title arm off; isolates title_search, and is an A/A null on fiqa
+    config:
+      lexical_fusion_weight: 0.0
+      title_search: false
+  - name: w0.25
+    system: lilbee
+    description: hybrid fusion, BM25 arm at weight 0.25, title arm on
+    config:
+      lexical_fusion_weight: 0.25
+      title_search: true
+  - name: w0.5
+    system: lilbee
+    description: hybrid fusion, BM25 arm at weight 0.5, title arm on
+    config:
+      lexical_fusion_weight: 0.5
+      title_search: true
+  - name: w0.75
+    system: lilbee
+    description: hybrid fusion, BM25 arm at weight 0.75, title arm on
+    config:
+      lexical_fusion_weight: 0.75
+      title_search: true
+  - name: w1.0
+    system: lilbee
+    description: hybrid fusion, BM25 arm at weight 1.0, title arm on
+    config:
+      lexical_fusion_weight: 1.0
+      title_search: true
+
+models:
+  embedder: Qwen3-Embedding-0.6B-Q8_0
+  # No generator is served for this tier: query expansion is off and nothing is
+  # graded by a model, so these are pure first-pass retrieval numbers.
+  generator: none-tier1-only
+  judge: not-applicable-tier1-only
+
+datasets:
+  - name: scifact
+    loader: beir/scifact/test
+    label_kind: native
+  - name: fiqa
+    loader: beir/fiqa/test
+    label_kind: native
+  - name: nfcorpus
+    loader: beir/nfcorpus/test
+    label_kind: native
+
+metrics:
+  - nDCG@10
+  - Recall@20
+  - MRR@10
+
+stats:
+  bootstrap_resamples: 10000
+  seed: 20260714
+  alpha: 0.05

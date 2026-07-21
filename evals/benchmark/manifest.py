@@ -1,0 +1,300 @@
+"""The preregistration manifest: everything frozen before any data moves.
+
+Freezing the datasets, metrics, both arms' configs, and the held-constant
+models to a file (and its fingerprint) is what stops the run from being
+cherry-picked after the numbers land. The key structural guarantee validated
+here is that the judge model differs from the generator model, so the answer
+tier is never graded by the same model that wrote the answer.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+from evals.benchmark.datasets import LABEL_DERIVED, LABEL_NATIVE
+
+LILBEE_SYSTEM = "lilbee"
+RAGFLOW_SYSTEM = "ragflow"
+FROZEN_TEMPERATURE = 0.0
+
+
+@dataclass(frozen=True)
+class ArmConfig:
+    """One system under test and the configuration it runs with."""
+
+    name: str
+    system: str
+    description: str
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """The models held constant across both arms.
+
+    ``embedder`` is served once and shared by both arms. ``generator`` writes
+    every answer; ``judge`` grades them and MUST differ from ``generator``.
+    ``generator_swap`` records an alternate generator noted for a sensitivity
+    check, not used in the main run.
+    """
+
+    embedder: str
+    generator: str
+    judge: str
+    generator_swap: str = ""
+
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    """One dataset, its loader, and whether its qrels are native or derived.
+
+    ``loader`` is an ir_datasets id for a native set (``beir/fiqa/test``), which
+    names the corpus, the split, and the published copy in one string. The split
+    is deliberately not a separate field: two places declaring it is two places
+    to disagree, and the id is what actually selects the data.
+    """
+
+    name: str
+    loader: str
+    label_kind: str
+
+
+@dataclass(frozen=True)
+class StatsConfig:
+    """Paired-statistics configuration, frozen so CIs are reproducible."""
+
+    bootstrap_resamples: int = 10000
+    seed: int = 20260714
+    alpha: float = 0.05
+
+
+@dataclass(frozen=True)
+class SystemProvenance:
+    """Which build produced the runs, and how the corpus was indexed.
+
+    The previous study pinned the embedder and nothing else, so its run files
+    could be rescored but not reproduced: no commit, no index parameters. A
+    reader who cannot rebuild the system under test is being asked to take the
+    numbers on trust, which is the thing a benchmark exists to avoid.
+
+    Every field is optional and empty-by-default so existing frozen manifests
+    keep their identity, but a run that leaves them empty is publishing an
+    unreproducible result and ``require_reproducible`` says so.
+    """
+
+    lilbee_commit: str = ""
+    lilbee_version: str = ""
+    chunk_size: int = 0
+    chunk_overlap: int = 0
+    reranker: str = ""
+    index_built_at: str = ""
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.lilbee_commit and self.chunk_size)
+
+
+@dataclass(frozen=True)
+class Manifest:
+    """The full frozen preregistration for one benchmark run."""
+
+    run_id: str
+    arms: list[ArmConfig]
+    models: ModelConfig
+    datasets: list[DatasetSpec]
+    metrics: list[str]
+    stats: StatsConfig
+    temperature: float = FROZEN_TEMPERATURE
+    system: SystemProvenance = field(default_factory=SystemProvenance)
+
+    def require_reproducible(self) -> None:
+        """Fail unless the manifest records which build produced the runs."""
+        if not self.system.is_complete:
+            raise ValueError(
+                "manifest does not record the system under test: set "
+                "system.lilbee_commit and system.chunk_size so the run can be "
+                "reproduced, not merely rescored"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def fingerprint(self) -> str:
+        """Stable sha256 over the canonical JSON; the preregistration's identity.
+
+        Optional identity fields that were never filled in are omitted from the
+        canonical form, so adding one to the schema does not silently change the
+        identity of every study that predates it. A populated value does change
+        the fingerprint, which is the point: a run against a different lilbee
+        build or index configuration is a different preregistration.
+        """
+        canonical = json.dumps(
+            _without_empty_optionals(self.to_dict()), sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    @property
+    def derived_datasets(self) -> list[str]:
+        return [ds.name for ds in self.datasets if ds.label_kind == LABEL_DERIVED]
+
+    @property
+    def arm_names(self) -> set[str]:
+        return {arm.name for arm in self.arms}
+
+    @property
+    def dataset_names(self) -> set[str]:
+        return {ds.name for ds in self.datasets}
+
+    def require_declared_comparison(self, arm_a: str, arm_b: str, dataset: str) -> None:
+        """Fail unless this manifest declares both arms and the dataset.
+
+        The fingerprint is the preregistration's identity; stamping it onto a
+        comparison the manifest never declared attests to a study that was not
+        performed. A manifest may declare more than two arms, since an ablation
+        is one baseline against several variants, but every comparison must be
+        between two distinct arms it names, on a dataset it lists.
+        """
+        undeclared_arms = {arm_a, arm_b} - self.arm_names
+        if undeclared_arms:
+            raise ValueError(
+                f"arms {sorted(undeclared_arms)} are not declared in manifest "
+                f"'{self.run_id}' (declares {sorted(self.arm_names)}); "
+                "the frozen fingerprint cannot attest to this comparison"
+            )
+        if arm_a == arm_b:
+            raise ValueError(f"a comparison needs two distinct arms, both are '{arm_a}'")
+        if dataset not in self.dataset_names:
+            raise ValueError(
+                f"dataset '{dataset}' is not declared in manifest '{self.run_id}' "
+                f"(declares {sorted(self.dataset_names)})"
+            )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Manifest:
+        """Build from a manifest payload, verifying a stored fingerprint if present.
+
+        ``freeze`` records the fingerprint alongside the manifest. Reading the
+        known keys and recomputing the fingerprint from whatever the file now
+        says makes any post-hoc edit self-consistent, so the one artifact whose
+        purpose is to be tamper-evident would report no tampering. A payload that
+        carries a fingerprint must still hash to it.
+        """
+        manifest = cls(
+            run_id=data["run_id"],
+            arms=[ArmConfig(**arm) for arm in data["arms"]],
+            models=ModelConfig(**data["models"]),
+            datasets=[DatasetSpec(**ds) for ds in data["datasets"]],
+            metrics=list(data["metrics"]),
+            stats=StatsConfig(**data.get("stats", {})),
+            temperature=data.get("temperature", FROZEN_TEMPERATURE),
+            system=SystemProvenance(**data.get("system", {})),
+        )
+        manifest.validate()
+        stored = data.get("fingerprint")
+        if stored is not None and stored != manifest.fingerprint():
+            raise ValueError(
+                f"manifest fingerprint does not match its contents (file {stored[:12]}, "
+                f"contents hash to {manifest.fingerprint()[:12]}); the frozen "
+                "preregistration was edited after it was frozen"
+            )
+        return manifest
+
+    @classmethod
+    def load(cls, path: Path) -> Manifest:
+        """Load and validate a manifest from a YAML or JSON file."""
+        text = path.read_text()
+        if path.suffix in (".yaml", ".yml"):
+            import yaml
+
+            data = yaml.safe_load(text)
+        else:
+            data = json.loads(text)
+        return cls.from_dict(data)
+
+    def freeze(self, path: Path) -> str:
+        """Write the canonical manifest to ``path`` and return its fingerprint."""
+        self.validate()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self.to_dict()
+        payload["fingerprint"] = self.fingerprint()
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return payload["fingerprint"]
+
+    def validate(self) -> None:
+        """Fail loudly on any preregistration invariant the run depends on."""
+        _validate_arms(self.arms)
+        _validate_models(self.models)
+        _validate_datasets(self.datasets)
+        if not self.metrics:
+            raise ValueError("manifest lists no metrics")
+        if self.temperature != FROZEN_TEMPERATURE:
+            raise ValueError(f"temperature must be {FROZEN_TEMPERATURE} for a deterministic run")
+
+
+# Identity fields added after manifests were already frozen. Omitting them when
+# empty keeps those fingerprints valid; a populated value still changes the
+# identity. Only fields introduced later belong here: excluding one that was
+# already hashed would change the identity of every study that recorded it.
+OPTIONAL_IDENTITY_FIELDS = (
+    "lilbee_commit",
+    "lilbee_version",
+    "reranker",
+    "index_built_at",
+)
+
+
+def _without_empty_optionals(payload: Any) -> Any:
+    """Drop optional identity fields left empty, recursively."""
+    if isinstance(payload, dict):
+        return {
+            key: _without_empty_optionals(value)
+            for key, value in payload.items()
+            if not (key in OPTIONAL_IDENTITY_FIELDS and value == "")
+        }
+    if isinstance(payload, list):
+        return [_without_empty_optionals(item) for item in payload]
+    return payload
+
+
+KNOWN_SYSTEMS = frozenset({LILBEE_SYSTEM, RAGFLOW_SYSTEM})
+
+
+MIN_ARMS = 2
+
+
+def _validate_arms(arms: list[ArmConfig]) -> None:
+    if len(arms) < MIN_ARMS:
+        raise ValueError("a benchmark needs at least two arms to compare")
+    if len({arm.name for arm in arms}) != len(arms):
+        raise ValueError("arm names must be distinct")
+    # Both a cross-system parity study (one lilbee, one ragflow) and a
+    # single-system ablation (two lilbee arms at different configs) are valid
+    # preregistrations; forcing one of each made the ablation impossible to
+    # declare, so the run compared undeclared arms under a stamped fingerprint.
+    unknown = {arm.system for arm in arms} - KNOWN_SYSTEMS
+    if unknown:
+        raise ValueError(
+            f"unknown arm system(s) {sorted(unknown)}; each arm's system must be "
+            f"one of {sorted(KNOWN_SYSTEMS)}"
+        )
+
+
+def _validate_models(models: ModelConfig) -> None:
+    if not models.embedder:
+        raise ValueError("a shared embedder model is required")
+    if not models.generator:
+        raise ValueError("a generator model is required")
+    if models.judge == models.generator:
+        raise ValueError("judge model must differ from the generator model")
+
+
+def _validate_datasets(datasets: list[DatasetSpec]) -> None:
+    if not datasets:
+        raise ValueError("manifest lists no datasets")
+    for ds in datasets:
+        if ds.label_kind not in (LABEL_NATIVE, LABEL_DERIVED):
+            raise ValueError(f"dataset '{ds.name}' has unknown label_kind '{ds.label_kind}'")

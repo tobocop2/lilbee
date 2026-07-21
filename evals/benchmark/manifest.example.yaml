@@ -1,0 +1,69 @@
+# Preregistration for one lilbee-vs-RAGFlow retrieval benchmark run.
+# Freeze this with `python -m evals.benchmark preregister` before any data
+# moves; the frozen copy carries a fingerprint so the run cannot be re-cut.
+run_id: parity-2026-07
+
+# Both arms share one served embedder and one served generator; only retrieval
+# differs. The judge must differ from the generator so answers are never graded
+# by the model that wrote them (validated at load time).
+models:
+  embedder: qwen3-embedding
+  generator: qwen2.5-72b-instruct
+  generator_swap: mistral-large-2411
+  judge: fable-5
+
+arms:
+  - name: lilbee-parity
+    system: lilbee
+    description: test/retrieval-parity with every parity feature enabled
+    config:
+      title_search: true
+      neighbor_expansion: 2
+      table_extraction: true
+      layout_detection: true
+      intent_llm: true
+  - name: ragflow-default
+    system: ragflow
+    description: RAGFlow DeepDoc pipeline at its defaults
+    config:
+      pipeline: deepdoc
+
+# Passage sets carry native TREC qrels and load straight from ir_datasets,
+# whose id names the corpus, the split, and the published copy. The
+# document-structured QA sets have no retrieval labels upstream: theirs are
+# derived from human gold-evidence annotations, marked label_kind: derived and
+# disclosed here, and their loader is supplied by the harness rather than an id.
+datasets:
+  - name: scifact
+    loader: beir/scifact/test
+    label_kind: native
+  - name: fiqa
+    loader: beir/fiqa/test
+    label_kind: native
+  - name: nfcorpus
+    loader: beir/nfcorpus/test
+    label_kind: native
+  - name: hotpotqa
+    loader: beir/hotpotqa/test
+    label_kind: native
+  - name: trec-covid
+    loader: beir/trec-covid
+    label_kind: native
+  - name: tat-dqa
+    loader: tatdqa
+    label_kind: derived
+  - name: ott-qa
+    loader: ottqa
+    label_kind: derived
+
+metrics:
+  - nDCG@10
+  - Recall@20
+  - MRR@10
+
+stats:
+  bootstrap_resamples: 10000
+  seed: 20260714
+  alpha: 0.05
+
+temperature: 0.0
