@@ -1818,7 +1818,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", specifier = ">=0.30" },
-    { name = "xberg", specifier = ">=1.0.0rc29" },
+    { name = "xberg", specifier = ">=1.0.0rc30" },
 ]
 provides-extras = ["litellm", "graph", "crawler", "cuda12", "release"]
 
@@ -4740,15 +4740,15 @@ wheels = [
 
 [[package]]
 name = "xberg"
-version = "1.0.0rc29"
+version = "1.0.0rc30"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/01/cd/27a2cccc105c40df6d10a23adf66ec755c960e8d491cbca4c207c6817f4b/xberg-1.0.0rc29.tar.gz", hash = "sha256:c66fb4aa84d641e37e65e7c3b1921982cfb8eb37c12fb66dfc67f19e4f594a82", size = 303548 }
+sdist = { url = "https://files.pythonhosted.org/packages/96/a0/915a0e5b74789119ab84834ad4dcbb705053f7a872cd9be225d0c7c68cbf/xberg-1.0.0rc30.tar.gz", hash = "sha256:6253898bd3f7a1b8a9d69e1a9ccc36f428c81a1c131b501fa23663c847a347ff", size = 304904 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/12/3b21d7942f4023033b5b99894af46cf91c96442253fbef603354f304a3b0/xberg-1.0.0rc29-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:cb74e2f2be759695c527b3335541cf7f601143a270ab550b80fdb3e69baf2bad", size = 38123462 },
-    { url = "https://files.pythonhosted.org/packages/17/59/896db8ec8dc28fee916592e3ee5fcc0b5186e9f4747b3eb911bb943f91df/xberg-1.0.0rc29-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:6ebfb80f187f8c8a1147b8ad4bb33d856e4a7115705750d406bc21acd5adb414", size = 34778448 },
-    { url = "https://files.pythonhosted.org/packages/ed/d8/f159aa161295882db7b6a60b125ea9946cda4313f96af6a5b9532981dc7b/xberg-1.0.0rc29-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:85c1fb2abae29b7f263bae3a8c34d2e83a80fcf2d51ef0014a3caed0be15f3d9", size = 43062408 },
-    { url = "https://files.pythonhosted.org/packages/cf/09/e1551d351f3203eb27aeb0e22511a05a5df0c30326635852572d085f71f5/xberg-1.0.0rc29-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b1af35e29f76d348e49a10b8b665abf185c7e7a271253bf92a81447091b54a9e", size = 45555785 },
-    { url = "https://files.pythonhosted.org/packages/ab/df/3452bceacafda20edc40ba4181c823ce83b063b701fb7e44d483885eb7be/xberg-1.0.0rc29-cp310-abi3-win_amd64.whl", hash = "sha256:7f1a94159ab7584369624aff3938953febb2102af1ca333710ee1c94e1c129d6", size = 30723686 },
+    { url = "https://files.pythonhosted.org/packages/9a/d9/e03a74a708b0306b6583c89d7a09e34f0bfd290dbc1ffb6024ea6e0e2b23/xberg-1.0.0rc30-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:a2a6eb1e77609d601534b6e87f2605e0dddb4b3f900a9347c7fad6195e065adf", size = 38291155 },
+    { url = "https://files.pythonhosted.org/packages/20/0b/187f1a0ac361d639ce5a124db0772e7de9e259765e262a2900fcf95ad3de/xberg-1.0.0rc30-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:897c76e94bc046cddd76dd3b4ebccbab85886d3f35772c761d057d2aadf79f21", size = 34948254 },
+    { url = "https://files.pythonhosted.org/packages/f8/53/5e6598c8b1ed447657f83ab2f0d34c56280e41f1453fcf99cd880e654254/xberg-1.0.0rc30-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:bc6a3566b516c3adad3ae482c21f29193e11b543a79efa325b7f9c72ae97bff4", size = 43172620 },
+    { url = "https://files.pythonhosted.org/packages/a3/f1/281208e983f5afd9af574fc1aec880aebf89cf4a4f9bb334641445de97bd/xberg-1.0.0rc30-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:495d8541123d553d4a94b1380bfe5fce0c7342678e70cb999c19823b0c3b2885", size = 45676001 },
+    { url = "https://files.pythonhosted.org/packages/81/56/359325c35545216462828b31f54f53def6a33b42a0561ac2b60122d2c5f5/xberg-1.0.0rc30-cp310-abi3-win_amd64.whl", hash = "sha256:9eceea800bc5e1ac036f49444a89b8730b9dcbd50b1d489a036a793bc55a9195", size = 32455213 },
 ]
 
 [[package]]
