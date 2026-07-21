@@ -30,16 +30,16 @@ recommend for IR is passed in instead.
 
 from __future__ import annotations
 
-from pathlib import Path
+import statistics
 from typing import Any
 
+# Resamples and seed come from the stats module rather than being redeclared:
+# the arm table and the paired comparisons behind the CIs are the same study,
+# and a second copy of these numbers is a second thing to forget to change.
+from evals.benchmark.stats import DEFAULT_RESAMPLES, DEFAULT_SEED
 from evals.deps import install_hint
 
 PYTERRIER_INSTALL_HINT = install_hint("python-terrier", "to compare retrieval arms")
-
-# Randomization-test resamples. Distinct from the bootstrap's, since the two
-# procedures answer different questions and are reported side by side.
-DEFAULT_RESAMPLES = 10000
 
 
 def randomization_test(resamples: int, seed: int) -> Any:
@@ -47,42 +47,47 @@ def randomization_test(resamples: int, seed: int) -> Any:
 
     PyTerrier types the hook as ``Callable[[Sequence, Sequence], Tuple[Any, float]]``:
     it hands over the baseline's and the arm's per-query scores and wants
-    ``(statistic, p_value)``. That is the same paired vector ``stats.compare``
-    works on, so both report the same test rather than two different ones.
+    ``(statistic, p_value)``.
+
+    The p-value comes from ``stats.permutation_test`` rather than a second scipy
+    call written here. The study reports this test in two places, the arm table
+    and the paired comparison behind each CI, and two implementations of it are
+    two chances for those to disagree about resampling while both look right.
     """
 
     def test(baseline_scores: Any, arm_scores: Any) -> tuple[float, float]:
-        import numpy as np
-        from scipy import stats as scipy_stats
+        from evals.benchmark.stats import permutation_test
 
-        diffs = np.asarray(arm_scores, dtype=float) - np.asarray(baseline_scores, dtype=float)
-        # An all-zero difference vector has nothing to permute, and scipy
-        # declines the degenerate case; the arms are identical on these queries.
-        if not diffs.any():
-            return 0.0, 1.0
-        result = scipy_stats.permutation_test(
-            (diffs,),
-            lambda x, axis: np.mean(x, axis=axis),
-            permutation_type="samples",
-            n_resamples=resamples,
-            alternative="two-sided",
-            random_state=seed,
-        )
-        return float(result.statistic), float(result.pvalue)
+        diffs = [
+            float(arm) - float(base) for base, arm in zip(baseline_scores, arm_scores, strict=True)
+        ]
+        # The mean difference is the statistic the p-value is about. PyTerrier
+        # does not render it, but the hook's contract is a pair and returning a
+        # placeholder would put a number in the slot that means nothing.
+        statistic = statistics.fmean(diffs) if diffs else 0.0
+        return statistic, permutation_test(diffs, resamples, seed)
 
     return test
 
 
 def run_to_frame(run: dict[str, dict[str, float]]) -> Any:
-    """Shape a run map as the ``qid``/``docno``/``score``/``rank`` frame PyTerrier takes."""
+    """Shape a run map as the ``qid``/``docno``/``score``/``rank`` frame PyTerrier takes.
+
+    PyTerrier only validates that ``rank`` is present (``_execution.py`` checks
+    the column list) and scores through ir_measures, which re-sorts on score, so
+    the rank written here is never read back. It still goes through the run
+    file's own ``rank_documents`` rather than a local sort: a second copy of that
+    tie rule would differ from the published run files only on ties, which is
+    the hardest place to notice and the place the rule exists for.
+    """
     import pandas as pd
+
+    from evals.benchmark.runfile import rank_documents
 
     rows = [
         {"qid": query_id, "docno": doc_id, "score": float(score), "rank": rank}
         for query_id, scored in run.items()
-        for rank, (doc_id, score) in enumerate(
-            sorted(scored.items(), key=lambda item: (item[1], item[0]), reverse=True)
-        )
+        for rank, (doc_id, score) in enumerate(rank_documents(scored))
     ]
     return pd.DataFrame(rows, columns=["qid", "docno", "score", "rank"])
 
@@ -117,7 +122,7 @@ def compare_arms(
     *,
     baseline: str,
     resamples: int = DEFAULT_RESAMPLES,
-    seed: int = 20260714,
+    seed: int = DEFAULT_SEED,
 ) -> Any:
     """Score every arm against ``baseline``; return the aggregated frame.
 
@@ -176,10 +181,3 @@ def compare_arms(
             if column.startswith(measure)
         }
     )
-
-
-def load_runs(run_paths: dict[str, Path]) -> dict[str, dict[str, dict[str, float]]]:
-    """Read one TREC run file per arm."""
-    from evals.benchmark.runfile import read_run
-
-    return {name: read_run(path) for name, path in run_paths.items()}

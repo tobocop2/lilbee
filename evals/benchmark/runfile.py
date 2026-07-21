@@ -45,20 +45,29 @@ class RunEntry:
         )
 
 
-def collapse_hits(
-    hits: list[ChunkHit], run_tag: str, *, limit: int | None = None
-) -> list[RunEntry]:
-    """Collapse chunk hits to documents (best score wins) and re-rank per query.
-
-    Multiple chunks from one document keep only that document's best score.
-    Within each query, documents are ranked by descending score, ties broken on
-    doc_id descending.
+def rank_documents(scored: dict[str, float]) -> list[tuple[str, float]]:
+    """One query's documents ordered by descending score, ties broken on doc_id descending.
 
     That tie rule is trec_eval's, and it is chosen to match rather than to be
     merely deterministic: the scorer is handed a doc_id to score map and re-sorts
     it with its own rule. An ascending tie-break here would write a rank column
     stating one order while the scorer used the reverse, which matters wherever
     rank fusion puts equal scores near a metric's cut depth.
+
+    Every place that assigns a rank goes through here. A second copy of this sort
+    is a second chance to pick the other tie rule, and the two would disagree
+    only on the ties, which is exactly where it is hardest to notice.
+    """
+    return sorted(scored.items(), key=lambda item: (item[1], item[0]), reverse=True)
+
+
+def collapse_hits(
+    hits: list[ChunkHit], run_tag: str, *, limit: int | None = None
+) -> list[RunEntry]:
+    """Collapse chunk hits to documents (best score wins) and re-rank per query.
+
+    Multiple chunks from one document keep only that document's best score, and
+    ``rank_documents`` orders what survives.
 
     ``limit`` caps each query at that many documents after ranking. A chunk-level
     arm over-fetches chunks to reach the target document depth and can overshoot
@@ -72,7 +81,7 @@ def collapse_hits(
             per_query[hit.doc_id] = hit.score
     entries: list[RunEntry] = []
     for query_id in sorted(best):
-        ranked = sorted(best[query_id].items(), key=lambda item: (item[1], item[0]), reverse=True)
+        ranked = rank_documents(best[query_id])
         if limit is not None:
             ranked = ranked[:limit]
         for rank, (doc_id, score) in enumerate(ranked, start=1):
