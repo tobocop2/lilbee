@@ -152,6 +152,11 @@ class Config(BaseSettings):
     # costs a stack, and the work is mostly I/O and numpy, both of which release
     # the GIL.
     mcp_tool_threads: int = ConfigField(default=40, ge=1, writable=True)
+    # Helper processes that turn crawled HTML into markdown. That conversion is
+    # pure Python and holds the GIL for roughly 0.33 ms per KiB of HTML, so a
+    # crawl running inside the daemon competes with request handling for the one
+    # core Python can use. 0 keeps the conversion in the server process.
+    crawl_markdown_workers: int = ConfigField(default=2, ge=0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)
     cors_origins: list[str] = Field(default_factory=list)

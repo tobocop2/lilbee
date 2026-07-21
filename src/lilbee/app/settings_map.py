@@ -146,6 +146,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             " one daemon serves before retrieval calls queue"
         ),
     ),
+    "crawl_markdown_workers": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Helper processes converting crawled HTML to markdown, keeping that CPU"
+            " work off the server's core; 0 converts in the server process"
+        ),
+    ),
     "auto_sync": SettingDef(
         bool,
         nullable=False,

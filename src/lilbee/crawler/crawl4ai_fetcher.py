@@ -16,6 +16,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
+from lilbee.crawler.markdown_pool import MarkdownConversionPool, PooledMarkdownGenerator
 from lilbee.crawler.models import (
     CancelToken,
     ConcurrencySpec,
@@ -55,6 +56,16 @@ def _build_inner_crawler(*, verbose: bool, render_mode: CrawlRenderMode) -> Any:
         verbose=verbose,
     )
     return AsyncWebCrawler(config=config, verbose=verbose)
+
+
+def _markdown_pool() -> MarkdownConversionPool | None:
+    """The crawl's markdown helper pool, or ``None`` to convert in this process.
+
+    Reads the setting once per crawl rather than per page, so a crawl keeps the
+    pool it started with even if the setting is edited while it runs.
+    """
+    workers = cfg.crawl_markdown_workers
+    return MarkdownConversionPool(workers) if workers >= 1 else None
 
 
 def _build_rate_limited_dispatcher(
@@ -267,6 +278,7 @@ class Crawl4aiFetcher:
         """Fetch a single URL via crawl4ai's ``arun``."""
         from crawl4ai import CrawlerRunConfig
 
+        # One page: starting a helper process would cost more than the conversion.
         config = CrawlerRunConfig(page_timeout=int(timeout * 1000))
         async with _open_crawler(quiet=self._quiet, render_mode=self._render_mode) as crawler:
             result = await crawler.arun(url=url, config=config)
@@ -320,6 +332,7 @@ class Crawl4aiFetcher:
             should_cancel=_should_cancel,
             filter_chain=filter_chain,
         )
+        pool = _markdown_pool()
         config = CrawlerRunConfig(
             deep_crawl_strategy=strategy,
             page_timeout=int(timeout * 1000),
@@ -327,6 +340,7 @@ class Crawl4aiFetcher:
             max_range=concurrency.max_delay_range,
             semaphore_count=concurrency.semaphore_count,
             stream=True,
+            **({} if pool is None else {"markdown_generator": PooledMarkdownGenerator(pool)}),
         )
 
         dispatcher = _build_rate_limited_dispatcher(concurrency, self._render_mode)
@@ -355,6 +369,10 @@ class Crawl4aiFetcher:
                             error=cr.error_message or "Unknown error",
                         )
             finally:
+                if pool is not None:
+                    # The helpers exist for this crawl; a daemon that is not
+                    # crawling must not be holding processes open.
+                    pool.shutdown()
                 # If the consumer breaks out before we saw a cancel, still
                 # short-circuit the BFS strategy so any in-flight arun_many
                 # batch stops dispatching. Mirrors the orchestrator's
