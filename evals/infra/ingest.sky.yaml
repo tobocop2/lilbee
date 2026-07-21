@@ -15,19 +15,20 @@ name: msmarco-ingest
 resources:
   cloud: runpod
   disk_size: 600
-  # A100 first because it is the arch every prior run used, then H100. The
-  # engine's own build pins CUDA architectures to 70;75;80;86;89;90, so sm_90 is
-  # compiled in and H100 should work -- an older note claiming otherwise is
-  # contradicted by the build script. preflight.sh checks the engine against the
-  # GPU's actual compute capability before the ingest starts, so if that reading
-  # is wrong it costs two minutes rather than three hours.
+  # A100 only. The volume lives in US-WA-1 and a RunPod volume cannot change
+  # datacentre; US-WA-1 has A100-SXM4-80GB and no H100, so switching GPU family
+  # would mean rebuilding the volume and re-fetching the corpus.
+  #
+  # Widest A100 ladder rather than a single shape, because stock is Low: four
+  # cards is the fast path, but a single card still ingests, just slower. The
+  # embedding is data-parallel, so cards trade directly against wall time.
   ordered:
     - accelerators: A100-80GB-SXM:4
     - accelerators: A100-80GB:4
-    - accelerators: H100:4
     - accelerators: A100-80GB-SXM:2
     - accelerators: A100-80GB:2
-    - accelerators: H100:2
+    - accelerators: A100-80GB-SXM:1
+    - accelerators: A100-80GB:1
 volumes:
   /workspace: msmarco-bench
 envs:
@@ -41,11 +42,6 @@ envs:
   BACKEND: cu124
   EMBED_MODEL: Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf
   LILBEE_POD_HOURLY_USD: "6.40"
-  # One embed server per GPU, round-robined. lilbee auto-detects this at 0, but
-  # auto also caps itself by the VRAM left after reserving a persistent query
-  # fleet (chat, rerank, vision) that this run never uses. Pinning it keeps all
-  # four cards on the embedding rather than holding VRAM for roles nothing calls.
-  LILBEE_EMBED_REPLICAS: "4"
   # MS MARCO passages are plain text. OCR would reserve vision VRAM, compete for
   # the same cards, and never fire on a single document.
   LILBEE_ENABLE_OCR: "false"
@@ -76,6 +72,14 @@ run: |
   export LILBEE_INGEST_TRACE_FILE=/workspace/logs/ingest_trace.log
   export WORK_DIR=/root MIN_DISK_GB=400
   export LILBEE_BASE_URL=http://127.0.0.1:8080
+  # One embed server per card that actually provisioned. lilbee's auto setting
+  # is one-per-GPU but caps itself by the VRAM left after reserving a persistent
+  # query fleet (chat, rerank, vision) this run never calls, so it is pinned --
+  # to the real count, not a guess. The resource ladder can land on four cards,
+  # two, or one, and four embed servers on a single card would contend for the
+  # same SMs while quadrupling the weights held in its memory.
+  export LILBEE_EMBED_REPLICAS="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
+  echo "embed replicas: $LILBEE_EMBED_REPLICAS (one per detected GPU)"
   mkdir -p /workspace/logs
   # Fails before the hours start, not during them.
   bash evals/infra/preflight.sh 2>&1 | tee /workspace/logs/preflight.log
