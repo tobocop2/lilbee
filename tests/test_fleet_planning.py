@@ -2482,3 +2482,53 @@ class TestTheFleetBackendFromThePlanSnapshot:
         monkeypatch.setattr(planning_mod._read_device_cache, "get", _must_not_run)
 
         assert planning_mod._fleet_backend() == "CUDA"
+
+
+class TestABusyUnifiedHostStillServesASmallModel:
+    """Admission and sizing ask different questions of the same RAM.
+
+    Routing unified hosts to the refusing path made admission read instantaneous
+    free RAM, so CI refused a 0.6B chat model on a macOS runner that was merely
+    busy: "does not fit available memory and will not be served". The plan
+    defines the whole intended residency, so what it must fit is the machine,
+    not the machine's current moment.
+    """
+
+    def _host(self, monkeypatch, *, total: int, free: int) -> list[FleetDevice]:
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: total)
+        monkeypatch.setattr(planning_mod, "_plan_free_system_memory", lambda: free)
+        return [FleetDevice("MTL", 0, "Apple M2", total, free, unified=True)]
+
+    def test_admission_charges_the_machine_not_the_moment(self, monkeypatch) -> None:
+        devices = self._host(monkeypatch, total=16 * _GB, free=1 * _GB)
+
+        assert planning_mod._unified_admission_budget(devices) > 8 * _GB
+
+    def test_sizing_still_charges_what_is_free(self, monkeypatch) -> None:
+        """Context and slots must fit what can actually be backed right now."""
+        devices = self._host(monkeypatch, total=16 * _GB, free=1 * _GB)
+
+        assert planning_mod._unified_memory_budget(devices) < 2 * _GB
+
+    def test_a_dedicated_host_has_neither_budget(self, monkeypatch) -> None:
+        devices = [FleetDevice("CUDA", 0, "NVIDIA", 24 * _GB, 23 * _GB)]
+
+        assert planning_mod._unified_memory_budget(devices) is None
+        assert planning_mod._unified_admission_budget(devices) is None
+
+    def test_a_model_larger_than_the_machine_is_still_refused(self, monkeypatch) -> None:
+        """The refusal the routing change exists for has to survive the fix."""
+        from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
+
+        devices = self._host(monkeypatch, total=16 * _GB, free=8 * _GB)
+        budget = planning_mod._unified_admission_budget(devices)
+
+        assert budget is not None
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.CHAT, 40 * _GB)],
+            [(0, 16 * _GB)],
+            estimate_peak=lambda _r, ratio: tuple(40 * _GB for _ in ratio),
+            unified_budget=budget,
+        )
+
+        assert WorkerRole.CHAT in plan.unplaceable_roles

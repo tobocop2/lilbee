@@ -1326,6 +1326,26 @@ def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
     return max(0, _plan_free_system_memory() - floor)
 
 
+def _unified_admission_budget(devices: list[FleetDevice]) -> int | None:
+    """Shared-RAM pool a role set is *admitted* against, or ``None`` if dedicated.
+
+    Total installed RAM minus the OS floor, not what happens to be free. Sizing
+    asks a different question and keeps using free RAM: how much context can be
+    backed right now. Admission asks whether the machine can host this fleet at
+    all, and the plan defines the whole intended residency, so charging it
+    against a live figure refuses a 600 MB model on a box that is merely busy at
+    the moment, which is what happened. The GPU path already charges total
+    capacity for exactly this reason.
+    """
+    if _unified_memory_budget(devices) is None:
+        return None
+    floor = min(
+        _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
+        model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
+    )
+    return max(0, model_cache.total_system_memory() - floor)
+
+
 def _resolve_placement(
     placement: PlacementSpec | None,
     inputs: list[ModelPlacementInput],
@@ -1396,7 +1416,11 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         None, unified_budget=unified_budget, total_vram=sum(d.total_bytes for d in devices)
     )
     resolved = _resolve_placement(
-        placement, inputs, model_refs, devices, unified_budget=unified_budget
+        placement,
+        inputs,
+        model_refs,
+        devices,
+        unified_budget=_unified_admission_budget(devices),
     )
     return ResolvedPlacement(
         devices=tuple(devices),
@@ -1468,7 +1492,13 @@ def plan_launches(
         total_vram=sum(d.total_bytes for d in devices),
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
-    placement = _resolve_placement(spec, inputs, model_refs, devices, unified_budget=unified_budget)
+    placement = _resolve_placement(
+        spec,
+        inputs,
+        model_refs,
+        devices,
+        unified_budget=_unified_admission_budget(devices),
+    )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     return FleetPlan(
