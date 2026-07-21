@@ -25,8 +25,8 @@ def _arm_labels(rows: list[dict[str, Any]]) -> tuple[str, str]:
 
 def _p_cell(row: dict[str, Any]) -> str:
     """A p-value at the resampling floor is a bound, not a point estimate."""
-    if row.get("p_at_floor") and row.get("resamples"):
-        return f"< {1 / (int(row['resamples']) + 1):.1e}"
+    if row.get("p_at_floor") and row.get("p_floor"):
+        return f"< {float(row['p_floor']):.1e}"
     return f"{row['p_value']:.3f}"
 
 

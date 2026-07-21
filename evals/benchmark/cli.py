@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from evals.benchmark import ir_metrics, stats
+from evals.benchmark import metrics, stats
 from evals.benchmark.collectors import (
     DEFAULT_TARGET_DOCS,
     LilbeeCollector,
@@ -90,19 +90,19 @@ def _cmd_score_ir(args: argparse.Namespace) -> int:
 
     qrels = json.loads(args.qrels.read_text())
     run = run_to_pytrec(read_run(args.run))
-    scores = ir_metrics.score_run(qrels, run, args.metrics)
+    scores = metrics.score_run(qrels, run, args.metrics)
     _write_jsonl(
         args.out,
         [
             {
                 "dataset": args.dataset,
                 "run_tag": args.run_tag,
-                "aggregated": scores.aggregated,
-                "per_query": scores.per_query,
+                "aggregated": scores["aggregated"],
+                "per_query": scores["per_query"],
             }
         ],
     )
-    print(f"scored {args.run_tag} on {args.dataset}: {scores.aggregated} -> {args.out}")
+    print(f"scored {args.run_tag} on {args.dataset}: {scores['aggregated']} -> {args.out}")
     return 0
 
 

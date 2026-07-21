@@ -8,9 +8,19 @@
 run_id: fusion-weight-ablation-2026-07
 
 arms:
+  # The baseline differs from every weighted arm in ONE variable, the lexical
+  # fusion weight. The previous run silenced title_search here and nowhere else,
+  # so every "-vs-dense" comparison moved two knobs at once and no delta could be
+  # attributed to the weight. title_search gets its own arm below instead.
   - name: dense
     system: lilbee
-    description: vector-only baseline; lexical and title arms silenced
+    description: vector-only baseline; lexical arm silenced, title arm on
+    config:
+      lexical_fusion_weight: 0.0
+      title_search: true
+  - name: dense-notitle
+    system: lilbee
+    description: vector-only with the title arm off; isolates title_search against dense
     config:
       lexical_fusion_weight: 0.0
       title_search: false

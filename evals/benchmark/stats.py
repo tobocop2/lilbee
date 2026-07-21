@@ -1,15 +1,20 @@
-"""Paired statistics on per-query metric vectors.
+"""Paired statistics on per-query metric vectors, computed by scipy.
 
 Two arms are scored on the same queries, so every metric difference is paired.
-A paired bootstrap gives a 95% confidence interval for the mean difference and
-a sign-flip randomization test gives a p-value. Both are seeded and pure, so a
-result is bit-for-bit reproducible. A difference whose CI crosses zero is
-flagged not significant.
+scipy supplies all three procedures and none of them is reimplemented here:
+
+- ``scipy.stats.bootstrap(method="percentile")`` for the 95% CI on the mean
+  difference
+- ``scipy.stats.permutation_test(permutation_type="samples")`` for the paired
+  sign-flip randomization test, which is the test Smucker, Allan and Carterette
+  (CIKM 2007) recommend for IR evaluation
+- ``scipy.stats.false_discovery_control(method="bh")`` for Benjamini-Hochberg
+
+Everything is seeded, so a result is reproducible run to run.
 """
 
 from __future__ import annotations
 
-import random
 import statistics
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -17,8 +22,11 @@ from typing import Any
 DEFAULT_RESAMPLES = 10000
 DEFAULT_SEED = 20260714
 DEFAULT_ALPHA = 0.05
-# Probability of flipping a paired difference's sign in the randomization test.
-SIGN_FLIP_PROBABILITY = 0.5
+
+SCIPY_INSTALL_HINT = (
+    "scipy is required for benchmark statistics; install the benchmark deps: "
+    "uv pip install -r evals/benchmark/requirements.txt"
+)
 
 
 @dataclass(frozen=True)
@@ -46,16 +54,37 @@ class PairedResult:
     permutation_seed: int = DEFAULT_SEED + 1
 
     @property
+    def p_floor(self) -> float:
+        """The smallest p-value this many resamples can express, two-sided.
+
+        Two-sided, so both tails count and the floor is 2/(resamples+1) rather
+        than 1/(resamples+1). The old hand-rolled test only ever counted the
+        tail it observed, which understated the floor by a factor of two and so
+        reported a bound as though it were a measurement.
+        """
+        return 2.0 / (self.resamples + 1)
+
+    @property
     def p_at_floor(self) -> bool:
-        """True when p sits at 1/(resamples+1), the smallest attainable value.
+        """True when p sits at the smallest value the resampling can express.
 
         At the floor the p-value is a bound, not a measurement: it should be
-        rendered as "< 1/(resamples+1)" rather than quoted as a point estimate.
+        rendered as "< p_floor" rather than quoted as a point estimate.
         """
-        return self.p_value <= 1.0 / (self.resamples + 1)
+        return self.p_value <= self.p_floor
 
     def to_dict(self) -> dict[str, Any]:
-        return {**asdict(self), "p_at_floor": self.p_at_floor}
+        # p_floor travels with the row so renderers quote the bound rather than
+        # recomputing the formula and drifting from it.
+        return {**asdict(self), "p_at_floor": self.p_at_floor, "p_floor": self.p_floor}
+
+
+def _scipy_stats() -> Any:
+    try:
+        from scipy import stats
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise RuntimeError(SCIPY_INSTALL_HINT) from exc
+    return stats
 
 
 def benjamini_hochberg(p_values: list[float]) -> list[float]:
@@ -64,69 +93,55 @@ def benjamini_hochberg(p_values: list[float]) -> list[float]:
     Controls the false-discovery rate across a family of comparisons. Without
     it, reporting the best of N correlated arms at its raw p-value claims a
     confidence the study did not earn.
-
-    Hand-rolled rather than taken from scipy because this module is deliberately
-    stdlib-only: the benchmark's heavy scorers are pod-only extras kept out of
-    the shipped lock, and scoring must not require them. Checked against
-    ``scipy.stats.false_discovery_control(method="bh")`` over 2000 randomized
-    families including exact ties and duplicates; maximum absolute difference
-    2.2e-16.
     """
-    count = len(p_values)
-    if not count:
+    if not p_values:
         return []
-    ordered = sorted(range(count), key=lambda index: p_values[index])
-    adjusted = [0.0] * count
-    running = 1.0
-    # Step up from the largest p, keeping the sequence monotone non-decreasing.
-    for rank, index in enumerate(reversed(ordered), start=1):
-        position = count - rank + 1
-        running = min(running, p_values[index] * count / position)
-        adjusted[index] = min(1.0, running)
-    return adjusted
-
-
-def _percentile(sorted_values: list[float], fraction: float) -> float:
-    """Linear-interpolated percentile of an already-sorted list."""
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    position = fraction * (len(sorted_values) - 1)
-    lower = int(position)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    weight = position - lower
-    return sorted_values[lower] * (1 - weight) + sorted_values[upper] * weight
+    adjusted = _scipy_stats().false_discovery_control(p_values, method="bh")
+    return [float(value) for value in adjusted]
 
 
 def paired_bootstrap_ci(
-    diffs: list[float], resamples: int, seed: int, alpha: float
+    diffs: list[float], resamples: int, seed: int, alpha: float = DEFAULT_ALPHA
 ) -> tuple[float, float]:
     """Percentile CI of the mean paired difference from a seeded bootstrap."""
     if not diffs:
         return 0.0, 0.0
-    rng = random.Random(seed)
-    count = len(diffs)
-    means: list[float] = []
-    for _ in range(resamples):
-        resample = [diffs[rng.randrange(count)] for _ in range(count)]
-        means.append(statistics.fmean(resample))
-    means.sort()
-    return _percentile(means, alpha / 2), _percentile(means, 1 - alpha / 2)
+    # A constant difference vector has no spread to resample, and scipy declines
+    # the degenerate estimate; the interval is the point itself.
+    if len(set(diffs)) == 1:
+        return diffs[0], diffs[0]
+    import numpy as np
+
+    interval = (
+        _scipy_stats()
+        .bootstrap(
+            (np.asarray(diffs, dtype=float),),
+            np.mean,
+            n_resamples=resamples,
+            method="percentile",
+            confidence_level=1.0 - alpha,
+            random_state=seed,
+        )
+        .confidence_interval
+    )
+    return float(interval.low), float(interval.high)
 
 
 def permutation_test(diffs: list[float], resamples: int, seed: int) -> float:
-    """Two-sided sign-flip randomization p-value for a nonzero mean difference."""
-    if not diffs:
+    """Two-sided paired sign-flip randomization p-value for a nonzero mean."""
+    if not diffs or all(diff == 0.0 for diff in diffs):
         return 1.0
-    rng = random.Random(seed)
-    observed = abs(statistics.fmean(diffs))
-    at_least_as_extreme = 0
-    for _ in range(resamples):
-        flipped = [d if rng.random() < SIGN_FLIP_PROBABILITY else -d for d in diffs]
-        if abs(statistics.fmean(flipped)) >= observed:
-            at_least_as_extreme += 1
-    return (at_least_as_extreme + 1) / (resamples + 1)
+    import numpy as np
+
+    result = _scipy_stats().permutation_test(
+        (np.asarray(diffs, dtype=float),),
+        lambda x, axis: np.mean(x, axis=axis),
+        permutation_type="samples",
+        n_resamples=resamples,
+        alternative="two-sided",
+        random_state=seed,
+    )
+    return float(result.pvalue)
 
 
 def _paired_diffs(

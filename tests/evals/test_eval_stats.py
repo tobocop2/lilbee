@@ -1,8 +1,8 @@
 """Paired statistics: bootstrap CI, randomization p, and their determinism.
 
-These exercise the seeded pure functions directly, so every number here is
-reproducible and the significance rule is pinned to observable behaviour rather
-than to the implementation.
+scipy owns the three procedures, so these do not re-verify its arithmetic. What
+they pin is this module's contract on top of it: query alignment, the two
+independent seed streams, the resampling floor, and the significance rule.
 """
 
 import pytest
@@ -14,20 +14,6 @@ def _const_diffs(value: float, n: int) -> tuple[dict[str, float], dict[str, floa
     a = {f"q{i}": 0.0 for i in range(n)}
     b = {f"q{i}": value for i in range(n)}
     return a, b
-
-
-def test_percentile_of_empty_is_zero():
-    assert stats._percentile([], 0.5) == 0.0
-
-
-def test_percentile_of_singleton_ignores_fraction():
-    assert stats._percentile([7.0], 0.0) == 7.0
-    assert stats._percentile([7.0], 1.0) == 7.0
-
-
-def test_percentile_interpolates_linearly():
-    assert stats._percentile([0.0, 10.0], 0.5) == pytest.approx(5.0)
-    assert stats._percentile([0.0, 10.0, 20.0], 0.25) == pytest.approx(5.0)
 
 
 def test_bootstrap_ci_of_a_constant_difference_is_that_constant():
@@ -65,7 +51,8 @@ def test_permutation_p_is_small_for_a_large_consistent_effect():
 def test_permutation_p_never_undercuts_the_resample_floor():
     # The smallest reportable p is 1/(resamples+1); it can never be 0.
     p = stats.permutation_test([1.0] * 10, resamples=50, seed=1)
-    assert p == pytest.approx(1 / 51)
+    # Two-sided: both tails count, so the floor is 2/(resamples+1).
+    assert p == pytest.approx(2 / 51)
 
 
 def test_compare_reports_a_significant_positive_effect():
@@ -125,6 +112,7 @@ def test_compare_result_round_trips_through_to_dict():
         "bootstrap_seed",
         "permutation_seed",
         "p_at_floor",
+        "p_floor",
     }
 
 
@@ -141,7 +129,8 @@ def test_p_value_floor_is_exposed_rather_than_read_as_an_exact_value():
     # estimate overstates precision.
     a, b = _const_diffs(1.0, 10)
     result = stats.compare("MRR@10", a, b, resamples=50, seed=1)
-    assert result.p_value == pytest.approx(1 / 51)
+    assert result.p_value == pytest.approx(2 / 51)
+    assert result.p_floor == pytest.approx(2 / 51)
     assert result.p_at_floor is True
     assert result.resamples == 50
 

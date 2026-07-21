@@ -79,6 +79,32 @@ class StatsConfig:
 
 
 @dataclass(frozen=True)
+class SystemProvenance:
+    """Which build produced the runs, and how the corpus was indexed.
+
+    The previous study pinned the embedder and nothing else, so its run files
+    could be rescored but not reproduced: no commit, no index parameters. A
+    reader who cannot rebuild the system under test is being asked to take the
+    numbers on trust, which is the thing a benchmark exists to avoid.
+
+    Every field is optional and empty-by-default so existing frozen manifests
+    keep their identity, but a run that leaves them empty is publishing an
+    unreproducible result and ``require_reproducible`` says so.
+    """
+
+    lilbee_commit: str = ""
+    lilbee_version: str = ""
+    chunk_size: int = 0
+    chunk_overlap: int = 0
+    reranker: str = ""
+    index_built_at: str = ""
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.lilbee_commit and self.chunk_size)
+
+
+@dataclass(frozen=True)
 class Manifest:
     """The full frozen preregistration for one benchmark run."""
 
@@ -89,6 +115,16 @@ class Manifest:
     metrics: list[str]
     stats: StatsConfig
     temperature: float = FROZEN_TEMPERATURE
+    system: SystemProvenance = field(default_factory=SystemProvenance)
+
+    def require_reproducible(self) -> None:
+        """Fail unless the manifest records which build produced the runs."""
+        if not self.system.is_complete:
+            raise ValueError(
+                "manifest does not record the system under test: set "
+                "system.lilbee_commit and system.chunk_size so the run can be "
+                "reproduced, not merely rescored"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -161,6 +197,7 @@ class Manifest:
             metrics=list(data["metrics"]),
             stats=StatsConfig(**data.get("stats", {})),
             temperature=data.get("temperature", FROZEN_TEMPERATURE),
+            system=SystemProvenance(**data.get("system", {})),
         )
         manifest.validate()
         stored = data.get("fingerprint")
@@ -208,7 +245,14 @@ class Manifest:
 # empty keeps those fingerprints valid; a populated value still changes the
 # identity. Only fields introduced later belong here: excluding one that was
 # already hashed would change the identity of every study that recorded it.
-OPTIONAL_IDENTITY_FIELDS = ("revision", "checksum")
+OPTIONAL_IDENTITY_FIELDS = (
+    "revision",
+    "checksum",
+    "lilbee_commit",
+    "lilbee_version",
+    "reranker",
+    "index_built_at",
+)
 
 
 def _without_empty_optionals(payload: Any) -> Any:

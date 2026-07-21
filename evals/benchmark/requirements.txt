@@ -5,8 +5,14 @@
 #   uv pip install -r evals/benchmark/requirements.txt
 # Pinned exactly, not floored: a scorer upgrade silently moves every published
 # number, and the frozen manifest cannot notice because it records no versions.
-# pytrec_eval-terrier is the maintained pytrec_eval fork; it imports as pytrec_eval.
+# ir_measures owns metric computation, including cut depths: RR@10 is reciprocal
+# rank cut at 10, so nothing here truncates a run or breaks ties itself. It pulls
+# pytrec_eval-terrier (the maintained pytrec_eval fork) as its scorer backend.
+# scipy owns the statistics: percentile bootstrap, paired sign-flip permutation
+# test, and Benjamini-Hochberg.
+ir_measures==0.4.3
 pytrec_eval-terrier==0.5.10
+scipy==1.18.0
 ragas==0.2.14
 beir==2.1.0
 datasets==2.21.0
