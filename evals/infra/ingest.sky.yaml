@@ -15,11 +15,19 @@ name: msmarco-ingest
 resources:
   cloud: runpod
   disk_size: 600
+  # A100 first because it is the arch every prior run used, then H100. The
+  # engine's own build pins CUDA architectures to 70;75;80;86;89;90, so sm_90 is
+  # compiled in and H100 should work -- an older note claiming otherwise is
+  # contradicted by the build script. preflight.sh checks the engine against the
+  # GPU's actual compute capability before the ingest starts, so if that reading
+  # is wrong it costs two minutes rather than three hours.
   ordered:
     - accelerators: A100-80GB-SXM:4
     - accelerators: A100-80GB:4
+    - accelerators: H100:4
     - accelerators: A100-80GB-SXM:2
     - accelerators: A100-80GB:2
+    - accelerators: H100:2
 volumes:
   /workspace: msmarco-bench
 envs:
