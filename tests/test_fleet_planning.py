@@ -11,7 +11,12 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, RerankerType
 from lilbee.providers.fleet import planning as planning_mod
-from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice, visible_env
+from lilbee.providers.fleet.devices import (
+    VULKAN_BACKEND,
+    DeviceProbe,
+    FleetDevice,
+    visible_env,
+)
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
@@ -1835,6 +1840,12 @@ class TestPlanProbe:
         monkeypatch.setattr(
             "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None
         )
+        # The capture takes devices and the all-refused fact from one probe run.
+        monkeypatch.setattr(
+            planning_mod,
+            "_resolve_devices_and_refusal",
+            lambda _b: ([FleetDevice("CUDA", 0, "A", 24 * _GB, free_vram)], False),
+        )
         monkeypatch.setattr(
             planning_mod,
             "resolve_devices",
@@ -2109,7 +2120,9 @@ def test_engine_reporting_no_devices_is_believed_over_the_host_loader(monkeypatc
 
     from lilbee.providers.fleet import gpu_select
 
-    probe = SimpleNamespace(devices=[], output="Available devices:\n", spoke_protocol=True)
+    probe = SimpleNamespace(
+        devices=[], output="Available devices:\n", spoke_protocol=True, refused_all=False
+    )
     monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
     monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
     monkeypatch.setattr(
@@ -2127,7 +2140,7 @@ def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
 
     from lilbee.providers.fleet import gpu_select
 
-    probe = SimpleNamespace(devices=[], output="", spoke_protocol=False)
+    probe = SimpleNamespace(devices=[], output="", spoke_protocol=False, refused_all=False)
     monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
     monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
     monkeypatch.setattr(
@@ -2152,7 +2165,10 @@ def test_an_engine_that_does_not_know_the_flag_still_reaches_the_fallback(monkey
     from lilbee.providers.fleet import gpu_select
 
     probe = SimpleNamespace(
-        devices=[], output="error: invalid argument: --list-devices\n", spoke_protocol=False
+        devices=[],
+        output="error: invalid argument: --list-devices\n",
+        spoke_protocol=False,
+        refused_all=False,
     )
     monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
     monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
@@ -2263,3 +2279,129 @@ def test_clearing_the_device_cache_also_clears_what_the_loader_said(monkeypatch)
     finally:
         gpu_select.vulkan_device_types_by_name.cache_clear()
         gpu_select.integrated_vulkan_indices.cache_clear()
+
+
+class TestLoaderDerivedDevicesAreSizedAgainstButNeverPinned:
+    """The fallback holds raw loader ordinals; --device speaks the engine's own
+    post-filter naming.
+
+    Loader order [llvmpipe, iGPU] leaves the iGPU at raw index 1, so a pin would
+    say Vulkan1 while a Vulkan-capable engine names its only device Vulkan0: an
+    invalid-device error, or the wrong adapter where there are more.
+    """
+
+    def test_a_loader_derived_device_is_not_pinned(self) -> None:
+        from lilbee.providers.fleet.planning import _device_names
+
+        loader = (FleetDevice(VULKAN_BACKEND, 1, "", 8 * _GB, 8 * _GB, from_loader=True),)
+
+        assert _device_names(loader) == ()
+
+    def test_engine_parsed_devices_are_still_pinned_by_name(self) -> None:
+        from lilbee.providers.fleet.planning import _device_names
+
+        parsed = (
+            FleetDevice(VULKAN_BACKEND, 0, "Card A", 8 * _GB, 8 * _GB),
+            FleetDevice(VULKAN_BACKEND, 2, "Card C", 8 * _GB, 8 * _GB),
+        )
+
+        assert _device_names(parsed) == ("Vulkan0", "Vulkan2")
+
+    def test_the_fallback_marks_what_it_builds(self, monkeypatch) -> None:
+        """The flag has to be set where the devices are invented, or the rule
+        above is decoration."""
+        from pathlib import Path as _Path
+
+        from lilbee.providers.fleet import gpu_select
+
+        probe = SimpleNamespace(devices=[], output="", spoke_protocol=False, refused_all=False)
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
+        monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(1, 8 * _GB, 8 * _GB)])
+        monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+        devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
+
+        assert [d.from_loader for d in devices] == [True]
+        assert planning_mod._device_names(tuple(devices)) == ()
+
+
+class TestARefusedDeviceIsAlsoKeptFromTheEngine:
+    """A CPU-shaped plan does not make the engine use the CPU.
+
+    Without a pin, ggml's fallback takes the first non-CPU adapter, i.e. the one
+    lilbee refused, and offloads every layer onto it while placement budgeted
+    against system RAM.
+    """
+
+    def test_the_launch_names_no_device(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(engine_devices_all_refused=True),
+        )
+
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ("none",)
+
+    def test_a_plain_cpu_host_is_left_unpinned(self, monkeypatch) -> None:
+        """Nothing was refused, so there is nothing to keep the engine off."""
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(engine_devices_all_refused=False),
+        )
+
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ()
+
+    def test_no_snapshot_means_no_claim(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ()
+
+    def test_a_placed_gpu_still_wins_over_the_cpu_pin(self, monkeypatch) -> None:
+        """The refusal pin is a fallback for an empty device list, not an override."""
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(engine_devices_all_refused=True),
+        )
+        chosen = (FleetDevice(VULKAN_BACKEND, 0, "Card A", 8 * _GB, 8 * _GB),)
+
+        names = planning_mod._device_names(chosen) or (
+            planning_mod._cpu_pin_when_every_device_was_refused()
+        )
+
+        assert names == ("Vulkan0",)
+
+
+def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None:
+    """--list-devices is a subprocess against a driver that may be wedged, with a
+    minute-long timeout. Devices and the all-refused fact come from one run."""
+    from lilbee.providers.fleet.devices import DeviceProbe
+
+    runs: list[int] = []
+
+    def _counting(_binary, **_kw) -> DeviceProbe:
+        runs.append(1)
+        return DeviceProbe(
+            [FleetDevice("CUDA", 0, "A", 24 * _GB, 20 * _GB)],
+            "Available devices:\n",
+            spoke_protocol=True,
+        )
+
+    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
+    monkeypatch.setattr("lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.assert_gpu_devices_usable", lambda *_a: None
+    )
+    monkeypatch.setattr(planning_mod, "probe_devices", _counting)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 20 * _GB)
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
+    planning_mod.clear_plan_probe()
+    try:
+        planning_mod.capture_plan_probe()
+    finally:
+        planning_mod.clear_plan_probe()
+
+    assert len(runs) == 1, f"ran --list-devices {len(runs)} times for one snapshot"

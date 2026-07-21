@@ -78,6 +78,8 @@ _ALL_LAYER_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.of
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
 _FLASH_AUTO = "auto"
+# llama-server's documented way to say "offload nothing": --device none.
+_NO_DEVICE = "none"
 # Backends whose flash-attention coverage in llama.cpp is complete enough to ask
 # for it outright. Vulkan and SYCL are behind CUDA's and have been incomplete on
 # Intel's mesa driver, so those are left to the engine's own auto, which enables
@@ -982,7 +984,7 @@ def _launch_for(
         cache_type_v=cache_type_v,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
-        device_names=_device_names(chosen),
+        device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
     )
     return InstanceLaunch(
         role=plan.role,
@@ -1003,7 +1005,16 @@ def _launch_for(
 
 
 def resolve_devices(binary: Path) -> list[FleetDevice]:
-    """Enumerate devices in the binary's index space, or the Vulkan VRAM probe.
+    """Enumerate devices in the binary's index space, or the Vulkan VRAM probe."""
+    return _resolve_devices_and_refusal(binary)[0]
+
+
+def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]:
+    """:func:`resolve_devices`, plus whether every GPU the engine listed was refused.
+
+    One function because both answers come from one ``--list-devices`` run, and
+    that run costs a subprocess against a driver that may be wedged. Asking twice
+    would pay it twice.
 
     The binary's ``--list-devices`` is authoritative, including when it lists
     nothing: it prints every non-CPU device it can use, so an empty list means
@@ -1051,7 +1062,9 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
 
         integrated = integrated_vulkan_indices()
         devices = [
-            FleetDevice(VULKAN_BACKEND, idx, "", vram, free, unified=idx in integrated)
+            FleetDevice(
+                VULKAN_BACKEND, idx, "", vram, free, unified=idx in integrated, from_loader=True
+            )
             for idx, vram, free in (enumerate_gpu_vram() or [])
         ]
         if devices:
@@ -1063,7 +1076,7 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
                 len(devices),
                 "LILBEE_ENGINE_DIR",
             )
-    return devices
+    return devices, probe.refused_all
 
 
 _DEVICE_PROBE_TTL_S = 2.0
@@ -1153,6 +1166,9 @@ class _PlanProbe:
     devices: tuple[FleetDevice, ...]
     available_vram: int
     free_system: int
+    # The engine listed GPUs and lilbee rejected all of them, so the plan is
+    # CPU-shaped while the engine would still choose one of those devices.
+    engine_devices_all_refused: bool = False
 
 
 class _PlanProbeStore:
@@ -1187,11 +1203,13 @@ def capture_plan_probe() -> None:
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env()
+    devices, refused_all = _resolve_devices_and_refusal(binary)
     _plan_probe_store.set(
         _PlanProbe(
-            devices=tuple(resolve_devices(binary)),
+            devices=tuple(devices),
             available_vram=int(model_cache.get_available_memory(cfg.gpu_memory_fraction)),
             free_system=model_cache.free_system_memory(),
+            engine_devices_all_refused=refused_all,
         )
     )
 
@@ -1199,6 +1217,27 @@ def capture_plan_probe() -> None:
 def clear_plan_probe() -> None:
     """Drop the plan snapshot (full fleet teardown); the next build re-captures."""
     _plan_probe_store.clear()
+
+
+def _cpu_pin_when_every_device_was_refused() -> tuple[str, ...]:
+    """``("none",)`` when the engine offered GPUs that lilbee refused, else empty.
+
+    Dropping a device from lilbee's view does not stop the engine using it. With
+    no pin at all, ggml applies its own selection, and its fallback takes the
+    first non-CPU adapter, which is exactly the paravirtual device just refused;
+    with every layer offloaded by default the model then runs on it while
+    placement budgeted against system RAM. Naming no device keeps the engine on
+    the CPU the plan was shaped for.
+    """
+    probe = _plan_probe_store.get()
+    if probe is None or not probe.engine_devices_all_refused:
+        return ()
+    log.warning(
+        "The engine listed GPU devices that lilbee will not plan onto, so it is being "
+        "run on the CPU. Serving from one of them would be slower than the CPU or fail "
+        "outright, and placement has been sized for system RAM."
+    )
+    return (_NO_DEVICE,)
 
 
 def _plan_devices(binary: Path) -> list[FleetDevice]:
@@ -1244,6 +1283,15 @@ def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:
     variables in the same space the probe enumerated, so they keep doing that.
     """
     if not devices or devices[0].backend != VULKAN_BACKEND:
+        return ()
+    if any(d.from_loader for d in devices):
+        # These indices are raw loader ordinals, and --device speaks the engine's
+        # own post-filter naming, so Vulkan1 here can name Vulkan0 there or
+        # nothing at all. Sizing against them is still worth doing; pinning by
+        # them is not. Left unpinned, ggml applies its own device selection,
+        # which is the filtering lilbee is trying to agree with in the first
+        # place. The env pin is not the answer either: it takes raw ordinals but
+        # switches off the type filter, the support check and the dedup with them.
         return ()
     return tuple(f"{d.backend}{d.index}" for d in devices)
 

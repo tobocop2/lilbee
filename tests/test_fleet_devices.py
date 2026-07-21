@@ -840,3 +840,45 @@ def test_a_listing_that_reports_free_never_touches_the_loader(
     (device,) = _parse_devices("  Vulkan0: Card A (16000 MiB, 9000 MiB free)")
 
     assert device.free_bytes == 9000 * _MIB
+
+
+class TestRefusingEveryDeviceIsRecorded:
+    """Dropping a device from lilbee's view does not stop the engine using it.
+
+    ggml's own fallback takes the first non-CPU adapter, so a VM whose only
+    adapter is paravirtual gets a CPU-shaped plan and a model offloaded onto the
+    device lilbee just refused.
+    """
+
+    def test_refusing_the_only_listed_gpu_is_recorded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(
+            gpu_select,
+            "vulkan_device_types_by_name",
+            lambda: {"Virtio-GPU Venus": gpu_select.VkDeviceType.VIRTUAL_GPU},
+        )
+        _fake_listing(monkeypatch, "Available devices:\n  Vulkan0: Virtio-GPU Venus (15000 MiB)\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.refused_all is True
+
+    def test_a_host_with_no_gpu_at_all_has_refused_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No device to keep the engine off, so nothing to say."""
+        _fake_listing(monkeypatch, "Available devices:\n  CPU0: host cpu (64000 MiB)\n")
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.devices == []
+        assert probe.refused_all is False
+
+    def test_keeping_a_device_is_not_a_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _fake_listing(monkeypatch, "Available devices:\n  CUDA0: NVIDIA (24268 MiB)\n")
+
+        assert probe_devices(Path("/bin/llama-server")).refused_all is False

@@ -15,6 +15,7 @@ the wheels' location is only known at install time.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import shutil
 import subprocess
@@ -46,6 +47,8 @@ _HIP_SONAMES: tuple[str, ...] = ("libamdhip64.so", "librocblas.so", "libhipblas.
 _CUDA_ERROR_MARKERS: tuple[str, ...] = ("error", "fail", "no cuda")
 _LDD_TIMEOUT_S = 10
 # PCI vendor id for AMD, as sysfs reports it.
+log = logging.getLogger(__name__)
+
 _AMD_PCI_VENDOR_ID = "0x1002"
 # How much of the probe output to quote when no specific error line is found.
 _DIAGNOSTIC_TAIL_CHARS = 300
@@ -165,6 +168,20 @@ def _amd_gpu_present() -> bool:
     return False
 
 
+def _amd_discrete_gpu_proven() -> bool:
+    """Whether a discrete AMD card is positively known to be present.
+
+    Positive evidence only. The sysfs checks that find an AMD GPU cannot tell a
+    discrete card from an APU, and the difference decides between refusing to
+    start and merely running slower, so the question is put to the Vulkan loader,
+    which reports the device type. An unreachable loader proves nothing and
+    answers no, which keeps the softer path.
+    """
+    from lilbee.providers.fleet.gpu_select import PCIVendorID, discrete_gpu_from_vendor
+
+    return discrete_gpu_from_vendor(PCIVendorID.AMD) is True
+
+
 def assert_gpu_devices_usable(binary: Path, devices: list[FleetDevice], probe_output: str) -> None:
     """Fail loud when a GPU build cannot initialize any device on a host that has one.
 
@@ -178,17 +195,34 @@ def assert_gpu_devices_usable(binary: Path, devices: list[FleetDevice], probe_ou
     if not sys.platform.startswith("linux") or devices:
         return
     env = {**os.environ, **cuda_runtime_env()}
-    if _links_hip_runtime(binary, env) and _amd_gpu_present():
-        raise ProviderError(
+    if not (_links_hip_runtime(binary, env) and _amd_gpu_present()):
+        return
+    if not _amd_discrete_gpu_proven():
+        # An APU is an AMD GPU by every check above: amdgpu exposes /dev/kfd for
+        # integrated parts too, and the iGPU carries vendor 0x1002. But AMD's
+        # population of GPUs ROCm legitimately does not support is large, and an
+        # unsupported gfx target is the normal case for an APU rather than a
+        # misconfiguration. Failing here would stop the engine on a laptop where
+        # CPU serving worked, which is worse than the slow fallback this guard
+        # exists to catch, so say so and let it start.
+        log.warning(
             "The engine links the ROCm/HIP runtime and this host has an AMD GPU, but it "
-            "enumerated no device, so GPU work would silently fall back to CPU.\n"
-            f"The engine reported: {_device_probe_diagnostic(probe_output)}\n"
-            "Likely causes: the ROCm user-space version does not match the amdgpu kernel "
-            "driver; the GPU's gfx target is not supported by this ROCm build (check with "
-            "'rocminfo'); no read/write permission on /dev/kfd (the user is usually added "
-            "to the 'render' and 'video' groups); or a restrictive ROCR_VISIBLE_DEVICES or "
-            "HIP_VISIBLE_DEVICES."
+            "enumerated no device, so GPU work will fall back to CPU. No discrete AMD card "
+            "was found, so this is most likely an APU whose gfx target this ROCm build does "
+            "not support (check with 'rocminfo'). The engine reported: %s",
+            _device_probe_diagnostic(probe_output),
         )
+        return
+    raise ProviderError(
+        "The engine links the ROCm/HIP runtime and this host has an AMD GPU, but it "
+        "enumerated no device, so GPU work would silently fall back to CPU.\n"
+        f"The engine reported: {_device_probe_diagnostic(probe_output)}\n"
+        "Likely causes: the ROCm user-space version does not match the amdgpu kernel "
+        "driver; the GPU's gfx target is not supported by this ROCm build (check with "
+        "'rocminfo'); no read/write permission on /dev/kfd (the user is usually added "
+        "to the 'render' and 'video' groups); or a restrictive ROCR_VISIBLE_DEVICES or "
+        "HIP_VISIBLE_DEVICES."
+    )
 
 
 def assert_cuda_devices_usable(binary: Path, devices: list[FleetDevice], probe_output: str) -> None:

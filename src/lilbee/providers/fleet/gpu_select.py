@@ -480,6 +480,21 @@ def vulkan_device_types_by_name() -> dict[str, VkDeviceType]:
     }
 
 
+def discrete_gpu_from_vendor(vendor_id: int) -> bool | None:
+    """Whether the loader reports a discrete adapter from *vendor_id*.
+
+    ``None`` when the loader cannot be reached, which is a different answer from
+    "no": a caller deciding whether to fail loud must not read silence as proof
+    that a card is absent, nor as proof that one is present.
+    """
+    devices = _enumerate_vulkan_devices()
+    if not devices:
+        return None
+    return any(
+        d.vendor_id == vendor_id and d.device_type == VkDeviceType.DISCRETE_GPU for d in devices
+    )
+
+
 def host_has_no_discrete_gpu() -> bool:
     """Whether the Vulkan loader can see adapters and none of them is discrete.
 

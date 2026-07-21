@@ -80,6 +80,11 @@ class FleetDevice:
     # of the same RAM the OS and every other process is using, and placement
     # must stay inside the system budget rather than treating it as headroom.
     unified: bool = False
+    # Whether this device came from the host's Vulkan loader rather than from the
+    # engine's own listing. Its index is then a raw loader ordinal, which is a
+    # different space from the one the engine names its devices in, so it can be
+    # sized against but never pinned by.
+    from_loader: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,10 @@ class DeviceProbe:
     # none. Defaults False so a probe that never ran is never mistaken for one
     # that ran and found nothing.
     spoke_protocol: bool = False
+    # Whether the engine listed GPU devices and every one was rejected. Distinct
+    # from a host that simply has none: the engine will still pick one of those
+    # devices at launch unless it is told not to.
+    refused_all: bool = False
 
 
 def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
@@ -178,6 +187,9 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
         output, returncode = _run_list_devices(binary, timeout_s)
     except (OSError, subprocess.SubprocessError):
         return DeviceProbe([], "")
+    parsed = _parse_devices(output)
+    selected = _select_backend(parsed)
+    offered = [d for d in parsed if d.backend in _BACKEND_RANK]
     spoke = returncode == 0 and _DEVICE_LIST_HEADER in output
     if not spoke:
         log.warning(
@@ -188,7 +200,9 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             returncode,
             "LILBEE_ENGINE_DIR",
         )
-    return DeviceProbe(_select_backend(_parse_devices(output)), output, spoke_protocol=spoke)
+    return DeviceProbe(
+        selected, output, spoke_protocol=spoke, refused_all=bool(offered) and not selected
+    )
 
 
 def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:
