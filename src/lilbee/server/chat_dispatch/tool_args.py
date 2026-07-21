@@ -17,6 +17,8 @@ def parse_tool_arguments(raw: str) -> dict[str, Any]:
         return {}
     try:
         parsed = json.loads(raw)
-    except (ValueError, TypeError):
+    except ValueError:
+        # JSONDecodeError only: raw is a str, so json.loads cannot raise
+        # TypeError here, and catching it widened this to hide real bugs.
         return {"_raw": raw}
     return parsed if isinstance(parsed, dict) else {"_raw": raw}

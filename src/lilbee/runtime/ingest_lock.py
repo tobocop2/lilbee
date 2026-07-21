@@ -49,16 +49,25 @@ class IngestLockRegistry:
 
     @staticmethod
     def canonical_source_name(p_str: str) -> str:
-        """Match the basename ``copy_files`` writes under ``cfg.documents_dir``."""
+        """Basename of *p_str*, for callers that flatten into ``documents_dir``.
+
+        ``copy_files`` writes server-side paths by basename, so /api/add locks
+        on that. Uploads keep their relative layout and pass the relative path
+        instead, which is why the caller picks the key rather than this class.
+        """
         return Path(p_str).name
 
-    async def acquire(self, paths: list[str]) -> tuple[list[tuple[str, asyncio.Lock]], list[str]]:
-        """Return ``(acquired, busy)`` partitioning of ``paths`` by lock state."""
+    async def acquire(self, names: list[str]) -> tuple[list[tuple[str, asyncio.Lock]], list[str]]:
+        """Return ``(acquired, busy)`` partitioning of ``names`` by lock state.
+
+        Each name is the source identity as it will exist on disk; the caller
+        derives it, because how a path maps to a stored source differs per
+        ingest surface.
+        """
         acquired: list[tuple[str, asyncio.Lock]] = []
         busy: list[str] = []
         seen: set[str] = set()
-        for p_str in paths:
-            name = self.canonical_source_name(p_str)
+        for name in names:
             if name in seen:
                 continue
             seen.add(name)

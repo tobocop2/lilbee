@@ -65,6 +65,7 @@ _STOP_REASON_TO_FINISH: dict[StopReason, FinishReason] = {
     StopReason.TOOL_USE: FinishReason.TOOL_CALLS,
 }
 
+_TOOL_CALL_ID_REQUIRED = "A tool message requires tool_call_id naming the call it answers."
 _IMAGE_CONTENT_UNSUPPORTED = (
     "Image content is not supported by /v1/chat/completions yet. Send a text-only request."
 )
@@ -167,7 +168,12 @@ class _StreamMapper:
         if isinstance(event.delta, TextDelta):
             return self._text_delta(self._reasoning.feed(event.delta.text))
         if isinstance(event.delta, ToolUseDelta):
-            tool_index = self._tool_index_for_block[event.index]
+            # A delta for a block we never saw start is a provider quirk, not a
+            # server fault; a bare subscript turned it into a KeyError that
+            # surfaced as a stream-level internal error.
+            tool_index = self._tool_index_for_block.get(event.index)
+            if tool_index is None:
+                return None
             return CompletionsStreamDelta(
                 tool_calls=[_tool_call_args(tool_index, event.delta.partial_json)],
             )
@@ -225,9 +231,18 @@ async def canonical_stream_to_completions_chunks(
     matching OpenAI's ``stream_options.include_usage`` contract.
     """
     mapper = _StreamMapper()
+    # One timestamp for the whole completion. OpenAI holds created constant
+    # across a stream; recomputing it per chunk reported several creation times
+    # for one completion, and clients order or dedupe on it.
+    created = int(time.time())
     async for event in events:
         for chunk in _chunks_for_event(
-            event, mapper, model=model, response_id=response_id, include_usage=include_usage
+            event,
+            mapper,
+            model=model,
+            response_id=response_id,
+            include_usage=include_usage,
+            created=created,
         ):
             yield chunk
 
@@ -239,19 +254,24 @@ def _chunks_for_event(
     model: str,
     response_id: str,
     include_usage: bool,
+    created: int,
 ) -> list[CompletionsStreamChunk]:
     """The OpenAI chunks one canonical event translates to; empty for a no-op event."""
     if isinstance(event, ContentBlockStart):
-        return _maybe_chunk(model, response_id, mapper.block_start(event))
+        return _maybe_chunk(model, response_id, mapper.block_start(event), created=created)
     if isinstance(event, ContentBlockDelta):
-        return _maybe_chunk(model, response_id, mapper.block_delta(event))
+        return _maybe_chunk(model, response_id, mapper.block_delta(event), created=created)
     if isinstance(event, ContentBlockStop):
         # Closing a text block flushes any text the reasoning splitter still
         # buffers (an unclosed <think>, or a tag that never completed).
-        return _maybe_chunk(model, response_id, mapper.block_stop())
+        return _maybe_chunk(model, response_id, mapper.block_stop(), created=created)
     if isinstance(event, MessageDelta):
         return _message_delta_chunks(
-            event, model=model, response_id=response_id, include_usage=include_usage
+            event,
+            model=model,
+            response_id=response_id,
+            include_usage=include_usage,
+            created=created,
         )
     if isinstance(event, MessageStart | MessageStop):
         # OpenAI's wire format has no equivalent: MessageStart carries metadata
@@ -264,12 +284,16 @@ def _chunks_for_event(
 
 
 def _message_delta_chunks(
-    event: MessageDelta, *, model: str, response_id: str, include_usage: bool
+    event: MessageDelta, *, model: str, response_id: str, include_usage: bool, created: int
 ) -> list[CompletionsStreamChunk]:
     """The finish chunk, plus the usage-only chunk when the client asked for it."""
     chunks = [
         _chunk(
-            model, response_id, CompletionsStreamDelta(), finish_reason=_finish_reason_for(event)
+            model,
+            response_id,
+            CompletionsStreamDelta(),
+            finish_reason=_finish_reason_for(event),
+            created=created,
         )
     ]
     if include_usage:
@@ -277,15 +301,15 @@ def _message_delta_chunks(
         # include_usage is set; a client blocking on it must not hang because the
         # provider streamed no usage frame.
         usage = event.usage or CanonicalUsage(input_tokens=0, output_tokens=0)
-        chunks.append(_usage_chunk(model, response_id, usage))
+        chunks.append(_usage_chunk(model, response_id, usage, created=created))
     return chunks
 
 
 def _maybe_chunk(
-    model: str, response_id: str, delta: CompletionsStreamDelta | None
+    model: str, response_id: str, delta: CompletionsStreamDelta | None, *, created: int
 ) -> list[CompletionsStreamChunk]:
     """Wrap a delta in a chunk, or nothing when the event produced no delta."""
-    return [] if delta is None else [_chunk(model, response_id, delta)]
+    return [] if delta is None else [_chunk(model, response_id, delta, created=created)]
 
 
 def _chunk(
@@ -294,21 +318,24 @@ def _chunk(
     delta: CompletionsStreamDelta,
     *,
     finish_reason: FinishReason | None = None,
+    created: int,
 ) -> CompletionsStreamChunk:
     return CompletionsStreamChunk(
         id=response_id,
-        created=int(time.time()),
+        created=created,
         model=model,
         choices=[CompletionsStreamChoice(index=0, delta=delta, finish_reason=finish_reason)],
     )
 
 
-def _usage_chunk(model: str, response_id: str, usage: CanonicalUsage) -> CompletionsStreamChunk:
+def _usage_chunk(
+    model: str, response_id: str, usage: CanonicalUsage, *, created: int
+) -> CompletionsStreamChunk:
     """Final include_usage chunk: empty choices, populated usage totals."""
     total = usage.input_tokens + usage.output_tokens
     return CompletionsStreamChunk(
         id=response_id,
-        created=int(time.time()),
+        created=created,
         model=model,
         choices=[],
         usage=CompletionsUsage(
@@ -320,9 +347,16 @@ def _usage_chunk(model: str, response_id: str, usage: CanonicalUsage) -> Complet
 
 
 def _system_text(msg: CompletionsMessage) -> str:
+    """Flatten a system message to text, rejecting image parts.
+
+    The same image part is a 400 in a user message, so silently dropping it
+    here answered as though the request had been honoured.
+    """
     if isinstance(msg.content, str):
         return msg.content
     if isinstance(msg.content, list):
+        if any(isinstance(part, CompletionsImageContent) for part in msg.content):
+            raise ValueError(_IMAGE_CONTENT_UNSUPPORTED)
         return "".join(
             part.text for part in msg.content if isinstance(part, CompletionsTextContent)
         )
@@ -334,11 +368,15 @@ def _message_from_request(msg: CompletionsMessage) -> CanonicalMessage:
     if role == "system":
         raise ValueError("system messages should be extracted by the caller")
     if role == "tool":
+        if not msg.tool_call_id:
+            # Substituting "" produced a tool result no tool call can pair with,
+            # which the provider sees as a result for a call it never made.
+            raise ValueError(_TOOL_CALL_ID_REQUIRED)
         return CanonicalMessage(
             role="tool",
             content=[
                 ToolResultBlock(
-                    tool_use_id=msg.tool_call_id or "",
+                    tool_use_id=msg.tool_call_id,
                     content=_tool_result_content(msg.content),
                 )
             ],

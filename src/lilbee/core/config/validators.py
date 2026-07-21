@@ -24,5 +24,8 @@ def ConfigField(  # noqa: N802  pydantic Field wrapper; matches Field's PascalCa
     if not public:
         extra["public"] = False
     if extra:
-        kwargs["json_schema_extra"] = extra
+        # Merge rather than assign: a caller passing its own json_schema_extra
+        # had it silently dropped, with lilbee's flags winning.
+        supplied = kwargs.get("json_schema_extra")
+        kwargs["json_schema_extra"] = {**supplied, **extra} if isinstance(supplied, dict) else extra
     return Field(*args, **kwargs)

@@ -104,6 +104,27 @@ class TestDispatchChat:
         assert resp.stop_reason == StopReason.END_TURN
         assert resp.id.startswith("msg_")
 
+    def test_tool_calls_force_tool_use_even_when_the_provider_says_stop(
+        self, services_with_model
+    ) -> None:
+        """A provider that returns tool calls without saying so still means tool_use.
+
+        FinishReason.coerce falls back to STOP for a missing or unknown value,
+        so the response carried tool_use content under end_turn and a client
+        reading stop_reason would not run the tools. The streaming path already
+        refuses the same downgrade.
+        """
+        from lilbee.providers.base import ToolCall
+
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="",
+            tool_calls=(ToolCall(id="call_1", name="search", arguments='{"q": "x"}'),),
+            finish_reason=FinishReason.STOP,
+        )
+        resp = dispatch_chat(_req())
+        assert resp.stop_reason == StopReason.TOOL_USE
+        assert any(getattr(block, "name", None) == "search" for block in resp.content)
+
     def test_empty_text_returns_empty_content(self, services_with_model) -> None:
         services_with_model.provider.chat.return_value = ChatResult(
             text="", tool_calls=(), finish_reason=FinishReason.STOP
@@ -424,18 +445,23 @@ class TestDispatchChat:
 
 
 class _FakeStream:
-    """Test-only async iterator that mimics ``ClosableIterator[ChatStreamItem]``."""
+    """Test-only ``ClosableIterator[ChatStreamItem]``.
+
+    This used to be an *async* iterator, despite the docstring, so every
+    streaming test drove the async-native branch of the dispatch iterator
+    rather than the sync path every real provider returns.
+    """
 
     def __init__(self, frames):
         self._frames = list(frames)
         self.closed = False
 
-    def __aiter__(self):
+    def __iter__(self):
         return self
 
-    async def __anext__(self):
+    def __next__(self):
         if not self._frames:
-            raise StopAsyncIteration
+            raise StopIteration
         return self._frames.pop(0)
 
     def close(self) -> None:
@@ -741,6 +767,34 @@ class TestDispatchChatStream:
         assert all(isinstance(s.block, ToolUseBlock) for s in starts)
         # Two content blocks opened, two closed.
         assert len(stops) == 2
+
+    async def test_text_between_argument_deltas_keeps_one_call_identity(
+        self, services_with_model
+    ) -> None:
+        """A text frame closes the open tool block, so the next delta for the
+        same call opens a second one. Continuation deltas carry no id or name,
+        so it used to get a synthetic id and an empty name, splitting one call
+        across two blocks."""
+        services_with_model.provider.supports_tools.return_value = True
+        frames = [
+            ToolCallDelta(index=0, id="c1", name="search", arguments_delta='{"q":'),
+            "thinking out loud",
+            ToolCallDelta(index=0, id=None, name=None, arguments_delta='"x"}'),
+        ]
+        services_with_model.provider.chat.return_value = _FakeStream(frames)
+        events = await self._drain(
+            dispatch_chat_stream(
+                _req(tools=[CanonicalTool(name="search", description="", input_schema={})])
+            )
+        )
+        tool_starts = [
+            e
+            for e in events
+            if isinstance(e, ContentBlockStart) and isinstance(e.block, ToolUseBlock)
+        ]
+        assert len(tool_starts) == 2
+        assert {s.block.id for s in tool_starts} == {"c1"}
+        assert {s.block.name for s in tool_starts} == {"search"}
 
 
 class _SyncFakeStream:

@@ -171,3 +171,73 @@ async def test_release_skips_already_cancelled_waiters() -> None:
     await asyncio.wait_for(second, timeout=1)
     assert chat_gate().in_flight == 1
     await release_chat_slot()
+
+
+async def test_a_newcomer_does_not_barge_past_a_queued_waiter() -> None:
+    """FIFO: a request arriving while someone is queued waits behind them.
+
+    Without this, release() wakes a waiter but does not hand it the slot, so any
+    request entering acquire() in between takes the slot synchronously and the
+    woken waiter re-queues at the tail. Under load the oldest requests are
+    overtaken repeatedly and are the ones that time out into a 429.
+    """
+    await acquire_chat_slot_or_busy(1, timeout=0.5)  # fill the only slot
+    order: list[str] = []
+
+    async def _contend(name: str) -> None:
+        await acquire_chat_slot_or_busy(1, timeout=5)
+        order.append(name)
+
+    first = asyncio.create_task(_contend("first"))
+    await asyncio.sleep(0)  # first is queued
+    second = asyncio.create_task(_contend("second"))
+    await asyncio.sleep(0)  # second must queue behind, not take the free slot
+
+    await release_chat_slot()
+    await asyncio.wait_for(first, timeout=1)
+    assert order == ["first"]
+    assert second.done() is False
+
+    await release_chat_slot()
+    await asyncio.wait_for(second, timeout=1)
+    assert order == ["first", "second"]
+    await release_chat_slot()
+
+
+async def test_the_woken_waiter_keeps_the_slot_against_a_racing_newcomer() -> None:
+    """The freed slot is handed to the waiter, not left up for grabs."""
+    await acquire_chat_slot_or_busy(1, timeout=0.5)
+    waiter = asyncio.create_task(acquire_chat_slot_or_busy(1, timeout=5))
+    await asyncio.sleep(0)  # queued
+
+    await release_chat_slot()  # hands the slot to the queued waiter
+    # A newcomer running before the woken waiter resumes must not steal it.
+    with pytest.raises(ChatBusyError):
+        await acquire_chat_slot_or_busy(1, timeout=0)
+
+    await asyncio.wait_for(waiter, timeout=1)
+    assert chat_gate().in_flight == 1
+    await release_chat_slot()
+
+
+async def test_a_capacity_increase_wakes_already_queued_waiters() -> None:
+    """A slot count that grows must admit the waiters it just made room for.
+
+    Capacity is read at admission time, so the gate learns the new count from
+    the next caller; the waiters parked under the old count have to be woken
+    then, not left to time out into a 429 against an idle backend.
+    """
+    await acquire_chat_slot_or_busy(1, timeout=0.5)  # capacity 1, slot taken
+    parked = [asyncio.create_task(acquire_chat_slot_or_busy(1, timeout=5)) for _ in range(3)]
+    await asyncio.sleep(0)
+    assert all(not t.done() for t in parked)
+
+    # The backend is reconfigured to 4 slots; the next caller reports it.
+    late = asyncio.create_task(acquire_chat_slot_or_busy(4, timeout=5))
+    await asyncio.wait_for(asyncio.gather(*parked), timeout=1)
+    assert chat_gate().in_flight == 4
+
+    for _ in range(4):
+        await release_chat_slot()
+    await asyncio.wait_for(late, timeout=1)
+    await release_chat_slot()

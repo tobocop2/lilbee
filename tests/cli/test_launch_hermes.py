@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -215,15 +217,24 @@ def test_launch_hermes_env_upsert_preserves_other_lines(tmp_path):
     assert "LILBEE_TOKEN=stale" not in env_text
 
 
-def test_upsert_env_token_chmods_env_on_posix(tmp_path, monkeypatch):
-    """The token .env is chmod 0600 on posix. Force os.name so the chmod line is
-    covered on Windows runners too, where os.name is 'nt' and the branch is skipped."""
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
+def test_upsert_env_token_writes_the_env_owner_only(tmp_path):
+    """The .env carries the bearer token, so it must be 0600 the whole time.
+
+    Asserts the resulting mode rather than that a chmod was called: the write
+    creates the file owner-only and keeps that mode across the atomic replace,
+    so there is no chmod to observe and no window where it is world-readable.
+    """
+    import stat
+
     from lilbee.cli.launchers import hermes
 
-    monkeypatch.setattr(hermes.os, "name", "posix")
-    chmodded: list[int] = []
-    monkeypatch.setattr(Path, "chmod", lambda self, mode: chmodded.append(mode))
-    env = tmp_path / ".env"
-    hermes._upsert_env_token(env, "tok-xyz")
-    assert 0o600 in chmodded
+    previous = os.umask(0)
+    try:
+        env = tmp_path / ".env"
+        hermes._upsert_env_token(env, "tok-xyz")
+    finally:
+        os.umask(previous)
+
     assert "LILBEE_TOKEN=tok-xyz" in env.read_text()
+    assert stat.S_IMODE(env.stat().st_mode) == 0o600

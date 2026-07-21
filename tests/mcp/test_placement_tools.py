@@ -213,7 +213,7 @@ def test_clear_placement_tool_provider_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_placement_tools_wire_names():
     """Placement tools must be registered under clean wire names (no _tool suffix)."""
-    tools = await mcp_server.mcp.list_tools()
+    tools = await mcp_server.build_mcp_server().list_tools()
     names = {t.name for t in tools}
     assert "get_placement" in names
     assert "preview_placement" in names
