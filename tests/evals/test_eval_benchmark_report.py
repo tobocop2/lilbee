@@ -79,7 +79,8 @@ def test_the_report_names_the_judge_and_the_scorer_versions():
     # reproducible if the report says which release produced it.
     report = render_report([*_rows("a", "b"), _versions_row()])
     assert "fable-5" in report
-    assert "| ragas | 0.4.3 |" in report
+    # pandas pads the cells, so assert on content rather than spacing.
+    assert "ragas" in report and "0.4.3" in report
 
 
 def test_a_run_without_an_audit_omits_the_section_rather_than_faking_it():
