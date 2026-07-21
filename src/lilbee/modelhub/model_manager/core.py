@@ -190,14 +190,19 @@ class ModelManager:
                 f"Add the model in {where}, then pick it here."
             )
         if not allow_unsupported:
-            self._enforce_arch_compat(model)
+            self.enforce_arch_compat(model)
         try:
             return self._pull_native(model, on_bytes=on_bytes)
         finally:
             self._invalidate_installed_cache()
 
-    def _enforce_arch_compat(self, ref: str) -> None:
-        """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set."""
+    def enforce_arch_compat(self, ref: str) -> None:
+        """Raise UnsupportedArchError if *ref*'s architecture isn't in the supported set.
+
+        Public because the pull preflight on the HTTP surface runs the same
+        check before starting a download, so a caller learns the model is
+        unsupported before any bytes move.
+        """
         from lilbee.app.services import get_services
         from lilbee.catalog.compat import (
             ModelCompat,

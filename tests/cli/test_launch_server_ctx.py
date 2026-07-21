@@ -15,7 +15,10 @@ def _health(monkeypatch, body: dict) -> None:
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = body
-    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, timeout: resp)
+    # /api/health needs the token like every other route, and the probe reads
+    # it from server.json, which does not exist under test.
+    monkeypatch.setattr(launch_mod, "_session_token", lambda: "t")
+    monkeypatch.setattr(launch_mod.httpx, "get", lambda url, **_kw: resp)
 
 
 @pytest.mark.no_warm_default

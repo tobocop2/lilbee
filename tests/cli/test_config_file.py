@@ -44,3 +44,24 @@ def test_load_refuses_corrupt_file(tmp_path):
         )
     assert exc.value.exit_code == 1
     assert path.read_text() == "{ not valid"  # untouched
+
+
+def test_atomic_write_creates_parents_and_writes(tmp_path):
+    path = tmp_path / "nested" / "c.json"
+    config_file.atomic_write_text(path, '{"a": 1}')
+    assert json.loads(path.read_text()) == {"a": 1}
+    assert not list((tmp_path / "nested").glob("*.tmp"))
+
+
+def test_atomic_write_leaves_no_litter_on_failure(tmp_path, monkeypatch):
+    path = tmp_path / "c.json"
+    path.write_text("original")
+
+    def _boom(*_a, **_k):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr("lilbee.core.security.os.replace", _boom)
+    with pytest.raises(OSError):
+        config_file.atomic_write_text(path, "new")
+    assert path.read_text() == "original"
+    assert not list(tmp_path.glob("*.tmp"))

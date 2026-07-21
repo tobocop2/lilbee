@@ -90,6 +90,15 @@ class TestHelpers:
             result = default_data_dir()
             assert result.parts[-1] == "lilbee"
 
+    def test_default_data_dir_linux_fallback(self):
+        filtered = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
+        with (
+            mock.patch.dict(os.environ, filtered, clear=True),
+            mock.patch("sys.platform", "linux"),
+        ):
+            result = default_data_dir()
+            assert result.parts[-3:] == (".local", "share", "lilbee")
+
     def test_default_state_dir_is_not_a_cache_dir(self, tmp_path):
         """Live engine records must not sit where a cleaner may wipe them."""
         with (
@@ -117,15 +126,6 @@ class TestHelpers:
             result = default_state_dir()
             assert "Caches" not in str(result)
             assert "Application Support" in str(result)
-
-    def test_default_data_dir_linux_fallback(self):
-        filtered = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
-        with (
-            mock.patch.dict(os.environ, filtered, clear=True),
-            mock.patch("sys.platform", "linux"),
-        ):
-            result = default_data_dir()
-            assert result.parts[-3:] == (".local", "share", "lilbee")
 
     def test_default_data_dir_windows(self, tmp_path):
         with (
@@ -275,31 +275,10 @@ class TestStderrSuppressed:
         )
 
 
-def test_atomic_write_creates_parents_and_writes(tmp_path):
-    import json
+def test_stderr_suppressed_can_nest():
+    """A suppressed block can re-enter this, directly or via a native helper
+    that wraps its own stderr. A plain Lock self-deadlocked there."""
+    from lilbee.core.system import stderr_suppressed
 
-    from lilbee.core.system import atomic_write_text
-
-    path = tmp_path / "nested" / "c.json"
-    atomic_write_text(path, '{"a": 1}')
-    assert json.loads(path.read_text()) == {"a": 1}
-    assert not list((tmp_path / "nested").glob("*.tmp"))
-
-
-def test_atomic_write_leaves_no_litter_on_failure(tmp_path, monkeypatch):
-    """A failed rename must leave the destination and the directory as they were."""
-    import pytest
-
-    from lilbee.core import system as system_mod
-
-    path = tmp_path / "c.json"
-    path.write_text("original")
-
-    def _boom(*_a, **_k):
-        raise OSError("rename failed")
-
-    monkeypatch.setattr(system_mod.os, "replace", _boom)
-    with pytest.raises(OSError):
-        system_mod.atomic_write_text(path, "new")
-    assert path.read_text() == "original"
-    assert not list(tmp_path.glob("*.tmp"))
+    with stderr_suppressed(), stderr_suppressed():
+        pass

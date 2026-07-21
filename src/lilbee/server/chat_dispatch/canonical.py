@@ -80,6 +80,13 @@ class CanonicalToolChoice:
     mode: Literal["auto", "any", "none", "tool"]
     tool_name: str | None = None
 
+    def __post_init__(self) -> None:
+        # Without this the None reaches the provider as
+        # {"function": {"name": None}}, a malformed tool choice rather than a
+        # rejected request.
+        if self.mode == "tool" and not self.tool_name:
+            raise ValueError('CanonicalToolChoice(mode="tool") requires a tool_name')
+
 
 @dataclass(frozen=True)
 class CanonicalChatRequest:

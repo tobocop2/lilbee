@@ -688,13 +688,15 @@ running server, ask it to stop with `POST /api/shutdown` (token-authed): it
 shuts down exactly as an external SIGTERM would, and its locks release the
 moment it exits.
 
-The surface covers search (with SSE streaming variants for `ask` and `chat`),
+Every route needs the session token, reads included, `GET /api/health` among
+them; the daemon writes the token to `server.json` (mode `0600`) next to the
+port file, and `lilbee agent-config` hands it to local clients. The surface
+covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
 saved conversations (`/api/sessions`: list, read, create, append, rename,
-delete, and the compaction summary; reads work with a read-only token,
-writes need a full one), configuration (including a defaults endpoint
-that powers per-setting reset), and status/health. The
+delete, and the compaction summary), configuration (including a defaults
+endpoint that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
 is running, and the full OpenAPI schema is published at the

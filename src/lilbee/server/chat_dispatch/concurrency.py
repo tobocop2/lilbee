@@ -18,17 +18,40 @@ class ChatBusyError(Exception):
 
 
 class ChatGate:
-    """Admit up to the backend's live slot capacity; the rest wait, then 429.
+    """Admit up to the backend's live slot capacity; the rest wait FIFO, then 429.
 
     Capacity is read at admission time, not fixed when the gate is created, so a
     model swap or provider change that changes the slot count takes effect at
     once, and a single in-process model (capacity 1) is never oversubscribed.
     The fleet reports its ``--parallel`` slot count, so its continuous-batching
-    slots are actually used instead of one request at a time.
+    slots are actually used instead of one request at a time. The latest count
+    any caller reports is remembered, so a capacity increase also admits the
+    waiters that are already queued rather than leaving them to time out
+    against a backend that now has room.
+
+    Hand-rolled on purpose, and the reason is worth keeping because the obvious
+    replacement almost fits. ``anyio.CapacityLimiter`` has a runtime-settable
+    ``total_tokens`` that would make a capacity increase wake waiters for free,
+    but it binds each token to the borrowing task and raises ``RuntimeError``
+    when another task releases it. Slots here are released from wherever cleanup
+    happens first, including a response's after-send hook, which is not the task
+    that acquired. ``asyncio.Semaphore`` allows the cross-task release but has no
+    live capacity. Neither fits until the streaming cleanup paths are collapsed
+    onto one task.
+
+    Slots are *handed to* waiters rather than merely signalled. Waking a waiter
+    reserves its slot in the same synchronous step, and a request arriving while
+    a waiter is queued joins the back of the queue instead of testing the
+    counter. Without both, a newcomer could take the slot in the window between
+    the wake-up and the woken waiter resuming, and the waiter would rejoin at
+    the tail: the requests that had waited longest would be overtaken
+    repeatedly and would be the ones to time out.
     """
 
     def __init__(self) -> None:
         self._in_flight = 0
+        # Last slot count reported by a caller; the gate has no other view of it.
+        self._ceiling = 1
         self._waiters: deque[asyncio.Future[None]] = deque()
 
     @property
@@ -38,55 +61,75 @@ class ChatGate:
 
     async def acquire(self, capacity: int, timeout: float) -> None:
         """Reserve a slot, waiting up to *timeout*; raise ChatBusyError if full."""
-        ceiling = max(1, capacity)
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while self._in_flight >= ceiling:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise ChatBusyError(_busy_message(timeout))
-            waiter: asyncio.Future[None] = loop.create_future()
-            self._waiters.append(waiter)
-            try:
-                # asyncio.timeout, not wait_for: 3.11's wait_for swallows a task
-                # cancellation that races a completed waiter (fixed in 3.12).
-                async with asyncio.timeout(remaining):
-                    await waiter
-            except TimeoutError as exc:
-                self._renotify_if_woken(waiter)
-                raise ChatBusyError(_busy_message(timeout)) from exc
-            except asyncio.CancelledError:
-                self._renotify_if_woken(waiter)
-                raise
-            finally:
-                if waiter in self._waiters:
-                    self._waiters.remove(waiter)
-        self._in_flight += 1
+        self._observe_capacity(max(1, capacity))
+        # Admit straight away only with room AND nobody ahead in the queue.
+        if not self._waiters and self._in_flight < self._ceiling:
+            self._in_flight += 1
+            return
+        if timeout <= 0:
+            raise ChatBusyError(_busy_message(timeout))
+        waiter: asyncio.Future[None] = loop.create_future()
+        self._waiters.append(waiter)
+        try:
+            # asyncio.timeout, not wait_for: 3.11's wait_for swallows a task
+            # cancellation that races a completed waiter (fixed in 3.12).
+            async with asyncio.timeout(timeout):
+                await waiter
+            # Returning means a slot was reserved for us by whoever woke us;
+            # there is nothing left to claim.
+        except TimeoutError as exc:
+            self._abandon(waiter)
+            raise ChatBusyError(_busy_message(timeout)) from exc
+        except asyncio.CancelledError:
+            self._abandon(waiter)
+            raise
+        finally:
+            if waiter in self._waiters:
+                self._waiters.remove(waiter)
 
     async def release(self) -> None:
-        """Free an acquired slot and wake one waiter.
+        """Free an acquired slot and admit whoever it makes room for.
 
-        Contains no awaits: the decrement and wake-up run synchronously on the
+        Contains no awaits: the decrement and wake-ups run synchronously on the
         event loop, so a cancellation delivered to the caller (for example a
         client disconnect tearing down a streaming response) can never abort
         the release halfway and leak the slot.
         """
         if self._in_flight > 0:
             self._in_flight -= 1
-        self._wake_next()
+        self._admit_waiters()
 
-    def _wake_next(self) -> None:
-        """Wake the oldest still-pending waiter, if any."""
+    def _observe_capacity(self, ceiling: int) -> None:
+        """Record the caller's live slot count and admit anyone it now fits."""
+        self._ceiling = ceiling
+        self._admit_waiters()
+
+    def _admit_waiters(self) -> None:
+        """Hand a reserved slot to each queued waiter that now fits."""
+        while self._in_flight < self._ceiling:
+            waiter = self._pop_live_waiter()
+            if waiter is None:
+                return
+            # Reserve before waking: the slot is the waiter's from this moment,
+            # so nothing entering acquire() in between can take it.
+            self._in_flight += 1
+            waiter.set_result(None)
+
+    def _pop_live_waiter(self) -> asyncio.Future[None] | None:
+        """Remove and return the oldest waiter still able to take a slot."""
         while self._waiters:
             waiter = self._waiters.popleft()
             if not waiter.done():
-                waiter.set_result(None)
-                return
+                return waiter
+        return None
 
-    def _renotify_if_woken(self, waiter: asyncio.Future[None]) -> None:
-        """Pass a wake-up consumed by a bailing-out waiter on to the next one."""
+    def _abandon(self, waiter: asyncio.Future[None]) -> None:
+        """Give back a slot that was reserved for a waiter that then bailed out."""
         if waiter.done() and not waiter.cancelled():
-            self._wake_next()
+            if self._in_flight > 0:
+                self._in_flight -= 1
+            self._admit_waiters()
 
 
 def _busy_message(timeout: float) -> str:

@@ -2,7 +2,6 @@
 
 import os
 import sys
-import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,7 +10,10 @@ from pathlib import Path
 #: Directory name for a project-local lilbee knowledge base (sibling of ``.git/``).
 LOCAL_ROOT_DIRNAME = ".lilbee"
 
-_STDERR_LOCK = threading.Lock()
+# Reentrant: a suppressed block can re-enter this (directly or via a native
+# helper wrapping its own stderr) and a plain Lock self-deadlocks. Nesting
+# restores correctly: the inner exit puts back the outer's devnull.
+_STDERR_LOCK = threading.RLock()
 
 
 @contextmanager
@@ -182,26 +184,3 @@ def is_network_path(path: Path) -> bool:
         resolved = str(path)
     fstype = _mount_fstype(resolved, mounts_text)
     return fstype in _NETWORK_FS_TYPES or fstype.startswith("fuse.")
-
-
-def atomic_write_text(path: Path, text: str) -> None:
-    """Write *text* to *path* atomically (unique temp file + os.replace).
-
-    The temp file's name is unique per writer, so two processes writing the
-    same destination cannot interleave into one another's buffer and then both
-    rename it into place. Readers see either the old file or the new one, never
-    a truncated or half-written one.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, suffix=".tmp", delete=False, mode="w", encoding="utf-8"
-        ) as tmp:
-            tmp_name = tmp.name
-            tmp.write(text)
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name is not None:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
