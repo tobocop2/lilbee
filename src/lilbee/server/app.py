@@ -6,6 +6,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import anyio.to_thread
 from litestar import Litestar
 from litestar.config.cors import CORSConfig
 from litestar.middleware.base import DefineMiddleware
@@ -135,9 +136,28 @@ def _warn_if_few_file_descriptors() -> None:
     )
 
 
+def _raise_thread_pool_ceiling() -> None:
+    """Resize the thread pool anyio hands every ``to_thread`` call.
+
+    Synchronous work is offloaded off the event loop so one slow handler cannot
+    stall every connected agent, and anyio's default pool holds 40 threads. That
+    is the real ceiling on how many agents one daemon serves: past it, retrieval
+    calls queue while the disk and CPU sit idle.
+
+    Resizing anyio's own limiter rather than passing a private one to each call
+    raises the ceiling for every offload in the process, including Litestar's
+    sync route handlers and the MCP SDK's, which a limiter of our own would
+    leave pinned at 40 while we lifted only our own handlers.
+    """
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    if limiter.total_tokens != cfg.mcp_tool_threads:
+        limiter.total_tokens = cfg.mcp_tool_threads
+
+
 @asynccontextmanager
 async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     """Pre-load LLM provider and embedding model on server startup."""
+    _raise_thread_pool_ceiling()
     _warn_if_few_file_descriptors()
     session_manager.load_or_generate()
 

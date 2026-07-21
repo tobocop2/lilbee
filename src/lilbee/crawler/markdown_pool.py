@@ -45,7 +45,7 @@ def _worker_convert(html: str, base_url: str, citations: bool) -> tuple[str, str
     result = DefaultMarkdownGenerator().generate_markdown(
         html, base_url=base_url, citations=citations
     )
-    return str(result.raw_markdown or ""), str(getattr(result, "markdown_with_citations", "") or "")
+    return str(result.raw_markdown or ""), str(result.markdown_with_citations or "")
 
 
 class MarkdownConversionPool:

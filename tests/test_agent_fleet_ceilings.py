@@ -5,60 +5,74 @@ from __future__ import annotations
 import resource
 
 
-class TestToolThreadLimiter:
-    """Sync MCP tool handlers are offloaded off the event loop into a pool.
+class TestThreadPoolCeiling:
+    """Synchronous work is offloaded off the event loop, and anyio's default pool
+    holds 40 threads.
 
-    anyio's default holds 40 threads, so a fleet larger than that queues
-    retrieval calls while the disk and CPU sit idle.
+    That is the real ceiling on how many agents one daemon serves: past it,
+    retrieval calls queue while the disk and CPU sit idle.
     """
 
-    def _limiter(self, monkeypatch, threads: int):
-        from lilbee import mcp_server
+    async def test_the_pool_is_resized_to_the_setting(self, monkeypatch) -> None:
+        import anyio.to_thread
+
         from lilbee.core.config import cfg
+        from lilbee.server import app as app_mod
 
-        monkeypatch.setattr(cfg, "mcp_tool_threads", threads)
-        mcp_server._tool_thread_limiter.cache_clear()
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        original = limiter.total_tokens
+        monkeypatch.setattr(cfg, "mcp_tool_threads", 200)
         try:
-            return mcp_server._tool_thread_limiter()
+            app_mod._raise_thread_pool_ceiling()
+            assert limiter.total_tokens == 200
         finally:
-            mcp_server._tool_thread_limiter.cache_clear()
+            limiter.total_tokens = original
 
-    def test_the_pool_is_sized_by_the_setting(self, monkeypatch) -> None:
-        assert self._limiter(monkeypatch, 200).total_tokens == 200
+    async def test_resizing_anyios_own_limiter_lifts_every_offload(self, monkeypatch) -> None:
+        """A private limiter would raise the ceiling only for lilbee's handlers
+        and leave Litestar's and the MCP SDK's pinned at the default."""
+        import anyio.to_thread
 
-    def test_the_default_keeps_anyios_ceiling(self, monkeypatch) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.server import app as app_mod
+
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        original = limiter.total_tokens
+        monkeypatch.setattr(cfg, "mcp_tool_threads", 77)
+        try:
+            app_mod._raise_thread_pool_ceiling()
+            assert anyio.to_thread.current_default_thread_limiter().total_tokens == 77
+        finally:
+            limiter.total_tokens = original
+
+    async def test_a_pool_already_the_right_size_is_left_alone(self, monkeypatch) -> None:
+        import anyio.to_thread
+
+        from lilbee.core.config import cfg
+        from lilbee.server import app as app_mod
+
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        original = limiter.total_tokens
+        monkeypatch.setattr(cfg, "mcp_tool_threads", int(original))
+        try:
+            app_mod._raise_thread_pool_ceiling()
+            assert limiter.total_tokens == original
+        finally:
+            limiter.total_tokens = original
+
+    def test_the_default_keeps_anyios_ceiling(self) -> None:
         """Unset, nothing changes: the pool is the size it has always been."""
         from lilbee.core.config.model import Config
 
         assert Config.model_fields["mcp_tool_threads"].default == 40
 
-    def test_every_handler_shares_one_pool(self, monkeypatch) -> None:
-        """A limiter per call would be no limit at all."""
-        from lilbee import mcp_server
-        from lilbee.core.config import cfg
-
-        monkeypatch.setattr(cfg, "mcp_tool_threads", 12)
-        mcp_server._tool_thread_limiter.cache_clear()
-        try:
-            assert mcp_server._tool_thread_limiter() is mcp_server._tool_thread_limiter()
-        finally:
-            mcp_server._tool_thread_limiter.cache_clear()
-
-    async def test_a_sync_handler_runs_against_that_pool(self, monkeypatch) -> None:
-        """The limiter has to reach the offload call, not merely exist."""
+    async def test_a_sync_handler_is_still_offloaded(self, monkeypatch) -> None:
+        """The offload itself is unchanged; only the pool it lands in is sized."""
         from lilbee import mcp_server
 
-        seen: dict[str, object] = {}
-
-        async def _fake_run_sync(func, *, limiter=None):
-            seen["limiter"] = limiter
-            return func()
-
-        monkeypatch.setattr(mcp_server.anyio.to_thread, "run_sync", _fake_run_sync)
         offloaded = mcp_server._offload_sync(lambda: "done")
 
         assert await offloaded() == "done"
-        assert seen["limiter"] is mcp_server._tool_thread_limiter()
 
     def test_an_async_handler_is_left_alone(self) -> None:
         """It already yields; wrapping it would buy a thread for nothing."""
