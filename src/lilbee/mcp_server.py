@@ -13,6 +13,7 @@ import re
 import threading
 import uuid
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -20,6 +21,7 @@ from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import Tool as MCPTool
 
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
@@ -137,7 +139,8 @@ def _offload_sync(fn: _F) -> _F:
     return cast("_F", _runner)
 
 
-_REGISTRATIONS: list[tuple[Callable[..., Any], str | None]] = []
+# (handler, wire name override, gate) applied by build_mcp_server per instance.
+_REGISTRATIONS: list[tuple[Callable[..., Any], str | None, Callable[[], bool] | None]] = []
 
 
 def _tool(fn: _F) -> _F:
@@ -146,7 +149,7 @@ def _tool(fn: _F) -> _F:
     Returns the original callable so in-process callers (tests, the stdio
     fallback) keep the synchronous API while the schema sees the offloaded form.
     """
-    _REGISTRATIONS.append((_offload_sync(fn), None))
+    _REGISTRATIONS.append((_offload_sync(fn), None, None))
     return fn
 
 
@@ -154,27 +157,31 @@ def _tool_named(name: str) -> Callable[[_F], _F]:
     """Register an MCP tool under an explicit wire *name* (sync handlers offloaded)."""
 
     def deco(fn: _F) -> _F:
-        _REGISTRATIONS.append((_offload_sync(fn), name))
+        _REGISTRATIONS.append((_offload_sync(fn), name, None))
         return fn
 
     return deco
 
 
-def _tool_if(condition: bool) -> Callable[[_F], _F]:
-    """Register an MCP tool only when *condition* is true.
+def _tool_if(when: Callable[[], bool]) -> Callable[[_F], _F]:
+    """Register an MCP tool gated on *when*, evaluated at server-build time.
 
     The function stays importable so direct callers (tests, in-process
-    fallback) can still reach it. Whether the tool appears in the MCP
-    schema is fixed at import time; changing the gating config requires
-    a server restart.
+    fallback) can still reach it. A server built after a config change
+    carries the current tool surface; live servers keep theirs.
     """
-    if condition:
-        return _tool
+    if not callable(when):
+        raise TypeError("_tool_if takes a zero-arg callable, evaluated per build")
 
-    def _passthrough(fn: _F) -> _F:
+    def deco(fn: _F) -> _F:
+        _REGISTRATIONS.append((_offload_sync(fn), None, when))
         return fn
 
-    return _passthrough
+    return deco
+
+
+def _wiki_enabled() -> bool:
+    return cfg.wiki
 
 
 def _error(msg: str) -> dict[str, Any]:
@@ -344,7 +351,7 @@ async def add(
     return result
 
 
-@_tool_if(crawler_available())
+@_tool_if(crawler_available)
 async def crawl(
     url: str,
     depth: int | None = None,
@@ -382,7 +389,7 @@ async def crawl(
     return {"status": "started", "task_id": task_id, "url": url}
 
 
-@_tool_if(crawler_available())
+@_tool_if(crawler_available)
 def crawl_status(task_id: str) -> dict[str, Any]:
     """Poll a crawl task by id; returns ``{status, pages, error}``."""
     task = get_task(task_id)
@@ -432,9 +439,6 @@ def init(path: str = "") -> dict[str, Any]:
     os.environ["LILBEE_DATA"] = str(base)
     overlay_persisted_settings(base)
     reset_services()
-    # The new vault may have a different cfg.wiki; re-tune the search tool's scope
-    # hint so it advertises the scopes this corpus actually has.
-    _tune_search_scope_for_corpus(mcp)
 
     return {"command": "init", "path": str(root), "created": created}
 
@@ -472,7 +476,7 @@ def _require_agent_session(session_id: str) -> Session:
     return session
 
 
-@_tool_if(agent_sessions_enabled())
+@_tool_if(agent_sessions_enabled)
 def sessions_list() -> dict[str, Any]:
     """List the agent's sessions, newest first."""
     if not agent_sessions_enabled():
@@ -481,7 +485,7 @@ def sessions_list() -> dict[str, Any]:
     return {"sessions": [asdict(meta) for meta in metas], "total": len(metas)}
 
 
-@_tool_if(agent_sessions_enabled())
+@_tool_if(agent_sessions_enabled)
 def session_get(session_id: str) -> dict[str, Any]:
     """Return one agent session: metadata, transcript, summary."""
     if not agent_sessions_enabled():
@@ -508,7 +512,7 @@ def session_get(session_id: str) -> dict[str, Any]:
     }
 
 
-@_tool_if(agent_sessions_enabled())
+@_tool_if(agent_sessions_enabled)
 def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
     """Start a saved chat session; returns its id."""
     if not agent_sessions_enabled():
@@ -519,7 +523,7 @@ def session_create(model_ref: str, scope: str = "both") -> dict[str, Any]:
     return {"id": session_id, "model_ref": model_ref, "scope": scope}
 
 
-@_tool_if(agent_sessions_enabled())
+@_tool_if(agent_sessions_enabled)
 def session_add_message(
     session_id: str,
     role: MessageRole,
@@ -547,7 +551,7 @@ def session_add_message(
     return {"id": session_id, "added": True}
 
 
-@_tool_if(agent_sessions_enabled())
+@_tool_if(agent_sessions_enabled)
 def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
     """Replace an agent session's compaction summary."""
     if not agent_sessions_enabled():
@@ -560,7 +564,7 @@ def session_set_summary(session_id: str, summary: str) -> dict[str, Any]:
     return {"id": session_id, "summary": summary}
 
 
-@_tool_if(agent_sessions_enabled())
+@_tool_if(agent_sessions_enabled)
 def session_rename(session_id: str, title: str) -> dict[str, Any]:
     """Rename an agent session."""
     if not agent_sessions_enabled():
@@ -573,7 +577,7 @@ def session_rename(session_id: str, title: str) -> dict[str, Any]:
     return {"id": session_id, "title": title}
 
 
-@_tool_if(agent_sessions_enabled())
+@_tool_if(agent_sessions_enabled)
 def session_delete(session_id: str) -> dict[str, Any]:
     """Delete an agent session."""
     if not agent_sessions_enabled():
@@ -649,7 +653,7 @@ def reset(confirm: bool = False) -> dict[str, Any]:
     return result
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages; empty ``wiki_source`` lints all."""
     from lilbee.wiki.lint import lint_all, lint_wiki_page
@@ -667,7 +671,7 @@ def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     }
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_citations(wiki_source: str) -> dict[str, Any]:
     """List citations for a wiki page."""
     records = get_services().store.get_citations_for_wiki(wiki_source)
@@ -679,7 +683,7 @@ def wiki_citations(wiki_source: str) -> dict[str, Any]:
     }
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues."""
     from lilbee.wiki.lint import lint_all
@@ -705,7 +709,7 @@ def wiki_status() -> dict[str, Any]:
     }
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_list() -> dict[str, Any]:
     """List wiki pages with metadata."""
     if not cfg.wiki:
@@ -723,7 +727,7 @@ def wiki_list() -> dict[str, Any]:
     }
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_read(slug: str) -> dict[str, Any]:
     """Read a wiki page's content + frontmatter by slug."""
     if not cfg.wiki:
@@ -739,7 +743,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
     return {"command": "wiki_read", **asdict(result)}
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_build() -> dict[str, Any]:
     """Build the concept and entity wiki across all ingested sources."""
     if not cfg.wiki:
@@ -749,7 +753,7 @@ def wiki_build() -> dict[str, Any]:
     return {"command": "wiki_build", **run_full_build(cfg)}
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. Currently a full rebuild."""
     if not cfg.wiki:
@@ -759,7 +763,7 @@ def wiki_update() -> dict[str, Any]:
     return {"command": "wiki_update", **run_full_build(cfg)}
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_synthesize() -> dict[str, Any]:
     """Generate synthesis pages for concept clusters with three or more sources."""
     if not cfg.wiki:
@@ -769,7 +773,7 @@ def wiki_synthesize() -> dict[str, Any]:
     return {"command": "wiki_synthesize", **run_full_synthesize(cfg)}
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages."""
     from lilbee.wiki.prune import prune_wiki
@@ -1034,7 +1038,7 @@ def model_rm(model: str, source: str = "") -> dict[str, Any]:
         return _error(str(exc))
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_drafts_list() -> dict[str, Any]:
     """List pending wiki drafts (read-only; accept/reject are CLI-only)."""
     from lilbee.wiki.drafts import list_drafts
@@ -1048,7 +1052,7 @@ def wiki_drafts_list() -> dict[str, Any]:
     }
 
 
-@_tool_if(cfg.wiki)
+@_tool_if(_wiki_enabled)
 def wiki_drafts_diff(slug: str) -> dict[str, Any]:
     """Unified diff of a draft against its published counterpart."""
     from lilbee.core.security import PathTraversalError
@@ -1102,9 +1106,8 @@ def _flatten_tool_description(text: str) -> str:
     return "\n".join(line.strip() for line in text.strip().splitlines())
 
 
-def _strip_schema_noise(server: FastMCP) -> None:
-    """Trim auto-generated noise from every registered tool's schema before
-    it ships on the OpenAI tools wire for each chat request.
+def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Trim auto-generated noise from a tool's input schema, on a copy.
 
     Drops:
     - FastMCP/Pydantic ``title`` keys (per-schema + per-property). Tools the
@@ -1115,46 +1118,45 @@ def _strip_schema_noise(server: FastMCP) -> None:
       every ``dict[str, Any]`` but it's the JSON Schema default behavior.
     - The ``null`` arm of ``anyOf: [{type: X}, {type: null}]`` unions for
       ``T | None`` defaults; the null branch is implicit.
-    - Triple-quoted docstring indentation on the tool description. The model
-      sees a flat sentence instead of multi-line text with 4-space prefixes.
 
-    The net effect is a roughly 25-35% reduction in the serialized tools
-    payload, which matters most for small-context (16K) chat models where
-    the tools surface was previously eating ~60% of the budget.
-
-    Runs once per built server, after every registration has been applied.
+    A roughly 25-35% reduction in the serialized tools payload, which matters
+    most for small-context (16K) chat models where the tools surface was
+    previously eating ~60% of the budget.
     """
-    for info in server._tool_manager._tools.values():
-        params = info.parameters
-        if isinstance(params, dict):
-            params.pop("title", None)
-            properties = params.get("properties")
-            if isinstance(properties, dict):
-                for prop in properties.values():
-                    if isinstance(prop, dict):
-                        _strip_property_noise(prop)
-        if isinstance(info.description, str):
-            info.description = _flatten_tool_description(info.description)
+    schema = deepcopy(schema)
+    schema.pop("title", None)
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for prop in properties.values():
+            if isinstance(prop, dict):
+                _strip_property_noise(prop)
+    return schema
 
 
 _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 
 
-def _tune_search_scope_for_corpus(server: FastMCP) -> None:
-    """Tell ``search`` which scopes this corpus actually has.
+class LilbeeMCP(FastMCP):
+    """FastMCP that trims its tools wire and keeps it current with config."""
 
-    When wiki generation is off (``cfg.wiki`` is False), a model that guesses
-    ``scope="wiki"`` only gets a silent fallback to the full pool, so advertise
-    raw/both only. Idempotent and reversible so a config reload re-tunes it.
-    """
-    info = server._tool_manager._tools.get("search")
-    if info is None or not isinstance(info.description, str):
-        return
-    has_hint = _NO_WIKI_SCOPE_HINT in info.description
-    if cfg.wiki and has_hint:
-        info.description = info.description.replace(_NO_WIKI_SCOPE_HINT, "")
-    elif not cfg.wiki and not has_hint:
-        info.description += _NO_WIKI_SCOPE_HINT
+    async def list_tools(self) -> list[MCPTool]:
+        """The registered tools with schema noise stripped and flat descriptions.
+
+        The transforms run on the wire representation per request, never on the
+        stored registrations, so they cannot drift out of sync with config. The
+        ``search`` description advertises only the scopes this corpus has: when
+        wiki generation is off, a model that guesses ``scope="wiki"`` gets a
+        silent fallback to the full pool, so raw/both only.
+        """
+        tools = await super().list_tools()
+        for tool in tools:
+            tool.inputSchema = _strip_schema(tool.inputSchema)
+            if isinstance(tool.description, str):
+                description = _flatten_tool_description(tool.description)
+                if tool.name == "search" and not cfg.wiki:
+                    description += _NO_WIKI_SCOPE_HINT
+                tool.description = description
+        return tools
 
 
 def _client_name(ctx: Context | None) -> str:
@@ -1213,7 +1215,7 @@ def _derive_owner(agent_id: str, ctx: Context | None) -> str:
     return agent_owner(_slug(_anon_owner_id(ctx)))
 
 
-@_tool_if(memory_enabled())
+@_tool_if(memory_enabled)
 def memory_remember(
     text: str,
     kind: MemoryKind = MemoryKind.FACT,
@@ -1230,7 +1232,7 @@ def memory_remember(
     return {"ok": True, "id": memory_id, "owner": owner}
 
 
-@_tool_if(memory_enabled())
+@_tool_if(memory_enabled)
 def memory_recall(
     query: str, limit: int = 0, agent_id: str = "", ctx: Context | None = None
 ) -> dict[str, Any]:
@@ -1246,7 +1248,7 @@ def memory_recall(
     }
 
 
-@_tool_if(memory_enabled())
+@_tool_if(memory_enabled)
 def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any]:
     """List every memory in this agent's namespace (any kind, newest first)."""
     if not memory_enabled():
@@ -1260,7 +1262,7 @@ def memory_list(agent_id: str = "", ctx: Context | None = None) -> dict[str, Any
     }
 
 
-@_tool_if(memory_enabled())
+@_tool_if(memory_enabled)
 def memory_forget(memory_id: str, agent_id: str = "", ctx: Context | None = None) -> dict[str, Any]:
     """Delete one of this agent's own memories by id (agent_id scopes the namespace)."""
     if not memory_enabled():
@@ -1344,27 +1346,23 @@ def clear_placement_tool() -> dict[str, Any]:
     return _placement_result(lambda: set_placement(None))
 
 
-def build_mcp_server() -> FastMCP:
-    """Build a FastMCP server carrying every tool registered in this module.
+def build_mcp_server() -> LilbeeMCP:
+    """Build an MCP server carrying every tool registered in this module.
 
-    Each transport gets its own instance: FastMCP caches one
+    Each transport builds its own instance: FastMCP caches one
     ``StreamableHTTPSessionManager`` per server and its ``run()`` is single-use,
-    so a shared server cannot back two apps in one process.
+    so a shared server cannot back two apps in one process. Gates registered
+    via ``_tool_if`` are evaluated here, against current config.
     """
-    server = FastMCP("lilbee", instructions=_INSTRUCTIONS)
-    for fn, name in _REGISTRATIONS:
-        server.add_tool(fn, name=name)
-    _strip_schema_noise(server)
-    _tune_search_scope_for_corpus(server)
+    server = LilbeeMCP("lilbee", instructions=_INSTRUCTIONS)
+    for fn, name, gate in _REGISTRATIONS:
+        if gate is None or gate():
+            server.add_tool(fn, name=name)
     return server
 
 
-# The stdio server. The HTTP daemon builds its own; see build_mcp_mount.
-mcp = build_mcp_server()
-
-
 def main() -> None:
-    """Entry point for the MCP server."""
+    """Entry point for the stdio MCP server."""
     # Preload so the first tool call doesn't pay the cold-start cost
     # of provider/embedder/store init. Failures (missing model, bad
     # config) still surface on the first tool call rather than crashing
@@ -1380,4 +1378,4 @@ def main() -> None:
     if parent_pid is not None:
         watch_parent_thread(parent_pid, lambda: os._exit(0))
 
-    mcp.run()
+    build_mcp_server().run()

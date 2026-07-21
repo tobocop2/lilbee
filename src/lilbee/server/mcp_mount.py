@@ -71,9 +71,9 @@ def _transport_security() -> TransportSecuritySettings:
 def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     """Return the MCP route handler and the session-manager lifespan.
 
-    Builds its own MCP server rather than sharing the stdio one: FastMCP caches
-    a single session manager per server and ``run()`` is single-use, so a shared
-    server's second lifespan would raise.
+    Each mount builds its own MCP server: FastMCP caches a single session
+    manager per server and ``run()`` is single-use, so a shared server's
+    second lifespan would raise.
     """
     # Mark MCP as served over the shared HTTP daemon so single-vault-only tools
     # (init, reset) refuse runtime vault-switch / teardown that would race

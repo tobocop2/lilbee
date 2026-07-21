@@ -1008,7 +1008,7 @@ tools (~10% of a 32K context, ~35% of Gemma 4's 7K).
   `cfg.wiki` is on or `lilbee[crawler]` is installed.
 - Tool docstrings stay at one or two sentences (FastMCP turns them
   into per-parameter schema descriptions).
-- `_strip_schema_noise` in `mcp_server.py` drops the FastMCP/Pydantic
+- `LilbeeMCP.list_tools` in `mcp_server.py` drops the FastMCP/Pydantic
   auto-generated `title` keys before the tools hit the wire.
 - `tests/test_mcp.py::TestToolsSchemaSize` caps the schema at 7 KB; new
   tools or doc bloat trip the cap and force a deliberate review.
