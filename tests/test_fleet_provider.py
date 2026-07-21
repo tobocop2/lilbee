@@ -685,6 +685,36 @@ def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
     assert set(peaks) == {id(replica_a), id(replica_b)}  # both replicas pulled work
 
 
+def test_vision_dispatcher_blocks_on_a_full_pool_until_a_slot_frees() -> None:
+    # Every slot held up front, so the waiter's first pick returns None and it
+    # parks on the condition's timed re-poll; freeing a slot must wake it. Filling
+    # the pool before the waiter starts makes the block deterministic rather than
+    # relying on threads racing into a full pool.
+    import threading
+
+    dispatcher = prov_mod._VisionDispatcher()
+    only = _fake_client()
+    pool = [prov_mod._VisionReplica(only, 1)]
+
+    acquired = threading.Event()
+
+    def _wait_for_slot() -> None:
+        with dispatcher.slot(pool):
+            acquired.set()
+
+    with dispatcher.slot(pool) as held:
+        assert held is only  # the pool's one slot is now taken
+        waiter = threading.Thread(target=_wait_for_slot)
+        waiter.start()
+        # The waiter cannot get in while the slot is held; it is parked in the
+        # condition wait, not spinning on a busy pool.
+        assert not acquired.wait(timeout=0.2)
+    # Slot released here; release notifies the waiter, which wakes and acquires.
+    assert acquired.wait(timeout=5.0)
+    waiter.join(timeout=5.0)
+    assert not waiter.is_alive()
+
+
 def test_vision_dispatcher_prefers_replica_with_most_free_slots() -> None:
     # Balanced routing drains fastest: the next request goes to the replica with
     # the most free slots, not to whichever raced ahead.
