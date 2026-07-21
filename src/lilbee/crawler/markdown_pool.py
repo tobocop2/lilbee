@@ -121,12 +121,41 @@ def _resolve_workers(workers: int | None) -> int:
     return max(1, min(workers, _MAX_WORKERS, os.cpu_count() or 1))
 
 
-class PooledMarkdownGenerator:
-    """crawl4ai markdown generator that converts in helper processes.
+def build_pooled_generator(pool: MarkdownConversionPool) -> Any | None:
+    """A crawl4ai markdown generator converting in *pool*, or ``None``.
 
-    Implements the one method crawl4ai calls, and falls back to the stock
-    generator whenever the pool cannot answer, so a crawl never fails because
-    the offload is unavailable.
+    Built as a real subclass because ``CrawlerRunConfig`` type-checks what it is
+    given ("markdown_generator must be an instance of MarkdownGenerationStrategy")
+    and rejects a duck-typed object outright, failing every page of the crawl
+    rather than degrading.
+
+    ``None`` when crawl4ai's base class cannot be imported, which is the case
+    whenever the optional extra is absent or something has stubbed the module.
+    The caller then passes no generator and the crawler converts in-process,
+    which is the same fallback every other failure here takes.
+    """
+    try:
+        from crawl4ai.markdown_generation_strategy import MarkdownGenerationStrategy
+    except (ImportError, AttributeError):
+        return None
+
+    class _PooledMarkdownGenerator(MarkdownGenerationStrategy):  # type: ignore[misc]
+        def __init__(self, conversion_pool: MarkdownConversionPool) -> None:
+            super().__init__()
+            self._pool = conversion_pool
+
+        generate_markdown = PooledMarkdownGenerator.generate_markdown
+
+    return _PooledMarkdownGenerator(pool)
+
+
+class PooledMarkdownGenerator:
+    """The conversion behaviour, kept plain so it can be tested without crawl4ai.
+
+    :func:`build_pooled_generator` grafts this ``generate_markdown`` onto a real
+    subclass of crawl4ai's strategy base, which is what the crawler will accept.
+    Falls back to the stock generator whenever the pool cannot answer, so a crawl
+    never fails because the offload is unavailable.
     """
 
     def __init__(self, pool: MarkdownConversionPool) -> None:

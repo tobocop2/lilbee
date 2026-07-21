@@ -11,6 +11,7 @@ from lilbee.crawler.markdown_pool import (
     PooledMarkdownGenerator,
     _resolve_workers,
     _worker_convert,
+    build_pooled_generator,
 )
 
 
@@ -206,3 +207,81 @@ class TestTheCrawlChoosesWhetherToPool:
         pool = crawl4ai_fetcher._markdown_pool()
 
         assert isinstance(pool, MarkdownConversionPool)
+
+
+class TestTheCrawlerAcceptsTheGenerator:
+    """CrawlerRunConfig type-checks the generator it is handed.
+
+    A duck-typed one is rejected outright with "markdown_generator must be an
+    instance of MarkdownGenerationStrategy", which fails every page of the crawl
+    rather than degrading to in-process conversion. Calling generate_markdown
+    directly cannot see that, so the seam itself is exercised here.
+    """
+
+    def test_the_generator_is_a_strategy_the_crawler_will_take(self) -> None:
+        from crawl4ai.markdown_generation_strategy import MarkdownGenerationStrategy
+
+        generator = build_pooled_generator(MarkdownConversionPool(1))
+
+        assert isinstance(generator, MarkdownGenerationStrategy)
+
+    def test_a_run_config_accepts_it(self) -> None:
+        """The exact call the recursive crawl makes."""
+        from crawl4ai import CrawlerRunConfig
+
+        config = CrawlerRunConfig(
+            markdown_generator=build_pooled_generator(MarkdownConversionPool(1))
+        )
+
+        assert config.markdown_generator is not None
+
+    def test_it_still_converts_through_the_pool(self, monkeypatch) -> None:
+        """Subclassing must not lose the offload it exists for."""
+
+        class _Pool:
+            def convert(self, *_a):
+                return ("# pooled", "# pooled cited")
+
+        generator = build_pooled_generator(_Pool())  # type: ignore[arg-type]
+        result = generator.generate_markdown("<h1>x</h1>")
+
+        assert str(result.raw_markdown) == "# pooled"
+
+
+class TestAStubbedOrAbsentCrawl4aiDegrades:
+    """crawl4ai is an optional extra, and tests stub it.
+
+    Importing its base class at generator-construction time made a stubbed
+    module fail the whole crawl ("'crawl4ai' is not a package"), which is the
+    opposite of this module's contract that every setup failure converts
+    in-process instead.
+    """
+
+    def test_no_generator_is_built_when_the_base_is_missing(self, monkeypatch) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_strategy(name, *args, **kwargs):
+            if name == "crawl4ai.markdown_generation_strategy":
+                raise ImportError("no crawl4ai here")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_strategy)
+
+        assert build_pooled_generator(MarkdownConversionPool(1)) is None
+
+    def test_a_stubbed_module_is_treated_the_same(self, monkeypatch) -> None:
+        """A stub raises AttributeError rather than ImportError."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _stubbed(name, *args, **kwargs):
+            if name == "crawl4ai.markdown_generation_strategy":
+                raise AttributeError("'crawl4ai' is not a package")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _stubbed)
+
+        assert build_pooled_generator(MarkdownConversionPool(1)) is None

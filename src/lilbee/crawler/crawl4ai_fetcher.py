@@ -16,7 +16,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap
 from lilbee.crawler.bootstrap import CrawlerBrowserError
-from lilbee.crawler.markdown_pool import MarkdownConversionPool, PooledMarkdownGenerator
+from lilbee.crawler.markdown_pool import MarkdownConversionPool, build_pooled_generator
 from lilbee.crawler.models import (
     CancelToken,
     ConcurrencySpec,
@@ -333,6 +333,9 @@ class Crawl4aiFetcher:
             filter_chain=filter_chain,
         )
         pool = _markdown_pool()
+        generator = None if pool is None else build_pooled_generator(pool)
+        if generator is None:
+            pool = None
         config = CrawlerRunConfig(
             deep_crawl_strategy=strategy,
             page_timeout=int(timeout * 1000),
@@ -340,7 +343,7 @@ class Crawl4aiFetcher:
             max_range=concurrency.max_delay_range,
             semaphore_count=concurrency.semaphore_count,
             stream=True,
-            **({} if pool is None else {"markdown_generator": PooledMarkdownGenerator(pool)}),
+            **({} if generator is None else {"markdown_generator": generator}),
         )
 
         dispatcher = _build_rate_limited_dispatcher(concurrency, self._render_mode)
