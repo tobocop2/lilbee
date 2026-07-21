@@ -30,7 +30,7 @@ resources:
     - accelerators: A100-80GB-SXM:1
     - accelerators: A100-80GB:1
 volumes:
-  /workspace: msmarco-bench
+  /workspace: msmarco-ca
 envs:
   # Two branches, because neither has everything. lilbee comes from
   # feat/kreuzberg-5, which carries data/ingest/trace.py -- the per-document

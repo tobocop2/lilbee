@@ -14,7 +14,7 @@ resources:
   # ir_datasets' scratch space during extraction.
   disk_size: 60
 volumes:
-  /workspace: msmarco-bench
+  /workspace: msmarco-ca
 envs:
   # The harness branch, not the lilbee feature branch. This stage runs
   # ir_datasets and writes files; it never touches lilbee's ingest, so it needs
