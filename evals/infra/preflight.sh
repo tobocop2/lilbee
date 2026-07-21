@@ -17,22 +17,11 @@ log "GPUs as the driver reports them"
 nvidia-smi --query-gpu=index,name,memory.total,driver_version,compute_cap \
            --format=csv,noheader || die "nvidia-smi failed; this box has no usable driver"
 
-# Community pods routinely arrive with nvidia-smi working and cuInit broken.
-# torch is the cheapest thing that actually initialises a CUDA context.
-log "CUDA context actually initialises (nvidia-smi alone does not prove this)"
-"$PYBIN" - <<'PY' || die "CUDA present per nvidia-smi but unusable; reclaim this pod"
-import sys, torch
-if not torch.cuda.is_available():
-    sys.exit("torch.cuda.is_available() is False")
-n = torch.cuda.device_count()
-for i in range(n):
-    cap = torch.cuda.get_device_capability(i)
-    print(f"  gpu{i} {torch.cuda.get_device_name(i)} sm_{cap[0]}{cap[1]}")
-# Touch each card: allocation is what fails when a context is broken.
-for i in range(n):
-    torch.zeros(1024, 1024, device=f"cuda:{i}").sum().item()
-print(f"  all {n} GPU(s) allocated and computed")
-PY
+# No torch probe here. lilbee runs a llama.cpp engine and does not depend on
+# torch, so importing it only proved whether an unrelated package happened to be
+# installed. The authoritative check is further down: the engine loading the
+# embedder and returning a real vector exercises the same CUDA path the ingest
+# will use, on the same binary, with the same model.
 
 # A prebuilt engine is a release artifact, not a compile: if it is missing the
 # only sane response is to stop, because the fallback is an eight-hour build on
