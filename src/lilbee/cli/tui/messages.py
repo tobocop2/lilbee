@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from lilbee.core.config import cfg
+from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
 log = logging.getLogger(__name__)
@@ -496,8 +497,24 @@ FLEET_MODEL_NOT_DOWNLOADED = "{role}: {model} not downloaded, pull it to place i
 # lacks the CAP_PERFMON grant, so the muted "--" reads as a fixable state.
 FLEET_INTEL_UTIL_GRANT = (
     "Intel GPU utilization needs a one-time grant: "
-    "sudo setcap cap_perfmon+ep {binary}  (or Linux 6.2+ reads it with no setup)"
+    "sudo setcap cap_perfmon+ep {binary}  (or Linux 6.5+ reads it with no setup)"
 )
+# Shown when intel_gpu_top is not installed at all: the i915 PMU covers kernels
+# too old to publish fdinfo engine counters, so installing igt-gpu-tools is the
+# only path to utilization there.
+FLEET_INTEL_UTIL_INSTALL = (
+    "Intel GPU utilization needs the igt-gpu-tools package "
+    "(then: sudo setcap cap_perfmon+ep $(command -v intel_gpu_top))"
+)
+
+
+def intel_util_hint_text(hint: IntelUtilHint) -> str:
+    """Localized fix instruction for an unreadable Intel util reading."""
+    if hint.kind is IntelHintKind.GRANT and hint.binary is not None:
+        return FLEET_INTEL_UTIL_GRANT.format(binary=hint.binary)
+    return FLEET_INTEL_UTIL_INSTALL
+
+
 FLEET_CMD_PREVIEW = "Preview"
 FLEET_CMD_APPLY = "Apply"
 FLEET_CMD_AUTO = "Auto"

@@ -54,9 +54,9 @@ def _upsert_env_token(path: Path, token: str) -> None:
     line = f"{LILBEE_TOKEN_ENV_VAR}={token}"
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     kept = [ln for ln in existing if not ln.startswith(f"{LILBEE_TOKEN_ENV_VAR}=")]
+    # atomic_write_text creates the file 0600 and keeps that mode across the
+    # replace, so the token is never briefly readable and needs no chmod after.
     config_file.atomic_write_text(path, "\n".join([*kept, line]) + "\n")
-    if os.name == "posix":
-        path.chmod(0o600)
 
 
 def warn_hermes_ungrounded() -> None:

@@ -1,4 +1,9 @@
-"""General routes: health, status, config."""
+"""General routes: health, status, config, source, warm.
+
+Every route needs the token, ``/api/health`` included: it reports the chat
+engine's last error, which carries model paths and loader failures. A local
+probe reads the token from server.json like every other local client.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,6 @@ from litestar.response import Stream
 from pydantic import ValidationError
 
 from lilbee.server import handlers
-from lilbee.server.auth import read_only
 from lilbee.server.models import (
     ConfigResponse,
     ConfigUpdateResponse,
@@ -22,35 +26,30 @@ from lilbee.server.models import (
 
 
 @get("/api/health")
-@read_only
 async def health_route() -> HealthResponse:
     """Service health check returning server version and uptime status."""
     return await handlers.health()
 
 
 @get("/api/warm/stream")
-@read_only
 async def warm_stream_route() -> Stream:
     """Stream chat-model cold-load progress as SSE for a launcher's warm indicator."""
     return Stream(handlers.warm_stream(), media_type="text/event-stream")
 
 
 @get("/api/status")
-@read_only
 async def status_route() -> StatusResponse:
     """Current configuration, indexed document sources, and chunk counts."""
     return await handlers.status()
 
 
 @get("/api/config")
-@read_only
 async def config_route() -> ConfigResponse:
     """Return all user-facing configuration values."""
     return await handlers.get_config()
 
 
 @get("/api/config/defaults")
-@read_only
 async def config_defaults_route() -> ConfigResponse:
     """Return canonical defaults for every writable, public configuration field."""
     return await handlers.get_config_defaults()
@@ -66,7 +65,6 @@ async def config_update_route(data: dict[str, Any]) -> ConfigUpdateResponse:
 
 
 @get("/api/source")
-@read_only
 async def source_content_route(
     source: str, raw: bool = False
 ) -> SourceContentResponse | Response[bytes]:

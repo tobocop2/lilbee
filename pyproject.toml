@@ -61,6 +61,9 @@ dependencies = [
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
     "regex",
+    # The read side is stdlib tomllib; this is its write half.
+    "tomli-w>=1.0",
+    "cachetools>=7.1.4",
 ]
 
 [project.optional-dependencies]
@@ -121,6 +124,7 @@ dev = [
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.3",
     "pre-commit>=4.0",
+    "types-cachetools>=7.0.0.20260713",
 ]
 
 [tool.pytest.ini_options]
@@ -141,6 +145,10 @@ markers = [
 [tool.coverage.run]
 source = ["lilbee"]
 concurrency = ["thread"]
+# Generated modules are machine output, not code anyone wrote or can meaningfully
+# test; measuring them says nothing about the suite. Excluded so the number stays
+# a statement about hand-written code, and so regenerating cannot move it.
+omit = ["src/lilbee/_generated/*"]
 
 [tool.coverage.report]
 show_missing = true

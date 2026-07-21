@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
@@ -26,6 +25,7 @@ from lilbee.providers.fleet.adapters import (
 )
 from lilbee.providers.fleet.binary import llama_server_runtime_env, resolve_llama_server
 from lilbee.providers.fleet.devices import (
+    VULKAN_BACKEND,
     FleetDevice,
     host_lacks_nvlink,
     probe_devices,
@@ -77,7 +77,17 @@ _EMBED_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.pooled
 _ALL_LAYER_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.offload_all_layers)
 _FLASH_ON = "on"
 _FLASH_OFF = "off"
-_DEFAULT_THREADS = 4
+_FLASH_AUTO = "auto"
+# llama-server's documented way to say "offload nothing": --device none.
+_NO_DEVICE = "none"
+# Backends pinned by the name the engine printed rather than through an env var,
+# because their variables index a different space than --list-devices reports.
+_NAME_PINNED_BACKENDS = frozenset({VULKAN_BACKEND, "SYCL"})
+# Backends whose flash-attention coverage in llama.cpp is complete enough to ask
+# for it outright. Vulkan and SYCL are behind CUDA's and have been incomplete on
+# Intel's mesa driver, so those are left to the engine's own auto, which enables
+# flash attention only where the backend really supports it.
+_TRUSTED_FLASH_BACKENDS = frozenset({"CUDA", "ROCm", "HIP", "MTL", "Metal"})
 # Roles to which flash attention applies; embed/rerank run without it.
 _FLASH_ROLES = tuple(role for role, info in ROLE_REGISTRY.items() if info.flash_attn)
 
@@ -281,6 +291,7 @@ def _fit_slots(
                 gpu_layers=_role_gpu_layers(role),
                 flash_attn=_role_flash(role),
                 kv_cache_type=_role_kv_cache_type(role),
+                kv_cache_type_v=_role_kv_cache_type_v(role),
                 mmproj_path=mmproj_path,
             )
         except (ProviderError, OSError):
@@ -367,14 +378,46 @@ def _flash_enabled() -> bool:
     return cfg.flash_attention is not False
 
 
-def _flash_attn_flag() -> str:
+def _fleet_backend() -> str | None:
+    """The engine backend this host plans onto, or ``None`` when unknown.
+
+    Prefers the plan snapshot so a whole planning pass answers consistently, and
+    falls back to the short-TTL read cache rather than a fresh probe.
+    """
+    probe = _plan_probe_store.get()
+    if probe is not None:
+        return probe.devices[0].backend if probe.devices else None
+    try:
+        devices = _read_device_cache.get(resolve_llama_server())
+    except (ProviderError, OSError):
+        return None
+    return devices[0].backend if devices else None
+
+
+def _flash_attention_is_trusted() -> bool:
+    """Whether to ask for flash attention outright rather than let the engine decide.
+
+    Unknown backends answer yes, which keeps every host that works today on the
+    argv it has now; only the backends known to lag get the engine's own auto.
+    """
+    backend = _fleet_backend()
+    return backend is None or backend in _TRUSTED_FLASH_BACKENDS
+
+
+def flash_attn_flag() -> str:
     """``--flash-attn`` argv value for chat and vision."""
-    return _FLASH_ON if _flash_enabled() else _FLASH_OFF
+    if not _flash_enabled():
+        return _FLASH_OFF
+    return _FLASH_ON if _flash_attention_is_trusted() else _FLASH_AUTO
 
 
 def _role_flash(role: WorkerRole) -> bool:
-    """Flash attention applies to chat and vision; embed/rerank run without it."""
-    return role in _FLASH_ROLES and _flash_enabled()
+    """Whether the estimate may assume flash attention for *role*.
+
+    Only a definite ``on``. Under ``auto`` the engine decides at load time, and
+    assuming it would size the KV cache below what the launch may need.
+    """
+    return role in _FLASH_ROLES and flash_attn_flag() == _FLASH_ON
 
 
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
@@ -389,14 +432,29 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
     return resolve_replica_count(role, device_count)
 
 
-def _cache_type_flag() -> str | None:
-    """KV cache type for chat, or ``None`` to leave llama-server's f16 default."""
-    from lilbee.core.config import cfg
+def _role_kv_cache_type_v(role: WorkerRole) -> KvCacheType:
+    """The V cache type for *role*: the configured one only when flash attention is on.
+
+    llama.cpp refuses a quantized V cache without flash attention ("V cache
+    quantization requires flash_attn") and the server never starts, while a
+    quantized K cache needs nothing. So V follows the setting only where flash
+    attention is certain, and is f16 under ``auto`` or ``off``. That costs memory
+    rather than a launch, and the estimate moves with it.
+    """
     from lilbee.core.config.enums import KvCacheType
 
-    if cfg.kv_cache_type is KvCacheType.F16:
-        return None
-    return cfg.kv_cache_type.value
+    configured = _role_kv_cache_type(role)
+    return configured if flash_attn_flag() == _FLASH_ON else KvCacheType.F16
+
+
+def chat_cache_type_flags() -> tuple[str | None, str | None]:
+    """``(--cache-type-k, --cache-type-v)`` for chat; ``None`` leaves the f16 default."""
+    from lilbee.core.config.enums import KvCacheType
+
+    def flag(kind: KvCacheType) -> str | None:
+        return None if kind is KvCacheType.F16 else kind.value
+
+    return flag(_role_kv_cache_type(WorkerRole.CHAT)), flag(_role_kv_cache_type_v(WorkerRole.CHAT))
 
 
 def _vision_mmproj(model_ref: str) -> Path | None:
@@ -456,6 +514,7 @@ def _estimate_role(
         gpu_layers=_role_gpu_layers(role),
         flash_attn=_role_flash(role),
         kv_cache_type=_role_kv_cache_type(role),
+        kv_cache_type_v=_role_kv_cache_type_v(role),
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
     )
@@ -544,6 +603,7 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
             gpu_layers=_role_gpu_layers(role),
             flash_attn=_role_flash(role),
             kv_cache_type=_role_kv_cache_type(role),
+            kv_cache_type_v=_role_kv_cache_type_v(role),
             mmproj_path=mmproj,
             tensor_split=ratio,
             batch_size=_pooled_batch_size(role, _role_rerank_mode(role, meta), ctx),
@@ -584,6 +644,7 @@ def _chat_split_ctx_objective(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=target,
         )
 
@@ -884,6 +945,7 @@ def _launch_for(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
         )
     else:
@@ -909,6 +971,7 @@ def _launch_for(
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
+    cache_type_k, cache_type_v = chat_cache_type_flags() if is_chat else (None, None)
     argv = build_server_argv(
         binary=binary,
         spec=spec,
@@ -919,11 +982,12 @@ def _launch_for(
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
-        flash_attn=_flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
-        cache_type=_cache_type_flag() if is_chat else None,
+        flash_attn=flash_attn_flag() if (is_chat or is_vision or is_llm_rerank) else None,
+        cache_type_k=cache_type_k,
+        cache_type_v=cache_type_v,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
-        threads=(os.cpu_count() or _DEFAULT_THREADS) if is_vision else None,
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
+        device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
     )
     return InstanceLaunch(
         role=plan.role,
@@ -944,22 +1008,38 @@ def _launch_for(
 
 
 def resolve_devices(binary: Path) -> list[FleetDevice]:
-    """Enumerate devices in the binary's index space, or the Vulkan VRAM probe.
+    """Enumerate devices in the binary's index space, or the Vulkan VRAM probe."""
+    return _resolve_devices_and_refusal(binary)[0]
 
-    The binary's ``--list-devices`` is authoritative; when it enumerates nothing,
-    fall back to the Vulkan VRAM probe, which reports the same index space. A
+
+def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]:
+    """:func:`resolve_devices`, plus whether every GPU the engine listed was refused.
+
+    One function because both answers come from one ``--list-devices`` run, and
+    that run costs a subprocess against a driver that may be wedged. Asking twice
+    would pay it twice.
+
+    The binary's ``--list-devices`` is authoritative, including when it lists
+    nothing: it prints every non-CPU device it can use, so an empty list means
+    the engine has no usable GPU rather than that we failed to look. The Vulkan
+    VRAM probe is consulted only when the binary produced no output at all, and
+    it reports the same index space. A
     probe that times out raises instead (a wedged GPU driver); falling through
     to the in-process Vulkan probe there could hang this thread unkillably.
     """
-    from lilbee.providers.fleet.cuda_runtime import assert_cuda_devices_usable
+    from lilbee.providers.fleet.cuda_runtime import assert_gpu_devices_usable
     from lilbee.providers.fleet.gpu_select import enumerate_gpu_vram
 
     probe = probe_devices(binary)
     devices = probe.devices
     # A CUDA build that links a runtime it cannot init a GPU with must fail loud,
     # not silently fall back to CPU (the Vulkan VRAM probe below would mask it).
-    assert_cuda_devices_usable(binary, devices, probe.output)
-    if not devices and model_cache.has_nvidia_gpu():
+    # Only when the engine actually answered, though: a binary that does not
+    # support --list-devices enumerated nothing because it was never asked, and
+    # accusing its driver of failing to initialize would be both wrong and fatal.
+    if probe.spoke_protocol:
+        assert_gpu_devices_usable(binary, devices, probe.output)
+    if not devices and probe.spoke_protocol and model_cache.has_nvidia_gpu():
         log.warning(
             "This host has an NVIDIA GPU but the engine's device probe "
             "(%s --list-devices) reported none; placement is falling back to "
@@ -967,11 +1047,39 @@ def resolve_devices(binary: Path) -> list[FleetDevice]:
             "CUDA_VISIBLE_DEVICES, and that the llama-server build has CUDA support.",
             binary,
         )
-    if not devices:
+    if not devices and not probe.spoke_protocol:
+        # Only when the binary never answered the question. An engine that ran
+        # and listed nothing is reporting a fact, not a gap: believing the host
+        # loader instead invents devices the engine cannot see. A CPU-only build
+        # on a desktop with mesa is the clearest case, and the cost is not merely
+        # a wrong device list. The fleet is planned onto GPUs, the pins are
+        # no-ops, the shared-RAM guard is off because devices looked non-empty,
+        # and every role then loads its full weights into system RAM while
+        # running on the CPU anyway.
+        #
+        # Keyed on the exit code and the header rather than on there being no
+        # output at all: the probe merges stderr into stdout, so a build that
+        # predates --list-devices prints usage text and would otherwise be read
+        # as an authoritative "no GPUs here".
+        from lilbee.providers.fleet.gpu_select import integrated_vulkan_indices
+
+        integrated = integrated_vulkan_indices()
         devices = [
-            FleetDevice("Vulkan", idx, "", vram, vram) for idx, vram in (enumerate_gpu_vram() or [])
+            FleetDevice(
+                VULKAN_BACKEND, idx, "", vram, free, unified=idx in integrated, from_loader=True
+            )
+            for idx, vram, free in (enumerate_gpu_vram() or [])
         ]
-    return devices
+        if devices:
+            log.warning(
+                "The engine's device probe returned nothing, so placement is using "
+                "the host's Vulkan loader instead and found %d device(s). If the "
+                "engine has no Vulkan backend it will run on CPU regardless; set %s "
+                "to override the engine location if that is wrong.",
+                len(devices),
+                "LILBEE_ENGINE_DIR",
+            )
+    return devices, probe.refused_all
 
 
 _DEVICE_PROBE_TTL_S = 2.0
@@ -983,6 +1091,10 @@ _DEVICE_PROBE_FAILURE_TTL_S = 60.0
 
 class _ReadDeviceCache:
     """Short-TTL device-probe cache for the read/view path.
+
+    Not a ``cachetools.TTLCache``: it caches the *failure* too, under its own
+    longer TTL, and re-raises it. A memoizing cache stores return values only,
+    so a failing probe would re-spawn the subprocess on every placement read.
 
     Inspecting placement (GET placement/gpus, preview, ``placement show``)
     resolves devices on every call, which spawns a ``llama-server --list-devices``
@@ -1028,8 +1140,20 @@ _read_device_cache = _ReadDeviceCache(_DEVICE_PROBE_TTL_S, _DEVICE_PROBE_FAILURE
 
 
 def clear_read_device_cache() -> None:
-    """Drop the read-path device probe cache (e.g. after the fleet is reconfigured)."""
+    """Drop the read-path device probe cache (e.g. after the fleet is reconfigured).
+
+    Also drops what the host's Vulkan loader told us about device types, which is
+    otherwise held for the process lifetime and would survive a driver reload or
+    an eGPU being plugged in.
+    """
+    from lilbee.providers.fleet.gpu_select import (
+        integrated_vulkan_indices,
+        vulkan_device_types_by_name,
+    )
+
     _read_device_cache.clear()
+    vulkan_device_types_by_name.cache_clear()
+    integrated_vulkan_indices.cache_clear()
 
 
 @dataclass(frozen=True)
@@ -1049,6 +1173,9 @@ class _PlanProbe:
     devices: tuple[FleetDevice, ...]
     available_vram: int
     free_system: int
+    # The engine listed GPUs and lilbee rejected all of them, so the plan is
+    # CPU-shaped while the engine would still choose one of those devices.
+    engine_devices_all_refused: bool = False
 
 
 class _PlanProbeStore:
@@ -1083,11 +1210,13 @@ def capture_plan_probe() -> None:
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env()
+    devices, refused_all = _resolve_devices_and_refusal(binary)
     _plan_probe_store.set(
         _PlanProbe(
-            devices=tuple(resolve_devices(binary)),
+            devices=tuple(devices),
             available_vram=int(model_cache.get_available_memory(cfg.gpu_memory_fraction)),
             free_system=model_cache.free_system_memory(),
+            engine_devices_all_refused=refused_all,
         )
     )
 
@@ -1095,6 +1224,27 @@ def capture_plan_probe() -> None:
 def clear_plan_probe() -> None:
     """Drop the plan snapshot (full fleet teardown); the next build re-captures."""
     _plan_probe_store.clear()
+
+
+def _cpu_pin_when_every_device_was_refused() -> tuple[str, ...]:
+    """``("none",)`` when the engine offered GPUs that lilbee refused, else empty.
+
+    Dropping a device from lilbee's view does not stop the engine using it. With
+    no pin at all, ggml applies its own selection, and its fallback takes the
+    first non-CPU adapter, which is exactly the paravirtual device just refused;
+    with every layer offloaded by default the model then runs on it while
+    placement budgeted against system RAM. Naming no device keeps the engine on
+    the CPU the plan was shaped for.
+    """
+    probe = _plan_probe_store.get()
+    if probe is None or not probe.engine_devices_all_refused:
+        return ()
+    log.warning(
+        "The engine listed GPU devices that lilbee will not plan onto, so it is being "
+        "run on the CPU. Serving from one of them would be slower than the CPU or fail "
+        "outright, and placement has been sized for system RAM."
+    )
+    return (_NO_DEVICE,)
 
 
 def _plan_devices(binary: Path) -> list[FleetDevice]:
@@ -1130,17 +1280,74 @@ def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
     return weights_bytes <= model_cache.total_system_memory() * fraction
 
 
+def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:
+    """``--device`` names for *devices*, empty when the backend pins through env.
+
+    Vulkan and SYCL, because neither one's environment variable speaks the space
+    the probe enumerated. Vulkan's indexes the raw loader enumeration while the
+    names come from the engine's filtered list, so the two disagree wherever ggml
+    drops or merges a device. SYCL's is not an index list at all but a selector
+    over a backend runtime, so a device the engine calls ``SYCL1`` need not be
+    Level Zero ordinal 1: OpenCL devices interleave, discarded devices shift the
+    numbering, and multi-tile cards appear as sub-devices.
+
+    ``--device`` sidesteps both by naming devices exactly as ``--list-devices``
+    printed them, which is where these indices were read from. CUDA and ROCm
+    keep composing their variables, which do share the probe's space.
+    """
+    if not devices or devices[0].backend not in _NAME_PINNED_BACKENDS:
+        return ()
+    if any(d.from_loader for d in devices):
+        # These indices are raw loader ordinals, and --device speaks the engine's
+        # own post-filter naming, so Vulkan1 here can name Vulkan0 there or
+        # nothing at all. Sizing against them is still worth doing; pinning by
+        # them is not. Left unpinned, ggml applies its own device selection,
+        # which is the filtering lilbee is trying to agree with in the first
+        # place. The env pin is not the answer either: it takes raw ordinals but
+        # switches off the type filter, the support check and the dedup with them.
+        return ()
+    return tuple(f"{d.backend}{d.index}" for d in devices)
+
+
 def _unified_memory_budget(devices: list[FleetDevice]) -> int | None:
-    """Shared-RAM placement budget (free RAM minus the OS floor) when there is no
-    discrete GPU, else ``None``. Discrete GPUs load into dedicated VRAM, so system
-    RAM is not the constraint there."""
-    if devices:
+    """Shared-RAM placement budget (free RAM minus the OS floor), or ``None``.
+
+    ``None`` once any device has memory of its own, since dedicated VRAM is the
+    constraint there rather than system RAM. A host whose only devices are
+    integrated, and a host with no devices at all, both stay inside the system
+    budget: their GPU memory is the system's memory.
+    """
+    # Only a device with memory of its own lifts the system-RAM constraint. An
+    # integrated GPU or an Apple Silicon Mac reports a slice of the same RAM the
+    # OS is using, so treating its total as headroom over-commits the machine by
+    # roughly the whole system footprint.
+    if any(not device.unified for device in devices):
         return None
     floor = min(
         _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
         model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
     )
     return max(0, _plan_free_system_memory() - floor)
+
+
+def _unified_admission_budget(devices: list[FleetDevice]) -> int | None:
+    """Shared-RAM pool a role set is *admitted* against, or ``None`` if dedicated.
+
+    Total installed RAM minus the OS floor, not what happens to be free. Sizing
+    asks a different question and keeps using free RAM: how much context can be
+    backed right now. Admission asks whether the machine can host this fleet at
+    all, and the plan defines the whole intended residency, so charging it
+    against a live figure refuses a 600 MB model on a box that is merely busy at
+    the moment, which is what happened. The GPU path already charges total
+    capacity for exactly this reason.
+    """
+    if _unified_memory_budget(devices) is None:
+        return None
+    floor = min(
+        _SYSTEM_MEMORY_FLOOR_CAP_BYTES,
+        model_cache.total_system_memory() // _SYSTEM_MEMORY_FLOOR_DIVISOR,
+    )
+    return max(0, model_cache.total_system_memory() - floor)
 
 
 def _resolve_placement(
@@ -1213,7 +1420,11 @@ def resolve_placement_plan(placement: PlacementSpec | None) -> ResolvedPlacement
         None, unified_budget=unified_budget, total_vram=sum(d.total_bytes for d in devices)
     )
     resolved = _resolve_placement(
-        placement, inputs, model_refs, devices, unified_budget=unified_budget
+        placement,
+        inputs,
+        model_refs,
+        devices,
+        unified_budget=_unified_admission_budget(devices),
     )
     return ResolvedPlacement(
         devices=tuple(devices),
@@ -1285,7 +1496,13 @@ def plan_launches(
         total_vram=sum(d.total_bytes for d in devices),
     )
     spec = PlacementSpec.from_json(cfg.placement) if cfg.placement else None
-    placement = _resolve_placement(spec, inputs, model_refs, devices, unified_budget=unified_budget)
+    placement = _resolve_placement(
+        spec,
+        inputs,
+        model_refs,
+        devices,
+        unified_budget=_unified_admission_budget(devices),
+    )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
     return FleetPlan(

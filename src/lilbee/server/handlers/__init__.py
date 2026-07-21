@@ -40,7 +40,7 @@ from lilbee.server.handlers.ingest import (
     import_stream,
     sync_stream,
     validate_add_paths,
-    validate_uploads,
+    validate_upload_names,
 )
 from lilbee.server.handlers.models import (
     TASK_ENDPOINT_PATH,
@@ -75,13 +75,14 @@ from lilbee.server.handlers.sse import (
     sse_event,
 )
 from lilbee.server.models import (
-    GpuInfoResponse,
+    GpusResponse,
     HealthResponse,
     PlacementResponse,
     StatusResponse,
 )
 
 if TYPE_CHECKING:
+    from lilbee.app.placement import GpuInfo, PlacementView
     from lilbee.providers.base import LLMProvider
 
 # How often the warm stream re-snapshots provider state; sub-second so the read
@@ -158,30 +159,34 @@ _GPU_STATS_INTERVAL_S = 1.0
 
 
 async def gpu_stats_stream(
-    devices: Sequence[object],
+    devices: Sequence[GpuInfo],
     interval_s: float = _GPU_STATS_INTERVAL_S,
     max_ticks: int | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream live per-GPU utilization + free memory as SSE for the placement view.
 
     Devices are resolved by the caller before the stream starts so a ProviderError
-    surfaces as a 503 at route time, not mid-stream. Each tick only runs the light
-    per-vendor utilization probe (nvidia-smi, amd-smi, xpu-smi, or ioreg). The
-    client keeps the stream open while visible; ``max_ticks`` bounds it for tests.
-    A heartbeat is emitted every ``cfg.sse_heartbeat_interval`` seconds of idle so
-    clients don't time out.
+    surfaces as a 503 at route time, not mid-stream. The client keeps the stream
+    open while visible; ``max_ticks`` bounds it for tests. A heartbeat is emitted
+    every ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
+
+    The per-vendor probe runs on a worker thread, not here. It is not light: every
+    backend shells out to an SMI tool with a five-second timeout, and the Intel
+    paths sleep and scan /proc on top of that. Driven inline it held the event
+    loop for the whole subprocess on every tick, once per connected client, which
+    stalls chat, search and embedding requests along with it.
     """
     from lilbee.cli.tui import messages as msg
-    from lilbee.providers.fleet.gpu_stats import intel_grant_binary, probe_gpu_stats
+    from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats_shared
 
     last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
-        stats = probe_gpu_stats(devices)  # type: ignore[arg-type]
+        stats = await asyncio.to_thread(probe_gpu_stats_shared, devices)
         payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
-        binary = intel_grant_binary(devices, stats)  # type: ignore[arg-type]
-        if binary:
-            payload["notice"] = msg.FLEET_INTEL_UTIL_GRANT.format(binary=binary)
+        hint = intel_util_hint(devices, stats)
+        if hint:
+            payload["notice"] = msg.intel_util_hint_text(hint)
         yield sse_event(SseEvent.GPU_STATS, payload)
         tick += 1
         if max_ticks is None or tick < max_ticks:
@@ -203,16 +208,16 @@ async def placement() -> PlacementResponse:
     """Current effective placement."""
     from lilbee.app.placement import get_placement
 
-    return PlacementResponse.from_view(get_placement())
+    return _placement_response(get_placement())
 
 
 async def placement_preview(spec_json: str | None) -> PlacementResponse:
-    """Preview a candidate spec (or auto when spec_json is None). No persistence."""
+    """Preview a candidate spec (or auto when no spec). No persistence."""
     from lilbee.app.placement import preview_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
     spec = PlacementSpec.from_json(spec_json) if spec_json else None
-    return PlacementResponse.from_view(preview_placement(spec))
+    return _placement_response(preview_placement(spec))
 
 
 async def placement_set(spec_json: str) -> PlacementResponse:
@@ -220,21 +225,41 @@ async def placement_set(spec_json: str) -> PlacementResponse:
     from lilbee.app.placement import set_placement
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
-    return PlacementResponse.from_view(set_placement(PlacementSpec.from_json(spec_json)))
+    return _placement_response(set_placement(PlacementSpec.from_json(spec_json)))
 
 
 async def placement_clear() -> PlacementResponse:
     """Clear manual placement; returns to the auto planner and rebuilds the fleet."""
     from lilbee.app.placement import set_placement
 
-    return PlacementResponse.from_view(set_placement(None))
+    return _placement_response(set_placement(None))
 
 
-async def gpus() -> list[GpuInfoResponse]:
-    """Detected GPUs with free/total VRAM."""
+def _placement_response(view: PlacementView) -> PlacementResponse:
+    """Serialize a placement view with the host-level Intel util notice attached."""
+    resp = PlacementResponse.from_view(view)
+    resp.notice = _intel_notice_text(view.gpus)
+    return resp
+
+
+def _intel_notice_text(devices: Sequence[GpuInfo]) -> str | None:
+    """Formatted Intel util fix for the JSON surfaces, or None when util reads fine."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
+
+    hint = probe_intel_util_hint(devices)
+    return msg.intel_util_hint_text(hint) if hint else None
+
+
+async def gpus() -> GpusResponse:
+    """Detected GPUs with free/total VRAM, plus the host-level Intel util notice."""
     from lilbee.app.placement import get_placement
 
-    return PlacementResponse.from_view(get_placement()).gpus
+    view = get_placement()
+    return GpusResponse(
+        gpus=PlacementResponse.from_view(view).gpus,
+        notice=_intel_notice_text(view.gpus),
+    )
 
 
 __all__ = [
@@ -284,6 +309,6 @@ __all__ = [
     "sync_stream",
     "update_config",
     "validate_add_paths",
-    "validate_uploads",
+    "validate_upload_names",
     "warm_stream",
 ]

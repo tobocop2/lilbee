@@ -20,6 +20,7 @@ from lilbee.data.store import (
     scope_to_chunk_type,
 )
 from lilbee.runtime.lock import write_lock
+from tests._mock_effects import repeat_last
 
 
 @pytest.fixture()
@@ -2282,7 +2283,7 @@ class TestEmbeddingModelGate:
             "schema_version": 1,
             "updated_at": "2026-04-26T00:00:00+00:00",
         }
-        with mock.patch.object(store, "get_meta", side_effect=[None, winning_meta]):
+        with mock.patch.object(store, "get_meta", side_effect=repeat_last(None, winning_meta)):
             assert store.initialize_meta_if_legacy() is False
 
 

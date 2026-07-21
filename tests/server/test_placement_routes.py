@@ -58,11 +58,11 @@ def test_delete_refused_on_daemon():
 
 def test_placement_routes_require_auth():
     """No placement route is read-only: they all run subprocess device probes."""
-    from lilbee.server.auth import is_read_only
+    from lilbee.server.auth import authenticates_itself
 
-    assert not is_read_only(placement_preview_route.fn)
-    assert not is_read_only(placement_route.fn)
-    assert not is_read_only(gpus_route.fn)
+    assert not authenticates_itself(placement_preview_route.fn)
+    assert not authenticates_itself(placement_route.fn)
+    assert not authenticates_itself(gpus_route.fn)
 
 
 def test_preview_provider_error_returns_503(monkeypatch):
@@ -242,25 +242,29 @@ def test_delete_provider_error_returns_503_when_enabled(monkeypatch):
 
 
 def test_get_gpus(monkeypatch):
-    from lilbee.server.models import GpuInfoResponse
+    from lilbee.server.models import GpuInfoResponse, GpusResponse
 
     async def _gpus():
-        return [
-            GpuInfoResponse(
-                index=0,
-                backend="CUDA",
-                label="CUDA0",
-                name="A100",
-                total_bytes=80 * GIB,
-                free_bytes=72 * GIB,
-            )
-        ]
+        return GpusResponse(
+            gpus=[
+                GpuInfoResponse(
+                    index=0,
+                    backend="CUDA",
+                    label="CUDA0",
+                    name="A100",
+                    total_bytes=80 * GIB,
+                    free_bytes=72 * GIB,
+                )
+            ],
+            notice="INSTALL HINT",
+        )
 
     monkeypatch.setattr(handlers, "gpus", _gpus)
     with create_test_client([gpus_route]) as client:
         r = client.get("/api/gpus")
         assert r.status_code == 200
-        assert r.json()[0]["label"] == "CUDA0"
+        assert r.json()["gpus"][0]["label"] == "CUDA0"
+        assert r.json()["notice"] == "INSTALL HINT"
 
 
 def test_gpu_stats_stream_provider_error_returns_503(monkeypatch):
@@ -294,3 +298,64 @@ def test_gpu_stats_stream_streams_events(monkeypatch):
         r = client.get("/api/gpus/stream")
         assert r.status_code == 200
         assert "text/event-stream" in r.headers["content-type"]
+
+
+def test_gpu_stats_stream_probes_off_the_event_loop(monkeypatch):
+    """get_placement spawns subprocess device probes; a wedged driver must not
+    stall every other request, so the probe runs in a worker thread."""
+    import threading
+
+    import lilbee.app.placement as placement_mod
+    from lilbee.app.placement import PlacementView
+
+    view = PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
+    probe_tid: list[int] = []
+    loop_tid: list[int] = []
+
+    def _probe():
+        probe_tid.append(threading.get_ident())
+        return view
+
+    async def _fake_stream(devices):
+        # The generator runs on the event loop, so this is the loop's thread.
+        loop_tid.append(threading.get_ident())
+        yield "event: gpu_stats\ndata: {}\n\n"
+
+    monkeypatch.setattr(placement_mod, "get_placement", _probe)
+    monkeypatch.setattr(handlers, "gpu_stats_stream", _fake_stream)
+    with create_test_client([gpu_stats_stream_route]) as client:
+        r = client.get("/api/gpus/stream")
+        assert r.status_code == 200
+    assert probe_tid and loop_tid and probe_tid[0] != loop_tid[0]
+
+
+def test_probe_oserror_is_service_unavailable_not_unprocessable(monkeypatch):
+    """A missing vendor tool is a host fault, not a bad spec.
+
+    FileNotFoundError (no nvidia-smi on PATH) and PermissionError (device node)
+    were bundled with PlacementError into a 422, which sends the caller looking
+    for a mistake in JSON that is fine.
+    """
+
+    async def _boom(_spec):
+        raise FileNotFoundError(2, "No such file or directory", "nvidia-smi")
+
+    monkeypatch.setattr(handlers, "placement_preview", _boom)
+    with create_test_client([placement_preview_route]) as client:
+        r = client.post("/api/placement/preview", json={"spec": None})
+    assert r.status_code == 503
+    assert "nvidia-smi" in r.text or "probe" in r.text.lower()
+
+
+def test_put_probe_oserror_is_service_unavailable_when_enabled(monkeypatch):
+    """The apply route maps a failed probe the same way preview does."""
+    _enable_http_placement(monkeypatch)
+
+    async def _boom(_spec):
+        raise PermissionError(13, "Permission denied", "/dev/nvidia0")
+
+    monkeypatch.setattr(handlers, "placement_set", _boom)
+    with create_test_client([placement_set_route]) as client:
+        r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
+    assert r.status_code == 503
+    assert "probe" in r.text.lower() or "nvidia-smi" in r.text

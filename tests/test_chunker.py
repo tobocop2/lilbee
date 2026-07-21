@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.data.chunk import chunk_text
+from tests._mock_effects import repeat_last
 
 
 @dataclass
@@ -404,7 +405,9 @@ class Greeter:
         from lilbee.data.code_chunker import PackConfig, _ensure_language
 
         with (
-            patch("lilbee.data.code_chunker.has_language", side_effect=[False, True]) as has,
+            patch(
+                "lilbee.data.code_chunker.has_language", side_effect=repeat_last(False, True)
+            ) as has,
             patch("lilbee.data.code_chunker.init") as init_mock,
         ):
             assert _ensure_language("python") is True

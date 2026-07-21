@@ -2098,8 +2098,7 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        h._hosted_cache.set("", [])  # prime then clear to defeat any prior TTL entry
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2149,7 +2148,7 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
         monkeypatch.setattr(
             h,
@@ -2172,7 +2171,7 @@ class TestHostedCatalogEntries:
         from lilbee.catalog.types import ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         calls = {"n": 0}
 
         def _discover():
@@ -2258,7 +2257,7 @@ class TestModelsCatalog:
         """
         import lilbee.server.handlers.models as h
 
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(h, "discover_api_models", lambda: {})
         monkeypatch.setattr(h, "classify_all_remote_models", lambda *a, **k: [])
 
@@ -2283,7 +2282,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2303,7 +2302,10 @@ class TestModelsCatalog:
         frontier = [m for m in resp.models if m.source == ModelSource.FRONTIER]
         assert frontier and frontier[0].display_name == "gemini-2.0-flash"
         assert frontier[0].key_status == "ready"
-        assert resp.total == 1  # 0 native + 1 hosted
+        # total describes the paginated native listing only. Counting the
+        # first-page-only hosted overlay into it made page 1 report a larger
+        # total than page 2 of the same listing.
+        assert resp.total == 0
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_hosted_skipped_when_featured_filter(
@@ -2316,7 +2318,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2344,7 +2346,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=20, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2374,7 +2376,7 @@ class TestModelsCatalog:
 
         mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
-        h._hosted_cache._result = None
+        h._hosted_cache.clear()
         monkeypatch.setattr(
             h,
             "discover_api_models",
@@ -2837,6 +2839,69 @@ class TestModelsInstalled:
         assert result.models[0].source == "lm_studio"
 
 
+def _thread_recorder(result):
+    """Stand in for a blocking call, recording which thread each call ran on.
+
+    Returns ``(threads, stub)``. Takes any signature so it can replace whichever
+    blocking function the test is offloading.
+    """
+    import threading
+
+    threads: list[int] = []
+
+    def stub(*_args, **_kwargs):
+        threads.append(threading.get_ident())
+        return result
+
+    return threads, stub
+
+
+class TestModelHandlersRunBlockingWorkOffLoop:
+    """Backend model discovery/show do blocking HTTP; they must not run inline.
+
+    A slow or unreachable Ollama/LM Studio endpoint would otherwise stall every
+    other request on the single event loop for the HTTP timeout.
+    """
+
+    async def test_set_model_runs_list_models_off_the_loop(self, tmp_path, mock_svc):
+        import threading
+
+        loop_tid = threading.get_ident()
+        threads, stub = _thread_recorder([_CHAT_REF])
+        mock_svc.provider.list_models.side_effect = stub
+
+        await handlers.set_chat_model(_CHAT_REF)
+
+        assert threads and all(tid != loop_tid for tid in threads)
+
+    async def test_models_show_runs_off_the_loop(self, mock_svc):
+        import threading
+
+        loop_tid = threading.get_ident()
+        threads, stub = _thread_recorder({})
+        mock_svc.provider.show_model.side_effect = stub
+
+        await handlers.models_show("ollama/qwen3:0.6b")
+
+        assert threads and threads[0] != loop_tid
+
+    async def test_models_installed_runs_off_the_loop(self):
+        import threading
+
+        loop_tid = threading.get_ident()
+        threads, stub = _thread_recorder([])
+        mock_manager = MagicMock()
+        mock_manager.list_installed.side_effect = stub
+
+        with patch(
+            "lilbee.server.handlers.models.get_services",
+            return_value=MagicMock(model_manager=mock_manager),
+        ):
+            await handlers.models_installed()
+
+        assert threads and threads[0] != loop_tid
+
+
 class TestModelsPull:
     async def test_yields_progress_events_native(self):
         mock_manager = MagicMock()
@@ -2869,18 +2934,30 @@ class TestModelsPull:
         assert any("error" in e and "fail" in e for e in non_empty)
 
     async def test_cancel_stops_pull(self, caplog):
-        """Closing the pull generator mid-stream sets cancel and logs."""
+        """A disconnect aborts the download, it does not just silence progress.
+
+        The pull runs in a worker thread that asyncio cannot interrupt, so the
+        progress callback is the only way in. It used to return quietly on
+        cancel, leaving a multi-GB download running for a client that had gone.
+        """
         import threading
 
+        from lilbee.runtime.cancellation import TaskCancelledError
+
         barrier = threading.Event()
+        finished_whole_download = threading.Event()
+        aborted: list[bool] = []
         mock_manager = MagicMock()
 
         def blocking_pull(model, source, *, on_bytes=None, allow_unsupported=False):
-            if on_bytes:
-                on_bytes(100, 1000)
+            on_bytes(100, 1000)
             barrier.wait(timeout=2)
-            if on_bytes:
+            try:
                 on_bytes(1000, 1000)
+            except TaskCancelledError:
+                aborted.append(True)
+                raise
+            finished_whole_download.set()
 
         mock_manager.pull.side_effect = blocking_pull
         caplog.set_level(logging.INFO, logger="lilbee.server.handlers")
@@ -2894,9 +2971,13 @@ class TestModelsPull:
                     await gen.aclose()
                     barrier.set()
                     break
-            await asyncio.sleep(0.05)
+            for _ in range(200):
+                if aborted or finished_whole_download.is_set():
+                    break
+                await asyncio.sleep(0.01)
 
-        assert any("Model pull stream cancelled by client" in r.message for r in caplog.records)
+        assert aborted == [True], "the progress callback must abort the pull, not return"
+        assert not finished_whole_download.is_set(), "the download ran to completion after cancel"
 
 
 class TestModelsDelete:
@@ -3756,6 +3837,24 @@ class TestClassifyLoadError:
         assert code == SseErrorCode.MODEL_TOO_LARGE
         assert user_message == "Model too large for available RAM"
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "llama_context: n_ctx_per_seq (8192) > n_ctx_train (4096)",
+            "llama_context: KV cache type not supported",
+            "llama_context: invalid sequence configuration",
+        ],
+    )
+    def test_context_diagnostics_are_not_reported_as_out_of_memory(self, message):
+        """llama_context prefixes a whole family of context diagnostics.
+
+        Matching the bare prefix told users to pick a smaller model when the
+        real fix is a config change, and hid the message that said so.
+        """
+        code, text = handlers.classify_load_error(message)
+        assert code is None
+        assert "too large" not in text.lower()
+
     def test_llama_context_signature_is_classified(self):
         code, _ = handlers.classify_load_error("llama_context: failed to allocate")
         assert code == SseErrorCode.MODEL_TOO_LARGE
@@ -3944,9 +4043,9 @@ class TestListExternalModels:
         """Reset the external models cache before each test."""
         from lilbee.server.handlers import models as h
 
-        h._external_cache = h._ExternalModelsCache()
+        h._external_cache.clear()
         yield
-        h._external_cache = h._ExternalModelsCache()
+        h._external_cache.clear()
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_returns_provider_models(self, mock_svc):
@@ -3971,17 +4070,29 @@ class TestListExternalModels:
         assert result1.models == ["model-a"]
         mock_svc.return_value.provider.list_models.assert_called_once()
 
-    @patch("lilbee.server.handlers.models.time")
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_cache_expires(self, mock_svc, mock_time):
-        mock_svc.return_value.provider.list_models.return_value = ["model-a"]
-        mock_time.monotonic.return_value = 0.0
-        await handlers.list_external_models()
+    async def test_cache_expires(self, mock_svc):
+        """Drives the cache's own clock rather than patching the module's, which
+        the store no longer reads: cachetools takes its timer at construction."""
+        from cachetools import TTLCache
 
-        mock_time.monotonic.return_value = 61.0
-        await handlers.list_external_models()
+        from lilbee.server.handlers import models as h
 
-        assert mock_svc.return_value.provider.list_models.call_count == 2
+        now = {"t": 0.0}
+        original = h._external_cache
+        h._external_cache = TTLCache(maxsize=1, ttl=h._EXTERNAL_MODELS_TTL, timer=lambda: now["t"])
+        try:
+            mock_svc.return_value.provider.list_models.return_value = ["model-a"]
+            await handlers.list_external_models()
+            now["t"] = h._EXTERNAL_MODELS_TTL - 1
+            await handlers.list_external_models()
+            assert mock_svc.return_value.provider.list_models.call_count == 1, "still fresh"
+
+            now["t"] = h._EXTERNAL_MODELS_TTL + 1
+            await handlers.list_external_models()
+            assert mock_svc.return_value.provider.list_models.call_count == 2
+        finally:
+            h._external_cache = original
 
     @patch("lilbee.server.handlers.models.get_services")
     async def test_cache_invalidates_on_config_change(self, mock_svc):
@@ -4234,18 +4345,27 @@ class TestAddHandlerCancel:
 
 
 class TestModelPullProgressCancel:
-    async def test_cancel_during_pull_skips_later_progress(self):
-        """When cancel is set before pull starts, all progress calls return early."""
+    async def test_cancel_during_pull_aborts_and_emits_no_progress(self):
+        """Cancel set before the pull starts aborts it at the first callback.
+
+        The callback used to return quietly, which emitted nothing but let the
+        download run on. It now raises, so the worker stops as well.
+        """
         import threading
+
+        from lilbee.runtime.cancellation import TaskCancelledError
 
         mock_manager = MagicMock()
         progress_called = threading.Event()
+        aborted = threading.Event()
 
         def fake_pull(model, source, *, on_bytes=None, allow_unsupported=False):
-            if on_bytes:
-                # All progress calls should see cancel already set
+            progress_called.set()
+            try:
                 on_bytes(500, 1000)
-                progress_called.set()
+            except TaskCancelledError:
+                aborted.set()
+                raise
 
         mock_manager.pull.side_effect = fake_pull
 
@@ -4270,7 +4390,8 @@ class TestModelPullProgressCancel:
             # Wait for the pull thread to complete
             await asyncio.sleep(0.2)
 
-        assert progress_called.is_set()  # Pull did call on_bytes
+        assert progress_called.is_set(), "the pull should have started"
+        assert aborted.is_set(), "the callback must abort the pull, not return"
         assert not any("current" in e for e in events if e)
 
 
@@ -4557,6 +4678,20 @@ class TestSourceContentRoute:
         assert resp.headers["content-type"].startswith("application/octet-stream")
         assert "attachment" in resp.headers["content-disposition"]
 
+    @pytest.mark.parametrize("content_type", ["text/xml", "application/xml"])
+    def test_xml_is_never_rendered_inline(self, content_type):
+        """XML can carry an xml-stylesheet PI whose XSLT emits script.
+
+        Asserted on the predicate rather than through a ``.xml`` file because
+        the extension's Content-Type comes from the host mimetypes database:
+        it resolves to ``application/xml`` here, which already degrades, but a
+        host whose database says ``text/xml`` would have matched the ``text/``
+        category and rendered. The verdict must not depend on the host.
+        """
+        from lilbee.server.handlers.documents import _is_safe_for_inline_render
+
+        assert _is_safe_for_inline_render(content_type) is False
+
     async def test_raw_svg_source_forces_octet_stream_attachment(self, isolated_env):
         """SVG can carry script; not in the allowlist → forced to octet-stream."""
         from litestar.testing import AsyncTestClient
@@ -4672,6 +4807,20 @@ class TestPlacementHandlers:
         assert resp.manual is False
         assert resp.gpus == []
         assert resp.roles == []
+        assert resp.notice is None
+
+    async def test_placement_includes_intel_notice_when_hint_fires(self):
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+        view = _stub_placement_view()
+        hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
+        with (
+            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
+        ):
+            resp = await handlers.placement()
+        assert resp.notice is not None
+        assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in resp.notice
 
     async def test_placement_surfaces_co_tenant_roles(self):
         # Co-tenants are placed but not co-resident; a surface that omits them
@@ -4718,7 +4867,7 @@ class TestPlacementHandlers:
         assert resp.manual is False
         mock_set.assert_called_once_with(None)
 
-    async def test_gpus_returns_list(self):
+    async def test_gpus_returns_envelope(self):
         from lilbee.app.placement import GpuInfo, PlacementView
 
         gpu = GpuInfo(
@@ -4732,19 +4881,55 @@ class TestPlacementHandlers:
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
         with patch("lilbee.app.placement.get_placement", return_value=view):
             result = await handlers.gpus()
-        assert len(result) == 1
-        assert result[0].name == "A100"
+        assert len(result.gpus) == 1
+        assert result.gpus[0].name == "A100"
+        assert result.notice is None
+
+    async def test_gpus_includes_intel_notice_when_hint_fires(self):
+        from lilbee.app.placement import GpuInfo, PlacementView
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
+        hint = IntelUtilHint(IntelHintKind.INSTALL, None)
+        with (
+            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
+        ):
+            result = await handlers.gpus()
+        assert result.notice is not None
+        assert "igt-gpu-tools" in result.notice
 
     async def test_gpu_stats_stream_emits_live_snapshots(self):
         from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet import gpu_stats as gpu_stats_mod
         from lilbee.providers.fleet.gpu_stats import GpuStat
 
         gpu = GpuInfo(
             index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
         )
         stat = {0: GpuStat(0, 64, 150, 200)}
+        # Ticking faster than the shared-sample TTL is not what a client does;
+        # the stream interval is a second and the TTL is just under it, so every
+        # tick of one stream is a fresh reading. Zero the TTL to keep that true
+        # for a test that ticks immediately.
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(gpu_stats_mod, "_SHARED_SAMPLE_TTL_S", 0.0)
+        monkeypatch.setattr(gpu_stats_mod, "_shared_sample", {})
         with patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat) as probe:
-            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=2)]
+            try:
+                chunks = [
+                    c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=2)
+                ]
+            finally:
+                monkeypatch.undo()
         events = [
             json.loads(line[len("data:") :].strip())
             for chunk in chunks
@@ -4765,8 +4950,60 @@ class TestPlacementHandlers:
         }
         assert probe.call_count == 2
 
+    async def test_concurrent_viewers_share_one_probe(self):
+        """The probe shells out to a vendor SMI tool with a five-second timeout.
+
+        Without coalescing, N open placement views meant N concurrent
+        subprocesses per tick against the same hardware.
+        """
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet import gpu_stats as gpu_stats_mod
+        from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats_shared
+
+        gpu = GpuInfo(
+            index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
+        )
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(gpu_stats_mod, "_shared_sample", {})
+        with patch(
+            "lilbee.providers.fleet.gpu_stats.probe_gpu_stats",
+            return_value={0: GpuStat(0, 64, 150, 200)},
+        ) as probe:
+            try:
+                for _ in range(5):
+                    probe_gpu_stats_shared((gpu,))
+            finally:
+                monkeypatch.undo()
+
+        assert probe.call_count == 1
+
+    async def test_a_one_shot_caller_is_never_served_a_stale_sample(self):
+        """probe_gpu_stats stays uncached; only the stream path coalesces."""
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet import gpu_stats as gpu_stats_mod
+        from lilbee.providers.fleet.gpu_stats import GpuStat, probe_gpu_stats_shared
+
+        gpu = GpuInfo(
+            index=0, backend="CUDA", label="CUDA0", name="A40", total_bytes=200, free_bytes=200
+        )
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(gpu_stats_mod, "_SHARED_SAMPLE_TTL_S", 0.0)
+        monkeypatch.setattr(gpu_stats_mod, "_shared_sample", {})
+        with patch(
+            "lilbee.providers.fleet.gpu_stats.probe_gpu_stats",
+            return_value={0: GpuStat(0, 64, 150, 200)},
+        ) as probe:
+            try:
+                probe_gpu_stats_shared((gpu,))
+                probe_gpu_stats_shared((gpu,))
+            finally:
+                monkeypatch.undo()
+
+        assert probe.call_count == 2
+
     async def test_gpu_stats_stream_includes_intel_grant_notice(self):
         from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
         from lilbee.providers.fleet.gpu_stats import GpuStat
 
         gpu = GpuInfo(
@@ -4778,12 +5015,10 @@ class TestPlacementHandlers:
             free_bytes=200,
         )
         stat = {0: GpuStat(0, None, 200, 200)}
+        hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
         with (
             patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
-            patch(
-                "lilbee.providers.fleet.gpu_stats.intel_grant_binary",
-                return_value="/usr/bin/intel_gpu_top",
-            ),
+            patch("lilbee.providers.fleet.gpu_stats.intel_util_hint", return_value=hint),
         ):
             chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
         events = [
@@ -4793,6 +5028,34 @@ class TestPlacementHandlers:
             if line.startswith("data:")
         ]
         assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in events[0]["notice"]
+
+    async def test_gpu_stats_stream_includes_intel_install_notice(self):
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        stat = {0: GpuStat(0, None, 200, 200)}
+        hint = IntelUtilHint(IntelHintKind.INSTALL, None)
+        with (
+            patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
+            patch("lilbee.providers.fleet.gpu_stats.intel_util_hint", return_value=hint),
+        ):
+            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
+        events = [
+            json.loads(line[len("data:") :].strip())
+            for chunk in chunks
+            for line in chunk.splitlines()
+            if line.startswith("data:")
+        ]
+        assert "igt-gpu-tools" in events[0]["notice"]
 
     async def test_gpu_stats_stream_emits_heartbeat_when_interval_elapsed(self):
         """A heartbeat event is emitted when the configured interval elapses."""
@@ -4833,3 +5096,61 @@ class TestPlacementHandlers:
         event_names = [line.split(":", 1)[1].strip() for line in event_lines]
         assert SseEvent.GPU_STATS in event_names
         assert SseEvent.HEARTBEAT in event_names
+
+
+class TestSseQueueEviction:
+    """The cap only holds if eviction can find the progress events it may shed."""
+
+    def _queue(self, max_events: int = 4):
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        return SseEventQueue(max_events=max_events)
+
+    def test_progress_behind_a_token_is_still_evictable(self):
+        """Head-only eviction gave up whenever a token reached the front.
+
+        A real stream interleaves the two, so the head is non-droppable almost
+        immediately and the queue grew past its cap while still holding
+        progress events it was allowed to drop.
+        """
+        from lilbee.runtime.progress import EventType
+
+        queue = self._queue(max_events=3)
+        queue.put_nowait("token-1")
+        queue.put_event_nowait("progress-1", EventType.EMBED)
+        queue.put_event_nowait("progress-2", EventType.EMBED)
+
+        queue.put_nowait("token-2")
+
+        assert queue.qsize() == 3
+        assert queue.dropped_events == 1
+        # The shed one is the oldest progress, not the token at the head.
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert drained == ["token-1", "progress-2", "token-2"]
+
+    def test_incoming_progress_is_dropped_when_nothing_is_shedable(self):
+        """With the queue full of tokens there is no progress to shed, so the
+        arriving progress event is the one that goes."""
+        from lilbee.runtime.progress import EventType
+
+        queue = self._queue(max_events=2)
+        queue.put_nowait("token-1")
+        queue.put_nowait("token-2")
+
+        queue.put_event_nowait("progress-1", EventType.EMBED)
+
+        assert queue.qsize() == 2
+        assert queue.dropped_events == 1
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert drained == ["token-1", "token-2"]
+
+    def test_always_delivered_events_are_never_shed(self):
+        """done/error/sentinel must land even when nothing is droppable."""
+        queue = self._queue(max_events=2)
+        queue.put_nowait("token-1")
+        queue.put_nowait("token-2")
+        queue.put_nowait("done")
+
+        drained = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert drained == ["token-1", "token-2", "done"]
+        assert queue.dropped_events == 0

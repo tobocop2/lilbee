@@ -12,15 +12,21 @@ line; this file is not touched.
 
 from __future__ import annotations
 
+import os
+import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from lilbee.providers.fleet.gpu_backends import (
+    IntelUtilHint,
     UtilSample,
-    intel_gpu_top_grant_binary,
     resolve_backend,
     util_backend_name,
+)
+from lilbee.providers.fleet.gpu_backends import (
+    intel_util_hint as _detect_intel_util_hint,
 )
 
 
@@ -64,6 +70,73 @@ def _safe_sample(
         return {}
 
 
+# One in-flight probe per device set, shared by every concurrent caller. The
+# probe shells out to a vendor SMI tool (five-second timeout) and the Intel paths
+# sleep and scan /proc on top, so N open placement views would otherwise mean N
+# concurrent subprocesses every tick against the same hardware. A sample is
+# reused for slightly under one tick, which is fresh enough for a live view and
+# turns the per-client cost back into a per-machine one.
+_SHARED_SAMPLE_TTL_S = 0.9
+_shared_lock = threading.Lock()
+_shared_sample: dict[tuple[int, ...], tuple[float, dict[int, GpuStat]]] = {}
+
+
+def probe_gpu_stats_shared(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
+    """``probe_gpu_stats``, coalesced across concurrent callers.
+
+    Callers arriving while a sample is fresh reuse it; the rest serialise on the
+    lock so exactly one probe runs per device set per interval, rather than one
+    per subscriber. Kept separate from ``probe_gpu_stats`` so one-shot callers
+    still get an uncached reading.
+    """
+    key = tuple(sorted(d.index for d in devices))
+    with _shared_lock:
+        cached = _shared_sample.get(key)
+        if cached is not None and time.monotonic() - cached[0] < _SHARED_SAMPLE_TTL_S:
+            return cached[1]
+        stats = probe_gpu_stats(devices)
+        _shared_sample[key] = (time.monotonic(), stats)
+        return stats
+
+
+# Which visible-devices variable masks each util backend's index space. The
+# engine numbers its devices after the mask, the SMI tools before it, so under
+# CUDA_VISIBLE_DEVICES=2,3 the fleet holds devices 0 and 1 while nvidia-smi keeps
+# reporting 0..3. Merging those two spaces by ordinal attributes another
+# tenant's cards' utilization, temperature and free memory to this fleet.
+_BACKEND_VISIBLE_VARS: dict[str, tuple[str, ...]] = {
+    "CUDA": ("CUDA_VISIBLE_DEVICES",),
+    # Innermost mask first. ROCr filters, then HIP re-indexes within the
+    # survivors, so walking outward from the fleet's index means undoing HIP
+    # before ROCr.
+    "ROCm": ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"),
+    "HIP": ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"),
+}
+
+
+def _physical_index(backend_name: str, fleet_index: int) -> int:
+    """The index the vendor's SMI tool uses for the fleet's device *fleet_index*.
+
+    Resolved by walking the visible-devices masks outward from the fleet's own
+    index, undoing each one in the reverse of the order the runtime applied it.
+
+    An unset mask, a mask naming devices by UUID, or a backend with no mask
+    leaves the index unchanged, which is what every unmasked host has today.
+    Intel is absent: ONEAPI_DEVICE_SELECTOR is a selector grammar rather than an
+    index list, and xpu-smi is called with the fleet index directly.
+    """
+    index = fleet_index
+    for var in _BACKEND_VISIBLE_VARS.get(backend_name, ()):
+        raw = os.environ.get(var)
+        if not raw:
+            continue
+        entries = [e.strip() for e in raw.split(",")]
+        if not all(e.isdigit() for e in entries) or index >= len(entries):
+            return fleet_index
+        index = int(entries[index])
+    return index
+
+
 def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     """Live stats keyed by device index. Empty when no devices are given.
 
@@ -83,9 +156,12 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
         by_backend.setdefault(util_backend_name(d.backend, d.name), []).append(d)
 
     for backend_name, group in by_backend.items():
-        indices = frozenset(d.index for d in group)
-        for index, sample in _safe_sample(backend_name, indices).items():
-            if index not in stats:
+        # Ask the SMI tool about its own indices, and merge its answers back into
+        # the engine's; the two spaces differ whenever a visible-devices mask is set.
+        fleet_by_physical = {_physical_index(backend_name, d.index): d.index for d in group}
+        for physical, sample in _safe_sample(backend_name, frozenset(fleet_by_physical)).items():
+            index = fleet_by_physical.get(physical)
+            if index is None or index not in stats:
                 continue
             base = stats[index]
             # Keep structural VRAM when the backend returns the 0/0 sentinel
@@ -104,20 +180,24 @@ def probe_gpu_stats(devices: Sequence[DeviceLike]) -> dict[int, GpuStat]:
     return {i: stats[i] for i in sorted(stats)}
 
 
-def intel_grant_binary(devices: Sequence[DeviceLike], stats: dict[int, GpuStat]) -> str | None:
-    """The intel_gpu_top path a grant would unblock when an Intel GPU's util is
-    missing only for that reason, else None.
+def intel_util_hint(
+    devices: Sequence[DeviceLike], stats: dict[int, GpuStat]
+) -> IntelUtilHint | None:
+    """The fix that would unblock an Intel GPU's missing util reading, else None.
 
-    A surface turns the binary into the localized grant hint. Modern kernels read
-    util with no grant, so this stays silent there, and the None-util gate clears
-    it once a grant makes util read.
+    Fires only when an Intel device's util is actually missing; a surface turns
+    the hint into a localized message (grant when intel_gpu_top is installed but
+    blocked, install when it is absent, e.g. kernels too old for fdinfo).
     """
     for d in devices:
         if util_backend_name(d.backend, d.name) != "SYCL":
             continue
         stat = stats.get(d.index)
         if stat is not None and stat.utilization_pct is None:
-            binary = intel_gpu_top_grant_binary()
-            if binary is not None:
-                return binary
+            return _detect_intel_util_hint()
     return None
+
+
+def probe_intel_util_hint(devices: Sequence[DeviceLike]) -> IntelUtilHint | None:
+    """Probe live stats and evaluate the Intel util hint in one call."""
+    return intel_util_hint(devices, probe_gpu_stats(devices))

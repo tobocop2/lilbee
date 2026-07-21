@@ -595,11 +595,16 @@ class TestEnableOcrConfig:
             c = Config()
             assert c.enable_ocr is True
 
-    def test_garbage_value_coerces_via_bool(self) -> None:
-        """Unrecognized string falls through parse_bool and coerces via ``bool()``."""
+    def test_garbage_value_falls_back_to_auto(self) -> None:
+        """An unparseable value must not turn OCR on.
+
+        This used to fall through to ``bool()``, and ``bool("maybe")`` is True,
+        so a typo silently enabled an expensive pass. The sibling bool
+        validators warn and take their default; this one now does too.
+        """
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
             c = Config()
-            assert c.enable_ocr is True  # bool("maybe") is True
+            assert c.enable_ocr is None
 
     def test_whitespace_only_means_auto(self) -> None:
         """Whitespace-only strings hit the auto/none branch and return None."""
@@ -1877,3 +1882,107 @@ class TestActiveConfigScope:
         with config_scope(scoped):
             assert active_config() is scoped
         assert active_config() is cfg
+
+
+class TestBoolVocabularyMatchesPydantic:
+    """parse_bool must accept what pydantic accepts for the same settings object.
+
+    Every other bool field on Config is coerced by pydantic, which takes
+    on/off/y/n/t/f as well. The narrower hand-rolled vocabulary made the same
+    env spelling mean different things on different fields, and on enable_ocr
+    it inverted: the ValueError fell through to bool("off"), which is True.
+    """
+
+    @pytest.mark.parametrize("raw", ["on", "y", "t", "true", "1", "yes", "ON", " on "])
+    def test_truthy_spellings(self, raw):
+        from lilbee.core.config.parsing import parse_bool
+
+        assert parse_bool(raw) is True
+
+    @pytest.mark.parametrize("raw", ["off", "n", "f", "false", "0", "no", "OFF", " off "])
+    def test_falsy_spellings(self, raw):
+        from lilbee.core.config.parsing import parse_bool
+
+        assert parse_bool(raw) is False
+
+    def test_unknown_spelling_still_raises(self):
+        from lilbee.core.config.parsing import parse_bool
+
+        with pytest.raises(ValueError, match="Invalid boolean"):
+            parse_bool("maybe")
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"), [("off", False), ("on", True), ("n", False), ("y", True)]
+    )
+    def test_enable_ocr_agrees_with_pydantic(self, raw, expected):
+        """enable_ocr routed through parse_bool; 'off' used to come back True."""
+        from lilbee.core.config.model import Config
+
+        assert Config(enable_ocr=raw).enable_ocr is expected
+
+    def test_enable_ocr_unknown_value_falls_back_to_auto(self):
+        """An unparseable value must not silently become True via bool()."""
+        from lilbee.core.config.model import Config
+
+        assert Config(enable_ocr="maybe").enable_ocr is None
+
+
+class TestCrawlExclusionsMatchWholeSegments:
+    """The exclusion patterns are regexes against the whole URL, not globs.
+
+    Bare path prefixes therefore matched longer words and silently dropped
+    legitimate content pages from a crawl.
+    """
+
+    @staticmethod
+    def _excluded(url: str) -> bool:
+        import re
+
+        from lilbee.core.config.defaults import _AUTH_EXCLUDE, _ECOMMERCE_EXCLUDE
+
+        return any(re.search(p, url) for p in _AUTH_EXCLUDE + _ECOMMERCE_EXCLUDE)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/cartography/maps",
+            "https://example.com/accounting/gaap",
+            "https://example.com/professional-services",
+            "https://example.com/registers-of-companies",
+        ],
+    )
+    def test_content_pages_are_not_excluded(self, url):
+        assert not self._excluded(url)
+
+    @pytest.mark.parametrize(
+        ("url", "excluded"),
+        [
+            ("https://x.dev/docs?ref=sidebar", False),
+            ("https://x.dev/p?share=twitter", False),
+            ("https://x.dev/p?utm_source=newsletter", True),
+            ("https://x.dev/p?fbclid=abc", True),
+            ("https://x.dev/p?replytocom=5", True),
+        ],
+    )
+    def test_only_campaign_tokens_are_treated_as_tracking(self, url, excluded):
+        """?ref= and ?share= are ordinary content links on docs and forum
+        platforms; dropping one can drop the only URL that reaches a page."""
+        import re
+
+        from lilbee.core.config.defaults import _TRACKING_EXCLUDE
+
+        assert any(re.search(p, url) for p in _TRACKING_EXCLUDE) is excluded
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/cart",
+            "https://example.com/cart/",
+            "https://example.com/cart?step=1",
+            "https://example.com/checkout/step1",
+            "https://example.com/login",
+            "https://example.com/my-account/orders",
+        ],
+    )
+    def test_transactional_and_auth_urls_are_still_excluded(self, url):
+        assert self._excluded(url)

@@ -315,6 +315,21 @@ jobs:
           REPO: ${{ github.repository }}
         run: gh workflow run publish-cuda-packages.yml --repo "${REPO}" -f tag="${TAG}"
 
+  # Auto-dispatch the compat packaging fan-out once the compat executables are
+  # on the release. Fire-and-forget: a compat failure never blocks the release.
+  dispatch-compat:
+    needs: [resolve, attach-prerelease]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run publish-compat-packages.yml --repo "${REPO}" -f tag="${TAG}"
+
   # Supplementary opt-in lilbee[multi-gpu] artifacts on their OWN path. Fully
   # decoupled: not in attach-prerelease's needs and not gating dispatch-publish,
   # so a failure here never blocks the release. Builds are continue-on-error.

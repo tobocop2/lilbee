@@ -32,6 +32,20 @@ def test_get_gpus_tool(monkeypatch):
     out = mcp_server.get_gpus_tool()
     assert [g["label"] for g in out["gpus"]] == ["CUDA0"]
     assert out["gpus"][0]["free_bytes"] == 72 * GIB
+    assert out["notice"] is None
+
+
+def test_get_gpus_tool_includes_intel_notice(monkeypatch):
+    """An Intel host with unreadable utilization surfaces the fix, matching HTTP /api/gpus."""
+    from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+    hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
+    monkeypatch.setattr(mcp_server, "get_placement", lambda: _view())
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", lambda devices: hint
+    )
+    out = mcp_server.get_gpus_tool()
+    assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in out["notice"]
 
 
 def test_get_gpus_tool_returns_error_on_provider_failure(monkeypatch):
@@ -199,7 +213,7 @@ def test_clear_placement_tool_provider_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_placement_tools_wire_names():
     """Placement tools must be registered under clean wire names (no _tool suffix)."""
-    tools = await mcp_server.mcp.list_tools()
+    tools = await mcp_server.build_mcp_server().list_tools()
     names = {t.name for t in tools}
     assert "get_placement" in names
     assert "preview_placement" in names

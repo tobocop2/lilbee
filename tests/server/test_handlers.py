@@ -181,23 +181,26 @@ class TestAddEndpoint:
         assert resp.status_code == 201
 
     def test_validate_uploads_rejects_bad_input(self, mock_extract_file, isolated_env):
-        """validate_uploads guards empty/malformed names and keeps relative paths."""
-        from lilbee.server.handlers.ingest import validate_uploads
+        """validate_upload_names guards empty/malformed names and keeps relative paths."""
+        from lilbee.server.handlers.ingest import validate_upload_names
 
         with pytest.raises(ValueError, match="no files"):
-            validate_uploads([])
+            validate_upload_names([])
         with pytest.raises(ValueError, match="invalid upload filename"):
-            validate_uploads([("", b"x")])
+            validate_upload_names([""])
         with pytest.raises(ValueError, match="must be relative"):
-            validate_uploads([("/etc/passwd", b"x")])
+            validate_upload_names(["/etc/passwd"])
         with pytest.raises(ValueError, match="must be relative"):
-            validate_uploads([("C:\\dir\\file.txt", b"x")])
+            validate_upload_names(["C:\\dir\\file.txt"])
         with pytest.raises(ValueError, match="may not contain"):
-            validate_uploads([("../../a/b.txt", b"x")])
+            validate_upload_names(["../../a/b.txt"])
         # Relative paths survive so an uploaded tree keeps its layout.
-        assert validate_uploads([("src/pkg/__init__.py", b"x")]) == [("src/pkg/__init__.py", b"x")]
+        assert validate_upload_names(["src/pkg/__init__.py"]) == ["src/pkg/__init__.py"]
         # Backslash separators and ./ prefixes normalize to POSIX relative form.
-        assert validate_uploads([("./src\\a.py", b"x")]) == [("src/a.py", b"x")]
+        assert validate_upload_names(["./src\\a.py"]) == ["src/a.py"]
+        # A multipart part may carry no filename at all.
+        with pytest.raises(ValueError, match="invalid upload filename"):
+            validate_upload_names([None])
 
     async def test_add_nonexistent_file_in_errors(self, mock_extract_file, isolated_env, tmp_path):
         """Nonexistent paths appear in the summary errors list."""
@@ -574,17 +577,25 @@ class TestAddIngestMutex:
         registry.release(held)
         assert registry._locks == {}
 
-    async def test_acquire_add_locks_dedups_repeated_paths(self, isolated_env):
-        """Duplicate paths in one request collapse to a single acquired lock."""
+    async def test_acquire_dedups_repeated_names(self, isolated_env):
+        """The registry locks each distinct name once."""
         from lilbee.app.services import get_services
 
         registry = get_services().ingest_lock_registry
-        acquired, busy = await registry.acquire(["/x/doc.txt", "/y/doc.txt"])
+        acquired, busy = await registry.acquire(["doc.txt", "doc.txt"])
         try:
             assert busy == []
             assert [name for name, _ in acquired] == ["doc.txt"]
         finally:
             registry.release(acquired)
+
+    def test_add_locks_server_paths_by_basename(self):
+        """/api/add flattens into documents_dir, so two paths sharing a
+        basename are one source and must share one lock."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        assert IngestLockRegistry.canonical_source_name("/x/doc.txt") == "doc.txt"
+        assert IngestLockRegistry.canonical_source_name("/y/doc.txt") == "doc.txt"
 
     async def test_second_concurrent_add_emits_already_ingesting(self, isolated_env, tmp_path):
         """Second /api/add for a held source yields already_ingesting, no done."""
@@ -636,6 +647,29 @@ class TestAddIngestMutex:
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
         assert "free.txt" in summary["copied"]
         assert "held.txt" not in summary["copied"]
+        # The done event is the only frame a client is guaranteed to still have,
+        # so it has to say the batch was partial. Without this a caller reads
+        # done as "all ingested" and never retries the contended file.
+        assert summary["already_ingesting"] == ["held.txt"]
+        assert "held.txt" not in summary["skipped"]
+
+    async def test_distinct_relative_paths_get_distinct_locks(self, isolated_env):
+        """Two uploads that land at different paths must not share one lock.
+
+        The registry reduced every key to its basename. That is right for
+        /api/add, where copy_files flattens into documents_dir, but uploads
+        keep their relative layout, so src/util.py and tests/util.py are
+        different files that were being serialized against each other.
+        """
+        from lilbee.app.services import get_services
+
+        registry = get_services().ingest_lock_registry
+        acquired, busy = await registry.acquire(["src/util.py", "tests/util.py"])
+        try:
+            assert busy == []
+            assert sorted(name for name, _lock in acquired) == ["src/util.py", "tests/util.py"]
+        finally:
+            registry.release(acquired)
 
     async def test_concurrent_different_sources_run_in_parallel(self, isolated_env, tmp_path):
         """Disjoint sources do not contend: both requests complete with done."""
@@ -767,3 +801,20 @@ class TestAddIngestHardening:
         # The stale chunks are removed in the same batched write that re-adds them.
         assert "orphan.txt" in self._cleanup_sources(store)
         store.write_chunks_batch.assert_called()
+
+
+class TestValidateAddPathsRejectsNamelessPaths:
+    def test_a_path_with_no_final_component_is_rejected(self):
+        """Path(x).name never contains separators, so the traversal check alone
+        could not fail. What it must catch is an empty name, which would make
+        documents_dir itself the copy destination."""
+        from lilbee.server.handlers.ingest import validate_add_paths
+
+        with pytest.raises(ValueError, match="does not name a file"):
+            validate_add_paths({"paths": ["/"]})
+
+    def test_a_normal_path_still_passes(self):
+        from lilbee.server.handlers.ingest import validate_add_paths
+
+        paths, _force, _ocr, _timeout = validate_add_paths({"paths": ["/tmp/report.pdf"]})
+        assert paths == ["/tmp/report.pdf"]
