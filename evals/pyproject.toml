@@ -53,12 +53,20 @@ requires-python = ">=3.12"
 # scipy owns the statistics: percentile bootstrap, paired sign-flip permutation
 # test, and Benjamini-Hochberg. PyTerrier ships no confidence intervals, checked
 # against its source rather than its docs, so the interval stays here.
+#
+# numpy and pandas are declared even though scipy and python-terrier both pull
+# them, because this harness imports them directly: stats builds numpy arrays
+# for the bootstrap, and the comparison layer builds pandas frames. Leaning on a
+# transitive for something you import yourself is the same mistake that broke the
+# answer tier, one level down.
 dependencies = [
     "ir_measures==0.4.3",
     "pytrec_eval-terrier==0.5.10",
     "ir_datasets==0.6.3",
     "python-terrier==1.0",
     "scipy==1.18.0",
+    "numpy",
+    "pandas",
     "httpx",
     "pyyaml",
 ]
@@ -84,15 +92,22 @@ dependencies = [
 # path, which reaches the judge over litellm; only the optional local NLI
 # checker wants one. Its spaCy model is a separate step:
 #   uv run --project evals python -m spacy download en_core_web_sm
+#
+# openai is declared for the same reason as numpy above: the judge binding
+# constructs AsyncOpenAI itself rather than letting ragas resolve a client, so
+# it is a direct import and not ragas' business to supply.
 generation = [
     "ragas==0.4.3",
     "langchain-community==0.3.31",
     "ragchecker==0.1.9",
+    "openai",
 ]
 
-# The human-audit sample's agreement statistics: quadratic-weighted Cohen's
-# kappa and the exact-match and mean-absolute-error rates beside it.
-audit = ["scikit-learn==1.9.0"]
+# Validating the judge rather than trusting it. scikit-learn supplies the
+# agreement statistics; datasets loads SummEval, whose 1600 expert-rated
+# summaries let the judge be calibrated against human ratings that already exist
+# rather than against ratings somebody has to produce for this project.
+audit = ["scikit-learn==1.9.0", "datasets>=3,<5"]
 
 [dependency-groups]
 dev = ["pytest", "pytest-asyncio"]

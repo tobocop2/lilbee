@@ -13,6 +13,7 @@ PACKAGE_EXTRAS = {
     "ragas": "generation",
     "ragchecker": "generation",
     "scikit-learn": "audit",
+    "datasets": "audit",
 }
 
 
@@ -36,6 +37,7 @@ SCORER_PACKAGES = (
     "scikit-learn",
     "ragas",
     "ragchecker",
+    "datasets",
 )
 
 
