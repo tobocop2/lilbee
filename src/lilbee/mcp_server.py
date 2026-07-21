@@ -445,8 +445,13 @@ def init(path: str = "") -> dict[str, Any]:
 
 @_tool
 def remove(names: list[str], delete_files: bool = False) -> dict[str, Any]:
-    """Remove documents by source name; ``delete_files=true`` also deletes the file on disk."""
-    result = get_services().store.remove_documents(
+    """Remove documents by source name; a folder name removes everything beneath it.
+
+    ``delete_files=true`` also deletes the file on disk.
+    """
+    from lilbee.app.ingest import remove_documents_durably
+
+    result = remove_documents_durably(
         names, delete_files=delete_files, documents_dir=cfg.documents_dir
     )
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}

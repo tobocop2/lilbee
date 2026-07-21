@@ -67,6 +67,12 @@ After that you're in chat. `/add` indexes documents, `/crawl` indexes a website
 Press `/add` to add files, directories, or web pages. Paths tab-complete; the
 job runs in the Task Center, so you can keep chatting while indexing happens.
 
+`add` copies the files into lilbee's own documents directory, so the copy is a
+snapshot taken at that moment. Editing the originals later has no effect until
+you add them again, and files you delete at the source stay indexed until you
+remove them. To drop a whole directory you added, remove it by name with
+`/delete myfolder` (or `lilbee remove myfolder`).
+
 If a file with the same name is already indexed, `add` skips it. To re-index in
 place, remove the document first with `/delete name`, or pass `--force` from
 the CLI.
@@ -594,6 +600,7 @@ lilbee ask "Explain this" --model qwen3
 | Command | Description |
 |---------|-------------|
 | `lilbee remove manual.pdf` | Remove from the index (keeps source file) |
+| `lilbee remove myfolder` | Remove every document indexed under a folder (prompts first; `--yes` to skip) |
 | `lilbee remove manual.pdf --delete` | Remove and delete the source file |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |

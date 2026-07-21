@@ -69,8 +69,10 @@ def _imported_source_markdown(source: str) -> str | None:
 async def delete_documents(
     names: list[str], *, delete_files: bool = False
 ) -> DocumentRemoveResponse:
-    """Remove documents from the knowledge base by source name."""
-    result = get_services().store.remove_documents(names, delete_files=delete_files)
+    """Remove documents by source name; a folder name removes everything beneath it."""
+    from lilbee.app.ingest import remove_documents_durably
+
+    result = remove_documents_durably(names, delete_files=delete_files)
     return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)
 
 

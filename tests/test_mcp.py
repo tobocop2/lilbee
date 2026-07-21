@@ -369,6 +369,24 @@ class TestRemove:
         result = remove([traversal_name], delete_files=True)
         assert result["removed"] == [traversal_name]
 
+    def test_folder_name_removes_everything_beneath_it(self, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "myrepo/a.md"},
+            {"filename": "myrepo/b.md"},
+            {"filename": "other.md"},
+        ]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["myrepo/a.md", "myrepo/b.md"], not_found=[]
+        )
+        result = remove(["myrepo"])
+        assert result["removed"] == ["myrepo/a.md", "myrepo/b.md"]
+        assert mock_svc.store.remove_documents.call_args.args[0] == [
+            "myrepo/a.md",
+            "myrepo/b.md",
+        ]
+
 
 class TestListDocuments:
     def test_returns_documents(self, mock_svc):

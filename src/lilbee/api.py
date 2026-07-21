@@ -145,9 +145,11 @@ class Lilbee:
             return asyncio.run(_sync(quiet=True))
 
     def remove(self, name: str) -> None:
-        """Remove a document from the index by source name."""
+        """Remove a document by source name; a folder name removes everything beneath it."""
+        from lilbee.app.ingest import remove_documents_durably
+
         with config_scope(self._config), services_scope(self._services):
-            self._services.store.remove_documents([name], delete_files=True)
+            remove_documents_durably([name], delete_files=True)
 
     def status(self) -> dict[str, object]:
         """Return index stats (document count, data directory, etc.)."""

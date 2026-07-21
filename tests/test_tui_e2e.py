@@ -2776,6 +2776,24 @@ class TestChatSlashCommands:
             mock_notify.assert_called_once()
             assert "monokai" in mock_notify.call_args[0][0]
 
+    async def test_cmd_delete_folder_removes_everything_beneath(self, _mock_resolve):
+        """/delete <folder> is accepted and removes every source beneath it."""
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            with (
+                mock.patch("lilbee.cli.tui.screens.chat.get_services") as mock_svc,
+                mock.patch("lilbee.app.ingest.remove_documents_durably") as mock_remove,
+            ):
+                mock_svc.return_value.store.get_sources.return_value = [
+                    {"filename": "myrepo/a.md"},
+                    {"filename": "myrepo/b.md"},
+                ]
+                app.screen._handle_slash("/delete myrepo")
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+            mock_remove.assert_called_once_with(["myrepo"])
+
     async def test_cmd_delete_no_docs(self, _mock_resolve):
         """/delete with no docs shows warning."""
         app = ChatTestApp()

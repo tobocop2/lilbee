@@ -1025,7 +1025,10 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, usage)
             return
 
-        if name not in known:
+        # A folder name (parent directory of one or more sources) removes
+        # everything beneath it; remove_documents_durably expands it.
+        is_folder = any(source.startswith(name.rstrip("/") + "/") for source in known)
+        if name not in known and not is_folder:
             message = msg.CMD_DELETE_NOT_FOUND.format(name=name)
             suggestion = _closest_source(name, known)
             if suggestion is not None:

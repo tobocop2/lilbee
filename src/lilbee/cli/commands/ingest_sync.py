@@ -573,17 +573,35 @@ _delete_file_option = typer.Option(
     False, "--delete", help="Also delete the file from the documents directory."
 )
 
+_remove_yes_option = typer.Option(
+    False, "--yes", "-y", help="Skip the confirmation prompt when removing a folder."
+)
+
 
 def remove(
     names: list[str] = _remove_names_argument,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
     delete_file: bool = _delete_file_option,
+    yes: bool = _remove_yes_option,
 ) -> None:
-    """Remove documents from the knowledge base by source name."""
+    """Remove documents from the knowledge base by source name.
+
+    A folder name removes every document indexed beneath it.
+    """
     apply_overrides(data_dir=data_dir, use_global=use_global)
 
-    result = get_services().store.remove_documents(
+    from lilbee.app.ingest import expand_folder_names, remove_documents_durably
+
+    targets = expand_folder_names(names)
+    is_folder_removal = sorted(set(targets)) != sorted(set(names))
+    if is_folder_removal and not yes and not cfg.json_mode:
+        typer.confirm(
+            f"Remove {len(targets)} documents? Files on disk are kept unless you pass --delete.",
+            abort=True,
+        )
+
+    result = remove_documents_durably(
         names, delete_files=delete_file, documents_dir=cfg.documents_dir
     )
 

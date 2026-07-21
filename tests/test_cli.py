@@ -1463,6 +1463,73 @@ class TestRemove:
         assert result.exit_code == 0
         assert not doc.exists()
 
+    def test_remove_folder_confirms_and_expands(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "myrepo/a.pdf"},
+            {"filename": "myrepo/b.pdf"},
+        ]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["myrepo/a.pdf", "myrepo/b.pdf"], not_found=[]
+        )
+        result = runner.invoke(app, ["remove", "myrepo"], input="y\n")
+        assert result.exit_code == 0
+        assert "2 documents" in result.output
+        assert mock_svc.store.remove_documents.call_args.args[0] == [
+            "myrepo/a.pdf",
+            "myrepo/b.pdf",
+        ]
+
+    def test_remove_folder_aborts_on_no(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [{"filename": "myrepo/a.pdf"}]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["myrepo/a.pdf"], not_found=[]
+        )
+        result = runner.invoke(app, ["remove", "myrepo"], input="n\n")
+        assert result.exit_code != 0
+        mock_svc.store.remove_documents.assert_not_called()
+
+    def test_remove_folder_yes_skips_confirm(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [{"filename": "myrepo/a.pdf"}]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["myrepo/a.pdf"], not_found=[]
+        )
+        result = runner.invoke(app, ["remove", "myrepo", "--yes"])
+        assert result.exit_code == 0
+        mock_svc.store.remove_documents.assert_called_once()
+
+    def test_remove_exact_file_needs_no_confirm(self, isolated_env, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [{"filename": "test.pdf"}]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["test.pdf"], not_found=[]
+        )
+        # No stdin provided: an exact filename must not prompt.
+        result = runner.invoke(app, ["remove", "test.pdf"])
+        assert result.exit_code == 0
+        mock_svc.store.remove_documents.assert_called_once()
+
+    def test_remove_skip_marks_kept_file(self, isolated_env, mock_svc):
+        """A plain remove writes a skip-marker so the next sync won't re-ingest it."""
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+        from lilbee.data.store import RemoveResult
+
+        doc = cfg.documents_dir / "keep.txt"
+        doc.write_text("content")
+        mock_svc.store.get_sources.return_value = [{"filename": "keep.txt"}]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["keep.txt"], not_found=[]
+        )
+        result = runner.invoke(app, ["remove", "keep.txt"])
+        assert result.exit_code == 0
+        assert "keep.txt" in load_skip_markers(cfg.data_root)
+
     def test_remove_json(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
 

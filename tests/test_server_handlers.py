@@ -3069,7 +3069,7 @@ class TestDeleteDocuments:
         f = tmp_path / "a.md"
         f.write_text("content")
 
-        def fake_remove(names, *, delete_files=False):
+        def fake_remove(names, *, delete_files=False, documents_dir=None):
             if delete_files and f.exists():
                 f.unlink()
             return RemoveResult(removed=["a.md"], not_found=[])
@@ -3078,6 +3078,23 @@ class TestDeleteDocuments:
         result = await handlers.delete_documents(["a.md"], delete_files=True)
         assert result.removed == ["a.md"]
         assert not f.exists()
+
+    async def test_folder_name_removes_everything_beneath_it(self, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "myrepo/a.md"},
+            {"filename": "myrepo/b.md"},
+        ]
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["myrepo/a.md", "myrepo/b.md"], not_found=[]
+        )
+        result = await handlers.delete_documents(["myrepo"])
+        assert result.removed == ["myrepo/a.md", "myrepo/b.md"]
+        assert mock_svc.store.remove_documents.call_args.args[0] == [
+            "myrepo/a.md",
+            "myrepo/b.md",
+        ]
 
 
 class TestUpdateConfig:

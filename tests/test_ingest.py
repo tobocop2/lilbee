@@ -3184,3 +3184,97 @@ class TestRemoveDocumentsDurably:
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=[], not_found=["gone"])
         remove_documents_durably(["gone"])
         assert load_skip_markers(cfg.data_root) == {}
+
+    def test_folder_name_expands_and_marks_members(self, isolated_env, mock_svc):
+        """A folder name removes and skip-marks every source beneath it."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+        from lilbee.data.store.types import RemoveResult
+
+        (isolated_env / "myrepo" / "sub").mkdir(parents=True)
+        a = isolated_env / "myrepo" / "a.txt"
+        a.write_text("x")
+        b = isolated_env / "myrepo" / "sub" / "b.txt"
+        b.write_text("y")
+        mock_svc.store.get_sources.side_effect = lambda: [
+            {"filename": "myrepo/a.txt"},
+            {"filename": "myrepo/sub/b.txt"},
+            {"filename": "keep.md"},
+        ]
+        mock_svc.store.remove_documents.side_effect = None
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["myrepo/a.txt", "myrepo/sub/b.txt"], not_found=[]
+        )
+
+        remove_documents_durably(["myrepo"])
+
+        # The store is asked to remove the expanded members, not the folder name.
+        called = mock_svc.store.remove_documents.call_args
+        assert called.args[0] == ["myrepo/a.txt", "myrepo/sub/b.txt"]
+        markers = load_skip_markers(cfg.data_root)
+        assert markers["myrepo/a.txt"] == file_hash(a)
+        assert markers["myrepo/sub/b.txt"] == file_hash(b)
+
+    def test_delete_files_passthrough(self, isolated_env, mock_svc):
+        """delete_files reaches the store, and unlinked files get no marker."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.store.types import RemoveResult
+
+        doc = isolated_env / "d.txt"
+        doc.write_text("x")
+        mock_svc.store.get_sources.side_effect = lambda: [{"filename": "d.txt"}]
+        mock_svc.store.remove_documents.side_effect = None
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["d.txt"], not_found=[]
+        )
+
+        remove_documents_durably(["d.txt"], delete_files=True)
+
+        assert mock_svc.store.remove_documents.call_args.kwargs["delete_files"] is True
+
+
+class TestExpandFolderNames:
+    def test_folder_expands_to_members_in_order(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import expand_folder_names
+
+        mock_svc.store.get_sources.side_effect = lambda: [
+            {"filename": "myrepo/a.py"},
+            {"filename": "myrepo/sub/b.py"},
+            {"filename": "other.md"},
+        ]
+        assert expand_folder_names(["myrepo"]) == ["myrepo/a.py", "myrepo/sub/b.py"]
+
+    def test_trailing_slash_accepted(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import expand_folder_names
+
+        mock_svc.store.get_sources.side_effect = lambda: [{"filename": "myrepo/a.py"}]
+        assert expand_folder_names(["myrepo/"]) == ["myrepo/a.py"]
+
+    def test_exact_source_kept(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import expand_folder_names
+
+        mock_svc.store.get_sources.side_effect = lambda: [{"filename": "other.md"}]
+        assert expand_folder_names(["other.md"]) == ["other.md"]
+
+    def test_unknown_name_passthrough(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import expand_folder_names
+
+        mock_svc.store.get_sources.side_effect = lambda: [{"filename": "a.md"}]
+        assert expand_folder_names(["ghost"]) == ["ghost"]
+
+    def test_prefix_must_be_a_directory_boundary(self, isolated_env, mock_svc):
+        """``my`` must not match ``myrepo/...``; only whole path segments count."""
+        from lilbee.app.ingest import expand_folder_names
+
+        mock_svc.store.get_sources.side_effect = lambda: [{"filename": "myrepo/a.py"}]
+        assert expand_folder_names(["my"]) == ["my"]
+
+    def test_dedup_when_folder_and_member_both_requested(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import expand_folder_names
+
+        mock_svc.store.get_sources.side_effect = lambda: [
+            {"filename": "myrepo/a.py"},
+            {"filename": "myrepo/b.py"},
+        ]
+        assert expand_folder_names(["myrepo", "myrepo/a.py"]) == ["myrepo/a.py", "myrepo/b.py"]

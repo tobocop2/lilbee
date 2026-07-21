@@ -54,13 +54,55 @@ def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
 _REMOVED_SKIP_REASON = "removed via delete (re-add the file or run retry-skipped to restore)"
 
 
-def remove_documents_durably(names: list[str]) -> RemoveResult:
+def expand_folder_names(names: list[str]) -> list[str]:
+    """Expand any folder name to the indexed sources beneath it.
+
+    A name that matches an indexed source exactly is kept. A name that matches no
+    source but is a parent directory of one or more sources expands to all of
+    them, matched on whole path segments (``myrepo`` covers ``myrepo/a.py`` but
+    never ``myrepo-2/x``). A name that matches neither is kept unchanged so the
+    caller reports it not-found. Order and de-duplication are preserved.
+    """
+    from lilbee.app.services import get_services
+
+    known = [s["filename"] for s in get_services().store.get_sources()]
+    known_set = set(known)
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str) -> None:
+        if candidate not in seen:
+            seen.add(candidate)
+            expanded.append(candidate)
+
+    for name in names:
+        if name in known_set:
+            _add(name)
+            continue
+        prefix = name.rstrip("/") + "/"
+        members = [source for source in known if source.startswith(prefix)]
+        if members:
+            for member in members:
+                _add(member)
+        else:
+            _add(name)
+    return expanded
+
+
+def remove_documents_durably(
+    names: list[str],
+    *,
+    delete_files: bool = False,
+    documents_dir: Path | None = None,
+) -> RemoveResult:
     """Remove documents from the index and skip-mark them so sync won't re-ingest.
 
-    The source files stay on disk (non-destructive), but each removed file gets a
-    skip-marker keyed on its current hash, so the next sync treats it as
-    unchanged-and-skipped instead of re-ingesting it and resurrecting the doc.
-    Editing the file (new hash), ``retry-skipped``, or ``rebuild`` restores it.
+    A folder name (a parent directory of indexed sources) removes every source
+    beneath it. Unless *delete_files* is set the source files stay on disk, and
+    each removed file gets a skip-marker keyed on its current hash so the next
+    sync treats it as unchanged-and-skipped instead of re-ingesting it and
+    resurrecting the doc. Editing the file (new hash), ``retry-skipped``, or
+    ``rebuild`` restores it.
     """
     from lilbee.app.services import get_services
     from lilbee.data.ingest.discovery import file_hash
@@ -71,15 +113,20 @@ def remove_documents_durably(names: list[str]) -> RemoveResult:
         write_skip_reasons,
     )
 
-    result = get_services().store.remove_documents(names)
+    docs_dir = documents_dir or cfg.documents_dir
+    targets = expand_folder_names(names)
+    result = get_services().store.remove_documents(
+        targets, delete_files=delete_files, documents_dir=docs_dir
+    )
     if not result.removed:
         return result
     markers = load_skip_markers(cfg.data_root)
     reasons = load_skip_reasons(cfg.data_root)
     for name in result.removed:
-        path = cfg.documents_dir / name
-        # Imported sources have no file on disk; sync never re-ingests them, so a
-        # marker is only needed for real files that would otherwise be re-found.
+        path = docs_dir / name
+        # Imported sources and files removed with delete_files have nothing on
+        # disk; sync never re-ingests those, so a marker is only needed for real
+        # files that would otherwise be re-found.
         if path.exists():
             markers[name] = file_hash(path)
             reasons[name] = _REMOVED_SKIP_REASON
