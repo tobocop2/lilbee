@@ -2444,3 +2444,41 @@ class TestTheFleetBackendWithoutAPlanSnapshot:
         monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: [])
 
         assert planning_mod._fleet_backend() is None
+
+
+class TestTheFleetBackendFromThePlanSnapshot:
+    """Inside a planning pass the backend comes from the snapshot, so a whole
+    pass answers consistently even as the live probe changes underneath it."""
+
+    def test_the_snapshot_names_the_backend(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(devices=(FleetDevice("ROCm", 0, "AMD", 24 * _GB, 23 * _GB),)),
+        )
+
+        assert planning_mod._fleet_backend() == "ROCm"
+
+    def test_a_snapshot_of_a_gpu_less_host_names_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store, "get", lambda: SimpleNamespace(devices=())
+        )
+
+        assert planning_mod._fleet_backend() is None
+
+    def test_the_snapshot_wins_over_the_live_probe(self, monkeypatch) -> None:
+        """A live read under a loaded fleet can disagree; the pass must not."""
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(
+                devices=(FleetDevice("CUDA", 0, "NVIDIA", 24 * _GB, 23 * _GB),)
+            ),
+        )
+
+        def _must_not_run(_b):
+            raise AssertionError("the live probe was consulted despite a snapshot")
+
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", _must_not_run)
+
+        assert planning_mod._fleet_backend() == "CUDA"
