@@ -33,6 +33,16 @@ envs:
   BACKEND: cu124
   EMBED_MODEL: Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf
   LILBEE_POD_HOURLY_USD: "6.40"
+  # One embed server per GPU, round-robined. lilbee auto-detects this at 0, but
+  # auto also caps itself by the VRAM left after reserving a persistent query
+  # fleet (chat, rerank, vision) that this run never uses. Pinning it keeps all
+  # four cards on the embedding rather than holding VRAM for roles nothing calls.
+  LILBEE_EMBED_REPLICAS: "4"
+  # MS MARCO passages are plain text. OCR would reserve vision VRAM, compete for
+  # the same cards, and never fire on a single document.
+  LILBEE_ENABLE_OCR: "false"
+  # Only the embedder is loaded, so there is no second model to leave room for.
+  LILBEE_GPU_MEMORY_FRACTION: "0.90"
   HF_TOKEN: ""
 setup: |
   set -euo pipefail
