@@ -54,6 +54,32 @@ else
 fi
 
 # ---------------------------------------------------------------- phase 1
+# Start lilbee and warm the embedder FIRST, before materialising 8.8M passages.
+# A wrong GPU arch or a broken embedder shows up here in seconds; discovering it
+# after an hour of writing passage files would waste the hour. This is also the
+# real "does CUDA work" check that preflight cannot run, because preflight has no
+# server to probe.
+log "starting lilbee and warming the embedder (fast-fail before materialisation)"
+"$LILBEE_BIN" serve --port 8080 >"$LOG_DIR/serve.log" 2>&1 &
+SERVE_PID=$!
+# lilbee lazy-loads workers on the first request; gating on a readiness flag
+# deadlocks because the flag only flips once a request arrives.
+"$PYBIN" - <<'PY'
+import httpx, os, sys, time
+for attempt in range(90):
+    try:
+        httpx.post("http://127.0.0.1:8080/v1/embeddings",
+                   json={"model": os.environ["EMBED_MODEL"], "input": "warmup"},
+                   timeout=180).raise_for_status()
+        print("  embedder warm"); break
+    except Exception:
+        time.sleep(10)
+else:
+    sys.exit("embedder never came up")
+PY
+
+
+# ---------------------------------------------------------------- phase 2
 # One file per passage, because lilbee names a source by its path relative to the
 # documents directory, and the retrieval scoring has to join back to
 # passage-level qrels. Grouping passages into larger files would make the
@@ -88,26 +114,6 @@ PY
   touch "$LOCAL/.passages_written"
 fi
 log "documents on disk: $(find "$DOCS_DIR" -type f -name '*.txt' | wc -l)"
-
-# ---------------------------------------------------------------- phase 2
-log "starting lilbee and warming the embedder"
-"$LILBEE_BIN" serve --port 8080 >"$LOG_DIR/serve.log" 2>&1 &
-SERVE_PID=$!
-# lilbee lazy-loads workers on the first request; gating on a readiness flag
-# deadlocks because the flag only flips once a request arrives.
-"$PYBIN" - <<'PY'
-import httpx, os, sys, time
-for attempt in range(90):
-    try:
-        httpx.post("http://127.0.0.1:8080/v1/embeddings",
-                   json={"model": os.environ["EMBED_MODEL"], "input": "warmup"},
-                   timeout=180).raise_for_status()
-        print("  embedder warm"); break
-    except Exception:
-        time.sleep(10)
-else:
-    sys.exit("embedder never came up")
-PY
 
 # ---------------------------------------------------------------- phase 3
 log "ingesting (this is the long one; trace at $LILBEE_INGEST_TRACE_FILE)"

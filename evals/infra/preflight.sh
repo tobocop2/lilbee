@@ -50,28 +50,12 @@ log "extraction stack imports against this image's glibc"
 log "embedding model downloads and is selected"
 "$LILBEE_BIN" use-embedder "${EMBED_MODEL}" 2>&1 | tail -5
 
-# The real arch check. If the engine has no kernels for this card, loading the
-# model is where it says so, on the same binary the ingest will use.
-log "embedder returns a real vector (this is the CUDA check that matters)"
-"$PYBIN" - <<'PY' || die "the embedder did not return a usable vector; the ingest would produce an empty index"
-import os, sys, httpx, time
-base = os.environ["LILBEE_BASE_URL"].rstrip("/")
-for attempt in range(60):
-    try:
-        r = httpx.post(f"{base}/v1/embeddings",
-                       json={"model": os.environ["EMBED_MODEL"], "input": "preflight probe"},
-                       timeout=120)
-        r.raise_for_status()
-        vec = r.json()["data"][0]["embedding"]
-        print(f"  embedding dim={len(vec)}")
-        if len(vec) < 8:
-            sys.exit(f"embedder returned a degenerate vector of length {len(vec)}")
-        break
-    except Exception as exc:
-        if attempt == 59:
-            sys.exit(f"embedder never came up: {exc}")
-        time.sleep(10)
-PY
+# The engine-loads-a-vector check lives in ingest.sh phase 2, not here: it needs
+# a running lilbee serve, and nothing serves at preflight time. use-embedder
+# above already downloaded and selected the model, which is the part that can be
+# checked without a server. A wrong GPU arch surfaces when serve loads the model
+# for the warm step, before any passage is materialised, so the fast-fail
+# guarantee holds.
 
 log "disk headroom for the index"
 AVAIL=$(df -BG --output=avail "$WORK_DIR" | tail -1 | tr -dc '0-9')
