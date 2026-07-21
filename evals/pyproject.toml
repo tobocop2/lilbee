@@ -69,6 +69,12 @@ dependencies = [
     "pandas",
     "httpx",
     "pyyaml",
+    # pydantic owns the preregistration manifest's shape, and manifest is
+    # imported by the base CLI, so it belongs here rather than arriving through
+    # ragas in the generation extra. Relying on that was the exact mistake this
+    # file warns about two comments up: a tier-1 sync installed no ragas, and
+    # every command died on ModuleNotFoundError after the pod had provisioned.
+    "pydantic>=2,<3",
 ]
 
 [project.optional-dependencies]
