@@ -91,7 +91,7 @@ class TestWhereTheConversionRuns:
     so converting there blocks the event loop for the whole conversion. lilbee
     silences that generator and converts where it can await instead."""
 
-    def test_no_workers_keeps_the_conversion_in_this_process(self, monkeypatch) -> None:
+    def test_no_workers_keeps_the_conversion_on_the_loop(self, monkeypatch) -> None:
         from lilbee.core.config import cfg
         from lilbee.crawler import crawl4ai_fetcher
 
@@ -109,7 +109,7 @@ class TestWhereTheConversionRuns:
         assert limiter is not None
         assert limiter.total_tokens == 3
 
-    async def test_without_a_limiter_it_converts_here(self) -> None:
+    async def test_without_a_limiter_it_converts_on_the_loop(self) -> None:
         from lilbee.crawler import crawl4ai_fetcher
 
         page = mock.MagicMock(
@@ -121,7 +121,7 @@ class TestWhereTheConversionRuns:
                 == "# inline"
             )
 
-    async def test_with_a_limiter_it_converts_off_process(self) -> None:
+    async def test_with_a_limiter_it_converts_off_the_event_loop(self) -> None:
         """The whole point: the conversion is awaited, not run on the loop."""
         from anyio import CapacityLimiter
 
@@ -132,7 +132,7 @@ class TestWhereTheConversionRuns:
         )
         limiter = CapacityLimiter(1)
         with mock.patch(
-            "anyio.to_process.run_sync", new=mock.AsyncMock(return_value="# offloaded")
+            "anyio.to_thread.run_sync", new=mock.AsyncMock(return_value="# offloaded")
         ) as run_sync:
             result = await crawl4ai_fetcher._markdown_for(page, silenced=True, limiter=limiter)
 

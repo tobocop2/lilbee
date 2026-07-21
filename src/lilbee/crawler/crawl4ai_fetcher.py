@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-import anyio.to_process
+import anyio.to_thread
 from anyio import CapacityLimiter
 
 from lilbee.core.config import cfg
@@ -62,7 +62,7 @@ def _build_inner_crawler(*, verbose: bool, render_mode: CrawlRenderMode) -> Any:
 
 
 def _conversion_limiter() -> CapacityLimiter | None:
-    """How many pages may convert off-process at once, or ``None`` to convert here.
+    """How many pages may convert off the event loop at once, or ``None`` for on it.
 
     Read once per crawl, so a crawl keeps the setting it started with.
     """
@@ -97,7 +97,7 @@ def _silent_markdown_generator() -> Any | None:
 
 
 async def _markdown_for(result: Any, *, silenced: bool, limiter: CapacityLimiter | None) -> str:
-    """The page's markdown, converted here only when the backend was silenced.
+    """The page's markdown, converted by lilbee only when the backend was silenced.
 
     An un-silenced backend already converted the page, so re-converting it would
     duplicate the work this exists to move.
@@ -108,7 +108,7 @@ async def _markdown_for(result: Any, *, silenced: bool, limiter: CapacityLimiter
     base_url = base_url_for(result.html or "", result.url, result.redirected_url)
     if limiter is None:
         return html_to_markdown(html, base_url)
-    return await anyio.to_process.run_sync(html_to_markdown, html, base_url, limiter=limiter)
+    return await anyio.to_thread.run_sync(html_to_markdown, html, base_url, limiter=limiter)
 
 
 def _build_rate_limited_dispatcher(

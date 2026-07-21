@@ -23,8 +23,8 @@ def base_url_for(html: str, url: str, redirected_url: str | None = None) -> str:
 def html_to_markdown(html: str, base_url: str) -> str:
     """Convert *html* to markdown, resolving relative links against *base_url*.
 
-    Imports its backend on call so it is picklable into a worker process, where
-    nothing of the parent's state is inherited.
+    Imports its backend on call: this is the one place lilbee depends on a
+    third-party HTML-to-markdown implementation.
     """
     from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 
