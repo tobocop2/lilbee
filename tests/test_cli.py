@@ -3812,6 +3812,49 @@ class TestSelfCheck:
         assert not d.exists()
         fake_swap.shutdown.assert_called_once()
 
+    def test_self_check_chat_uses_the_planners_flash_and_kv_decision(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The self-check exists to exercise the flags a real request drives.
+
+        The flash-attention value and the KV cache types are one decision (a
+        quantized V cache is invalid without flash attention), so this path asks
+        the planner rather than rebuilding the rule and drifting from it.
+        """
+        from lilbee.cli.commands import setup
+        from lilbee.core.config.enums import KvCacheType
+        from lilbee.providers.fleet import planning as planning_mod
+        from lilbee.providers.roles import WorkerRole
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.binary.resolve_llama_server", lambda: "/fake/llama-server"
+        )
+        monkeypatch.setattr("tempfile.mkdtemp", lambda *a, **k: str(tmp_path / "wd"))
+        (tmp_path / "wd").mkdir()
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "Vulkan")
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        captured: dict[str, list[str]] = {}
+
+        class _Swap:
+            def start(self, launches):
+                captured["argv"] = launches[0].argv
+                raise RuntimeError("stop here")
+
+            def shutdown(self, *_a, **_k):
+                pass
+
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.swap_manager.SwapManager", lambda *a, **k: _Swap()
+        )
+        with pytest.raises(RuntimeError):
+            setup._self_check_server(WorkerRole.CHAT, tmp_path / "model.gguf")
+
+        argv = captured["argv"]
+        assert argv[argv.index("--flash-attn") + 1] == "auto"
+        assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+        assert "--cache-type-v" not in argv
+
     def test_skips_download_when_model_paths_given(self, tmp_path: Path) -> None:
         chat = tmp_path / "chat.gguf"
         chat.write_bytes(b"chat")
