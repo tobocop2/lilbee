@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gguf import MODEL_ARCH_NAMES
 from huggingface_hub import hf_hub_url
 from huggingface_hub.utils import HFValidationError
 
+from lilbee._generated.engine_archs import SUPPORTED_ARCHS
 from lilbee.catalog.header_probe import probe_architecture
 from lilbee.catalog.refs import (
     NATIVE_GGUF_REF_MIN_SLASHES,
@@ -18,8 +18,6 @@ from lilbee.catalog.types import ModelCompat
 
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
-
-SUPPORTED_ARCHS: frozenset[str] = frozenset(MODEL_ARCH_NAMES.values())
 
 
 def classify(architecture: str) -> ModelCompat:

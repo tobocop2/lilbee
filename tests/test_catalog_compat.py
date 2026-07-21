@@ -28,13 +28,6 @@ def test_classify_known_supported() -> None:
     assert classify("llama") is ModelCompat.SUPPORTED
 
 
-def test_classify_gemma4_supported() -> None:
-    # gemma4 is the arch that drove the gguf >=0.19 floor: the pinned engine serves
-    # it, and 0.19 is the first release enumerating it. Pins the floor's purpose,
-    # so dropping back to a gguf that omits the arch fails here rather than in a pull.
-    assert classify("gemma4") is ModelCompat.SUPPORTED
-
-
 def test_classify_unknown_string_is_unsupported() -> None:
     assert classify("this-arch-will-never-exist") is ModelCompat.UNSUPPORTED
 

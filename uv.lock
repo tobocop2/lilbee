@@ -1792,7 +1792,7 @@ requires-dist = [
     { name = "crawl4ai", marker = "extra == 'crawler'", specifier = ">=0.9.0" },
     { name = "diskcache", specifier = ">=5.6.1" },
     { name = "filelock" },
-    { name = "gguf", specifier = ">=0.19,<0.20" },
+    { name = "gguf", specifier = ">=0.18" },
     { name = "graspologic-native", marker = "extra == 'graph'", specifier = ">=1.2" },
     { name = "httpx" },
     { name = "huggingface-hub", specifier = ">=1.11.0" },
