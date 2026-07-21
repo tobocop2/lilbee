@@ -27,6 +27,7 @@ import psutil
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import resolve_llama_swap
+from lilbee.providers.fleet.child_guard import spawn_llama_swap
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import role_model_prefix
 from lilbee.providers.fleet.swap_config import PORT_FLAG, build_swap_config
@@ -186,7 +187,7 @@ class SwapManager:
         self._close_log()
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
-        self._proc = subprocess.Popen(  # noqa: S603 - argv[0] is the resolved llama-swap
+        self._proc = spawn_llama_swap(
             [
                 str(resolve_llama_swap()),
                 _CONFIG_FLAG,

@@ -59,7 +59,7 @@ def _fake_response(*, status: int = 200, payload: object = None) -> object:
 
 def _patch_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
     monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
-    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(sm, "spawn_llama_swap", lambda *a, **k: proc)
     # Isolate lifecycle tests from the real process-tree teardown.
     monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
 
@@ -110,7 +110,7 @@ class TestStart:
             return _FakeProc(poll_result=None)
 
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
-        monkeypatch.setattr(sm.subprocess, "Popen", _capturing_popen)
+        monkeypatch.setattr(sm, "spawn_llama_swap", _capturing_popen)
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 
