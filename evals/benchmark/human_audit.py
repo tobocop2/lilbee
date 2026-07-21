@@ -71,8 +71,15 @@ def stratified_sample(
 
     A uniform draw from a judge that mostly says 5 produces an audit of mostly
     5s, which measures agreement where it is easiest and says nothing about the
-    boundary cases the score range exists to separate. Sampling evenly across
-    the observed scores puts the audit where the judge is most likely wrong.
+    boundary cases the score range exists to separate.
+
+    Round-robin over the score buckets, which is not the same as an even split
+    and should not be described as one. A rare score is taken *exhaustively* --
+    every row of it, up to the sample size -- and the remainder is filled from
+    whatever scores still have rows. Asking for 60 from 108 fives and 12 ones
+    yields all 12 ones and 48 fives, not 30 and 30. That is the intended shape:
+    the rare scores are where the judge is least tested, so the audit takes all
+    of them it can get rather than capping them at a quota.
     """
     if dimension not in DIMENSIONS:
         raise ValueError(f"unknown dimension '{dimension}'; expected one of {list(DIMENSIONS)}")
@@ -178,7 +185,7 @@ def agreement(
     unordered, and those call for different responses.
     """
     try:
-        from sklearn.metrics import cohen_kappa_score
+        from sklearn.metrics import accuracy_score, cohen_kappa_score, mean_absolute_error
     except ImportError as exc:
         raise RuntimeError(SKLEARN_INSTALL_HINT) from exc
     from scipy import stats as scipy_stats
@@ -221,8 +228,8 @@ def agreement(
                     )
                 ),
                 spearman=correlation,
-                exact_match=sum(a == b for a, b in pairs) / len(pairs),
-                mean_absolute_error=sum(abs(a - b) for a, b in pairs) / len(pairs),
+                exact_match=float(accuracy_score(annotated, judged)),
+                mean_absolute_error=float(mean_absolute_error(annotated, judged)),
             )
         )
     return results

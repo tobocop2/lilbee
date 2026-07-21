@@ -198,7 +198,25 @@ def judge_rows(rows: list[BlindRow], llm: Any, out_path: Path) -> dict[str, dict
             checkpoint.append({"gid": row.gid, **grade})
 
     asyncio.run(run())
-    return {
-        record["gid"]: {dimension: record[dimension] for dimension in DIMENSIONS}
-        for record in load_jsonl(out_path)
-    }
+    return load_grades(out_path)
+
+
+def load_grades(path: Path) -> dict[str, dict[str, int]]:
+    """Read a checkpointed grades file as ``gid -> dimension -> score``.
+
+    Filtered to the declared dimensions rather than to "everything but the gid",
+    so a stray key in the file cannot arrive downstream wearing a score's shape.
+    A row missing a dimension raises: ``judge_rows`` only ever writes complete
+    rows, so an incomplete one is a truncated or hand-edited file, and averaging
+    over it would quietly change the denominator.
+    """
+    grades: dict[str, dict[str, int]] = {}
+    for record in load_jsonl(path):
+        missing = [dimension for dimension in DIMENSIONS if dimension not in record]
+        if missing:
+            raise ValueError(
+                f"{path}: grade for {record.get('gid')} is missing {missing}; "
+                "a grades file is written whole, so this one was truncated or edited"
+            )
+        grades[str(record["gid"])] = {dimension: record[dimension] for dimension in DIMENSIONS}
+    return grades

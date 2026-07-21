@@ -12,7 +12,7 @@ from typing import Any
 from evals.retrieval.answers import AnswerRow, answer_questions, make_http_client
 from evals.retrieval.blinding import BlindAssignment, build_blind_rows, unblind
 from evals.retrieval.checkpoint import load_items, load_jsonl
-from evals.retrieval.judging import DIMENSIONS, SCORE_MIN, judge_rows
+from evals.retrieval.judging import DIMENSIONS, SCORE_MIN, judge_rows, load_grades
 from evals.retrieval.llm import judge_backend, lilbee_chat_fn, warm_chat
 from evals.retrieval.questions import (
     COUNT_QUESTIONS,
@@ -154,10 +154,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
         for gid, assignment in assignments.items()
         if _is_prefailed(answers_by_arm.get(assignment.arm, {}).get(assignment.qid))
     ]
-    judged = {
-        record["gid"]: {k: v for k, v in record.items() if k != "gid"}
-        for record in load_jsonl(args.work_dir / GRADES_FILE)
-    }
+    judged = load_grades(args.work_dir / GRADES_FILE)
     # The noise floor is measured only over rows a judge actually graded twice.
     # Prefailed rows were never judged; both of their replicates are mechanically
     # set to the same score below, which would register as perfect agreement and

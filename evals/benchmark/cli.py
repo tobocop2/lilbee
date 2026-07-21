@@ -315,11 +315,9 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 def _cmd_audit_sample(args: argparse.Namespace) -> int:
     """Draw the blind human-audit sheet from a finished judging pass."""
     from evals.benchmark.human_audit import AuditRow, stratified_sample, write_audit_sheet
+    from evals.retrieval.judging import load_grades
 
-    grades = {
-        record["gid"]: {key: value for key, value in record.items() if key != "gid"}
-        for record in load_jsonl(args.grades)
-    }
+    grades = load_grades(args.grades)
     blind = {record["gid"]: record for record in load_jsonl(args.blind_rows)}
     chosen = stratified_sample(grades, args.size, dimension=args.dimension, seed=args.seed)
     missing = [gid for gid in chosen if gid not in blind]
@@ -348,12 +346,9 @@ def _cmd_audit_sample(args: argparse.Namespace) -> int:
 def _cmd_audit_score(args: argparse.Namespace) -> int:
     """Report how closely the judge tracked the human sample."""
     from evals.benchmark.human_audit import agreement, read_audit_sheet
+    from evals.retrieval.judging import load_grades
 
-    grades = {
-        record["gid"]: {key: value for key, value in record.items() if key != "gid"}
-        for record in load_jsonl(args.grades)
-    }
-    results = agreement(grades, read_audit_sheet(args.audited))
+    results = agreement(load_grades(args.grades), read_audit_sheet(args.audited))
     _append_jsonl(
         args.out,
         [{"row_type": "human_audit", **result.to_dict()} for result in results],

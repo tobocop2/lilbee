@@ -146,3 +146,21 @@ def test_agreement_covers_only_the_rows_both_sides_scored():
     human = _grades({f"g{i}": 3 for i in range(MIN_AUDIT_ROWS)})
     for result in agreement(judge, human):
         assert result.n == MIN_AUDIT_ROWS
+
+
+def test_a_rare_score_is_taken_exhaustively_not_capped_at_a_quota():
+    # Round-robin, not an even split. The docstring's own worked example: 108
+    # fives and 12 ones, asking for 60, gives every one of the ones. Capping the
+    # rare bucket at a quota would leave the judge least tested exactly where it
+    # is least tested already.
+    grades = _grades({f"g{i}": 5 for i in range(108)} | {f"h{i}": 1 for i in range(12)})
+    chosen = stratified_sample(grades, 60, dimension="faithfulness", seed=1)
+    rare = [gid for gid in chosen if gid.startswith("h")]
+    assert len(rare) == 12
+    assert len(chosen) == 60
+
+
+def test_asking_for_more_than_exists_returns_everything_once():
+    grades = _grades({f"g{i}": 3 for i in range(5)})
+    chosen = stratified_sample(grades, 50, dimension="relevance", seed=1)
+    assert sorted(chosen) == sorted(grades)
