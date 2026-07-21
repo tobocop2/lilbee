@@ -473,13 +473,27 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
-    def test_init_retunes_search_scope_for_new_vault(self, tmp_path):
-        """Switching vaults re-tunes the search-tool scope hint for the new corpus."""
+    async def test_init_switches_search_scope_hint_to_the_new_vault(
+        self, tmp_path, monkeypatch, overlay_reads_config_toml
+    ):
+        """After a vault switch, a live server advertises the new corpus's scopes.
+
+        The hint is computed per list_tools call from current config, so the
+        overlay ``init`` applies is on the wire without a re-tune step.
+        """
+        from lilbee.mcp_server import build_mcp_server
+
+        monkeypatch.setattr(cfg, "wiki", False)
+        server = build_mcp_server()
+
         target = tmp_path / "proj"
         target.mkdir()
-        with mock.patch("lilbee.mcp_server._tune_search_scope_for_corpus") as mock_tune:
-            init(str(target))
-        mock_tune.assert_called_once()
+        (target / "config.toml").write_text("wiki = true\n")
+        init(str(target))
+
+        assert cfg.wiki is True
+        search = next(t for t in await server.list_tools() if t.name == "search")
+        assert "No wiki layer here" not in (search.description or "")
 
     def test_bare_name_tag_rejected_after_init(self, tmp_path):
         """The cfg validator rejects bare ``name:tag`` shapes."""
@@ -712,17 +726,17 @@ class TestAdd:
 
 
 class TestMain:
-    @mock.patch("lilbee.mcp_server.mcp")
-    def test_main_calls_run(self, mock_mcp):
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
+    def test_main_calls_run(self, mock_build):
         main()
-        mock_mcp.run.assert_called_once()
+        mock_build.return_value.run.assert_called_once()
 
-    @mock.patch("lilbee.mcp_server.mcp")
+    @mock.patch("lilbee.mcp_server.build_mcp_server")
     @mock.patch("lilbee.mcp_server.get_services", side_effect=RuntimeError("boom"))
-    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_mcp):
-        """A crash in the pre-warm path falls through to mcp.run() instead of aborting."""
+    def test_main_preload_failure_does_not_block_server(self, mock_get_services, mock_build):
+        """A crash in the pre-warm path falls through to run() instead of aborting."""
         main()
-        mock_mcp.run.assert_called_once()
+        mock_build.return_value.run.assert_called_once()
 
 
 class TestAddWithUrls:
@@ -1737,34 +1751,21 @@ class TestToolsSchemaSize:
     reviewers can scrutinise.
     """
 
-    def test_tool_if_true_returns_mcp_tool_decorator(self) -> None:
-        """``_tool_if(True)`` returns a real decorator; ``_tool_if(False)``
-        returns a pass-through so the function stays importable but isn't on
-        the MCP wire. Cleans up after itself so the test doesn't pollute the
-        shared FastMCP server with a sentinel tool.
-        """
+    def test_tool_if_rejects_a_pre_evaluated_condition(self) -> None:
+        """``_tool_if(cfg.flag)`` freezes the gate at import; the decorator
+        demands a callable so the mistake fails at decoration, not as a stale
+        tool surface after a config change."""
         from lilbee.mcp_server import _tool_if
-        from lilbee.mcp_server import mcp as _mcp
 
-        sentinel_name = "_schema_size_test_sentinel"
-
-        def _schema_size_test_sentinel() -> None: ...
-
-        gated_off = _tool_if(False)(_schema_size_test_sentinel)
-        assert gated_off is _schema_size_test_sentinel
-        assert sentinel_name not in _mcp._tool_manager._tools
-
-        gated_on = _tool_if(True)(_schema_size_test_sentinel)
-        try:
-            assert callable(gated_on)
-            assert sentinel_name in _mcp._tool_manager._tools
-        finally:
-            _mcp._tool_manager._tools.pop(sentinel_name, None)
+        with pytest.raises(TypeError, match="zero-arg callable"):
+            _tool_if(True)  # type: ignore[arg-type]
 
     async def test_wiki_tools_not_registered_when_wiki_disabled(self) -> None:
         """``cfg.wiki=False`` (the default) keeps wiki MCP tools off the wire."""
         from lilbee.core.config import cfg as _cfg
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         assert _cfg.wiki is False
         tools = await _mcp.list_tools()
@@ -1778,7 +1779,9 @@ class TestToolsSchemaSize:
         lands here first, named, instead of surfacing as a byte overflow in
         whichever job happens to register the most tools.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         registered = {t.name for t in tools if not t.name.startswith(_AMBIENT_TOOL_PREFIXES)}
@@ -1793,12 +1796,14 @@ class TestToolsSchemaSize:
     async def test_default_tools_schema_under_budget(self) -> None:
         """The pinned default surface must stay under the cap so small-context
         (16K) chat models keep room for the user's actual content.
-        ``_strip_schema_noise`` removes title / default / null-arm-anyOf /
+        The ``LilbeeMCP`` wire transform removes title / default / null-arm-anyOf /
         additionalProperties=true noise.
         """
         import json as _json
 
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         payload = [
@@ -1819,10 +1824,12 @@ class TestToolsSchemaSize:
         )
 
     async def test_no_title_noise_in_input_schema(self) -> None:
-        """``_strip_schema_noise`` keeps FastMCP-auto-generated title fields
+        """The wire transform keeps FastMCP-auto-generated title fields
         off the wire. Adding a tool whose schema contains a title fails here.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1834,11 +1841,13 @@ class TestToolsSchemaSize:
                     )
 
     async def test_descriptions_have_no_indented_body_lines(self) -> None:
-        """_strip_schema_noise flattens docstring indentation before it ships. A
+        """The wire transform flattens docstring indentation before it ships. A
         triple-quoted docstring indents every continuation line; textwrap.dedent
         alone left those 4-space prefixes in place because the summary line's zero
         indent makes the common prefix empty."""
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1860,7 +1869,9 @@ class TestToolsSchemaSize:
         """The model picks tools from name + description; ``default`` values
         on properties are server-side trivia that cost tokens at every dispatch.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1875,7 +1886,9 @@ class TestToolsSchemaSize:
         """``T | None`` should serialize as ``{type: T}``, not a two-arm
         ``anyOf`` with a null branch the model gains nothing from.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:
@@ -1895,7 +1908,9 @@ class TestToolsSchemaSize:
         """``additionalProperties: true`` is JSON Schema's default; serializing
         it explicitly is bytes for nothing.
         """
-        from lilbee.mcp_server import mcp as _mcp
+        from lilbee.mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
 
         tools = await _mcp.list_tools()
         for t in tools:

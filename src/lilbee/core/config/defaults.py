@@ -1,8 +1,9 @@
 """Default values and constants for :mod:`lilbee.config`.
 
-Holds frozen literal data: directory ignore lists, NER label allow-list,
-LanceDB table names, the crawl URL exclusion patterns (grouped per
-category), and the default system / CORS prompts.
+Holds frozen literal data: directory ignore lists, the NER label allow-list,
+LanceDB table names, the default HTTP timeout and context size, the crawl URL
+exclusion patterns (grouped per category), the default RAG and general system
+prompts, and the CORS allow-origin regex.
 """
 
 DEFAULT_IGNORE_DIRS = frozenset(
@@ -104,32 +105,48 @@ _ATTACHMENT_EXCLUDE: tuple[str, ...] = (
     r"\?attachment_id=",
 )
 
+# Regexes against the whole URL, not globs, so a bare prefix also matches
+# longer words: /cart excluded /cartography. Require a segment boundary.
+_PATH_BOUNDARY = r"(?:/|\?|#|$)"
+
+
+def _whole_segments(*paths: str) -> tuple[str, ...]:
+    """Anchor each path prefix so it matches a whole segment, not a word."""
+    return tuple(path + _PATH_BOUNDARY for path in paths)
+
+
 # Auth and account flows (generic across CMSes and e-commerce platforms).
-_AUTH_EXCLUDE: tuple[str, ...] = (
+_AUTH_EXCLUDE: tuple[str, ...] = _whole_segments(
     r"/login",
     r"/logout",
     r"/register",
     r"/signup",
     r"/signin",
     r"/account",
-    r"/my-account/",
     r"/profile",
     r"/password-reset",
     r"/forgot-password",
 )
+_AUTH_EXCLUDE = (*_AUTH_EXCLUDE, r"/my-account/")
 
 # E-commerce transactional flows (cart / checkout / compare / etc.).
-_ECOMMERCE_EXCLUDE: tuple[str, ...] = (
+_ECOMMERCE_EXCLUDE: tuple[str, ...] = _whole_segments(
     r"/cart",
     r"/checkout",
     r"/wishlist",
     r"/orders?",
     r"/compare",
+)
+_ECOMMERCE_EXCLUDE = (
+    *_ECOMMERCE_EXCLUDE,
     r"/products\.json",
     r"/collections/.+/products/.+\?page=",
 )
 
 # Marketing / tracking query parameters (utm_*, fbclid, gclid, etc.).
+# Vendor campaign tokens only. Dropping ?utm_source= is free (the canonical
+# URL is in the frontier too), but ?ref= and ?share= are ordinary content
+# links on docs and forum platforms.
 _TRACKING_EXCLUDE: tuple[str, ...] = (
     (
         r"[?&]("
@@ -145,10 +162,9 @@ _TRACKING_EXCLUDE: tuple[str, ...] = (
         r"|igshid"
         r"|pk_campaign|pk_source|pk_medium|pk_[a-z_]+"
         r"|_ga"
-        r"|ref|referrer"
         r"|affiliate|aff_id|aff_ref|aff|partner"
         r"|srsltid"
-        r"|share|replytocom"
+        r"|replytocom"
         r")="
     ),
 )

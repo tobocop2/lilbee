@@ -74,14 +74,38 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _session_token() -> str | None:
+    """The bearer token from server.json, or None if it is not readable yet."""
+    try:
+        data = json.loads(server_json_path().read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    token = data.get("token")
+    return token if isinstance(token, str) and token else None
+
+
 def _probe_health(port: int) -> dict[str, object] | None:
     """GET ``/api/health`` once; return the parsed body on 200, else None.
 
     The single place the probe URL, timeout, error handling, and status check
     live, so the three public probes below stay consistent.
+
+    Health needs the token like every other route: it reports the chat
+    engine's last error, which carries model paths and loader failures. The
+    token is re-read per attempt rather than captured once, because these
+    probes poll a server that is still starting and server.json does not exist
+    until its lifespan has run. No token yet means no server yet, which is the
+    same answer a refused connection gives.
     """
+    token = _session_token()
+    if token is None:
+        return None
     try:
-        resp = httpx.get(f"http://{LOOPBACK}:{port}{_HEALTH_PATH}", timeout=_HEALTH_PROBE_TIMEOUT_S)
+        resp = httpx.get(
+            f"http://{LOOPBACK}:{port}{_HEALTH_PATH}",
+            timeout=_HEALTH_PROBE_TIMEOUT_S,
+            headers={"Authorization": f"Bearer {token}"},
+        )
     except httpx.HTTPError:
         return None
     if resp.status_code != _HTTP_OK:

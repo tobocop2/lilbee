@@ -757,7 +757,11 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
-                pass  # fall through to bool() coercion below for unrecognised strings
+                # bool() on a non-empty string is True, so falling through here
+                # turned an unparseable value into "on". Warn and auto-detect,
+                # matching the sibling validators.
+                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
+                return None
         return bool(v)
 
     @field_validator("flash_attention", mode="before")

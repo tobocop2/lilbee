@@ -984,6 +984,10 @@ _DEVICE_PROBE_FAILURE_TTL_S = 60.0
 class _ReadDeviceCache:
     """Short-TTL device-probe cache for the read/view path.
 
+    Not a ``cachetools.TTLCache``: it caches the *failure* too, under its own
+    longer TTL, and re-raises it. A memoizing cache stores return values only,
+    so a failing probe would re-spawn the subprocess on every placement read.
+
     Inspecting placement (GET placement/gpus, preview, ``placement show``)
     resolves devices on every call, which spawns a ``llama-server --list-devices``
     subprocess; a brief TTL collapses a burst of reads onto one probe. A probe
