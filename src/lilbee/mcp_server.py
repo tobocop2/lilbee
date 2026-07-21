@@ -1301,7 +1301,19 @@ def _parse_spec(spec: dict[str, Any] | None) -> PlacementSpec | None:
 @_tool_named("get_gpus")
 def get_gpus_tool() -> dict[str, Any]:
     """List detected GPUs with free/total VRAM (the placement HTTP /api/gpus equivalent)."""
-    return _placement_guard(lambda: {"gpus": _placement_dict(get_placement())["gpus"]})
+
+    def _body() -> dict[str, Any]:
+        from lilbee.cli.tui import messages as msg
+        from lilbee.providers.fleet.gpu_stats import probe_intel_util_hint
+
+        view = get_placement()
+        hint = probe_intel_util_hint(view.gpus)
+        return {
+            "gpus": _placement_dict(view)["gpus"],
+            "notice": msg.intel_util_hint_text(hint) if hint else None,
+        }
+
+    return _placement_guard(_body)
 
 
 @_tool_named("get_placement")

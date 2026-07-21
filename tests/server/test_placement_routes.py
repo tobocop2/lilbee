@@ -242,25 +242,29 @@ def test_delete_provider_error_returns_503_when_enabled(monkeypatch):
 
 
 def test_get_gpus(monkeypatch):
-    from lilbee.server.models import GpuInfoResponse
+    from lilbee.server.models import GpuInfoResponse, GpusResponse
 
     async def _gpus():
-        return [
-            GpuInfoResponse(
-                index=0,
-                backend="CUDA",
-                label="CUDA0",
-                name="A100",
-                total_bytes=80 * GIB,
-                free_bytes=72 * GIB,
-            )
-        ]
+        return GpusResponse(
+            gpus=[
+                GpuInfoResponse(
+                    index=0,
+                    backend="CUDA",
+                    label="CUDA0",
+                    name="A100",
+                    total_bytes=80 * GIB,
+                    free_bytes=72 * GIB,
+                )
+            ],
+            notice="INSTALL HINT",
+        )
 
     monkeypatch.setattr(handlers, "gpus", _gpus)
     with create_test_client([gpus_route]) as client:
         r = client.get("/api/gpus")
         assert r.status_code == 200
-        assert r.json()[0]["label"] == "CUDA0"
+        assert r.json()["gpus"][0]["label"] == "CUDA0"
+        assert r.json()["notice"] == "INSTALL HINT"
 
 
 def test_gpu_stats_stream_provider_error_returns_503(monkeypatch):

@@ -22,6 +22,7 @@ from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import list_installed_models
+from tests._mock_effects import repeat_last
 
 runner = CliRunner()
 
@@ -3865,7 +3866,7 @@ class TestSelfCheck:
         with (
             mock.patch(
                 "lilbee.cli.commands.setup._download_self_check_model",
-                side_effect=[chat, emb],
+                side_effect=repeat_last(chat, emb),
             ),
             chat_patch,
             embed_patch,
@@ -4347,7 +4348,7 @@ class TestDownloadSelfCheckModel:
                 return b"ok"
 
         urlopen = mock.Mock(
-            side_effect=[urllib.error.URLError("flaky"), _Resp()],
+            side_effect=repeat_last(urllib.error.URLError("flaky"), _Resp()),
         )
         with (
             mock.patch("tempfile.mkdtemp", return_value=str(tmp_path)),

@@ -4669,6 +4669,20 @@ class TestPlacementHandlers:
         assert resp.manual is False
         assert resp.gpus == []
         assert resp.roles == []
+        assert resp.notice is None
+
+    async def test_placement_includes_intel_notice_when_hint_fires(self):
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+        view = _stub_placement_view()
+        hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
+        with (
+            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
+        ):
+            resp = await handlers.placement()
+        assert resp.notice is not None
+        assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in resp.notice
 
     async def test_placement_surfaces_co_tenant_roles(self):
         # Co-tenants are placed but not co-resident; a surface that omits them
@@ -4715,7 +4729,7 @@ class TestPlacementHandlers:
         assert resp.manual is False
         mock_set.assert_called_once_with(None)
 
-    async def test_gpus_returns_list(self):
+    async def test_gpus_returns_envelope(self):
         from lilbee.app.placement import GpuInfo, PlacementView
 
         gpu = GpuInfo(
@@ -4729,8 +4743,31 @@ class TestPlacementHandlers:
         view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
         with patch("lilbee.app.placement.get_placement", return_value=view):
             result = await handlers.gpus()
-        assert len(result) == 1
-        assert result[0].name == "A100"
+        assert len(result.gpus) == 1
+        assert result.gpus[0].name == "A100"
+        assert result.notice is None
+
+    async def test_gpus_includes_intel_notice_when_hint_fires(self):
+        from lilbee.app.placement import GpuInfo, PlacementView
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        view = PlacementView(gpus=(gpu,), roles=(), unplaceable=(), manual=False, spec_json=None)
+        hint = IntelUtilHint(IntelHintKind.INSTALL, None)
+        with (
+            patch("lilbee.app.placement.get_placement", return_value=view),
+            patch("lilbee.providers.fleet.gpu_stats.probe_intel_util_hint", return_value=hint),
+        ):
+            result = await handlers.gpus()
+        assert result.notice is not None
+        assert "igt-gpu-tools" in result.notice
 
     async def test_gpu_stats_stream_emits_live_snapshots(self):
         from lilbee.app.placement import GpuInfo
@@ -4764,6 +4801,7 @@ class TestPlacementHandlers:
 
     async def test_gpu_stats_stream_includes_intel_grant_notice(self):
         from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
         from lilbee.providers.fleet.gpu_stats import GpuStat
 
         gpu = GpuInfo(
@@ -4775,12 +4813,10 @@ class TestPlacementHandlers:
             free_bytes=200,
         )
         stat = {0: GpuStat(0, None, 200, 200)}
+        hint = IntelUtilHint(IntelHintKind.GRANT, "/usr/bin/intel_gpu_top")
         with (
             patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
-            patch(
-                "lilbee.providers.fleet.gpu_stats.intel_grant_binary",
-                return_value="/usr/bin/intel_gpu_top",
-            ),
+            patch("lilbee.providers.fleet.gpu_stats.intel_util_hint", return_value=hint),
         ):
             chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
         events = [
@@ -4790,6 +4826,34 @@ class TestPlacementHandlers:
             if line.startswith("data:")
         ]
         assert "setcap cap_perfmon+ep /usr/bin/intel_gpu_top" in events[0]["notice"]
+
+    async def test_gpu_stats_stream_includes_intel_install_notice(self):
+        from lilbee.app.placement import GpuInfo
+        from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+        from lilbee.providers.fleet.gpu_stats import GpuStat
+
+        gpu = GpuInfo(
+            index=0,
+            backend="SYCL",
+            label="SYCL0",
+            name="Intel Arc",
+            total_bytes=200,
+            free_bytes=200,
+        )
+        stat = {0: GpuStat(0, None, 200, 200)}
+        hint = IntelUtilHint(IntelHintKind.INSTALL, None)
+        with (
+            patch("lilbee.providers.fleet.gpu_stats.probe_gpu_stats", return_value=stat),
+            patch("lilbee.providers.fleet.gpu_stats.intel_util_hint", return_value=hint),
+        ):
+            chunks = [c async for c in handlers.gpu_stats_stream((gpu,), interval_s=0, max_ticks=1)]
+        events = [
+            json.loads(line[len("data:") :].strip())
+            for chunk in chunks
+            for line in chunk.splitlines()
+            if line.startswith("data:")
+        ]
+        assert "igt-gpu-tools" in events[0]["notice"]
 
     async def test_gpu_stats_stream_emits_heartbeat_when_interval_elapsed(self):
         """A heartbeat event is emitted when the configured interval elapses."""

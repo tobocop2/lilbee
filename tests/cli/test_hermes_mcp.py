@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from lilbee.cli.launchers import hermes_mcp
+from tests._mock_effects import repeat_last
 
 
 def _script(tmp_path, shebang: str):
@@ -70,7 +71,7 @@ def test_ensure_installs_pinned_extra_when_missing_and_allowed(tmp_path):
     binary = _script(tmp_path, "#!/opt/venv/bin/python")
     msgs: list[str] = []
     with (
-        patch.object(hermes_mcp, "has_http_mcp", side_effect=[False, True]),
+        patch.object(hermes_mcp, "has_http_mcp", side_effect=repeat_last(False, True)),
         patch.object(hermes_mcp, "_mcp_extra_requirements", return_value=["mcp==1.26.0"]),
         patch.object(hermes_mcp.subprocess, "run") as run,
     ):
@@ -98,7 +99,7 @@ def test_ensure_guides_when_install_did_not_take(tmp_path):
     msgs: list[str] = []
     proc = SimpleNamespace(returncode=1, stderr="error: externally-managed-environment", stdout="")
     with (
-        patch.object(hermes_mcp, "has_http_mcp", side_effect=[False, False]),
+        patch.object(hermes_mcp, "has_http_mcp", side_effect=repeat_last(False, False)),
         patch.object(hermes_mcp, "_mcp_extra_requirements", return_value=["mcp"]),
         patch.object(hermes_mcp.subprocess, "run", return_value=proc),
     ):
