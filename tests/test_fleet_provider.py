@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -3256,3 +3257,75 @@ class TestAdoptableLaunchGuards:
 
     def test_no_detached_states_means_no_adoption(self, tmp_path) -> None:
         assert FleetProvider()._try_adopt_detached(tmp_path) is False
+
+
+class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
+    """A device that enumerates but cannot allocate fails at model load and
+    nowhere else.
+
+    Left healthy, its replica keeps winning the least-in-flight pick, so every
+    request goes to the one instance that cannot serve while a sibling on a
+    working card sits idle.
+    """
+
+    def _clients(self, failing: set[int]):
+        from lilbee.providers.fleet.client import LlamaServerClient
+
+        made = []
+        for i in range(2):
+            client = mock.MagicMock(spec=LlamaServerClient)
+            client.healthy = True
+            client.index = i
+            made.append(client)
+        return made, failing
+
+    def test_the_failing_replica_is_marked_unhealthy(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        clients, _ = self._clients({0})
+
+        def _warm(_role, client):
+            if client.index == 0:
+                raise RuntimeError("failed to allocate on device 0")
+
+        monkeypatch.setattr(provider_mod, "_warm_role", _warm)
+        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
+        fleet._warm_errors = {}
+
+        assert fleet._warm_role_clients(WorkerRole.EMBED, clients) is True
+
+        clients[0].mark_unhealthy.assert_called_once()
+        clients[1].mark_healthy.assert_called_once()
+        clients[1].mark_unhealthy.assert_not_called()
+
+    def test_a_replica_that_loads_is_returned_to_the_pool(self, monkeypatch) -> None:
+        """A previously-failed replica whose device recovered must route again."""
+        from lilbee.providers.fleet import provider as provider_mod
+
+        clients, _ = self._clients(set())
+        monkeypatch.setattr(provider_mod, "_warm_role", lambda _r, _c: None)
+        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
+        fleet._warm_errors = {}
+
+        fleet._warm_role_clients(WorkerRole.EMBED, clients)
+
+        for client in clients:
+            client.mark_healthy.assert_called_once()
+            client.mark_unhealthy.assert_not_called()
+
+    def test_every_replica_failing_still_reports_the_role_unwarmed(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import provider as provider_mod
+
+        clients, _ = self._clients({0, 1})
+
+        def _boom(_role, _client):
+            raise RuntimeError("no device could allocate")
+
+        monkeypatch.setattr(provider_mod, "_warm_role", _boom)
+        fleet = provider_mod.FleetProvider.__new__(provider_mod.FleetProvider)
+        fleet._warm_errors = {}
+
+        assert fleet._warm_role_clients(WorkerRole.EMBED, clients) is False
+        assert "no device could allocate" in fleet._warm_errors[WorkerRole.EMBED]
+        for client in clients:
+            client.mark_unhealthy.assert_called_once()

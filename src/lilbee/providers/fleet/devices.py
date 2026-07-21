@@ -50,6 +50,9 @@ _HIP_VISIBLE_VAR = "HIP_VISIBLE_DEVICES"
 _VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 _ONEAPI_SELECTOR_VAR = "ONEAPI_DEVICE_SELECTOR"
 _LEVEL_ZERO_PREFIX = "level_zero:"
+# ONEAPI_DEVICE_SELECTOR's "every device of this backend"; filters and renumbers
+# nothing, so indices taken behind it are already the backend's own.
+_SELECTOR_WILDCARD = "*"
 # "  CUDA0: NVIDIA GeForce RTX 3090 (24268 MiB, 23500 MiB free)"
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*\((\d+)\s*MiB(?:,\s*(\d+)\s*MiB\s*free)?\)\s*$"
@@ -481,7 +484,8 @@ def visible_env(devices: tuple[FleetDevice, ...]) -> dict[str, str]:
         # with --device instead, in the same space the names were parsed from.
         return {}
     if backend == "SYCL":
-        return {_ONEAPI_SELECTOR_VAR: _compose_sycl(indices, os.environ.get(_ONEAPI_SELECTOR_VAR))}
+        selector = _compose_sycl(indices, os.environ.get(_ONEAPI_SELECTOR_VAR))
+        return {} if selector is None else {_ONEAPI_SELECTOR_VAR: selector}
     return {}
 
 
@@ -515,14 +519,39 @@ def _amd_visible_env(indices: list[int]) -> dict[str, str]:
     return {var: _compose_visible(indices, os.environ.get(var))}
 
 
-def _compose_sycl(indices: list[int], parent_value: str | None) -> str:
-    """``ONEAPI_DEVICE_SELECTOR`` value naming the same devices the probe saw.
+def _compose_sycl(indices: list[int], parent_value: str | None) -> str | None:
+    """``ONEAPI_DEVICE_SELECTOR`` for *indices*, or ``None`` to inherit the parent.
 
-    A parent selector shaped ``level_zero:i,j`` makes the probe's indices
-    relative to its post-colon list, so each index maps through that list like
-    :func:`_compose_visible`; any other shape (or none) emits absolute indices.
+    ``ONEAPI_DEVICE_SELECTOR`` is a selector grammar, not an index list, and only
+    one of its shapes can be composed through. A parent ``level_zero:i,j``
+    renumbers the devices behind it, so the probe's indices are relative to that
+    list and map through it like :func:`_compose_visible`.
+
+    A wildcard (``level_zero:*``) filters and renumbers nothing, so the probe's
+    indices are already absolute and are emitted as they are. Treating it as a
+    one-entry list, which is what matching on the prefix alone did, pinned device
+    0 to every GPU the parent allowed and killed the launch outright for any
+    higher index.
+
+    Every other shape (sub-devices like ``0.1``, a negation, a device-type
+    filter) is left alone: returning ``None`` inherits the parent selector
+    unchanged, which cannot widen what the parent allowed nor fail the launch,
+    where guessing an absolute list could do the first and raising does the
+    second.
     """
-    if parent_value is not None and parent_value.startswith(_LEVEL_ZERO_PREFIX):
-        parent_list = parent_value[len(_LEVEL_ZERO_PREFIX) :]
-        return _LEVEL_ZERO_PREFIX + _compose_visible(indices, parent_list)
+    if parent_value is None:
+        return _absolute_sycl(indices)
+    if not parent_value.startswith(_LEVEL_ZERO_PREFIX):
+        return _absolute_sycl(indices)
+    parent_list = parent_value[len(_LEVEL_ZERO_PREFIX) :]
+    if parent_list.strip() == _SELECTOR_WILDCARD:
+        return _absolute_sycl(indices)
+    entries = [entry.strip() for entry in parent_list.split(",")]
+    if not all(entry.isdigit() for entry in entries):
+        return None
+    return _LEVEL_ZERO_PREFIX + _compose_visible(indices, parent_list)
+
+
+def _absolute_sycl(indices: list[int]) -> str:
+    """``level_zero:`` selector naming *indices* in the backend's own numbering."""
     return _LEVEL_ZERO_PREFIX + ",".join(str(i) for i in indices)

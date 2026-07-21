@@ -882,3 +882,58 @@ class TestRefusingEveryDeviceIsRecorded:
         _fake_listing(monkeypatch, "Available devices:\n  CUDA0: NVIDIA (24268 MiB)\n")
 
         assert probe_devices(Path("/bin/llama-server")).refused_all is False
+
+
+class TestSyclSelectorIsAGrammarNotAnIndexList:
+    """ONEAPI_DEVICE_SELECTOR has shapes beyond ``i,j``, and only that one can be
+    composed through.
+
+    Matching on the ``level_zero:`` prefix alone treated ``level_zero:*`` as a
+    one-entry list: pinning device 0 emitted ``level_zero:*``, exposing every GPU
+    the parent allowed, and pinning any higher index raised and killed the launch.
+    """
+
+    def _pin(self, monkeypatch: pytest.MonkeyPatch, parent: str | None, indices=(0,)):
+        if parent is None:
+            monkeypatch.delenv("ONEAPI_DEVICE_SELECTOR", raising=False)
+        else:
+            monkeypatch.setenv("ONEAPI_DEVICE_SELECTOR", parent)
+        devices = tuple(FleetDevice("SYCL", i, "Arc", 0, 0) for i in indices)
+        return visible_env(devices)
+
+    def test_a_wildcard_parent_yields_the_backends_own_indices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wildcard filters and renumbers nothing, so the probe's indices stand."""
+        assert self._pin(monkeypatch, "level_zero:*") == {"ONEAPI_DEVICE_SELECTOR": "level_zero:0"}
+
+    def test_a_wildcard_parent_no_longer_kills_a_higher_index(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._pin(monkeypatch, "level_zero:*", indices=(1,)) == {
+            "ONEAPI_DEVICE_SELECTOR": "level_zero:1"
+        }
+
+    def test_an_index_list_parent_still_composes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Parent exposes physical 2 and 3 as 0 and 1; pinning 1 means physical 3.
+        assert self._pin(monkeypatch, "level_zero:2,3", indices=(1,)) == {
+            "ONEAPI_DEVICE_SELECTOR": "level_zero:3"
+        }
+
+    def test_a_shape_that_cannot_be_composed_is_inherited_untouched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sub-device selector renumbers in a way an index list cannot express.
+
+        Emitting an absolute list would hand the child devices the parent
+        excluded; raising would kill the launch. Inheriting does neither.
+        """
+        assert self._pin(monkeypatch, "level_zero:0.1") == {}
+
+    def test_a_negation_selector_is_also_inherited(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._pin(monkeypatch, "level_zero:gpu") == {}
+
+    def test_no_parent_selector_emits_absolute(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._pin(monkeypatch, None, indices=(0, 1)) == {
+            "ONEAPI_DEVICE_SELECTOR": "level_zero:0,1"
+        }
