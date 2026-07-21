@@ -127,7 +127,6 @@ def _self_check_server(
     same binary and flags a real request drives. The upstream loads on the first
     request; the caller shuts the manager down.
     """
-    from lilbee.core.config.enums import KvCacheType
     from lilbee.providers.engine_params import (
         resolve_chat_ctx,
         resolve_embed_ctx,
@@ -141,6 +140,7 @@ def _self_check_server(
     from lilbee.providers.fleet.client import LlamaServerClient
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.launch import InstanceLaunch
+    from lilbee.providers.fleet.planning import chat_cache_type_flags, flash_attn_flag
     from lilbee.providers.fleet.swap_manager import SwapManager
     from lilbee.providers.gguf_meta import read_gguf_metadata
 
@@ -151,6 +151,7 @@ def _self_check_server(
     else:
         ctx = cfg.num_ctx or resolve_chat_ctx(model_path, meta)
     spec = embed_spec(meta) if is_embed else ROLE_SPECS[role]
+    cache_type_k, cache_type_v = chat_cache_type_flags()
     argv = build_server_argv(
         binary=resolve_llama_server(),
         spec=spec,
@@ -159,11 +160,13 @@ def _self_check_server(
         n_gpu_layers=resolve_n_gpu_layers(embedding=is_embed),
         slots=1,
         ctx_per_slot=ctx,
-        # Chat mirrors the fleet's chat flags; embed runs f16 KV with a full-ctx batch.
-        flash_attn=None if is_embed else ("off" if cfg.flash_attention is False else "on"),
-        cache_type=(
-            None if is_embed or cfg.kv_cache_type is KvCacheType.F16 else cfg.kv_cache_type.value
-        ),
+        # Chat mirrors the fleet's chat flags, asked of the planner rather than
+        # rebuilt here: the flash-attention value and the KV types are one
+        # decision, and a second copy of it drifts. Embed runs f16 KV with a
+        # full-ctx batch.
+        flash_attn=None if is_embed else flash_attn_flag(),
+        cache_type_k=None if is_embed else cache_type_k,
+        cache_type_v=None if is_embed else cache_type_v,
         batch_size=ctx if is_embed else None,
     )
     work_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))

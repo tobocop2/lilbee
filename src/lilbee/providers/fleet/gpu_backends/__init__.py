@@ -10,6 +10,7 @@ backend string, or None when no backend covers that vendor.
 
 from __future__ import annotations
 
+from lilbee.providers.fleet.devices import VULKAN_BACKEND as _VULKAN
 from lilbee.providers.fleet.gpu_backends.amd import AmdBackend
 from lilbee.providers.fleet.gpu_backends.apple import BACKEND_KEY as _APPLE_KEY
 from lilbee.providers.fleet.gpu_backends.apple import AppleBackend
@@ -42,7 +43,6 @@ def resolve_backend(device_backend: str) -> UtilBackend | None:
     return _REGISTRY.get(device_backend)
 
 
-_VULKAN = "Vulkan"
 # Vulkan is vendor-agnostic, and a consumer GPU is often only exposed to the
 # engine via Vulkan. Map a Vulkan device to a vendor's util backend by the vendor
 # named in its device string so its utilization still reads.

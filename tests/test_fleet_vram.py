@@ -449,3 +449,39 @@ class TestProjectorCorrection:
             tensor_split=(1, 1),
         )
         assert est.per_device_vram == (3_000 + 4096, 3_000)
+
+
+def test_the_v_cache_type_reaches_the_estimator_command_line(monkeypatch, tmp_path) -> None:
+    """K and V differ wherever flash attention is left to the engine.
+
+    An estimate that reuses K for V sizes a cache the server will not allocate.
+    """
+    from lilbee.core.config.enums import KvCacheType
+    from lilbee.providers.fleet import vram as vram_mod
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 64)
+    captured: list[list[str]] = []
+
+    def _capture(argv, _path):
+        captured.append(argv)
+        return '{"estimate": {}}'
+
+    monkeypatch.setattr(vram_mod, "resolve_gguf_parser", lambda: Path("/fake/gguf-parser"))
+    monkeypatch.setattr(vram_mod, "_run_parser", _capture)
+    monkeypatch.setattr(vram_mod, "_parse_estimate", lambda *_a: object())
+    vram_mod._cached_footprint.cache_clear()
+
+    vram_mod.estimate_instance_footprint(
+        model,
+        ctx=4096,
+        slots=1,
+        gpu_layers=-1,
+        flash_attn=False,
+        kv_cache_type=KvCacheType.Q8_0,
+        kv_cache_type_v=KvCacheType.F16,
+    )
+
+    (argv,) = captured
+    assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+    assert argv[argv.index("--cache-type-v") + 1] == "f16"

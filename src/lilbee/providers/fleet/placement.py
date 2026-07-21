@@ -104,18 +104,20 @@ def plan_placement(
     device index; see ``planning.capture_plan_probe``). See
     docs/architecture.md (Placement). Other splits keep the fewest-cards behavior.
 
-    No GPU devices is the CPU/unified-memory case (a GPU-less host, or an Apple
-    Silicon box where the probe found nothing): roles run as single un-pinned
-    instances. ``unified_budget`` (free system RAM, bytes) gates them against one
-    shared pool so an oversize model is unplaceable instead of OOM-livelocking the
-    host; ``None`` keeps the legacy ungated behavior.
+    A ``unified_budget`` (free system RAM, bytes) means every device this host has
+    shares the host's memory, or it has none: an integrated GPU, an Apple Silicon
+    Mac, a GPU-less box. Those go through the shared pool whether or not a device
+    enumerated, because the constraint is the same RAM either way, and only that
+    path can refuse a role. Bin-packing them per device instead reads one pool as
+    several and never refuses anything, so a role set that cannot fit is admitted,
+    loads, and swap-livelocks the machine, which is what the budget exists to
+    prevent. ``None`` means at least one device has memory of its own, and the
+    per-GPU packing below applies.
     """
+    if unified_budget is not None:
+        return _place_shared_memory(models, unified_budget)
     if not devices:
-        return (
-            _place_ungated(models)
-            if unified_budget is None
-            else _place_shared_memory(models, unified_budget)
-        )
+        return _place_ungated(models)
     remaining: dict[int, float] = {idx: vram * USABLE_VRAM_FRACTION for idx, vram in devices}
 
     # The persistent singles are every replicas<=1 role plus replica 0 of each
