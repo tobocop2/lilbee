@@ -73,7 +73,11 @@ setup: |
   # 3.11, and every lilbee release requires >=3.11, so `python3 -m venv` built an
   # environment where "pip install lilbee" reported no matching distribution --
   # which reads as a missing package and is a too-old interpreter.
-  uv venv --python 3.12 /root/lilbee_venv
+  # --clear because setup re-runs on every relaunch and every pod reclaim, and
+  # uv refuses an existing environment. That is the third idempotency failure in
+  # this block: git clone, then the harness overlay, now the venv. Setup is
+  # re-entrant by default here, not by exception.
+  uv venv --clear --python 3.12 /root/lilbee_venv
   uv pip install -q --python /root/lilbee_venv/bin/python --upgrade pip
   /root/lilbee_venv/bin/python -m pip install -q --pre lilbee \
     --extra-index-url "https://lilbee.sh/${BACKEND}/"
