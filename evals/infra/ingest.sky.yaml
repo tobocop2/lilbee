@@ -23,7 +23,13 @@ resources:
 volumes:
   /workspace: msmarco-bench
 envs:
+  # Two branches, because neither has everything. lilbee comes from
+  # feat/kreuzberg-5, which carries data/ingest/trace.py -- the per-document
+  # timing that the whole run exists to capture and that never merged to main.
+  # The harness comes from its own branch. Both SHAs are recorded on the pod so
+  # the run is reproducible from the record rather than from memory.
   BRANCH: feat/kreuzberg-5
+  HARNESS_BRANCH: feat/rag-eval-harness
   BACKEND: cu124
   EMBED_MODEL: Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf
   LILBEE_POD_HOURLY_USD: "6.40"
@@ -32,6 +38,18 @@ setup: |
   set -euo pipefail
   curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${BRANCH}/tools/qa/opencode/pod_bootstrap.sh" -o /tmp/pod_bootstrap.sh
   BRANCH="${BRANCH}" BACKEND="${BACKEND}" bash /tmp/pod_bootstrap.sh
+  # Overlay the harness onto the lilbee checkout. Idempotent, because setup
+  # re-runs on every relaunch and on every pod reclaim.
+  rm -rf /tmp/harness
+  git clone --depth 1 --branch "$HARNESS_BRANCH" https://github.com/tobocop2/lilbee.git /tmp/harness
+  cp -r /tmp/harness/evals /opt/lilbee-src/
+  test -f /opt/lilbee-src/evals/infra/ingest.sh || { echo "FATAL: harness overlay missing"; exit 1; }
+  test -f /opt/lilbee-src/src/lilbee/data/ingest/trace.py || { echo "FATAL: no trace.py; wrong lilbee branch"; exit 1; }
+  # The record of what actually ran, written where the provenance can find it.
+  mkdir -p /workspace/logs
+  { echo "lilbee_branch=$BRANCH lilbee_sha=$(git -C /opt/lilbee-src rev-parse HEAD)";
+    echo "harness_branch=$HARNESS_BRANCH harness_sha=$(git -C /tmp/harness rev-parse HEAD)"; } \
+    | tee /workspace/logs/commits.txt
 run: |
   set -euo pipefail
   cd /opt/lilbee-src
