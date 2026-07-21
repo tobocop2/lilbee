@@ -347,10 +347,97 @@ class TestHeterogeneousGpuSizing:
 
 
 class TestHasNvidiaGpu:
-    def test_true_when_memory_detected(self, monkeypatch) -> None:
-        monkeypatch.setattr("lilbee.providers.model_cache._try_nvidia_memory", lambda: 8 * 1024**3)
+    def test_true_when_a_device_is_detected(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache._nvidia_device_totals",
+            lambda: [("GPU-aaa", 8 * 1024**3)],
+        )
         assert has_nvidia_gpu() is True
 
     def test_false_when_no_gpu(self, monkeypatch) -> None:
-        monkeypatch.setattr("lilbee.providers.model_cache._try_nvidia_memory", lambda: None)
+        monkeypatch.setattr("lilbee.providers.model_cache._nvidia_device_totals", lambda: None)
         assert has_nvidia_gpu() is False
+
+    def test_an_empty_mask_does_not_hide_the_card(self, monkeypatch) -> None:
+        """This answers "does the host have one", not "may this process use it".
+
+        An orchestrator exporting an empty CUDA_VISIBLE_DEVICES is the case the
+        env cleanup exists for, and it asks this first: if the empty mask hid
+        the card here, the cleanup could never run.
+        """
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache._nvidia_device_totals",
+            lambda: [("GPU-aaa", 8 * 1024**3)],
+        )
+        assert has_nvidia_gpu() is True
+
+
+class TestCudaVisibleDevicesMask:
+    """NVML and nvidia-smi report every card the driver knows about.
+
+    CUDA_VISIBLE_DEVICES is read by the CUDA runtime, not by either tool, so
+    budgets taken straight off them describe a machine the engine does not have.
+    """
+
+    _FLEET = (("GPU-aaa", 24 * 1024**3), ("GPU-bbb", 8 * 1024**3), ("GPU-ccc", 16 * 1024**3))
+
+    def _totals(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "lilbee.providers.model_cache._nvidia_device_totals", lambda: list(self._FLEET)
+        )
+
+    def test_unmasked_sums_the_whole_fleet(self, monkeypatch) -> None:
+        self._totals(monkeypatch)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        assert _try_nvidia_memory(sum) == 48 * 1024**3
+
+    def test_a_masked_container_sums_only_what_it_was_given(self, monkeypatch) -> None:
+        """One card of an eight-card host summed all eight and approved models
+        eight times too large for the card the container actually had."""
+        self._totals(monkeypatch)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+        assert _try_nvidia_memory(sum) == 24 * 1024**3
+
+    def test_masking_out_the_smallest_card_raises_the_min_budget(self, monkeypatch) -> None:
+        """The default reducer sized every budget against a card the engine cannot see."""
+        self._totals(monkeypatch)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2")
+        assert _try_nvidia_memory() == 16 * 1024**3
+
+    def test_uuid_entries_select_the_same_way(self, monkeypatch) -> None:
+        self._totals(monkeypatch)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-ccc")
+        assert _try_nvidia_memory() == 16 * 1024**3
+
+    def test_enumeration_stops_at_the_first_entry_naming_no_device(self, monkeypatch) -> None:
+        """CUDA stops there, so 0,9,1 means one card and not two."""
+        self._totals(monkeypatch)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,9,1")
+        assert _try_nvidia_memory(sum) == 24 * 1024**3
+
+    def test_an_empty_mask_leaves_no_budget_at_all(self, monkeypatch) -> None:
+        self._totals(monkeypatch)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        assert _try_nvidia_memory() is None
+
+
+class TestNvidiaSmiRowsThatDoNotParse:
+    """nvidia-smi output is text; a row that is not a memory figure is skipped
+    rather than allowed to poison the budget."""
+
+    def test_a_blank_row_is_dropped(self) -> None:
+        from lilbee.providers.model_cache import _parse_smi_row
+
+        assert _parse_smi_row("") is None
+        assert _parse_smi_row("  , GPU-aaa") is None
+
+    def test_a_non_numeric_memory_figure_is_dropped(self) -> None:
+        from lilbee.providers.model_cache import _parse_smi_row
+
+        assert _parse_smi_row("[N/A], GPU-aaa") is None
+
+    def test_an_older_smi_without_the_uuid_column_still_yields_a_device(self) -> None:
+        from lilbee.providers.model_cache import _parse_smi_row
+
+        assert _parse_smi_row("8192") == ("", 8192 * 1024 * 1024)

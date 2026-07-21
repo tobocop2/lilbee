@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,7 +11,12 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, RerankerType
 from lilbee.providers.fleet import planning as planning_mod
-from lilbee.providers.fleet.devices import DeviceProbe, FleetDevice, visible_env
+from lilbee.providers.fleet.devices import (
+    VULKAN_BACKEND,
+    DeviceProbe,
+    FleetDevice,
+    visible_env,
+)
 from lilbee.providers.fleet.placement import InstancePlan, ModelPlacementInput, Placement
 from lilbee.providers.fleet.vram import GgufVramEstimate
 from lilbee.providers.roles import RerankMode, WorkerRole
@@ -158,14 +164,14 @@ def test_role_ctx_vision_uses_vision_picker(monkeypatch) -> None:
     assert planning_mod._role_ctx(WorkerRole.VISION, Path("/m/v.gguf"), {}) == 4321
 
 
-def test_flash_attn_flag_on_by_default(monkeypatch) -> None:
+def testflash_attn_flag_on_by_default(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "flash_attention", None)
     assert planning_mod.flash_attn_flag() == "on"
     monkeypatch.setattr(cfg, "flash_attention", True)
     assert planning_mod.flash_attn_flag() == "on"
 
 
-def test_flash_attn_flag_off_when_disabled(monkeypatch) -> None:
+def testflash_attn_flag_off_when_disabled(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "flash_attention", False)
     assert planning_mod.flash_attn_flag() == "off"
 
@@ -347,28 +353,31 @@ def test_resolve_vision_slots_ceiling_one_short_circuits(monkeypatch) -> None:
     assert planning_mod._resolve_vision_slots(Path("/m/v.gguf"), 16384) == 1
 
 
-def test_cache_type_flag_none_for_f16(monkeypatch) -> None:
+def test_cache_type_flags_are_absent_for_f16(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
-    assert planning_mod.cache_type_flag() is None
+
+    assert planning_mod.chat_cache_type_flags() == (None, None)
 
 
-def test_cache_type_flag_uses_enum_value(monkeypatch) -> None:
+def test_cache_type_flags_use_the_enum_value(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", None)
-    assert planning_mod.cache_type_flag() == "q8_0"
+
+    assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
 
 
-def test_quantized_kv_falls_back_to_f16_without_flash_attention(monkeypatch) -> None:
-    # llama-server rejects quantized KV without flash attention.
+def test_only_the_v_cache_falls_back_without_flash_attention(monkeypatch) -> None:
+    # llama.cpp refuses a quantized V cache without flash attention; K needs nothing.
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod.cache_type_flag() is None
+
+    assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
 
 
 def test_estimator_kv_type_matches_the_launch_without_flash_attention(monkeypatch) -> None:
@@ -377,7 +386,8 @@ def test_estimator_kv_type_matches_the_launch_without_flash_attention(monkeypatc
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.F16
+    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.Q8_0
+    assert planning_mod._role_kv_cache_type_v(WorkerRole.CHAT) is KvCacheType.F16
 
 
 def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
@@ -1170,11 +1180,17 @@ class TestBuildFleetWiring:
         launch = self._launch_for_role(tmp_path, monkeypatch, role)
         assert launch.token_cap is None
 
-    def test_launch_for_vision_sets_full_core_threads(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(planning_mod.os, "cpu_count", lambda: 12)
+    def test_launch_for_vision_leaves_the_thread_count_to_the_engine(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """os.cpu_count() counts SMT siblings, efficiency cores and the host's cores
+        inside a cgroup-limited container. llama.cpp counts physical math cores and
+        skips efficiency cores deliberately, so the override was strictly worse
+        informed than the default it replaced.
+        """
         argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
-        assert argv[argv.index("--threads") + 1] == "12"
-        assert argv[argv.index("--threads-batch") + 1] == "12"
+        assert "--threads" not in argv
+        assert "--threads-batch" not in argv
         assert "--batch-size" not in argv
 
     def test_launch_for_vision_enables_flash_attn(self, tmp_path, monkeypatch) -> None:
@@ -1281,18 +1297,13 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(engine_params, "train_ctx_from_meta", lambda *a, **k: 600)
         assert engine_params.resolve_llm_rerank_ctx({}, tmp_path / "m.gguf") == 600
 
-    def test_launch_for_vision_threads_floor_when_cpu_count_unknown(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        monkeypatch.setattr(planning_mod.os, "cpu_count", lambda: None)
-        argv = self._launch_role(tmp_path, monkeypatch, WorkerRole.VISION)
-        assert argv[argv.index("--threads") + 1] == str(planning_mod._DEFAULT_THREADS)
-
     def test_plan_all_launches_resolves_devices_and_plans(self, monkeypatch) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         monkeypatch.setattr(
             planning_mod,
@@ -1321,7 +1332,9 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         monkeypatch.setattr(
             planning_mod,
@@ -1352,7 +1365,9 @@ class TestBuildFleetWiring:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         monkeypatch.setattr(
             planning_mod,
@@ -1384,12 +1399,14 @@ class TestBuildFleetWiring:
 
     def test_plan_all_launches_falls_back_to_vulkan_probe(self, monkeypatch) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        # The engine could not answer at all, which is the only case the fallback
+        # is for; a clean run listing nothing is a verdict and gets believed.
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([], "")
-        )  # can't enumerate
+            planning_mod, "probe_devices", lambda _binary: DeviceProbe([], "", spoke_protocol=False)
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_select.enumerate_gpu_vram",
-            lambda: [(0, 24 * _GB)],
+            lambda: [(0, 24 * _GB, 20 * _GB)],
         )
         seen: dict[str, list] = {}
         monkeypatch.setattr(
@@ -1483,7 +1500,11 @@ class TestResolveDevicesProbeFailureWarning:
     def test_warns_when_probe_finds_nothing_on_an_nvidia_host(self, monkeypatch, caplog) -> None:
         # A driver hiccup on a CUDA pod must not silently fall into the unified
         # shared-memory path; the operator needs a loud signal of what to check.
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
@@ -1492,7 +1513,11 @@ class TestResolveDevicesProbeFailureWarning:
         assert any("shared-memory mode" in record.message for record in caplog.records)
 
     def test_no_warning_without_an_nvidia_gpu(self, monkeypatch, caplog) -> None:
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: False)
         monkeypatch.setattr("lilbee.providers.fleet.gpu_select.enumerate_gpu_vram", lambda: [])
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
@@ -1502,7 +1527,9 @@ class TestResolveDevicesProbeFailureWarning:
     def test_no_warning_when_probe_succeeds(self, monkeypatch, caplog) -> None:
         device = FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)
         monkeypatch.setattr(
-            planning_mod, "probe_devices", lambda _binary: DeviceProbe([device], "")
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([device], "Available devices:\n", spoke_protocol=True),
         )
         with caplog.at_level("WARNING", logger=planning_mod.__name__):
             assert planning_mod.resolve_devices(Path("/bin/llama-server")) == [device]
@@ -1515,11 +1542,41 @@ class TestResolveDevicesProbeFailureWarning:
         from lilbee.providers.fleet import cuda_runtime
 
         monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
-        monkeypatch.setattr(planning_mod, "probe_devices", lambda _binary: DeviceProbe([], ""))
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe([], "Available devices:\n", spoke_protocol=True),
+        )
         monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
         monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: True)
         with pytest.raises(ProviderError, match="no CUDA-capable device"):
             planning_mod.resolve_devices(Path("/bin/llama-server"))
+
+    def test_an_engine_that_never_answered_is_not_accused_of_a_broken_driver(
+        self, monkeypatch
+    ) -> None:
+        """The fail-loud guard reads an empty device list as a driver that would
+        not initialize. A binary with no --list-devices support enumerated
+        nothing because it was never asked, so accusing its driver is both wrong
+        and fatal, and it pre-empts the fallback that rescues those engines."""
+        from lilbee.providers.fleet import cuda_runtime, gpu_select
+
+        monkeypatch.setattr(cuda_runtime.sys, "platform", "linux")
+        monkeypatch.setattr(
+            planning_mod,
+            "probe_devices",
+            lambda _binary: DeviceProbe(
+                [], "error: invalid argument: --list-devices\n", spoke_protocol=False
+            ),
+        )
+        monkeypatch.setattr("lilbee.providers.model_cache.has_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(cuda_runtime, "_links_cuda_runtime", lambda *_a: True)
+        monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * _GB, 8 * _GB)])
+        monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+        devices = planning_mod.resolve_devices(Path("/bin/llama-server"))
+
+        assert [(d.backend, d.index) for d in devices] == [("Vulkan", 0)]
 
     def test_probe_timeout_propagates_without_vulkan_fallback(self, monkeypatch) -> None:
         # A wedged probe raises; falling into the in-process Vulkan probe there
@@ -1620,8 +1677,6 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--reasoning-format",
     "--embeddings",
     "--pooling",
-    "--threads",
-    "--threads-batch",
 }
 # Sizing-relevant launch flag -> the gguf-parser flag that must carry the same value.
 _SIZING_FLAG_TO_ESTIMATOR_FLAG = {
@@ -1647,8 +1702,9 @@ class TestEstimateLaunchParity:
         "role",
         [WorkerRole.CHAT, WorkerRole.EMBED, WorkerRole.RERANK, WorkerRole.VISION],
     )
+    @pytest.mark.parametrize("backend", ["CUDA", "Vulkan"])
     def test_launch_sizing_flags_reflected_in_estimator_argv(
-        self, role: WorkerRole, tmp_path, monkeypatch
+        self, role: WorkerRole, backend: str, tmp_path, monkeypatch
     ) -> None:
         from lilbee.providers.fleet import vram as vram_mod
 
@@ -1661,6 +1717,9 @@ class TestEstimateLaunchParity:
         monkeypatch.setattr(cfg, "num_ctx", 4096)
         monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+        # Vulkan leaves V unquantized, so K and V differ; the estimate has to
+        # carry that difference or it sizes a cache the launch will not allocate.
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: backend)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         mmproj = Path("/m/mmproj.gguf") if role is WorkerRole.VISION else None
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: mmproj)
@@ -1691,6 +1750,7 @@ class TestEstimateLaunchParity:
             gpu_layers=captured["gpu_layers"],  # type: ignore[arg-type]
             flash_attn=captured["flash_attn"],  # type: ignore[arg-type]
             kv_cache_type=captured["kv_cache_type"].value,  # type: ignore[union-attr]
+            kv_cache_type_v=captured["kv_cache_type_v"].value,  # type: ignore[union-attr]
             mmproj=str(captured["mmproj_path"]) if captured.get("mmproj_path") else None,
             tensor_split=captured.get("tensor_split", ()),  # type: ignore[arg-type]
             batch_size=captured.get("batch_size"),  # type: ignore[arg-type]
@@ -1712,6 +1772,15 @@ class TestEstimateLaunchParity:
             assert estimator_flags.get(estimator_flag) == value, (
                 f"{role}: launch {flag}={value} not reflected as estimator "
                 f"{estimator_flag}={estimator_flags.get(estimator_flag)}"
+            )
+        # The loop above walks launch flags, so it cannot see an estimator flag
+        # with no launch counterpart. That direction matters for the KV types:
+        # an estimator sizing a q8_0 V cache the launch leaves at f16 reserves
+        # less memory than the server will allocate.
+        for kv_flag in ("--cache-type-k", "--cache-type-v"):
+            assert estimator_flags.get(kv_flag, "f16") == launch_flags.get(kv_flag, "f16"), (
+                f"{role}/{backend}: estimator {kv_flag}={estimator_flags.get(kv_flag)} "
+                f"but launch {kv_flag}={launch_flags.get(kv_flag)}"
             )
 
 
@@ -1815,6 +1884,12 @@ class TestPlanProbe:
         monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None
+        )
+        # The capture takes devices and the all-refused fact from one probe run.
+        monkeypatch.setattr(
+            planning_mod,
+            "_resolve_devices_and_refusal",
+            lambda _b: ([FleetDevice("CUDA", 0, "A", 24 * _GB, free_vram)], False),
         )
         monkeypatch.setattr(
             planning_mod,
@@ -2142,6 +2217,7 @@ def test_estimator_argv_has_no_override_tensor_without_offload(monkeypatch) -> N
         gpu_layers=-1,
         flash_attn=True,
         kv_cache_type="q8_0",
+        kv_cache_type_v="q8_0",
         mmproj=None,
         tensor_split=(),
         batch_size=None,
@@ -2164,6 +2240,7 @@ def test_estimator_argv_charges_offloaded_experts_to_cpu(monkeypatch) -> None:
         gpu_layers=-1,
         flash_attn=True,
         kv_cache_type="q8_0",
+        kv_cache_type_v="q8_0",
         mmproj=None,
         tensor_split=(),
         batch_size=None,
@@ -2308,8 +2385,474 @@ def test_assert_engine_probeable_probes_without_capturing_a_snapshot(monkeypatch
     # The build precondition enumerates devices (surfacing a wedge) but must not
     # store a plan snapshot; that stays with the clean-box capture after the stop.
     called: list[bool] = []
-    monkeypatch.setattr(planning_mod, "_probe_engine_devices", lambda: called.append(True) or [])
+    monkeypatch.setattr(
+        planning_mod, "_probe_engine_devices", lambda: (called.append(True), ([], False))[1]
+    )
     planning_mod._plan_probe_store.clear()
     planning_mod.assert_engine_probeable()
     assert called == [True]  # it enumerated devices...
     assert planning_mod._plan_probe_store.get() is None  # ...but took no snapshot
+
+
+def test_integrated_gpu_keeps_the_shared_ram_budget(monkeypatch) -> None:
+    """An iGPU's reported total is system RAM, not headroom on top of it."""
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 10 * 10**9)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 15 * 10**9)
+    igpu = FleetDevice("Vulkan", 0, "Iris Xe", 15 * 10**9, 15 * 10**9, unified=True)
+    assert planning_mod._unified_memory_budget([igpu]) is not None
+
+
+def test_apple_silicon_keeps_the_shared_ram_budget(monkeypatch) -> None:
+    """Metal reports a working-set slice of system RAM, so the same holds."""
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 20 * 10**9)
+    monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 34 * 10**9)
+    metal = FleetDevice("MTL", 0, "Apple M1 Pro", 22 * 10**9, 22 * 10**9, unified=True)
+    assert planning_mod._unified_memory_budget([metal]) is not None
+
+
+def test_a_discrete_card_beside_an_igpu_still_lifts_the_budget() -> None:
+    """One device with memory of its own is enough; VRAM is the constraint then."""
+    igpu = FleetDevice("Vulkan", 0, "Iris Xe", 15 * 10**9, 15 * 10**9, unified=True)
+    dgpu = FleetDevice("Vulkan", 1, "RTX 4090", 24 * 10**9, 24 * 10**9)
+    assert planning_mod._unified_memory_budget([igpu, dgpu]) is None
+
+
+def test_metal_devices_are_recognised_as_unified(monkeypatch) -> None:
+    """The Apple case is decided by backend, since the size ratio cannot decide it."""
+    from lilbee.providers.fleet import gpu_select
+    from lilbee.providers.fleet.devices import _is_unified
+
+    # The CUDA leg asks the host's real Vulkan loader otherwise, so this passed
+    # on macOS and CI (no loader) and failed on any Linux box with mesa.
+    monkeypatch.setattr(gpu_select, "vulkan_device_types_by_name", dict)
+
+    assert _is_unified("MTL", "Apple M3 Max") is True
+    assert _is_unified("Metal", "Apple M3 Max") is True
+    assert _is_unified("CUDA", "NVIDIA RTX A5000") is False
+
+
+def test_engine_reporting_no_devices_is_believed_over_the_host_loader(monkeypatch) -> None:
+    """A CPU-only build on a desktop with mesa must plan as CPU, not as a GPU box.
+
+    --list-devices prints every non-CPU device the engine can use, so an empty
+    list is a fact. Fabricating devices from the host loader plans a fleet onto
+    GPUs the engine cannot see: the pins are no-ops, the shared-RAM guard is off
+    because the list looked non-empty, and every role loads full weights into
+    RAM while running on the CPU anyway.
+    """
+    from pathlib import Path as _Path
+
+    from lilbee.providers.fleet import gpu_select
+
+    probe = SimpleNamespace(
+        devices=[], output="Available devices:\n", spoke_protocol=True, refused_all=False
+    )
+    monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
+    monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+    )
+    # The host loader can see a GPU; the engine still cannot use it.
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
+
+    assert planning_mod.resolve_devices(_Path("/fake/llama-server")) == []
+
+
+def test_a_probe_that_could_not_run_still_falls_back(monkeypatch) -> None:
+    """No output means no information, which is the one case worth guessing in."""
+    from pathlib import Path as _Path
+
+    from lilbee.providers.fleet import gpu_select
+
+    probe = SimpleNamespace(devices=[], output="", spoke_protocol=False, refused_all=False)
+    monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
+    monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+    )
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+    devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
+    assert [(d.backend, d.index) for d in devices] == [("Vulkan", 0)]
+
+
+def test_an_engine_that_does_not_know_the_flag_still_reaches_the_fallback(monkeypatch) -> None:
+    """A build predating --list-devices prints usage text and exits non-zero.
+
+    The probe merges stderr into stdout, so gating the fallback on "no output"
+    read that usage text as an authoritative empty device list and planned a GPU
+    host as CPU-only, which is a regression against what these users had.
+    """
+    from pathlib import Path as _Path
+
+    from lilbee.providers.fleet import gpu_select
+
+    probe = SimpleNamespace(
+        devices=[],
+        output="error: invalid argument: --list-devices\n",
+        spoke_protocol=False,
+        refused_all=False,
+    )
+    monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
+    monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.assert_cuda_devices_usable", lambda *_a: None
+    )
+    monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(0, 8 * 10**9, 8 * 10**9)])
+    monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+    devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
+
+    assert [(d.backend, d.index) for d in devices] == [("Vulkan", 0)]
+
+
+def test_vulkan_launches_pin_by_name_not_by_raw_index() -> None:
+    """--device takes the names --list-devices printed, the space we parsed from."""
+    from lilbee.providers.fleet.planning import _device_names
+
+    vulkan = (FleetDevice("Vulkan", 0, "", 0, 0), FleetDevice("Vulkan", 2, "", 0, 0))
+    assert _device_names(vulkan) == ("Vulkan0", "Vulkan2")
+
+
+def test_non_vulkan_backends_keep_pinning_through_env() -> None:
+    """CUDA, ROCm and SYCL compose their variables in the probe's own space."""
+    from lilbee.providers.fleet.planning import _device_names
+
+    assert _device_names((FleetDevice("CUDA", 0, "", 0, 0),)) == ()
+    assert _device_names((FleetDevice("ROCm", 0, "", 0, 0),)) == ()
+    assert _device_names(()) == ()
+
+
+class TestFlashAttentionIsBackendAware:
+    """Forcing --flash-attn on took the decision away from the engine everywhere.
+
+    llama.cpp's Vulkan flash-attn coverage lags CUDA's and has been incomplete on
+    Intel's mesa driver, which is what a Tiger Lake laptop reported as a chat
+    slowdown. But 'auto' cannot be passed alone: llama.cpp refuses a quantized V
+    cache without flash attention and the server never starts.
+    """
+
+    def _on_backend(self, monkeypatch, backend: str | None) -> None:
+        monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: backend)
+        monkeypatch.setattr(cfg, "flash_attention", None)
+        monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
+
+    @pytest.mark.parametrize("backend", ["CUDA", "ROCm", "HIP", "Metal", "MTL"])
+    def test_backends_with_full_coverage_are_unchanged(self, monkeypatch, backend: str) -> None:
+        """Every host that works today must keep the argv it has now."""
+        self._on_backend(monkeypatch, backend)
+        assert planning_mod.flash_attn_flag() == "on"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+
+    def test_an_unknown_backend_keeps_todays_behaviour(self, monkeypatch) -> None:
+        self._on_backend(monkeypatch, None)
+        assert planning_mod.flash_attn_flag() == "on"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+
+    @pytest.mark.parametrize("backend", ["Vulkan", "SYCL"])
+    def test_lagging_backends_defer_to_the_engine_and_leave_v_unquantized(
+        self, monkeypatch, backend: str
+    ) -> None:
+        """K quantization needs nothing; only V requires flash attention."""
+        self._on_backend(monkeypatch, backend)
+        assert planning_mod.flash_attn_flag() == "auto"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
+
+    def test_explicit_off_no_longer_asks_for_an_impossible_v_cache(self, monkeypatch) -> None:
+        """flash_attention=false with a quantized KV type asked llama-server for
+        'V cache quantization requires flash_attn', so it never started."""
+        self._on_backend(monkeypatch, "CUDA")
+        monkeypatch.setattr(cfg, "flash_attention", False)
+        assert planning_mod.flash_attn_flag() == "off"
+        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
+
+    def test_the_estimate_does_not_assume_flash_attention_under_auto(self, monkeypatch) -> None:
+        """The engine decides at load; assuming it would size KV below what the
+        launch may need."""
+        self._on_backend(monkeypatch, "Vulkan")
+        assert planning_mod._role_flash(WorkerRole.CHAT) is False
+        self._on_backend(monkeypatch, "CUDA")
+        assert planning_mod._role_flash(WorkerRole.CHAT) is True
+
+
+def test_clearing_the_device_cache_also_clears_what_the_loader_said(monkeypatch) -> None:
+    """The loader's answers are held for the process lifetime otherwise, so a
+    driver reload or a newly plugged eGPU would never be noticed."""
+    from lilbee.providers.fleet import gpu_select
+
+    readings = iter(
+        [
+            [gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.INTEGRATED_GPU, "iGPU", 0, 0)],
+            [gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.DISCRETE_GPU, "eGPU", 0, 0)],
+        ]
+    )
+    monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: next(readings))
+    gpu_select.vulkan_device_types_by_name.cache_clear()
+    gpu_select.integrated_vulkan_indices.cache_clear()
+    try:
+        assert gpu_select.vulkan_device_types_by_name() == {
+            "iGPU": gpu_select.VkDeviceType.INTEGRATED_GPU
+        }
+
+        planning_mod.clear_read_device_cache()
+
+        assert gpu_select.vulkan_device_types_by_name() == {
+            "eGPU": gpu_select.VkDeviceType.DISCRETE_GPU
+        }
+    finally:
+        gpu_select.vulkan_device_types_by_name.cache_clear()
+        gpu_select.integrated_vulkan_indices.cache_clear()
+
+
+class TestLoaderDerivedDevicesAreSizedAgainstButNeverPinned:
+    """The fallback holds raw loader ordinals; --device speaks the engine's own
+    post-filter naming.
+
+    Loader order [llvmpipe, iGPU] leaves the iGPU at raw index 1, so a pin would
+    say Vulkan1 while a Vulkan-capable engine names its only device Vulkan0: an
+    invalid-device error, or the wrong adapter where there are more.
+    """
+
+    def test_a_loader_derived_device_is_not_pinned(self) -> None:
+        from lilbee.providers.fleet.planning import _device_names
+
+        loader = (FleetDevice(VULKAN_BACKEND, 1, "", 8 * _GB, 8 * _GB, from_loader=True),)
+
+        assert _device_names(loader) == ()
+
+    def test_engine_parsed_devices_are_still_pinned_by_name(self) -> None:
+        from lilbee.providers.fleet.planning import _device_names
+
+        parsed = (
+            FleetDevice(VULKAN_BACKEND, 0, "Card A", 8 * _GB, 8 * _GB),
+            FleetDevice(VULKAN_BACKEND, 2, "Card C", 8 * _GB, 8 * _GB),
+        )
+
+        assert _device_names(parsed) == ("Vulkan0", "Vulkan2")
+
+    def test_the_fallback_marks_what_it_builds(self, monkeypatch) -> None:
+        """The flag has to be set where the devices are invented, or the rule
+        above is decoration."""
+        from pathlib import Path as _Path
+
+        from lilbee.providers.fleet import gpu_select
+
+        probe = SimpleNamespace(devices=[], output="", spoke_protocol=False, refused_all=False)
+        monkeypatch.setattr(planning_mod, "probe_devices", lambda _b: probe)
+        monkeypatch.setattr(planning_mod.model_cache, "has_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(gpu_select, "enumerate_gpu_vram", lambda: [(1, 8 * _GB, 8 * _GB)])
+        monkeypatch.setattr(gpu_select, "integrated_vulkan_indices", frozenset)
+
+        devices = planning_mod.resolve_devices(_Path("/fake/llama-server"))
+
+        assert [d.from_loader for d in devices] == [True]
+        assert planning_mod._device_names(tuple(devices)) == ()
+
+
+class TestARefusedDeviceIsAlsoKeptFromTheEngine:
+    """A CPU-shaped plan does not make the engine use the CPU.
+
+    Without a pin, ggml's fallback takes the first non-CPU adapter, i.e. the one
+    lilbee refused, and offloads every layer onto it while placement budgeted
+    against system RAM.
+    """
+
+    def test_the_launch_names_no_device(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(engine_devices_all_refused=True),
+        )
+
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ("none",)
+
+    def test_a_plain_cpu_host_is_left_unpinned(self, monkeypatch) -> None:
+        """Nothing was refused, so there is nothing to keep the engine off."""
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(engine_devices_all_refused=False),
+        )
+
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ()
+
+    def test_no_snapshot_means_no_claim(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ()
+
+    def test_a_placed_gpu_still_wins_over_the_cpu_pin(self, monkeypatch) -> None:
+        """The refusal pin is a fallback for an empty device list, not an override."""
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(engine_devices_all_refused=True),
+        )
+        chosen = (FleetDevice(VULKAN_BACKEND, 0, "Card A", 8 * _GB, 8 * _GB),)
+
+        names = planning_mod._device_names(chosen) or (
+            planning_mod._cpu_pin_when_every_device_was_refused()
+        )
+
+        assert names == ("Vulkan0",)
+
+
+def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None:
+    """--list-devices is a subprocess against a driver that may be wedged, with a
+    minute-long timeout. Devices and the all-refused fact come from one run."""
+    from lilbee.providers.fleet.devices import DeviceProbe
+
+    runs: list[int] = []
+
+    def _counting(_binary, **_kw) -> DeviceProbe:
+        runs.append(1)
+        return DeviceProbe(
+            [FleetDevice("CUDA", 0, "A", 24 * _GB, 20 * _GB)],
+            "Available devices:\n",
+            spoke_protocol=True,
+        )
+
+    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
+    monkeypatch.setattr("lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda: None)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.assert_gpu_devices_usable", lambda *_a: None
+    )
+    monkeypatch.setattr(planning_mod, "probe_devices", _counting)
+    monkeypatch.setattr("lilbee.providers.model_cache.get_available_memory", lambda _f: 20 * _GB)
+    monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
+    planning_mod.clear_plan_probe()
+    try:
+        planning_mod.capture_plan_probe()
+    finally:
+        planning_mod.clear_plan_probe()
+
+    assert len(runs) == 1, f"ran --list-devices {len(runs)} times for one snapshot"
+
+
+class TestTheFleetBackendWithoutAPlanSnapshot:
+    """Flash-attention and KV choices ask which backend the host plans onto.
+
+    Outside a planning pass there is no snapshot, so the question falls to the
+    read cache, and a probe that cannot run must answer "unknown" rather than
+    propagate out of a flag decision.
+    """
+
+    def test_the_read_cache_answers_when_no_snapshot_exists(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            planning_mod._read_device_cache,
+            "get",
+            lambda _b: [FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)],
+        )
+
+        assert planning_mod._fleet_backend() == "CUDA"
+
+    def test_a_probe_that_cannot_run_yields_no_backend(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        def _boom(_b):
+            raise ProviderError("probe wedged")
+
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", _boom)
+
+        assert planning_mod._fleet_backend() is None
+
+    def test_a_host_with_no_devices_yields_no_backend(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: [])
+
+        assert planning_mod._fleet_backend() is None
+
+
+class TestTheFleetBackendFromThePlanSnapshot:
+    """Inside a planning pass the backend comes from the snapshot, so a whole
+    pass answers consistently even as the live probe changes underneath it."""
+
+    def test_the_snapshot_names_the_backend(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(devices=(FleetDevice("ROCm", 0, "AMD", 24 * _GB, 23 * _GB),)),
+        )
+
+        assert planning_mod._fleet_backend() == "ROCm"
+
+    def test_a_snapshot_of_a_gpu_less_host_names_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store, "get", lambda: SimpleNamespace(devices=())
+        )
+
+        assert planning_mod._fleet_backend() is None
+
+    def test_the_snapshot_wins_over_the_live_probe(self, monkeypatch) -> None:
+        """A live read under a loaded fleet can disagree; the pass must not."""
+        monkeypatch.setattr(
+            planning_mod._plan_probe_store,
+            "get",
+            lambda: SimpleNamespace(
+                devices=(FleetDevice("CUDA", 0, "NVIDIA", 24 * _GB, 23 * _GB),)
+            ),
+        )
+
+        def _must_not_run(_b):
+            raise AssertionError("the live probe was consulted despite a snapshot")
+
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", _must_not_run)
+
+        assert planning_mod._fleet_backend() == "CUDA"
+
+
+class TestABusyUnifiedHostStillServesASmallModel:
+    """Admission and sizing ask different questions of the same RAM.
+
+    Routing unified hosts to the refusing path made admission read instantaneous
+    free RAM, so CI refused a 0.6B chat model on a macOS runner that was merely
+    busy: "does not fit available memory and will not be served". The plan
+    defines the whole intended residency, so what it must fit is the machine,
+    not the machine's current moment.
+    """
+
+    def _host(self, monkeypatch, *, total: int, free: int) -> list[FleetDevice]:
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: total)
+        monkeypatch.setattr(planning_mod, "_plan_free_system_memory", lambda: free)
+        return [FleetDevice("MTL", 0, "Apple M2", total, free, unified=True)]
+
+    def test_admission_charges_the_machine_not_the_moment(self, monkeypatch) -> None:
+        devices = self._host(monkeypatch, total=16 * _GB, free=1 * _GB)
+
+        assert planning_mod._unified_admission_budget(devices) > 8 * _GB
+
+    def test_sizing_still_charges_what_is_free(self, monkeypatch) -> None:
+        """Context and slots must fit what can actually be backed right now."""
+        devices = self._host(monkeypatch, total=16 * _GB, free=1 * _GB)
+
+        assert planning_mod._unified_memory_budget(devices) < 2 * _GB
+
+    def test_a_dedicated_host_has_neither_budget(self, monkeypatch) -> None:
+        devices = [FleetDevice("CUDA", 0, "NVIDIA", 24 * _GB, 23 * _GB)]
+
+        assert planning_mod._unified_memory_budget(devices) is None
+        assert planning_mod._unified_admission_budget(devices) is None
+
+    def test_a_model_larger_than_the_machine_is_still_refused(self, monkeypatch) -> None:
+        """The refusal the routing change exists for has to survive the fix."""
+        from lilbee.providers.fleet.placement import ModelPlacementInput, plan_placement
+
+        devices = self._host(monkeypatch, total=16 * _GB, free=8 * _GB)
+        budget = planning_mod._unified_admission_budget(devices)
+
+        assert budget is not None
+        plan = plan_placement(
+            [ModelPlacementInput(WorkerRole.CHAT, 40 * _GB)],
+            [(0, 16 * _GB)],
+            estimate_peak=lambda _r, ratio: tuple(40 * _GB for _ in ratio),
+            unified_budget=budget,
+        )
+
+        assert WorkerRole.CHAT in plan.unplaceable_roles

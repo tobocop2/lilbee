@@ -143,7 +143,7 @@ def _self_check_server(
     from lilbee.providers.fleet.groups import SwapGroup
     from lilbee.providers.fleet.launch import InstanceLaunch
     from lilbee.providers.fleet.planning import (
-        cache_type_flag,
+        chat_cache_type_flags,
         expert_offload_all,
         expert_offload_layers,
         flash_attn_flag,
@@ -158,6 +158,7 @@ def _self_check_server(
     else:
         ctx = cfg.num_ctx or resolve_chat_ctx(model_path, meta)
     spec = embed_spec(meta) if is_embed else ROLE_SPECS[role]
+    cache_type_k, cache_type_v = chat_cache_type_flags()
     argv = build_server_argv(
         binary=resolve_llama_server(),
         spec=spec,
@@ -166,9 +167,13 @@ def _self_check_server(
         n_gpu_layers=resolve_n_gpu_layers(embedding=is_embed),
         slots=1,
         ctx_per_slot=ctx,
-        # Chat mirrors the fleet's chat flags; embed runs f16 KV with a full-ctx batch.
+        # Chat mirrors the fleet's chat flags, asked of the planner rather than
+        # rebuilt here: the flash-attention value and the KV types are one
+        # decision, and a second copy of it drifts. Embed runs f16 KV with a
+        # full-ctx batch.
         flash_attn=None if is_embed else flash_attn_flag(),
-        cache_type=None if is_embed else cache_type_flag(),
+        cache_type_k=None if is_embed else cache_type_k,
+        cache_type_v=None if is_embed else cache_type_v,
         batch_size=ctx if is_embed else None,
         # Expert offload is role-agnostic in the fleet, so it is here too: an MoE
         # embedding model with offload configured must get the same command line

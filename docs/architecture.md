@@ -316,14 +316,31 @@ flowchart LR
   GPU-driver I/O is killed (and abandoned if unkillable) and surfaces as a named
   error through the warm tracker, health, and the TUI, never as an empty device
   list or a silent never-ready fleet.
-- **Pinning** (`devices.visible_env`): per backend, never by a foreign index —
-  CUDA via `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the
-  environment presets another order), ROCm via
-  `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`, Vulkan via `GGML_VK_VISIBLE_DEVICES`.
-  When the parent environment already restricts a visible-devices var (a pod preset
-  like `CUDA_VISIBLE_DEVICES=2,3`), the probe's indices are relative to that list,
-  so the child env maps them back through it (integer or UUID entries) and keeps
-  naming the same physical cards the probe saw.
+- **Pinning**: per backend, never by a foreign index, and in two shapes depending on
+  whether the backend's environment variable speaks the same space `--list-devices`
+  numbers.
+  - By name, via `--device` (`planning._device_names`): **Vulkan** and **SYCL**.
+    `GGML_VK_VISIBLE_DEVICES` indexes the raw loader enumeration, not ggml's
+    filtered list, and setting it also disables ggml's device-type filter, its
+    `storageBuffer16BitAccess` support check and its same-UUID dedup.
+    `ONEAPI_DEVICE_SELECTOR` is a selector over a backend runtime rather than an
+    index list, so a device the engine calls `SYCL1` need not be Level Zero
+    ordinal 1. `--device` names devices exactly as `--list-devices` printed them,
+    which is where the indices came from. Devices synthesized by the Vulkan
+    fallback are never pinned: they carry raw loader ordinals, so the engine is
+    left to select for itself.
+  - By environment (`devices.visible_env`): **CUDA** via `CUDA_VISIBLE_DEVICES`
+    with `CUDA_DEVICE_ORDER` (`PCI_BUS_ID` unless the environment presets another
+    order), **ROCm/HIP** via one of `ROCR_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES`
+    (never both: ROCr filters first and HIP re-indexes within the survivors, so
+    writing both double-filters). When the parent environment already restricts a
+    visible-devices var (a pod preset like `CUDA_VISIBLE_DEVICES=2,3`), the probe's
+    indices are relative to that list, so the child env maps them back through it
+    (integer or UUID entries) and keeps naming the same physical cards the probe
+    saw.
+  - When the engine listed GPUs and placement refused all of them, the launch
+    carries `--device none`: dropping a device from lilbee's view does not stop
+    ggml choosing it, and its fallback takes the first non-CPU adapter.
 - **VRAM estimation** (`vram.py`): each instance's footprint comes from
   **`gguf-parser`** (`estimate_instance_footprint`), a UMA-aware estimator run as a
   subprocess and memoized on the GGUF's path + mtime + sizing. It reports both a

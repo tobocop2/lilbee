@@ -172,21 +172,36 @@ def expert_offload_patterns(*, cpu_moe: bool, n_cpu_moe: int | None) -> tuple[st
     return (EXPERT_TENSOR_REGEX,) if cpu_moe else ()
 
 
+def _attention_args(
+    flash_attn: str | None, cache_type_k: str | None, cache_type_v: str | None
+) -> list[str]:
+    """Flash-attention and KV cache flags; each stays absent to keep the engine default."""
+    args: list[str] = []
+    if flash_attn is not None:
+        args += ["--flash-attn", flash_attn]
+    if cache_type_k is not None:
+        args += ["--cache-type-k", cache_type_k]
+    if cache_type_v is not None:
+        args += ["--cache-type-v", cache_type_v]
+    return args
+
+
 def build_server_argv(
     *,
     binary: Path,
     spec: RoleServerSpec,
     model_path: Path,
     devices: tuple[int, ...],
+    device_names: tuple[str, ...] = (),
     n_gpu_layers: int,
     slots: int,
     ctx_per_slot: int,
     tensor_split: tuple[int, ...] = (),
     mmproj: Path | None = None,
     flash_attn: str | None = None,
-    cache_type: str | None = None,
+    cache_type_k: str | None = None,
+    cache_type_v: str | None = None,
     batch_size: int | None = None,
-    threads: int | None = None,
     no_mmap: bool = False,
     cpu_moe: bool = False,
     n_cpu_moe: int | None = None,
@@ -211,16 +226,18 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
-    if flash_attn is not None:
-        argv += ["--flash-attn", flash_attn]
-    if cache_type is not None:
-        argv += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
+    argv += _attention_args(flash_attn, cache_type_k, cache_type_v)
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
-    if threads is not None:
-        argv += ["--threads", str(threads), "--threads-batch", str(threads)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar
         argv += ["--mmproj", str(mmproj)]
+    if device_names:
+        # Names as --list-devices prints them, which is the space they were parsed
+        # from. The Vulkan visible-devices variable takes RAW loader indices
+        # instead, so re-emitting parsed ordinals into it silently changes index
+        # space, and setting it also turns off ggml's own type filter, support
+        # check and same-UUID dedup. This keeps all of that active.
+        argv += ["--device", ",".join(device_names)]
     if len(devices) > 1:
         ratio = tensor_split or tuple(1 for _ in devices)
         argv += ["--tensor-split", ",".join(str(r) for r in ratio)]

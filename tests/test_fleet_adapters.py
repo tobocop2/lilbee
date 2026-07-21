@@ -138,10 +138,27 @@ def test_build_argv_cache_type_sets_k_and_v() -> None:
         n_gpu_layers=-1,
         slots=4,
         ctx_per_slot=4096,
-        cache_type="q8_0",
+        cache_type_k="q8_0",
+        cache_type_v="q8_0",
     )
     assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
     assert argv[argv.index("--cache-type-v") + 1] == "q8_0"
+
+
+def test_build_argv_quantizes_k_alone_when_asked() -> None:
+    """A quantized V cache needs flash attention; a quantized K cache needs nothing."""
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+        cache_type_k="q8_0",
+    )
+    assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
+    assert "--cache-type-v" not in argv
 
 
 def test_build_argv_batch_size_raises_both_batch_and_ubatch() -> None:
@@ -161,7 +178,12 @@ def test_build_argv_batch_size_raises_both_batch_and_ubatch() -> None:
     assert argv[argv.index("--ubatch-size") + 1] == "8192"
 
 
-def test_build_argv_threads_sets_threads_and_threads_batch() -> None:
+def test_build_argv_never_sets_a_thread_count() -> None:
+    """llama-server counts physical math cores and skips efficiency cores itself.
+
+    Any count lilbee computes here is worse informed than that default, so the
+    knob is gone rather than merely unused.
+    """
     argv = build_server_argv(
         binary=Path("/bin/llama-server"),
         spec=ROLE_SPECS[WorkerRole.VISION],
@@ -170,10 +192,9 @@ def test_build_argv_threads_sets_threads_and_threads_batch() -> None:
         n_gpu_layers=-1,
         slots=1,
         ctx_per_slot=4096,
-        threads=12,
     )
-    assert argv[argv.index("--threads") + 1] == "12"
-    assert argv[argv.index("--threads-batch") + 1] == "12"
+    assert "--threads" not in argv
+    assert "--threads-batch" not in argv
 
 
 def test_build_argv_omits_optional_flags_by_default() -> None:
@@ -394,3 +415,18 @@ def test_expert_offload_patterns_compile_as_regexes() -> None:
     # a pattern that only parses in Python would break both.
     for pattern in expert_offload_patterns(cpu_moe=False, n_cpu_moe=2):
         re.compile(pattern)
+
+
+def test_build_argv_emits_the_device_names_it_is_given() -> None:
+    """Vulkan and SYCL pin by name, in the space --list-devices printed them."""
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0, 2),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        device_names=("Vulkan0", "Vulkan2"),
+    )
+    assert argv[argv.index("--device") + 1] == "Vulkan0,Vulkan2"
