@@ -419,3 +419,51 @@ class TestAnApuLaptopIsNotRefusedTheEngine:
         )
 
         assert cuda_runtime._amd_discrete_gpu_proven() is False
+
+
+def test_hip_link_check_is_false_when_ldd_cannot_run(monkeypatch, tmp_path) -> None:
+    """No linkage evidence is not evidence of linkage: a binary whose libraries
+    cannot be listed must not be accused of linking ROCm."""
+    from lilbee.providers.fleet import cuda_runtime
+
+    monkeypatch.setattr(cuda_runtime, "_ldd_output", lambda *_a: None)
+
+    assert cuda_runtime._links_hip_runtime(tmp_path / "llama-server", {}) is False
+
+
+def test_an_unreadable_sysfs_vendor_entry_is_skipped(monkeypatch, tmp_path) -> None:
+    """A card whose vendor file cannot be read is passed over, not fatal: sysfs
+    entries come and go as devices are bound and unbound."""
+    from lilbee.providers.fleet import cuda_runtime
+
+    drm = tmp_path / "sys/class/drm"
+    unreadable = drm / "card0" / "device"
+    unreadable.mkdir(parents=True)
+    (unreadable / "vendor").mkdir()  # a directory where a file is expected -> OSError
+    (tmp_path / "dev").mkdir()
+    (tmp_path / "dev/kfd").write_text("")
+
+    real_path = cuda_runtime.Path
+
+    class _RootedPath(type(real_path())):  # type: ignore[misc]
+        def __new__(cls, *args):
+            first = str(args[0]) if args else ""
+            if first.startswith(("/dev/kfd", "/sys/class/drm")):
+                return real_path(str(tmp_path) + first)
+            return real_path(*args)
+
+    monkeypatch.setattr(cuda_runtime, "Path", _RootedPath)
+
+    assert cuda_runtime._amd_gpu_present() is False
+
+
+def test_hip_link_check_reads_the_sonames_the_binary_lists(monkeypatch, tmp_path) -> None:
+    """A ROCm build is identified by its linkage, resolved or not, so a stub
+    engine on a host with no ROCm still gets the AMD treatment."""
+    from lilbee.providers.fleet import cuda_runtime
+
+    monkeypatch.setattr(cuda_runtime, "_ldd_output", lambda *_a: "libamdhip64.so.6 => not found\n")
+    assert cuda_runtime._links_hip_runtime(tmp_path / "llama-server", {}) is True
+
+    monkeypatch.setattr(cuda_runtime, "_ldd_output", lambda *_a: "libc.so.6 => /lib/libc.so.6\n")
+    assert cuda_runtime._links_hip_runtime(tmp_path / "llama-server", {}) is False

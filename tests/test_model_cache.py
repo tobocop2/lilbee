@@ -420,3 +420,24 @@ class TestCudaVisibleDevicesMask:
         self._totals(monkeypatch)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         assert _try_nvidia_memory() is None
+
+
+class TestNvidiaSmiRowsThatDoNotParse:
+    """nvidia-smi output is text; a row that is not a memory figure is skipped
+    rather than allowed to poison the budget."""
+
+    def test_a_blank_row_is_dropped(self) -> None:
+        from lilbee.providers.model_cache import _parse_smi_row
+
+        assert _parse_smi_row("") is None
+        assert _parse_smi_row("  , GPU-aaa") is None
+
+    def test_a_non_numeric_memory_figure_is_dropped(self) -> None:
+        from lilbee.providers.model_cache import _parse_smi_row
+
+        assert _parse_smi_row("[N/A], GPU-aaa") is None
+
+    def test_an_older_smi_without_the_uuid_column_still_yields_a_device(self) -> None:
+        from lilbee.providers.model_cache import _parse_smi_row
+
+        assert _parse_smi_row("8192") == ("", 8192 * 1024 * 1024)

@@ -2405,3 +2405,42 @@ def test_capturing_the_plan_snapshot_probes_the_engine_once(monkeypatch) -> None
         planning_mod.clear_plan_probe()
 
     assert len(runs) == 1, f"ran --list-devices {len(runs)} times for one snapshot"
+
+
+class TestTheFleetBackendWithoutAPlanSnapshot:
+    """Flash-attention and KV choices ask which backend the host plans onto.
+
+    Outside a planning pass there is no snapshot, so the question falls to the
+    read cache, and a probe that cannot run must answer "unknown" rather than
+    propagate out of a flag decision.
+    """
+
+    def test_the_read_cache_answers_when_no_snapshot_exists(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(
+            planning_mod._read_device_cache,
+            "get",
+            lambda _b: [FleetDevice("CUDA", 0, "gpu", 24 * _GB, 23 * _GB)],
+        )
+
+        assert planning_mod._fleet_backend() == "CUDA"
+
+    def test_a_probe_that_cannot_run_yields_no_backend(self, monkeypatch) -> None:
+        from lilbee.providers.base import ProviderError
+
+        def _boom(_b):
+            raise ProviderError("probe wedged")
+
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", _boom)
+
+        assert planning_mod._fleet_backend() is None
+
+    def test_a_host_with_no_devices_yields_no_backend(self, monkeypatch) -> None:
+        monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: None)
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
+        monkeypatch.setattr(planning_mod._read_device_cache, "get", lambda _b: [])
+
+        assert planning_mod._fleet_backend() is None

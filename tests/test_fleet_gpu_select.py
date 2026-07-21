@@ -404,3 +404,178 @@ def test_distinct_cards_still_each_report_their_own(monkeypatch) -> None:
         "RTX 4090": 20 * 1024**3,
         "RX 7900 XTX": 2 * 1024**3,
     }
+
+
+class TestTheProbeDegradesOnAnIncompleteLoader:
+    """Every Properties2-family entry point is resolved defensively.
+
+    A loader old enough to lack them is a real configuration, and the probe has
+    to fall back to what Vulkan 1.0 offers rather than raise out of a bootstrap.
+    """
+
+    class _LoaderWithout:
+        """A loader that raises AttributeError for any symbol asked of it."""
+
+        def __getattr__(self, name: str):
+            raise AttributeError(name)
+
+    def test_properties2_absent_yields_no_uuid_reader(self) -> None:
+        from lilbee.providers.fleet.gpu_select import _resolve_properties2
+
+        assert _resolve_properties2(self._LoaderWithout()) is None
+
+    def test_features2_absent_yields_no_feature_reader(self) -> None:
+        from lilbee.providers.fleet.gpu_select import _resolve_features2
+
+        assert _resolve_features2(self._LoaderWithout()) is None
+
+    def test_memory_budget_absent_yields_no_budget_reader(self) -> None:
+        from lilbee.providers.fleet.gpu_select import _resolve_memory_budget
+
+        assert _resolve_memory_budget(self._LoaderWithout()) is None
+
+
+class TestDeviceTypesTheHeadersDoNotDefine:
+    def test_an_unknown_device_type_is_not_invented(self) -> None:
+        """A driver returning a value vk.h has no name for must not become one."""
+        from lilbee.providers.fleet.gpu_select import _known_device_type
+
+        assert _known_device_type(99) is None
+
+    def test_a_known_device_type_round_trips(self) -> None:
+        from lilbee.providers.fleet.gpu_select import VkDeviceType, _known_device_type
+
+        assert _known_device_type(2) is VkDeviceType.DISCRETE_GPU
+
+
+class TestTheMemoryBudgetExtensionIsAskedFor:
+    """Chaining the budget struct onto a device without the extension leaves it
+    zeroed, and a zero budget cannot be told from a full card."""
+
+    def _enum(self, *, first_rc=0, second_rc=0, count=1, name=b"VK_EXT_memory_budget"):
+        from lilbee.providers.fleet import gpu_select
+
+        def _enum_extensions(_handle, _layer, count_ref, props_ref) -> int:
+            if props_ref is None:
+                count_ref._obj.value = count
+                return first_rc
+            for i in range(count):
+                props_ref[i].extensionName = name
+            return second_rc
+
+        return gpu_select, _enum_extensions
+
+    def test_the_extension_being_present_is_detected(self) -> None:
+        gpu_select, enum_extensions = self._enum()
+
+        assert gpu_select._supports_memory_budget(None, enum_extensions) is True
+
+    def test_a_device_listing_other_extensions_only(self) -> None:
+        gpu_select, enum_extensions = self._enum(name=b"VK_KHR_swapchain")
+
+        assert gpu_select._supports_memory_budget(None, enum_extensions) is False
+
+    def test_a_device_listing_no_extensions(self) -> None:
+        gpu_select, enum_extensions = self._enum(count=0)
+
+        assert gpu_select._supports_memory_budget(None, enum_extensions) is False
+
+    def test_a_failed_count_query(self) -> None:
+        gpu_select, enum_extensions = self._enum(first_rc=1)
+
+        assert gpu_select._supports_memory_budget(None, enum_extensions) is False
+
+    def test_a_failed_second_query(self) -> None:
+        gpu_select, enum_extensions = self._enum(second_rc=1)
+
+        assert gpu_select._supports_memory_budget(None, enum_extensions) is False
+
+
+class _FakeSymbol:
+    """Stands in for a ctypes function pointer: accepts argtypes/restype."""
+
+    argtypes: object = None
+    restype: object = None
+
+
+class _LoaderWith:
+    """A loader exposing every symbol the probe may resolve."""
+
+    def __init__(self) -> None:
+        self._symbols: dict[str, _FakeSymbol] = {}
+
+    def __getattr__(self, name: str) -> _FakeSymbol:
+        return self._symbols.setdefault(name, _FakeSymbol())
+
+
+class TestResolvedSymbolsCarryTheirCallingConvention:
+    """argtypes and restype are stamped on every resolved symbol.
+
+    Skipping it lets ctypes guess the calling convention, which on Windows is
+    silent stack corruption rather than an error.
+    """
+
+    def test_properties2_is_stamped(self) -> None:
+        from lilbee.providers.fleet.gpu_select import _resolve_properties2
+
+        resolved = _resolve_properties2(_LoaderWith())
+
+        assert resolved is not None
+        assert resolved.argtypes is not None
+        assert resolved.restype is None
+
+    def test_features2_is_stamped(self) -> None:
+        from lilbee.providers.fleet.gpu_select import _resolve_features2
+
+        resolved = _resolve_features2(_LoaderWith())
+
+        assert resolved is not None
+        assert resolved.argtypes is not None
+
+    def test_the_memory_budget_pair_is_stamped(self) -> None:
+        from lilbee.providers.fleet.gpu_select import _resolve_memory_budget
+
+        resolved = _resolve_memory_budget(_LoaderWith())
+
+        assert resolved is not None
+        get_memory2, enum_extensions = resolved
+        assert get_memory2.argtypes is not None
+        assert enum_extensions.restype is not None
+
+
+class TestProvingADiscreteCardFromAVendor:
+    """The ROCm fail-loud guard asks this before refusing to start, so the three
+    answers have to stay distinct: yes, no, and cannot tell."""
+
+    def test_a_discrete_card_of_that_vendor_is_proof(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.DISCRETE_GPU, "RX", 0x1002, 0)
+            ],
+        )
+
+        assert gpu_select.discrete_gpu_from_vendor(0x1002) is True
+
+    def test_a_discrete_card_of_another_vendor_is_not(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(
+            gpu_select,
+            "_enumerate_vulkan_devices",
+            lambda: [
+                gpu_select.VulkanDevice(0, gpu_select.VkDeviceType.DISCRETE_GPU, "RTX", 0x10DE, 0)
+            ],
+        )
+
+        assert gpu_select.discrete_gpu_from_vendor(0x1002) is False
+
+    def test_an_unreachable_loader_cannot_tell(self, monkeypatch) -> None:
+        from lilbee.providers.fleet import gpu_select
+
+        monkeypatch.setattr(gpu_select, "_enumerate_vulkan_devices", lambda: None)
+
+        assert gpu_select.discrete_gpu_from_vendor(0x1002) is None

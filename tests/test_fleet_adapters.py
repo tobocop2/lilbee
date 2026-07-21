@@ -344,3 +344,18 @@ def test_build_argv_defaults_to_mmap() -> None:
         ctx_per_slot=4096,
     )
     assert "--no-mmap" not in argv
+
+
+def test_build_argv_emits_the_device_names_it_is_given() -> None:
+    """Vulkan and SYCL pin by name, in the space --list-devices printed them."""
+    argv = build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0, 2),
+        n_gpu_layers=-1,
+        slots=1,
+        ctx_per_slot=4096,
+        device_names=("Vulkan0", "Vulkan2"),
+    )
+    assert argv[argv.index("--device") + 1] == "Vulkan0,Vulkan2"
