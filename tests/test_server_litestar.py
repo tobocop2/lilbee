@@ -1508,6 +1508,19 @@ class TestLifespan:
             pass
 
     @mock.patch("lilbee.server.app.get_services")
+    async def test_a_raising_embedding_check_warns_and_does_not_block(self, mock_get_svc, caplog):
+        """A check that raises leaves the server usable for everything but embedding."""
+        mock_svc = mock.MagicMock()
+        mock_svc.embedder.validate_model.side_effect = RuntimeError("model file is corrupt")
+        mock_get_svc.return_value = mock_svc
+        from lilbee.server.app import _lifespan
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.server.app"):
+            async with _lifespan(mock.MagicMock()):
+                pass
+        assert "Failed to validate embedding model" in caplog.text
+
+    @mock.patch("lilbee.server.app.get_services")
     async def test_unavailable_embedding_model_warns_and_does_not_block(self, mock_get_svc, caplog):
         mock_svc = mock.MagicMock()
         mock_svc.embedder.validate_model.return_value = False
