@@ -171,8 +171,8 @@ async def search_route(
         raise ValidationException(str(exc)) from exc
     except Exception as exc:
         # str(exc) here routinely carries data-root paths, LanceDB table names,
-        # and model ids, and this route has no token gate. Log the real cause
-        # for the operator; return a generic message on the wire.
+        # and model ids. Log the real cause for the operator; return a generic
+        # message on the wire.
         log.exception("Search failed")
         raise HTTPException(status_code=503, detail="Search is temporarily unavailable.") from exc
 

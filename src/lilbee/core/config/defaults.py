@@ -1,4 +1,4 @@
-"""Default values and constants for :mod:`lilbee.config`.
+"""Default values and constants for :mod:`lilbee.core.config`.
 
 Holds frozen literal data: directory ignore lists, the NER label allow-list,
 LanceDB table names, the default HTTP timeout and context size, the crawl URL
