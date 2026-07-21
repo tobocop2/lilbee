@@ -127,6 +127,9 @@ run: |
   export LILBEE_INGEST_TRACE_FILE=/workspace/logs/ingest_trace.log
   export WORK_DIR=/root MIN_DISK_GB=400
   export LILBEE_BASE_URL=http://127.0.0.1:8080
+  # preflight and ingest.sh both need these; only the ssh driver set them before.
+  export LILBEE_BIN=/root/lilbee_venv/bin/lilbee PYBIN=/root/lilbee_venv/bin/python
+  export EMBED_MODEL="$EMBED_MODEL" BACKEND="$BACKEND"
   # One embed server per card that actually provisioned. lilbee's auto setting
   # is one-per-GPU but caps itself by the VRAM left after reserving a persistent
   # query fleet (chat, rerank, vision) this run never calls, so it is pinned --
