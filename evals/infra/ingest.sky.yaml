@@ -1,0 +1,46 @@
+# Stage 2: embed and index 8,841,823 passages.
+#
+# 4x A100-80GB. Embedding is data-parallel -- each card takes a different shard
+# and there is no all-reduce -- so more GPUs is close to linear here. That is a
+# different situation from tensor-split generation, which a previous run found
+# all-reduce-bound on PCIe; the earlier warning does not apply to this workload.
+#
+# disk_size holds the working set on local NVMe. The volume is for sequential
+# files only: it is MooseFS, where per-file operations measured ~1000x slower
+# than local disk, and building a LanceDB index there cost a previous run four
+# hours with the GPUs idle.
+#
+#   sky launch -c msmarco-ingest evals/infra/ingest.sky.yaml --retry-until-up -y
+name: msmarco-ingest
+resources:
+  cloud: runpod
+  disk_size: 600
+  ordered:
+    - accelerators: A100-80GB-SXM:4
+    - accelerators: A100-80GB:4
+    - accelerators: A100-80GB-SXM:2
+    - accelerators: A100-80GB:2
+volumes:
+  /workspace: msmarco-bench
+envs:
+  BRANCH: feat/kreuzberg-5
+  BACKEND: cu124
+  EMBED_MODEL: Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf
+  LILBEE_POD_HOURLY_USD: "6.40"
+  HF_TOKEN: ""
+setup: |
+  set -euo pipefail
+  curl -fsSL "https://raw.githubusercontent.com/tobocop2/lilbee/${BRANCH}/tools/qa/opencode/pod_bootstrap.sh" -o /tmp/pod_bootstrap.sh
+  BRANCH="${BRANCH}" BACKEND="${BACKEND}" bash /tmp/pod_bootstrap.sh
+run: |
+  set -euo pipefail
+  cd /opt/lilbee-src
+  export WORKSPACE=/workspace LOCAL=/root/msmarco
+  export LILBEE_INGEST_TRACE=1
+  export LILBEE_INGEST_TRACE_FILE=/workspace/logs/ingest_trace.log
+  export WORK_DIR=/root MIN_DISK_GB=400
+  export LILBEE_BASE_URL=http://127.0.0.1:8080
+  mkdir -p /workspace/logs
+  # Fails before the hours start, not during them.
+  bash evals/infra/preflight.sh 2>&1 | tee /workspace/logs/preflight.log
+  bash evals/infra/ingest.sh    2>&1 | tee -a /workspace/logs/ingest.log

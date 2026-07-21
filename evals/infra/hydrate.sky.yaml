@@ -1,0 +1,36 @@
+# Stage 1: pull MS MARCO onto the volume. CPU only, on purpose.
+#
+# Downloading 8.8M passages is I/O, not compute. Doing it on the GPU box would
+# bill an A100 by the hour to wait on a socket. This pod exists to be cheap and
+# to be gone the moment it finishes.
+#
+#   sky launch -c msmarco-hydrate evals/infra/hydrate.sky.yaml --retry-until-up -y
+name: msmarco-hydrate
+resources:
+  cloud: runpod
+  cpus: 8+
+  disk_size: 100
+volumes:
+  /workspace: msmarco-bench
+envs:
+  BRANCH: feat/kreuzberg-5
+  LILBEE_POD_HOURLY_USD: "0.20"
+setup: |
+  set -euo pipefail
+  apt-get update -qq && apt-get install -y -qq git curl >/dev/null
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  git clone --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git /opt/lilbee-src
+  cd /opt/lilbee-src
+  uv sync --project evals
+run: |
+  set -euo pipefail
+  export PATH="$HOME/.local/bin:$PATH"
+  cd /opt/lilbee-src
+  mkdir -p /workspace/datasets /workspace/logs
+  # ir_datasets pins and checksums the published copy, so what lands here is
+  # the same collection the leaderboard used rather than a re-hosted variant.
+  PYTHONPATH=. uv run --project evals python -m evals.benchmark fetch \
+    --manifest evals/benchmark/manifest.msmarco.yaml \
+    --out /workspace/datasets 2>&1 | tee /workspace/logs/hydrate.log
+  ls -la /workspace/datasets/msmarco/

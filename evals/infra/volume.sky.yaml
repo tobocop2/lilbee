@@ -1,0 +1,19 @@
+# Persistent volume for the MS MARCO run: the corpus going in, the index tarball
+# coming out. Both survive pod teardown, which matters because a secure pod can
+# be reclaimed mid-ingest and the alternative is re-downloading 8.8M passages.
+#
+# Pinned to US-MD-1 because that is where A100-80GB had live stock when the run
+# was placed (evals/infra/gpu_availability.py). A RunPod volume cannot move
+# datacentre, so the GPU has to be found first and the volume built around it.
+#
+# A100 rather than H100 deliberately: the prebuilt cu124 engine ships no sm_90
+# kernels and dies on H100 with a misleading "no CUDA-capable device". A100 is
+# sm_80 and known-good.
+#
+#   sky volumes apply evals/infra/volume.sky.yaml
+name: msmarco-bench
+type: runpod-network-volume
+infra: runpod/US/US-MD-1
+# Corpus 3G + 8.8M passage files ~35G + index ~135G at f32 + tarball ~135G,
+# with headroom for the tar to exist beside the thing it archives.
+size: 600Gi
