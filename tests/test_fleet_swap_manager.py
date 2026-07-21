@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -367,6 +368,7 @@ class TestProcessTeardown:
             def __init__(self, pid: int, argv: list[str]) -> None:
                 self.pid = pid
                 self._argv = argv
+                self.info = {"name": Path(next(iter(argv), "")).name}
 
             def cmdline(self) -> list[str]:
                 return self._argv
@@ -379,7 +381,33 @@ class TestProcessTeardown:
         ours = _Proc(10, [swap_bin, "-config", our_cfg, "-listen", "x"])
         other = _Proc(11, [swap_bin, "-config", other_cfg])
         notswap = _Proc(12, ["/x/bin/python", "-config", our_cfg])
-        monkeypatch.setattr(sm.psutil, "process_iter", lambda: [ours, other, notswap])
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda *a, **k: [ours, other, notswap])
+        result = sm._swaps_for_config(Path("/data/llama-swap.json"))
+        assert [p.pid for p in result] == [10]
+
+    def test_swaps_for_config_reads_no_cmdline_for_unrelated_processes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The scan walks the whole process table; cmdline() is the expensive call
+        # (and on macOS blocks on entitlement-protected binaries), so a process
+        # whose name is not llama-swap must be filtered on name alone.
+        class _Exploding:
+            pid = 99
+            info: ClassVar[dict[str, str]] = {"name": "Google Chrome Helper"}
+
+            def cmdline(self) -> list[str]:
+                raise AssertionError("cmdline() paid for an unrelated process")
+
+        our_cfg = str(Path("/data/llama-swap.json"))
+
+        class _Ours:
+            pid = 10
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
+
+            def cmdline(self) -> list[str]:
+                return ["/x/bin/llama-swap", "-config", our_cfg]
+
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda *a, **k: [_Exploding(), _Ours()])
         result = sm._swaps_for_config(Path("/data/llama-swap.json"))
         assert [p.pid for p in result] == [10]
 
@@ -388,29 +416,32 @@ class TestProcessTeardown:
     ) -> None:
         # A process can exit (or deny access) between enumeration and cmdline();
         # the scan must skip it, not abort, or a busy box could never be reaped.
+        swap_bin = "/x/bin/llama-swap"
+        our_cfg = str(Path("/data/llama-swap.json"))
+
         class _GoneProc:
             pid = 20
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
 
             def cmdline(self) -> list[str]:
                 raise sm.psutil.NoSuchProcess(self.pid)
 
         class _DeniedProc:
             pid = 21
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
 
             def cmdline(self) -> list[str]:
                 raise sm.psutil.AccessDenied(self.pid)
 
-        swap_bin = "/x/bin/llama-swap"
-        our_cfg = str(Path("/data/llama-swap.json"))
-
         class _LiveProc:
             pid = 22
+            info: ClassVar[dict[str, str]] = {"name": "llama-swap"}
 
             def cmdline(self) -> list[str]:
                 return [swap_bin, "-config", our_cfg]
 
         monkeypatch.setattr(
-            sm.psutil, "process_iter", lambda: [_GoneProc(), _DeniedProc(), _LiveProc()]
+            sm.psutil, "process_iter", lambda *a, **k: [_GoneProc(), _DeniedProc(), _LiveProc()]
         )
         result = sm._swaps_for_config(Path("/data/llama-swap.json"))
         assert [p.pid for p in result] == [22]
@@ -1040,6 +1071,7 @@ class _FakeServerProc:
         self._parent_name = parent_name
         self.terminated = False
         self.killed = False
+        self.info = {"name": Path(next(iter(cmdline), "")).name}
 
     def cmdline(self) -> list[str]:
         if self._cmdline_raises:
@@ -1088,11 +1120,11 @@ class TestOrphanServerReaping:
         recycled = _FakeServerProc(2, ["/usr/bin/python3", "serve.py", "--port", "5002"])
         other_port = _FakeServerProc(3, ["/opt/llama-server", "--port", "9999"])
         no_port = _FakeServerProc(4, ["/opt/llama-server"])
-        vanished = _FakeServerProc(5, [], cmdline_raises=True)
+        vanished = _FakeServerProc(5, ["/opt/llama-server"], cmdline_raises=True)
         monkeypatch.setattr(
             sm.psutil,
             "process_iter",
-            lambda: iter([orphan, recycled, other_port, no_port, vanished]),
+            lambda *a, **k: iter([orphan, recycled, other_port, no_port, vanished]),
         )
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
         SwapManager(tmp_path, _GROUP).reap_stale()
@@ -1114,7 +1146,7 @@ class TestOrphanServerReaping:
             ["/opt/llama-server", "--port", "5001"],
             parent_name="llama-swap",
         )
-        monkeypatch.setattr(sm.psutil, "process_iter", lambda: iter([adopted]))
+        monkeypatch.setattr(sm.psutil, "process_iter", lambda *a, **k: iter([adopted]))
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert adopted.terminated is False
@@ -1135,7 +1167,9 @@ class TestOrphanServerReaping:
             ["/opt/llama-server", "--port", "5002"],
             parent_name=_PARENT_RAISES,
         )
-        monkeypatch.setattr(sm.psutil, "process_iter", lambda: iter([orphan, parent_vanished]))
+        monkeypatch.setattr(
+            sm.psutil, "process_iter", lambda *a, **k: iter([orphan, parent_vanished])
+        )
         monkeypatch.setattr(sm.psutil, "wait_procs", lambda procs, timeout: (list(procs), []))
         SwapManager(tmp_path, _GROUP).reap_stale()
         assert orphan.terminated is True
@@ -1463,11 +1497,15 @@ def test_owned_swap_scan_skips_processes_that_deny_inspection(monkeypatch, leak)
     from lilbee.providers.fleet import swap_manager
 
     config_path = Path("/tmp/x.json")
+    # name() is cheap and readable; only cmdline() (KERN_PROCARGS2) is protected,
+    # so both pass the name pre-filter and the leak surfaces at cmdline().
     denied = mock.MagicMock()
+    denied.info = {"name": "llama-swap"}
     denied.cmdline.side_effect = leak
     visible = mock.MagicMock()
+    visible.info = {"name": "llama-swap"}
     visible.cmdline.return_value = ["/opt/bin/llama-swap", "-config", str(config_path)]
-    monkeypatch.setattr(psutil, "process_iter", lambda: [denied, visible])
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: [denied, visible])
 
     swaps = swap_manager._swaps_for_config(config_path)
     assert swaps == [visible]

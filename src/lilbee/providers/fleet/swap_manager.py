@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -420,6 +421,22 @@ def _await_killed(procs: list[psutil.Process]) -> None:
         log.warning("Process %s survived SIGKILL; its VRAM may still be held.", proc.pid)
 
 
+def _processes_named(needle: str) -> Iterator[psutil.Process]:
+    """Live processes whose executable name contains *needle*.
+
+    ``name()`` is a cheap field (comm/proc_name); ``cmdline()`` reads the full
+    argument vector and on macOS blocks on entitlement-protected binaries. So the
+    name is the pre-filter and callers pay for ``cmdline()`` only on a match,
+    which keeps a full-process-table scan from stalling on an unrelated process.
+    """
+    for proc in psutil.process_iter(["name"]):
+        # process_iter already skips processes that vanish mid-scan and, per its
+        # ad_value contract, leaves ``name`` as None where it could not be read.
+        name = proc.info["name"] or ""
+        if needle in name:
+            yield proc
+
+
 def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
     """Every live llama-swap (any owner) running against *config_path*.
 
@@ -430,7 +447,7 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
     """
     target = str(config_path)
     swaps: list[psutil.Process] = []
-    for proc in psutil.process_iter():
+    for proc in _processes_named(_LLAMA_SWAP_PROCESS_NAME):
         try:
             cmdline = proc.cmdline()
         except (
@@ -444,8 +461,8 @@ def _swaps_for_config(config_path: Path) -> list[psutil.Process]:
             # binaries (sysctl KERN_PROCARGS2), leaking a raw PermissionError or a
             # C-extension SystemError instead of an AccessDenied.
             continue
-        binary = Path(next(iter(cmdline), "")).name
-        if _LLAMA_SWAP_PROCESS_NAME in binary and target in cmdline:
+        # Identity is the -config path; _processes_named already gated on comm.
+        if target in cmdline:
             swaps.append(proc)
     return swaps
 
@@ -724,14 +741,13 @@ def _find_orphan_servers(ports: tuple[int, ...]) -> list[psutil.Process]:
         return []
     targets = {str(port) for port in ports}
     orphans: list[psutil.Process] = []
-    for proc in psutil.process_iter():
+    for proc in _processes_named(_LLAMA_SERVER_PROCESS_NAME):
         try:
             cmdline = proc.cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        binary = Path(next(iter(cmdline), "")).name
-        if _LLAMA_SERVER_PROCESS_NAME not in binary:
-            continue
+        # Identity is the --port value plus the absence of a live swap parent;
+        # _processes_named already gated on the executable name (comm).
         if _port_argument(cmdline) in targets and not _has_live_swap_parent(proc):
             orphans.append(proc)
     return orphans
