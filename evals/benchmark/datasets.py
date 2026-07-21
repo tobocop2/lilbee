@@ -1,24 +1,29 @@
 """Dataset loading, normalized to a single (corpus, queries, qrels) triple.
 
+``ir_datasets`` owns the download, the cache, and the parse. It ships all 48
+BEIR sets, pins each to a specific published copy, and verifies it. The loader
+this replaces fetched an unversioned URL, so a republished upstream corpus moved
+every number while the frozen manifest's fingerprint stayed identical, and the
+reproducibility the manifest exists to carry was a claim about the dataset name
+alone.
+
 Two label kinds:
 
-- NATIVE qrels ship with the dataset (BEIR, MS MARCO, HotpotQA). They are used
-  as published.
-- DERIVED qrels are computed from human gold-evidence annotations on QA
-  datasets that have no retrieval labels of their own (TAT-DQA, OTT-QA). The
-  derivation is the single documented pure function ``derive_qrels_from_evidence``,
-  and every derived dataset is recorded as such in the manifest.
-
-Real downloads live behind a lazily-imported loader. The normalization and
-derivation logic is pure and is what the unit tests exercise on tiny fixtures.
+- NATIVE qrels ship with the dataset (BEIR, MS MARCO, HotpotQA). Used as
+  published, straight from ir_datasets.
+- DERIVED qrels are computed from human gold-evidence annotations on QA datasets
+  that have no retrieval labels of their own (TAT-DQA, OTT-QA). The derivation is
+  the single documented pure function ``derive_qrels_from_evidence``, and every
+  derived dataset is recorded as such in the manifest.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
+
+from evals.deps import install_hint
 
 LABEL_NATIVE = "native"
 LABEL_DERIVED = "derived"
@@ -30,6 +35,8 @@ Corpus = dict[str, dict[str, str]]
 Queries = dict[str, str]
 Qrels = dict[str, dict[str, int]]
 
+IR_DATASETS_INSTALL_HINT = install_hint("ir_datasets", "to load benchmark corpora")
+
 
 @dataclass(frozen=True)
 class Dataset:
@@ -40,45 +47,6 @@ class Dataset:
     corpus: Corpus
     queries: Queries
     qrels: Qrels
-
-
-def normalize_corpus(rows: Mapping[str, Mapping[str, Any]]) -> Corpus:
-    """Normalize BEIR-style corpus rows to ``doc_id -> {title, text}``.
-
-    Documents whose title and text are both empty are dropped: they can never
-    be a relevant hit and only inflate the index.
-    """
-    corpus: Corpus = {}
-    for doc_id, row in rows.items():
-        title = str(row.get("title", "")).strip()
-        text = str(row.get("text", "")).strip()
-        if title or text:
-            corpus[str(doc_id)] = {"title": title, "text": text}
-    return corpus
-
-
-def normalize_queries(rows: Mapping[str, Any]) -> Queries:
-    """Normalize query rows to ``query_id -> text``, dropping empty queries."""
-    queries: Queries = {}
-    for qid, text in rows.items():
-        cleaned = str(text).strip()
-        if cleaned:
-            queries[str(qid)] = cleaned
-    return queries
-
-
-def normalize_qrels(rows: Mapping[str, Mapping[str, Any]]) -> Qrels:
-    """Normalize native qrels to ``query_id -> {doc_id: grade}`` with int grades.
-
-    Non-positive grades are dropped so the qrels hold only judged-relevant
-    documents, matching how pytrec_eval treats them.
-    """
-    qrels: Qrels = {}
-    for qid, judged in rows.items():
-        graded = {str(doc): int(grade) for doc, grade in judged.items() if int(grade) > 0}
-        if graded:
-            qrels[str(qid)] = graded
-    return qrels
 
 
 def derive_qrels_from_evidence(
@@ -100,72 +68,71 @@ def derive_qrels_from_evidence(
     return qrels
 
 
-def build_native_dataset(
-    name: str,
-    corpus_rows: Mapping[str, Mapping[str, Any]],
-    query_rows: Mapping[str, Any],
-    qrel_rows: Mapping[str, Mapping[str, Any]],
-) -> Dataset:
-    """Assemble a native-qrel dataset from raw BEIR-style rows."""
-    return Dataset(
-        name=name,
-        label_kind=LABEL_NATIVE,
-        corpus=normalize_corpus(corpus_rows),
-        queries=normalize_queries(query_rows),
-        qrels=normalize_qrels(qrel_rows),
-    )
+def load_ir_dataset(dataset_id: str) -> tuple[Corpus, Queries, Qrels]:
+    """Read one ir_datasets dataset into the harness' triple.
+
+    Document fields vary across BEIR: scifact and nfcorpus carry a title, fiqa
+    does not. The title is read defensively for that reason, and its absence on
+    fiqa is why the title-search arm there is an A/A null control rather than a
+    comparison.
+
+    Non-positive relevance grades are dropped so the qrels hold only
+    judged-relevant documents, matching how trec_eval treats them.
+    """
+    try:
+        import ir_datasets
+    except ImportError as exc:
+        raise RuntimeError(IR_DATASETS_INSTALL_HINT) from exc
+    source = ir_datasets.load(dataset_id)
+    corpus: Corpus = {}
+    for doc in source.docs_iter():
+        title = str(getattr(doc, "title", "") or "").strip()
+        text = str(doc.text or "").strip()
+        # A document with neither title nor text can never be a relevant hit and
+        # only inflates the index.
+        if title or text:
+            corpus[str(doc.doc_id)] = {"title": title, "text": text}
+    queries = {
+        str(query.query_id): query.text.strip()
+        for query in source.queries_iter()
+        if query.text.strip()
+    }
+    qrels: Qrels = {}
+    for qrel in source.qrels_iter():
+        if qrel.relevance > 0:
+            qrels.setdefault(str(qrel.query_id), {})[str(qrel.doc_id)] = int(qrel.relevance)
+    return corpus, queries, qrels
 
 
-def build_derived_dataset(
-    name: str,
-    corpus_rows: Mapping[str, Mapping[str, Any]],
-    query_rows: Mapping[str, Any],
-    evidence: Mapping[str, Iterable[str]],
-) -> Dataset:
-    """Assemble a derived-qrel dataset from a QA corpus plus gold evidence."""
-    return Dataset(
-        name=name,
-        label_kind=LABEL_DERIVED,
-        corpus=normalize_corpus(corpus_rows),
-        queries=normalize_queries(query_rows),
-        qrels=derive_qrels_from_evidence(evidence),
-    )
+# A derived-qrel dataset has no ir_datasets equivalent by definition: the labels
+# do not exist upstream. Its loader returns the corpus, the queries, and the
+# per-query gold evidence that ``derive_qrels_from_evidence`` turns into qrels.
+DerivedLoader = Callable[[], tuple[Corpus, Queries, Mapping[str, Iterable[str]]]]
 
 
-# Loaders for real downloads. Each returns the raw rows the pure builders above
-# consume; they are only called by ``load_dataset`` and import heavy deps lazily.
-RawNativeLoader = Callable[[Path], tuple[Mapping, Mapping, Mapping]]
-RawDerivedLoader = Callable[[Path], tuple[Mapping, Mapping, Mapping]]
+def load_dataset(spec: Any, *, derived_loader: DerivedLoader | None = None) -> Dataset:
+    """Load a dataset described by a manifest ``DatasetSpec``.
 
-
-def _load_beir(cache_dir: Path, dataset_key: str, split: str) -> tuple[Mapping, Mapping, Mapping]:
-    """Download and read a BEIR dataset (SciFact, FiQA, NFCorpus, ...)."""
-    from beir import util
-    from beir.datasets.data_loader import GenericDataLoader
-
-    url = f"https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{dataset_key}.zip"
-    data_path = util.download_and_unzip(url, str(cache_dir))
-    return GenericDataLoader(data_folder=data_path).load(split=split)
-
-
-def load_dataset(
-    spec: Any,
-    cache_dir: Path,
-    *,
-    native_loader: RawNativeLoader | None = None,
-    derived_loader: RawDerivedLoader | None = None,
-) -> Dataset:
-    """Load a dataset described by a manifest ``DatasetSpec`` to a normalized triple.
-
-    The real download is injected (or lazily selected by ``spec.loader``); the
-    normalization and derivation are the pure functions above. Tests inject
-    tiny in-memory loaders so nothing touches the network.
+    ``spec.loader`` is an ir_datasets id (``beir/fiqa/test``) for native sets.
+    Derived sets take an injected loader, since their labels are computed here
+    rather than published.
     """
     if spec.label_kind == LABEL_DERIVED:
         if derived_loader is None:
             raise ValueError(f"no derived loader available for dataset '{spec.name}'")
-        corpus_rows, query_rows, evidence = derived_loader(cache_dir)
-        return build_derived_dataset(spec.name, corpus_rows, query_rows, evidence)
-    loader = native_loader or (lambda path: _load_beir(path, spec.loader, spec.split))
-    corpus_rows, query_rows, qrel_rows = loader(cache_dir)
-    return build_native_dataset(spec.name, corpus_rows, query_rows, qrel_rows)
+        corpus, queries, evidence = derived_loader()
+        return Dataset(
+            name=spec.name,
+            label_kind=LABEL_DERIVED,
+            corpus=corpus,
+            queries=queries,
+            qrels=derive_qrels_from_evidence(evidence),
+        )
+    corpus, queries, qrels = load_ir_dataset(spec.loader)
+    return Dataset(
+        name=spec.name,
+        label_kind=LABEL_NATIVE,
+        corpus=corpus,
+        queries=queries,
+        qrels=qrels,
+    )

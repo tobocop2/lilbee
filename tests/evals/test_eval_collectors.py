@@ -134,7 +134,7 @@ def test_default_target_docs_matches_the_published_recall_depth():
 
 
 def test_run_file_tie_order_matches_the_scorers_rule():
-    # pytrec_eval drops the rank column and re-sorts, breaking score ties on
+    # The scorer drops the rank column and re-sorts, breaking score ties on
     # doc_id descending. Writing the reverse order would state one ranking while
     # the scorer used another.
     hits = [_hit("d1", 1.0), _hit("d2", 1.0), _hit("d3", 1.0)]

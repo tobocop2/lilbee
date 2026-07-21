@@ -43,7 +43,8 @@ def _ir_section(rows: list[dict[str, Any]], arm_a: str, arm_b: str) -> list[str]
     lines = [
         "## Tier 1 - retrieval, scored against human labels",
         "",
-        "Computed by pytrec_eval against each dataset's published relevance "
+        "Computed by ir_measures, on its pytrec_eval backend, against each "
+        "dataset's published relevance "
         "labels. No model judges anything, so these numbers are exactly "
         "reproducible from the run files and qrels.",
         "",

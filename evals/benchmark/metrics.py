@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from evals.deps import install_hint
+
 Qrels = dict[str, dict[str, int]]
 Run = dict[str, dict[str, float]]
 
@@ -34,10 +36,7 @@ METRIC_MEASURES: dict[str, str] = {
     "MRR@10": "RR@10",
 }
 
-IR_MEASURES_INSTALL_HINT = (
-    "ir_measures is required to score retrieval; install the benchmark deps: "
-    "uv pip install -r evals/benchmark/requirements.txt"
-)
+IR_MEASURES_INSTALL_HINT = install_hint("ir_measures", "to score retrieval")
 
 
 def score_run(qrels: Qrels, run: Run, metrics: list[str]) -> dict[str, Any]:

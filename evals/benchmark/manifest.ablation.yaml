@@ -62,13 +62,13 @@ models:
 
 datasets:
   - name: scifact
-    loader: scifact
+    loader: beir/scifact/test
     label_kind: native
   - name: fiqa
-    loader: fiqa
+    loader: beir/fiqa/test
     label_kind: native
   - name: nfcorpus
-    loader: nfcorpus
+    loader: beir/nfcorpus/test
     label_kind: native
 
 metrics:

@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from evals.benchmark.stats import DEFAULT_ALPHA, benjamini_hochberg
-from evals.retrieval.judging import DIMENSIONS
+from evals.retrieval.judging import DIMENSIONS, SCORE_MAX, SCORE_MIN
 from evals.retrieval.scoring import ResultRowType
 
 REPORTED_ARMS = 2
+# Rendered beside every mean. Derived rather than written out, so the scale the
+# report claims cannot drift from the scale the judge actually graded on.
+SCALE_LABEL = f"{SCORE_MIN}-{SCORE_MAX}"
 
 
 def _adjusted_p(tests: dict[str, dict[str, Any]]) -> dict[str, float]:
@@ -52,14 +55,15 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         f"questions the judge returned a usable grade for {counts}; answers that "
         "failed outright and grades that came back unparseable are not in those "
         f"counts. Answers scored per arm: {mean_counts}, since a failed answer "
-        "scores zero rather than being dropped. The per-dimension means below "
+        f"scores at the rubric's bottom level ({SCORE_MIN}) rather than being "
+        "dropped. The per-dimension means below "
         f"are over the {summary.get('paired_questions', '?')} questions both arms "
         "have an outcome for, so the two means cover the same set rather than "
         "each arm averaging over whatever its judge happened to parse. "
         "Judges saw only question + ground truth + one answer; no arm labels.",
         f"Judge noise floor: plus or minus {noise} per dimension, measured over "
         f"{summary.get('noise_pairs', '?')} questions from {summary.get('noise_arm', '?')} "
-        "graded twice under two equivalent phrasings of the grading prompt. That is a "
+        "graded twice under two equivalent presentations of the rubric. That is a "
         "per-question disagreement: it describes how steady the judge is on one answer, "
         "and is not a threshold for a difference of means. Significance below comes "
         "from a paired test on the per-question grades, family-adjusted across the "
@@ -78,7 +82,7 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         interval = f"[{test['ci_low']:+.3f}, {test['ci_high']:+.3f}]" if test is not None else "-"
         shown = f"{adjusted:.3f}" if adjusted is not None else "-"
         lines.append(
-            f"| {dimension} (0-2) | {first_mean} | {second_mean} "
+            f"| {dimension} ({SCALE_LABEL}) | {first_mean} | {second_mean} "
             f"| {round(second_mean - first_mean, 3):+g} | {interval} | {shown} "
             f"| {_verdict(adjusted)} |"
         )

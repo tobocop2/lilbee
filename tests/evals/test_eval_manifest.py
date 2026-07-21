@@ -14,6 +14,7 @@ from evals.benchmark.manifest import (
     Manifest,
     ModelConfig,
     StatsConfig,
+    SystemProvenance,
 )
 
 
@@ -206,17 +207,11 @@ def test_an_unfilled_identity_field_does_not_change_the_fingerprint():
     # Adding a field to the schema must not silently re-identify every study
     # frozen before it existed, or the stamped fingerprints stop matching.
     base = _manifest()
-    with_empty = _manifest(
-        datasets=[DatasetSpec(name="scifact", loader="scifact", label_kind="native", revision="")]
-    )
+    with_empty = _manifest(system=SystemProvenance(lilbee_commit=""))
     assert base.fingerprint() == with_empty.fingerprint()
 
 
 def test_a_populated_identity_field_does_change_the_fingerprint():
     base = _manifest()
-    pinned = _manifest(
-        datasets=[
-            DatasetSpec(name="scifact", loader="scifact", label_kind="native", revision="v1.0.0")
-        ]
-    )
+    pinned = _manifest(system=SystemProvenance(lilbee_commit="abc1234", chunk_size=512))
     assert base.fingerprint() != pinned.fingerprint()

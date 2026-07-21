@@ -1,12 +1,10 @@
 """TREC run files and the chunk-to-document collapse both arms share.
 
-A run file is the standard six-column TREC format::
-
-    query_id Q0 doc_id rank score run_tag
-
-Retrieval returns chunks; scoring happens at the document level, so chunks are
-collapsed to their parent document (best score wins) and re-ranked before the
-run file is written. Everything here is pure so it can be fully unit-tested.
+Reading is ``ir_measures.read_trec_run``: the format is standard and its parser
+is the one the scorer already ships. What stays here is the part no library
+owns, because it is about this system rather than about TREC: retrieval returns
+chunks, scoring happens at the document level, so chunks are collapsed to their
+parent document (best score wins) and re-ranked before the run file is written.
 """
 
 from __future__ import annotations
@@ -14,7 +12,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from evals.deps import install_hint
+
 TREC_UNUSED_COLUMN = "Q0"
+
+RUN_INSTALL_HINT = install_hint("ir_measures", "to read run and qrels files")
 
 
 @dataclass(frozen=True)
@@ -42,17 +44,6 @@ class RunEntry:
             f"{self.rank} {self.score:.6f} {self.run_tag}"
         )
 
-    @classmethod
-    def from_line(cls, line: str) -> RunEntry:
-        query_id, _unused, doc_id, rank, score, run_tag = line.split()
-        return cls(
-            query_id=query_id,
-            doc_id=doc_id,
-            rank=int(rank),
-            score=float(score),
-            run_tag=run_tag,
-        )
-
 
 def collapse_hits(
     hits: list[ChunkHit], run_tag: str, *, limit: int | None = None
@@ -64,11 +55,10 @@ def collapse_hits(
     doc_id descending.
 
     That tie rule is trec_eval's, and it is chosen to match rather than to be
-    merely deterministic: run_to_pytrec drops the rank column and hands
-    pytrec_eval a doc_id to score map, which it re-sorts with its own rule. An
-    ascending tie-break here would write a rank column stating one order while
-    the scorer used the reverse, which matters wherever rank fusion puts equal
-    scores near a metric's cut depth.
+    merely deterministic: the scorer is handed a doc_id to score map and re-sorts
+    it with its own rule. An ascending tie-break here would write a rank column
+    stating one order while the scorer used the reverse, which matters wherever
+    rank fusion puts equal scores near a metric's cut depth.
 
     ``limit`` caps each query at that many documents after ranking. A chunk-level
     arm over-fetches chunks to reach the target document depth and can overshoot
@@ -96,14 +86,26 @@ def write_run(path: Path, entries: list[RunEntry]) -> None:
     path.write_text("".join(entry.to_line() + "\n" for entry in entries))
 
 
-def read_run(path: Path) -> list[RunEntry]:
-    """Parse a TREC run file; blank lines are skipped."""
-    return [RunEntry.from_line(line) for line in path.read_text().splitlines() if line.strip()]
-
-
-def run_to_pytrec(entries: list[RunEntry]) -> dict[str, dict[str, float]]:
-    """Shape run entries as pytrec_eval expects: query_id -> doc_id -> score."""
+def read_run(path: Path) -> dict[str, dict[str, float]]:
+    """Parse a TREC run file to the ``query_id -> doc_id -> score`` map scorers take."""
+    try:
+        import ir_measures
+    except ImportError as exc:
+        raise RuntimeError(RUN_INSTALL_HINT) from exc
     run: dict[str, dict[str, float]] = {}
-    for entry in entries:
-        run.setdefault(entry.query_id, {})[entry.doc_id] = entry.score
+    for scored in ir_measures.read_trec_run(str(path)):
+        run.setdefault(scored.query_id, {})[scored.doc_id] = float(scored.score)
     return run
+
+
+def read_qrels(path: Path) -> dict[str, dict[str, int]]:
+    """Parse a TREC qrels file to the ``query_id -> doc_id -> grade`` map scorers take."""
+    try:
+        import ir_measures
+    except ImportError as exc:
+        raise RuntimeError(RUN_INSTALL_HINT) from exc
+    qrels: dict[str, dict[str, int]] = {}
+    for judged in ir_measures.read_trec_qrels(str(path)):
+        if judged.relevance > 0:
+            qrels.setdefault(judged.query_id, {})[judged.doc_id] = int(judged.relevance)
+    return qrels

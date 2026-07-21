@@ -12,7 +12,7 @@ from typing import Any
 from evals.retrieval.answers import AnswerRow, answer_questions, make_http_client
 from evals.retrieval.blinding import BlindAssignment, build_blind_rows, unblind
 from evals.retrieval.checkpoint import load_items, load_jsonl
-from evals.retrieval.judging import DIMENSIONS, judge_rows
+from evals.retrieval.judging import DIMENSIONS, SCORE_MIN, judge_rows
 from evals.retrieval.llm import judge_backend, lilbee_chat_fn, warm_chat
 from evals.retrieval.questions import (
     COUNT_QUESTIONS,
@@ -108,7 +108,7 @@ def _cmd_judge(args: argparse.Namespace) -> int:
     _write_jsonl(args.work_dir / BLIND_ROWS_FILE, [row.to_dict() for row in blind.rows])
     judge = judge_backend()
     warm_chat(judge.chat)
-    grades = judge_rows(blind.rows, judge.chat, args.work_dir / GRADES_FILE)
+    grades = judge_rows(blind.rows, judge.llm, args.work_dir / GRADES_FILE)
     # The noise arm and judge identity are recorded here so scoring cannot pick a
     # different noise arm than the one that was actually graded twice, and so a
     # finished run says which model produced its grades.
@@ -160,12 +160,15 @@ def _cmd_score(args: argparse.Namespace) -> int:
     }
     # The noise floor is measured only over rows a judge actually graded twice.
     # Prefailed rows were never judged; both of their replicates are mechanically
-    # set to zero below, which would register as perfect agreement and pull the
-    # floor toward zero, making every real cross-arm delta look like signal.
+    # set to the same score below, which would register as perfect agreement and
+    # pull the floor toward zero, making every real cross-arm delta look like
+    # signal.
     judged_only = unblind(assignments, judged)
     scored = dict(judged)
     for gid in prefailed:
-        scored[gid] = dict.fromkeys(DIMENSIONS, 0)
+        # The rubric's bottom level already describes a missing answer, so a
+        # prefailed row scores there rather than off the scale the rest use.
+        scored[gid] = dict.fromkeys(DIMENSIONS, SCORE_MIN)
     results = build_results(
         questions,
         answers_by_arm,

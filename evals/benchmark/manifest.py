@@ -52,21 +52,15 @@ class ModelConfig:
 class DatasetSpec:
     """One dataset, its loader, and whether its qrels are native or derived.
 
-    ``revision`` and ``checksum`` identify which copy of the corpus was scored.
-    The BEIR loader fetches an unversioned URL, so without them a republished
-    upstream corpus changes every number while the manifest fingerprint stays
-    identical, and the reproducibility the frozen manifest is supposed to carry
-    would be a claim about the dataset name only. Both are recorded rather than
-    enforced here: they enter the fingerprint, so a run against a different copy
-    is a different preregistration.
+    ``loader`` is an ir_datasets id for a native set (``beir/fiqa/test``), which
+    names the corpus, the split, and the published copy in one string. The split
+    is deliberately not a separate field: two places declaring it is two places
+    to disagree, and the id is what actually selects the data.
     """
 
     name: str
     loader: str
     label_kind: str
-    split: str = "test"
-    revision: str = ""
-    checksum: str = ""
 
 
 @dataclass(frozen=True)
@@ -135,8 +129,8 @@ class Manifest:
         Optional identity fields that were never filled in are omitted from the
         canonical form, so adding one to the schema does not silently change the
         identity of every study that predates it. A populated value does change
-        the fingerprint, which is the point: a run against a different corpus
-        revision is a different preregistration.
+        the fingerprint, which is the point: a run against a different lilbee
+        build or index configuration is a different preregistration.
         """
         canonical = json.dumps(
             _without_empty_optionals(self.to_dict()), sort_keys=True, separators=(",", ":")
@@ -246,8 +240,6 @@ class Manifest:
 # identity. Only fields introduced later belong here: excluding one that was
 # already hashed would change the identity of every study that recorded it.
 OPTIONAL_IDENTITY_FIELDS = (
-    "revision",
-    "checksum",
     "lilbee_commit",
     "lilbee_version",
     "reranker",

@@ -97,3 +97,55 @@ def test_stats_refuses_a_metric_the_scored_files_do_not_carry(tmp_path):
     )
     with pytest.raises(ValueError, match="absent from the scored files"):
         _cmd_stats(args)
+
+
+def test_fetch_writes_trec_qrels_a_third_party_can_rescore_with(tmp_path, monkeypatch):
+    # The qrels ship with the report, so the artifact must be the format every
+    # other IR tool reads rather than this harness' own JSON.
+    from evals.benchmark import cli
+    from evals.benchmark.datasets import Dataset
+
+    manifest = tmp_path / "m.yaml"
+    manifest.write_text(
+        "run_id: fetch-test\n"
+        "arms:\n"
+        "  - {name: dense, system: lilbee, description: baseline}\n"
+        "  - {name: w1.0, system: lilbee, description: fused}\n"
+        "models: {embedder: bge, generator: gen, judge: judge}\n"
+        "datasets:\n"
+        "  - {name: scifact, loader: beir/scifact/test, label_kind: native}\n"
+        "metrics: [nDCG@10]\n"
+    )
+    monkeypatch.setattr(
+        "evals.benchmark.datasets.load_dataset",
+        lambda spec, **_: Dataset(
+            name=spec.name,
+            label_kind="native",
+            corpus={"d1": {"title": "T", "text": "body"}},
+            queries={"q1": "question?"},
+            qrels={"q1": {"d1": 2, "d0": 1}},
+        ),
+    )
+    out = tmp_path / "datasets"
+    assert cli.main(["fetch", "--manifest", str(manifest), "--out", str(out)]) == 0
+    # Sorted, six-column-compatible, grades preserved.
+    assert (out / "scifact" / "qrels.trec").read_text() == "q1 0 d0 1\nq1 0 d1 2\n"
+    assert json.loads((out / "scifact" / "queries.jsonl").read_text().strip()) == {
+        "query_id": "q1",
+        "text": "question?",
+    }
+    assert json.loads((out / "scifact" / "corpus.jsonl").read_text().strip()) == {
+        "doc_id": "d1",
+        "title": "T",
+        "text": "body",
+    }
+
+
+def test_fetch_qrels_round_trip_through_the_reader_the_scorer_uses(tmp_path):
+    # Written by fetch, read by score-ir: if those two disagree the run scores
+    # against qrels that are not the ones published beside it.
+    from evals.benchmark.runfile import read_qrels
+
+    path = tmp_path / "qrels.trec"
+    path.write_text("q1 0 d0 1\nq1 0 d1 2\nq2 0 d5 1\n")
+    assert read_qrels(path) == {"q1": {"d0": 1, "d1": 2}, "q2": {"d5": 1}}

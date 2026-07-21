@@ -46,8 +46,8 @@ def _test_row(metric, p_value, ci=(-0.1, 0.1)):
 def test_render_report_shows_the_delta_and_its_paired_verdict():
     report = render_report([_summary()])
     # No paired test supplied: the report says so rather than implying a verdict.
-    assert "| faithfulness (0-2) | 1.5 | 1.55 | +0.05 | - | - | not tested |" in report
-    assert "| relevance (0-2) | 1.8 | 1.2 | -0.6 | - | - | not tested |" in report
+    assert "| faithfulness (1-5) | 1.5 | 1.55 | +0.05 | - | - | not tested |" in report
+    assert "| relevance (1-5) | 1.8 | 1.2 | -0.6 | - | - | not tested |" in report
 
 
 def test_render_report_decides_significance_on_the_adjusted_p():

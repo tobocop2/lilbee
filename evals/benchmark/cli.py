@@ -1,8 +1,9 @@
 """Command-line entry point for the lilbee-vs-RAGFlow benchmark.
 
-Subcommands mirror the run stages: preregister, collect, score-ir, answer,
-score-ragas, stats, report. Heavy scorers (pytrec_eval, ragas) are imported
-lazily inside the modules they live in, so the CLI loads without them.
+Subcommands mirror the run stages: preregister, fetch, collect, score-ir,
+answer, score-ragas, stats, report. Heavy dependencies (ir_measures,
+ir_datasets, ragas) are imported lazily inside the modules they live in, so the
+CLI loads without them.
 """
 
 from __future__ import annotations
@@ -85,11 +86,42 @@ def _cmd_collect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_score_ir(args: argparse.Namespace) -> int:
-    from evals.benchmark.runfile import read_run, run_to_pytrec
+def _cmd_fetch(args: argparse.Namespace) -> int:
+    """Materialize every dataset the manifest declares, from ir_datasets."""
+    from evals.benchmark.collectors import write_queries
+    from evals.benchmark.datasets import load_dataset
 
-    qrels = json.loads(args.qrels.read_text())
-    run = run_to_pytrec(read_run(args.run))
+    manifest = Manifest.load(args.manifest)
+    for spec in manifest.datasets:
+        dataset = load_dataset(spec)
+        out = args.out / spec.name
+        out.mkdir(parents=True, exist_ok=True)
+        write_queries(out / "queries.jsonl", dataset.queries)
+        # TREC qrels, not JSON: the published artifact should be the format
+        # every other IR tool reads, since these files travel with the report.
+        (out / "qrels.trec").write_text(
+            "".join(
+                f"{qid} 0 {doc_id} {grade}\n"
+                for qid, judged in sorted(dataset.qrels.items())
+                for doc_id, grade in sorted(judged.items())
+            )
+        )
+        _write_jsonl(
+            out / "corpus.jsonl",
+            [{"doc_id": doc_id, **fields} for doc_id, fields in dataset.corpus.items()],
+        )
+        print(
+            f"{spec.name}: {len(dataset.corpus)} docs, {len(dataset.queries)} queries, "
+            f"{len(dataset.qrels)} judged -> {out}"
+        )
+    return 0
+
+
+def _cmd_score_ir(args: argparse.Namespace) -> int:
+    from evals.benchmark.runfile import read_qrels, read_run
+
+    qrels = read_qrels(args.qrels)
+    run = read_run(args.run)
     scores = metrics.score_run(qrels, run, args.metrics)
     _write_jsonl(
         args.out,
@@ -302,9 +334,16 @@ def _add_collect(sub: argparse._SubParsersAction) -> None:
     parser.set_defaults(handler=_cmd_collect)
 
 
+def _add_fetch(sub: argparse._SubParsersAction) -> None:
+    parser = sub.add_parser("fetch", help="materialize the manifest's datasets from ir_datasets")
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.set_defaults(handler=_cmd_fetch)
+
+
 def _add_score_ir(sub: argparse._SubParsersAction) -> None:
-    parser = sub.add_parser("score-ir", help="score a run file against qrels with pytrec_eval")
-    parser.add_argument("--qrels", type=Path, required=True)
+    parser = sub.add_parser("score-ir", help="score a run file against qrels with ir_measures")
+    parser.add_argument("--qrels", type=Path, required=True, help="TREC qrels file")
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--run-tag", required=True)
@@ -364,6 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     for register in (
         _add_preregister,
+        _add_fetch,
         _add_collect,
         _add_score_ir,
         _add_answer,

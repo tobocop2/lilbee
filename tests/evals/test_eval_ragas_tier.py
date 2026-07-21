@@ -15,6 +15,8 @@ from evals.benchmark.ragas_tier import (
     score_ragas,
 )
 
+from tests.evals.stub_judge import install_stub_graders
+
 
 def _samples(n):
     return [
@@ -133,7 +135,7 @@ def _judge_answer(qid, arm, text="an answer", error=None):
     )
 
 
-def test_corroborating_judge_floor_excludes_never_judged_rows(tmp_path):
+def test_corroborating_judge_floor_excludes_never_judged_rows(tmp_path, monkeypatch):
     # Arm B's tq1 answer failed outright, so it never reaches the judge. Zeroing
     # it into both replicates registers as perfect self-agreement and drags the
     # floor toward zero, which marks every answer-tier delta as signal.
@@ -147,20 +149,15 @@ def test_corroborating_judge_floor_excludes_never_judged_rows(tmp_path):
             "tq1": _judge_answer("tq1", "B", error="boom"),
         },
     }
-    grades = iter(
-        ['{"faithfulness": 2, "relevance": 2, "citation": 2}'] * 2
-        + ['{"faithfulness": 0, "relevance": 0, "citation": 0}'] * 8
-    )
-    summary = run_corroborating_judge(
-        questions, answers, "B", lambda _p: next(grades), tmp_path, seed=1
-    )
+    install_stub_graders(monkeypatch)
+    summary = run_corroborating_judge(questions, answers, "B", None, tmp_path, seed=1)
     # Only tq0 was graded twice, so the floor is measured over that one pair and
     # the prefailed tq1 contributes nothing.
     assert summary.noise_floor >= 0.0
     assert summary.means["A"].keys() == summary.means["B"].keys()
 
 
-def test_corroborating_judge_means_cover_the_same_questions(tmp_path):
+def test_corroborating_judge_means_cover_the_same_questions(tmp_path, monkeypatch):
     from evals.benchmark.ragas_tier import run_corroborating_judge
 
     questions = [_judge_question("tq0"), _judge_question("tq1")]
@@ -168,11 +165,9 @@ def test_corroborating_judge_means_cover_the_same_questions(tmp_path):
         "A": {q.qid: _judge_answer(q.qid, "A") for q in questions},
         "B": {q.qid: _judge_answer(q.qid, "B") for q in questions},
     }
-    # The judge returns junk for one row, so it lands in neither map.
-    replies = iter(["not json"] + ['{"faithfulness": 2, "relevance": 2, "citation": 2}'] * 20)
-    summary = run_corroborating_judge(
-        questions, answers, "B", lambda _p: next(replies), tmp_path, seed=1
-    )
+    # The judge fails on one row, so it lands in neither map.
+    install_stub_graders(monkeypatch, fail_times=1)
+    summary = run_corroborating_judge(questions, answers, "B", None, tmp_path, seed=1)
     assert summary.paired_questions == len(
         set(summary.per_arm_scored["A"]) & set(summary.per_arm_scored["B"])
     )

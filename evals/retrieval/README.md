@@ -25,20 +25,22 @@ the store. Lives outside `src/` on purpose: it never ships in the package.
    arm. It waits for the server's health route, retries each question three
    times, and checkpoints every row to JSONL, so a killed pod run resumes
    without redoing completed questions.
-3. **judge** shuffles every gradable answer under an opaque id and grades
-   them one at a time: the judge sees only question + ground truth + one
-   answer, never arm labels, and never knows a comparison is happening. Arm
-   B's answers are judged twice under different ids and under two equivalent
-   phrasings of the grading prompt; the disagreement between those two passes
-   is the judge's noise floor. The two phrasings carry identical content and an
-   identical rubric and differ only in how the material is arranged, which is
-   what makes the second pass a measurement: both backends decode greedily at
-   temperature 0, so re-sending an identical prompt would return an identical
-   grade and report a noise floor of exactly zero. Grades are checkpointed too.
+3. **judge** shuffles every gradable answer under an opaque id and grades them
+   one at a time through RAGAS' rubric metric, which owns the prompt, the
+   structured output, and the retry when a response does not validate. The judge
+   sees only question + ground truth + one answer, never arm labels, and never
+   knows a comparison is happening. Arm B's answers are judged twice under
+   different ids and under two equivalent presentations of the rubric; the
+   disagreement between those two passes is the judge's noise floor. The two
+   presentations describe the same five levels and differ only in wording and
+   layout, which is what makes the second pass a measurement: both backends
+   decode greedily at temperature 0, so an identical rubric would produce an
+   identical prompt, return an identical grade, and report a noise floor of
+   exactly zero. Grades are checkpointed too.
 4. **score** unblinds mechanically: per-dimension means (faithfulness,
-   relevance, citation, each 0-2), a paired test of each dimension across the
-   two arms, and exact pass/fail for count and known-item questions. Writes
-   machine-readable `results.jsonl`.
+   relevance, citation, each on RAGAS' 1-5 rubric scale), a paired test of each
+   dimension across the two arms, and exact pass/fail for count and known-item
+   questions. Writes machine-readable `results.jsonl`.
 5. **report** renders `results.jsonl` as markdown. Significance comes from the
    paired per-question test, Benjamini-Hochberg adjusted across the dimensions
    tested. The noise floor is reported as what it is, a per-question statement
@@ -112,8 +114,10 @@ export LILBEE_EVAL_JUDGE_API_KEY="..."              # optional
   answers file records its arm, endpoint, depth and a digest of the question
   set, and resuming it under a different one is refused rather than silently
   producing a file that mixes two configurations.
-- Answers that hard-fail after all retries are recorded as failures and score
-  zero everywhere (prefailed: they never reach the judge).
+- Answers that hard-fail after all retries are recorded as failures and score at
+  the rubric's bottom level everywhere (prefailed: they never reach the judge).
+  The bottom level already describes a missing answer, so they stay on the same
+  scale as every other number in the report rather than sitting below it.
 
 ## Files in a judge work dir
 

@@ -6,14 +6,19 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
+
+from evals.deps import install_hint
 
 ChatFn = Callable[[str], str]
 
 JUDGE_BASE_URL_ENV = "LILBEE_EVAL_JUDGE_BASE_URL"
 JUDGE_MODEL_ENV = "LILBEE_EVAL_JUDGE_MODEL"
 JUDGE_API_KEY_ENV = "LILBEE_EVAL_JUDGE_API_KEY"
+
+RAGAS_INSTALL_HINT = install_hint("ragas", "for judging")
 
 CHAT_MAX_TOKENS = 256
 CHAT_TIMEOUT_SECONDS = 300.0
@@ -60,11 +65,38 @@ def lilbee_chat_fn() -> ChatFn:
 
 @dataclass(frozen=True)
 class JudgeBackend:
-    """The judge's chat function plus the identity that produced the grades."""
+    """The judge's identity, its ragas LLM, and a plain chat fn for warming.
 
+    ``llm`` is what ragas' rubric metrics grade through. ``chat`` exists only so
+    ``warm_chat`` can block on model load over the same endpoint without
+    spending a structured-output call to do it.
+    """
+
+    llm: Any
     chat: ChatFn
     model: str
     base_url: str
+
+
+def ragas_judge_llm(
+    base_url: str, model: str, api_key: str | None, temperature: float = 0.0
+) -> Any:
+    """A ragas LLM bound to this endpoint, for structured-output grading.
+
+    The client is async because ragas' rubric metrics grade through
+    ``agenerate``, which refuses a synchronous client outright.
+
+    Without an explicit client here, ragas resolves a process-global default
+    model from the environment, so the manifest's pinned judge and temperature
+    would not be what actually graded the answers.
+    """
+    try:
+        from openai import AsyncOpenAI
+        from ragas.llms import llm_factory
+    except ImportError as exc:
+        raise RuntimeError(RAGAS_INSTALL_HINT) from exc
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
+    return llm_factory(model, provider="openai", client=client, temperature=temperature)
 
 
 def judge_backend() -> JudgeBackend:
@@ -87,8 +119,10 @@ def judge_backend() -> JudgeBackend:
             "wrote the questions and generated the answers, and an unnamed model would "
             "leave the run's grades unattributable."
         )
+    api_key = os.environ.get(JUDGE_API_KEY_ENV)
     return JudgeBackend(
-        chat=openai_chat_fn(base_url, model, os.environ.get(JUDGE_API_KEY_ENV)),
+        llm=ragas_judge_llm(base_url, model, api_key),
+        chat=openai_chat_fn(base_url, model, api_key),
         model=model,
         base_url=base_url,
     )

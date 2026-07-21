@@ -8,16 +8,19 @@ from evals.retrieval.checkpoint import load_items, load_jsonl
 from evals.retrieval.questions import CountOracle, Question, QuestionKind
 from evals.retrieval.scoring import ResultRowType
 
+from tests.evals.stub_judge import install_stub_graders
+
 
 def _write_jsonl(path, rows):
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
 
 
 class _JudgeBackend:
-    """Stand-in for the real judge endpoint: a chat fn plus its identity."""
+    """Stand-in for the real judge endpoint: its grading LLM plus its identity."""
 
-    def __init__(self, chat, model="test-judge", base_url="http://judge"):
-        self.chat = chat
+    def __init__(self, model="test-judge", base_url="http://judge"):
+        self.llm = None
+        self.chat = lambda _prompt: ""
         self.model = model
         self.base_url = base_url
 
@@ -75,8 +78,8 @@ def test_judge_score_report_pipeline(tmp_path, monkeypatch):
     questions_path, answers_a, answers_b = _fixture_files(tmp_path)
     work_dir = tmp_path / "work"
 
-    fixed_grade = '{"faithfulness": 2, "relevance": 2, "citation": 1}'
-    monkeypatch.setattr(cli, "judge_backend", lambda: _JudgeBackend(lambda _prompt: fixed_grade))
+    install_stub_graders(monkeypatch)
+    monkeypatch.setattr(cli, "judge_backend", _JudgeBackend)
     monkeypatch.setattr(cli, "warm_chat", lambda chat: None)
 
     exit_code = cli.main(
@@ -134,7 +137,7 @@ def test_judge_score_report_pipeline(tmp_path, monkeypatch):
 
 def test_judge_rejects_duplicate_arm_labels(tmp_path, monkeypatch):
     questions_path, answers_a, _ = _fixture_files(tmp_path)
-    monkeypatch.setattr(cli, "judge_backend", lambda: _JudgeBackend(lambda _prompt: "{}"))
+    monkeypatch.setattr(cli, "judge_backend", _JudgeBackend)
     monkeypatch.setattr(cli, "warm_chat", lambda chat: None)
     exit_code = cli.main(
         [

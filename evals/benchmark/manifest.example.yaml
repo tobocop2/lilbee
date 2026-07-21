@@ -28,38 +28,33 @@ arms:
     config:
       pipeline: deepdoc
 
-# Passage sets carry native TREC qrels; the document-structured QA sets have
-# their retrieval labels derived from human gold-evidence annotations, marked
-# label_kind: derived and disclosed here.
+# Passage sets carry native TREC qrels and load straight from ir_datasets,
+# whose id names the corpus, the split, and the published copy. The
+# document-structured QA sets have no retrieval labels upstream: theirs are
+# derived from human gold-evidence annotations, marked label_kind: derived and
+# disclosed here, and their loader is supplied by the harness rather than an id.
 datasets:
   - name: scifact
-    loader: scifact
+    loader: beir/scifact/test
     label_kind: native
-    split: test
   - name: fiqa
-    loader: fiqa
+    loader: beir/fiqa/test
     label_kind: native
-    split: test
   - name: nfcorpus
-    loader: nfcorpus
+    loader: beir/nfcorpus/test
     label_kind: native
-    split: test
   - name: hotpotqa
-    loader: hotpotqa
+    loader: beir/hotpotqa/test
     label_kind: native
-    split: test
   - name: trec-covid
-    loader: trec-covid
+    loader: beir/trec-covid
     label_kind: native
-    split: test
   - name: tat-dqa
     loader: tatdqa
     label_kind: derived
-    split: test
   - name: ott-qa
     loader: ottqa
     label_kind: derived
-    split: dev
 
 metrics:
   - nDCG@10

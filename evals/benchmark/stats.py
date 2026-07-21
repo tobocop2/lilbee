@@ -19,14 +19,13 @@ import statistics
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from evals.deps import install_hint
+
 DEFAULT_RESAMPLES = 10000
 DEFAULT_SEED = 20260714
 DEFAULT_ALPHA = 0.05
 
-SCIPY_INSTALL_HINT = (
-    "scipy is required for benchmark statistics; install the benchmark deps: "
-    "uv pip install -r evals/benchmark/requirements.txt"
-)
+SCIPY_INSTALL_HINT = install_hint("scipy", "for benchmark statistics")
 
 
 @dataclass(frozen=True)

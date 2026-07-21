@@ -5,14 +5,32 @@
 #   uv pip install -r evals/benchmark/requirements.txt
 # Pinned exactly, not floored: a scorer upgrade silently moves every published
 # number, and the frozen manifest cannot notice because it records no versions.
+#
 # ir_measures owns metric computation, including cut depths: RR@10 is reciprocal
 # rank cut at 10, so nothing here truncates a run or breaks ties itself. It pulls
-# pytrec_eval-terrier (the maintained pytrec_eval fork) as its scorer backend.
-# scipy owns the statistics: percentile bootstrap, paired sign-flip permutation
-# test, and Benjamini-Hochberg.
+# pytrec_eval-terrier (the maintained pytrec_eval fork) as its scorer backend,
+# and it reads and writes TREC run and qrels files.
 ir_measures==0.4.3
 pytrec_eval-terrier==0.5.10
+
+# ir_datasets owns corpus download, caching, and parsing. It ships all 48 BEIR
+# sets pinned to a published copy and checksummed, which is what the previous
+# unversioned zip URL could not offer. It replaces beir and datasets outright.
+ir_datasets==0.6.3
+
+# scipy owns the statistics: percentile bootstrap, paired sign-flip permutation
+# test, and Benjamini-Hochberg.
 scipy==1.18.0
-ragas==0.2.14
-beir==2.1.0
-datasets==2.21.0
+
+# ragas owns model-graded scoring: the tier-2 RAG metrics and the rubric grader
+# the blind judge runs on, including prompt construction, structured output, and
+# retry on a response that does not validate.
+#
+# langchain-community is pinned because ragas imports
+# langchain_community.chat_models.vertexai unconditionally at import time, and
+# 0.4 removed that module. ragas itself declares no upper bound, so a fresh
+# install resolves 0.4.x and every ragas import raises ModuleNotFoundError. The
+# pin above it is not enough on its own: a scorer's own dependency can move the
+# scorer's behaviour just as surely as the scorer's version can.
+ragas==0.4.3
+langchain-community==0.3.31

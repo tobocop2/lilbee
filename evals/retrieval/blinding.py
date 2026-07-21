@@ -7,9 +7,9 @@ together, so a judge cannot tell arms, replicates, or that a comparison is
 happening at all.
 
 The two replicates are graded under different but equivalent presentations of
-the same prompt (see ``judging.JUDGE_PROMPTS``). Re-sending an identical prompt
-to a greedy decoder returns an identical grade, which would make the measured
-"noise" zero by construction.
+the same rubric (see ``judging.RUBRICS``). An identical rubric produces an
+identical prompt, and to a greedy decoder that returns an identical grade, which
+would make the measured "noise" zero by construction.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ JUDGED_KINDS = (QuestionKind.TOPICAL, QuestionKind.KNOWN_ITEM)
 class BlindRow:
     """What a judge sees: no qid, no arm, no replicate.
 
-    ``variant`` selects which equivalent presentation of the grading prompt this
+    ``variant`` selects which equivalent presentation of the grading rubric this
     row is graded under. It is not a hint about arm or replicate: it carries no
     identity, and a judge seeing one row cannot tell which variant it is or that
     a second pass exists.
@@ -97,8 +97,9 @@ def build_blind_rows(
 ) -> BlindSet:
     """Blind rows for every judged question, with the noise arm duplicated.
 
-    Missing, errored, and empty answers are prefailed: they score zero without
-    wasting a judge call, and their gids never reach a judge.
+    Missing, errored, and empty answers are prefailed: the scorer puts them at
+    the rubric's bottom level without wasting a judge call, and their gids never
+    reach a judge.
     """
     rows: list[BlindRow] = []
     assignments: dict[str, BlindAssignment] = {}

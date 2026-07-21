@@ -12,41 +12,48 @@ import pytest
 from evals.retrieval.answers import AnswerRow
 from evals.retrieval.blinding import (
     BlindAssignment,
-    BlindRow,
     build_blind_rows,
     unblind,
 )
-from evals.retrieval.judging import JUDGE_PROMPTS, judge_prompt_for
+from evals.retrieval.judging import DIMENSIONS, PRESENTATIONS, RUBRICS, SCORE_MIN, rubric_for
 from evals.retrieval.llm import JUDGE_BASE_URL_ENV, JUDGE_MODEL_ENV, judge_backend
 from evals.retrieval.questions import Question, QuestionKind
 from evals.retrieval.scoring import MissingNoiseReplicateError, build_results
 
 
-def _row(variant):
-    return BlindRow(
-        gid="g1", question="Q?", source="a.txt", ground="ground", answer="ans", variant=variant
-    )
+def test_the_two_replicates_are_graded_under_different_rubric_presentations():
+    # ragas builds one prompt per rubric, so an identical rubric produces an
+    # identical prompt. To a greedy decoder that returns an identical grade, and
+    # the measured "noise" would be zero by construction.
+    for dimension in DIMENSIONS:
+        assert rubric_for(dimension, 0) != rubric_for(dimension, 1)
 
 
-def test_the_two_replicates_are_graded_under_different_prompts():
-    # Identical prompts to a greedy decoder return identical grades, so the
-    # measured "noise" would be zero by construction.
-    assert judge_prompt_for(_row(0)) != judge_prompt_for(_row(1))
+def test_both_presentations_describe_the_same_five_levels():
+    # Equivalent content, different arrangement. A presentation that dropped or
+    # added a level would make the second pass a different grading task, and its
+    # disagreement with the first would no longer be judge noise.
+    for dimension in DIMENSIONS:
+        first, second = rubric_for(dimension, 0), rubric_for(dimension, 1)
+        assert set(first) == set(second)
+        assert set(first) == {f"score{level}_description" for level in range(1, 6)}
 
 
-def test_both_prompt_variants_carry_the_same_content_and_rubric():
-    first, second = judge_prompt_for(_row(0)), judge_prompt_for(_row(1))
-    for fragment in ("Q?", "a.txt", "ground", "ans"):
-        assert fragment in first
-        assert fragment in second
-    # Same scale and same dimensions requested, only the arrangement differs.
-    for dimension in ("faithfulness", "relevance", "citation"):
-        assert dimension in first
-        assert dimension in second
+def test_the_presentations_differ_in_layout_not_only_in_wording():
+    # format_rubrics joins the dict in insertion order, so the order the levels
+    # are laid out is part of what the judge sees.
+    for dimension in DIMENSIONS:
+        assert list(rubric_for(dimension, 0)) != list(rubric_for(dimension, 1))
 
 
 def test_variant_selection_wraps_rather_than_indexing_out_of_range():
-    assert judge_prompt_for(_row(len(JUDGE_PROMPTS))) == judge_prompt_for(_row(0))
+    for dimension in DIMENSIONS:
+        assert rubric_for(dimension, PRESENTATIONS) == rubric_for(dimension, 0)
+
+
+def test_every_dimension_has_a_presentation_for_each_replicate():
+    assert set(RUBRICS) == set(DIMENSIONS)
+    assert all(len(variants) == PRESENTATIONS for variants in RUBRICS.values())
 
 
 def _answer(qid, arm, text="an answer", error=None):
@@ -161,9 +168,9 @@ def test_unblind_keeps_replicates_separate():
 
 
 def test_prefailed_answers_are_not_counted_as_judge_graded():
-    # An answer that failed outright never reaches the judge. It scores zero
-    # against its arm, but reporting it as judge-graded overstates the judge's n
-    # and makes the report's own caveat false.
+    # An answer that failed outright never reaches the judge. It scores at the
+    # rubric's bottom level against its arm, but reporting it as judge-graded
+    # overstates the judge's n and makes the report's own caveat false.
     questions = [
         Question(
             qid=f"tq{i}",
@@ -179,10 +186,10 @@ def test_prefailed_answers_are_not_counted_as_judge_graded():
         "B": {"tq0": _answer("tq0", "B"), "tq1": _answer("tq1", "B")},
     }
     grade = {"faithfulness": 1, "relevance": 1, "citation": 1}
-    zero = {"faithfulness": 0, "relevance": 0, "citation": 0}
-    # Arm A's tq1 prefailed: mechanically zeroed in `unblinded`, absent from `judged`.
+    floor = dict.fromkeys(("faithfulness", "relevance", "citation"), SCORE_MIN)
+    # Arm A's tq1 prefailed: set to the rubric floor in `unblinded`, absent from `judged`.
     unblinded = {
-        "A": {0: {"tq0": grade, "tq1": zero}},
+        "A": {0: {"tq0": grade, "tq1": floor}},
         "B": {0: {"tq0": grade, "tq1": grade}, 1: {"tq0": grade, "tq1": grade}},
     }
     judged = {

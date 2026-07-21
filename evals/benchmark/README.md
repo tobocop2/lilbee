@@ -29,20 +29,22 @@ happened to come from.
 ## Two tiers
 
 1. **Tier 1 - retrieval, no model opinion.** Each arm returns a ranked list per
-   query, written as a TREC run file. `pytrec_eval` scores it against the
+   query, written as a TREC run file. `ir_measures` scores it against the
    dataset's published relevance labels (qrels): nDCG@10, Recall@20, MRR@10.
    Nothing is graded by a model, so the numbers are reproducible by anyone with
-   the same run files and qrels. MRR@10 truncates each run to depth 10 before
-   scoring, and every metric is averaged over the qrels topic set, so a query an
-   arm returned nothing for scores zero instead of leaving the denominator.
+   the same run files and qrels. The cut depth is part of the measure
+   (`RR@10`, not a truncated run), and every metric is averaged over the qrels
+   topic set, so a query an arm returned nothing for scores zero instead of
+   leaving the denominator.
 2. **Tier 2 - answer quality.** Both arms answer with the same model; RAGAS
    scores faithfulness, answer relevancy, and context precision/recall for
    *both* arms, using the judge model the manifest freezes. Each mean carries
    the number of answers that actually scored, since RAGAS cannot score every
-   answer and the two arms need not fail equally often. The blind
-   duplicate-arm judge from `evals/retrieval` is reused as a corroborating
-   signal, with its noise floor measured by grading one arm twice under two
-   equivalent phrasings of the grading prompt.
+   answer and the two arms need not fail equally often. A blind duplicate-arm
+   judge runs alongside as a corroborating signal: RAGAS' rubric metric grades
+   each answer on faithfulness, relevance, and citation, and its noise floor is
+   measured by grading one arm twice under two equivalent presentations of the
+   rubric.
 
 Every **Tier-1** cross-arm difference is paired per query and gets a bootstrap
 95% CI and a randomization-test p-value. Because a study runs many such tests at
@@ -61,8 +63,10 @@ the RAGAS metrics.
 ## Native vs derived labels
 
 Passage sets (BEIR SciFact/FiQA/NFCorpus, HotpotQA, TREC-COVID) ship native TREC
-qrels. They are used as published with one normalization: non-positive
-judgments are dropped, which is how pytrec_eval treats them, and a topic whose
+qrels and load through `ir_datasets`, whose id (`beir/fiqa/test`) names the
+corpus, the split, and the published copy, and which checksums what it
+downloads. They are used as published with one normalization: non-positive
+judgments are dropped, which is how trec_eval treats them, and a topic whose
 judgments are all non-positive has no relevant document to find and so is not
 scorable. The document-structured QA sets (TAT-DQA, OTT-QA) have
 no retrieval labels of their own, so their qrels are **derived** from human
@@ -85,6 +89,10 @@ RUN=/tmp/bench
 #    published under it.
 uv run python -m evals.benchmark preregister \
   --manifest evals/benchmark/manifest.example.yaml --out "$RUN/manifest.frozen.json"
+
+# 0b. Materialize the manifest's datasets: corpus, queries, and TREC qrels.
+uv run python -m evals.benchmark fetch \
+  --manifest evals/benchmark/manifest.example.yaml --out "$RUN/datasets"
 
 # 1. Serve the shared model with lilbee (all parity features on) and stand up
 #    RAGFlow pointed at the same OpenAI-compatible endpoint.
@@ -110,11 +118,11 @@ uv run python -m evals.benchmark collect --system ragflow \
   --api-key "$RAGFLOW_KEY" --dataset-id "$RAGFLOW_DATASET" \
   --run-tag ragflow --run "$RUN/run-ragflow.trec" --checkpoint "$RUN/ck-ragflow.jsonl"
 
-# 4. Tier 1: score each run against the qrels with pytrec_eval.
-uv run python -m evals.benchmark score-ir --qrels "$RUN/qrels.json" \
+# 4. Tier 1: score each run against the qrels with ir_measures.
+uv run python -m evals.benchmark score-ir --qrels "$RUN/datasets/scifact/qrels.trec" \
   --run "$RUN/run-lilbee.trec" --dataset scifact --run-tag lilbee \
   --out "$RUN/ir-lilbee.jsonl"
-uv run python -m evals.benchmark score-ir --qrels "$RUN/qrels.json" \
+uv run python -m evals.benchmark score-ir --qrels "$RUN/datasets/scifact/qrels.trec" \
   --run "$RUN/run-ragflow.trec" --dataset scifact --run-tag ragflow \
   --out "$RUN/ir-ragflow.jsonl"
 
@@ -141,8 +149,9 @@ uv run python -m evals.benchmark report \
   --results "$RUN/results.jsonl" --out "$RUN/report.md"
 ```
 
-Keep the frozen manifest, run files, and qrels: with those, a third party can
-re-score the whole Tier-1 comparison without the pod.
+Keep the frozen manifest, run files, and qrels. All three are standard formats,
+so a third party can re-score the whole Tier-1 comparison without the pod and
+without this harness.
 
 ## Optional dependencies
 
@@ -152,7 +161,7 @@ its tests) load without them. They are kept out of the shipped lock on purpose
 them from the standalone requirements file on the benchmark pod:
 
 ```bash
-uv pip install -r evals/benchmark/requirements.txt   # pytrec_eval, ragas, beir, datasets
+uv pip install -r evals/benchmark/requirements.txt   # ir_measures, ir_datasets, scipy, ragas
 ```
 
 ## Determinism and resume
