@@ -1230,6 +1230,12 @@ class TestSearch:
         assert result.exit_code == 0
         assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
 
+    def test_search_rejects_non_positive_top_k(self, mock_svc):
+        for bad in ("0", "-3"):
+            result = runner.invoke(app, ["search", "q", "--top-k", bad])
+            assert result.exit_code != 0
+        mock_svc.searcher.search.assert_not_called()
+
     def test_search_rejects_empty_query(self, mock_svc):
         result = runner.invoke(app, ["search", "   "])
         assert result.exit_code != 0
