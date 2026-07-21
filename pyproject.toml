@@ -137,6 +137,10 @@ markers = [
 [tool.coverage.run]
 source = ["lilbee"]
 concurrency = ["thread"]
+# Generated modules are machine output, not code anyone wrote or can meaningfully
+# test; measuring them says nothing about the suite. Excluded so the number stays
+# a statement about hand-written code, and so regenerating cannot move it.
+omit = ["src/lilbee/_generated/*"]
 
 [tool.coverage.report]
 show_missing = true
