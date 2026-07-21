@@ -53,7 +53,7 @@ def _manifest(arms=None, datasets=None, **over) -> Manifest:
 
 
 def test_a_valid_cross_system_manifest_validates():
-    _manifest().validate()
+    _manifest()
 
 
 def test_a_single_system_ablation_is_a_valid_preregistration():
@@ -62,13 +62,13 @@ def test_a_single_system_ablation_is_a_valid_preregistration():
         ArmConfig(name="dense", system="lilbee", description="dense only"),
         ArmConfig(name="w1.0", system="lilbee", description="full weighted fusion"),
     ]
-    _manifest(arms=ablation).validate()
+    _manifest(arms=ablation)
 
 
 def test_at_least_two_arms_are_required():
     one = [ArmConfig(name="solo", system="lilbee", description="")]
     with pytest.raises(ValueError, match="at least two arms"):
-        _manifest(arms=one).validate()
+        _manifest(arms=one)
 
 
 def test_an_ablation_may_declare_a_baseline_and_several_variants():
@@ -76,8 +76,9 @@ def test_an_ablation_may_declare_a_baseline_and_several_variants():
     ablation = [ArmConfig(name="dense", system="lilbee", description="")] + [
         ArmConfig(name=f"w{w}", system="lilbee", description="") for w in ("0.25", "0.5", "1.0")
     ]
+    # Construction is validation now, so building it is half the assertion.
     manifest = _manifest(arms=ablation)
-    manifest.validate()
+    assert manifest.arm_names == {"dense", "w0.25", "w0.5", "w1.0"}
     manifest.require_declared_comparison("dense", "w0.5", "scifact")
 
 
@@ -87,7 +88,7 @@ def test_arm_names_must_be_distinct():
         ArmConfig(name="same", system="ragflow", description=""),
     ]
     with pytest.raises(ValueError, match="distinct"):
-        _manifest(arms=dupes).validate()
+        _manifest(arms=dupes)
 
 
 def test_unknown_arm_system_is_rejected():
@@ -96,33 +97,34 @@ def test_unknown_arm_system_is_rejected():
         ArmConfig(name="b", system="elasticsearch", description=""),
     ]
     with pytest.raises(ValueError, match="unknown arm system"):
-        _manifest(arms=bad).validate()
+        _manifest(arms=bad)
 
 
 def test_judge_must_differ_from_generator():
     with pytest.raises(ValueError, match="judge model must differ"):
-        _manifest(models=_models(judge="gen-a")).validate()
+        _manifest(models=_models(judge="gen-a"))
 
 
 def test_nonzero_temperature_is_rejected():
     with pytest.raises(ValueError, match="temperature must be"):
-        _manifest(temperature=0.7).validate()
+        _manifest(temperature=0.7)
 
 
 def test_empty_metrics_are_rejected():
     with pytest.raises(ValueError, match="no metrics"):
-        _manifest(metrics=[]).validate()
+        _manifest(metrics=[])
 
 
 def test_empty_datasets_are_rejected():
     with pytest.raises(ValueError, match="no datasets"):
-        _manifest(datasets=[]).validate()
+        _manifest(datasets=[])
 
 
 def test_unknown_dataset_label_kind_is_rejected():
-    bad = [DatasetSpec(name="x", loader="x", label_kind="made-up")]
+    # Rejected at construction rather than at a later validate() call, so the
+    # bad spec cannot exist long enough to be passed anywhere.
     with pytest.raises(ValueError, match="unknown label_kind"):
-        _manifest(datasets=bad).validate()
+        DatasetSpec(name="x", loader="x", label_kind="made-up")
 
 
 def test_require_declared_comparison_accepts_the_declared_pair():
