@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import active_config
@@ -64,7 +65,8 @@ def _semantic_embedding_config() -> EmbeddingConfig:
 
 
 def _table_chunking() -> TableChunkingMode | None:
-    """Header-repeating table splits when table extraction is on, else xberg's default.
+    """Header-repeating table splits when table extraction is on, else None for
+    xberg's default.
 
     REPEAT_HEADER carries the header row into every piece of a long table, so
     no chunk holds headerless rows.
@@ -86,21 +88,24 @@ def build_chunking_config(*, use_semantic: bool = True) -> ChunkingConfig:
         # The semantic chunker sizes by characters and ignores ChunkSizing, so it
         # stays on the character budget regardless of cfg.token_sizing.
         max_chars, max_overlap = _char_budget()
-        return ChunkingConfig(
+        chunking = ChunkingConfig(
             chunker_type=_SEMANTIC_CHUNKER,
             embedding=_semantic_embedding_config(),
             topic_threshold=config.topic_threshold,
             max_characters=max_chars,
             overlap=max_overlap,
-            table_chunking=_table_chunking(),
         )
-    max_size, max_overlap, sizing = _size_params()
-    return ChunkingConfig(
-        max_characters=max_size,
-        overlap=max_overlap,
-        sizing=sizing,
-        table_chunking=_table_chunking(),
-    )
+    else:
+        max_size, max_overlap, sizing = _size_params()
+        chunking = ChunkingConfig(
+            max_characters=max_size,
+            overlap=max_overlap,
+            sizing=sizing,
+        )
+    # table_chunking has no "unset" value on xberg's frozen ChunkingConfig, so the
+    # field is left at its default rather than overwritten with None.
+    mode = _table_chunking()
+    return chunking if mode is None else replace(chunking, table_chunking=mode)
 
 
 def chunk_text(

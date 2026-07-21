@@ -9,7 +9,7 @@ import time
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config
@@ -35,9 +35,29 @@ from lilbee.runtime.progress import (
 )
 
 if TYPE_CHECKING:
-    from xberg import ExtractedDocument, ExtractionConfig, OcrConfig, PdfConfig, Table
+    from xberg import (
+        ExtractedDocument,
+        ExtractionConfig,
+        LayoutDetectionConfig,
+        OcrConfig,
+        PdfConfig,
+    )
 
 log = logging.getLogger(__name__)
+
+
+class _ExtractedTable(Protocol):
+    """The table fields lilbee indexes as dedicated chunks.
+
+    Structural, so it is satisfied by both xberg's public ``Table`` and the native
+    type that ``ExtractedDocument.tables`` actually yields.
+    """
+
+    @property
+    def markdown(self) -> str: ...
+
+    @property
+    def page_number(self) -> int: ...
 
 
 def content_type_to_mode(content_type: str) -> ExtractMode:
@@ -163,13 +183,13 @@ def _pdf_options() -> PdfConfig | None:
     return PdfConfig(**kwargs)
 
 
-def _layout_options() -> dict[str, Any]:
-    """ExtractionConfig kwargs enabling layout detection, empty when off."""
+def _layout_config() -> LayoutDetectionConfig | None:
+    """LayoutDetectionConfig when layout detection is on, else None for xberg's default."""
     if not active_config().layout_detection:
-        return {}
+        return None
     from xberg import LayoutDetectionConfig
 
-    return {"layout": LayoutDetectionConfig(), "use_layout_for_markdown": True}
+    return LayoutDetectionConfig()
 
 
 def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> ExtractionConfig:
@@ -186,14 +206,20 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # vision backend; scoped to the vision path, since it is a GPU re-OCR lever.
     force_ocr = _ocr_force_requested() and ocr.backend == OcrBackendName.LILBEE_VISION
     if mode is ExtractMode.PAGINATED:
-        return ExtractionConfig(
+        paginated = ExtractionConfig(
             chunking=chunking,
             pages=PageConfig(extract_pages=True, insert_page_markers=False),
             ocr=ocr,
             force_ocr=force_ocr,
             pdf_options=_pdf_options(),
-            **_layout_options(),
         )
+        # Set only when on: the keys are absent rather than None, leaving xberg's
+        # defaults in place when layout detection is off.
+        layout = _layout_config()
+        if layout is not None:
+            paginated["layout"] = layout
+            paginated["use_layout_for_markdown"] = True
+        return paginated
     return ExtractionConfig(
         chunking=chunking,
         output_format=MARKDOWN_OUTPUT,
@@ -270,7 +296,7 @@ def _capture_result_page_texts(
         page_texts_out.append(_page_text_record(source_name, 0, doc.content, content_type))
 
 
-def _document_tables(doc: ExtractedDocument) -> list[Table]:
+def _document_tables(doc: ExtractedDocument) -> list[_ExtractedTable]:
     """The result tables to index as dedicated chunks, when table extraction is on.
 
     Each table becomes its own chunk carrying xberg's markdown serialization and

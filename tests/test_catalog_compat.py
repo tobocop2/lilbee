@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from gguf import MODEL_ARCH_NAMES
 
 from lilbee.catalog.compat import (
     SUPPORTED_ARCHS,
@@ -30,9 +29,8 @@ def test_classify_known_supported() -> None:
 
 
 def test_classify_gemma4_supported() -> None:
-    # The pinned engine serves gemma4, but the bundled gguf package predates it
-    # (MODEL_ARCH_NAMES stops at gemma3n), so it must be allowlisted explicitly.
-    assert "gemma4" not in MODEL_ARCH_NAMES.values()
+    # The pinned engine serves gemma4. gguf only started listing it in 0.19, and
+    # the floor is >=0.18, so compat allowlists it; the verdict must hold on either.
     assert classify("gemma4") is ModelCompat.SUPPORTED
 
 

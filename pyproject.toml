@@ -56,7 +56,10 @@ dependencies = [
     "huggingface_hub>=1.11.0",
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
-    "numpy",
+    # numpy <2.5: 2.5 requires Python 3.12, above lilbee's 3.11 floor. Uncapped,
+    # 3.12+ resolves a numpy 3.11 users never get, and its stubs use 3.12-only
+    # syntax mypy rejects at the 3.11 target. 2.4.x covers cp311 through cp314.
+    "numpy<2.5",
     # Entity schema patterns are LLM-authored, so their matches need a wall-clock
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
