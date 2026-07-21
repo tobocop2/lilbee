@@ -102,7 +102,7 @@ def _display_score(result: dict[str, Any]) -> float:
 
 def search(
     query: str = typer.Argument(..., help="Search query"),
-    top_k: int = typer.Option(None, "--top-k", "-k", help="Number of results"),
+    top_k: int = typer.Option(None, "--top-k", "-k", min=1, help="Number of results"),
     scope: SearchScope = _scope_option,
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,

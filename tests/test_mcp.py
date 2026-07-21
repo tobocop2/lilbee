@@ -165,6 +165,19 @@ class TestSearch:
         assert call_kwargs["chunk_type"] is None
         assert any("unknown scope" in record.message for record in caplog.records)
 
+    def test_non_positive_top_k_falls_back_to_the_default(self, mock_svc, caplog):
+        """Same lenient stance as the scope fallback: a model passing top_k=0
+        or a negative still gets a search with the configured default instead
+        of a negative limit reaching the store."""
+        import logging
+
+        mock_svc.searcher.search.return_value = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.mcp_server"):
+            result = search("q", top_k=-3)
+        assert result == []
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == cfg.top_k
+        assert any("not positive" in record.message for record in caplog.records)
+
     def test_returns_searcher_results_unfiltered(self, mock_svc):
         """The relevance cutoff lives in Searcher.search (with the
         lexical-support exemption); MCP must not re-filter on bare distance,
