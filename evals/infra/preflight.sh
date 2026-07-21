@@ -34,9 +34,6 @@ for i in range(n):
 print(f"  all {n} GPU(s) allocated and computed")
 PY
 
-# The prebuilt cu124 engine ships no sm_90 kernels, so it dies on H100 with a
-# misleading "no CUDA-capable device". A100 is sm_80 and known-good. This is the
-# check that decides whether the ingest can run at all on this box.
 # A prebuilt engine is a release artifact, not a compile: if it is missing the
 # only sane response is to stop, because the fallback is an eight-hour build on
 # a GPU box.
@@ -44,12 +41,15 @@ log "engine binary is present and prebuilt (never compiled here)"
 "$PYBIN" -c 'import lilbee_engine, os, sys; p = lilbee_engine.get_llama_server_path(); sys.exit(0 if os.access(p, os.X_OK) else f"engine missing or not executable at {p}")' \
   || die "no usable llama-server; the engine wheel is a stub or was not installed"
 
+# Whether the shipped engine covers this card is checked against the card, not
+# assumed from a note. An earlier comment asserted the cu124 build had no sm_90
+# kernels; the build pins 70;75;80;86;89;90, so it does. Ask the box.
 log "engine has kernels for this GPU's compute capability"
 CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '. ')
 log "  compute capability sm_${CAP}, engine backend ${BACKEND:-cu124}"
 "$LILBEE_BIN" models doctor 2>&1 | tee /tmp/engine_doctor.txt || true
 if grep -qiE "no CUDA-capable device|no kernel image" /tmp/engine_doctor.txt; then
-  die "engine has no kernels for sm_${CAP}; use an A100 (sm_80) or a backend built for this arch"
+  die "engine has no kernels for sm_${CAP}; pick a GPU the ${BACKEND:-cu124} build covers"
 fi
 
 log "embedding model actually loads and returns a vector"
