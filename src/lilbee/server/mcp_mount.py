@@ -71,24 +71,18 @@ def _transport_security() -> TransportSecuritySettings:
 def build_mcp_mount() -> tuple[ASGIRouteHandler, _Lifespan]:
     """Return the MCP route handler and the session-manager lifespan.
 
-    A fresh session manager is built per call: ``session_manager.run()`` can
-    only be entered once per instance, and the app factory runs once per
-    process in production but repeatedly across tests.
+    Every call yields a mount whose lifespan can start. FastMCP caches one
+    session manager on the module-level server and
+    ``StreamableHTTPSessionManager.run()`` is single-use, so the cache is
+    cleared here; without it a second app in the same process gets a manager
+    whose lifespan raises. The package exposes no public reset, so this pokes
+    the attribute ``streamable_http_app()`` populates lazily, under the
+    ``mcp>=1.26,<2`` pin.
     """
     # Mark MCP as served over the shared HTTP daemon so single-vault-only tools
     # (init, reset) refuse runtime vault-switch / teardown that would race
     # concurrent in-flight handlers on the process-global Services singleton.
     set_http_mounted(True)
-    # run() is single-use per instance, so each app needs its own manager.
-    # The mcp package has no public reset, hence the private attribute, under
-    # the mcp>=1.26,<2 pin. Checked, not assumed: a rename would otherwise
-    # surface as an opaque run()-already-entered error from the lifespan.
-    if not hasattr(mcp, "_session_manager"):
-        raise RuntimeError(
-            "This mcp release no longer caches the session manager on "
-            "FastMCP._session_manager, so a per-app session manager cannot be "
-            "forced. Check the mcp version pin in pyproject.toml."
-        )
     mcp._session_manager = None
     mcp.settings.streamable_http_path = "/"
     mcp.settings.transport_security = _transport_security()

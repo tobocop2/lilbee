@@ -88,11 +88,12 @@ def test_handler_mounts_at_mcp_path() -> None:
 
 
 def test_fresh_session_manager_per_build() -> None:
+    """run() is single-use per manager, so a second app in the same process
+    needs its own or its lifespan raises."""
     build_mcp_mount()
     first = mcp.session_manager
     build_mcp_mount()
-    second = mcp.session_manager
-    assert first is not second
+    assert mcp.session_manager is not first
 
 
 @pytest.fixture
@@ -235,19 +236,3 @@ async def test_search_tool_uses_the_shared_services_singleton(
         set_services(None)
     services.searcher.search.assert_called_once()
     assert services.searcher.search.call_args.args[0] == "hello"
-
-
-def test_a_dependency_without_the_private_session_manager_fails_at_build(monkeypatch) -> None:
-    """The mount clears FastMCP's private _session_manager because the package
-    exposes no public reset. If a release renames it, the failure must name the
-    dependency here rather than surfacing later as run()-already-entered."""
-    import pytest
-
-    from lilbee.server import mcp_mount
-
-    class _NoSessionManager:
-        settings = None
-
-    monkeypatch.setattr(mcp_mount, "mcp", _NoSessionManager())
-    with pytest.raises(RuntimeError, match="mcp version pin"):
-        build_mcp_mount()
