@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,14 +54,25 @@ def copy_files(paths: list[Path], *, force: bool = False) -> CopyResult:
 _REMOVED_SKIP_REASON = "removed via delete (re-add the file or run retry-skipped to restore)"
 
 
+def folder_members(name: str, known: Iterable[str]) -> list[str]:
+    """Indexed sources under folder *name*, matched on whole path segments.
+
+    ``myrepo`` covers ``myrepo/a.py`` but never ``myrepo-2/x``. Empty when *name*
+    is not a parent directory of any known source. This is the single definition
+    of the folder-boundary rule, shared by expansion and the delete-guard.
+    """
+    prefix = name.rstrip("/") + "/"
+    return [source for source in known if source.startswith(prefix)]
+
+
 def expand_folder_names(names: list[str]) -> list[str]:
     """Expand any folder name to the indexed sources beneath it.
 
     A name that matches an indexed source exactly is kept. A name that matches no
     source but is a parent directory of one or more sources expands to all of
-    them, matched on whole path segments (``myrepo`` covers ``myrepo/a.py`` but
-    never ``myrepo-2/x``). A name that matches neither is kept unchanged so the
-    caller reports it not-found. Order and de-duplication are preserved.
+    them (see :func:`folder_members`). A name that matches neither is kept
+    unchanged so the caller reports it not-found. Order and de-duplication are
+    preserved.
     """
     from lilbee.app.services import get_services
 
@@ -79,8 +90,7 @@ def expand_folder_names(names: list[str]) -> list[str]:
         if name in known_set:
             _add(name)
             continue
-        prefix = name.rstrip("/") + "/"
-        members = [source for source in known if source.startswith(prefix)]
+        members = folder_members(name, known)
         if members:
             for member in members:
                 _add(member)

@@ -1027,8 +1027,9 @@ class ChatScreen(Screen[None]):
 
         # A folder name (parent directory of one or more sources) removes
         # everything beneath it; remove_documents_durably expands it.
-        is_folder = any(source.startswith(name.rstrip("/") + "/") for source in known)
-        if name not in known and not is_folder:
+        from lilbee.app.ingest import folder_members
+
+        if name not in known and not folder_members(name, known):
             message = msg.CMD_DELETE_NOT_FOUND.format(name=name)
             suggestion = _closest_source(name, known)
             if suggestion is not None:

@@ -3225,9 +3225,7 @@ class TestRemoveDocumentsDurably:
         doc.write_text("x")
         mock_svc.store.get_sources.side_effect = lambda: [{"filename": "d.txt"}]
         mock_svc.store.remove_documents.side_effect = None
-        mock_svc.store.remove_documents.return_value = RemoveResult(
-            removed=["d.txt"], not_found=[]
-        )
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["d.txt"], not_found=[])
 
         remove_documents_durably(["d.txt"], delete_files=True)
 
