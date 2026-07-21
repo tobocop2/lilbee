@@ -29,8 +29,9 @@ def test_classify_known_supported() -> None:
 
 
 def test_classify_gemma4_supported() -> None:
-    # The pinned engine serves gemma4. gguf only started listing it in 0.19, and
-    # the floor is >=0.18, so compat allowlists it; the verdict must hold on either.
+    # gemma4 is the arch that drove the gguf >=0.19 floor: the pinned engine serves
+    # it, and 0.19 is the first release enumerating it. Pins the floor's purpose,
+    # so dropping back to a gguf that omits the arch fails here rather than in a pull.
     assert classify("gemma4") is ModelCompat.SUPPORTED
 
 

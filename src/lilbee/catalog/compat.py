@@ -19,13 +19,7 @@ from lilbee.catalog.types import ModelCompat
 if TYPE_CHECKING:
     from lilbee.catalog.hf_client import HfClient
 
-# Architectures the pinned llama.cpp engine serves but the bundled gguf package
-# does not yet enumerate in MODEL_ARCH_NAMES. Keep this in step with the engine
-# pin in tools/wheel-build/build_llama_server.sh; drop an entry once a gguf bump
-# lists it upstream (the union below is idempotent if it does).
-_ENGINE_EXTRA_ARCHS: frozenset[str] = frozenset({"gemma4"})
-
-SUPPORTED_ARCHS: frozenset[str] = frozenset(MODEL_ARCH_NAMES.values()) | _ENGINE_EXTRA_ARCHS
+SUPPORTED_ARCHS: frozenset[str] = frozenset(MODEL_ARCH_NAMES.values())
 
 
 def classify(architecture: str) -> ModelCompat:
