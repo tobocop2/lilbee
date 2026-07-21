@@ -139,7 +139,7 @@ class TestSearchRoute:
 
 
 class TestSearchDoesNotLeakInternals:
-    """/api/search is reachable without a token, so its errors stay generic."""
+    """/api/search errors stay generic even for authorized callers."""
 
     def test_unexpected_failure_hides_the_exception_text(self, client, caplog):
         boom = RuntimeError("no such table '/home/tobias/data/lancedb/chunks'")

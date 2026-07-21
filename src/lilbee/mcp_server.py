@@ -210,6 +210,11 @@ def search(
         # "both" rather than a hard failure so the request still does work.
         log.warning("lilbee_search: unknown scope %r, falling back to %r", scope, SearchScope.BOTH)
         chunk_type = scope_to_chunk_type(SearchScope.BOTH.value)
+    if top_k is not None and top_k < 1:
+        # Same lenient stance as the scope fallback above: do the search with
+        # the configured default rather than hard-failing the agent's call.
+        log.warning("lilbee_search: top_k %d is not positive, using the default", top_k)
+        top_k = None
     effective_top_k = top_k if top_k is not None else cfg.top_k
     try:
         results = get_services().searcher.search(
