@@ -262,7 +262,7 @@ class TestMcpMainIntegration:
         monkeypatch.setenv(PARENT_PID_ENV, "888888")
         with (
             mock.patch.object(mcp_mod, "get_services"),
-            mock.patch.object(mcp_mod.mcp, "run"),
+            mock.patch.object(mcp_mod, "build_mcp_server"),
             mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher,
         ):
             mcp_mod.main()
@@ -274,7 +274,7 @@ class TestMcpMainIntegration:
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(mcp_mod, "get_services"),
-            mock.patch.object(mcp_mod.mcp, "run"),
+            mock.patch.object(mcp_mod, "build_mcp_server"),
             mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher,
         ):
             mcp_mod.main()
@@ -286,7 +286,7 @@ class TestMcpMainIntegration:
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(mcp_mod, "get_services", side_effect=RuntimeError("no provider")),
-            mock.patch.object(mcp_mod.mcp, "run"),
+            mock.patch.object(mcp_mod, "build_mcp_server"),
             caplog.at_level("DEBUG", logger="lilbee.mcp_server"),
         ):
             mcp_mod.main()

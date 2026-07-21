@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterable, AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -108,6 +108,20 @@ def _provider_chat_kwargs(req: CanonicalChatRequest, canonical_model: str) -> di
     }
 
 
+def _stop_reason_for(result: ChatResult) -> StopReason:
+    """Closing stop reason for a non-streaming result.
+
+    Tool calls win over the reported finish reason. FinishReason.coerce falls
+    back to STOP for a missing or unknown value, so a provider that returns
+    tool calls without saying so produced tool_use content under end_turn, and
+    a client reading stop_reason decides whether to run the tools. The
+    streaming path already refuses the same downgrade.
+    """
+    if result.tool_calls:
+        return StopReason.TOOL_USE
+    return _FINISH_REASON_TO_STOP.get(result.finish_reason, StopReason.END_TURN)
+
+
 def _content_blocks_from_result(result: ChatResult) -> list[ContentBlock]:
     """Build canonical content blocks from a non-streaming provider result."""
     content: list[ContentBlock] = []
@@ -140,7 +154,7 @@ def dispatch_chat(
         id=_new_message_id(),
         model=canonical_model,
         content=_content_blocks_from_result(result),
-        stop_reason=_FINISH_REASON_TO_STOP.get(result.finish_reason, StopReason.END_TURN),
+        stop_reason=_stop_reason_for(result),
         usage=CanonicalUsage(
             input_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.completion_tokens,
@@ -183,21 +197,21 @@ async def dispatch_chat_stream(
 
 
 async def _async_iter_provider_stream(
-    stream: Iterator[ChatStreamItem] | AsyncIterator[ChatStreamItem],
+    stream: Iterator[ChatStreamItem],
 ) -> AsyncIterator[ChatStreamItem]:
     """Iterate a provider chat stream without blocking the event loop.
 
-    An async-native stream is consumed directly, without thread hops. The
-    fleet and SDK providers stream via plain sync generators; iterating one
-    inline on the event loop would block, so each ``next()`` runs in a
-    worker thread via ``asyncio.to_thread``. ``LLMProvider.chat`` cannot
-    narrow this distinction in the Protocol because the SDK backend has no
-    async-native path.
+    ``LLMProvider.chat`` types a streaming result as a ClosableIterator, and
+    every provider in the tree returns a plain sync generator; iterating one
+    inline on the event loop would block, so each ``next()`` runs in a worker
+    thread via ``asyncio.to_thread``.
+
+    There used to be an async-native branch here for a provider shape that
+    does not exist. It was dead and also wrong: the caller's cleanup is
+    ``await asyncio.to_thread(stream.close)``, which an async-native stream
+    would not satisfy. Adding one means changing the Protocol and that
+    cleanup together, not restoring a branch nothing reaches.
     """
-    if isinstance(stream, AsyncIterable):
-        async for frame in stream:
-            yield frame
-        return
     while True:
         frame = await asyncio.to_thread(_next_or_done, stream)
         if frame is _STREAM_DONE:
@@ -231,6 +245,9 @@ class _StreamState:
         self._open: _OpenBlockKind = _OpenBlockKind.NONE
         self._index: int = -1
         self._tool_index: int | None = None
+        # Provider tool index -> the (id, name) its first delta carried.
+        # Continuation deltas typically carry neither.
+        self._tool_identity: dict[int, tuple[str, str]] = {}
         self._stop_reason: StopReason = StopReason.END_TURN
         self._usage: TokenUsage | None = None
 
@@ -286,17 +303,32 @@ class _StreamState:
             self._tool_index = frame.index
             yield ContentBlockStart(
                 index=self._index,
-                block=ToolUseBlock(
-                    id=frame.id or _new_call_id(),
-                    name=frame.name or "",
-                    input={},
-                ),
+                block=ToolUseBlock(**self._tool_block_fields(frame)),
             )
         if frame.arguments_delta is not None:
             yield ContentBlockDelta(
                 index=self._index,
                 delta=ToolUseDelta(partial_json=frame.arguments_delta),
             )
+
+    def _tool_block_fields(self, frame: ToolCallDelta) -> dict[str, Any]:
+        """Identity for the block opening on *frame*, remembered per tool index.
+
+        A text frame between two argument deltas of one call (streamed
+        reasoning surfaced as text, say) closes the open tool block, so the
+        next delta for the same call has to open a second block. Continuation
+        deltas carry no id and no name, so that block used to get a fresh
+        synthetic id and an empty name, splitting one logical call across two
+        blocks the second of which matched no tool. Reusing the identity the
+        call already announced at least leaves both blocks stitchable by id.
+        """
+        known = self._tool_identity.get(frame.index)
+        identity = (
+            frame.id or (known[0] if known else _new_call_id()),
+            frame.name or (known[1] if known else ""),
+        )
+        self._tool_identity[frame.index] = identity
+        return {"id": identity[0], "name": identity[1], "input": {}}
 
     def _close_current(self) -> Iterator[CanonicalStreamEvent]:
         if self._open != _OpenBlockKind.NONE:

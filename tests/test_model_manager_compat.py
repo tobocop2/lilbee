@@ -14,7 +14,7 @@ from lilbee.modelhub.model_manager import ModelManager
 
 
 def _stub_services(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch get_services() so _enforce_arch_compat doesn't need a real container."""
+    """Patch get_services() so enforce_arch_compat doesn't need a real container."""
     import lilbee.app.services as services_mod
 
     stub = mock.MagicMock()

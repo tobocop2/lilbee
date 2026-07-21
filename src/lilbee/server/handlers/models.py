@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Literal
 
+from cachetools import TTLCache
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
@@ -28,10 +28,11 @@ from lilbee.catalog.types import CatalogSize, CatalogSort, KeyStatus, ModelSourc
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
-from lilbee.modelhub.role_validator import _MODEL_FIELD_TO_TASK, validate_model_task_assignment
+from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK, validate_model_task_assignment
 from lilbee.providers.local_servers import canonical_local_ref, local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import (
     FitLevel,
     SizeVariantInfo,
@@ -236,8 +237,8 @@ def _require_model_available(model: str) -> str:
 
 
 def _build_task_to_field() -> dict[ModelTask, str]:
-    """Invert config's ``_MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
-    return {ModelTask(task): field for field, task in _MODEL_FIELD_TO_TASK.items()}
+    """Invert ``MODEL_FIELD_TO_TASK`` so the two maps stay in sync."""
+    return {ModelTask(task): field for field, task in MODEL_FIELD_TO_TASK.items()}
 
 
 _TASK_TO_FIELD: dict[ModelTask, str] = _build_task_to_field()
@@ -258,7 +259,7 @@ def _require_model_for_task(model: str, expected: ModelTask, *, allow_empty: boo
 
 async def set_chat_model(model: str) -> SetModelResponse:
     """Switch active chat model. Validates installation and catalog task."""
-    normalized = _require_model_for_task(model, ModelTask.CHAT)
+    normalized = await asyncio.to_thread(_require_model_for_task, model, ModelTask.CHAT)
     return await _set_model("chat_model", normalized)
 
 
@@ -272,27 +273,33 @@ async def set_embedding_model(model: str) -> SetModelResponse:
     until that happens. The settings boundary pins legacy store meta to
     the OLD ref before the write and computes ``reindex_required`` after.
     """
-    normalized = _require_model_for_task(model, ModelTask.EMBEDDING)
+    normalized = await asyncio.to_thread(_require_model_for_task, model, ModelTask.EMBEDDING)
     result = apply_settings_update({"embedding_model": normalized})
     return SetModelResponse(model=normalized, reindex_required=result.reindex_required)
 
 
 async def set_vision_model(model: str) -> SetModelResponse:
     """Switch vision OCR model. Empty string unsets it (vision OCR disabled)."""
-    normalized = _require_model_for_task(model, ModelTask.VISION, allow_empty=True)
+    normalized = await asyncio.to_thread(
+        _require_model_for_task, model, ModelTask.VISION, allow_empty=True
+    )
     return await _set_model("vision_model", normalized)
 
 
 async def set_reranker_model(model: str) -> SetModelResponse:
     """Switch reranker model. Empty string unsets it (reranking disabled)."""
-    normalized = _require_model_for_task(model, ModelTask.RERANK, allow_empty=True)
+    normalized = await asyncio.to_thread(
+        _require_model_for_task, model, ModelTask.RERANK, allow_empty=True
+    )
     return await _set_model("reranker_model", normalized)
 
 
 async def models_show(model: str) -> ModelsShowResponse:
     """Return model metadata/parameters. Returns empty model if unavailable."""
     provider = get_services().provider
-    result = provider.show_model(model)
+    # show_model dispatches to the SDK backend, which does a network call to the
+    # local server; offload so a hung backend doesn't block the event loop.
+    result = await asyncio.to_thread(provider.show_model, model)
     return ModelsShowResponse(**(result or {}))
 
 
@@ -388,28 +395,11 @@ def _hosted_entry(rm: RemoteModel, source: ModelSource) -> CatalogEntryResponse:
 _HOSTED_MODELS_TTL = 60
 
 
-class _HostedModelsCache:
-    """TTL cache for discovered hosted rows (no module-level mutable global)."""
-
-    def __init__(self) -> None:
-        self._time: float = 0.0
-        self._key: str = ""
-        self._result: list[CatalogEntryResponse] | None = None
-
-    def get(self, key: str) -> list[CatalogEntryResponse] | None:
-        now = time.monotonic()
-        fresh = (now - self._time) < _HOSTED_MODELS_TTL
-        if self._result is not None and key == self._key and fresh:
-            return self._result
-        return None
-
-    def set(self, key: str, result: list[CatalogEntryResponse]) -> None:
-        self._time = time.monotonic()
-        self._key = key
-        self._result = result
-
-
-_hosted_cache = _HostedModelsCache()
+# Single-entry TTL caches keyed on the config tuple that produced the value:
+# maxsize=1 means a lookup under a new key evicts the old one.
+_hosted_cache: TTLCache[str, list[CatalogEntryResponse]] = TTLCache(
+    maxsize=1, ttl=_HOSTED_MODELS_TTL
+)
 
 
 def _discover_hosted_sync() -> list[CatalogEntryResponse]:
@@ -448,7 +438,7 @@ async def _collect_hosted_entries(
     rows = _hosted_cache.get(key)
     if rows is None:
         rows = await asyncio.to_thread(_discover_hosted_sync)
-        _hosted_cache.set(key, rows)
+        _hosted_cache[key] = rows
     if task is not None:
         rows = [r for r in rows if r.task == task]
     if search:
@@ -496,16 +486,16 @@ async def models_catalog(
         _build_catalog_entry(e, available_bytes=available_bytes, families_by_repo=families_by_repo)
         for e in enriched
     ]
-    # Hosted rows (frontier + ollama) are selectable and download-free, so
-    # they're shown on the first page only (mirrors the featured first-page
-    # convention), skipped for featured-only and installed=False filters, and
-    # counted toward ``total``.
+    # Hosted rows (frontier + ollama) are selectable and download-free, shown
+    # on the first page only and skipped for featured-only / installed=False.
+    # They stay out of ``total``: as an unpaginated overlay they made page 1
+    # report a larger total than page 2 of the same listing.
     hosted_rows: list[CatalogEntryResponse] = []
     if offset == 0 and not featured and installed is not False:
         hosted_rows = await _collect_hosted_entries(task=parsed_task, search=search)
 
     return ModelsCatalogResponse(
-        total=result.total + len(hosted_rows),
+        total=result.total,
         limit=result.limit,
         offset=result.offset,
         has_more=result.has_more,
@@ -513,16 +503,24 @@ async def models_catalog(
     )
 
 
-async def models_installed() -> ModelsInstalledResponse:
-    """Return installed models with their granular source and canonical ref."""
+def _installed_entries_sync() -> list[InstalledModelEntry]:
+    """Blocking body of :func:`models_installed`: list installs and their sources."""
     manager = get_services().model_manager
-    models = []
+    entries = []
     for name in manager.list_installed():
         source = manager.get_source(name) or ModelSource.REMOTE
-        models.append(
+        entries.append(
             InstalledModelEntry(name=canonical_local_ref(name, source.value), source=source)
         )
-    return ModelsInstalledResponse(models=models)
+    return entries
+
+
+async def models_installed() -> ModelsInstalledResponse:
+    """Return installed models with their granular source and canonical ref."""
+    # list_installed walks the model filesystem and, on TTL expiry, queries the
+    # configured local servers over HTTP; offload it like list_models does.
+    entries = await asyncio.to_thread(_installed_entries_sync)
+    return ModelsInstalledResponse(models=entries)
 
 
 async def enforce_pull_arch_compat(
@@ -543,7 +541,7 @@ async def enforce_pull_arch_compat(
         return
     manager = get_services().model_manager
     try:
-        await asyncio.to_thread(manager._enforce_arch_compat, model)
+        await asyncio.to_thread(manager.enforce_arch_compat, model)
     except UnsupportedArchError as exc:
         raise HTTPException(
             status_code=409,
@@ -575,8 +573,11 @@ async def models_pull(
 
     def _pull_blocking() -> None:
         def _on_bytes(downloaded: int, total: int) -> None:
+            # Raise, not return: the pull runs in a worker thread asyncio
+            # cannot interrupt, so returning left a multi-GB download running
+            # for a client that had gone.
             if sse.cancel.is_set():
-                return
+                raise TaskCancelledError
             payload = sse_event(SseEvent.PROGRESS, {"current": downloaded, "total": total})
             sse.loop.call_soon_threadsafe(sse.queue.put_event_nowait, payload, SseEvent.PROGRESS)
 
@@ -587,14 +588,22 @@ async def models_pull(
                 on_bytes=_on_bytes,
                 allow_unsupported=allow_unsupported,
             )
+        except TaskCancelledError:
+            log.info("Model pull for %s aborted: client disconnected", model)
         except Exception as exc:
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, sse_error(str(exc)))
         finally:
             sse.loop.call_soon_threadsafe(sse.queue.put_nowait, None)
 
     task = asyncio.ensure_future(asyncio.to_thread(_pull_blocking))
-    async for event in sse.drain(task, "Model pull stream"):
-        yield event
+    try:
+        async for event in sse.drain(task, "Model pull stream"):
+            yield event
+    finally:
+        # Closing this generator means the client is gone. Set it here, not in
+        # drain's cleanup, which runs only once that generator is collected;
+        # until then the worker thread keeps downloading.
+        sse.cancel.set()
 
 
 async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteResponse:
@@ -622,40 +631,23 @@ async def models_delete(model: str, *, source: str = "native") -> ModelsDeleteRe
 _EXTERNAL_MODELS_TTL = 60
 
 
-class _ExternalModelsCache:
-    """TTL cache for external model listings (no module-level mutable global)."""
-
-    def __init__(self) -> None:
-        self._time: float = 0.0
-        self._key: str = ""
-        self._result: ExternalModelsResponse | None = None
-
-    def get(self, key: str) -> ExternalModelsResponse | None:
-        now = time.monotonic()
-        if self._result and key == self._key and (now - self._time) < _EXTERNAL_MODELS_TTL:
-            return self._result
-        return None
-
-    def set(self, key: str, result: ExternalModelsResponse) -> None:
-        self._time = time.monotonic()
-        self._key = key
-        self._result = result
-
-
-_external_cache = _ExternalModelsCache()
+_external_cache: TTLCache[str, ExternalModelsResponse] = TTLCache(
+    maxsize=1, ttl=_EXTERNAL_MODELS_TTL
+)
 
 
 async def list_external_models() -> ExternalModelsResponse:
     """Query the provider for available models via its list_models() API."""
     key = f"{cfg.ollama_base_url}:{cfg.lm_studio_base_url}:{cfg.llm_api_key or ''}"
+    # ``is not None``, not truthiness: an empty model list is a real answer.
     cached = _external_cache.get(key)
-    if cached:
+    if cached is not None:
         return cached
 
     try:
         models = await asyncio.to_thread(get_services().provider.list_models)
         result = ExternalModelsResponse(models=models)
-        _external_cache.set(key, result)
+        _external_cache[key] = result
         return result
     except Exception as exc:
         log.warning("Failed to list external models: %s", exc)

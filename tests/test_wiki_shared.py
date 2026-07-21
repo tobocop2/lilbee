@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lilbee.core.text import clean_label_for_display, is_valid_label, make_slug
 from lilbee.wiki.shared import (
     SUBDIR_TO_TYPE,
@@ -181,3 +183,29 @@ class TestCleanLabelForDisplay:
 
     def test_leaves_ordinary_label_unchanged(self):
         assert clean_label_for_display("brake pads") == "brake pads"
+
+
+class TestSlugWhitespaceHandling:
+    """The docstring promises whitespace maps to single hyphens."""
+
+    def test_a_double_space_does_not_collide_with_a_slash(self):
+        """`--` is the reserved encoding for `/`, so a run of spaces producing
+        it made two different entities share one wiki page, and whichever was
+        written second silently overwrote the first."""
+        from lilbee.core.text import make_slug
+
+        assert make_slug("Chevrolet  Caprice") != make_slug("Chevrolet/Caprice")
+        assert make_slug("Chevrolet  Caprice") == "chevrolet-caprice"
+        assert make_slug("Chevrolet/Caprice") == "chevrolet--caprice"
+
+    @pytest.mark.parametrize("label", ["Chevrolet\tCaprice", "Chevrolet\nCaprice"])
+    def test_other_whitespace_becomes_a_hyphen_not_nothing(self, label):
+        """Tabs and newlines were deleted, welding two words into one token."""
+        from lilbee.core.text import make_slug
+
+        assert make_slug(label) == "chevrolet-caprice"
+
+    def test_leading_and_trailing_whitespace_is_trimmed(self):
+        from lilbee.core.text import make_slug
+
+        assert make_slug("  Caprice  ") == "caprice"

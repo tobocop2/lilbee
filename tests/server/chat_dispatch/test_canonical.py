@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
     CanonicalMessage,
@@ -115,11 +117,18 @@ def test_stop_reason_is_string_enum() -> None:
 
 
 def test_canonical_tool_choice_modes() -> None:
-    for mode in ("auto", "any", "none", "tool"):
+    for mode in ("auto", "any", "none"):
         choice = CanonicalToolChoice(mode=mode)  # type: ignore[arg-type]
         assert choice.mode == mode
     forced = CanonicalToolChoice(mode="tool", tool_name="search")
     assert forced.tool_name == "search"
+
+
+def test_forced_tool_choice_requires_a_name() -> None:
+    """Without the name this reached the provider as {"function": {"name": None}},
+    a malformed tool choice the backend rejects instead of the boundary."""
+    with pytest.raises(ValueError, match="requires a tool_name"):
+        CanonicalToolChoice(mode="tool")
 
 
 def test_canonical_message_holds_tool_result_blocks() -> None:

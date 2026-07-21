@@ -59,10 +59,13 @@ class TestCompletionsErrorCodeEnum:
             assert code in COMPLETIONS_ERROR_TYPES, code
 
 
-class TestInvalidCodeRejected:
-    def test_bare_string_not_in_enum_raises_key_error(self) -> None:
-        with pytest.raises(KeyError):
-            completions_error_body("zzz_unknown", "wat")  # type: ignore[arg-type]
+class TestUnmappedCodeDegrades:
+    def test_a_code_with_no_type_mapping_still_builds_a_body(self) -> None:
+        """A bare subscript turned a handled 4xx into a 500 while building the
+        error body. test_every_code_has_a_type_mapping guards completeness."""
+        body = completions_error_body("zzz_unknown", "wat")  # type: ignore[arg-type]
+        assert body["error"]["message"] == "wat"
+        assert body["error"]["type"] == "invalid_request_error"
 
 
 class TestClassifyProviderError:
@@ -100,18 +103,32 @@ class TestClassifyProviderError:
             (ProviderErrorKind.BAD_REQUEST, 400, CompletionsErrorCode.INVALID_REQUEST),
             (ProviderErrorKind.AUTH, 401, CompletionsErrorCode.INVALID_API_KEY),
             (ProviderErrorKind.RATE_LIMIT, 429, CompletionsErrorCode.RATE_LIMIT_EXCEEDED),
-            (ProviderErrorKind.CONNECTION, 503, CompletionsErrorCode.INTERNAL_ERROR),
-            (ProviderErrorKind.SERVER, 502, CompletionsErrorCode.INTERNAL_ERROR),
         ],
     )
-    def test_classified_provider_kinds_keep_status_code_and_message(
-        self, kind, status, code
-    ) -> None:
+    def test_client_input_kinds_keep_status_code_and_message(self, kind, status, code) -> None:
+        """These describe the caller's own request, so the text helps them."""
         result = classify_provider_error(ProviderError("the original message", kind=kind))
         assert result is not None
         assert result.http_status == status
         assert result.code == code
         assert result.message == "the original message"
+
+    @pytest.mark.parametrize(
+        ("kind", "status"),
+        [(ProviderErrorKind.CONNECTION, 503), (ProviderErrorKind.SERVER, 502)],
+    )
+    def test_backend_failure_text_is_not_returned_to_the_caller(self, kind, status, caplog) -> None:
+        """Backend failure text carries the upstream body and the dead
+        server's stderr: loopback ports, engine paths, CUDA failures."""
+        leak = "HTTP 502: bind 127.0.0.1:8137 failed, /opt/engine/llama-server died"
+        with caplog.at_level("WARNING"):
+            result = classify_provider_error(ProviderError(leak, kind=kind))
+        assert result is not None
+        assert result.http_status == status
+        assert result.code == CompletionsErrorCode.INTERNAL_ERROR
+        assert "127.0.0.1" not in result.message
+        assert "/opt/engine" not in result.message
+        assert leak in caplog.text
 
     def test_unknown_provider_kind_returns_none(self) -> None:
         assert classify_provider_error(ProviderError("x", kind=ProviderErrorKind.UNKNOWN)) is None

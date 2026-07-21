@@ -57,6 +57,9 @@ dependencies = [
     "psutil>=5.9",
     "pydantic-settings>=2.14.2",
     "numpy",
+    # The read side is stdlib tomllib; this is its write half.
+    "tomli-w>=1.0",
+    "cachetools>=7.1.4",
 ]
 
 [project.optional-dependencies]
@@ -117,6 +120,7 @@ dev = [
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.3",
     "pre-commit>=4.0",
+    "types-cachetools>=7.0.0.20260713",
 ]
 
 [tool.pytest.ini_options]

@@ -19,7 +19,7 @@ from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.providers.model_ref import default_first, with_configured_remote_chat
-from lilbee.server.auth import read_only, session_manager
+from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
     CompletionsErrorCode,
     classify_provider_error,
@@ -55,7 +55,7 @@ _MULTI_CHOICE_MESSAGE = "lilbee serves one choice per request; set n to 1 or omi
 
 
 @get("/v1/models")
-@read_only
+@auth_checked_in_handler
 async def list_models_endpoint(request: Request) -> Response:
     """Return installed chat models in the ``/v1/models`` shape, the configured one leading."""
     auth_error = _auth_failure(request)
@@ -65,7 +65,10 @@ async def list_models_endpoint(request: Request) -> Response:
     # list_installed walks the model filesystem and served_chat_ctx may probe the
     # engine; run both off the event loop like the sibling chat-completions route.
     payload = await asyncio.to_thread(_build_models_list_payload)
-    return Response(payload.model_dump(), media_type="application/json")
+    # exclude_none like the sibling completions responses: context_window is
+    # deliberately None for every model but the active one, and emitting it as
+    # null adds a field OpenAI clients do not expect on a model entry.
+    return Response(payload.model_dump(exclude_none=True), media_type="application/json")
 
 
 def _build_models_list_payload() -> ModelsListResponse:
@@ -96,8 +99,24 @@ def _build_models_list_payload() -> ModelsListResponse:
     )
 
 
-@post("/v1/chat/completions", status_code=200)
-@read_only
+async def _auth_before_request(request: Request) -> Response | None:
+    """Reject an unauthenticated caller before Litestar parses the body.
+
+    The endpoint is marked @auth_checked_in_handler so AuthMiddleware defers to
+    the handler, which answers a bad token with the OpenAI error envelope
+    rather than Litestar's 401 shape. But binding the body as a handler
+    parameter made Litestar parse and pydantic-validate the whole payload
+    first, so an unauthenticated caller got request_max_body_size worth of
+    JSON processed on every request, and a malformed body was answered with a
+    400 naming the failing fields instead of ever reaching the 401. Litestar
+    runs before_request ahead of kwargs resolution and short-circuits on a
+    returned value, so this is the one place the check can sit.
+    """
+    return _auth_failure(request)
+
+
+@post("/v1/chat/completions", status_code=200, before_request=_auth_before_request)
+@auth_checked_in_handler
 async def chat_completions_endpoint(
     request: Request, data: CompletionsRequest
 ) -> Response | Stream:
@@ -144,15 +163,13 @@ async def chat_completions_endpoint(
 
 
 def _reject_before_dispatch(request: Request, data: CompletionsRequest) -> Response | None:
-    """Auth, multi-choice, and unsupported-param checks before any dispatch work.
+    """Multi-choice and unsupported-param checks before any dispatch work.
 
     Returns a 4xx Response to short-circuit, or None to proceed. Unmapped OpenAI
     params (``response_format``, ``logprobs``, and any other unknown field) are
-    accepted but logged at debug so a client learns they had no effect.
+    accepted but logged at debug so a client learns they had no effect. Auth is
+    not checked here: it runs in the before_request hook, ahead of body parsing.
     """
-    auth_error = _auth_failure(request)
-    if auth_error is not None:
-        return auth_error
     if data.n is not None and data.n > 1:
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _MULTI_CHOICE_MESSAGE)
     if data.model_extra:
@@ -227,11 +244,15 @@ async def _gated_completions_stream(
     all unwind cleanly; a disconnect before the first iteration is covered
     by the route's after-send release of the same guard.
     """
+    # One id for the whole stream, error frame included: the frame is shaped as a
+    # real chunk so SDK clients parse it, and those accumulate by chunk id, so a
+    # fresh id made the error look like part of a different completion.
+    response_id = _response_id()
     try:
         try:
             events = dispatch_chat_stream(req, canonical_model=model)
             chunks = canonical_stream_to_completions_chunks(
-                events, model=model, response_id=_response_id(), include_usage=include_usage
+                events, model=model, response_id=response_id, include_usage=include_usage
             )
             async for frame in encode_completions_sse(chunks):
                 yield frame
@@ -240,15 +261,26 @@ async def _gated_completions_stream(
             if classified is None:
                 log.exception("chat_completions stream failed")
                 yield _sse_error_frame(
-                    CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE, model=model
+                    CompletionsErrorCode.INTERNAL_ERROR,
+                    _INTERNAL_ERROR_MESSAGE,
+                    model=model,
+                    response_id=response_id,
                 )
             else:
-                yield _sse_error_frame(classified.code, classified.message, model=model)
+                yield _sse_error_frame(
+                    classified.code, classified.message, model=model, response_id=response_id
+                )
     finally:
         await guard.release()
 
 
-def _sse_error_frame(code: CompletionsErrorCode, message: str, *, model: str = "") -> bytes:
+def _sse_error_frame(
+    code: CompletionsErrorCode,
+    message: str,
+    *,
+    model: str = "",
+    response_id: str | None = None,
+) -> bytes:
     """SSE frame carrying a mid-stream error in OpenAI's chunk-shaped wire format.
 
     OpenAI-SDK clients only parse ``chat.completion.chunk``-shaped frames, so the
@@ -259,7 +291,7 @@ def _sse_error_frame(code: CompletionsErrorCode, message: str, *, model: str = "
     """
     body = completions_error_body(code, message)
     chunk: dict[str, object] = {
-        "id": _response_id(),
+        "id": response_id or _response_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,

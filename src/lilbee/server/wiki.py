@@ -1,8 +1,13 @@
-"""Wiki layer route handlers: page listing, reading, citations, lint, generation, pruning."""
+"""Wiki layer route handlers: page listing, reading, citations, lint, generation, pruning.
+
+Every route needs the token: pages are generated from the user's own corpus,
+so even the titles in a listing are their content.
+"""
 
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +18,6 @@ from litestar.params import Parameter
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
-from lilbee.server.auth import read_only
 from lilbee.server.models import (
     DraftInfoResponse,
     WikiBuildResult,
@@ -44,7 +48,6 @@ from lilbee.wiki.drafts import (
     list_drafts,
     reject_draft,
 )
-from lilbee.wiki.index import update_wiki_index
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
     WIKI_DISABLED_ERROR,
@@ -70,29 +73,23 @@ def _find_page(slug: str) -> Path | None:
 
 
 @get("/api/wiki")
-@read_only
 async def wiki_list_route() -> list[dict[str, Any]]:
     """List all wiki pages across subdirectories.
-    If wiki/index.md exists, regenerate it first to ensure freshness,
-    then build the page list from disk.
+
+    Reads the tree without touching it. This route is unauthenticated, so it
+    used to hand any caller a way to rewrite index.md on repeat and to race the
+    build path over the same file. The listing never depended on that write
+    anyway: it is built by walking pages, and every path that changes the tree
+    (build, update, synthesize, prune, draft-accept) refreshes the index itself.
     """
     _require_wiki()
-    root = _wiki_root()
-    # The index regen walks and rewrites files and list_pages walks the tree;
-    # offload both so the listing doesn't block the event loop.
-    return await asyncio.to_thread(_list_wiki_pages_sync, root)
-
-
-def _list_wiki_pages_sync(root: Path) -> list[dict[str, Any]]:
-    """Blocking body of :func:`wiki_list_route`: refresh index, then walk pages."""
-    index_path = root / "index.md"
-    if index_path.is_file():
-        update_wiki_index()
-    return [p.to_dict() for p in list_pages(root)]
+    # list_pages walks the whole tree; offload so the listing doesn't block
+    # the event loop.
+    pages = await asyncio.to_thread(list_pages, _wiki_root())
+    return [p.to_dict() for p in pages]
 
 
 @get("/api/wiki/drafts")
-@read_only
 async def wiki_drafts_route() -> list[DraftInfoResponse]:
     """List pending wiki drafts with drift, faithfulness, and pending-marker info."""
     _require_wiki()
@@ -100,7 +97,6 @@ async def wiki_drafts_route() -> list[DraftInfoResponse]:
 
 
 @get("/api/wiki/drafts/diff/{slug:path}")
-@read_only
 async def wiki_draft_diff_route(slug: str) -> WikiDraftDiffResponse:
     """Return the unified diff of a draft against its published counterpart.
 
@@ -130,9 +126,11 @@ async def wiki_draft_accept_route(slug: str) -> WikiDraftAcceptResponse:
     slug = slug.lstrip("/")
     store = svc_mod.get_services().store
     try:
-        # accept_draft re-chunks and embeds the page; offload so it doesn't block
-        # the event loop (and every other REST/MCP request on it).
-        result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
+        # accept_draft overwrites a published page and refreshes the index, the
+        # same artifacts a build writes, so it shares the build mutex. It also
+        # re-chunks and embeds, so it runs off the event loop.
+        async with _wiki_build_lock():
+            result = await asyncio.to_thread(accept_draft, slug, _wiki_root(), store)
     except FileNotFoundError as exc:
         raise NotFoundException(detail=f"draft not found: {slug}") from exc
     except PathTraversalError as exc:
@@ -155,7 +153,6 @@ async def wiki_draft_reject_route(slug: str) -> WikiDraftRejectResponse:
 
 
 @get("/api/wiki/citations")
-@read_only
 async def wiki_citations_reverse_route(
     source: str = Parameter(query="source", default=""),
 ) -> list[WikiCitationRecord]:
@@ -169,7 +166,6 @@ async def wiki_citations_reverse_route(
 
 
 @get("/api/wiki/{slug:path}")
-@read_only
 async def wiki_read_route(slug: str) -> WikiPageDetail | WikiCitationsResult:
     """Read a specific wiki page as markdown, or its citations."""
     _require_wiki()
@@ -217,8 +213,11 @@ async def wiki_lint_route() -> WikiLintResult:
 async def wiki_prune_route() -> WikiPruneResult:
     """Trigger pruning of stale/orphaned wiki pages."""
     _require_wiki()
-    # prune_wiki walks the whole wiki tree and store; offload off the loop.
-    report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
+    # prune archives pages and rewrites the index, so it takes the build mutex
+    # like the other writers. It also walks the whole tree and store, so it runs
+    # off the event loop.
+    async with _wiki_build_lock():
+        report = await asyncio.to_thread(prune_mod.prune_wiki, svc_mod.get_services().store)
     return WikiPruneResult(
         records=[WikiPruneRecordResponse(**r.to_dict()) for r in report.records],
         archived=report.archived_count,
@@ -287,11 +286,19 @@ async def wiki_synthesize_route() -> WikiSynthesizeResult:
 
 
 @get("/api/wiki/status")
-@read_only
 async def wiki_status_route() -> WikiStatusResult:
-    """Wiki layer status: page counts and recent lint counts."""
+    """Wiki layer status: page counts and recent lint counts.
+
+    Token-gated, unlike the other wiki reads: the lint behind it walks every
+    page and issues a store query each, so leaving it open made it an
+    unauthenticated way to spend the machine's IO budget. It still answers
+    while the wiki is disabled so a client can render the disabled state
+    without a second round trip to /api/config.
+    """
     root = _wiki_root()
-    if not root.exists():
+    if not cfg.wiki or not root.exists():
+        # A disabled wiki can still have a tree left over from an earlier
+        # build; report the disabled state rather than linting it.
         return WikiStatusResult(wiki_enabled=cfg.wiki)
 
     summaries_dir = root / WikiSubdir.SUMMARIES
@@ -299,7 +306,12 @@ async def wiki_status_route() -> WikiStatusResult:
     summaries = list(summaries_dir.rglob("*.md")) if summaries_dir.exists() else []
     drafts = list(drafts_dir.rglob("*.md")) if drafts_dir.exists() else []
 
-    report = await asyncio.to_thread(lint_mod.lint_all, svc_mod.get_services().store)
+    # record_log=False: a status poll is a read, and appending a LINT entry to
+    # log.md on every poll is what that flag exists to avoid. The MCP and CLI
+    # status surfaces already pass it.
+    report = await asyncio.to_thread(
+        partial(lint_mod.lint_all, svc_mod.get_services().store, record_log=False)
+    )
     return WikiStatusResult(
         wiki_enabled=cfg.wiki,
         summaries=len(summaries),

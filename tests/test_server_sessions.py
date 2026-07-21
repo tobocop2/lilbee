@@ -7,7 +7,7 @@ from litestar.testing import TestClient
 
 from lilbee.app import services as svc_mod
 from lilbee.core.config import cfg
-from lilbee.server.auth import is_read_only
+from lilbee.server.auth import authenticates_itself
 from lilbee.server.routes.sessions import (
     session_add_message_route,
     session_claim_route,
@@ -173,17 +173,19 @@ class TestDelete:
         assert client.delete("/api/sessions/nope").status_code == 404
 
 
-def test_reads_are_read_only_and_writes_are_not():
-    assert is_read_only(sessions_list_route.fn)
-    assert is_read_only(session_get_route.fn)
-    assert not is_read_only(session_rename_route.fn)
-    assert not is_read_only(session_delete_route.fn)
+def test_every_session_route_requires_the_token():
+    """Reads included: the two GETs used to serve full chat transcripts to any
+    caller that could reach the port."""
+    assert not authenticates_itself(sessions_list_route.fn)
+    assert not authenticates_itself(session_get_route.fn)
+    assert not authenticates_itself(session_rename_route.fn)
+    assert not authenticates_itself(session_delete_route.fn)
     # A read-only token must not be able to create, append, or summarize.
-    assert not is_read_only(session_create_route.fn)
-    assert not is_read_only(session_add_message_route.fn)
-    assert not is_read_only(session_set_summary_route.fn)
+    assert not authenticates_itself(session_create_route.fn)
+    assert not authenticates_itself(session_add_message_route.fn)
+    assert not authenticates_itself(session_set_summary_route.fn)
     # The takeover operation above all: a read-only token must never claim.
-    assert not is_read_only(session_claim_route.fn)
+    assert not authenticates_itself(session_claim_route.fn)
 
 
 class TestOwnership:
@@ -278,3 +280,24 @@ class TestSessionsDisabled:
         client.delete(f"/api/sessions/{session_id}")
         cfg.sessions_enabled = True
         assert len(store.get(session_id).messages) == before
+
+
+class TestSessionVanishesMidRequest:
+    """Handlers mutate then re-read to build the response, and the TUI and
+    HTTP surfaces share one store, so a delete landing between the two used to
+    escape as a 500."""
+
+    def test_a_delete_between_the_mutation_and_the_read_is_a_404(self, client, store):
+        session_id = store.create(model_ref=None, scope=None, origin=SessionOrigin.HTTP)
+        real_add = store.add_message
+
+        def add_then_vanish(*args, **kwargs):
+            real_add(*args, **kwargs)
+            store.delete(session_id)
+
+        store.add_message = add_then_vanish
+        resp = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "hi"},
+        )
+        assert resp.status_code == 404

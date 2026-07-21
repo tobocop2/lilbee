@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import typer
+
+from lilbee.core.security import write_private_text
 
 
 def load_config_dict(
@@ -39,17 +39,11 @@ def load_config_dict(
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    """Write *text* to *path* atomically (temp file + os.replace), creating parents."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, suffix=".tmp", delete=False, mode="w", encoding="utf-8"
-        ) as tmp:
-            tmp_name = tmp.name
-            tmp.write(text)
-        os.replace(tmp_name, path)
-    except BaseException:
-        if tmp_name is not None:
-            Path(tmp_name).unlink(missing_ok=True)
-        raise
+    """Write *text* to *path* atomically (temp file + os.replace), creating parents.
+
+    Agent configs carry the lilbee bearer token, so they get the same
+    owner-only treatment as the other secret files. This already wrote through
+    a temp file, which is created 0600 and keeps that mode across the replace;
+    sharing the one implementation just makes that explicit.
+    """
+    write_private_text(path, text)
