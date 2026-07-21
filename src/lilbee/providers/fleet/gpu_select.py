@@ -497,9 +497,11 @@ def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
 
     Returns ``None`` if the loader can't be found or any Vulkan call
     fails; empty list ("loader present, no adapters") is a distinct
-    outcome and propagates back. The bootstrap calls this twice
-    (autoselect plus the dual-vendor ICD pin) at process startup; the
-    Vulkan probe is ms-scale, no caching needed.
+    outcome and propagates back.
+
+    Uncached, and each caller decides for itself whether to hold the answer: the
+    device types are a property of the machine and are cached, while free memory
+    is a live number that is read fresh every time it is asked for.
     """
     lib = _load_vulkan_loader()
     if lib is None:
