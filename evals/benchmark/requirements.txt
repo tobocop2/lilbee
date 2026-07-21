@@ -42,3 +42,18 @@ python-terrier==1.0
 # scorer's behaviour just as surely as the scorer's version can.
 ragas==0.4.3
 langchain-community==0.3.31
+
+# RAGChecker cross-checks the RAGAS tier and, unlike it, separates retriever-side
+# from generator-side failure, which is the diagnosis a retrieval A/B most needs.
+# Stronger provenance too: NeurIPS 2024 Datasets and Benchmarks, meta-evaluated
+# on 280 human-labelled instances, where RAGAS' correlation figures are
+# self-reported on a dataset its own authors built.
+#
+# Two caveats, both deliberate rather than overlooked. Its last release is
+# September 2024 and its last commit December 2024, so it is a cross-check and
+# not the primary scorer. And it is heavy: it pulls spaCy, transformers and
+# torch, which is the largest single addition in this file. No GPU is needed on
+# the default path, which reaches the judge over litellm; only the optional
+# local NLI checker wants one. The spaCy model is a separate step:
+#   python -m spacy download en_core_web_sm
+ragchecker==0.1.9

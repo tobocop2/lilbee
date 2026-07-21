@@ -312,6 +312,42 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_score_ragchecker(args: argparse.Namespace) -> int:
+    """Cross-check the RAGAS tier, and split the result by which half moved."""
+    from evals.benchmark.ragchecker_tier import (
+        RagCheckerJudge,
+        attribution,
+        make_ragchecker_evaluator,
+        score_ragchecker,
+    )
+
+    manifest = Manifest.load(args.manifest)
+    judge = RagCheckerJudge(model=manifest.models.judge, base_url=args.judge_base_url)
+    evaluate_fn = make_ragchecker_evaluator(judge)
+    scored = {}
+    for label, path in (("arm_a", args.samples_a), ("arm_b", args.samples_b)):
+        samples = _load_samples(path)
+        query_ids = [row["query_id"] for row in load_items(path)]
+        scored[label] = score_ragchecker(samples, query_ids, evaluate_fn=evaluate_fn)
+    deltas = attribution(scored["arm_a"], scored["arm_b"])
+    _append_jsonl(
+        args.out,
+        [
+            {
+                "row_type": "ragchecker",
+                "arm_a": scored["arm_a"].to_dict(),
+                "arm_b": scored["arm_b"].to_dict(),
+                **deltas,
+            }
+        ],
+    )
+    print(
+        f"retriever side moved {deltas['retriever_delta']:+.4f}, generator side "
+        f"{deltas['generator_delta']:+.4f} -> {args.out}"
+    )
+    return 0
+
+
 def _cmd_audit_sample(args: argparse.Namespace) -> int:
     """Draw the blind human-audit sheet from a finished judging pass."""
     from evals.benchmark.human_audit import AuditRow, stratified_sample, write_audit_sheet
@@ -454,6 +490,23 @@ def _add_stats(sub: argparse._SubParsersAction) -> None:
     parser.set_defaults(handler=_cmd_stats)
 
 
+def _add_score_ragchecker(sub: argparse._SubParsersAction) -> None:
+    parser = sub.add_parser(
+        "score-ragchecker",
+        help="claim-level cross-check of the answer tier, split retriever vs generator",
+    )
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--samples-a", type=Path, required=True)
+    parser.add_argument("--samples-b", type=Path, required=True)
+    parser.add_argument(
+        "--judge-base-url",
+        required=True,
+        help="OpenAI-compatible endpoint serving the manifest's judge model",
+    )
+    parser.add_argument("--out", type=Path, required=True)
+    parser.set_defaults(handler=_cmd_score_ragchecker)
+
+
 def _add_audit_sample(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser(
         "audit-sample", help="draw a blind human-audit sheet from a judging pass"
@@ -497,6 +550,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_answer,
         _add_score_ragas,
         _add_stats,
+        _add_score_ragchecker,
         _add_audit_sample,
         _add_audit_score,
         _add_report,

@@ -30,6 +30,7 @@ SCORER_PACKAGES = (
     "scipy",
     "scikit-learn",
     "ragas",
+    "ragchecker",
 )
 
 
