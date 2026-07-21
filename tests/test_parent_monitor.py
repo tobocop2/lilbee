@@ -298,7 +298,7 @@ def test_mcp_parent_death_releases_services_before_hard_exit(monkeypatch):
     import lilbee.mcp_server as mcp_mod
 
     order: list[str] = []
-    monkeypatch.setattr("lilbee.app.services.reset_services", lambda: order.append("reset"))
+    monkeypatch.setattr("lilbee.mcp_server.reset_services", lambda: order.append("reset"))
     monkeypatch.setattr(mcp_mod.os, "_exit", lambda code: order.append(f"exit:{code}"))
     mcp_mod._exit_on_parent_death()
     assert order == ["reset", "exit:0"]
@@ -322,7 +322,7 @@ def test_mcp_parent_death_time_boxes_a_wedged_cleanup(monkeypatch):
         started.set()
         time.sleep(30)  # a peer holds the build lock; cleanup cannot finish
 
-    monkeypatch.setattr("lilbee.app.services.reset_services", _wedged)
+    monkeypatch.setattr("lilbee.mcp_server.reset_services", _wedged)
     exited: list[int] = []
     monkeypatch.setattr(mcp_mod.os, "_exit", lambda code: exited.append(code))
 

@@ -66,8 +66,13 @@ class TestExpertOffloadFitBudget:
 
     @staticmethod
     def _ram(monkeypatch, *, gib: int) -> None:
+        # Installed RAM, which is what the headroom scales from: it is added to a
+        # capacity-based VRAM budget, so mixing in a live figure made a catalog
+        # entry fit or not depending on what else the machine was doing. Patching
+        # the free reading instead left these tests reading the host's own RAM,
+        # so they passed or failed by the size of the machine running them.
         monkeypatch.setattr(
-            "lilbee.providers.model_cache.free_system_memory", lambda: gib * 1024**3
+            "lilbee.providers.model_cache.total_system_memory", lambda: gib * 1024**3
         )
 
     @staticmethod
