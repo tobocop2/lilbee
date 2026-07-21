@@ -80,6 +80,9 @@ _FLASH_OFF = "off"
 _FLASH_AUTO = "auto"
 # llama-server's documented way to say "offload nothing": --device none.
 _NO_DEVICE = "none"
+# Backends pinned by the name the engine printed rather than through an env var,
+# because their variables index a different space than --list-devices reports.
+_NAME_PINNED_BACKENDS = frozenset({VULKAN_BACKEND, "SYCL"})
 # Backends whose flash-attention coverage in llama.cpp is complete enough to ask
 # for it outright. Vulkan and SYCL are behind CUDA's and have been incomplete on
 # Intel's mesa driver, so those are left to the engine's own auto, which enables
@@ -1276,13 +1279,19 @@ def _chat_no_mmap(weights_bytes: int, *, on_network_fs: bool = False) -> bool:
 def _device_names(devices: tuple[FleetDevice, ...]) -> tuple[str, ...]:
     """``--device`` names for *devices*, empty when the backend pins through env.
 
-    Only Vulkan. Its visible-devices variable indexes the raw loader enumeration
-    while the names come from the engine's filtered list, so the two disagree
-    on any host where ggml drops or merges a device -- a machine with two ICDs
-    for one card being the clear case. CUDA, ROCm and SYCL compose their
-    variables in the same space the probe enumerated, so they keep doing that.
+    Vulkan and SYCL, because neither one's environment variable speaks the space
+    the probe enumerated. Vulkan's indexes the raw loader enumeration while the
+    names come from the engine's filtered list, so the two disagree wherever ggml
+    drops or merges a device. SYCL's is not an index list at all but a selector
+    over a backend runtime, so a device the engine calls ``SYCL1`` need not be
+    Level Zero ordinal 1: OpenCL devices interleave, discarded devices shift the
+    numbering, and multi-tile cards appear as sub-devices.
+
+    ``--device`` sidesteps both by naming devices exactly as ``--list-devices``
+    printed them, which is where these indices were read from. CUDA and ROCm
+    keep composing their variables, which do share the probe's space.
     """
-    if not devices or devices[0].backend != VULKAN_BACKEND:
+    if not devices or devices[0].backend not in _NAME_PINNED_BACKENDS:
         return ()
     if any(d.from_loader for d in devices):
         # These indices are raw loader ordinals, and --device speaks the engine's
