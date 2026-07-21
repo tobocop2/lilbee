@@ -166,19 +166,23 @@ async def gpu_stats_stream(
     """Stream live per-GPU utilization + free memory as SSE for the placement view.
 
     Devices are resolved by the caller before the stream starts so a ProviderError
-    surfaces as a 503 at route time, not mid-stream. Each tick only runs the light
-    per-vendor utilization probe (nvidia-smi, amd-smi, xpu-smi, or ioreg). The
-    client keeps the stream open while visible; ``max_ticks`` bounds it for tests.
-    A heartbeat is emitted every ``cfg.sse_heartbeat_interval`` seconds of idle so
-    clients don't time out.
+    surfaces as a 503 at route time, not mid-stream. The client keeps the stream
+    open while visible; ``max_ticks`` bounds it for tests. A heartbeat is emitted
+    every ``cfg.sse_heartbeat_interval`` seconds of idle so clients don't time out.
+
+    The per-vendor probe runs on a worker thread, not here. It is not light: every
+    backend shells out to an SMI tool with a five-second timeout, and the Intel
+    paths sleep and scan /proc on top of that. Driven inline it held the event
+    loop for the whole subprocess on every tick, once per connected client, which
+    stalls chat, search and embedding requests along with it.
     """
     from lilbee.cli.tui import messages as msg
-    from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats
+    from lilbee.providers.fleet.gpu_stats import intel_util_hint, probe_gpu_stats_shared
 
     last_heartbeat = time.monotonic()
     tick = 0
     while max_ticks is None or tick < max_ticks:
-        stats = probe_gpu_stats(devices)
+        stats = await asyncio.to_thread(probe_gpu_stats_shared, devices)
         payload: dict[str, object] = {"gpus": [dataclasses.asdict(s) for s in stats.values()]}
         hint = intel_util_hint(devices, stats)
         if hint:
