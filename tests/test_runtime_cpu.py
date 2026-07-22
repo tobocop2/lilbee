@@ -61,6 +61,12 @@ def test_cgroup_v2_unlimited_is_none(tmp_path) -> None:
     assert _cgroup_cpu_quota(tmp_path) is None
 
 
+def test_cgroup_v2_malformed_is_none(tmp_path) -> None:
+    # A single-field or non-integer cpu.max is unparseable, not a limit.
+    _write_cgroup(tmp_path, {"cpu.max": "notanumber\n"})
+    assert _cgroup_cpu_quota(tmp_path) is None
+
+
 def test_cgroup_v1_quota(tmp_path) -> None:
     _write_cgroup(
         tmp_path,

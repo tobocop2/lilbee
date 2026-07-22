@@ -3413,6 +3413,14 @@ class TestDetectMoves:
         assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
 
 
+class TestSyncResultRender:
+    def test_str_includes_relocated_line(self):
+        from lilbee.data.ingest.types import SyncResult
+
+        r = SyncResult(added=[], updated=[], removed=[], unchanged=0, relocated=["a.md", "b.md"])
+        assert "Relocated: 2" in str(r)
+
+
 class TestResolveSourcePath:
     def test_owned_key_resolves_under_documents_dir(self, isolated_env):
         from lilbee.data.ingest.discovery import resolve_source_path

@@ -172,6 +172,12 @@ class TestSync:
         assert "bad.txt" in result.output
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_sync_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env):
+        result = runner.invoke(app, ["sync", "--max-cpus", "3"])
+        assert result.exit_code == 0
+        assert cfg.ingest_workers == 3
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_sync_retry_skipped_flag(self, mock_sync):
         """`lilbee sync --retry-skipped` forwards retry_skipped=True to the engine."""
         result = runner.invoke(app, ["sync", "--retry-skipped"])
@@ -237,6 +243,15 @@ class TestAdd:
         """Adding a nonexistent path fails."""
         result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_file_xyz.txt")])
         assert result.exit_code != 0
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_max_cpus_sets_ingest_workers(self, mock_sync, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content")
+        result = runner.invoke(app, ["add", str(src), "--max-cpus", "2"])
+        assert result.exit_code == 0
+        assert cfg.ingest_workers == 2
 
     def test_add_warns_on_existing(self, isolated_env, tmp_path):
         """Re-adding a source that is already registered warns."""

@@ -99,6 +99,40 @@ class TestDoAddCancelCleanup:
         assert "corpus" not in cfg.linked_roots
         assert (source / "a.txt").exists()  # source bytes never touched
 
+    def test_relocated_result_notifies(self, isolated_documents, tmp_path):
+        # A successful sync that relocated a source notifies the user with the
+        # relocated count (chat.py relocated branch).
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.data.ingest import SyncResult
+
+        screen = ChatScreen.__new__(ChatScreen)
+        reporter = MagicMock()
+        reporter.update = MagicMock()
+        screen.notify = MagicMock()
+
+        source = tmp_path / "corpus"
+        source.mkdir()
+        (source / "a.txt").write_text("moved content")
+        relocated_result = SyncResult(
+            added=[], updated=[], removed=[], unchanged=0, relocated=["corpus/a.txt"]
+        )
+
+        def _run(coro):
+            coro.close()
+            return relocated_result
+
+        with (
+            patch("lilbee.runtime.asyncio_loop.run", side_effect=_run),
+            patch("lilbee.cli.tui.screens.chat.call_from_thread") as cft,
+        ):
+            screen._do_add([source], reporter)
+
+        sent = [c.args[2] for c in cft.call_args_list if len(c.args) >= 3]
+        assert msg.CMD_ADD_RELOCATED.format(count=1) in sent
+
     def test_sync_result_failed_triggers_cleanup(self, isolated_documents, tmp_path):
         """A SyncResult with failed entries must also un-register the root.
 
