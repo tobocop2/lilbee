@@ -57,7 +57,7 @@ class EntityType(BaseModel):
 
 
 class EntitySchema(BaseModel):
-    """The editable extraction contract for one corpus."""
+    """The induced extraction contract for one corpus."""
 
     types: list[EntityType]
 

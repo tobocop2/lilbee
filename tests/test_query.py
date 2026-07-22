@@ -1120,6 +1120,21 @@ class TestAskRaw:
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
 
+    def test_a_source_only_named_in_the_models_own_block_is_not_cited(self, mock_svc):
+        """cited_sources is the grounding signal JSON callers read, so it must
+        reflect what the answer used, not what the model echoed back. A model
+        that ends with its own Sources list naming every retrieved file would
+        otherwise mark all of them cited."""
+        mock_svc.store.search.return_value = [
+            _make_result(source="used.pdf", chunk="oil is 5 quarts"),
+            _make_result(source="never-used.pdf", chunk="unrelated"),
+        ]
+        mock_svc.provider.chat.return_value = _text_result(
+            "The engine holds 5 quarts, see used.pdf.\n\nSources:\n- used.pdf\n- never-used.pdf"
+        )
+        result = get_services().searcher.ask_raw("oil capacity?")
+        assert [s.source for s in result.cited_sources] == ["used.pdf"]
+
     def test_no_results_returns_grounded_refusal(self, mock_svc):
         """Zero RAG hits in RAG mode return a grounded refusal instead of
         free-wheeling on the model's parametric knowledge (bb-0i0). The model is
@@ -3571,6 +3586,30 @@ class TestStripLlmCitations:
     def test_removes_dangling_heading(self):
         text = "The answer is 42.\n\nSources:\n"
         assert strip_llm_citations(text) == "The answer is 42."
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                "Sources:\n- made-up.pdf\n\n- also-fake.pdf\n\nThe engine holds 5 quarts.",
+                "The engine holds 5 quarts.",
+            ),
+            (
+                "Answer.\n\nSources:\n1. a.pdf\n\n2. b.pdf\n\nMore prose.",
+                "Answer.\n\nMore prose.",
+            ),
+        ],
+        ids=["bulleted", "numbered"],
+    )
+    def test_removes_a_block_whose_items_are_blank_line_separated(self, text, expected):
+        """Markdown routinely spaces list items apart. Ending the block at the
+        first blank line leaves the remaining fabricated names in the answer,
+        with lilbee's own authoritative sources block stacked underneath."""
+        assert strip_llm_citations(text).strip() == expected
+
+    def test_removes_an_indented_block(self):
+        """The heading may be indented even when the list items are not."""
+        assert strip_llm_citations("Answer.\n   Sources:\n   - a.pdf") == "Answer."
 
 
 class TestExtractCitedIndices:

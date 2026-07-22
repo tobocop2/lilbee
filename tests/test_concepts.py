@@ -825,10 +825,22 @@ class TestRebuildClusters:
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_empty_chunk_concepts(self, mock_leiden, cg, mock_svc):
+        """An emptied corpus clears the graph instead of leaving the last one.
+
+        Returning early here is what let a vault whose documents were all
+        deleted keep serving its old concepts through query expansion forever.
+        """
+        from lilbee.core.config import CONCEPT_EDGES_TABLE, CONCEPT_NODES_TABLE
+
         _cc, side = self._chunk_concepts({"chunk_source": [], "chunk_index": [], "concept": []})
         mock_svc.store.open_table.side_effect = side
         cg.rebuild_clusters()
         mock_leiden.assert_not_called()
+        cleared = {
+            call.args[0]: call.args[2] for call in mock_svc.store.clear_and_add.call_args_list
+        }
+        assert cleared[CONCEPT_NODES_TABLE] == []
+        assert cleared[CONCEPT_EDGES_TABLE] == []
 
     @patch("lilbee.retrieval.concepts.graph._leiden_partition")
     def test_rebuild_recomputes_corpus_pmi(self, mock_leiden, cg, mock_svc):

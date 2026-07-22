@@ -73,6 +73,9 @@ class LLMOptions(BaseModel):
     # token budget inside <think> and emit nothing. llama-server maps this
     # to chat_template_kwargs; hosted-API translators drop it.
     think: bool | None = None
+    # Structured-output request for the internal calls that want a bare JSON
+    # value back. Must be listed here or the allowlist above silently drops it.
+    response_format: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return only non-None values as a dict."""

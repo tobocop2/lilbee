@@ -43,7 +43,7 @@ def mock_svc():
     embedder = mock.MagicMock()
     embedder.embed.return_value = [0.1] * 768
     embedder.embed_batch.side_effect = lambda texts, **kw: [[0.1] * 768 for _ in texts]
-    embedder.validate_model.return_value = None
+    embedder.validate_model.return_value = True
     services = make_mock_services(embedder=embedder)
     # /api/chat now goes through chat_dispatch, which validates the requested
     # model against the KnownModelCache. Pre-load both the registry and the

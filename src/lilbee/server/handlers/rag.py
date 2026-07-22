@@ -24,7 +24,11 @@ from lilbee.retrieval.query.compaction import (
     history_budget,
     prompt_history,
 )
-from lilbee.retrieval.query.formatting import StreamingCitationFilter, cited_subset
+from lilbee.retrieval.query.formatting import (
+    StreamingCitationFilter,
+    cited_subset,
+    strip_llm_citations,
+)
 from lilbee.retrieval.query.searcher import (
     GROUNDED_REFUSAL,
     SEARCH_NEEDS_EMBEDDER,
@@ -526,7 +530,10 @@ async def chat(
     return AskResponse(
         answer=answer,
         sources=[CleanedChunk(**clean_result(s)) for s in sources],
-        cited_sources=[CleanedChunk(**clean_result(s)) for s in cited_subset(answer, sources)],
+        cited_sources=[
+            CleanedChunk(**clean_result(s))
+            for s in cited_subset(strip_llm_citations(answer), sources)
+        ],
         compaction=compaction,
     )
 
