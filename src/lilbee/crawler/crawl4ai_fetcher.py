@@ -9,6 +9,7 @@ import io
 import logging
 import math
 from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -96,19 +97,45 @@ def _silent_markdown_generator() -> Any | None:
     return _SilentMarkdownGenerator()
 
 
-async def _markdown_for(result: Any, *, silenced: bool, limiter: CapacityLimiter | None) -> str:
-    """The page's markdown, converted by lilbee only when the backend was silenced.
+@dataclass(frozen=True)
+class _Conversion:
+    """The markdown seam for one crawl: crawl4ai's own generator silenced so lilbee re-converts.
 
-    An un-silenced backend already converted the page, so re-converting it would
-    duplicate the work this exists to move.
+    ``generator`` is the silent generator handed to crawl4ai, or ``None`` when its markdown
+    base class is unavailable and the crawl converts itself. ``limiter`` bounds how many pages
+    convert on the thread pool at once, or ``None`` to convert inline on the loop.
     """
-    html = result.cleaned_html or result.html or ""
-    if not silenced or not html:
-        return str(result.markdown or "")
-    base_url = base_url_for(result.html or "", result.url, result.redirected_url)
-    if limiter is None:
-        return html_to_markdown(html, base_url)
-    return await anyio.to_thread.run_sync(html_to_markdown, html, base_url, limiter=limiter)
+
+    generator: Any | None
+    limiter: CapacityLimiter | None
+
+    @property
+    def config_kwargs(self) -> dict[str, Any]:
+        """``CrawlerRunConfig`` kwargs that install the silent generator, if there is one."""
+        return {} if self.generator is None else {"markdown_generator": self.generator}
+
+    async def markdown_for(self, result: Any) -> str:
+        """The page's markdown, re-converted off the loop only when the backend was silenced.
+
+        An un-silenced backend already converted the page, so re-converting would
+        duplicate the work this exists to move.
+        """
+        html = result.cleaned_html or result.html or ""
+        if self.generator is None or not html:
+            return str(result.markdown or "")
+        base_url = base_url_for(result.html or "", result.url, result.redirected_url)
+        if self.limiter is None:
+            return html_to_markdown(html, base_url)
+        return await anyio.to_thread.run_sync(
+            html_to_markdown, html, base_url, limiter=self.limiter
+        )
+
+
+def _new_conversion() -> _Conversion:
+    """Build the conversion seam for one crawl, reading ``crawl_convert_workers`` once."""
+    generator = _silent_markdown_generator()
+    limiter = _conversion_limiter() if generator is not None else None
+    return _Conversion(generator, limiter)
 
 
 def _build_rate_limited_dispatcher(
@@ -321,16 +348,11 @@ class Crawl4aiFetcher:
         """Fetch a single URL via crawl4ai's ``arun``."""
         from crawl4ai import CrawlerRunConfig
 
-        generator = _silent_markdown_generator()
-        limiter = _conversion_limiter() if generator is not None else None
-        config = CrawlerRunConfig(
-            page_timeout=int(timeout * 1000),
-            **({} if generator is None else {"markdown_generator": generator}),
-        )
+        conversion = _new_conversion()
+        config = CrawlerRunConfig(page_timeout=int(timeout * 1000), **conversion.config_kwargs)
         async with _open_crawler(quiet=self._quiet, render_mode=self._render_mode) as crawler:
             result = await crawler.arun(url=url, config=config)
-        converted = await _markdown_for(result, silenced=generator is not None, limiter=limiter)
-        markdown = converted.strip()
+        markdown = (await conversion.markdown_for(result)).strip()
         if markdown:
             return FetchedPage(url=url, markdown=markdown, success=True)
         return FetchedPage(
@@ -380,8 +402,7 @@ class Crawl4aiFetcher:
             should_cancel=_should_cancel,
             filter_chain=filter_chain,
         )
-        generator = _silent_markdown_generator()
-        limiter = _conversion_limiter() if generator is not None else None
+        conversion = _new_conversion()
         config = CrawlerRunConfig(
             deep_crawl_strategy=strategy,
             page_timeout=int(timeout * 1000),
@@ -389,7 +410,7 @@ class Crawl4aiFetcher:
             max_range=concurrency.max_delay_range,
             semaphore_count=concurrency.semaphore_count,
             stream=True,
-            **({} if generator is None else {"markdown_generator": generator}),
+            **conversion.config_kwargs,
         )
 
         dispatcher = _build_rate_limited_dispatcher(concurrency, self._render_mode)
@@ -410,12 +431,7 @@ class Crawl4aiFetcher:
                         strategy_cancelled = True
                         break
                     if cr.success:
-                        yield FetchedPage(
-                            url=cr.url,
-                            markdown=await _markdown_for(
-                                cr, silenced=generator is not None, limiter=limiter
-                            ),
-                        )
+                        yield FetchedPage(url=cr.url, markdown=await conversion.markdown_for(cr))
                     else:
                         yield FetchedPage(
                             url=cr.url,

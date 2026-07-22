@@ -144,18 +144,13 @@ class Config(BaseSettings):
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
     topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
-    # Threads available to synchronous MCP tool handlers. They are offloaded off
-    # the event loop so one slow handler cannot stall every connected agent, and
-    # anyio's default pool of 40 becomes the ceiling on how many agents a single
-    # daemon serves concurrently: past that, retrieval calls queue while the disk
-    # and CPU sit idle. Raise it when serving a large agent fleet; each thread
-    # costs a stack, and the work is mostly I/O and numpy, both of which release
-    # the GIL.
+    # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
+    # that may run off the event loop at once. The ceiling on agents one daemon
+    # serves before their calls queue.
     mcp_tool_threads: int = ConfigField(default=40, ge=1, writable=True)
-    # Helper processes that turn crawled HTML into markdown. That conversion is
-    # pure Python and holds the GIL for roughly 0.33 ms per KiB of HTML, so a
-    # crawl running inside the daemon competes with request handling for the one
-    # core Python can use. 0 keeps the conversion in the server process.
+    # Crawled pages converted to markdown on anyio's thread pool at once. The
+    # conversion is synchronous, so this keeps it off the event loop that serves
+    # requests. 0 converts inline on the loop.
     crawl_convert_workers: int = ConfigField(default=2, ge=0, writable=True)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=0, ge=0, le=65535)

@@ -115,11 +115,9 @@ class TestWhereTheConversionRuns:
         page = mock.MagicMock(
             cleaned_html="<h1>x</h1>", html="<h1>x</h1>", url="https://e/", redirected_url=None
         )
+        conversion = crawl4ai_fetcher._Conversion(generator=object(), limiter=None)
         with inject_modules(_stub_crawl4ai("# inline")):
-            assert (
-                await crawl4ai_fetcher._markdown_for(page, silenced=True, limiter=None)
-                == "# inline"
-            )
+            assert await conversion.markdown_for(page) == "# inline"
 
     async def test_with_a_limiter_it_converts_off_the_event_loop(self) -> None:
         """The whole point: the conversion is awaited, not run on the loop."""
@@ -131,10 +129,11 @@ class TestWhereTheConversionRuns:
             cleaned_html="<h1>x</h1>", html="<h1>x</h1>", url="https://e/", redirected_url=None
         )
         limiter = CapacityLimiter(1)
+        conversion = crawl4ai_fetcher._Conversion(generator=object(), limiter=limiter)
         with mock.patch(
             "anyio.to_thread.run_sync", new=mock.AsyncMock(return_value="# offloaded")
         ) as run_sync:
-            result = await crawl4ai_fetcher._markdown_for(page, silenced=True, limiter=limiter)
+            result = await conversion.markdown_for(page)
 
         assert result == "# offloaded"
         assert run_sync.await_args.kwargs["limiter"] is limiter
@@ -146,20 +145,55 @@ class TestWhereTheConversionRuns:
         page = mock.MagicMock(
             cleaned_html="<h1>x</h1>", html="<h1>x</h1>", url="https://e/", markdown="# backend"
         )
+        conversion = crawl4ai_fetcher._Conversion(generator=None, limiter=None)
 
-        got = await crawl4ai_fetcher._markdown_for(page, silenced=False, limiter=None)
-
-        assert got == "# backend"
+        assert await conversion.markdown_for(page) == "# backend"
 
     async def test_a_page_with_no_html_keeps_whatever_the_backend_gave(self) -> None:
         from lilbee.crawler import crawl4ai_fetcher
 
         page = mock.MagicMock(cleaned_html="", html="", markdown="# from backend")
+        conversion = crawl4ai_fetcher._Conversion(generator=object(), limiter=None)
 
-        assert (
-            await crawl4ai_fetcher._markdown_for(page, silenced=True, limiter=None)
-            == "# from backend"
-        )
+        assert await conversion.markdown_for(page) == "# from backend"
+
+
+class TestTheConversionSeam:
+    def test_config_kwargs_install_the_silent_generator(self) -> None:
+        from lilbee.crawler import crawl4ai_fetcher
+
+        gen = object()
+        conversion = crawl4ai_fetcher._Conversion(generator=gen, limiter=None)
+
+        assert conversion.config_kwargs == {"markdown_generator": gen}
+
+    def test_config_kwargs_are_empty_when_the_backend_converts_itself(self) -> None:
+        from lilbee.crawler import crawl4ai_fetcher
+
+        conversion = crawl4ai_fetcher._Conversion(generator=None, limiter=None)
+
+        assert conversion.config_kwargs == {}
+
+    def test_a_seam_bounds_conversion_by_the_worker_count(self, monkeypatch) -> None:
+        from lilbee.core.config import cfg
+        from lilbee.crawler import crawl4ai_fetcher
+
+        monkeypatch.setattr(cfg, "crawl_convert_workers", 2)
+        with inject_modules(_stub_crawl4ai()):
+            conversion = crawl4ai_fetcher._new_conversion()
+
+        assert conversion.generator is not None
+        assert conversion.limiter is not None
+        assert conversion.limiter.total_tokens == 2
+
+    def test_a_seam_without_a_backend_leaves_conversion_to_the_crawl(self) -> None:
+        from lilbee.crawler import crawl4ai_fetcher
+
+        with inject_modules({"crawl4ai.markdown_generation_strategy": None}):
+            conversion = crawl4ai_fetcher._new_conversion()
+
+        assert conversion.generator is None
+        assert conversion.limiter is None
 
 
 class TestTheSilencedBackendGenerator:

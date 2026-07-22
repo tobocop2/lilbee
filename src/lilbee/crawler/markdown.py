@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import re
 
+# Mirrors crawl4ai's own <base href> derivation (async_webcrawler) verbatim so a
+# silenced re-conversion resolves relative links the way an un-silenced crawl would.
+# A real HTML parser here would resolve differently and diverge from the backend;
+# keep this in sync with crawl4ai instead.
 _BASE_HREF = re.compile(r"<base\s[^>]*href\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 
 

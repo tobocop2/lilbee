@@ -105,20 +105,13 @@ from lilbee.server.wiki import (
 log = logging.getLogger(__name__)
 
 
-# Each connected agent holds a socket, and the daemon needs descriptors of its
-# own for the engine, the store and the log. macOS still defaults to 256 open
-# files and most Linux distributions to 1024, so a large fleet meets the limit
-# as a connection failure long before it meets anything to do with the GPU.
+# Below this soft open-file limit a large agent fleet meets the limit as
+# connection failures before it saturates the machine.
 _FD_SOFT_LIMIT_NUDGE = 4096
 
 
 def _warn_if_few_file_descriptors() -> None:
-    """Say so when the descriptor limit would cap the fleet before the hardware does.
-
-    Advisory only. Raising the soft limit from inside the process would apply to
-    this process alone and not to the shell the next one starts from, so the
-    operator is told the number rather than having it changed under them.
-    """
+    """Log an advisory when the open-file limit is low enough to cap the agent fleet."""
     try:
         import resource
     except ImportError:  # pragma: no cover - Windows has no resource module
@@ -137,17 +130,10 @@ def _warn_if_few_file_descriptors() -> None:
 
 
 def _raise_thread_pool_ceiling() -> None:
-    """Resize the thread pool anyio hands every ``to_thread`` call.
+    """Set anyio's shared thread-pool size to ``mcp_tool_threads``.
 
-    Synchronous work is offloaded off the event loop so one slow handler cannot
-    stall every connected agent, and anyio's default pool holds 40 threads. That
-    is the real ceiling on how many agents one daemon serves: past it, retrieval
-    calls queue while the disk and CPU sit idle.
-
-    Resizing anyio's own limiter rather than passing a private one to each call
-    raises the ceiling for every offload in the process, including Litestar's
-    sync route handlers and the MCP SDK's, which a limiter of our own would
-    leave pinned at 40 while we lifted only our own handlers.
+    Resizes anyio's own default limiter, not a private one, so every offload in
+    the process is lifted (Litestar and MCP sync handlers included), not only ours.
     """
     limiter = anyio.to_thread.current_default_thread_limiter()
     if limiter.total_tokens != cfg.mcp_tool_threads:
