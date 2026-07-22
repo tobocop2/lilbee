@@ -108,10 +108,7 @@ def discover_files() -> dict[str, Path]:
     linked = _linked_roots(documents_dir)
     allowed = (documents_dir.resolve(), *linked.values())
     files: dict[str, Path] = {}
-    # Skip the top-level linked dirs in the main pass: a symlink would not be
-    # descended anyway, and a junction would be, so pruning both keeps each linked
-    # root walked exactly once below (under its label). Top-level file links are
-    # listed among filenames here and recorded against the guard directly.
+    # skip_dirs prunes the linked roots so each is walked exactly once below.
     _walk_into(files, documents_dir, None, allowed, config.ignore_dirs, skip_dirs=frozenset(linked))
     for label, target in linked.items():
         if target.is_dir():

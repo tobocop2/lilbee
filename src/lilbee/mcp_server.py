@@ -336,7 +336,7 @@ async def add(
             crawled_count += len(crawled_paths)
 
     # Linking is blocking disk I/O (stat + symlink); keep it off the event loop.
-    copy_result = await anyio.to_thread.run_sync(functools.partial(link_files, valid, force=force))
+    link_result = await anyio.to_thread.run_sync(functools.partial(link_files, valid, force=force))
 
     from lilbee.app.ingest import temporary_ocr_config
 
@@ -345,8 +345,8 @@ async def add(
 
     result: dict[str, Any] = {
         "command": "add",
-        "copied": copy_result.linked,
-        "skipped": copy_result.skipped,
+        "copied": link_result.linked,
+        "skipped": link_result.skipped,
         "crawled": crawled_count,
         "errors": errors,
         "sync": sync_result,

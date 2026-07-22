@@ -347,10 +347,13 @@ def sync_cmd(
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
     retry_skipped: bool = _retry_skipped_option,
+    max_cpus: int | None = _max_cpus_option,
 ) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
+    if max_cpus is not None:
+        cfg.ingest_workers = max_cpus
 
     try:
         result = _run_sync_with_signal_cancel(retry_skipped=retry_skipped)
@@ -371,10 +374,13 @@ def rebuild(
     use_global: bool = global_option,
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
+    max_cpus: int | None = _max_cpus_option,
 ) -> None:
     """Nuke the DB and re-ingest everything from documents/."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     _apply_ocr_overrides(ocr, ocr_timeout)
+    if max_cpus is not None:
+        cfg.ingest_workers = max_cpus
     from lilbee.data.ingest import SyncResult
 
     try:
@@ -465,9 +471,9 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
     """Run the JSON-mode finish: link files, sync, emit one structured result."""
     from lilbee.data.ingest import sync
 
-    copy_result = LinkResult()
+    link_result = LinkResult()
     if file_paths:
-        copy_result = link_files(file_paths, force=force)
+        link_result = link_files(file_paths, force=force)
     # Headless one-shot ingest: only the embed server is needed, so suppress eager
     # start (matching the interactive path) instead of warming every role's VRAM.
     cfg.worker_pool_eager_start = False
@@ -475,8 +481,8 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
     json_output(
         {
             "command": "add",
-            "copied": copy_result.linked,
-            "skipped": copy_result.skipped,
+            "copied": link_result.linked,
+            "skipped": link_result.skipped,
             "crawled": len(crawled_paths),
             "sync": sync_result_to_json(result),
         }
@@ -599,14 +605,17 @@ def remove(
 
     from lilbee.app.ingest import expand_remove_targets, remove_documents_durably
 
-    targets = expand_remove_targets(names)
+    known = [s["filename"] for s in get_services().store.get_sources()]
+    targets = expand_remove_targets(names, known=known)
     expanded = sorted(set(targets)) != sorted(set(names))
     if expanded and not yes and not cfg.json_mode:
+        # Count only what actually exists; not-found names are kept in targets.
+        removable = sum(1 for t in targets if t in set(known))
         typer.confirm(
-            f"Remove {len(targets)} document(s)? Source files on disk are kept.", abort=True
+            f"Remove {removable} document(s)? Source files on disk are kept.", abort=True
         )
 
-    result = remove_documents_durably(names)
+    result = remove_documents_durably(names, targets=targets)
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}

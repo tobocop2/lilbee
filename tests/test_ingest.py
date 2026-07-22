@@ -1353,6 +1353,34 @@ class TestStatShortCircuit:
         plan = pipeline._plan_file_changes(disk, {}, cancel=cancel)
         assert plan.files_to_process == []
 
+    def test_parallel_plan_cancels_pending_work_midpass(self, isolated_env, monkeypatch):
+        import threading
+
+        from lilbee.data.ingest import pipeline
+
+        disk: dict[str, Path] = {}
+        for i in range(30):
+            p = isolated_env / f"m{i:02d}.txt"
+            p.write_text(str(i))
+            disk[p.name] = p
+
+        cancel = threading.Event()
+        monkeypatch.setattr(pipeline, "_plan_workers", lambda: 4)
+        original = pipeline._classify_file_change
+        seen = {"n": 0}
+
+        def _spy(name, path, record, markers):
+            seen["n"] += 1
+            if seen["n"] >= 3:
+                cancel.set()  # trip cancel partway through the pass
+            return original(name, path, record, markers)
+
+        monkeypatch.setattr(pipeline, "_classify_file_change", _spy)
+        plan = pipeline._plan_file_changes(disk, {}, cancel=cancel)
+
+        # A mid-pass cancel drops queued work rather than hashing all 30 files.
+        assert len(plan.files_to_process) < 30
+
     def test_plan_workers_config_override_beats_auto(self, monkeypatch):
         import types
 

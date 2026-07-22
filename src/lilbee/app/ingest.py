@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lilbee.app.services import get_services
 from lilbee.core.config import active_config, cfg
 from lilbee.core.system import is_ignored_dir, is_link, remove_link
 from lilbee.data.store.types import RemoveResult
@@ -176,18 +177,19 @@ def folder_members(name: str, known: Iterable[str]) -> list[str]:
     return [source for source in known if source.startswith(prefix)]
 
 
-def expand_remove_targets(names: list[str]) -> list[str]:
+def expand_remove_targets(names: list[str], known: list[str] | None = None) -> list[str]:
     """Expand folder names and glob patterns to the indexed sources they cover.
 
     An exact source name is kept. A folder name (a parent directory of indexed
     sources) expands to every source beneath it. A glob (a name containing
     ``* ? [``) expands to every source it fnmatches. A name matching none of
     these is kept unchanged so the caller reports it not-found. Order and
-    de-duplication are preserved.
+    de-duplication are preserved. *known* (the indexed source filenames) is read
+    from the store when not supplied; a caller that already has it passes it to
+    avoid a second read.
     """
-    from lilbee.app.services import get_services
-
-    known = [s["filename"] for s in get_services().store.get_sources()]
+    if known is None:
+        known = [s["filename"] for s in get_services().store.get_sources()]
     known_set = set(known)
     expanded: list[str] = []
     seen: set[str] = set()
@@ -232,7 +234,9 @@ def _unlink_linked_roots(names: Iterable[str], documents_dir: Path) -> list[str]
     return unlinked
 
 
-def remove_documents_durably(names: list[str]) -> RemoveResult:
+def remove_documents_durably(
+    names: list[str], targets: list[str] | None = None
+) -> RemoveResult:
     """Remove documents from the index (folders and globs expand) and make it stick.
 
     Never deletes source bytes. A folder or glob argument expands to every
@@ -241,8 +245,9 @@ def remove_documents_durably(names: list[str]) -> RemoveResult:
     re-ingesting it. Removing a top-level linked root instead unlinks that symlink
     (discovery then can't re-find its files, so no markers are needed for them).
     Editing the source (new hash), ``retry-skipped``, or ``rebuild`` restores it.
+    *targets* (the expanded names) is computed when not supplied; a caller that
+    already expanded for a confirmation prompt passes it to avoid re-expanding.
     """
-    from lilbee.app.services import get_services
     from lilbee.data.ingest.discovery import file_hash
     from lilbee.data.ingest.skip_marker import (
         load_skip_markers,
@@ -252,7 +257,8 @@ def remove_documents_durably(names: list[str]) -> RemoveResult:
     )
 
     documents_dir = cfg.documents_dir
-    targets = expand_remove_targets(names)
+    if targets is None:
+        targets = expand_remove_targets(names)
     result = get_services().store.remove_documents(targets)
     if not result.removed:
         return result

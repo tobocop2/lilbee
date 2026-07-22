@@ -323,7 +323,9 @@ def _classify_changes(
 
     Independent per file and side-effect-free, so pooled classification matches a
     serial pass; ``hashlib`` releases the GIL during digest, giving real speedup
-    on a large corpus. Returns name -> verdict; a set ``cancel`` stops submission.
+    on a large corpus. Returns name -> verdict. A set ``cancel`` stops promptly:
+    submission halts and queued-but-unstarted work is cancelled, so a mid-pass
+    cancel over a huge corpus does not hash every remaining file.
     """
     def _classify(name: str, path: Path) -> _FileChangeVerdict:
         return _classify_file_change(name, path, existing_sources.get(name), skip_markers)
@@ -343,6 +345,11 @@ def _classify_changes(
                 break
             futures[pool.submit(_classify, name, path)] = name
         for future in as_completed(futures):
+            if cancel and cancel.is_set():
+                # Drop queued-but-unstarted work; running tasks drain on exit.
+                for pending in futures:
+                    pending.cancel()
+                break
             verdicts[futures[future]] = future.result()
     return verdicts
 
@@ -363,8 +370,9 @@ def _plan_file_changes(
     or run ``/sync --force-rebuild`` to clear the marker and try again.
 
     Classification fans across a thread pool (see :func:`_classify_changes`); the
-    plan is assembled from the results in the original sorted order, making the
-    output identical to a serial pass regardless of completion order or cancel.
+    plan is assembled from the results in the original sorted order, so a partial
+    or reordered completion never yields a wrong or reordered plan -- only a
+    shorter one when cancelled mid-pass.
     """
     skip_markers = skip_markers or {}
     items = sorted(disk_files.items())

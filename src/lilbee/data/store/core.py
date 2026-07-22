@@ -1141,17 +1141,22 @@ class Store:
         table's source column, the citation source_filename, and the sources row are
         updated in place under one write lock, so a move costs no re-extraction or
         re-embedding. ``moves`` is ``(old_name, new_name, new_stat)`` tuples.
+
+        Each table is opened once; the re-key is then a targeted per-move update.
+        A single-statement batch would need a ``CASE`` expression, which LanceDB's
+        update SQL does not support, and a delete+re-add across the vector tables is
+        not worth its risk for what is a rare mass relabel.
         """
         if not moves:
             return
         with self._write_lock():
+            tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
+            sources = self.open_table(SOURCES_TABLE)
             for old, new, stat in moves:
                 where_old = f"= '{escape_sql_string(old)}'"
-                for table_name, column in _RELOCATABLE_TABLES:
-                    table = self.open_table(table_name)
+                for table, column in tables:
                     if table is not None:
                         table.update(where=f"{column} {where_old}", values={column: new})
-                sources = self.open_table(SOURCES_TABLE)
                 if sources is not None:
                     values: dict[str, object] = {"filename": new}
                     if stat is not None:

@@ -2200,5 +2200,50 @@ class TestRelocateSources:
         moved = next(s for s in store.get_sources() if s["filename"] == "new/a.md")
         assert moved["file_hash"] == "hash123"  # same content, hash unchanged
 
+    def test_relocate_rekeys_every_source_table(self, store):
+        # Guards _RELOCATABLE_TABLES: page_texts.source and citations.source_filename
+        # must move too, so dropping a table from the list fails here.
+        from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, PAGE_TEXTS_TABLE
+        from lilbee.data.store import SourceType
+        from lilbee.data.store.types import SourceStat
+
+        records = _make_records(n=1)
+        records[0]["source"] = "old/a.md"
+        store.add_chunks(records)
+        store.add_page_texts(
+            [{"source": "old/a.md", "page": 1, "text": "t", "content_type": "text"}]
+        )
+        store.add_citations(
+            [
+                {
+                    "wiki_source": "w.md",
+                    "wiki_chunk_index": 0,
+                    "citation_key": "k",
+                    "claim_type": "support",
+                    "source_filename": "old/a.md",
+                    "source_hash": "h",
+                    "page_start": 0,
+                    "page_end": 0,
+                    "line_start": 0,
+                    "line_end": 0,
+                    "excerpt": "e",
+                    "created_at": "",
+                }
+            ]
+        )
+        store.upsert_source("old/a.md", "h", 1, SourceType.DOCUMENT)
+
+        store.relocate_sources([("old/a.md", "new/a.md", SourceStat(1, 2, 3))])
+
+        chunks = store.open_table(CHUNKS_TABLE)
+        pages = store.open_table(PAGE_TEXTS_TABLE)
+        cites = store.open_table(CITATIONS_TABLE)
+        assert chunks.count_rows("source = 'new/a.md'") == 1
+        assert chunks.count_rows("source = 'old/a.md'") == 0
+        assert pages.count_rows("source = 'new/a.md'") == 1
+        assert pages.count_rows("source = 'old/a.md'") == 0
+        assert cites.count_rows("source_filename = 'new/a.md'") == 1
+        assert cites.count_rows("source_filename = 'old/a.md'") == 0
+
     def test_relocate_empty_is_noop(self, store):
         store.relocate_sources([])  # must not raise or acquire the lock
