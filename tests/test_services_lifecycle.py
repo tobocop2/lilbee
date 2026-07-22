@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import threading
 from unittest.mock import MagicMock
@@ -14,6 +15,7 @@ from lilbee.app.services import (
     peek_services,
     reset_services,
     set_services,
+    wait_for_hard_exit_teardown,
 )
 
 # The exact signals production installs: (SIGTERM, SIGHUP) on POSIX, SIGTERM alone
@@ -157,3 +159,37 @@ def test_install_off_main_thread_is_a_noop():
     thread.start()
     thread.join()
     assert errors == []
+
+
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_hard_exit_logs_the_received_signal(sig, caplog):
+    """server.log must record which signal ended the process, for diagnostics."""
+    _install_stub_services()
+    install_engine_lifecycle_hooks()
+    handler = signal.getsignal(sig)
+    assert callable(handler)
+
+    with caplog.at_level(logging.INFO, logger="lilbee.app.services"):
+        with pytest.raises(SystemExit):
+            handler(sig, None)
+        _join_teardown()
+
+    assert any(signal.Signals(sig).name in rec.message for rec in caplog.records)
+
+
+def test_wait_for_hard_exit_teardown_joins_the_running_thread():
+    """serve's lock release must not outrun a signal-driven fleet stop."""
+    finished = threading.Event()
+
+    def slow_teardown() -> None:
+        finished.wait(timeout=5)
+
+    thread = threading.Thread(target=slow_teardown, name="hard-exit-teardown")
+    thread.start()
+    finished.set()
+    wait_for_hard_exit_teardown()
+    assert not thread.is_alive()
+
+
+def test_wait_for_hard_exit_teardown_without_a_teardown_is_a_noop():
+    wait_for_hard_exit_teardown()

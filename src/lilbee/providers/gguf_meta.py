@@ -38,6 +38,8 @@ _ARCH_FIELD_SUFFIXES: dict[str, str] = {
     "attention.value_length": "value_length",
     # Embedding pooling the model was trained for; absent on most non-embedders.
     "pooling_type": "pooling_type",
+    # Routed expert count; present only on MoE models, whose experts offload.
+    "expert_count": "expert_count",
 }
 
 

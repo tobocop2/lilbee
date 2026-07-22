@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from lilbee.providers.fleet.adapters import (
     ROLE_SPECS,
     build_server_argv,
     embed_spec,
+    expert_offload_patterns,
     rerank_spec,
     resolve_rerank_mode,
 )
@@ -344,6 +346,75 @@ def test_build_argv_defaults_to_mmap() -> None:
         ctx_per_slot=4096,
     )
     assert "--no-mmap" not in argv
+
+
+def _chat_argv(**kwargs) -> list[str]:
+    """A chat command line with the offload knobs under test applied."""
+    return build_server_argv(
+        binary=Path("/bin/llama-server"),
+        spec=ROLE_SPECS[WorkerRole.CHAT],
+        model_path=Path("/models/chat.gguf"),
+        devices=(0,),
+        n_gpu_layers=-1,
+        slots=4,
+        ctx_per_slot=4096,
+        **kwargs,
+    )
+
+
+def test_build_argv_has_no_expert_offload_by_default() -> None:
+    argv = _chat_argv()
+    assert "--cpu-moe" not in argv
+    assert "--n-cpu-moe" not in argv
+
+
+def test_build_argv_offloads_every_expert_when_asked() -> None:
+    assert "--cpu-moe" in _chat_argv(cpu_moe=True)
+
+
+def test_build_argv_offloads_a_layer_count_when_asked() -> None:
+    argv = _chat_argv(n_cpu_moe=24)
+    assert argv[argv.index("--n-cpu-moe") + 1] == "24"
+
+
+def test_build_argv_layer_count_wins_over_offload_everything() -> None:
+    # The pair would offload the same tensors twice.
+    argv = _chat_argv(cpu_moe=True, n_cpu_moe=8)
+    assert "--cpu-moe" not in argv
+    assert argv[argv.index("--n-cpu-moe") + 1] == "8"
+
+
+def test_expert_offload_patterns_empty_when_not_configured() -> None:
+    assert expert_offload_patterns(cpu_moe=False, n_cpu_moe=None) == ()
+
+
+def test_expert_offload_patterns_blanket_for_offload_everything() -> None:
+    # One pattern covering every block, matching llama.cpp's --cpu-moe.
+    patterns = expert_offload_patterns(cpu_moe=True, n_cpu_moe=None)
+    assert patterns == (r"\.ffn_(up|down|gate|gate_up)_(ch|)exps",)
+
+
+def test_expert_offload_patterns_are_per_block_for_a_layer_count() -> None:
+    # llama.cpp expands --n-cpu-moe N into one pattern per block below N.
+    patterns = expert_offload_patterns(cpu_moe=False, n_cpu_moe=3)
+    assert patterns == (
+        r"blk\.0\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+        r"blk\.1\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+        r"blk\.2\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+    )
+
+
+def test_expert_offload_patterns_layer_count_wins() -> None:
+    assert expert_offload_patterns(cpu_moe=True, n_cpu_moe=1) == (
+        r"blk\.0\.ffn_(up|down|gate|gate_up)_(ch|)exps",
+    )
+
+
+def test_expert_offload_patterns_compile_as_regexes() -> None:
+    # gguf-parser compiles these with Go's RE2 and llama.cpp with std::regex;
+    # a pattern that only parses in Python would break both.
+    for pattern in expert_offload_patterns(cpu_moe=False, n_cpu_moe=2):
+        re.compile(pattern)
 
 
 def test_build_argv_emits_the_device_names_it_is_given() -> None:
