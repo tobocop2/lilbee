@@ -52,6 +52,10 @@ class _PmiInputs(NamedTuple):
     cooccurrences: Counter[tuple[str, str]]
     concept_counts: Counter[str]
     total_chunks: int
+    # A missing map means concepts were never built; an existing but empty one
+    # means the corpus was emptied. Both give total_chunks == 0, and only the
+    # second should clear the graph.
+    map_exists: bool
 
 
 class ConceptGraph:
@@ -354,7 +358,7 @@ class ConceptGraph:
         concept_counts: Counter[str] = Counter()
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if table is None:
-            return _PmiInputs(cooccurrences, concept_counts, 0)
+            return _PmiInputs(cooccurrences, concept_counts, 0, map_exists=False)
         per_chunk: dict[tuple[str, int], set[str]] = {}
         for rows in _iter_row_batches(table):
             for row in rows:
@@ -367,7 +371,7 @@ class ConceptGraph:
             for i, a in enumerate(ordered):
                 for b in ordered[i + 1 :]:
                     cooccurrences[(a, b)] += 1
-        return _PmiInputs(cooccurrences, concept_counts, len(per_chunk))
+        return _PmiInputs(cooccurrences, concept_counts, len(per_chunk), map_exists=True)
 
     def rebuild_clusters(self) -> None:
         """Recompute corpus PMI from the chunk_concepts map, re-run Leiden, compact.
@@ -382,8 +386,14 @@ class ConceptGraph:
         without this rewrite the edges table grows monotonically across syncs
         and expand_query keeps serving edges for concepts that left the corpus.
         """
-        cooccurrences, concept_counts, total_chunks = self._corpus_pmi_inputs()
-        if total_chunks == 0 or not cooccurrences:
+        cooccurrences, concept_counts, total_chunks, map_exists = self._corpus_pmi_inputs()
+        if total_chunks == 0:
+            # The corpus was emptied: leaving the last graph in place would keep
+            # expansion serving concepts no document carries any more.
+            if map_exists:
+                self._clear_graph()
+            return
+        if not cooccurrences:
             return
         pmi_weights = _compute_pmi(cooccurrences, concept_counts, total_chunks)
         if not pmi_weights:
@@ -412,6 +422,15 @@ class ConceptGraph:
             CONCEPT_EDGES_TABLE, _concept_edges_schema(), edge_rows, "source IS NOT NULL"
         )
         self.compact_tables()
+
+    def _clear_graph(self) -> None:
+        """Drop every node and edge, keeping both tables present for readers."""
+        self._store.clear_and_add(
+            CONCEPT_NODES_TABLE, _concept_nodes_schema(), [], "concept IS NOT NULL"
+        )
+        self._store.clear_and_add(
+            CONCEPT_EDGES_TABLE, _concept_edges_schema(), [], "source IS NOT NULL"
+        )
 
     def compact_tables(self) -> None:
         """Compact the concept tables; per-file adds otherwise accrete tiny versions."""

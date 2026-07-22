@@ -508,7 +508,15 @@ async def sync(
 
     # Ingest files (with optional progress bar)
     if files_to_process:
-        get_services().embedder.validate_model()
+        # Ingest has no degraded mode: without an embedding model every chunk
+        # fails to embed, after the run has already paid the parse and OCR cost
+        # for the whole corpus. Refuse up front instead. Search and chat, which
+        # fall back to keyword, ask embedding_available() and carry on.
+        if not get_services().embedder.validate_model():
+            raise RuntimeError(
+                f"Ingest needs an embedding model. {active_config().embedding_model!r} is not "
+                "available: pull it, or set a different embedding_model."
+            )
         await ingest_batch(
             files_to_process,
             added,

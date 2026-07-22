@@ -1397,6 +1397,26 @@ class TestStatShortCircuit:
         assert plan_threads
         assert all(t != loop_thread for t in plan_threads)
 
+    async def test_sync_refuses_without_an_embedding_model(self, isolated_env, mock_svc):
+        """Ingest cannot degrade the way search can. Warning and continuing pays
+        the full parse and OCR cost for every file and then fails to embed all
+        of them, so the run must stop before any of that work happens."""
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "doc.txt").write_text("content")
+        mock_svc.embedder.validate_model.return_value = False
+
+        with (
+            mock.patch(
+                "kreuzberg.extract_file_sync",
+                new_callable=Mock,
+                return_value=_make_kreuzberg_result(),
+            ) as extract,
+            pytest.raises(RuntimeError, match="embedding model"),
+        ):
+            await sync(quiet=True)
+        extract.assert_not_called()
+
     async def test_sync_backfills_stats_via_store(self, isolated_env, mock_svc):
         from lilbee.data.ingest import file_hash, sync
 
