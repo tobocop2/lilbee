@@ -28,11 +28,12 @@ resources:
   # ships kernels only for sm_70..90, so it would have none for a B200. The
   # ladder falls to A100 and to four cards rather than fail to provision.
   ordered:
-    - accelerators: H100:8
+    - accelerators: H100:8            # fastest if a DC has an 8-pack
+    - accelerators: H100:4            # H100 is Low in ~8 DCs -- a 4-pack usually lands fast
     - accelerators: A100-80GB-SXM:8
-    - accelerators: A100-80GB:8
-    - accelerators: H100:4
     - accelerators: A100-80GB-SXM:4
+    - accelerators: H100:2
+    - accelerators: A100-80GB:4
 # The local harness, synced straight to the pod (.skyignore drops .venv/caches),
 # so edits deploy without a git round-trip.
 file_mounts:
