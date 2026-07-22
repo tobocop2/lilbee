@@ -27,15 +27,18 @@ resources:
   # B200 is deliberately absent: it is Blackwell (sm_100) and the cu124 engine
   # ships kernels only for sm_70..90, so it would have none for a B200. The
   # ladder falls to A100 and to four cards rather than fail to provision.
-  # 4-packs only. 8-packs returned no capacity in every region tried (NO, RO, SE,
-  # SG, US, CZ, DK) -- they are not grabbable from the current secure stock, and
-  # attempting them just wastes each retry cycle. A 4x H100 lands in seconds when
-  # a region has stock; 4x H100 is also faster per card than A100. Cycling only
-  # the securable 4-pack tier lands a box roughly twice as fast.
+  # Grab the most GPUs available, H100 first (Hopper sm_90, ~1.7x A100 HBM, no
+  # recompile), floor of 4 so a box always lands. 8-packs have not been grabbable
+  # from secure stock, 6 is worth a try, and 4 reliably lands -- --retry-until-up
+  # takes the largest rung a region has. sky's RunPod path is Secure Cloud only
+  # (skypilot#3441), so this is the whole securable pool.
   ordered:
+    - accelerators: H100:8
+    - accelerators: H100:6
+    - accelerators: A100-80GB-SXM:8
+    - accelerators: A100-80GB-SXM:6
     - accelerators: H100:4
     - accelerators: A100-80GB-SXM:4
-    - accelerators: A100-80GB:4
 # The local harness, synced straight to the pod (.skyignore drops .venv/caches),
 # so edits deploy without a git round-trip.
 file_mounts:
