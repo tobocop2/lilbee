@@ -49,6 +49,7 @@ from lilbee.data.ingest.skip_marker import (
     write_skip_markers,
     write_skip_reasons,
 )
+from lilbee.data.ingest.title import derive_title
 from lilbee.data.ingest.types import (
     ChunkRecord,
     FileChangePlan,
@@ -61,6 +62,7 @@ from lilbee.data.store import (
     ChunkWrite,
     ConceptRecords,
     PageTextRecord,
+    SourceMeta,
     SourceRecord,
     SourceStat,
     SourceStatBackfill,
@@ -153,11 +155,11 @@ async def _build_entity_records(records: list[ChunkRecord], source_name: str) ->
     nlp = None
     if any(t.kind is ExtractorKind.SPACY for t in schema.types):
         from lilbee.retrieval.concepts import concepts_available
-        from lilbee.retrieval.concepts.nlp import _ensure_spacy_model
+        from lilbee.retrieval.concepts.nlp import load_spacy_pipeline
 
         if concepts_available():
             try:
-                nlp = _ensure_spacy_model()
+                nlp = load_spacy_pipeline()
             except ImportError:
                 log.warning("spaCy model unavailable; spacy-kind entity types skipped")
     provider = None
@@ -210,22 +212,27 @@ async def _produce_records(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> list[ChunkRecord]:
-    """Extract, chunk, and embed a single file into store-ready records.
+) -> tuple[list[ChunkRecord], SourceMeta]:
+    """Extract, chunk, and embed a single file into (records, source metadata).
 
     The LanceDB write is deferred: records are returned to the caller and written
     in a batched flush (see :func:`_flush_writes`), so bulk ingest pays one
     write-lock acquisition per batch instead of one per file. The per-page text
     dataset rows land in ``page_texts_out`` and are written by the same flush.
+    The returned metadata (extraction-provided when available, stem-derived title
+    otherwise) stamps every record's ``title`` and updates the source row.
     """
     records: list[ChunkRecord]
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
     if content_type == "code":
         records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
+        meta = SourceMeta(title=derive_title(source_name))
     elif path.suffix.lower() == ".md":
-        records = await ingest_markdown(path, source_name, on_progress, page_texts_out=page_texts)
+        records, meta = await ingest_markdown(
+            path, source_name, on_progress, page_texts_out=page_texts
+        )
     else:
-        records = await ingest_document(
+        records, meta = await ingest_document(
             path,
             source_name,
             content_type,
@@ -234,7 +241,11 @@ async def _produce_records(
             page_texts_out=page_texts,
         )
 
-    return records
+    for record in records:
+        # NULL (not "") for an absent title, so chunk rows match the migration
+        # and the _sources table, which both persist absence as NULL.
+        record["title"] = meta.title or None
+    return records, meta
 
 
 def _disk_stat(path: Path) -> SourceStat | None:
@@ -823,6 +834,21 @@ def _reconcile_missing(
     return sorted(name for name in disk_files if name not in accounted)
 
 
+def _require_embedding_model() -> None:
+    """Refuse ingest without an embedding model.
+
+    Ingest has no degraded mode: without one, every chunk fails to embed after
+    the run has already paid the parse and OCR cost. Search and chat fall back
+    to keyword via embedding_available() and carry on.
+    """
+    if not get_services().embedder.validate_model():
+        raise RuntimeError(
+            f"Ingest needs an embedding model. "
+            f"{active_config().embedding_model!r} is not available: "
+            "pull it, or set a different embedding_model."
+        )
+
+
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -890,7 +916,7 @@ async def sync(
             from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
 
             with keep_fleet_warm():
-                get_services().embedder.validate_model()
+                _require_embedding_model()
                 await ingest_stream(
                     _chain_shards(first, shards),
                     added,
@@ -926,6 +952,7 @@ async def sync(
 
     if state.planned or relocated:
         _store.ensure_fts_index()
+        _store.ensure_scalar_indexes()
         _store.ensure_vector_index()
         _store.optimize_sources()
         await _rebuild_concept_clusters()
@@ -1096,7 +1123,7 @@ async def ingest_stream(
                 # transaction as the new write (see _flush_writes), so cleanup is
                 # carried on the result rather than run eagerly here.
                 page_texts: list[PageTextRecord] = []
-                records = await _produce_records(
+                records, meta = await _produce_records(
                     entry.path,
                     name,
                     entry.content_type,
@@ -1123,6 +1150,7 @@ async def ingest_stream(
                     stat=entry.stat,
                     concept_records=concept_records,
                     entity_rows=entity_rows,
+                    meta=meta,
                 )
             except (asyncio.CancelledError, TaskCancelledError) as exc:
                 # TaskCancelledError is the TUI's cooperative cancel signal raised
@@ -1560,6 +1588,7 @@ def _flush_batch(buffer: list[_IngestResult]) -> None:
             needs_cleanup=r.needs_cleanup,
             stat=r.stat,
             page_texts=cast(list[dict], r.page_texts or []),
+            meta=r.meta,
         )
         for r in buffer
     ]
