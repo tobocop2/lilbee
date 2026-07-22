@@ -1482,6 +1482,22 @@ class TestRemove:
         assert result.exit_code == 0
         assert set(captured["names"]) == {"docs/a.txt", "docs/b.txt"}
 
+    def test_remove_folder_confirms_before_removing(self, isolated_env, mock_svc):
+        # Without --yes, a folder that expands to several docs prompts for confirm.
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "docs/a.txt"},
+            {"filename": "docs/b.txt"},
+        ]
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=list(names), not_found=[]
+        )
+        with mock.patch("typer.confirm", return_value=True) as confirm:
+            result = runner.invoke(app, ["remove", "docs"])
+        assert result.exit_code == 0
+        confirm.assert_called_once()
+
     def test_remove_glob_pattern(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
 

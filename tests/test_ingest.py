@@ -3413,6 +3413,63 @@ class TestDetectMoves:
         assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
 
 
+class TestResolveSourcePath:
+    def test_owned_key_resolves_under_documents_dir(self, isolated_env):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        assert resolve_source_path("notes/a.md") == cfg.documents_dir / "notes/a.md"
+
+    def test_dir_root_key_resolves_under_the_root(self, isolated_env, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        root = tmp_path / "corpus"
+        cfg.linked_roots = {"corpus": str(root)}
+        assert resolve_source_path("corpus/sub/a.pdf") == root / "sub" / "a.pdf"
+
+    def test_file_root_key_resolves_to_the_file(self, isolated_env, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path
+
+        f = tmp_path / "report.pdf"
+        cfg.linked_roots = {"report.pdf": str(f)}
+        assert resolve_source_path("report.pdf") == f
+
+    def test_checked_resolver_rejects_escaping_key(self, isolated_env, tmp_path):
+        from lilbee.data.ingest.discovery import resolve_source_path_checked
+
+        root = tmp_path / "corpus"
+        root.mkdir()
+        cfg.linked_roots = {"corpus": str(root)}
+        assert resolve_source_path_checked("corpus/a.pdf") == (root / "a.pdf").resolve()
+        assert resolve_source_path_checked("corpus/../../etc/passwd") is None
+
+
+class TestSourceLabelTaken:
+    def test_true_for_live_registered_root(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import source_label_taken
+
+        root = tmp_path / "corpus"
+        root.mkdir()
+        cfg.linked_roots = {"corpus": str(root)}
+        assert source_label_taken("corpus") is True
+
+    def test_false_for_dangling_registered_root(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import source_label_taken
+
+        cfg.linked_roots = {"corpus": str(tmp_path / "gone")}
+        assert source_label_taken("corpus") is False
+
+    def test_true_for_owned_documents_entry(self, isolated_env):
+        from lilbee.app.ingest import source_label_taken
+
+        (cfg.documents_dir / "owned.md").write_text("x")
+        assert source_label_taken("owned.md") is True
+
+    def test_false_for_unknown_name(self, isolated_env):
+        from lilbee.app.ingest import source_label_taken
+
+        assert source_label_taken("nope") is False
+
+
 class TestRegisteredRootHelpers:
     def test_unregister_roots_skips_nested_and_removes_top_level(self, isolated_env, tmp_path):
         from lilbee.app.ingest import register_sources, unregister_roots
@@ -3438,6 +3495,20 @@ class TestRegisteredRootHelpers:
         register_sources([source])
         assert unregister_roots(["not-a-root"]) == []
         assert "corpus" in cfg.linked_roots
+
+    def test_unregister_empty_is_a_noop(self, isolated_env):
+        from lilbee.app.ingest import unregister_roots
+
+        assert unregister_roots([]) == []
+
+    def test_register_empty_is_a_noop(self, isolated_env):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        result = register_sources([])
+        assert result.registered == []
+        assert result.skipped == []
+        assert cfg.linked_roots == {}
 
 
 class TestRegisterSources:
