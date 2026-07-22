@@ -188,12 +188,18 @@ jobs:
           # On Windows, GITHUB_PATH needs a native path (C:\...), not the git-bash
           # /c/... form, or Python's shutil.which won't find the binary. cygpath
           # is a no-op fallback on Linux/macOS. Co-located DLLs are found via PATH.
+          #
+          # PATH only, deliberately no loader variable: llama-server and every
+          # library it pulls in carry RUNPATH $ORIGIN on Linux and LC_RPATH
+          # @loader_path on macOS, so the engine resolves its own libraries. A
+          # GITHUB_ENV export would apply to every later step in the job, and
+          # ollama's bundled runner links the same libggml/libllama SONAMEs this
+          # tarball ships, so it would load these instead of its own and
+          # segfault on the model warm-up.
           if command -v cygpath >/dev/null 2>&1; then
             cygpath -w "${bindir}" >> "${GITHUB_PATH}"
           else
             echo "${bindir}" >> "${GITHUB_PATH}"
-            echo "LD_LIBRARY_PATH=${bindir}:${LD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
-            echo "DYLD_LIBRARY_PATH=${bindir}:${DYLD_LIBRARY_PATH:-}" >> "${GITHUB_ENV}"
           fi
 
       # The engine also needs llama-swap (process supervisor / OpenAI proxy) and
