@@ -97,6 +97,20 @@ def is_link(path: Path) -> bool:
     return True
 
 
+def remove_link(path: Path) -> None:
+    """Detach a symlink or junction at *path*, never following it to the target.
+
+    A junction is a directory reparse point, so it is removed with ``rmdir``
+    (which detaches the link and leaves the target intact); a symlink or file is
+    removed with ``unlink``. Callers must have already checked :func:`is_link`;
+    passing a real directory here would ``rmdir`` it, which is only valid empty.
+    """
+    if path.is_dir() and not path.is_symlink():
+        path.rmdir()  # pragma: no cover - Windows junction detach; target left intact
+    else:
+        path.unlink()
+
+
 _CTX_TIER_FLOOR = 8192
 _CTX_TIER_TABLE: tuple[tuple[int, int], ...] = (
     # (total_bytes_threshold, target)

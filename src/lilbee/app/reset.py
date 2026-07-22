@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from lilbee.core.config import cfg
+from lilbee.core.system import is_link, remove_link
 
 
 class ResetResult(BaseModel):
@@ -31,11 +32,12 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
     for item in list(base_dir.iterdir()):
         try:
             # iterdir yields direct children only, so the entry is within
-            # base_dir by construction. Remove a symlink as the link itself
-            # (never follow it) -- resolving it would both escape base_dir and
-            # risk deleting the target, neither of which reset intends.
-            if item.is_symlink():
-                item.unlink()
+            # base_dir by construction. Detach a link (symlink or Windows
+            # junction) as the link itself, never following it -- rmtree'ing a
+            # junction would recurse into and delete the real target, which reset
+            # must not do (a linked-in corpus is the user's, kept intact).
+            if is_link(item):
+                remove_link(item)
             elif item.is_dir():
                 shutil.rmtree(item)
             else:

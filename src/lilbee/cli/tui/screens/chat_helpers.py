@@ -18,6 +18,7 @@ from urllib.request import url2pathname
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
+from lilbee.core.system import is_link, remove_link
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -138,16 +139,17 @@ def remove_linked_sources(names: list[str]) -> None:
     """Remove documents/ entries a /add invocation created, for cancel/failure cleanup.
 
     Called on cancel or failure of the add task so a cancelled file does not
-    re-appear on the next sync. A symlink (the normal add) is unlinked as the
-    link itself, never following it to the source bytes behind it. Silently
-    tolerates missing entries; the user may have removed them concurrently, and
-    the goal is just to prevent accidental indexing.
+    re-appear on the next sync. A link (symlink, or a Windows junction) is
+    detached as the link itself, never following it to the source bytes behind it
+    -- rmtree'ing a junction would delete the real corpus. Silently tolerates
+    missing entries; the user may have removed them concurrently, and the goal is
+    just to prevent accidental indexing.
     """
     for name in names:
         target = cfg.documents_dir / name
         try:
-            if target.is_symlink():
-                target.unlink()
+            if is_link(target):
+                remove_link(target)
             elif target.is_dir():
                 shutil.rmtree(target, ignore_errors=True)
             elif target.exists():

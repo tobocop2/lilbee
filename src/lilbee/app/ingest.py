@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lilbee.core.config import active_config, cfg
-from lilbee.core.system import is_ignored_dir, is_link
+from lilbee.core.system import is_ignored_dir, is_link, remove_link
 from lilbee.data.store.types import RemoveResult
 
 
@@ -54,19 +54,6 @@ def _copytree_ignore(directory: str, contents: list[str]) -> set[str]:
     }
 
 
-def _remove_link(path: Path) -> None:
-    """Remove a symlink or junction, never following it to the target.
-
-    A junction is a directory reparse point, so it is removed with ``rmdir``
-    (which detaches the link and leaves the target untouched); a symlink or file
-    is removed with ``unlink``.
-    """
-    if path.is_dir() and not path.is_symlink():
-        path.rmdir()  # pragma: no cover - Windows junction detach; target left intact
-    else:
-        path.unlink()
-
-
 def _create_junction(src: Path, dest: Path) -> bool:
     """Create a Windows directory junction ``dest -> src``. False if unavailable.
 
@@ -86,7 +73,7 @@ def _create_junction(src: Path, dest: Path) -> bool:
     except (OSError, ValueError, AttributeError):  # pragma: no cover - Windows-only
         pass
     with contextlib.suppress(OSError):  # pragma: no cover - Windows-only
-        _remove_link(dest)
+        remove_link(dest)
     return False  # pragma: no cover - Windows-only
 
 
@@ -156,7 +143,7 @@ def link_files(paths: list[Path], *, force: bool = False) -> LinkResult:
                 result.skipped.append(p.name)
                 continue
             if is_link(dest):
-                _remove_link(dest)  # replace a stale/dangling symlink or junction
+                remove_link(dest)  # replace a stale/dangling symlink or junction
             elif dest.is_file():
                 dest.unlink()  # replace a real file on force
             elif dest.is_dir() and symlinks_supported():
@@ -240,7 +227,7 @@ def _unlink_linked_roots(names: Iterable[str], documents_dir: Path) -> list[str]
             continue
         entry = documents_dir / name
         if is_link(entry):
-            _remove_link(entry)
+            remove_link(entry)
             unlinked.append(name.strip("/"))
     return unlinked
 

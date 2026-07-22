@@ -197,6 +197,24 @@ class TestLinkFiles:
         assert (dest / "a.txt").read_text() == "a"  # junction redirects transparently
         assert "corpus/a.txt" in discover_files()  # discovery follows it
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
+    def test_remove_link_detaches_junction_without_deleting_target(self, tmp_path, monkeypatch):
+        # Detaching a junction (rmdir) must leave the real corpus untouched.
+        from lilbee.app import ingest
+        from lilbee.core.system import remove_link
+
+        monkeypatch.setattr(ingest, "symlinks_supported", lambda: False)
+        src = tmp_path / "corpus"
+        src.mkdir()
+        (src / "a.txt").write_text("a")
+        link_files([src])
+        junction = cfg.documents_dir / "corpus"
+
+        remove_link(junction)
+
+        assert not junction.exists()
+        assert (src / "a.txt").read_text() == "a"  # target intact
+
     def test_copy_fallback_for_directory_filters_ignored_dirs(self, tmp_path, monkeypatch):
         from lilbee.app import ingest
 
