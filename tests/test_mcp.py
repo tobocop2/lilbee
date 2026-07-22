@@ -53,10 +53,12 @@ def isolated_env(tmp_path):
     """Redirect config paths for all MCP tests."""
     snapshot = cfg.model_copy()
 
+    cfg.data_root = tmp_path
     cfg.documents_dir = tmp_path / "documents"
     cfg.documents_dir.mkdir(exist_ok=True)
     cfg.data_dir = tmp_path / "data"
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
+    cfg.linked_roots = {}
 
     yield tmp_path
 
@@ -663,7 +665,8 @@ class TestAdd:
         assert "test.txt" in result["copied"]
         assert result["errors"] == []
         assert result["skipped"] == []
-        assert (cfg.documents_dir / "test.txt").read_text() == "hello world"
+        # Registered in place, not copied into documents_dir.
+        assert cfg.linked_roots == {"test.txt": str(src.resolve())}
         mock_sync.assert_awaited_once()
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -681,27 +684,33 @@ class TestAdd:
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_no_force(self, mock_sync, tmp_path):
-        (cfg.documents_dir / "exist.txt").write_text("old")
-        src = tmp_path / "exist.txt"
-        src.write_text("new")
+        # A live root already holds the "exist" label; a same-basename source is
+        # skipped without force.
+        one = tmp_path / "a" / "exist"
+        one.mkdir(parents=True)
+        cfg.linked_roots = {"exist": str(one)}
+        two = tmp_path / "b" / "exist"
+        two.mkdir(parents=True)
 
-        result = await add([str(src)])
+        result = await add([str(two)])
 
-        assert "exist.txt" in result["skipped"]
+        assert "exist" in result["skipped"]
         assert result["copied"] == []
-        assert (cfg.documents_dir / "exist.txt").read_text() == "old"
+        assert cfg.linked_roots == {"exist": str(one)}  # unchanged
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_existing_with_force(self, mock_sync, tmp_path):
-        (cfg.documents_dir / "exist.txt").write_text("old")
-        src = tmp_path / "exist.txt"
-        src.write_text("new")
+        one = tmp_path / "a" / "exist"
+        one.mkdir(parents=True)
+        cfg.linked_roots = {"exist": str(one)}
+        two = tmp_path / "b" / "exist"
+        two.mkdir(parents=True)
 
-        result = await add([str(src)], force=True)
+        result = await add([str(two)], force=True)
 
-        assert "exist.txt" in result["copied"]
+        assert "exist" in result["copied"]
         assert result["skipped"] == []
-        assert (cfg.documents_dir / "exist.txt").read_text() == "new"
+        assert cfg.linked_roots == {"exist": str(two.resolve())}  # re-pointed
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_directory(self, mock_sync, tmp_path):
@@ -712,7 +721,7 @@ class TestAdd:
         result = await add([str(src_dir)])
 
         assert "mydir" in result["copied"]
-        assert (cfg.documents_dir / "mydir" / "a.txt").read_text() == "a"
+        assert cfg.linked_roots == {"mydir": str(src_dir.resolve())}
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_with_enable_ocr(self, mock_sync, tmp_path):
