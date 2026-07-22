@@ -1,85 +1,55 @@
-# Stage 2: embed and index 8,841,823 passages.
+# MS MARCO ingest into one lilbee index.
 #
-# 4x A100-80GB. Embedding is data-parallel -- each card takes a different shard
-# and there is no all-reduce -- so more GPUs is close to linear here. That is a
-# different situation from tensor-split generation, which a previous run found
-# all-reduce-bound on PCIe; the earlier warning does not apply to this workload.
+# Adopts the proven lilbeekreuzbergstein pattern (millions of files ingested):
+# config.toml in the data root selects the embedder, `lilbee sync` indexes
+# documents/ in place (no copy), retry-to-zero, reconcile from LanceDB.
 #
-# disk_size holds the working set on local NVMe. The volume is for sequential
-# files only: it is MooseFS, where per-file operations measured ~1000x slower
-# than local disk, and building a LanceDB index there cost a previous run four
-# hours with the GPUs idle.
+# Local-only, no network volume: on-demand A100s are stable, and everything
+# lives on container NVMe. SMOKE_N proves the path on a subset before the full
+# 8.8M is committed -- launch the smoke, read docs/sec, then relaunch SMOKE_N=0.
 #
-#   sky launch -c msmarco-ingest evals/infra/ingest.sky.yaml --retry-until-up -y
+#   sky launch -c mm evals/infra/ingest.sky.yaml --env SMOKE_N=50000 \
+#       --idle-minutes-to-autostop 20 --down -y
 name: msmarco-ingest
-# Launch this with --idle-minutes-to-autostop 20 --down (see the launch command
-# below). Idle pods must stop themselves: this run left an A100 billing across
-# several exchanges while blocked on a human, and a question asked of a person
-# is an unbounded wait the meter does not care about. --down rather than stop,
-# because a stopped RunPod pod still holds its container disk.
 resources:
   cloud: runpod
-  # Ubuntu 24.04 (glibc 2.39) for xberg, whose wheel needs __isoc23_strtoll from
-  # glibc 2.38. The tag is a real runpod/pytorch image verified to exist on the
-  # registry before use -- a guessed tag ('...cuda12.4.1-devel-ubuntu24.04') did
-  # not exist, and RunPod's response is to grab a box, fail the image pull, and
-  # release it, which reads as endless provisioning churn. The cu124 engine
-  # wheel bundles its own cudart, so this image's CUDA 12.8 does not conflict.
+  # Ubuntu 24.04 (glibc 2.39): xberg's wheel needs __isoc23_strtoll (glibc 2.38).
+  # A real, registry-verified runpod/pytorch tag -- a guessed tag makes RunPod
+  # grab a box, fail the image pull, and release it (endless provisioning churn).
   image_id: docker:runpod/pytorch:1.0.7-rc.138-cu1281-torch271-ubuntu2404
-  # Everything lives on container disk now: corpus, passage files, index.
-  disk_size: 600
-  # On-demand A100 (sky's default; not spot), widest ladder because stock is Low.
-  # Four cards is the fast path and one still ingests, just slower -- embedding
-  # is data-parallel so cards trade directly against wall time. The volume in
-  # EU-RO-1 pins the region, so every rung is an EU-RO-1 A100.
+  disk_size: 400
+  # One card for the smoke: the discovery/chunk feed is single-threaded, so more
+  # GPUs may just starve. Measure one card's docs/sec first, then decide whether
+  # the full run scales to four (embedding is data-parallel, ~linear if it does).
   ordered:
-    - accelerators: A100-80GB-SXM:4
-    - accelerators: A100-80GB:4
-    - accelerators: A100-80GB-SXM:2
-    - accelerators: A100-80GB:2
     - accelerators: A100-80GB-SXM:1
     - accelerators: A100-80GB:1
-# Volume in EU-RO-1, which has A100-SXM4-80GB and offers volumes. Persistence is
-# the point now: an on-demand box can still be reclaimed, and phase 0 of the
-# ingest re-fetches the corpus onto the volume only if it is not already there,
-# so a reclaim resumes from whatever the volume already holds instead of
-# restarting. The volume follows availability rather than pinning the run to a
-# dead region -- the lesson from US-WA-1, whose A100 vanished twice mid-run.
-volumes:
-  /workspace: msmarco-eu
+# The local harness, synced straight to the pod (.skyignore drops .venv/caches),
+# so edits deploy without a git round-trip.
+file_mounts:
+  /opt/evals: ./evals
 envs:
-  # Two branches, because neither has everything. lilbee comes from
-  # feat/kreuzberg-5, which carries data/ingest/trace.py -- the per-document
-  # timing that the whole run exists to capture and that never merged to main.
-  # The harness comes from its own branch. Both SHAs are recorded on the pod so
-  # the run is reproducible from the record rather than from memory.
   BRANCH: feat/kreuzberg-5
-  HARNESS_BRANCH: feat/rag-eval-harness
   BACKEND: cu124
   EMBED_MODEL: Qwen/Qwen3-Embedding-8B-GGUF/Qwen3-Embedding-8B-Q8_0.gguf
-  LILBEE_POD_HOURLY_USD: "6.40"
-  # MS MARCO passages are plain text. OCR would reserve vision VRAM, compete for
-  # the same cards, and never fire on a single document.
-  LILBEE_ENABLE_OCR: "false"
-  # Only the embedder is loaded, so there is no second model to leave room for.
-  LILBEE_GPU_MEMORY_FRACTION: "0.90"
-  HF_TOKEN: ""
+  DATASET_ID: msmarco-passage
+  # 0 = full 8.8M corpus. A smoke run overrides this (--env SMOKE_N=50000).
+  SMOKE_N: "0"
+  LILBEE_POD_HOURLY_USD: "3.20"
 setup: |
   set -euo pipefail
   export PATH="$HOME/.local/bin:$PATH"
   command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
-  mkdir -p /workspace/logs
 
-  # uv supplies python 3.12: the pod's system python is older than 3.11 and every
-  # lilbee release requires >=3.11, so a system venv made "pip install lilbee"
-  # report no matching distribution. --clear and --seed: setup re-runs on every
-  # reclaim so it must be re-entrant, and uv venv omits pip without --seed.
+  # uv supplies python 3.12: the pod's system python is < 3.11 and every lilbee
+  # release requires >= 3.11. --clear + --seed: setup re-runs on every reclaim so
+  # it must be re-entrant, and uv venv omits pip without --seed.
   uv venv --clear --seed --python 3.12 /root/lilbee_venv
   VPY=/root/lilbee_venv/bin/python
 
-  # The lilbee package. Its engine is installed separately below, because
-  # resolving the engine through an index yields a 0.0.0 STUB with an empty bin/.
+  # lilbee from PyPI. Its engine installs separately below: resolving the engine
+  # through an index yields a 0.0.0 stub with an empty bin/.
   uv pip install -q --python "$VPY" --prerelease=allow lilbee
 
   # The PREBUILT engine, from the exact release asset. Never compiled: a git
@@ -92,52 +62,42 @@ setup: |
   uv pip install -q --python "$VPY" --reinstall "/tmp/$WHEEL"
 
   # The branch's python for trace.py, deps kept from the release so the engine
-  # survives, then the deps the branch ADDED that the release lacks (xberg's
-  # extraction stack). --no-deps alone left xberg missing and lilbee died at
-  # first extraction.
+  # survives, then xberg (extraction) and ir_datasets (the corpus source).
   uv pip install -q --python "$VPY" --no-deps --reinstall \
     "git+https://github.com/tobocop2/lilbee@${BRANCH}"
   uv pip install -q --python "$VPY" --prerelease=allow "xberg>=1.0.0rc30"
+  uv pip install -q --python "$VPY" ir_datasets pyarrow
 
   ENGINE_BIN="$($VPY -c 'import lilbee_engine; print(lilbee_engine.get_llama_server_path())')"
   test -x "$ENGINE_BIN" || { echo "FATAL: no engine at $ENGINE_BIN (stub wheel?)"; exit 1; }
-  $VPY -c 'import xberg' || { echo "FATAL: xberg import failed (glibc too old?)"; exit 1; }
-  echo "engine OK: $ENGINE_BIN ; xberg OK"
+  $VPY -c 'import xberg'        || { echo "FATAL: xberg import failed (glibc too old?)"; exit 1; }
+  $VPY -c 'import ir_datasets'  || { echo "FATAL: ir_datasets missing"; exit 1; }
+  $VPY -c 'import lancedb'      || { echo "FATAL: lancedb missing"; exit 1; }
+  echo "engine OK: $ENGINE_BIN ; xberg + ir_datasets + lancedb OK"
 
-  rm -rf /opt/lilbee-src /tmp/harness
+  # A shallow lilbee checkout for provenance (the exact SHA the run used).
+  rm -rf /opt/lilbee-src
   git clone -q --depth 1 --branch "$BRANCH" https://github.com/tobocop2/lilbee.git /opt/lilbee-src
-  git clone -q --depth 1 --branch "$HARNESS_BRANCH" https://github.com/tobocop2/lilbee.git /tmp/harness
-  cp -r /tmp/harness/evals /opt/lilbee-src/
-  test -f /opt/lilbee-src/src/lilbee/data/ingest/trace.py || { echo "FATAL: no trace.py; wrong branch"; exit 1; }
-  # NOT exporting UV_PROJECT_ENVIRONMENT: pointed at lilbee_venv it makes
-  # `uv sync --project evals` rewrite that venv to the harness project and
-  # uninstall the engine. Two projects, two environments.
-  cd /opt/lilbee-src && uv sync --project evals
-  "$VPY" -c "import lilbee_engine" || { echo "FATAL: uv sync removed the engine"; exit 1; }
-  { echo "lilbee_branch=$BRANCH lilbee_sha=$(git -C /opt/lilbee-src rev-parse HEAD)";
-    echo "harness_branch=$HARNESS_BRANCH harness_sha=$(git -C /tmp/harness rev-parse HEAD)"; } \
-    | tee /workspace/logs/commits.txt
+  mkdir -p /root/bench
+  echo "lilbee_branch=$BRANCH lilbee_sha=$(git -C /opt/lilbee-src rev-parse HEAD) engine=$TAG" \
+    > /root/bench/commits.txt
+  cat /root/bench/commits.txt
 run: |
   set -euo pipefail
-  cd /opt/lilbee-src
   export PATH="$HOME/.local/bin:$PATH"
-  export WORKSPACE=/workspace LOCAL=/root/msmarco
-  mkdir -p /workspace/datasets /workspace/logs
+  export LILBEE_DATA=/root/msmarco/data
+  export LOG_DIR=/root/bench/logs
+  mkdir -p "$LILBEE_DATA" "$LOG_DIR"
   export LILBEE_INGEST_TRACE=1
-  export LILBEE_INGEST_TRACE_FILE=/workspace/logs/ingest_trace.log
-  export WORK_DIR=/root MIN_DISK_GB=400
-  export LILBEE_BASE_URL=http://127.0.0.1:8080
-  # preflight and ingest.sh both need these; only the ssh driver set them before.
+  export LILBEE_INGEST_TRACE_FILE="$LOG_DIR/ingest_trace.log"
+  export LILBEE_LOG_LEVEL=INFO
+  export WORK_DIR=/root MIN_DISK_GB=120
   export LILBEE_BIN=/root/lilbee_venv/bin/lilbee PYBIN=/root/lilbee_venv/bin/python
-  export EMBED_MODEL="$EMBED_MODEL" BACKEND="$BACKEND"
-  # One embed server per card that actually provisioned. lilbee's auto setting
-  # is one-per-GPU but caps itself by the VRAM left after reserving a persistent
-  # query fleet (chat, rerank, vision) this run never calls, so it is pinned --
-  # to the real count, not a guess. The resource ladder can land on four cards,
-  # two, or one, and four embed servers on a single card would contend for the
-  # same SMs while quadrupling the weights held in its memory.
+  export EMBED_MODEL DATASET_ID SMOKE_N BACKEND
+  # One embed server per detected card. Pinned to the real count (not lilbee's
+  # VRAM auto-guess, which reserves room for a query fleet this run never calls).
   export LILBEE_EMBED_REPLICAS="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
-  echo "embed replicas: $LILBEE_EMBED_REPLICAS (one per detected GPU)"
-  # Fails before the hours start, not during them.
-  bash evals/infra/preflight.sh 2>&1 | tee /workspace/logs/preflight.log
-  bash evals/infra/ingest.sh    2>&1 | tee -a /workspace/logs/ingest.log
+  echo "embed replicas: $LILBEE_EMBED_REPLICAS ; SMOKE_N=$SMOKE_N"
+  # Fails before the GPU hours start, not during them.
+  bash /opt/evals/infra/preflight.sh 2>&1 | tee "$LOG_DIR/preflight.log"
+  bash /opt/evals/infra/ingest.sh

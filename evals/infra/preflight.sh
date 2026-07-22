@@ -36,9 +36,6 @@ log "engine binary is present and prebuilt (never compiled here)"
 CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '. ')
 log "  compute capability sm_${CAP}, engine backend ${BACKEND:-cu124}"
 
-# use-embedder both downloads the model and points lilbee at it. There is no
-# "models" command -- an earlier version of this check invented one and failed
-# with "No such command", which proved nothing about the GPU.
 # The branch's extraction stack is a compiled extension, so the image's glibc
 # has to be new enough for it. Checking here turns an undefined-symbol error at
 # first extraction -- which reads as a broken package -- into a named image
@@ -47,15 +44,21 @@ log "extraction stack imports against this image's glibc"
 "$PYBIN" -c 'import xberg' 2>/dev/null \
   || die "xberg will not import: glibc is $(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$'), and its wheel needs 2.38+. Use an ubuntu 24.04 image."
 
-log "embedding model downloads and is selected"
-"$LILBEE_BIN" use-embedder "${EMBED_MODEL}" 2>&1 | tail -5
+# Warm the model cache. The embedder is SELECTED by config.toml in the data root
+# (written by ingest.sh) -- the mechanism the proven lilbeekreuzbergstein harness
+# uses and the one the fleet actually reads. `use-embedder` wrote a config the
+# ingest's data-dir did not consult, so the embed server stayed on the
+# uninstalled default and every passage silently failed. `model pull` only
+# downloads; selection is the config file's job.
+log "embedding model downloads (pulled to the cache; config.toml selects it)"
+"$LILBEE_BIN" model pull "${EMBED_MODEL}" 2>&1 | tail -5 \
+  || die "model pull failed for ${EMBED_MODEL}"
 
-# The engine-loads-a-vector check lives in ingest.sh phase 2, not here: it needs
-# a running lilbee serve, and nothing serves at preflight time. use-embedder
-# above already downloaded and selected the model, which is the part that can be
-# checked without a server. A wrong GPU arch surfaces when serve loads the model
-# for the warm step, before any passage is materialised, so the fast-fail
-# guarantee holds.
+# The engine-loads-a-vector check lives in the sync run, not here: it needs a
+# running embed server, and nothing serves at preflight time. The model pull
+# above is the part checkable without a server. A wrong GPU arch surfaces when
+# the fleet loads the embedder at sync start, before the bulk is embedded, so
+# the fast-fail guarantee holds.
 
 log "disk headroom for the index"
 AVAIL=$(df -BG --output=avail "$WORK_DIR" | tail -1 | tr -dc '0-9')
