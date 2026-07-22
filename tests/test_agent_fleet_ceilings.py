@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
-import resource
+import types
+
+from tests._sys_modules import inject_modules
+
+# The resource module is POSIX-only, so the file-descriptor tests run against a
+# stand-in rather than importing it: that keeps them (and the coverage of the
+# warning's body) working on Windows, where the real module is absent.
+_UNLIMITED = -1
+
+
+def _fake_resource(*, soft: int, hard: int) -> dict[str, types.SimpleNamespace]:
+    mod = types.SimpleNamespace(
+        RLIMIT_NOFILE=7, RLIM_INFINITY=_UNLIMITED, getrlimit=lambda _res: (soft, hard)
+    )
+    return {"resource": mod}
 
 
 class TestThreadPoolCeiling:
@@ -87,35 +101,34 @@ class TestThreadPoolCeiling:
 class TestFileDescriptorNudge:
     """Each connected agent holds a socket; macOS still defaults to 256."""
 
-    def _run(self, monkeypatch, caplog, *, soft: int, hard: int = resource.RLIM_INFINITY):
+    def _run(self, caplog, *, soft: int, hard: int = _UNLIMITED) -> str:
         from lilbee.server import app as app_mod
 
-        monkeypatch.setattr(resource, "getrlimit", lambda _res: (soft, hard))
-        with caplog.at_level("INFO", logger=app_mod.__name__):
+        with inject_modules(_fake_resource(soft=soft, hard=hard)), caplog.at_level(
+            "INFO", logger=app_mod.__name__
+        ):
             app_mod._warn_if_few_file_descriptors()
         return caplog.text
 
-    def test_a_low_limit_is_named_with_the_command_to_raise_it(self, monkeypatch, caplog) -> None:
-        text = self._run(monkeypatch, caplog, soft=256)
+    def test_a_low_limit_is_named_with_the_command_to_raise_it(self, caplog) -> None:
+        text = self._run(caplog, soft=256)
 
         assert "256" in text
         assert "ulimit -n" in text
 
-    def test_a_generous_limit_says_nothing(self, monkeypatch, caplog) -> None:
-        assert self._run(monkeypatch, caplog, soft=65536) == ""
+    def test_a_generous_limit_says_nothing(self, caplog) -> None:
+        assert self._run(caplog, soft=65536) == ""
 
-    def test_an_unlimited_soft_limit_says_nothing(self, monkeypatch, caplog) -> None:
-        assert self._run(monkeypatch, caplog, soft=resource.RLIM_INFINITY) == ""
+    def test_an_unlimited_soft_limit_says_nothing(self, caplog) -> None:
+        assert self._run(caplog, soft=_UNLIMITED) == ""
 
-    def test_the_hard_limit_is_reported_so_the_operator_knows_the_ceiling(
-        self, monkeypatch, caplog
-    ) -> None:
-        text = self._run(monkeypatch, caplog, soft=256, hard=10240)
+    def test_the_hard_limit_is_reported_so_the_operator_knows_the_ceiling(self, caplog) -> None:
+        text = self._run(caplog, soft=256, hard=10240)
 
         assert "10240" in text
 
-    def test_an_unlimited_hard_limit_reads_as_unlimited(self, monkeypatch, caplog) -> None:
-        text = self._run(monkeypatch, caplog, soft=256, hard=resource.RLIM_INFINITY)
+    def test_an_unlimited_hard_limit_reads_as_unlimited(self, caplog) -> None:
+        text = self._run(caplog, soft=256, hard=_UNLIMITED)
 
         assert "unlimited" in text
 
