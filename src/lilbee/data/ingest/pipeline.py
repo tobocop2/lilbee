@@ -35,7 +35,7 @@ from lilbee.data.ingest.adaptive import (
 from lilbee.data.ingest.code import ingest_code_sync
 from lilbee.data.ingest.discovery import classify_file, discover_files, file_hash
 from lilbee.data.ingest.extract import ingest_document, ingest_markdown
-from lilbee.data.ingest.offload import max_workers, to_ingest_thread
+from lilbee.data.ingest.offload import embed_inflight_target, max_workers, to_ingest_thread
 from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     load_skip_markers,
@@ -103,8 +103,12 @@ def _max_concurrent() -> int:
             return fitted
         replicas = resolve_replica_count(WorkerRole.VISION, gpu_device_count())
         return max(1, replicas * config.vision_ocr_concurrency)
-    embed_slots = resolve_replica_count(WorkerRole.EMBED, gpu_device_count())
-    return max(cpu_quota(), embed_slots)
+    if config.ingest_max_inflight > 0:
+        return config.ingest_max_inflight  # explicit override
+    # Auto: keep every embed replica fed. The CPU-bound quota alone leaves a
+    # many-core multi-GPU box starved (~4 files/card), so scale admission with
+    # the detected fleet size -- no manual cap needed.
+    return max(cpu_quota(), embed_inflight_target())
 
 
 async def _rebuild_concept_clusters() -> None:
@@ -628,19 +632,26 @@ async def sync(
 
     # Ingest files (with optional progress bar)
     if files_to_process:
-        get_services().embedder.validate_model()
-        await ingest_batch(
-            files_to_process,
-            added,
-            updated,
-            failed,
-            skipped,
-            quiet=quiet,
-            on_progress=on_progress,
-            cancel=cancel,
-            flush_failed=flush_failed,
-            reasons=reasons,
-        )
+        # Hold the embed fleet resident for the whole batch: an unevenly loaded
+        # replica must not idle-unload and reload cold mid-run (which snowballs
+        # into a fleet collapse). The ContextVar propagates into the ingest
+        # thread pool, where the fleet actually spawns on the first embed.
+        from lilbee.providers.fleet.ingest_warmth import keep_fleet_warm
+
+        with keep_fleet_warm():
+            get_services().embedder.validate_model()
+            await ingest_batch(
+                files_to_process,
+                added,
+                updated,
+                failed,
+                skipped,
+                quiet=quiet,
+                on_progress=on_progress,
+                cancel=cancel,
+                flush_failed=flush_failed,
+                reasons=reasons,
+            )
 
     # A flush failure is a transient store-side problem, not a verdict on the
     # file: leaving it unmarked re-plans it next sync instead of skipping it.

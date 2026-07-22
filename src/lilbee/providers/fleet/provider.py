@@ -36,6 +36,7 @@ from lilbee.providers.fleet.client import (
     retry_on_busy,
 )
 from lilbee.providers.fleet.groups import SwapGroup, group_for
+from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
@@ -565,9 +566,12 @@ def _warm_ttl_seconds() -> int:
     idle-unloads it. With warm off the engine is on-demand and releases its
     weights after ``engine_idle_ttl_minutes`` of inactivity to free VRAM; the
     next prompt reloads transparently. A ttl of 0 there disables the idle unload
-    entirely (weights stay until the app tears the fleet down).
+    entirely (weights stay until the app tears the fleet down). A bulk ingest
+    also holds the fleet resident for its duration (see
+    :func:`lilbee.providers.fleet.ingest_warmth.keep_fleet_warm`) so an unevenly
+    loaded replica cannot idle-unload and reload cold mid-run.
     """
-    if cfg.keep_engine_warm:
+    if cfg.keep_engine_warm or ingest_keep_warm():
         return 0
     return cfg.engine_idle_ttl_minutes * 60
 
